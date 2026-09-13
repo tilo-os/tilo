@@ -1,0 +1,655 @@
+# Common Real-App Framework Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task, with one implementation author at a time. Steps use checkbox (`- [ ]`) syntax for tracking. Controller preflight is recorded in this plan's SDD ledger. Continue the already-authorized slices after each review and exact-SHA host verification.
+
+**Goal:** Establish one application factory, canonical record owner, per-instance local presentation/undo context, and fully bound widget/action dispatch shared by standalone, embedded, and headless hosts.
+
+**Architecture:** Extend `LaunchSpec`, `AppWidget`, `RecordStore`, `UndoLog`, `View`, and the existing qos-actions dispatcher in `ui`, reexported by `qos-app`. A component owns its real widget and fresh `WakeScope`; a scoped record owner owns the canonical Automerge document and writer. `App` and `headless::Driver` consume the same prepared component, and `TileHost` presents it without changing the destination of descendant callbacks or operations.
+
+**Tech Stack:** Existing Rust workspace, Automerge, app-state/atomic-file, qos-actions/collab-types permissions, retained Widget/Taffy, WakeScope, serde/postcard, existing nextest and isolated test helper. No new runtime, wire ABI, widget system, service locator, or dependency on shell from ui/apps.
+
+**Spec:** `docs/superpowers/specs/2026-09-12-macos-shell-port-design.md` §§4, 6, 7, 8, 11; `docs/superpowers/specs/2026-09-12-macos-app-capability-map.md`, particularly Notes and Files acceptance.
+
+## Global Constraints
+
+- “The first milestone is **real Notes and Files, with a complete capability map for every other app**.” This plan supplies their framework dependency, not milestone completion or substitute factories.
+- “Apps and `ui` must not depend on `shell` to request a service.”
+- “Two tiles opening one record share its document, but keep independent Views and operation contexts.”
+- “A construction or restoration failure leaves a retryable error tile and retains the original persisted data.” The framework returns a retained typed error; the later shell integration renders that tile.
+- “Headless execution remains a first-class runner of this same host contract.”
+- “Benchmarks and tests must not load the user's real state or secrets.”
+- “Keep Linux defaults and HDR behavior.”
+- Reviewed wake/LocalState/App baseline is `f14221783`, including completed Task 3 conformance. Do not replace it. There are no concurrent UI fixture edits; the direct core cutover is the sole source author until the controller assigns this plan's next implementation author.
+- The direct shell core cutover plan can move frame/render/shared-shell modules. This plan has no dependency on their current location and edits no shell module.
+- Same codebase and current lockfile/toolchain on both hosts; no Notes migration, Files provider, collaboration transport, package bridge, native event loop, or 47-app rewrite in this plan.
+
+---
+
+## Execution and review protocol
+
+The controller assigns one implementation author at a time. For each task: write the meaningful failing behavior tests, implement, self-review the full diff, run native macOS focused tests and affected checks, then create the explicit source commit named at the end of that task. Report the commit SHA and native evidence. The controller reviews that concrete task commit, synchronizes the exact SHA to Fedora and verifies the focused tests/affected checks there before accepting the task and proceeding. Corrections repeat this cycle with an explicit follow-up commit. Do not make the source commit depend on a prior controller review of a nonexistent commit. These already-authorized slices require no additional user permission.
+
+Native commands below use `CARGO_TARGET_DIR=/Users/xaver/dev/qos/target/macos-shell`; record `rustc -vV` host/target and use the already configured Apple Silicon toolchain. Keep `--locked --profile ci` on nextest runs, and require nonzero discovered/executed counts. On Fedora the controller uses that host's established explicit target directory and the same helper/lockfile/selection at the exact source SHA; do not reuse the Mac filesystem path. A baseline Mac dependency failure needs concrete parent-SHA evidence; it is not a portable success or grounds for excluding Fedora checks. No GUI launch is needed for these focused gates. After any normal git push, await the automatic final CI notification and use `fgj actions` for failures; keep relevant CI green before merging. No merge/push is required merely to produce this plan's task commits.
+
+The following check/clippy gates are mandatory for each task on **both hosts**, in addition to its focused tests. Run the native commands before its source commit; the controller runs the identical Cargo payload at that exact commit on Fedora. Prefix each command on Mac with `CARGO_TARGET_DIR=/Users/xaver/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py`; on Fedora use `CARGO_TARGET_DIR="$PWD/target/framework-verification" python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py` from the controller's isolated checkout. These explicit target directories preserve HOME/toolchain and prevent cross-host cache assumptions. Formatting uses `cargo fmt --all --check` on both hosts. A failed native gate must be fixed or established as an exact parent-SHA blocker; the affected Fedora gate remains required and no failure counts as a pass.
+
+| Task | Required compile command (both hosts) | Required lint command (both hosts) |
+| --- | --- | --- |
+| 1 — ownership/storage | `cargo check --locked -p app-state -p ui --all-targets` | `cargo clippy --locked -p app-state -p ui --all-targets -- -D warnings` |
+| 2 — factory/View contract | `cargo check --locked -p ui -p qos-app --all-targets` | `cargo clippy --locked -p ui -p qos-app --all-targets -- -D warnings` |
+| 3 — bound callbacks | `cargo check --locked -p ui -p qos-app --all-targets` | `cargo clippy --locked -p ui -p qos-app --all-targets -- -D warnings` |
+| 4 — bound actions/history | `cargo check --locked -p ui -p qos-app --all-targets` | `cargo clippy --locked -p ui -p qos-app --all-targets -- -D warnings` |
+| 5 — all runners | `cargo check --locked -p app-state -p ui -p qos-app --all-targets` | `cargo clippy --locked -p app-state -p ui -p qos-app --all-targets -- -D warnings` |
+
+The complete workspace/real-app host matrix remains a later controller gate; this table is the mandatory minimum for every common-framework task and cannot be replaced by integration-test success.
+
+## Source evidence and decisions for controller preflight
+
+| Source inspected | Consequence |
+| --- | --- |
+| `ui/src/launch.rs:462` and `:495` | Headless calls `live_root` and opens state independently; only native calls `configure_app`. Definition-aware preparation must happen before choosing the runner. Keep old launch entrypoints for unmigrated apps. |
+| `ui/src/headless.rs:424` | `Driver` is a type alias for `FrameHarness`, not a separate module. Modify `headless.rs`. |
+| `ui/Cargo.toml:313`, `ui/tests/it.rs` | Integration tests are modules of the single `it` binary (`autotests=false`); merely adding a test file does not run it. |
+| `ui/src/record.rs:569,766,858` | Current package/workspace resolution reads environment, `persist_for` converts load errors to absence and tries legacy adoption, and `open_record -> bool` conflates failure/already-open. Canonical opening needs a separate fallible explicit path with no implicit import. |
+| `crates/system/app-state/src/lib.rs:423,470,483` | Lock loss currently selects a random actor but permits writing. Empty existing document bytes currently mean absence. Canonical opening must refuse both ambiguous emptiness and contested writers. |
+| `crates/system/app-state/src/lib.rs:483,572,693` | Current load uses partial-load Ignore; save/write_full publish immediately. Keep recovery bytes in a CanonicalLoad until UI identity validation explicitly accepts publication through write_full. |
+| `crates/system/app-state/src/autosave.rs:175,197` | `flush` returns unit; `last_error` is a string. Reuse the writer and expose a fallible acknowledgement/status above it; do not equate a queued request with durable success. |
+| `ui/src/widget/tile_host.rs:561,615,751` | First sync calls `UndoLog::rebase`, layout inserts raw descendant pointers, and bound input uses the record but ambient author. Root forwarding alone is insufficient. |
+| `ui/src/state/mod.rs:20,101,116,260` | Undo entries have real author and explicit heads; rebase only changes `last_heads`, not stacks. Add instance filtering and explicit action boundaries without rewriting actor/user identity. |
+| `ui/src/app.rs:2449`, `ui/src/headless.rs:1621` | Resource resolution and Document execution currently select the runner's document. Extract the existing implementation and select the component binding before authority checks/executor/history. |
+| `ui/src/undo.rs:220` | Global raw-pointer draining combines commit notifications into the outer `State`. Partition by binding and drain once at the record boundary. |
+| `ui/src/wake.rs:60,127`, `ui/src/app.rs:5229` | `WakeScope::enter` can enter a closed route; App Drop closes, enters, then explicitly drops the root. Reuse that teardown ordering; detached handles still authorize publication. |
+| `ui/src/view.rs:65,141` | Existing `View` is reusable; ordinary hosted restoration must not invoke `FrozenApp.state` replacement. `RecordCheckout` is not yet a persisted envelope. |
+| `ui/src/permissions/mod.rs:124`, `crates/collab/actions/src/context.rs:17` | Reuse `PermissionContext` and `ActionContext`. The latter is provenance, not a user/instance identity or capability. |
+| `crates/runtime/runtime-fs/src/lib.rs` | Existing `FsClient`/`FileHandle` do not supply the complete portable directory-grant/operation contract. Do not invent a path-bearing “grant” in this framework slice. |
+| `shell/src/shell/tab_documents.rs:26` and `chrome_state.rs` | Durable tile IDs are `u64`. Reuse that representation below shell; scope it by explicit workspace/device rather than import a shell type. |
+
+**Writer decision:** Keep legacy advisory multiwriter behavior only while every participant is legacy-mode in this revised version. Add one shared/exclusive ownership gate on the existing store directory: legacy writable stores hold a shared gate, canonical stores an exclusive gate, both for their whole writer lifetime. Keep the existing actor lock for legacy behavior. This prevents a revised legacy entrypoint from writing alongside a canonical owner and prevents canonical opening of an active legacy import destination. Older/uncooperative binaries do not acquire this gate; no advisory mechanism stops their arbitrary writes. Concurrent use of one profile by those binaries remains unsupported and must be stated in the API docs. Do not describe this as runtime-qualified.
+
+**Service boundary decision:** The initial context has an explicit record service, current `PermissionContext`, authenticated `UserId`, `ActionContext`, and mount handle. Required/optional capability declarations use existing `PermissionScope` requests and existing service availability identifiers only when backed by a concrete implementation. The Files and collaboration plans add their actual typed handles to this context; this slice does not publish an `Any` map, raw-path authority, or success-shaped fake service.
+
+**Schema decision:** Use a new narrowly versioned local instance envelope containing existing `View` and record-reference fields, separate from `FrozenApp`. Version 1 has no document bytes and no effects to replay. App-specific local View contributions beyond today's fields belong to the Notes plan after its exact selected-page/caret needs are traced.
+
+## File responsibility map
+
+- `crates/system/app-state/src/lib.rs`: explicit canonical opener, absence/error distinction, writer ownership gate, typed store errors.
+- `crates/system/app-state/src/autosave.rs`: fallible flush acknowledgement while preserving existing `flush()` compatibility.
+- `ui/src/record.rs`: explicit owner registry and fallible record access, canonical identity checks, initialization before history, status/flush and action ownership.
+- New `ui/src/application.rs`: definition/catalogue, context, target, component construction and lifecycle. No native window code.
+- New `ui/src/application_view.rs`: validated local instance envelope and explicit local store; reuse `View` and `atomic-file`.
+- New `ui/src/bound_dispatch.rs`: callback binding/node routing and extracted resource-operation execution over the selected document.
+- `ui/src/widget/{mod,app_widget,tile_host}.rs`: default binding hook, component presentation/lifecycle and full existing widget contract.
+- `ui/src/{app,headless,launch,undo,view,wake,a11y_tree,accesskit_bridge}.rs`: consume the new bound owner/helpers; preserve legacy APIs where specified.
+- `ui/src/state/mod.rs`: instance-aware entries/filtering and explicit mutation boundaries in existing UndoLog.
+- `ui/src/lib.rs`, `crates/app/qos-app/src/lib.rs`: public module/prelude exports.
+- New `ui/tests/{application_contract,canonical_record_owner,bound_component_dispatch,instance_undo}.rs` plus `ui/tests/it.rs`: meaningful behavior gates; tests share small probes in new `ui/tests/support/application.rs` registered in existing `support/mod.rs`.
+
+## API vocabulary to keep consistent
+
+These are proposed additions, not assertions that they already exist. Concrete service extensions noted in the final section are intentionally not part of these signatures.
+
+```rust
+// ui::application. u64 is the existing durable tile ID representation.
+pub type InstanceId = u64;
+pub type ComponentFactory = fn(HostContext, LaunchTarget, RestoreInput)
+    -> Result<AppComponent, crate::launch::LaunchError>;
+
+pub struct ApplicationDefinition {
+    pub app_id: &'static str,
+    pub title: &'static str,
+    pub icon: crate::widget::IconDescriptor,
+    pub record_kind: crate::record::RecordKind,
+    pub required: Vec<crate::permissions::PermissionScope>,
+    pub optional: Vec<crate::permissions::PermissionScope>,
+    pub create: ComponentFactory, // not Option: supported entries cannot lack a factory
+}
+
+#[non_exhaustive]
+pub enum LaunchTarget {
+    New,
+    Record {
+        checkout: crate::record::RecordCheckout,
+        reveal: Option<qos_actions::ActionAddress>,
+    },
+}
+
+pub enum RestoreInput {
+    None,
+    Local(crate::application_view::SavedInstanceView),
+    // Explicit recovery input only; decode/validate, never adopt state on mount.
+    LegacyRecovery(crate::view::FrozenApp),
+}
+
+// Private fields; constructed by a runner/host, never inferred by app code.
+pub struct HostContext {
+    app_id: String,
+    instance_id: InstanceId,
+    device_id: String,
+    records: crate::record::RecordStore,
+    views: std::rc::Rc<crate::application_view::InstanceViewStore>,
+    record: crate::record::RecordCheckout,
+    reservation: Option<crate::record::RecordReservation>, // unique New construction owner
+    permissions: std::rc::Rc<std::cell::RefCell<crate::permissions::PermissionContext>>,
+    author: crate::permissions::UserId,
+    action_context: qos_actions::ActionContext,
+    wake_scope: crate::wake::WakeScope,
+}
+
+pub struct AppComponent {
+    // Own real content and instance lifetime together; expose no unbound root extraction.
+    context: HostContext,
+    root: Option<Box<dyn crate::widget::AppWidget>>, // taken/dropped explicitly under CLOSED child entry
+    registry: Option<qos_actions::ActionRegistry>, // callback captures dropped under same CLOSED entry
+    local_view: crate::view::View,
+    close_report: Option<ComponentCloseReport>,
+    // Runtime-only mount state and existing per-invocation lifecycle bookkeeping.
+    // Custom Drop closes context.wake_scope before cancelling/dropping root;
+    // field declaration order is not used as the lifecycle mechanism.
+}
+```
+
+The full construction signatures are:
+
+```rust
+impl HostContext {
+    pub fn prepare(definition: &ApplicationDefinition, records: RecordStore,
+        views: std::rc::Rc<InstanceViewStore>,
+        device_id: String, instance_id: InstanceId,
+        permissions: std::rc::Rc<std::cell::RefCell<PermissionContext>>,
+        author: UserId, action_context: qos_actions::ActionContext,
+        target: &LaunchTarget) -> Result<Self, LaunchError>;
+    pub fn record(&self) -> &RecordCheckout;
+    pub fn author(&self) -> &UserId;
+    pub fn permissions(&self) -> PermissionContext; // fresh snapshot, no authority cache
+    pub fn action_context(&self) -> &qos_actions::ActionContext;
+    pub fn wake_handle(&self) -> crate::wake::WakeHandle;
+    pub fn read_record<R>(&self, read: impl FnOnce(&AutoCommit) -> R)
+        -> Result<R, RecordOpenError>;
+    pub fn initialize_new_record(&mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>)
+        -> Result<(), RecordOpenError>;
+}
+impl ApplicationDefinition {
+    pub fn instantiate(&self, context: HostContext, target: LaunchTarget,
+        restore: RestoreInput) -> Result<AppComponent, LaunchError>;
+}
+impl AppComponent {
+    pub fn new(context: HostContext, root: Box<dyn AppWidget>,
+        registry: qos_actions::ActionRegistry) -> Self;
+    pub fn record(&self) -> &RecordCheckout;
+    pub fn mount(&mut self, sink: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static)
+        -> Result<(), LaunchError>;
+    // Suspension in this first slice unmounts through close; restoring constructs
+    // a fresh component/lifetime from the saved binding/View. No scope is reopened.
+    pub fn suspend(&mut self) -> ComponentCloseReport;
+}
+pub struct ApplicationCatalog {
+    definitions: std::collections::HashMap<&'static str, &'static ApplicationDefinition>,
+}
+impl ApplicationCatalog {
+    pub fn new() -> Self;
+    pub fn register(&mut self, definition: &'static ApplicationDefinition)
+        -> Result<(), LaunchError>;
+    pub fn resolve(&self, app_id: &str) -> Result<&'static ApplicationDefinition, LaunchError>;
+}
+```
+
+These snippets omit imports; `AutoCommit`, `PermissionContext`, `UserId`, record types, AppWidget, LaunchError and SavedInstanceView are the existing or explicitly defined types above. Mutable authority handles are supplied by the host; the public `permissions()` snapshot is informational and execution rereads the private live handle. HostContext constructors take explicit values; neither package/workspace nor user identity comes from environment in this API. `RecordStore` fixes package/workspace; validate it matches definition and restore binding. Runner preparation opens an existing record or reserves a new record identity and creates HostContext before factory invocation. A New reservation is not yet a live record, has no UndoLog/autosave, and cannot be opened by another component until the one owner initialization succeeds. The factory uses `HostContext::initialize_new_record` for its schema initialization, gets `record()/author()/permissions()/action_context()/wake_handle()` accessors, and consumes the context in `AppComponent::new(context, root, registry)`. Construction exposes read/project access to an existing record; document mutation during factory setup must be an explicit schema migration through the owner, not an untracked `sync` seed. Required scope failure is typed and prevents factory invocation. Current permission handles are consulted again at action execution.
+
+`ApplicationDefinition::instantiate(context, target, restore)` is the shared checked wrapper around its one `create` function: validate identity/target/restore, enter scope, invoke once, require the returned record to already be Ready and validate its binding, project/restore local View without document mutation, retain data on failure, and return a prepared component. Only RecordReservation::initialize transitions Reserved→Ready; instantiate never rebases, constructs a second UndoLog or starts autosave. A runner supplies context through `HostContext::prepare` (which resolves New vs existing before construction). No second native-specific root factory is introduced.
+
+## Task 1: Make canonical record opening explicit and fail closed
+
+**Files:** `app-state/src/{lib,autosave}.rs` at the paths above; `ui/src/record.rs`; new `ui/tests/canonical_record_owner.rs`; `ui/tests/it.rs`.
+
+**Consumes:** `DocStore`, `Autosave`, `RecordSet`, `RecordStore`, `RecordCheckout`, `UndoLog`.
+
+**Produces:**
+
+```rust
+// app_state; owner identity/path resolution is explicit and validated.
+impl DocStore {
+    pub fn open_canonical_at(package_id: &str, directory: &std::path::Path)
+        -> Result<Self, StoreError>;
+    pub fn load_canonical(&mut self) -> Result<Option<CanonicalLoad>, StoreError>;
+    pub fn accept_canonical(&mut self, loaded: CanonicalLoad)
+        -> Result<automerge::AutoCommit, StoreError>;
+    pub fn room_record_dir_at(profile_state_root: &std::path::Path,
+        package_id: &str, room_key: &str, record_key: &str)
+        -> Result<std::path::PathBuf, StoreError>;
+}
+// CanonicalLoad has private fields; load performs no document publication.
+pub struct CanonicalLoad {
+    doc: automerge::AutoCommit,
+    source_bytes: Vec<u8>,
+    repair_bytes: Option<Vec<u8>>, // valid recovered prefix, serialized in memory
+}
+impl CanonicalLoad {
+    pub fn document(&self) -> &automerge::AutoCommit;
+}
+// New StoreError variants: WriterBusy { path }, EmptyExistingDocument { path },
+// SourceChanged { path } (source no longer matches before repair publication).
+impl app_state::Autosave {
+    pub fn try_flush(&self) -> Result<(), String>;
+    pub fn request_checkpoint(&mut self, doc: &mut automerge::AutoCommit);
+}
+// app_state::autosave; one coherent read-only worker acknowledgement snapshot.
+#[derive(Clone)]
+pub struct DurabilitySnapshot {
+    pub durable_heads: Option<Vec<automerge::ChangeHash>>,
+    pub error: Option<String>,
+}
+impl app_state::Autosave {
+    pub fn durability_snapshot(&self) -> DurabilitySnapshot;
+}
+// ui::record; MemoryOnly is explicit and must never be labelled durably saved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordSaveStatus { Saved, Saving, Failed(String), MemoryOnly }
+impl RecordStore {
+    pub fn save_status(&self, id: &RecordId)
+        -> Result<RecordSaveStatus, RecordOpenError>;
+}
+
+// ui::record; holds one RecordStore per package/workspace under this profile root.
+pub struct RecordOwners { /* explicit root and weak owner map */ }
+impl RecordOwners {
+    pub fn new(profile_state_root: std::path::PathBuf) -> Self;
+    pub fn open(&mut self, package_id: &str, workspace_id: &str)
+        -> Result<RecordStore, RecordOpenError>;
+}
+pub enum RecordOpenOutcome { Loaded, AlreadyOpen }
+// Not Clone; private owner generation prevents a shared store handle from
+// initializing or cancelling another construction. Drop cancels only its
+// own still-Reserved slot; after successful initialization Drop is inert.
+pub struct RecordReservation { /* private store, checkout, generation */ }
+impl RecordReservation {
+    pub fn checkout(&self) -> &RecordCheckout;
+    pub fn initialize(&mut self,
+        initialize: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>)
+        -> Result<(), RecordOpenError>;
+}
+pub enum RecordOpenError {
+    Store(app_state::StoreError),
+    IdentityMismatch,
+    MissingRecord,
+    Busy,
+    Initialization(String),
+}
+impl RecordStore {
+    pub fn try_open_record(&self, want: &RecordCheckout)
+        -> Result<RecordOpenOutcome, RecordOpenError>; // Existing only
+    pub fn reserve_record(&self, want: &RecordCheckout)
+        -> Result<RecordReservation, RecordOpenError>; // explicit New only
+    pub fn is_ready(&self, id: &RecordId) -> bool;
+    pub fn durability_error(&self, id: &RecordId) -> Option<String>;
+    pub fn try_flush(&self) -> Result<(), String>;
+}
+```
+
+- [ ] Add regression tests first. Construct `RecordOwners::new(tempdir.path().join("state"))`, never change HOME or process env. Two `open("dev.qos.test", "room-a")` calls share mutations and a single writer; the same record ID in room-b does not share data. Existing target with no file yields `MissingRecord`, never `Reserved`. Assert corrupt, empty-existing, newer-schema, wrong-record and wrong-workspace files retain byte-identical contents after failed open and attempted close; the initializer's call counter remains zero. A fresh explicit New path reserves an ID without creating document bytes, history or autosave; initialization runs once and changes Reserved→Ready, while reopening does not initialize again. A second opener sees Busy while the reservation is initializing. An initializer error retains no partially initialized live document, publishes no document bytes and leaves the reservation owned by its construction context for retry/cancellation; a second initializer after success is rejected without running its closure.
+
+```rust
+// Core assertion sequence in canonical_record_owner::corrupt_is_not_a_new_record.
+let original = b"not an automerge document".to_vec();
+std::fs::write(&document_path, &original).unwrap();
+let result = store.try_open_record(&checkout);
+assert!(matches!(result, Err(RecordOpenError::Store(_))));
+assert_eq!(std::fs::read(&document_path).unwrap(), original);
+assert!(store.read(&checkout.id, |_| ()).is_none());
+```
+
+Test path construction uses the production explicit resolver, not duplicated layout constants. In app-state unit tests use its private constants and explicit test directory. Add child-process lock tests by launching the current test executable with `--exact` on a dedicated lock-holder test and a unique path argument/environment variable scoped only to that child. A pipe/file handshake proves the holder acquired the gate; no timing sleeps. Cover canonical→canonical, canonical→legacy, legacy→canonical refusals, legacy→legacy permitted behavior, release after orderly drop and process termination. Both refused opens leave actor and document bytes unchanged.
+
+- [ ] Run focused failing tests through the helper:
+
+```sh
+CARGO_TARGET_DIR=/Users/xaver/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run --locked --profile ci -p app-state -E 'test(canonical_)'
+CARGO_TARGET_DIR=/Users/xaver/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run --locked --profile ci -p ui --test it -E 'test(canonical_record_owner::)'
+```
+
+- [ ] Implement shared/exclusive gate acquisition before actor creation/loading or autosave. Extend existing lock acquisition code to return errors and support shared mode; hold its file in DocStore until autosave thread drops it. Every revised writable opener takes this gate; canonical uses exclusive and legacy uses shared, while legacy's actor lock behavior remains intact. `open_canonical_at` validates package and directory, rejects a non-directory existing path without `ensure_state_dir` legacy migration, and never resolves package/workspace via environment. Add path derivation under RecordOwners using app-state's existing validated package/room/record layout helpers; expose a shared explicit-root resolver rather than reproduce layout in ui.
+
+- [ ] Implement `load_canonical` as read/decode only: nonexistent file is absence; empty-existing, read and unparseable data are errors. First load with `LoadOptions::new().on_partial_load(OnPartialLoad::Error)` (the pinned Automerge default); on a strict decoding error retry the existing `OnPartialLoad::Ignore` behavior and accept a recovery candidate only when it yields a valid document with the required schema/identity. The pinned loader does not expose a distinct public PartialLoad error variant, so do not match an invented one; a failure in both modes is unrecoverable. If a valid prefix is recovered, validate app-state schema version and retain original `source_bytes` plus `doc.save()` repair bytes in CanonicalLoad; no save/append/atomic replacement occurs here. Failure to obtain a valid document remains an error with bytes preserved. `CanonicalLoad::document()` is immutable so UI validation cannot accidentally mutate the proposed recovery document.
+
+- [ ] In `RecordStore::try_open_record`, validate record ID/kind against `want` and room_scope against the explicit store using the existing readers and a nonmutating counterpart to `init_scoped`; require a valid nonempty home but preserve its original minting room, which may differ from the current replica workspace. Do not require home == workspace or rewrite home; canonical existing data with missing/mismatched identity is an error, not an identity-stamping opportunity. Only after app-state schema and these UI record checks succeed call `DocStore::accept_canonical`. That method consumes the exact CanonicalLoad from this opener, verifies that the source bytes still match, then publishes pending repair through existing `DocStore::write_full`/`atomic_file::write`, sets the actor/persisted heads, and returns the document. Repair failure returns an error and starts no autosave. For a complete valid file it performs no document write. No legacy fallback/migration-claim helper is called. Keep `CanonicalLoad` tied to its opening path/gate with a private source identity, so a load from store A cannot be accepted by store B.
+
+- [ ] Test recovered-prefix files carrying wrong record, wrong room, wrong kind or newer schema: compare original bytes before failed open, after dropping the failed open and after attempted flush; all remain identical and no writer starts. Test valid partial-tail recovery is published only after validation, survives a new edit/flush/reopen, and a changed source before acceptance yields SourceChanged without overwriting it. This is publication after validation, not publication during load.
+
+- [ ] Add RecordOwners weak registry keyed by validated `(package_id, workspace_id)` under its fixed profile root, and canonical mode in RecordSet. `try_open_record` distinguishes outcomes and checks already-open identity/kind. An explicit existing target never creates; New mints a RecordId, rejects collisions and installs a construction-owned Reserved slot holding the opened exclusive DocStore gate and identity, with no published document, UndoLog or Autosave. `RecordReservation::initialize` is the sole once-only phase transition: build the new document privately, stamp identity/home/room, run the app schema closure, validate it, commit setup, create one UndoLog baseline and start one Autosave, then install the Ready slot. On error discard the private candidate document, retaining the reservation and original error for its owner; on constructor cancellation release the reservation without publishing it. Keep canonical reservations in a separate pending map so legacy `Parked.doc == None` retains its checked-out meaning; reservations are not discoverable through read/with/open_records. Bind the reservation to its construction context and cancel only that owner's still-Reserved slot on failure/drop. `reserve_record` returns the unique non-Clone RecordReservation shown above; it carries a private owner generation and owns a strong store handle. Only this token can initialize/cancel that reservation. `HostContext` owns it in an Option and its mutable `initialize_new_record` accessor delegates to the token. A second RecordStore handle can neither initialize by public record ID nor cancel another reservation. Test drop of the owning token releases an uninitialized reservation, drop after Ready preserves the record, and a stale token cannot cancel a newer generation. `try_open_record` has no create boolean: it is Existing-only; New always uses the explicit reservation operation. A factory that needs no domain fields still calls this seam with `|_| Ok(())`. Only this method can finalize New; later projection, View restoration and mount do not finalize/rebase it. For the first valid Existing open, create its UndoLog/Autosave once after accept_canonical; AlreadyOpen only borrows the existing Ready slot and never takes a new baseline. Failed later factory/View setup retains any successfully initialized record for retry through its exact record ID and never reinitializes it. Existing `open/open_record/checkout` retain their signatures and legacy behavior outside canonical mode. Never move the canonical document out into an outer `State` via checkout.
+
+- [ ] Add `Autosave::try_flush` acknowledgement containing the actual writer result and a failure if the worker/ack channel closed. Preserve `flush()` as its legacy wrapper. `RecordStore::try_flush` requests current record changes once then awaits each writer and returns record-specific errors; `durability_error` reflects `last_error`. Test actual file failure (replace the document path with a directory inside the temp fixture) and worker error propagation. The current writer takes pending bytes before I/O and advances `sent` when enqueueing, so adding an acknowledgement alone cannot make retry durable. Implement an explicit failed-writer state: any failed Full/Append remains a sticky failure, ordinary Append messages cannot clear it or extend a possibly partial file, and an empty Flush returns that failure. `Autosave::request_checkpoint` always enqueues a complete current document snapshot independent of `sent`; only successful atomic publication of that Full checkpoint clears the failure and acknowledges durability. On a failed-record retry, `RecordStore::try_flush` first requests this checkpoint from its retained canonical document, then waits for the actual writer result. If a failure races with the first flush, return it; the next explicit retry sends the checkpoint. No error is cleared because there were no pending bytes. Keep ordinary healthy incremental writes unchanged. A failed append may have partially reached disk, so never blindly append its bytes again. Add a deterministic writer-unit regression using the existing commit boundary with a test-only injected write failure after a prefix, plus a filesystem regression: fail flush, repair destination without a new document edit, call owner try_flush again, drop all owners and reopen, and require all latest edits and healthy status. Also test an edit queued after failure is preserved by the full retry and the retry does not duplicate any Automerge change. No public test-only fault service is introduced. Test normal save/reopen and valid-prefix crash recovery using existing app-state fixtures. Prove repeated store handles do not schedule duplicate writes by existing full_writes/appends counters in module tests.
+
+- [ ] Add the read-only durability contract above while implementing the actual writer acknowledgement. Store durable heads and sticky error in one shared mutex snapshot, updated together only after the corresponding real write result. Full/Append queue messages carry the snapshot's heads; coalescing preserves the newest included heads, and successful filesystem publication acknowledges exactly those heads. An older checkpoint completing while newer edits exist must not label them saved. Keep `last_error` compatible by reading this same snapshot. Seed acknowledged heads only for a validated existing on-disk document after accept_canonical; a New private initialization must queue its initial full document and must not call seed as if those bytes were already durable. A first initialization can atomically publish before a later explicit flush, but success of enqueue alone never proves durability.
+
+  `RecordStore::save_status` is read-only: Failed takes precedence, an explicit in-memory store reports MemoryOnly, any pending ops or mismatch between current committed base heads and acknowledged heads reports Saving, and only matching acknowledged heads with no pending ops reports Saved. Use pinned Automerge0.8 `Transactable::pending_ops(&self)` and `Transactable::base_heads(&self)`; its `AutoCommit::get_heads(&mut self)` closes a transaction and must not be called merely to poll status. Missing/Reserved records return MissingRecord/Busy. Do not flush or mutate from this accessor. Add real writer tests with a narrow private completion barrier: queued full write is Saving, actual background acknowledgement becomes Saved without another edit, newer pending edits remain Saving after an older acknowledgement, failure stays Failed until successful full checkpoint, and repeated status polling leaves a real pending typing transaction's operation count/base heads/history unchanged. Cover MemoryOnly explicitly. Export through existing ui/qos-app facades. Notes later consumes this status through a bound widget hook; it does not implement another writer.
+
+- [ ] Rerun these selections plus existing app-state and record unit regressions; execute mandatory Task 1 check/clippy/format gates above on native. After self-review and native gates, commit only this task's explicit file set; the controller then reviews and executes those gates on Fedora at that SHA: `fix(state): enforce canonical record ownership and fallible opens`.
+
+## Task 2: Add the canonical definition, explicit construction and local restore envelope
+
+**Files:** new `ui/src/{application,application_view}.rs`; `ui/src/{lib,launch,view}.rs`; `crates/app/qos-app/src/lib.rs`; new `ui/tests/application_contract.rs`; shared test probe and module registrations.
+
+**Consumes:** Task 1 RecordOwners/RecordStore and all API vocabulary above.
+
+**Produces:** `ApplicationDefinition`, `HostContext`, `LaunchTarget`, `RestoreInput`, `AppComponent`, `ApplicationCatalog`; `SavedInstanceView`/`InstanceViewStore`; definition-based preparation independent of a native runner.
+
+```rust
+// application_view; existing record identifiers serialize as validated strings.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SavedInstanceView {
+    pub version: u32,                  // exactly 1 in this slice
+    pub app_id: String,
+    pub device_id: String,
+    pub workspace_id: String,
+    pub instance_id: u64,
+    pub record_id: String,
+    pub record_kind: String,
+    pub view: crate::view::View,
+}
+pub struct InstanceViewStore {
+    // Private validated profile/device/workspace namespace and resolved directory.
+    directory: std::path::PathBuf,
+    device_id: String,
+    workspace_id: String,
+}
+impl InstanceViewStore {
+    pub fn new(profile_state_root: std::path::PathBuf, device_id: &str, workspace_id: &str)
+        -> Result<Self, crate::view::ThawError>;
+    pub fn load(&self, instance_id: u64) -> Result<Option<SavedInstanceView>, crate::view::ThawError>;
+    pub fn save(&self, instance: &SavedInstanceView) -> Result<(), crate::view::ThawError>;
+}
+// HostContext::prepare takes definition ID/kind, explicit store, device/instance,
+// author/current permissions/provenance and target; it allocates fresh WakeScope.
+// AppComponent::new consumes the prepared context and real AppWidget+registry.
+impl AppComponent {
+    pub fn capture_local_view(&self) -> Result<crate::view::View, crate::view::ThawError>;
+    pub fn restore_local_view(&mut self, view: &crate::view::View) -> Result<(), crate::view::ThawError>;
+    pub fn close(&mut self) -> ComponentCloseReport;
+    pub fn close_report(&self) -> Option<&ComponentCloseReport>;
+}
+#[derive(Clone)]
+pub struct ComponentCloseReport {
+    // Retained whether local save or record flush succeeds or fails.
+    pub recovery: Option<SavedInstanceView>,
+    pub view_error: Option<String>,
+    pub view_retry: Option<std::rc::Rc<InstanceViewStore>>, // exact store while a local View save failed
+    pub record_error: Option<String>,
+    pub record_retry: Option<crate::record::RecordStore>, // strong owner while a dirty flush failed
+    pub teardown_error: Option<String>,
+}
+impl ComponentCloseReport {
+    pub fn retry_view(&mut self) -> Result<(), crate::view::ThawError>;
+}
+```
+
+`HostContext::prepare` owns the supplied `Rc<InstanceViewStore>` for the full component lifetime and validates its profile/device/workspace namespace against the RecordStore and explicit device. `close()` and `suspend()` use that exact store; their callers supply no replacement store and no runner discovers a profile after construction. The store may be shared by sibling components within the same namespace; each envelope still has its own instance key. On View-save failure the report retains both `recovery` and `view_retry`; `retry_view` atomically saves that envelope to that same store and clears the error/retained store only after success. It never reconstructs a store from the current environment or reopens a closed mount. Test a preparer-local store whose other handles are dropped, then native/headless/embedded close and a failed-save retry after the component is dropped. The original explicit namespace must receive the View in every case, and a wrong-profile/device/workspace store must fail before factory invocation.
+
+- [ ] Write definition tests with one deliberately small **test-only** AppWidget probe, exported nowhere in production catalogue. Its factory increments a counter, reads the selected record, registers a real test action, and creates `LocalState` during construction. Invoke checked construction with New twice and assert distinct record IDs; invoke existing twice and assert same record/different local View. Duplicate catalogue registration returns `LaunchError::DuplicateApplication`; supported entries always contain a factory by type. Unknown ID returns `UnknownApplication` rather than fabricated content. Required permission denial prevents factory execution. Optional denial is discoverable but not a construction failure.
+
+```rust
+let a = instantiate_probe(&mut host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+let b = instantiate_probe(&mut host, 12, LaunchTarget::New, RestoreInput::None).unwrap();
+assert_ne!(a.record().id, b.record().id);
+assert_eq!(factory_calls.get(), 2);
+assert!(catalog.register(probe_definition()).is_err()); // second same package ID
+```
+
+Define `instantiate_probe`, `probe_definition` and counter in `support/application.rs` using explicit temp RecordOwners, explicit `PermissionContext::from_capabilities`, and explicit `UserId`; do not call `local_user_id()` or `PermissionContext::permissive()` as a production default.
+
+- [ ] Write restore tests before implementation. Save View A, mutate the canonical record through B, close/reopen A with its old envelope, and assert B's changes remain and A's local scroll/focus restores independently. Foreign app/workspace/record/instance binding, malformed bytes, unknown version and nonfinite View geometry return typed errors with source bytes unchanged. A LegacyRecovery input validates `FrozenApp.version`/state but returns `RecoveryRequired` and never replaces canonical state. A failed factory keeps existing record and View bytes; it closes its lifetime and exposes no mounted callback target. For device D/workspaces A and B, save the same instance ID 11 with distinct app/record/View values, reload both scoped stores and prove neither overwrote the other; the same checks cover distinct devices within one profile. A wrong-device/workspace envelope at a valid key fails without replacement. App/record/kind/instance mismatches against HostContext also fail without modifying either file.
+
+- [ ] Run `cargo nextest run --locked --profile ci -p ui --test it -E 'test(application_contract::)'` via the isolated helper with the native CARGO_TARGET_DIR above and observe intended failures.
+
+- [ ] Implement the API vocabulary and `ApplicationCatalog::{register,resolve}` using package identity, not `AppKind`. Factory is a function pointer; catalogue only stores real supported definitions. Missing/unavailable fleet metadata remains in the later shell catalogue/capability map, with no manufactured GUI factory for Agent/OSK. Add typed LaunchError variants `Record(RecordOpenError)`, `Restore(ThawError)`, `DuplicateApplication(String)`, `UnknownApplication(String)`, `CapabilityDenied(PermissionScope)`, `BindingMismatch`, `RecoveryRequired`; preserve existing CLI error displays/exits. Add a retained construction failure variant `ComponentSetup { source: Box<LaunchError>, record: RecordCheckout, records: RecordStore }` for failure after a record reached Ready. The checked wrapper retains a store handle and checkout before consuming HostContext into the factory; on factory/restore failure after initialization it wraps the original typed error with that exact binding and strong owner. The host uses it for retry through Existing and must retain it independently of an error tile. Test New initialization succeeds then factory/restore fails, drop all other handles, and recover the exact minted record and content from the error; no second initializer runs. Before Ready, drop the unique reservation and return the original failure without publishing an empty record. Existing persisted View bytes remain untouched; a failed supplied restore input is retained by the caller and is not saved over them.
+
+- [ ] Put common construction order in one checked implementation. Validate required authority/target/restore envelope → open Existing or reserve New → allocate scope/context → enter scope for factory/action registration, with New factory calling the one RecordReservation::initialize transition before projecting the widget → require Ready and matching binding → project read-only from canonical record → restore validated local View → return prepared, unmounted component. No finalization follows View restore. `initialize_new_record` is unavailable after initialization or on an existing record and never rebases another mounted instance. Test a factory that omits initialization is rejected as unready, and count one initialization/UndoLog construction/autosave across prepare→factory→restore→mount and second-instance read-only mount. Faults after successful initialization retain Ready state and retry through Existing rather than rerunning the initializer. Scope closes on every failure path; pending construction wakes survive until mount. Factory registration travels in AppComponent, never via native `configure_app`.
+
+- [ ] Extract the component-local parts of current `App` FreezeThaw capture/restore into reusable helpers in `view.rs`: map only this component's focus order, use existing root `view_state/restore_view_state/get_state/set_state` hooks, and resolve against the current component tree. Default View does not invoke external effects. Use InstanceViewStore's explicit `(profile_state_root, device_id, workspace_id)` namespace and `atomic_file::write`. The directory is `profile_state_root/instance-views/<hex UTF-8 device ID>/<hex UTF-8 workspace ID>` and the filename is the decimal u64 instance ID plus `.postcard`; reject empty/invalid identity inputs and use reversible hex encoding so IDs cannot escape or collide as path segments. Envelope device/workspace must equal the store namespace; instance must equal the requested filename; construction separately validates app/record/kind against HostContext. Do not use an unscoped `load(instance_id)` beneath only a device root. Do not add an application-specific selected-page schema here. If app-local fields cannot round-trip through existing View, return a documented unsupported contribution for the Notes slice rather than serialize the whole document into the View.
+
+- [ ] Add exports and rerun focused tests plus existing FreezeThaw/launch parsing tests; execute mandatory Task 2 check/clippy/format gates above on native. After self-review/native success, create the source commit; the controller then reviews and executes those gates on Fedora at that SHA: `feat(ui): define shared application construction and local restore`.
+
+## Task 3: Bind every widget callback, including raw descendants, to the instance
+
+**Files:** `ui/src/{bound_dispatch,wake,app,headless,accesskit_bridge,a11y_tree}.rs`; `ui/src/widget/{mod,app_widget,tile_host}.rs`; new `ui/tests/bound_component_dispatch.rs`; `ui/tests/it.rs`.
+
+**Consumes:** Task 2 AppComponent/context with Task 1 canonical record handle.
+
+**Produces:** `TileHost::from_component`, runtime-only CallbackBinding, bound node map/helper, complete lifecycle and callback routing used by App and Driver.
+
+```rust
+// ui::bound_dispatch; not serialized and not an owning widget reference.
+#[derive(Clone)]
+pub struct CallbackBinding {
+    // Private: fresh lifetime handle, instance ID, record store/checkout,
+    // current permission handle, authenticated author, operation context.
+}
+pub struct BoundNodeMap {
+    // Existing NodeId -> *mut dyn Widget stays unchanged for Widget implementers.
+    // Side table associates raw pointers and Taffy descendants with binding.
+}
+// Public because FrameBuilder consumes this same implementation. Export
+// `pub mod bound_dispatch` from ui/src/lib.rs; keep all map fields private.
+impl BoundNodeMap {
+    pub fn new() -> Self;
+    pub fn rebuild(&mut self, root: &dyn crate::widget::Widget,
+        nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>);
+    pub fn clear(&mut self);
+}
+#[derive(Debug)]
+pub enum BoundDispatchError {
+    MissingNode,
+    ClosedLifetime,
+    Record(crate::record::RecordOpenError),
+}
+// Safety: caller exclusively owns the live tree matching nodes/bindings.
+// No replacement or rebuild may occur during callback; no reference escapes.
+pub unsafe fn invoke_bound_node<R>(
+    bindings: &BoundNodeMap,
+    nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    node: taffy::NodeId, outer: &mut automerge::AutoCommit,
+    outer_root: &automerge::ObjId,
+    callback: impl FnOnce(&mut dyn crate::widget::Widget,
+        &mut automerge::AutoCommit, &automerge::ObjId) -> R,
+) -> Result<R, BoundDispatchError>;
+// New default Widget hook; implemented by the bound component root/TileHost.
+fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> { None }
+// Internal WakeHandle method validates live route, enters it without owning it.
+// Closed must return Err; it must not fall back to the outer/current scope.
+// pub(crate) fn enter_if_open(&self) -> Result<WakeScopeGuard, WakeBindError>;
+// Teardown uses the OWNED WakeScope: close(); enter(); then cancellation/drop.
+// Existing WakeScope::enter preserves a closed route (unlike enter_detached).
+// No public dispatch helper may enter closed routes to execute ordinary work.
+```
+
+This is the single producer contract for App, Driver and the later shell FrameBuilder consumer. Same-record reentry reuses the active document borrow, never reacquiring its RefCell. A requested closed/missing component binding fails before callback and never falls back to the outer document. Unbound shell widgets keep their explicit outer document. Synthetic accessibility/resource nodes without Taffy IDs retain their originating CallbackBinding through common guarded traversal; the raw-node helper does not reconstruct that origin. Clear metadata before replacement or destruction and test these paths in the real common dispatcher.
+
+- [ ] Write callback probes that create a LocalState/LatestTask in each relevant callback. Build an ordinary container → TileHost → container → focusable leaf with both retained and Taffy descendants. Bind two instances to separate wake collectors, with a separate outer App scope. Drive root event plus **direct** leaf focus, IME, accessibility semantic action and measure paths; complete captured work and assert only the intended collector receives acceptable WakeEvents. Have the leaf read/mutate a distinct record marker on permitted document callbacks; the shell marker never changes. Test same durable instance ID closed/reopened and stale node/binding dispatch rejects the old lifetime. Add destructor/cancellation probes that capture a fresh LocalState, attempt publication through an old writer, and try a reentrant bound dispatch. All run under the CLOSED child route: publications/dispatch fail and no wake reaches the child, outer App or replacement. Exercise explicit close, content replacement, factory error after the component owns its root, restore failure, unwind of a constructed component and ordinary Drop. A test-only catch_unwind observes the destructor probes; production does not catch arbitrary app panics and claim recovery.
+
+- [ ] Build a table-driven test ledger of actual callbacks, not an assumption that one event covers all methods: construction; sync/update; build/apply/measure/draw; focused event/IME; focus/accessibility/synthetic accessibility; resource discovery/resolve/control drain; operation start/poll/cancel; search activation; native-view lifecycle hook invocation with existing harmless test host if available; host-intent drain; View capture/restore; suspend/close/drop. Native OS integration itself is deferred; every toolkit hook which invokes app code is still bound here. Update probe implementations as needed rather than adding public introspection only for tests.
+
+- [ ] Run `cargo nextest run --locked --profile ci -p ui --test it -E 'test(bound_component_dispatch::)'` via the isolated helper with the native CARGO_TARGET_DIR above; failures must demonstrate missing/outer destination, not a window/GPU prerequisite.
+
+- [ ] Add `TileHost::from_component(component)` and keep existing `TileContent::App`/`TileHost::new`/`bind_record` compatibility for unmigrated callers. The component path owns AppComponent through a single internal bound AppWidget adapter, so content replacement cannot drop the root before invalidating node metadata and closing the lifetime. Do not let `content_mut()` extract an unbound canonical root; if retained for compatibility, scope it to legacy content and expose a checked component replacement operation. Legacy bind failures must never use the parent document as fallback after a record binding was requested.
+
+- [ ] Implement callback entry in two complementary places. The bound root adapter guards every existing Widget/AppWidget callback and rebinds document parameters to its record. `BoundNodeMap` is rebuilt alongside each node_map rebuild, associates each component root's Taffy subtree with its binding (nested components override nearest owner), and provides scoped direct-pointer invocation for App/Driver. Keep `Widget::build_layout(... HashMap<NodeId,*mut dyn Widget>)` intact to avoid rewriting every widget. Do not keep widget references across callbacks, replacement or layout rebuild. Resolve synthetic accessibility targets through their originating bound root even where no Taffy node exists.
+
+- [ ] Route ALL direct dereferences through the scoped helper: App/Driver focus/order/measure/event/IME/semantic dispatch, undo status/request sweeps, resource and operation polling; accesskit_bridge and a11y_tree retained-tree walks enter child bindings too. Preserve old public helper signatures with unbound compatibility wrappers and add bound internal variants; do not silently leave App/Driver calling the old wrappers. For callbacks with document arguments borrow the bound record once and pass ROOT; callbacks without document arguments still enter scope. Avoid nested RefCell mutable borrow: root adapter and direct-node dispatcher share one entry function, and recursion under the same binding reuses the already borrowed document passed by the caller, never reopens it. Cross-record reentry during a mutation is queued as a host intent, not executed under the same borrow.
+
+- [ ] Expose the real content through `children/children_mut` so search/focus/semantics still discover it, while central resource traversal recognizes a bound boundary and cannot collect the same child's resources twice using the parent document. Forward existing theme/scale, metadata, host intents and local View hooks; no second command schema. Close sequence is mark component Closing/reject ordinary input → capture the latest local View while the tree is intact and cache its envelope in the component AND a host-owned close report → close the mount WakeScope immediately → enter that CLOSED child scope → save the captured envelope/request and flush recoverable record state → cancel admitted widget operations/subscriptions → detach node metadata/native children → take/drop the root under that same CLOSED entry. Do not defer scope.close until cancellation or drop, and never use enter_detached for teardown: detached publication is allowed, closed publication is not. Ordinary callback helpers reject Closing/Closed components and closed WakeHandles; only the owning lifecycle path may enter its closed route for cancellation/destruction. Record-service persistence may outlive the closed UI scope under its existing owner.
+
+  `close` returns ComponentCloseReport rather than returning only an error which would lose the captured View. It attempts both View save and record flush, records both errors, caches the report and returns a clone to the host even on failure. Host retains this report independently of the tile until recovery is durably recorded or explicitly resolved. On record flush failure, record_retry retains a strong RecordStore handle; the weak RecordOwners registry alone is insufficient to preserve dirty in-memory state after the last tile drops. A retry flushes that same owner and clears the retained handle only after durability succeeds. The local envelope still contains no document bytes. Repeated close returns the retained report without recapturing a destroyed root; a retry uses report.recovery and the record owner, never reopens the old mount. If capture itself fails, preserve the previous saved envelope/cached View and record the failure. A local save failure must not overwrite the prior good View file. Tests inject independent and simultaneous View-save/record-flush failures, drop the tile, and assert host-held recovery/error details and the dirty canonical record remain usable; repairing the test destination and flushing report.record_retry must persist the unsaved edit after the last tile is gone. Dropping one tile does not drop a record still used by another.
+
+- [ ] Implement explicit AppComponent::Drop in the existing App::Drop pattern (`ui/src/app.rs:5229`): close the owned scope, enter the closed child route, take root, registry and invocation-owned callback captures out of their Option/container fields and drop all app-owned values before leaving that guard. Declare the closed entry guard before the taken ownership locals so cancellation unwinding drops those values before the guard restores the outer scope; ordinary field drop only handles empty options and inert SDK metadata. Include an action-registry captured Drop probe as well as a root Drop probe. Cancellation follows the same closed owner path. Use a scoped teardown guard so an unwind during cancellation still drops any remaining owned root under the closed child entry; do not rely on field declaration order or unwind into an outer scope. A component factory must place its root and any callback-owning app resources in this guarded component owner immediately after successful construction, before subsequent fallible setup. Factory-error and restore-error cleanup drops that owner; an unready/new reservation is cancelled without publication. HostContext::Drop closes its scope for a factory which never installs a root. The framework does not claim panic isolation for arbitrary unreturned constructor locals; any app-owned partially built object that invokes code on Drop must adopt the same closed-scope owner before such a fallible step, a concrete requirement for the later real-app factory migrations.
+
+- [ ] Audit with `rg -n 'node_map|unsafe|children\(|children_mut\(' ui/src/{app,headless,undo,accesskit_bridge,a11y_tree}.rs` and check every app-code call against the ledger. Rerun the probe selection and existing wake integration/focus/accessibility tests; execute mandatory Task 3 check/clippy/format gates above on native, then create the source commit for controller review and exact-SHA Fedora verification: `feat(ui): bind component callbacks through descendant dispatch`.
+
+## Task 4: Execute actions and undo through the selected record and instance
+
+**Files:** `ui/src/{bound_dispatch,app,headless,undo,action_host}.rs`; `ui/src/state/mod.rs`; `ui/src/record.rs`; `ui/src/widget/{mod,tile_host}.rs`; new `ui/tests/instance_undo.rs`; extend `bound_component_dispatch.rs` and test registrations.
+
+**Consumes:** CallbackBinding/node map, per-component registry/current permissions/provenance, RecordStore::with_history.
+
+**Produces:** one extracted operation dispatcher, scoped resource addresses, per-instance history selection, correctly partitioned commit notifications. Keep the extracted function's existing argument semantics rather than simplify away actor, confirmation or broker evidence:
+
+```rust
+// bound_dispatch internal execution front door; resolution picks the binding
+// before entering this function. Runtime actor/evidence comes from the host.
+pub(crate) fn invoke_resource_action(
+    binding: &CallbackBinding,
+    root: &mut dyn crate::widget::AppWidget,
+    registry: &qos_actions::ActionRegistry,
+    transport: &mut dyn qos_actions::ActionTransport,
+    address: &qos_actions::ActionAddress,
+    argument: Option<&str>,
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+    actor: &str,
+    confirmation_satisfied: bool,
+    broker_admitted: bool,
+    confirmation_evidence: Option<&serde_json::Value>,
+    invocation: Option<qos_actions::InvocationId>,
+    ambient_context: Option<&qos_actions::ActionContext>,
+) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError>;
+```
+
+App's existing broker routing/admission surrounds this shared local execution door and supplies its established transport; Driver supplies its explicitly configured transport. The extracted door receives either structured arguments or legacy argument text, rejects both being supplied inconsistently, re-resolves live resources, and retains existing confirmation/result validation. No newly invented broker or service implementation belongs in this function.
+
+```rust
+// Runtime routing envelope; domain ActionAddress remains unmodified.
+pub struct BoundActionAddress {
+    pub instance_id: crate::application::InstanceId,
+    pub address: qos_actions::ActionAddress,
+}
+// Add to existing UndoEntry; never write instance into UserId/Automerge actor.
+pub instance_id: Option<crate::application::InstanceId>;
+// New UndoLog APIs; existing methods delegate with instance_id=None and keep
+// legacy author-scoped/LIFO behavior. Bound callers require exact Some match.
+pub fn next_undo_in(&self, author: &UserId, instance: u64) -> Option<&UndoEntry>;
+pub fn next_redo_in(&self, author: &UserId, instance: u64) -> Option<&UndoEntry>;
+pub fn undo_in(&mut self, doc: &mut AutoCommit, author: &UserId, instance: u64,
+    focus: Option<usize>, metadata: Option<String>) -> Option<UndoEntry>;
+pub fn redo_in(&mut self, doc: &mut AutoCommit, author: &UserId, instance: u64,
+    focus: Option<usize>, metadata: Option<String>) -> Option<UndoEntry>;
+pub fn record_committed_action_in(&mut self, doc: &mut AutoCommit,
+    before: Vec<ChangeHash>, focus: Option<usize>, metadata: Option<String>,
+    author: UserId, instance: u64) -> bool;
+```
+
+- [ ] Add regression tests with two probe components sharing one canonical record and a third using another. Export identical domain resource IDs from the shared instances; invoke by BoundActionAddress and assert correct View destination and one document change/history entry. Run pointer/control invocation, keyboard shortcut, palette/address invocation, and accessibility semantic action through both App and Driver. Deny/revoke after discovery and verify invocation is rejected without mutation. A stale resource or closed lifetime is rejected rather than routed to whichever tile currently matches the ID.
+
+- [ ] Write interleaved undo tests over real Automerge changes: A writes `a1`, B writes `b1`, A writes `a2`; undo A removes only `a2`, undo B removes only `b1`, redo each restores its own action. Both instances use the same authenticated author, which remains present in each entry. Add a remote-authored change between local actions and show undo preserves it. Add A-edit→undo-A→B-edit→redo-A and require B's edit not to clear A's redo stack. Mount B while A has an unfinished typing burst; no mount/rebase may consume A's pending boundary. Initialize a new record before first undo, then verify first undo removes only the first user edit, never schema or imported setup.
+
+```rust
+assert_eq!(history.next_undo_in(&alice, 11).unwrap().instance_id, Some(11));
+assert_eq!(history.next_undo_in(&alice, 12).unwrap().author, Some(alice.clone()));
+// After A's undo, B's independently edited field and remote field are intact.
+assert_eq!(read_string(doc, "b"), "b1");
+assert_eq!(read_string(doc, "remote"), "kept");
+```
+
+- [ ] Run isolated `cargo nextest run --locked --profile ci -p ui --test it -E 'test(instance_undo::) | test(bound_component_dispatch::)'` and focused existing `state::` undo tests; observe intended failures.
+
+- [ ] Extract the actual resource resolve/argument/confirmation/permission/execution/result logic from App and Driver into bound_dispatch. Preserve existing qos-actions `door`, registry/executor, `ActionTransport`, `InvocationId`, `ResourceOperationStart`, `InvocationUpdate`, cancellation and v2 result validation. Do not reimplement action schemas or downgrade `start_resource_operation_with_document` to the old immutable route. Select binding/current record/current authority before discovery and again before execution; use that component's registry and local author. Existing unbound calls become the legacy destination of the same helper. Preserve broker admission/confirmation evidence behavior: this slice accepts the existing injected transport/status but starts no new collaboration connection or ambient identity lookup.
+
+- [ ] Cache resource discovery by component lifetime, canonical record revision/heads and existing local-resource invalidation, not just domain resource ID or shell State revision. Keep instance routing outside ActionAddress; targeted APIs carry BoundActionAddress and a live binding token resolved by host. For an unqualified action address with multiple live destinations, return typed ambiguous-target failure unless the caller supplies the explicitly selected component. No first-match routing. Direct control invocations capture their originating binding during draining instead of losing it through recursive `take_control_invocation`.
+
+- [ ] Extend UndoEntry/filtering as above, including all inverse/redo/revision constructors. Preserve exact instance on moved entries. New local edit clears only that instance's redo entries; legacy APIs retain their documented behavior. Add RecordSet pending action ownership `(instance_id, before_heads, context)` under the record owner. Capture before heads before any mutation; drain explicit ActionHost boundaries once and record their before/after immediately. For widget typing bursts retain the original owner until its commit; only when another instance is about to mutate that record, finalize the previous burst with its original author's identity, captured metadata/context and before_heads, then begin the new operation. Read-only mount, projection, discovery and View restore neither finalize that burst nor call get_heads/rebase merely to establish a second baseline. Extend the pending-owner tuple to retain the authenticated author and original metadata alongside instance/context. Test A pending→mount/read B→continue A as one unchanged burst, then B's first actual mutation closes A once and starts a separate B boundary. Never reset a shared record baseline as a side effect of mounting another tile. No interleaved callbacks may use a shared `last_heads` to attribute another instance's edits.
+
+- [ ] Partition `record_dispatched_action`, `needs_commit/on_commit`, UndoAccess publication/requests and shortcuts by CallbackBinding. A bound child's notification is consumed at its record boundary and excluded from outer shell history, even if discovered through both retained traversal and node_map. Deduplicate raw pointer visits per sweep. Unbound shell changes continue using shell State. View actions create no document entry; Effect progress/outcomes create none unless the operation explicitly dispatches its declared replayable Document follow-up, in which case record exactly that action once. A denied action creates none.
+
+- [ ] Poll accepted operations under the live admitted component lifetime and same record binding; cancellation during close uses only the owning CLOSED-scope teardown path defined in Task 3; route terminal updates by `(lifetime, InvocationId)`. Closing rejects new UI delivery; do not retarget a result to a reopened instance with the same u64. Durable service completion is an explicit later service contract and cannot be inferred from a UI effect handle. Preserve local-private View guard against remote actors.
+
+- [ ] Rerun new tests plus existing action/undo/control/semantic/operation lifecycle tests selected by exact module names from `cargo nextest list`; verify shell outer document heads/history unchanged in all bound child cases; execute mandatory Task 4 check/clippy/format gates above on native, then create the source commit for controller review and exact-SHA Fedora verification: `fix(ui): dispatch component actions and undo to their bound record`.
+
+## Task 5: Use one prepared component in standalone, embedded and headless runners
+
+**Files:** `ui/src/{launch,app,headless,application}.rs`; existing `launch.rs` unit tests; `ui/tests/application_contract.rs`, `bound_component_dispatch.rs`; `crates/app/qos-app/src/lib.rs`.
+
+**Consumes:** Completed Tasks 1–4; no real-app construction or host-service side effects are implemented here.
+
+**Produces:**
+
+```rust
+// Runner authority comes from an explicit adapter, never from app metadata.
+pub struct PreparedComponentInputs {
+    pub context: HostContext,
+    pub target: LaunchTarget,
+    pub restore: RestoreInput,
+}
+pub type ComponentHostPreparer = fn(&ApplicationDefinition, &LaunchArgs)
+    -> Result<PreparedComponentInputs, LaunchError>;
+impl LaunchSpec {
+    pub fn from_definition(definition: &'static ApplicationDefinition) -> Self;
+    pub fn component_host(self, prepare: ComponentHostPreparer) -> Self;
+    // Runner setup supplies context/target/restore from validated CLI inputs.
+    pub fn prepare_component(&self, args: &LaunchArgs, context: HostContext,
+        target: LaunchTarget, restore: RestoreInput) -> Result<AppComponent, LaunchError>;
+}
+impl App {
+    pub fn from_component(component: AppComponent) -> Result<Self, LaunchError>;
+}
+impl crate::headless::FrameHarness {
+    pub fn from_component(component: AppComponent, viewport: (u32, u32))
+        -> Result<Self, LaunchError>;
+}
+// headless::run_component consumes the prepared component. It reuses current
+// drive_spec_actions/audit/output code and returns existing 0/1/3 outcomes.
+pub fn run_component(spec: &crate::headless::Spec, component: AppComponent) -> i32;
+```
+
+- [ ] Write a three-runner conformance test using the same `probe_definition().create` pointer and same serialized starting record. Standalone uses `App::from_component` without `.run()`, embedded uses `TileHost::from_component` under a distinct outer App, headless uses `Driver::from_component`. Each runner invokes the factory exactly once, has the same registered test domain action, sees identical canonical initial state and restoration, and produces byte-equivalent domain result with one history entry. Test effect and View result parity, denied action parity, local operation cancellation and close/reopen stale result rejection. These probe tests establish framework behavior only, not real Notes/Files qualification.
+
+- [ ] Add a launch unit test proving definition-based headless calls common preparation before choosing semantic-only/rendered behavior and never invokes `configure_app/open_state` as an independent second setup. Retain existing argv validation, custom commands/live handlers/shots behavior on legacy LaunchSpec. Explicitly reject incompatible definition plus legacy root/state override combinations with a LaunchError instead of calling two factories. Screenshot fixtures remain available but do not supply a production construction substitute.
+
+- [ ] Run isolated `cargo nextest run --locked --profile ci -p ui --test it -E 'test(application_contract::) | test(bound_component_dispatch::) | test(instance_undo::)'` and launch unit selections; observe intended failures.
+
+- [ ] Implement definition-aware dispatch inside LaunchSpec. Store the one ApplicationDefinition and an optional explicit ComponentHostPreparer callback. `from_definition` installs no ambient preparer; running a definition without one returns new typed `LaunchError::MissingComponentHost` before factory, window, profile discovery or service initialization. `component_host` supplies the runner's adapter. After ordinary argument validation, invoke it once to obtain PreparedComponentInputs, then call the existing checked prepare_component once before selecting native versus headless delivery. Validate returned context/target through the same ApplicationDefinition::instantiate wrapper; a preparer cannot bypass binding checks. Direct embedding can keep calling prepare_component with explicit inputs and needs no CLI callback. Resolve explicit standalone/test profile, workspace, author, scope and target in the adapter before app construction. Headless must provide isolated services/state before factory code runs, not mutate environment or discover state afterwards. Preserve public legacy startup behavior for unmigrated apps; definition-aware mode always follows the one prepared component path. Test adapters use the existing `allowed_live_options`/`LaunchArgs::value` seam with explicitly supplied temporary paths and fixture identity/permissions; do not invent a production `--author` flag or trust application-supplied IDs as authentication. Add tests that missing host preparation invokes no factory, denied/invalid preparation returns its typed failure, and native/headless call the same preparer exactly once. This framework slice defines no default profile/record CLI policy: the later SDK standalone-host bootstrap plan must supply a real preparer plus its exact accepted options before any production app main cuts over. Keep that dependency explicit in Notes/Files plans; neither an unregistered record flag nor an assumed default host makes a production binary runnable. Do not silently run a fresh empty profile for an explicit existing record whose profile is unavailable.
+
+- [ ] Mount the prepared component in both App and FrameHarness through the same internal bound root adapter used by TileHost. Native App can own its own outer window scope, while each component keeps its separate mount scope bound to that host's wake destination. FrameHarness owns a nonnative receiver/dirty flag for component wakes and checks fresh lifetime before ticking; constructing it inside another App scope must never capture that outer destination. No event loop, window, GPU, compositor or collaboration initialization is required by semantic-only preparation. Runner record persistence delegates to the canonical owner; do not call `persist::open` or create a second Autosave for the component document. Outer shell State remains independently owned.
+
+- [ ] Route explicit runner close and component replacement through `AppComponent::close()` before dropping the bound root. App, FrameHarness and the embedding host retain failed ComponentCloseReports independently of removed widgets, including the exact `view_retry` store and canonical `record_retry` owner. Headless driving includes close/save outcomes in its durability exit result; an in-memory component status remains explicitly MemoryOnly. Add three-runner tests with the preparer's other View-store handles dropped and a save failure during close: assert original scoped destination, retained envelope and retry without resurrecting the component. The Drop safety net invalidates callbacks during failure/unwind; it is not a substitute for this observable explicit close result.
+
+- [ ] Refactor headless driving helpers to accept the prepared driver's persistence callback/status rather than assuming a separate global Autosave. Keep JSON action inputs, inspection/audit outputs, semantic-only versus rendered modes and success/action/durability exit codes (0/1/3). Write filesystem-output smoke tests using temporary explicit paths, with real new framework definition preparation rather than a shot-only fixture. Add failure-path tests for state-open error and flush error returning 3 with preserved original bytes.
+
+- [ ] Run relevant existing launch/headless/App/widget/record/undo/resource/accessibility regressions using the isolated helper. Execute mandatory Task 5 check/clippy/format gates above on native before committing; after the source commit below, the controller reviews and runs those gates at that exact SHA on Fedora. Additional parent-plan workspace checks remain required in its qualified host/test windows. Exact final focused command:
+
+```sh
+CARGO_TARGET_DIR=/Users/xaver/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run --locked --profile ci -p ui --test it -E 'test(application_contract::) | test(canonical_record_owner::) | test(bound_component_dispatch::) | test(instance_undo::)'
+```
+
+Record host/commit/selection and any prerequisite failure; no build/test execution was performed to author this candidate. After self-review and native gates, create the source commit for controller review and exact-SHA Fedora verification: `feat(ui): share component preparation across native embedded and headless hosts`.
+
+## Seams handed to later plans
+
+1. **Notes construction/migration:** exports its real ApplicationDefinition and AppWidget implementation; factory consumes explicit HostContext record, author, permission/provenance and wake handle, then returns AppComponent with Notes actions registered. `initialize_new_record` is the only initial-document write seam for a genuinely new destination; it returns `RecordOpenError::Initialization` without running the closure for a loaded/already initialized record. Notes import must extend that owner transaction with its atomic receipt/content strategy and explicit legacy-source handling; no framework implicit legacy fallback. Selected page/caret extension uses existing local View helpers first. Existing normal Markdown/saver ownership remains Notes plan work.
+2. **Files providers and opener:** add a concrete typed granted-resource variant to non-exhaustive LaunchTarget once the actual runtime-fs provider contract defines file **and directory** handles, scope and revocation. Add those concrete handles/service fields to HostContext, not a generic service bag. Existing Record target already carries the exact Notes RecordCheckout/reveal address; Files can use the scoped record index/open intent without fabricating a `.notes` path. This framework plan does not claim FsClient/FileHandle is already sufficient.
+3. **Collaboration/authority:** canonical RecordOwners/RecordStore own per-record worker and delta-pump attachment; component owns distinct per-instance presence/View subscription. Extend explicit context/service construction with authenticated broker connection and record route, retain ActionTransport and current PermissionContext at invocation, and reuse current App delta processing. No environment-driven `CollaborationManager::for_record` is introduced into AppComponent. Revocation updates the live permission handle; capability discovery never substitutes for execution checks.
+4. **Shell catalogue/lifecycle:** link actual app-crate definitions in one package-ID catalogue shared by platforms, persist chosen app/record/instance binding, map u64 tile IDs directly, supply profile/device/workspace-scoped InstanceViewStore and explicit profile registry, bind wakes on mount, render typed retryable failures with data retained. Unsupported fleet entries stay capability-map metadata. The shell’s packaged Linux process route is separate and preserved.
+5. **Standalone SDK host:** supplies ComponentHostPreparer and exact profile/workspace/record CLI policy, authenticated identity/current authority, explicit record/view stores and actual required services before any factory runs. Definition-only LaunchSpec fails with MissingComponentHost until this adapter is installed. Real Notes/Files production binary cutover depends on this host plan; library conformance tests already provide explicit test adapters. No permissive or ambient test fallback is inferred.
+6. **Native host:** deliver input/IME/accessibility to existing App/Driver/common root and use component wake events. This plan needs no AppKit/Smithay types. Native lifecycle, Metal, VoiceOver, Fedora compositor/headless and actual Mac↔Fedora Notes/Files walkthrough remain subsequent qualification gates.
+
+## Decisions and remaining integration boundaries
+
+- Controller preflight accepted the shared/exclusive directory gate preserving legacy-with-legacy behavior while refusing canonical-with-legacy in this version. The exact gate file constant can live beside current LOCK_FILE; older binaries remain an explicit concurrent-profile limitation. This is not permission to migrate/import while an old writer is active.
+- Controller preflight accepted that `LaunchTarget` initially exposes New and Record only, with Files' granted target added by its provider plan. No currently inspected portable directory-grant type can faithfully occupy that variant today; accepting `PathBuf` would make the desired authority promise false.
+- Local restore schema v1 uses existing View only. The Notes plan must decide any additional page/drawer/caret contribution using its actual widgets; it must not overload shared document state or freeze bytes to bypass the local schema boundary.
+- Pending text-burst ownership is the main implementation complexity: preserve current grouping within one instance, close it on an actual mutation-owner transition (never read-only mount), and use explicit before/after boundaries for domain actions. If behavior tests prove this cannot be done safely within current UndoLog, bring that concrete failing trace to the controller before choosing another history owner; do not create per-instance document copies.
+
+## Resolution of controller preflight findings
+
+1. **Lifecycle:** explicit root ownership and custom Drop close the child route before cancellation/detach/destruction, then enter that closed route; ordinary dispatch rejects it. Failure/unwind cleanup follows the same owned-root path, and host-held ComponentCloseReport retains local recovery, independent persistence errors and a strong canonical owner for retrying failed writes.
+2. **Restore keys:** InstanceViewStore is constructed for explicit profile/device/workspace, uses collision-free namespace paths, and validates namespace plus app/record/instance binding; cross-workspace equal-ID tests are required.
+3. **Pending history:** read-only mount/projection leaves another instance's typing burst untouched. Finalization occurs only before a different instance actually mutates, retaining original author/context/metadata/before heads.
+4. **Recovery publication:** read-only CanonicalLoad holds source/repair bytes; accept_canonical publishes only after schema and immutable UI identity checks. Invalid recovered identities and newer schemas retain exact source bytes.
+5. **Initialization:** New reserves a private construction-owned slot. RecordReservation::initialize alone initializes schema, commits setup, creates baseline/autosave and marks Ready; factory restore/mount only verify Ready and never finalize again.
+6. **Baseline/gates:** baseline is reviewed f14221783 with UI Task 3 complete, direct core is the sole source author, and each task now requires explicit check/clippy/format gates on native and exact-SHA Fedora.
+
+## Additional controller preflight resolutions
+
+- Task 1 reservations now have a unique non-Clone RecordReservation token and Existing-only opener; shared handles cannot initialize or cancel another factory's slot. Task 2 stores that token explicitly and delegates initialization through a mutable HostContext.
+- The writer's current `pending.take()` plus enqueue-time `sent` tracking makes error acknowledgement alone insufficient for recovery. Task 1 now specifies sticky failed-writer state and a complete atomic checkpoint retry; Task 3's retained owner is therefore useful after a failed close, including no-new-edit retries and partial append failures.
+- Record home identifies its minting room, not its present replica scope (`ui/src/record.rs::init_scoped`). Validate nonempty home, preserve it and compare only room_scope to current workspace. Add a valid foreign-home/current-scope load regression alongside mismatch tests.
+- A successfully initialized New record needs a retained strong owner and exact minted checkout if subsequent factory/View setup fails. Task 2 now specifies LaunchError::ComponentSetup and a last-owner failure/retry regression; returning only a message would lose the promised recovery route.
+
+## Plan self-review
+
+This bounded plan covers the reviewed design's common factory, explicit target/context, record writer/restore ownership, local View, per-instance operation/undo and full callback/action dispatch requirements. Notes storage/schema import, Files grants/providers, broker/presence transport, shell production cutover and native loop remain separately named consumers, not hidden completion claims. Existing types and domain action/resource IDs are retained. No task starts a native event loop or depends on a substitute Notes/Files implementation. Testing commands use the provided isolation helper and explicit temp paths, preserving HOME and toolchain. No production files, tracked design documents, git state, operator data, builds/tests, VMs or GUI surfaces were changed while producing this candidate. Controller preflight decisions above are routine design review points within the authorized goal, not new user approval requests.
