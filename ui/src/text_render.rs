@@ -2323,7 +2323,7 @@ mod tests {
             [0.0..80.0, 120.0..200.0]
         );
 
-        let mut renderer = TextRenderer::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
         let style = TextStyle::new(16.0).with_line_height(1.25);
         let text = "one two three four five six seven eight nine ten eleven twelve thirteen";
         let engine = PolygonTextLayout::new(region);
@@ -2370,7 +2370,7 @@ mod tests {
 
     #[test]
     fn product_font_system_pins_every_generic_family() {
-        let font_system = configured_font_system();
+        let font_system = crate::font_catalog::fixture_font_system();
         let database = font_system.db();
         assert_eq!(database.family_name(&Family::SansSerif), UI_SANS_FAMILY);
         assert_eq!(database.family_name(&Family::Serif), UI_SERIF_FAMILY);
@@ -2382,7 +2382,7 @@ mod tests {
 
     #[test]
     fn shipped_fallback_policy_shapes_representative_scripts() {
-        let mut renderer = TextRenderer::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
         let style = TextStyle::new(18.0);
         let samples = [
             ("Arabic", "مرحبا"),
@@ -2425,7 +2425,7 @@ mod tests {
     /// — without this, every widget's `draw` pays a full cosmic-text shape.
     #[test]
     fn measure_cache_returns_hit_on_second_call() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let label = "Hello, gallery!";
         let (w1, h1) = tr.measure(label, 16.0, None);
         let (hits1, misses1) = tr.cache_stats();
@@ -2441,7 +2441,7 @@ mod tests {
 
     #[test]
     fn measure_cache_keys_on_size() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let _ = tr.measure("abc", 12.0, None);
         let _ = tr.measure("abc", 16.0, None);
         let _ = tr.measure("abc", 12.0, None); // hit
@@ -2452,7 +2452,7 @@ mod tests {
 
     #[test]
     fn style_line_height_controls_layout_and_cache_identity() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let compact = TextStyle::new(20.0).with_line_height(1.2);
         let relaxed = TextStyle::new(20.0).with_line_height(1.6);
 
@@ -2472,7 +2472,7 @@ mod tests {
 
     #[test]
     fn style_is_shared_by_measurement_and_drawing() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let style = TextStyle::new(18.0)
             .with_line_height(1.4)
             .with_weight(TextWeight::Semibold)
@@ -2502,7 +2502,7 @@ mod tests {
     #[test]
     fn background_span_emits_an_extra_fill_in_the_scene() {
         use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
 
         let plain_spans = [RichSpan::new("highlighted")];
         let plain = RichTextLayout::shape(
@@ -2557,7 +2557,7 @@ mod tests {
 
     #[test]
     fn elide_returns_text_unchanged_when_it_fits() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let s = "short";
         let (w, _) = tr.measure(s, 14.0, None);
         let out = tr.elide_to_width(s, 14.0, w + 50.0);
@@ -2567,7 +2567,7 @@ mod tests {
 
     #[test]
     fn elide_truncates_and_appends_ellipsis() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let s = "the quick brown fox jumps over the lazy dog";
         let (full_w, _) = tr.measure(s, 14.0, None);
         let budget = full_w / 3.0; // force truncation
@@ -2590,14 +2590,14 @@ mod tests {
     /// A zero/empty budget yields empty output; so does empty input.
     #[test]
     fn elide_edge_cases() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         assert_eq!(tr.elide_to_width("", 14.0, 100.0), "");
         assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
     }
 
     #[test]
     fn clamp_to_lines_caps_line_count_and_elides_last() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
              incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis";
         // Narrow width forces several wrapped lines; cap to 2.
@@ -2617,7 +2617,7 @@ mod tests {
 
     #[test]
     fn clamp_to_lines_degenerate_cases() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         assert!(tr.clamp_to_lines("anything", 14.0, 80.0, 0).is_empty());
         let one = tr.clamp_to_lines("a fairly long single line of text here", 14.0, 60.0, 1);
         assert_eq!(one.len(), 1);
@@ -2626,7 +2626,7 @@ mod tests {
 
     #[test]
     fn clamp_to_lines_no_overflow_keeps_all() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let lines = tr.clamp_to_lines("two words", 14.0, 1000.0, 3);
         assert_eq!(lines, vec!["two words".to_string()]);
         assert!(!lines[0].ends_with('\u{2026}'));
@@ -2634,7 +2634,7 @@ mod tests {
 
     #[test]
     fn wrap_lines_uses_cjk_opportunities_without_spaces() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "東京京都大阪名古屋";
         let two_glyphs = tr.measure("東京", 14.0, None).0 + 0.5;
         let lines = tr.wrap_lines(text, 14.0, two_glyphs);
@@ -2645,7 +2645,7 @@ mod tests {
 
     #[test]
     fn wrap_lines_respects_non_breaking_space() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "10\u{a0}km away";
         let narrow = tr.measure("10", 14.0, None).0 + 1.0;
         let lines = tr.wrap_lines(text, 14.0, narrow);
@@ -2655,7 +2655,7 @@ mod tests {
 
     #[test]
     fn wrap_lines_uses_dictionary_breaks_for_thai() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "ทุกสองสัปดาห์";
         let first_word = &text[..9];
         let budget = tr.measure(first_word, 14.0, None).0 + 0.5;
@@ -2670,7 +2670,7 @@ mod tests {
         reason = "buckets glyph y-positions into small row indices for a three-line test layout; round() already yields an integer-valued f32 far below i32::MAX"
     )]
     fn measure_and_draw_use_dictionary_breaks_for_thai() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let style = TextStyle::new(18.0);
         let text = "ทุกสองสัปดาห์";
         let width = [&text[..9], &text[9..18], &text[18..]]
@@ -2698,7 +2698,7 @@ mod tests {
 
     #[test]
     fn automatic_hyphenation_wraps_and_paints_only_exercised_breaks() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "extensive";
         let plain = TextStyle::new(20.0);
         let hyphenated = plain.clone().with_auto_hyphenation("en-US");
@@ -2732,7 +2732,7 @@ mod tests {
 
     #[test]
     fn hyphenation_policy_participates_in_measurement_cache_identity() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let text = "extensive";
         let width = 70.0;
         let plain = TextStyle::new(20.0);
@@ -2747,7 +2747,7 @@ mod tests {
     /// twice shapes it once.
     #[test]
     fn shape_cache_reshapes_once_for_repeated_draw() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         let c = Color::WHITE;
@@ -2769,7 +2769,7 @@ mod tests {
     /// label reuses the cached glyph geometry, making theme switches free.
     #[test]
     fn shape_cache_reuses_geometry_across_recolor() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         tr.draw_text_weighted(
@@ -2801,7 +2801,7 @@ mod tests {
     /// glyph positions, so it must miss and reshape.
     #[test]
     fn shape_cache_keys_on_width() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         let s = "the quick brown fox";
@@ -2841,7 +2841,7 @@ mod tests {
     /// geometry too, so the next draw reshapes.
     #[test]
     fn bump_generation_invalidates_shape_cache() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let mut scene = Scene::new();
         let t = Affine::IDENTITY;
         tr.draw_text_weighted(
@@ -2883,7 +2883,7 @@ mod tests {
     /// serif doesn't collide with sans).
     #[test]
     fn font_choice_families_resolve_and_shape() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let fams = tr.system_families();
         assert!(!fams.is_empty(), "the system font db exposes some families");
 
@@ -2952,7 +2952,7 @@ mod tests {
 
     #[test]
     fn advanced_features_are_part_of_shaping_and_measurement() {
-        let mut renderer = TextRenderer::new();
+        let mut renderer = crate::font_catalog::fixture_renderer();
         let base = TextStyle::new(32.0).with_family(FontChoice::Serif);
         let kerned = renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(true));
         let unkerned = renderer.measure_style("AVATAR To", None, &base.clone().with_kerning(false));
@@ -3033,11 +3033,7 @@ mod tests {
 
     #[test]
     fn variable_axes_are_normalized_in_the_faces_native_axis_order() {
-        let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
-            "en-US",
-        );
-        let renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+        let renderer = crate::font_catalog::fixture_renderer();
         let face = renderer
             .font_system
             .db()
@@ -3045,7 +3041,7 @@ mod tests {
                 families: &[Family::Name("Adwaita Sans")],
                 ..cosmic_text::fontdb::Query::default()
             })
-            .expect("the controlled catalog supplies Adwaita Sans");
+            .expect("the controlled fixture ships Adwaita Sans");
         let coords = renderer.normalized_coords(
             face,
             &[
@@ -3071,7 +3067,7 @@ mod tests {
     /// measure of a previously-seen string registers as a miss.
     #[test]
     fn bump_generation_invalidates_cache() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let _ = tr.measure("abc", 12.0, None);
         let _ = tr.measure("abc", 12.0, None); // hit
         tr.bump_generation();
@@ -3083,7 +3079,7 @@ mod tests {
 
     #[test]
     fn text_scale_one_is_metric_identity_and_invalid_values_are_safe() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let base = tr.measure("Accessible calendar", 18.0, None);
         tr.set_text_scale(1.0);
         assert_eq!(tr.measure("Accessible calendar", 18.0, None), base);
@@ -3098,7 +3094,7 @@ mod tests {
 
     #[test]
     fn text_scale_changes_measure_and_shape_cache_together() {
-        let mut tr = TextRenderer::new();
+        let mut tr = crate::font_catalog::fixture_renderer();
         let base = tr.measure("Calendar", 20.0, None);
         tr.set_text_scale(2.0);
         let doubled = tr.measure("Calendar", 20.0, None);

@@ -7218,10 +7218,9 @@ mod tests {
     /// requested named family rather than silently reverting to sans.
     #[test]
     fn font_family_override_shapes_in_named_family() {
-        let mut tr = TextRenderer::new();
-        let fams = tr.system_families();
-        assert!(!fams.is_empty(), "the system font db exposes some families");
-        let fam = fams[0].clone();
+        let mut tr = crate::font_catalog::fixture_renderer();
+        let fam = crate::text_render::UI_SERIF_FAMILY.to_owned();
+        assert!(tr.system_families().contains(&fam));
 
         let mut ti = TextInput::local()
             .with_initial_value("Reading")
