@@ -5,6 +5,120 @@ use ui::bound_dispatch::{BoundDispatchError, BoundNodeMap, invoke_bound_node};
 use ui::widget::{Button, Widget};
 
 #[test]
+fn owned_search_provider_methods_and_early_drop_enter_the_originating_component() {
+    use crate::support::application::{enable_provider_probe, instantiate_probe};
+    let host = ProbeHost::new();
+    let observed = enable_provider_probe();
+    let mut component =
+        instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+    let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sink = wakes.clone();
+    component
+        .mount(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .unwrap();
+    let tile = TileHost::from_component(component);
+    let providers = tile.search_providers();
+    wakes.store(0, std::sync::atomic::Ordering::Relaxed);
+    let provider = &providers[0];
+    assert_eq!(provider.name(), "Probe");
+    assert_eq!(
+        wakes.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "name is inert copied metadata"
+    );
+    assert_eq!(provider.action_directory_generation(), Some(4));
+    assert!(provider.action_directory_cursor_is_current(&ui::search::SearchCursor::default()));
+    assert_eq!(provider.search("").len(), 1);
+    assert!(provider.search_limited("", 0).is_empty());
+    let page = provider.search_page("", None, 1, 1);
+    assert_eq!(page.results.len(), 1);
+    assert!(page.next.is_some());
+    assert_eq!(page.inspected, 1);
+    provider.resolve_action_resource(&qos_actions::ActionAddress::new("probe:shared", "edit"));
+    assert!(observed.borrow().methods.iter().all(|(_, active)| *active));
+    drop(providers);
+    assert_eq!(observed.borrow().drops, vec![(true, true)]);
+    assert_eq!(
+        wakes.load(std::sync::atomic::Ordering::Relaxed),
+        7,
+        "all six live methods and early destruction wake the captured owner"
+    );
+}
+
+#[test]
+fn provider_payload_drops_on_close_even_when_the_proxy_outlives_replacement() {
+    use crate::support::application::{enable_provider_probe, existing, instantiate_probe};
+    let host = ProbeHost::new();
+    let observed = enable_provider_probe();
+    let component = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+    let checkout = component.record().clone();
+    let mut tile = TileHost::from_component(component);
+    let providers = tile.search_providers();
+    tile.close_components();
+    assert_eq!(observed.borrow().drops, vec![(false, false)]);
+    let mut replacement =
+        instantiate_probe(&host, 11, existing(&checkout), RestoreInput::None).unwrap();
+    let replacement_wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sink = replacement_wakes.clone();
+    replacement
+        .mount(move |_| {
+            sink.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })
+        .unwrap();
+    assert!(tile.replace_component(replacement).is_empty());
+    replacement_wakes.store(0, std::sync::atomic::Ordering::Relaxed);
+    let count = observed.borrow().methods.len();
+    let provider = &providers[0];
+    assert_eq!(provider.name(), "Probe");
+    assert_eq!(provider.action_directory_generation(), None);
+    assert!(!provider.action_directory_cursor_is_current(&ui::search::SearchCursor::default()));
+    assert!(provider.search("").is_empty());
+    assert!(provider.search_limited("", 1).is_empty());
+    let page = provider.search_page("", None, 1, 1);
+    assert!(page.results.is_empty() && page.next.is_none() && page.inspected == 0);
+    assert!(
+        provider
+            .resolve_action_resource(&qos_actions::ActionAddress::new("probe:shared", "edit"))
+            .is_none()
+    );
+    assert_eq!(observed.borrow().methods.len(), count);
+    assert_eq!(
+        replacement_wakes.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    drop(providers);
+    assert_eq!(observed.borrow().drops.len(), 1);
+}
+
+#[test]
+fn provider_destructor_unwind_keeps_payloads_under_the_closed_owner() {
+    use crate::support::application::{enable_provider_probe, instantiate_probe};
+    let host = ProbeHost::new();
+    let observed = enable_provider_probe();
+    let component = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+    let mut tile = TileHost::from_component(component);
+    let mut providers = tile.search_providers();
+    providers.extend(tile.search_providers());
+    observed.borrow_mut().panic_on_drop = true;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tile.close_components()));
+    observed.borrow_mut().panic_on_drop = false;
+    assert!(result.is_err());
+    assert_eq!(
+        observed.borrow().drops,
+        vec![(false, false), (false, false)]
+    );
+    assert!(
+        providers
+            .iter()
+            .all(|provider| provider.search("").is_empty())
+    );
+    drop(providers);
+    assert_eq!(observed.borrow().drops.len(), 2);
+}
+
+#[test]
 fn cleared_or_unadmitted_nodes_never_dispatch_as_outer_widgets() {
     let mut root = Button::new("probe", "Probe", None);
     let mut tree = taffy::TaffyTree::new();
@@ -1992,4 +2106,84 @@ fn legacy_mutable_admission_follows_new_intent_only_after_checked_resolution() {
                 .unwrap())
             .unwrap()
     );
+}
+
+#[test]
+fn task4_driver_qualified_equal_resource_ids_use_their_record_and_view_owner() {
+    use crate::support::application::{action_probe_factory, existing, operation_observations};
+    let host = ProbeHost::new();
+    let definition = definition(action_probe_factory);
+    let permissions = std::rc::Rc::new(std::cell::RefCell::new(
+        ui::permissions::PermissionContext::from_capabilities(
+            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "probe-author"),
+            vec![],
+        )
+        .at_unix_time(100),
+    ));
+    let first = definition
+        .instantiate(
+            host.prepare_with_permissions(&definition, 11, &LaunchTarget::New, permissions.clone())
+                .unwrap(),
+            LaunchTarget::New,
+            RestoreInput::None,
+        )
+        .unwrap();
+    let checkout = first.record().clone();
+    let target = existing(&checkout);
+    let second = definition
+        .instantiate(
+            host.prepare_with_permissions(&definition, 12, &target, permissions)
+                .unwrap(),
+            target,
+            RestoreInput::None,
+        )
+        .unwrap();
+    let column = ui::widget::Column::new()
+        .push(Box::new(TileHost::from_component(first)))
+        .push(Box::new(TileHost::from_component(second)));
+    let mut driver = controlled_driver(Box::new(column), (200, 100));
+    let outer = driver.state_mut().doc.get_heads();
+    let address = |instance_id, action| ui::bound_dispatch::BoundActionAddress {
+        instance_id,
+        address: qos_actions::ActionAddress::new("probe:shared", action),
+    };
+    driver
+        .invoke_bound_action(&address(12, "view"), &serde_json::Map::new())
+        .unwrap();
+    let observed = operation_observations();
+    assert!(observed[0].borrow().is_empty());
+    assert_eq!(*observed[1].borrow(), vec!["View"]);
+    host.records
+        .read_history(&checkout.id, |_, history| {
+            assert!(
+                history
+                    .next_undo_in(&crate::support::application::author(), 12)
+                    .is_none()
+            );
+        })
+        .unwrap();
+    driver
+        .invoke_bound_action(&address(11, "edit"), &serde_json::Map::new())
+        .unwrap();
+    host.records
+        .with_history(&checkout.id, |doc, history| {
+            let author = crate::support::application::author();
+            assert_eq!(
+                history.next_undo_in(&author, 11).unwrap().author.as_ref(),
+                Some(&author)
+            );
+            assert!(history.next_undo_in(&author, 12).is_none());
+            history.undo_in(doc, &author, 11, None, None).unwrap();
+            assert!(history.next_undo_in(&author, 11).is_none());
+            assert_eq!(
+                doc.get(automerge::ROOT, "body")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str(),
+                Some("initialized")
+            );
+        })
+        .unwrap();
+    assert_eq!(driver.state_mut().doc.get_heads(), outer);
 }
