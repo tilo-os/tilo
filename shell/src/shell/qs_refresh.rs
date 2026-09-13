@@ -70,12 +70,20 @@ impl Default for QsRefresh {
 
 impl QsRefresh {
     pub fn new() -> Self {
+        Self::with_os_reads(true)
+    }
+
+    pub(crate) fn without_os_reads() -> Self {
+        Self::with_os_reads(false)
+    }
+
+    fn with_os_reads(enabled: bool) -> Self {
         let (tx, rx) = channel();
         Self {
             tx,
             rx,
             in_flight: HashSet::new(),
-            enabled: true,
+            enabled,
         }
     }
 
@@ -96,6 +104,8 @@ impl QsRefresh {
         if !self.enabled {
             return;
         }
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("QS worker");
         if !self.in_flight.insert(tier) {
             return;
         }

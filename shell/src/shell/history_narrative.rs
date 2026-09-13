@@ -22,6 +22,8 @@ pub struct LocalHistoryNarrator {
 impl LocalHistoryNarrator {
     /// Start one bounded background generation when the evidence changes.
     pub fn request(&mut self, request: &NarrativeRequest) {
+        #[cfg(test)]
+        crate::shell::test_support::ambient_start("history model worker");
         let prompt = prompt_for(request);
         let key = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         if self.last_key.as_deref() == Some(&key) || self.running.swap(true, Ordering::AcqRel) {
