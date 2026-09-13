@@ -320,10 +320,10 @@ let Some(vello_font) = self.vello_font(face_id, first.font_weight) else {
 
 ```bash
 rustfmt --edition 2024 ui/src/text_render.rs ui/src/text_render/renderer_regressions.rs
-CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo clippy -p ui --lib --locked -- -D warnings
+CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo clippy -p ui --all-targets --locked -- -D warnings
 ```
 
-If the repository's pedantic lints require a narrow test-only allowance for these explicit assertions, fix the exact diagnostic at the item; do not broadly disable linting. The nextest selection already compiles the regression tests; library clippy keeps the lint gate scoped to the changed library.
+If the repository's pedantic lints require a narrow test-only allowance for these explicit assertions, fix the exact diagnostic at the item; do not broadly disable linting. The nextest selection compiles the regression tests; all-target clippy also lints their bodies and the existing UI targets. Fedora uses the same payload at the reviewed source SHA.
 
 - [ ] Review and commit Task 1 independently:
 
@@ -619,7 +619,7 @@ Pass `Weight(700)` as the third argument after its existing variation slice. Cha
 ```bash
 rustfmt --edition 2024 ui/src/text_render.rs ui/src/text_render/renderer_regressions.rs ui/src/richtext.rs
 CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo nextest run -p ui --lib --locked --profile ci -E 'test(text_render::) or test(richtext::)'
-CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell cargo clippy -p ui --lib --locked -- -D warnings
+CARGO_TARGET_DIR=/Users/user/dev/qos/target/macos-shell python3 .superpowers/sdd/2026-09-13-wake-scope-integration/run-isolated.py cargo clippy -p ui --all-targets --locked -- -D warnings
 ```
 
 Existing tests that construct ambient `TextRenderer::new()` may still expose the documented host-font prerequisite. Do not silently skip them or use renderer fixes to weaken their assertions. Record each failure with its source boundary, and let the controller coordinate deterministic-fixture migration where needed. CPU regression failures attributable to these changes block Task 2 acceptance.
