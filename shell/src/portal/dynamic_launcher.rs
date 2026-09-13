@@ -1,16 +1,20 @@
 //! `org.freedesktop.impl.portal.DynamicLauncher` backend.
 
+#[cfg(target_os = "linux")]
 use super::desktop_services::{LauncherInstallRequest, PortalResult};
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 #[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue, Structure, Value};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::{OwnedValue, Structure, Value};
 
 #[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{
@@ -37,6 +41,7 @@ impl DynamicLauncherBackend {
         }
     }
 }
+#[cfg(target_os = "linux")]
 fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str, default: bool) -> bool {
     options
         .get(key)
@@ -44,6 +49,7 @@ fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str, default: bool) -> 
         .and_then(|v| bool::try_from(v).ok())
         .unwrap_or(default)
 }
+#[cfg(target_os = "linux")]
 fn str_opt(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     options
         .get(key)?
@@ -52,6 +58,7 @@ fn str_opt(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
         .and_then(|v| String::try_from(v).ok())
         .filter(|v| v.len() <= 4096 && !v.chars().any(char::is_control))
 }
+#[cfg(target_os = "linux")]
 fn launcher_type(options: &HashMap<String, OwnedValue>) -> u32 {
     options
         .get("launcher_type")

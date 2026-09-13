@@ -982,7 +982,7 @@ mod tests {
                 workspace_roots: Vec::new(),
                 record_roots: Vec::new(),
                 remote_accounts: Vec::new(),
-                trusted_humans: Default::default(),
+                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
             });
         explorer.navigate(files);
         let idx = explorer
@@ -1051,7 +1051,7 @@ mod tests {
                 workspace_roots: Vec::new(),
                 record_roots: Vec::new(),
                 remote_accounts: Vec::new(),
-                trusted_humans: Default::default(),
+                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
             });
         explorer.navigate(files);
         let idx = explorer

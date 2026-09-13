@@ -10,7 +10,9 @@ use std::collections::{HashMap, HashSet};
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue, Value};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::{OwnedValue, Value};
 
 #[cfg(target_os = "linux")]
 use crate::shell::portal_dialog::{
@@ -52,6 +54,13 @@ impl UsbBackend {
 struct RequestedDevice {
     id: String,
     writable: bool,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     label: Option<String>,
 }
 

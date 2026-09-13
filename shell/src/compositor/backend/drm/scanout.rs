@@ -22,9 +22,8 @@ use drm_re::control::{
     framebuffer,
 };
 
-use super::paint::{
-    BridgeError, SceneDamage, VelloDrmBridge, XrgbHistoryCommit, XrgbTargetHistory,
-};
+use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
+use super::xrgb_history::{XrgbHistoryCommit, XrgbTargetHistory};
 use crate::compositor::backend::OutputId;
 use vello::{FineDamageRect, Scene};
 

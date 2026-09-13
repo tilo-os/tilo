@@ -1287,6 +1287,9 @@ pub(crate) fn build_workspace_root_with_scene_parts(
 
 /// As [`build_nirios_overlay_host_with_handle`], but with the store the
 /// open tabs' documents live in named by the caller.
+///
+/// # Panics
+/// In unit tests, panics if the isolated Files fixture cannot be created.
 // `tree_handle` is only ever read here (`.clone()`/`.read()`), never
 // moved, so `&WorkspaceTreeHandle` would be the tighter signature — but
 // its callers outside this module (`compositor::frame`,

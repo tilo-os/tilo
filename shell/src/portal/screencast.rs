@@ -24,15 +24,23 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedValue, Value};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::{OwnedValue, Value};
 
+#[cfg(target_os = "linux")]
 use crate::shell::state::{Capability, GRANT_ONCE};
 
 use super::PortalCaller;
@@ -40,6 +48,7 @@ use super::PortalCaller;
 use super::PromptOutcome;
 #[cfg(target_os = "linux")]
 use super::auth::authenticate_call;
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 use super::screencast_pipewire::{
     PipewireStreamInfo, PipewireStreamRequest, ScreenCastStreamProvisionerHandle,
@@ -47,6 +56,7 @@ use super::screencast_pipewire::{
 #[cfg(target_os = "linux")]
 use super::{CapabilityKind, PortalContext, flow};
 
+#[cfg(target_os = "linux")]
 const MAX_LIVE_SESSIONS: usize = 64;
 const MAX_RESTORE_TOKENS: usize = 256;
 const RESTORE_VENDOR: &str = "qos";
@@ -77,23 +87,93 @@ pub const SCREENCAST_VERSION: u32 = 4;
 /// Per-session negotiated selection, keyed by the frontend's `session_handle` object path.
 #[derive(Clone, Debug, Default)]
 struct ScreenCastSession {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     owner: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     app_id: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     caller: Option<PortalCaller>,
     /// Bitmask of requested source types (`SelectSources` `types`).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     source_types: u32,
     /// Requested cursor mode.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     cursor_mode: u32,
     /// Whether the app allowed selecting multiple sources.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     multiple: bool,
     /// Requested persistence: 0 none, 1 while-running, 2 until-revoked.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     persist_mode: u32,
     /// True once valid standard `restore_data` pre-approved this session, so
     /// `Start` skips the consent prompt (persisted-share fast path).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     restored: bool,
     /// Consent is requested exactly once, at Start (unless restored).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     consented: bool,
     /// Serializes concurrent Start calls across the async prompt.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     starting: bool,
     /// PipeWire nodes owned by this session, released on lifecycle close.
     streams: Vec<u32>,
@@ -123,6 +203,7 @@ struct RestoreStore {
 }
 
 impl RestoreStore {
+    #[cfg(target_os = "linux")]
     fn load() -> Self {
         Self::load_at(restore_path())
     }
@@ -215,6 +296,7 @@ impl RestoreStore {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn restore_path() -> Option<PathBuf> {
     let root = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
@@ -774,15 +856,18 @@ fn selected_source_types(mask: u32, multiple: bool) -> Vec<u32> {
 /// Return the least-significant supported portal bit. Portal source and cursor
 /// bitmasks deliberately use independent single-bit flags, so this chooses a
 /// deterministic default without inventing an unsupported capability.
+#[cfg(target_os = "linux")]
 fn first_supported_bit(mask: u32) -> Option<u32> {
     (mask != 0).then_some(mask & mask.wrapping_neg())
 }
 
+#[cfg(target_os = "linux")]
 fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
     let v = options.get(key)?.try_clone().ok()?;
     u32::try_from(v).ok()
 }
 
+#[cfg(target_os = "linux")]
 fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     let v = options.get(key)?.try_clone().ok()?;
     bool::try_from(v).ok()
@@ -864,12 +949,8 @@ mod tests {
     use crate::portal::screencast_pipewire::{
         MockScreenCastProvisioner, ScreenCastStreamProvisionerHandle,
     };
-    use crate::shell::state::{Workspace, WorkspaceId};
+    use crate::shell::state::WorkspaceId;
     use std::sync::Arc;
-
-    fn empty_ws(id: u64) -> Workspace {
-        Workspace::test_default(WorkspaceId(id), "sc")
-    }
 
     #[test]
     fn start_allow_returns_response_zero_with_streams_key() {

@@ -2329,6 +2329,7 @@ impl ShellOverlayHost {
     }
 
     #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(crate) fn capture_mirror_count_for_tests(&self) -> usize {
         self.capture_mirrors.len()
     }
@@ -17629,7 +17630,7 @@ mod palette_dispatch_tests {
         }
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
-        crate::shell::launcher::set_test_execution_program(Some(launcher.clone()));
+        crate::shell::launcher::set_test_execution_program(Some(launcher));
         crate::shell::launcher::set_wayland_socket_path(Some(tmp.path().join("wayland-0")));
 
         let (mut host, chrome) = host_with_chrome();

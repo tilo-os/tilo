@@ -421,7 +421,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         scope
             .bind(move |event| {
-                let _resource = &resource;
+                std::hint::black_box(&resource);
                 tx.send(event).unwrap();
             })
             .unwrap();
