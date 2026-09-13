@@ -12673,6 +12673,68 @@ mod bound_component_tests {
         }
     }
     impl Widget for Probe {
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &["bound.follow-up"]
+        }
+        fn resources(&self, _: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
+            let mut action = qos_actions::ActionSpec::operation(
+                "follow-up",
+                "Follow up",
+                qos_actions::OperationKind::Effect,
+                "bound.follow-up",
+                &(),
+            )
+            .unwrap();
+            action.contract.execution =
+                qos_actions::ExecutionMode::Background { cancellable: true };
+            action.contract.result = qos_actions::ResultSpec::Job;
+            vec![qos_actions::Resource::new("bound:probe", "probe", "Probe").with_action(action)]
+        }
+        #[allow(
+            clippy::panic_in_result_fn,
+            reason = "probe asserts canonical admission before returning the toolkit result"
+        )]
+        fn start_resource_operation_with_document(
+            &mut self,
+            _: qos_actions::InvocationId,
+            _: qos_actions::OperationKind,
+            type_id: &str,
+            _: &[u8],
+            doc: &mut automerge::AutoCommit,
+            path: &automerge::ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            assert_eq!(type_id, "bound.follow-up");
+            assert_eq!(path, &ROOT);
+            assert_eq!(
+                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                Some("child")
+            );
+            doc.put(ROOT, "follow-up", true).unwrap();
+            Self::capture("mutable-operation");
+            Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        }
+        fn poll_resource_operation(
+            &mut self,
+            invocation: qos_actions::InvocationId,
+            cancellation_requested: bool,
+            doc: &automerge::AutoCommit,
+            _: &automerge::ObjId,
+        ) -> Option<qos_actions::InvocationUpdate> {
+            if !cancellation_requested {
+                return None;
+            }
+            assert_eq!(
+                doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
+                Some("child")
+            );
+            assert!(!crate::local_state::LocalState::new(0).writer().try_set(1));
+            Self::capture("mutable-cancel");
+            Some(qos_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: None,
+            })
+        }
+
         fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
             assert_eq!(
                 doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
@@ -12806,6 +12868,10 @@ mod bound_component_tests {
         ))
     }
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one actual App lifetime verifies descendant delivery, mutable admission and closed cancellation"
+    )]
     fn real_app_descendant_focus_ime_semantics_and_measure_keep_child_binding() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
@@ -12824,7 +12890,7 @@ mod bound_component_tests {
         };
         let context = HostContext::prepare(
             &definition,
-            records,
+            records.clone(),
             views,
             "D".into(),
             1,
@@ -12839,6 +12905,7 @@ mod bound_component_tests {
         let mut component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
+        let checkout = component.record().clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         component
             .mount(move |event| {
@@ -12857,7 +12924,14 @@ mod bound_component_tests {
         let mut app = App::from_scoped_parts_with_controlled_inputs(
             outer,
             state,
-            Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
+            Box::new(
+                Column::new().push(Box::new(
+                    crate::widget::Row::new().push(Box::new(
+                        crate::widget::Container::new()
+                            .with_child(Box::new(TileHost::from_component(component))),
+                    )),
+                )),
+            ),
         );
         CAPTURES.with_borrow_mut(Vec::clear);
         app.init_layout();
@@ -12872,7 +12946,49 @@ mod bound_component_tests {
         let layout_root = app.root_node.unwrap();
         app.layout_dirty = true;
         run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true).unwrap();
+        assert!(
+            qos_actions::door::resolve(
+                &app.collect_local_resources(),
+                &qos_actions::ActionAddress::new("bound:probe", "follow-up")
+            )
+            .is_some(),
+            "fixture must publish its operation before admission"
+        );
+        let actor = app.local_author.0.clone();
+        assert!(matches!(
+            app.invoke_resource_action(
+                &qos_actions::ActionAddress::new("bound:probe", "follow-up"),
+                None,
+                &actor,
+                false,
+                false,
+                None,
+                Some(qos_actions::InvocationId::new()),
+                None,
+            )
+            .unwrap(),
+            crate::widget::ResourceOperationStart::Accepted
+        ));
+        assert!(
+            records
+                .read(&checkout.id, |doc| doc
+                    .get(ROOT, "follow-up")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_bool()
+                    .unwrap())
+                .unwrap()
+        );
+        assert!(app.state.doc.get(ROOT, "follow-up").unwrap().is_none());
         let captures = CAPTURES.with_borrow_mut(std::mem::take);
+        assert_eq!(
+            captures
+                .iter()
+                .filter(|(label, _)| *label == "mutable-operation")
+                .count(),
+            1
+        );
         for label in [
             "build",
             "sync",
@@ -12895,6 +13011,13 @@ mod bound_component_tests {
             assert!(rx.try_recv().is_err(), "{label} woke outer");
         }
         app.close_components();
+        assert_eq!(
+            CAPTURES.with_borrow(|c| c
+                .iter()
+                .filter(|(label, _)| *label == "mutable-cancel")
+                .count()),
+            1
+        );
         assert_eq!(app.component_close_reports().len(), 1);
         app.close_components();
         assert_eq!(app.component_close_reports().len(), 1);

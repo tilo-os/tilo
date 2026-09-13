@@ -460,7 +460,7 @@ Define `instantiate_probe`, `probe_definition` and counter in `support/applicati
 
 ## Task 3: Bind every widget callback, including raw descendants, to the instance
 
-**Files:** `ui/src/{application,bound_dispatch,wake,app,headless,accesskit_bridge,a11y_tree,lib,undo,view}.rs`; `ui/src/record.rs` only for the crate-private owner-identity and optional checked-borrow seams below; `ui/src/widget/{mod,app_widget,tile_host}.rs`; new `ui/tests/bound_component_dispatch.rs`; `ui/tests/{it,support/application}.rs`.
+**Files:** `ui/src/{application,bound_dispatch,wake,app,headless,accesskit_bridge,a11y_tree,lib,undo,view}.rs`; `ui/src/record.rs` only for the crate-private owner-identity and optional checked-borrow seams below; `ui/src/widget/{mod,app_widget,tile_host,column,row,container}.rs` (the three transparent containers preserve mutable operation forwarding without repeating the legacy fallback); new `ui/tests/bound_component_dispatch.rs`; `ui/tests/{it,support/application}.rs`.
 
 **Consumes:** Task 2 AppComponent/context with Task 1 canonical record handle.
 
