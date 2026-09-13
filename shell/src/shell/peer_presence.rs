@@ -1171,14 +1171,9 @@ mod two_sessions {
         host.set_rooms(rooms_of(&host_handle));
         guest.set_rooms(rooms_of(&guest_handle));
 
-        let input = crate::compositor::client_input::ClientInput::default();
-        assert!(
-            input.pointer_position().is_none(),
-            "the fixture has to be a session that has not been pointed at, \
-             or this proves nothing",
-        );
-
-        guest.set_cursor_position(input.pointer_position());
+        // No host pointer event has arrived. Optional position is the same
+        // shared input datum delivered by either native adapter.
+        guest.set_cursor_position(None);
         assert!(
             !guest.publish_local_cursor(&room.to_string()),
             "a session with no pointer has nothing to say about where one is",

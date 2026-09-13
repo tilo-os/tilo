@@ -4907,10 +4907,15 @@ impl Filesystem for QuickFS {
     ) {
         let name = name.as_bytes();
         let newname = newname.as_bytes();
-        if !flags.difference(RenameFlags::RENAME_NOREPLACE).is_empty() {
+        #[cfg(target_os = "linux")]
+        let unsupported_flags = flags.difference(RenameFlags::RENAME_NOREPLACE);
+        #[cfg(not(target_os = "linux"))]
+        let unsupported_flags = flags;
+        if !unsupported_flags.is_empty() {
             reply.error(to_errno(libc::ENOTSUP));
             return;
         }
+        #[cfg(target_os = "linux")]
         if flags.contains(RenameFlags::RENAME_NOREPLACE)
             && self.ns().lookup(newparent.0, newname).is_some()
         {

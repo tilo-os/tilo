@@ -12,11 +12,17 @@
 //!
 //! The Settings app can *start* a pairing (`Device1.Pair`), but the prompt that results belongs here.
 
+#[cfg(any(test, target_os = "linux"))]
+use tracing::warn;
+
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "linux")]
+use qos_bluez::BluezClient;
+#[cfg(target_os = "linux")]
 use qos_bluez::agent::{AgentEvent, AgentRegistration, PairingAgent};
-use qos_bluez::{BluezClient, PairingReply, PairingReplySender, PairingRequest};
-use tracing::{info, warn};
+use qos_bluez::{PairingReply, PairingReplySender, PairingRequest};
+use tracing::info;
 
 /// The prompt currently on screen, if any, and the channel that answers it.
 ///
@@ -57,6 +63,7 @@ impl PairingPromptHandle {
 
     /// Post a question. Any prompt already up is refused rather than
     /// silently replaced — dropping its reply channel is read as a decline by the agent, so an abandoned pairing fails closed.
+    #[cfg(any(test, target_os = "linux"))]
     fn post(&self, request: PairingRequest, reply: PairingReplySender) {
         if let Ok(mut s) = self.inner.lock() {
             if let Some(prev) = s.current.take() {
@@ -105,6 +112,7 @@ impl PairingPromptHandle {
 }
 
 /// A registered agent plus the task pumping its events. Dropping this stops the pump; call [`Self::shutdown`] to also unregister from `BlueZ`.
+#[cfg(target_os = "linux")]
 pub struct PairingService {
     registration: AgentRegistration,
     pump: tokio::task::JoinHandle<()>,
@@ -112,6 +120,7 @@ pub struct PairingService {
     handle: PairingPromptHandle,
 }
 
+#[cfg(target_os = "linux")]
 impl PairingService {
     /// Connect to `BlueZ`, register the pairing agent, and start feeding
     /// prompts to `handle`.
@@ -178,6 +187,7 @@ impl PairingService {
 }
 
 /// Convenience for the compositor boot path: start the service on `rt`, logging rather than failing when there's no Bluetooth on this machine.
+#[cfg(target_os = "linux")]
 pub fn spawn_on(
     rt: &tokio::runtime::Handle,
     handle: PairingPromptHandle,

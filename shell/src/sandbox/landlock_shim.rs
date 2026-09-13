@@ -29,7 +29,7 @@ use landlock::{
 /// Hidden subcommand token the `shell` binary dispatches on to enter the
 /// shim (see `src/main.rs`). bwrap is told to exec
 /// `<shell> __sandbox-exec …` as its command.
-pub const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
+pub use super::SANDBOX_EXEC_SUBCOMMAND;
 
 /// Highest Landlock ABI this shim targets. We deliberately cap at V4
 /// rather than chasing the newest ABI for two reasons:

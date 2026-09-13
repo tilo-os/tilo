@@ -22,27 +22,41 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
+#[cfg(target_os = "linux")]
+use crate::shell::state::FsMode;
+#[cfg(target_os = "linux")]
+use zbus::interface;
+#[cfg(target_os = "linux")]
+use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
+use zbus::object_server::SignalContext;
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+
+#[cfg(any(test, target_os = "linux"))]
 use std::collections::HashMap;
+#[cfg(any(test, target_os = "linux"))]
 use std::fmt::Write as _;
+#[cfg(any(test, target_os = "linux"))]
 use std::os::unix::ffi::OsStrExt as _;
+#[cfg(any(test, target_os = "linux"))]
 use std::path::PathBuf;
 
-use zbus::interface;
-use zbus::names::OwnedUniqueName;
-use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedValue, Value};
-
-use crate::shell::state::FsMode;
+#[cfg(any(test, target_os = "linux"))]
+use zbus::zvariant::{OwnedValue, Value};
 
 #[cfg(test)]
 use super::PortalCaller;
+#[cfg(target_os = "linux")]
 use super::{FilePickerOptions, PortalContext, auth::authenticate_call, lockdown};
 
 /// D-Bus interface impl. One instance per [`super::serve`] call, held by the zbus `ObjectServer` for the connection's lifetime.
+#[cfg(target_os = "linux")]
 pub struct FileChooserBackend {
     ctx: PortalContext,
 }
 
+#[cfg(target_os = "linux")]
 impl FileChooserBackend {
     pub fn new(ctx: PortalContext) -> Self {
         Self { ctx }
@@ -50,6 +64,7 @@ impl FileChooserBackend {
 }
 
 #[interface(name = "org.freedesktop.impl.portal.FileChooser")]
+#[cfg(target_os = "linux")]
 impl FileChooserBackend {
     /// `OpenFile` — request one or more existing files.
     #[allow(
@@ -156,6 +171,7 @@ impl FileChooserBackend {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl FileChooserBackend {
     /// Raise the dialog, and turn what the user picked into both a grant and a response.
     ///
@@ -194,6 +210,7 @@ impl FileChooserBackend {
 ///
 /// A malformed entry is skipped rather than failing the call — filters
 /// are a display convenience, and refusing to open a dialog over one bad filter would turn a cosmetic problem into an unusable Open menu.
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn filters_from_options(
     options: &HashMap<String, OwnedValue>,
 ) -> Vec<super::PickerFilter> {
@@ -209,11 +226,13 @@ pub(super) fn filters_from_options(
         .collect()
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     let v = options.get(key)?.try_clone().ok()?;
     bool::try_from(v).ok()
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     let v = options.get(key)?.try_clone().ok()?;
     String::try_from(v).ok().filter(|s| !s.is_empty())
@@ -225,6 +244,7 @@ fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String
 /// `response_code` follows the freedesktop.org Request convention: 0 =
 /// OK (with results), 1 = user cancelled, 2 = other failure. `None`
 /// (dialog dismissed without picking) is treated as cancel.
+#[cfg(any(test, target_os = "linux"))]
 pub(super) fn paths_to_open_response(
     paths: Option<Vec<PathBuf>>,
     save: bool,
@@ -255,6 +275,7 @@ pub(super) fn paths_to_open_response(
 
 /// Encode an absolute Linux path as an RFC 8089 file URI without forcing
 /// arbitrary filesystem bytes through lossy UTF-8 conversion.
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
     if !path.is_absolute() {
         return None;
@@ -273,15 +294,19 @@ pub(crate) fn file_uri(path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::portal::{
         CallerMap, FilePickerSpawnerHandle, GrantStoreHandle, MockFilePickerSpawner,
         MockScreenCastProvisioner, PromptQueueHandle, PromptResolver,
         ScreenCastStreamProvisionerHandle,
     };
+    #[cfg(target_os = "linux")]
     use crate::shell::state::{Workspace, WorkspaceId};
 
+    #[cfg(target_os = "linux")]
     use std::sync::Arc;
 
+    #[cfg(target_os = "linux")]
     fn empty_ws(id: u64) -> Workspace {
         Workspace::test_default(WorkspaceId(id), "fc")
     }
@@ -348,6 +373,7 @@ mod tests {
     /// Wires a `MockFilePickerSpawner` returning `/tmp/test.txt`, calls the
     /// backend's response builder, and asserts the response contains `file:///tmp/test.txt`.
     #[test]
+    #[cfg(target_os = "linux")]
     fn open_file_returns_user_selected_uri() {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(33));
         let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
@@ -394,6 +420,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn a_pick_is_left_to_the_document_portal_and_not_replicated_to_peers() {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(36));
         let picked = PathBuf::from("/tmp/only-this-one.txt");
@@ -452,6 +479,7 @@ mod tests {
         reason = "the read guard protects `ws`, which the closure below needs through the \
                   block's final `.count()` — already dropped at the earliest possible point"
     )]
+    #[cfg(target_os = "linux")]
     fn a_cancelled_dialog_grants_nothing() {
         use crate::shell::state::Capability;
 
@@ -511,6 +539,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn open_file_with_cancelled_spawner_returns_response_one() {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(34));
         let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
@@ -546,6 +575,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn save_responses_are_writable_and_open_responses_are_not() {
         for (save, mode, expect_write) in [
             (false, FsMode::Read, false),

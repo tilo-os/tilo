@@ -208,7 +208,7 @@ type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<Strin
 /// local app control, while this one only paints a room-scoped cue remotely.
 type FollowPresenceBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
 
-pub(crate) struct CaptureMirrorHandoffLayer {
+pub struct CaptureMirrorHandoffLayer {
     pub rgba: std::sync::Arc<[u8]>,
     pub width: u32,
     pub height: u32,
@@ -1440,7 +1440,7 @@ fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
 fn window_is_still_starting(tile: &crate::shell::state::TileContent) -> bool {
     match tile {
         crate::shell::state::TileContent::Foreign { surface_id, .. } => {
-            crate::compositor::foreign::store().frame_seq(*surface_id) == 0
+            crate::shell::foreign::store().frame_seq(*surface_id) == 0
         }
         _ => false,
     }
@@ -2163,7 +2163,7 @@ impl ShellOverlayHost {
         clippy::too_many_arguments,
         reason = "capture payload geometry and handoff metadata form one lifecycle operation"
     )]
-    pub(crate) fn upsert_capture_mirror(
+    pub fn upsert_capture_mirror(
         &mut self,
         id: &str,
         title: &str,
@@ -2198,7 +2198,7 @@ impl ShellOverlayHost {
         clippy::too_many_arguments,
         reason = "pinned capture creation carries the immutable artifact and its geometry"
     )]
-    pub(crate) fn insert_pinned_capture(
+    pub fn insert_pinned_capture(
         &mut self,
         id: &str,
         title: &str,
@@ -3198,12 +3198,18 @@ impl ShellOverlayHost {
         let Some(tile) = tile else {
             return false;
         };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: same row ownership invariant as `mount_peer_stream`.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
             for group in &mut row.groups {
                 if let Some(host) = group.host_for_tab_mut(tab_id) {
-                    host.replace_content(crate::shell::to_ui_tile(&tile));
+                    host.replace_content(crate::shell::to_ui_tile_with_inputs(
+                        &tile,
+                        &chrome.borrow().hosted_inputs,
+                    ));
                     return true;
                 }
             }
@@ -3327,7 +3333,11 @@ impl ShellOverlayHost {
                 // existing rows keep their host state.
                 for (idx, g) in strip.window_groups.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
-                        let mut fresh = crate::shell::to_ui_window_group(g, &records);
+                        let mut fresh = crate::shell::to_ui_window_group_with_inputs(
+                            g,
+                            &records,
+                            &chrome.borrow().hosted_inputs,
+                        );
                         // Same spawn fade the row's own splice paths use,
                         // so an opened window arrives the same way.
                         fresh.start_spawn_animation();
@@ -3375,7 +3385,10 @@ impl ShellOverlayHost {
                                 && !window_is_still_starting(&tab.tile)
                                 && let Some(host) = live.host_for_tab_mut(tab.id)
                             {
-                                host.replace_content(crate::shell::to_ui_tile(&tab.tile));
+                                host.replace_content(crate::shell::to_ui_tile_with_inputs(
+                                    &tab.tile,
+                                    &chrome.borrow().hosted_inputs,
+                                ));
                                 tab_tiles.insert(tab.id, signature);
                                 any_change = true;
                             }
@@ -3389,7 +3402,10 @@ impl ShellOverlayHost {
                         // Gets its own document too, same as any tab
                         // present at boot.
                         let mut host =
-                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile));
+                            ui::widget::TileHost::new(crate::shell::to_ui_tile_with_inputs(
+                                &tab.tile,
+                                &chrome.borrow().hosted_inputs,
+                            ));
                         host.bind_record(
                             records.clone(),
                             crate::shell::tab_documents::scratch_tab_record(tab.id),
@@ -3769,7 +3785,7 @@ impl ShellOverlayHost {
         };
         let removed = {
             let mut tree = st.tree_mut();
-            crate::compositor::tab_binding::remove_tab(&mut tree, tab_id)
+            crate::shell::tab_binding::remove_tab(&mut tree, tab_id)
         };
         if !removed {
             return false;
@@ -4381,7 +4397,7 @@ impl ShellOverlayHost {
                 .filter_map(|t| match &t.tile {
                     crate::shell::state::TileContent::Foreign { app_id, surface_id }
                         if {
-                            let store = crate::compositor::foreign::store();
+                            let store = crate::shell::foreign::store();
                             store.is_presented(*surface_id) || store.is_opening(*surface_id)
                         } =>
                     {
@@ -4673,7 +4689,7 @@ impl ShellOverlayHost {
         let target = {
             let st = chrome.borrow();
             let tree = st.tree();
-            crate::compositor::client_input::step_active_window(&tree, steps)
+            crate::shell::input_policy::step_active_window(&tree, steps)
         };
         let Some((strip, group, tab)) = target else {
             return false;
@@ -4694,7 +4710,7 @@ impl ShellOverlayHost {
         let target = {
             let st = chrome.borrow();
             let tree = st.tree();
-            crate::compositor::client_input::cycle_active_window(&tree, direction)
+            crate::shell::input_policy::cycle_active_window(&tree, direction)
         };
         let Some((strip, group, tab)) = target else {
             return false;
@@ -16917,6 +16933,13 @@ mod palette_dispatch_tests {
     use ui::widget::Container;
 
     fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
+        // Unit fixtures share the real in-process selection owner, never the
+        // operator's OS clipboard or another nextest process's selection.
+        static CLIPBOARD: std::sync::OnceLock<crate::compositor::selection::SharedSelection> =
+            std::sync::OnceLock::new();
+        crate::compositor::selection::install_host_clipboard(
+            CLIPBOARD.get_or_init(Default::default).clone(),
+        );
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
@@ -17076,7 +17099,7 @@ mod palette_dispatch_tests {
         let package_id = "dev.qos.exit-before-window-fixture";
         crate::shell::launcher::set_pending_placement(
             package_id,
-            crate::compositor::tab_binding::Placement::NewGroup,
+            crate::shell::tab_binding::Placement::NewGroup,
         );
         let notice = chrome.borrow_mut().push_notification_full(
             crate::shell::notification::Notification::new("Opening Fixture", "Loading…")
@@ -17106,7 +17129,7 @@ mod palette_dispatch_tests {
         );
         assert_eq!(
             crate::shell::launcher::placement_for_toplevel(package_id, 99_001),
-            Some(crate::compositor::tab_binding::Placement::NewGroup),
+            Some(crate::shell::tab_binding::Placement::NewGroup),
             "a daemonised GUI child must still inherit the requested placement"
         );
         crate::shell::launcher::clear_pending_placements();
@@ -17587,7 +17610,9 @@ mod palette_dispatch_tests {
         std::fs::write(
             &launcher,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}.pending\n/bin/mv {}.pending {}\n",
+                launch_log.display(),
+                launch_log.display(),
                 launch_log.display()
             ),
         )
@@ -17604,6 +17629,7 @@ mod palette_dispatch_tests {
         }
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
+        crate::shell::launcher::set_test_execution_program(Some(launcher.clone()));
         crate::shell::launcher::set_wayland_socket_path(Some(tmp.path().join("wayland-0")));
 
         let (mut host, chrome) = host_with_chrome();
@@ -17632,6 +17658,7 @@ mod palette_dispatch_tests {
             std::env::remove_var("QOS_APPS_DATA_DIR");
             std::env::remove_var("QOS_LAUNCHER_BIN");
         }
+        crate::shell::launcher::set_test_execution_program(None);
         crate::shell::launcher::set_wayland_socket_path(None);
         crate::shell::launcher::invalidate_app_cache();
         crate::shell::launcher::clear_pending_placements();
@@ -18137,12 +18164,12 @@ mod palette_dispatch_tests {
         // Adoption isn't the end of the wait — for the first moments the
         // tab holds nothing visible, and a blink-fast app must not be
         // preceded by an indicator flashing on and off.
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         store.forget(SURFACE);
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            crate::compositor::tab_binding::adopt_toplevel(
+            crate::shell::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
                 Some("dev.qos.retirefixture".to_string()),
@@ -18168,7 +18195,7 @@ mod palette_dispatch_tests {
         // stands down rather than repeating it.
         store.backdate_first_seen(
             SURFACE,
-            crate::compositor::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
+            crate::shell::foreign::OPENING_DELAY + std::time::Duration::from_millis(50),
         );
         assert!(
             h.retire_notices_for_opened_windows(),
@@ -18203,12 +18230,12 @@ mod palette_dispatch_tests {
         };
         crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
 
-        let store = crate::compositor::foreign::store();
+        let store = crate::shell::foreign::store();
         store.forget(SURFACE);
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
-            crate::compositor::tab_binding::adopt_toplevel(
+            crate::shell::tab_binding::adopt_toplevel(
                 &mut tree,
                 SURFACE,
                 Some("dev.qos.retirefixture".to_string()),
@@ -20739,7 +20766,7 @@ mod tests {
         let mut h = build_harness_with_host(host, chrome);
         let first = {
             let state = h.chrome.borrow();
-            crate::compositor::client_input::cycle_active_window(&state.tree(), 1)
+            crate::shell::input_policy::cycle_active_window(&state.tree(), 1)
                 .expect("the demo strip contains another window")
         };
         let alt = Modifiers::from(ModifiersState::ALT);
@@ -20758,7 +20785,7 @@ mod tests {
 
         let previous = {
             let state = h.chrome.borrow();
-            crate::compositor::client_input::cycle_active_window(&state.tree(), -1)
+            crate::shell::input_policy::cycle_active_window(&state.tree(), -1)
                 .expect("the forward step can be reversed")
         };
         let alt_shift = Modifiers::from(ModifiersState::ALT | ModifiersState::SHIFT);
@@ -21853,7 +21880,7 @@ mod tests {
         crate::shell::launcher::clear_pending_placements();
         crate::shell::launcher::set_pending_placement(
             app_id,
-            crate::compositor::tab_binding::Placement::NewGroup,
+            crate::shell::tab_binding::Placement::NewGroup,
         );
         let target = ui::HistoryResourceTarget {
             app_id: Some(app_id.to_string()),
