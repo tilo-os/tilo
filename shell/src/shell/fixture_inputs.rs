@@ -306,18 +306,7 @@ mod tests {
                 .borrow_mut()
                 .reference(home, &record.id, &record.kind)
         );
-        frame.host_mut().set_palette_query("tab");
-        frame
-            .host_mut()
-            .refresh_search_results_for_shots(&mut document, &automerge::ROOT);
-        assert!(
-            frame
-                .host()
-                .palette_rows_detailed()
-                .iter()
-                .any(|(id, _, _)| id == record.id.as_str()),
-            "actual Records provider returns indexed tab"
-        );
+        assert_records_query(&mut frame, &mut document, &record.id, &record.kind);
         rebuild(&mut frame, &mut document);
         assert_eq!(frame.chrome().active_local_user(), "shell-fixture");
         assert_eq!(
@@ -346,6 +335,40 @@ mod tests {
             vec!["notes", "editor", "records"]
         );
         assert_eq!(guard.attempts(), 0);
+    }
+
+    fn assert_records_query(
+        frame: &mut FrameBuilder,
+        document: &mut automerge::AutoCommit,
+        record_id: &ui::record::RecordId,
+        record_kind: &ui::record::RecordKind,
+    ) {
+        frame.host_mut().set_palette_query("tab");
+        frame
+            .host_mut()
+            .refresh_search_results_for_shots(document, &automerge::ROOT);
+        let catalog = frame.host().action_catalog(
+            "tab",
+            &frame.chrome(),
+            document,
+            &automerge::ROOT,
+            &crate::shell::search::action_api::AllVisible,
+        );
+        assert!(
+            catalog.contains(&crate::shell::search::action_api::ResourceRef::new(
+                "records",
+                record_id.as_str(),
+            )),
+            "actual Records provider returns indexed tab"
+        );
+        let title = crate::shell::room_records::record_title(record_id, record_kind);
+        assert!(
+            frame
+                .host()
+                .palette_rows_detailed()
+                .iter()
+                .any(|(_, label, _)| label == &title)
+        );
     }
 
     fn assert_rebuilt_files(
