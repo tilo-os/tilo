@@ -226,6 +226,22 @@ struct CompletionTest {
     destroy_at_marker: bool,
 }
 
+#[cfg(test)]
+impl CompletionTest {
+    fn now(&self) -> Instant {
+        self.start
+            .checked_add(self.elapsed)
+            .expect("injected clock fits Instant")
+    }
+
+    fn advance(&mut self, elapsed: Duration) {
+        self.elapsed = self
+            .elapsed
+            .checked_add(elapsed)
+            .expect("bounded injected elapsed time");
+    }
+}
+
 #[derive(Clone, Copy)]
 enum FrameOutput<'a> {
     GpuOnly,
@@ -489,7 +505,7 @@ impl RetainedGpuTarget {
     fn now(&self) -> Instant {
         #[cfg(test)]
         if let Some(clock) = &self.completion_test {
-            return clock.start + clock.elapsed;
+            return clock.now();
         }
         Instant::now()
     }
@@ -612,8 +628,8 @@ impl RetainedGpuTarget {
             let loss = self.loss.clone();
             #[cfg(test)]
             let gate_now = self.completion_test.as_mut().map(|clock| {
-                clock.elapsed += clock.encode_elapsed;
-                clock.start + clock.elapsed
+                clock.advance(clock.encode_elapsed);
+                clock.now()
             });
             let before_submit = || {
                 #[cfg(test)]
@@ -845,7 +861,7 @@ impl RetainedGpuTarget {
             #[cfg(test)]
             let result = if let Some(test) = self.completion_test.as_mut() {
                 test.counter_remaining
-                    .push(deadline.saturating_duration_since(test.start + test.elapsed));
+                    .push(deadline.saturating_duration_since(test.now()));
                 test.counters.pop_front().unwrap_or(result)
             } else {
                 result
@@ -868,9 +884,10 @@ impl RetainedGpuTarget {
                         .min(deadline.saturating_duration_since(self.now()));
                     #[cfg(test)]
                     if let Some(test) = self.completion_test.as_mut() {
-                        test.elapsed += test
-                            .pending_elapsed
-                            .min(deadline.saturating_duration_since(test.start + test.elapsed));
+                        test.advance(
+                            test.pending_elapsed
+                                .min(deadline.saturating_duration_since(test.now())),
+                        );
                         continue;
                     }
                     std::thread::sleep(delay);
@@ -899,11 +916,13 @@ impl RetainedGpuTarget {
                     }
                 });
             }
-            test.elapsed += match phase {
-                WaitPhase::Fence | WaitPhase::Marker => test.fence_elapsed,
-                WaitPhase::MapCallback => test.callback_elapsed,
-            }
-            .min(requested);
+            test.advance(
+                match phase {
+                    WaitPhase::Fence | WaitPhase::Marker => test.fence_elapsed,
+                    WaitPhase::MapCallback => test.callback_elapsed,
+                }
+                .min(requested),
+            );
         }
         Ok(())
     }
@@ -1518,6 +1537,7 @@ impl VelloDrmBridge {
         sparse_dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<Option<vello::SparseRenderStats>, BridgeError> {
+        self.target.check_health()?;
         self.last_phase_timing = None;
         self.invalidate_retained();
         self.reset_render_attempts();
@@ -1560,6 +1580,7 @@ impl VelloDrmBridge {
         sparse_dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<Option<SharedCoarseGeometryDiagnostic>, BridgeError> {
+        self.target.check_health()?;
         self.last_phase_timing = None;
         self.invalidate_retained();
         self.reset_render_attempts();
@@ -1602,6 +1623,7 @@ impl VelloDrmBridge {
         right_dst: &mut [u8],
         dst_pitch: usize,
     ) -> Result<Option<SegmentOrderReplayDiagnostic>, BridgeError> {
+        self.target.check_health()?;
         self.last_phase_timing = None;
         self.invalidate_retained();
         self.reset_render_attempts();
@@ -3773,7 +3795,11 @@ mod tests {
             .expect("explicit post-return pixel oracle");
         let mut result = Vec::new();
         for row in mapped.chunks(stride as usize).take(target.size.1 as usize) {
-            result.extend_from_slice(&row[..target.size.0 as usize * 4]);
+            result.extend_from_slice(
+                &row[..(target.size.0 as usize)
+                    .checked_mul(4)
+                    .expect("target row fits usize")],
+            );
         }
         drop(mapped);
         buffer.unmap();
@@ -3790,8 +3816,16 @@ mod tests {
             &vello::kurbo::Rect::new(
                 f64::from(rect.x),
                 f64::from(rect.y),
-                f64::from(rect.x + rect.width),
-                f64::from(rect.y + rect.height),
+                f64::from(
+                    rect.x
+                        .checked_add(rect.width)
+                        .expect("test rectangle x extent"),
+                ),
+                f64::from(
+                    rect.y
+                        .checked_add(rect.height)
+                        .expect("test rectangle y extent"),
+                ),
             ),
         );
         scene
@@ -4065,7 +4099,10 @@ mod tests {
         assert_eq!(requested, Duration::from_secs(12));
         assert_eq!(exhausted.last_render_attempts(), 4);
         assert!(exhausted.target.completed_view().is_none());
+    }
 
+    #[test]
+    fn gpu_target_linux_phase_failures_abort_without_recovery() {
         // Every individual Linux phase failure aborts immediately; no completed overflow may
         // turn a failed fence/callback/counter observation into another attempt.
         for phase in [Some(WaitPhase::Fence), Some(WaitPhase::MapCallback), None] {
@@ -4076,7 +4113,7 @@ mod tests {
                 test.counters = (0..8).map(|_| Ok(vello::BumpBudgetPoll::Pending)).collect();
             }
             bridge.target.completion_test = Some(test);
-            let mut bytes = vec![0xAB; actual.len()];
+            let mut bytes = vec![0xAB; 128 * 128 * 4];
             let result = bridge.paint_damage_into_xrgb8888(
                 &Scene::new(),
                 version(1, None, None),
@@ -4378,6 +4415,124 @@ mod tests {
         );
         assert!(target.take_gpu_timestamp_sample().is_none());
         assert!(target.completed_view().is_none());
+    }
+
+    fn assert_poisoned_diagnostic_rejected(
+        diagnostic: impl Fn(
+            &mut VelloDrmBridge,
+            &Scene,
+            &mut [u8],
+            &mut [u8],
+        ) -> Result<(), BridgeError>,
+    ) {
+        let mut bridge = required_bridge(128, 128);
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Fence);
+        bridge.target.completion_test = Some(test);
+        let mut left = vec![0xA5; 128 * 128 * 4];
+        let mut right = left.clone();
+        let scene = rect_scene(128, 128, Color::WHITE);
+        assert!(matches!(
+            bridge.paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut left, 512),
+            Err(BridgeError::Map(_))
+        ));
+        assert!(bridge.target.poisoned);
+        let attempts = bridge.last_render_attempts();
+        let packed = bridge.diagnostic_packed_scene().to_vec();
+        let texture = bridge.target.texture.clone();
+        let identity = bridge.xrgb_history_identity(512, 1);
+        assert!(
+            matches!(
+                diagnostic(&mut bridge, &Scene::new(), &mut left, &mut right),
+                Err(BridgeError::RecreateRequired)
+            ),
+            "diagnostic must reject before reusing the poisoned renderer"
+        );
+        assert_eq!(bridge.last_render_attempts(), attempts);
+        assert_eq!(bridge.diagnostic_packed_scene(), packed);
+        assert_eq!(bridge.target.texture, texture);
+        assert_eq!(bridge.xrgb_history_identity(512, 1), identity);
+        assert!(bridge.target.completed_view().is_none());
+        assert!(!bridge.retained_staging_valid);
+        assert!(left.iter().chain(&right).all(|byte| *byte == 0xA5));
+        // The poison oracle above deliberately leaves a submitted fence unresolved. Drain
+        // that fixture before testing independently observed device loss; production diagnostics
+        // themselves do not poll, wait, or reuse the poisoned renderer.
+        bridge
+            .target
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(Duration::from_secs(1)),
+            })
+            .expect("bounded test-only drain before device destruction");
+        bridge.target.device.destroy();
+        let _ = bridge.target.device.poll(wgpu::PollType::Poll);
+        assert!(
+            matches!(
+                diagnostic(&mut bridge, &scene, &mut left, &mut right),
+                Err(BridgeError::DeviceLost(_))
+            ),
+            "actual device loss takes precedence over reconstruction"
+        );
+    }
+
+    #[test]
+    fn gpu_target_poisoned_shared_coarse_diagnostic_rejects_before_encoding() {
+        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+            bridge
+                .shared_coarse_fine_diagnostic_into_xrgb8888(
+                    scene,
+                    &[vello::FineDamageRect {
+                        x: 16,
+                        y: 16,
+                        width: 16,
+                        height: 16,
+                    }],
+                    left,
+                    right,
+                    512,
+                )
+                .map(|_| ())
+        });
+    }
+
+    #[test]
+    fn gpu_target_poisoned_geometry_diagnostic_rejects_before_encoding() {
+        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+            bridge
+                .shared_coarse_fine_geometry_diagnostic_into_xrgb8888(
+                    scene,
+                    &[vello::FineDamageRect {
+                        x: 16,
+                        y: 16,
+                        width: 16,
+                        height: 16,
+                    }],
+                    left,
+                    right,
+                    512,
+                )
+                .map(|_| ())
+        });
+    }
+
+    #[test]
+    fn gpu_target_poisoned_segment_replay_rejects_before_encoding() {
+        assert_poisoned_diagnostic_rejected(|bridge, scene, left, right| {
+            let input = vello::SegmentOrderReplayInput {
+                tile: 0,
+                logical_command: 0,
+                size_and_rule: 98,
+                backdrop: 0,
+                expected: [[0; 5]; 49],
+                left: [[0; 5]; 49],
+                right: [[0; 5]; 49],
+            };
+            bridge
+                .segment_order_replay_into_xrgb8888(scene, &input, left, right, 512)
+                .map(|_| ())
+        });
     }
 
     const NATIVE_BENCHMARK_ACTION_TARGETS: [&str; 2] =
