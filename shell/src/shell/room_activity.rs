@@ -535,10 +535,6 @@ impl RoomActivityPane {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the pane constructor wires mutually dependent retained UI controllers and their one-shot intents in a single ownership transfer"
-    )]
     pub fn new() -> Self {
         Self::from_local_user(None)
     }
@@ -1363,32 +1359,27 @@ impl RoomActivityPane {
         // id; a peer's actor stays unresolved until collaboration says who.
         let actor = tree.doc.get_actor().to_hex_string();
         if !self.source.authors().is_registered(&actor) {
-            if let Some(local) = &self.explicit_local_user {
+            let principal = if let Some(local) = &self.explicit_local_user {
+                Some(local.clone())
+            } else {
+                #[cfg(test)]
+                crate::shell::test_support::ambient_start("history author identity");
+                if self.source.authors_mut().register_local_identity(&actor) {
+                    None
+                } else {
+                    let me = crate::shell::state::local_user_id();
+                    (!me.is_empty()).then_some(me)
+                }
+            };
+            if let Some(principal) = principal {
                 self.source.authors_mut().register(
                     &actor,
                     ui::widget::HistoryAuthor::new(
-                        local.clone(),
+                        principal,
                         ui::history_source::stable_hue(&actor),
                         ui::history_source::short_id(&actor),
                     ),
                 );
-            } else {
-                #[cfg(test)]
-                crate::shell::test_support::ambient_start("history author identity");
-                let registered = self.source.authors_mut().register_local_identity(&actor);
-                if !registered {
-                    let me = crate::shell::state::local_user_id();
-                    if !me.is_empty() {
-                        self.source.authors_mut().register(
-                            &actor,
-                            ui::widget::HistoryAuthor::new(
-                                me,
-                                ui::history_source::stable_hue(&actor),
-                                ui::history_source::short_id(&actor),
-                            ),
-                        );
-                    }
-                }
             }
         }
 
