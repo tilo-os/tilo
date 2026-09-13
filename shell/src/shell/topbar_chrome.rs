@@ -252,6 +252,7 @@ struct StatusKey {
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
 pub struct TopBarChrome {
+    explicit_local_user: Option<String>,
     rect: Rect,
     workspace_name: String,
     workspace_index: usize,
@@ -376,7 +377,16 @@ impl TopBarChrome {
     }
 
     pub fn from_tree(tree: &WorkspaceTree) -> Self {
+        Self::from_tree_with_identity(tree, None)
+    }
+
+    pub(crate) fn from_tree_with_local_user(tree: &WorkspaceTree, local: String) -> Self {
+        Self::from_tree_with_identity(tree, Some(local))
+    }
+
+    fn from_tree_with_identity(tree: &WorkspaceTree, explicit_local_user: Option<String>) -> Self {
         let mut this = Self {
+            explicit_local_user,
             rect: Rect::ZERO,
             workspace_name: String::new(),
             workspace_index: 0,
@@ -527,7 +537,10 @@ impl TopBarChrome {
         let peer_count = crate::shell::state::active_workspace_peer_count(tree);
         // Settled over the whole room, so a peer's avatar matches the
         // colour their cursor is drawn in elsewhere on the desktop.
-        let colors = crate::shell::state::roster_colors(roster);
+        let colors = self.explicit_local_user.as_deref().map_or_else(
+            || crate::shell::state::roster_colors(roster),
+            |local| crate::shell::state::roster_colors_with_local_user(roster, local),
+        );
         for c in roster.iter().filter(present).take(3) {
             let Some(ch) = c.name.chars().next() else {
                 continue;

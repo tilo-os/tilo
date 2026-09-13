@@ -1215,8 +1215,13 @@ pub(crate) fn build_workspace_root_with_scene_parts(
             .unwrap_or(0),
     ));
 
-    let mut topbar =
-        Box::new(topbar_chrome::TopBarChrome::from_tree(tree).with_chrome(chrome.clone()));
+    let topbar = match chrome.borrow().explicit_local_user() {
+        Some(local) => {
+            topbar_chrome::TopBarChrome::from_tree_with_local_user(tree, local.to_owned())
+        }
+        None => topbar_chrome::TopBarChrome::from_tree(tree),
+    };
+    let mut topbar = Box::new(topbar.with_chrome(chrome.clone()));
     let topbar_ptr = &raw mut *topbar;
 
     let mut content_col = Column::new()

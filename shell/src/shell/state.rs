@@ -7433,6 +7433,13 @@ fn public_key_user_id(key: collab_types::Ed25519PublicKey) -> UserId {
 /// local user is included in the settled set (never the avatar stack) so
 /// every host computes the same one.
 pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
+    roster_colors_with_local_user(roster, &local_user_id())
+}
+
+pub(crate) fn roster_colors_with_local_user(
+    roster: &[Collaborator],
+    local: &str,
+) -> HashMap<String, (u8, u8, u8)> {
     let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
     for c in roster {
         if let Some(rgb) = c
@@ -7443,14 +7450,13 @@ pub fn roster_colors(roster: &[Collaborator]) -> HashMap<String, (u8, u8, u8)> {
             explicit.insert(c.id.clone(), rgb);
         }
     }
-    let local = local_user_id();
     let mut ids: Vec<&str> = roster
         .iter()
         .filter(|c| !explicit.contains_key(&c.id))
         .map(|c| c.id.as_str())
         .collect();
-    if !explicit.contains_key(&local) {
-        ids.push(local.as_str());
+    if !explicit.contains_key(local) {
+        ids.push(local);
     }
     let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
     let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
