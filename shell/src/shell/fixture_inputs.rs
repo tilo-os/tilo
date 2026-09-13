@@ -265,7 +265,6 @@ mod tests {
     #[test]
     fn fixture_rebuild_keeps_explicit_actor_records_and_services() {
         use crate::shell::{crdt_text::CrdtTextBody, notes_app::BODY_KEY, tab_documents::tab_body};
-        use ui::widget::{TileContent, Widget};
         let parent = tempfile::tempdir().unwrap();
         let inputs = inputs(parent.path());
         let child = inputs.hosted.files.as_ref().unwrap().initial_dir.clone();
@@ -341,10 +340,26 @@ mod tests {
             tab_body(frame.chrome().records(), note, BODY_KEY).as_deref(),
             Some("Retained fixture note")
         );
+        assert_rebuilt_files(&mut frame, strip, files, &child, &mut document);
+        assert_eq!(
+            frame.host().fixture_provider_ids(),
+            vec!["notes", "editor", "records"]
+        );
+        assert_eq!(guard.attempts(), 0);
+    }
+
+    fn assert_rebuilt_files(
+        frame: &mut FrameBuilder,
+        strip: crate::shell::state::StripId,
+        files_tab: u64,
+        child: &std::path::Path,
+        document: &mut automerge::AutoCommit,
+    ) {
+        use ui::widget::{TileContent, Widget};
         let group = frame.host_mut().group_at_for_tests(strip, 0).unwrap();
-        assert!(group.set_active_tab(files));
+        assert!(group.set_active_tab(files_tab));
         let host = group.active_host_mut().unwrap();
-        host.sync(&mut document, &automerge::ROOT);
+        host.sync(document, &automerge::ROOT);
         let TileContent::App(app) = host.content_mut() else {
             panic!("actual Files app");
         };
@@ -362,11 +377,6 @@ mod tests {
             .open_entry(0, &mut file_explorer::files_app::SystemRunner)
             .unwrap_err();
         assert_eq!(error.to_string(), "Document opening is unavailable");
-        assert_eq!(
-            frame.host().fixture_provider_ids(),
-            vec!["notes", "editor", "records"]
-        );
-        assert_eq!(guard.attempts(), 0);
     }
 
     #[test]
