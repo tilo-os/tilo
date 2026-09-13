@@ -437,6 +437,8 @@ pub struct App {
     state: State,
     root_widget: Box<dyn Widget>,
     text_renderer: TextRenderer,
+    palette_text_renderer: fn() -> TextRenderer,
+    palette_field: fn() -> crate::widget::SearchField,
     taffy: TaffyTree<()>,
     root_node: Option<NodeId>,
     node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
@@ -657,6 +659,7 @@ struct AppConstructionInputs {
     collab_manager: CollaborationManager,
     configured_theme: fn() -> Theme,
     text_renderer: fn() -> TextRenderer,
+    palette_field: fn() -> crate::widget::SearchField,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<std::time::SystemTime>,
     local_author: fn() -> crate::permissions::UserId,
@@ -679,6 +682,7 @@ impl AppConstructionInputs {
             collab_manager,
             configured_theme: Theme::configured,
             text_renderer: TextRenderer::new,
+            palette_field: crate::widget::SearchField::new,
             debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             theme_store_stamp: || {
                 settings_store::settings_path()
@@ -714,6 +718,7 @@ impl AppConstructionInputs {
             collab_manager: CollaborationManager::disabled(),
             configured_theme: Theme::dark,
             text_renderer: crate::font_catalog::fixture_renderer,
+            palette_field: || crate::widget::SearchField::with_language("en_US"),
             debug_mode: || false,
             theme_store_stamp: || None,
             local_author: || crate::permissions::UserId("fixture-user".into()),
@@ -981,6 +986,8 @@ impl App {
             state,
             root_widget,
             text_renderer: (inputs.text_renderer)(),
+            palette_text_renderer: inputs.text_renderer,
+            palette_field: inputs.palette_field,
             taffy: TaffyTree::new(),
             root_node: None,
             node_map: std::collections::HashMap::new(),
@@ -3552,7 +3559,10 @@ impl App {
         )
         .unwrap_or_default();
         let providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref());
-        let mut palette = crate::action_palette::ActionPalette::new();
+        let mut palette = crate::action_palette::ActionPalette::with_inputs(
+            (self.palette_text_renderer)(),
+            self.palette_field,
+        );
         palette.load_open_resources(&resources);
         palette.load_bound_resources(bound);
         palette.set_providers(providers);
@@ -11112,7 +11122,7 @@ mod action_palette_tests {
         );
     }
 
-    fn synth_enter() -> WindowEvent {
+    pub(super) fn synth_enter() -> WindowEvent {
         let event = KeyEvent::synthetic(
             winit::event::RawKeyEvent {
                 physical_key: PhysicalKey::Unidentified(
@@ -13389,7 +13399,9 @@ mod bound_component_tests {
         }
     }
 
-    struct LazyProbe;
+    struct LazyProbe {
+        strict: bool,
+    }
     impl crate::search::SearchProvider for LazyProbe {
         fn name(&self) -> &'static str {
             "Probe lazy"
@@ -13399,6 +13411,24 @@ mod bound_component_tests {
         }
         fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
             match query {
+                "sealed" => vec![crate::search::SearchResult::for_action(
+                    "Probe",
+                    if self.strict {
+                        "Allowed sealed sibling title"
+                    } else {
+                        "Hidden sealed write title"
+                    },
+                    qos_actions::ActionAddress::new("bound:sealed", "apply"),
+                )],
+                "sealedopaque" => vec![crate::search::SearchResult::new(
+                    "Probe",
+                    if self.strict {
+                        "Allowed sealedopaque title"
+                    } else {
+                        "Hidden sealedopaque title"
+                    },
+                    "opaque",
+                )],
                 "lazy" => vec![crate::search::SearchResult::for_action(
                     "Probe",
                     "Lazy",
@@ -13414,6 +13444,20 @@ mod bound_component_tests {
             &self,
             address: &qos_actions::ActionAddress,
         ) -> Option<qos_actions::Resource> {
+            if address.resource == "bound:sealed" && address.action == "apply" {
+                return Some(
+                    qos_actions::Resource::new("bound:sealed", "probe", "Sealed").with_action(
+                        qos_actions::ActionSpec::immediate(
+                            "apply",
+                            "Apply",
+                            "bound.apply",
+                            &FollowUp,
+                        )
+                        .unwrap()
+                        .requiring(qos_actions::PermissionRequirement::Write),
+                    ),
+                );
+            }
             (address.resource == "bound:lazy" && address.action == "view").then(|| {
                 qos_actions::Resource::new("bound:lazy", "probe", "Lazy").with_action(
                     qos_actions::ActionSpec::operation(
@@ -13443,7 +13487,9 @@ mod bound_component_tests {
         }
 
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-            vec![Box::new(LazyProbe)]
+            vec![Box::new(LazyProbe {
+                strict: self.strict,
+            })]
         }
         fn activate_search_result(
             &mut self,
@@ -13952,6 +13998,9 @@ mod bound_component_tests {
             Self::with_same_record(false)
         }
         fn with_same_record(shared: bool) -> Self {
+            Self::with_authority(shared, false)
+        }
+        fn with_authority(shared: bool, separate: bool) -> Self {
             let temp = tempfile::tempdir().unwrap();
             let mut owners = crate::record::RecordOwners::new(temp.path().into());
             let records = owners
@@ -14011,7 +14060,11 @@ mod bound_component_tests {
                     views.clone(),
                     "D".into(),
                     instance,
-                    permissions.clone(),
+                    if separate && instance == 12 {
+                        Rc::new(RefCell::new(permissions.borrow().clone()))
+                    } else {
+                        permissions.clone()
+                    },
                     crate::permissions::UserId("fixture-user".into()),
                     qos_actions::ActionContext::default(),
                     &target,
@@ -14631,6 +14684,115 @@ mod bound_component_tests {
                 assert!(doc.get(ROOT, "later").unwrap().is_none());
             })
             .unwrap();
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fresh and revoked authority share the full visible-row and activation oracle"
+    )]
+    fn task4_denied_bound_provider_rows_are_not_disclosed() {
+        for initially_allowed in [false, true] {
+            let mut fixture = ActionFixture::with_authority(false, true);
+            let denied = crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+            if !initially_allowed {
+                *fixture.permissions.borrow_mut() = denied.clone();
+            }
+            fixture.app.open_action_palette();
+            fixture
+                .app
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .set_query("sealed");
+            fixture
+                .app
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .advance_search_page();
+            if initially_allowed {
+                assert!(
+                    fixture
+                        .app
+                        .action_palette()
+                        .unwrap()
+                        .result_labels()
+                        .contains(&"Hidden sealed write title".to_owned())
+                );
+                *fixture.permissions.borrow_mut() = denied;
+                fixture.app.refresh_action_palette_resources();
+                fixture
+                    .app
+                    .action_palette
+                    .as_mut()
+                    .unwrap()
+                    .advance_search_page();
+            }
+            let labels = fixture.app.action_palette().unwrap().result_labels();
+            assert!(!labels.contains(&"Hidden sealed write title".to_owned()));
+            let allowed = labels
+                .iter()
+                .position(|label| label == "Allowed sealed sibling title")
+                .unwrap();
+            fixture
+                .app
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .set_cursor(allowed);
+            assert!(
+                fixture
+                    .app
+                    .action_palette_handle_key(&action_palette_tests::synth_enter())
+            );
+            for (index, binding) in fixture.bindings.iter().enumerate() {
+                fixture
+                    .records
+                    .read(&binding.checkout.id, |doc| {
+                        assert_eq!(doc.get(ROOT, "follow-up").unwrap().is_some(), index == 1);
+                    })
+                    .unwrap();
+            }
+            fixture.app.open_action_palette();
+            fixture
+                .app
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .set_query("sealedopaque");
+            fixture
+                .app
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .advance_search_page();
+            let labels = fixture.app.action_palette().unwrap().result_labels();
+            assert!(!labels.contains(&"Hidden sealedopaque title".to_owned()));
+            assert!(labels.contains(&"Allowed sealedopaque title".to_owned()));
+            assert!(
+                fixture
+                    .records
+                    .read(&fixture.bindings[0].checkout.id, |doc| doc
+                        .get(ROOT, "navigation")
+                        .unwrap()
+                        .is_none())
+                    .unwrap()
+            );
+            assert!(
+                fixture
+                    .app
+                    .state
+                    .doc
+                    .get(ROOT, "follow-up")
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 
     #[test]
