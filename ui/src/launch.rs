@@ -291,8 +291,19 @@ impl LaunchSpec {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchError {
+    Record(crate::record::RecordOpenError),
+    Restore(crate::view::ThawError),
+    DuplicateApplication(String),
+    UnknownApplication(String),
+    CapabilityDenied(crate::permissions::PermissionScope),
+    BindingMismatch,
+    RecoveryRequired,
+    ComponentSetup {
+        source: Box<LaunchError>,
+        record: crate::record::RecordCheckout,
+        records: crate::record::RecordStore,
+    },
     MissingValue(String),
     Duplicate(String),
     InvalidViewport(String),
@@ -309,6 +320,14 @@ pub enum LaunchError {
 impl fmt::Display for LaunchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Record(error) => write!(f, "record open failed: {error}"),
+            Self::Restore(error) => write!(f, "view restore failed: {error}"),
+            Self::DuplicateApplication(id) => write!(f, "application {id:?} is already registered"),
+            Self::UnknownApplication(id) => write!(f, "application {id:?} is not available"),
+            Self::CapabilityDenied(scope) => write!(f, "required capability denied: {scope:?}"),
+            Self::BindingMismatch => f.write_str("application binding does not match"),
+            Self::RecoveryRequired => f.write_str("legacy state requires explicit recovery"),
+            Self::ComponentSetup { source, .. } => write!(f, "application setup failed: {source}"),
             Self::MissingValue(flag) => write!(f, "{flag} requires a value"),
             Self::Duplicate(flag) => write!(f, "{flag} was supplied more than once"),
             Self::InvalidViewport(value) => write!(
@@ -339,11 +358,67 @@ impl fmt::Display for LaunchError {
     }
 }
 
-impl std::error::Error for LaunchError {}
+impl fmt::Debug for LaunchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Record(error) => f.debug_tuple("Record").field(error).finish(),
+            Self::Restore(error) => f.debug_tuple("Restore").field(error).finish(),
+            Self::CapabilityDenied(scope) => {
+                f.debug_tuple("CapabilityDenied").field(scope).finish()
+            }
+            Self::ComponentSetup { source, record, .. } => f
+                .debug_struct("ComponentSetup")
+                .field("source", source)
+                .field("record", record)
+                .finish_non_exhaustive(),
+            Self::MissingValue(value) => f.debug_tuple("MissingValue").field(value).finish(),
+            Self::Duplicate(value) => f.debug_tuple("Duplicate").field(value).finish(),
+            Self::InvalidViewport(value) => f.debug_tuple("InvalidViewport").field(value).finish(),
+            Self::InvalidTextScale(value) => {
+                f.debug_tuple("InvalidTextScale").field(value).finish()
+            }
+            Self::UnknownArgument(value) => f.debug_tuple("UnknownArgument").field(value).finish(),
+            Self::ShotsOnly(value) => f.debug_tuple("ShotsOnly").field(value).finish(),
+            Self::Scenario(value) => f.debug_tuple("Scenario").field(value).finish(),
+            Self::Operation(value) => f.debug_tuple("Operation").field(value).finish(),
+            Self::DuplicateApplication(value) => {
+                f.debug_tuple("DuplicateApplication").field(value).finish()
+            }
+            Self::UnknownApplication(value) => {
+                f.debug_tuple("UnknownApplication").field(value).finish()
+            }
+            Self::ConflictingModes => f.write_str("ConflictingModes"),
+            Self::ShotsUnsupported => f.write_str("ShotsUnsupported"),
+            Self::HeadlessUnsupported => f.write_str("HeadlessUnsupported"),
+            Self::BindingMismatch => f.write_str("BindingMismatch"),
+            Self::RecoveryRequired => f.write_str("RecoveryRequired"),
+        }
+    }
+}
+
+impl std::error::Error for LaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Record(error) => Some(error),
+            Self::Restore(error) => Some(error),
+            Self::ComponentSetup { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl LaunchError {
     fn exit_code(&self) -> i32 {
-        if matches!(self, Self::Operation(_)) {
+        if matches!(
+            self,
+            Self::Operation(_)
+                | Self::Record(_)
+                | Self::Restore(_)
+                | Self::ComponentSetup { .. }
+                | Self::CapabilityDenied(_)
+                | Self::BindingMismatch
+                | Self::RecoveryRequired
+        ) {
             1
         } else {
             2
@@ -907,15 +982,14 @@ mod tests {
         assert_eq!(parsed.text_scale, Some(2.0));
         assert!(parsed.pseudo_locale);
 
-        assert_eq!(
+        assert!(matches!(
             parse_args(
                 &strings(&["app", "--native-audit", "--headless-drive", "{}"]),
                 &[],
-                &[],
-            )
-            .unwrap_err(),
-            LaunchError::ConflictingModes
-        );
+                &[]
+            ),
+            Err(LaunchError::ConflictingModes)
+        ));
         assert!(matches!(
             parse_args(
                 &strings(&["app", "--native-audit", "--native-audit"]),
@@ -929,10 +1003,10 @@ mod tests {
     #[test]
     fn rejects_conflicting_modes_and_shot_options_in_live_mode() {
         let both = strings(&["app", "--shots", "/tmp/a.png", "--headless-drive", "{}"]);
-        assert_eq!(
-            parse_args(&both, &[], &[]).unwrap_err(),
-            LaunchError::ConflictingModes
-        );
+        assert!(matches!(
+            parse_args(&both, &[], &[]),
+            Err(LaunchError::ConflictingModes)
+        ));
         let matrix_and_shot = strings(&[
             "app",
             "--shots",
@@ -940,10 +1014,10 @@ mod tests {
             "--responsive-matrix",
             "/tmp/matrix",
         ]);
-        assert_eq!(
-            parse_args(&matrix_and_shot, &[], &[]).unwrap_err(),
-            LaunchError::ConflictingModes
-        );
+        assert!(matches!(
+            parse_args(&matrix_and_shot, &[], &[]),
+            Err(LaunchError::ConflictingModes)
+        ));
 
         for option in [
             strings(&["app", "--viewport=800x600"]),
@@ -1029,7 +1103,7 @@ mod tests {
     fn privileged_app_can_reject_headless_driving() {
         let spec = LaunchSpec::new("dev.qos.test", dummy_root).disable_headless();
         let result = run_with_args(&spec, &strings(&["app", "--headless-drive", "{}"]));
-        assert_eq!(result, Err(LaunchError::HeadlessUnsupported));
+        assert!(matches!(result, Err(LaunchError::HeadlessUnsupported)));
     }
 
     #[test]
@@ -1133,9 +1207,8 @@ mod tests {
             .live_root_with_args(fallible_root)
             .max_positionals(1);
         match spec.live_root(&args) {
-            Err(error) => assert_eq!(
-                error,
-                LaunchError::Operation("cannot open broken.qdoc".into())
+            Err(error) => assert!(
+                matches!(error, LaunchError::Operation(message) if message == "cannot open broken.qdoc")
             ),
             Ok(_) => panic!("fallible root unexpectedly succeeded"),
         }
