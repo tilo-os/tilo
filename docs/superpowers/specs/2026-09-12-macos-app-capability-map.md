@@ -4,6 +4,15 @@ Status: proposed qualification map, 2026-09-12.
 Source audit: `d19f1a0ae2b1d05ec382188fd975bd5762e10704`.
 Scope: all 47 `apps/*/qos-app.toml` manifests at that commit.
 
+Inventory revalidation: `a1a0402f39530b8e409a5b3a12c00b158f0abb6c`, 2026-09-13.
+Manifest tree fingerprint: `7627838e7dd384276f88375336957da714487873e01dcd32e37a83257679f6fb`
+(SHA-256 of the path-sorted `git ls-tree` records for the 47 manifests).
+This revalidation checks identity, role, launch-link and declared-capability
+coverage only. It does not replace the original `d19f1a0` row-level source
+audit or claim that later implementation changes were re-audited.
+Machine-readable applicability and deliberately unrun host results are in
+[the qualification record](2026-09-12-macos-app-qualification.json).
+
 This accompanies the [portable shell design](2026-09-12-macos-shell-port-design.md).
 Real Notes and Files are the first milestone. The remaining rows identify work
 needed to qualify the existing apps through the same framework. This source
@@ -62,8 +71,28 @@ Mac implementations of their application logic.
 | W | Real web engine and native-child-view integration: tile clipping, overlays, focus, IME and accessibility. | E |
 | M | Media decoding, playback, audio output/input, capture and encoding, with accurate availability and permissions. | E |
 | P | Authorized process/tool launch, PTYs, lifecycle and platform paths; preserve Linux execution policy. | E |
-| S | Host/system administration adapters. Keep Linux facilities; expose Mac equivalents only where the operation has defined semantics. | E |
+| S | Host integration adapters. Qualify the row-specific subtype: privileged/system administration, notification, screen capture, location, presentation, clipboard/text injection, clock, media controls, theme/settings, URI opening, input surface, remote input, or host observation. Keep Linux facilities; expose Mac equivalents only where the operation has defined semantics. | E |
 | K | OS/ABI-aware independent package selection, execution bridge and confinement. Separate later specification. | Later packages |
+
+`S` is an umbrella scheduling label, not a claim that these operations share
+one provider or one authority model. The structured record carries each row’s
+subtype from the existing prose and distinguishes privileged/system
+administration from ordinary host integration. A listed subtype remains a gap
+or unknown until its host result has evidence; it never implies support.
+
+## Qualification result record
+
+The companion machine-readable record preserves the 47 manifest identities,
+roles, launch sources, family qualification references and `S` subtypes. A
+listed family or subtype identifies a boundary named by the shared contract or
+existing row prose; it does not establish capability applicability or support.
+Each record resolves required-category applicability through its applicability
+profile and macOS/Linux results through its host-result profile. The shared
+`portable_host_not_run_2026_09_13` host profile records both hosts as `not_run`
+because the inventory revalidation executed no app qualification. It does not
+overwrite or infer results from legacy Linux tests. `not_applicable` is used
+only for the Agent service’s source-established non-graphical checks; all other
+uncertain category applicability remains `unknown`.
 
 H applies to GUI apps, with the surface-specific OSK contract above. Agent needs
 the corresponding service lifecycle/authority checks, not GUI-only checks.
