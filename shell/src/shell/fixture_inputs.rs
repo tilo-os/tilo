@@ -373,10 +373,12 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "Welcome.txt");
         assert_eq!(entries[0].path, child.join("Welcome.txt"));
-        let error = files
-            .open_entry(0, &mut file_explorer::files_app::SystemRunner)
-            .unwrap_err();
-        assert_eq!(error.to_string(), "Document opening is unavailable");
+        assert!(
+            files
+                .open_entry(0, &mut file_explorer::files_app::SystemRunner)
+                .unwrap()
+        );
+        assert_eq!(files.status_line(), Some("Document opening is unavailable"));
     }
 
     #[test]
