@@ -8,6 +8,9 @@
 use super::*;
 
 use crate::shell::render::paint::{SceneDamage, VelloDrmBridge};
+use crate::shell::test_support::{
+    DenyAmbientStarts, PopulatedShellFixture, dispatch_populated_fixture_click,
+};
 
 const NATIVE_WIDTH: u32 = 3_840;
 const NATIVE_HEIGHT: u32 = 2_160;
@@ -17,8 +20,15 @@ fn xrgb_pitch() -> usize {
 }
 
 fn bridge() -> VelloDrmBridge {
-    VelloDrmBridge::new(NATIVE_WIDTH, NATIVE_HEIGHT)
-        .expect("native retained-frame oracle requires a working wgpu adapter")
+    let bridge = VelloDrmBridge::new(NATIVE_WIDTH, NATIVE_HEIGHT)
+        .expect("native retained-frame oracle requires a working wgpu adapter");
+    eprintln!(
+        "retained renderer gate adapter: {:?}",
+        bridge
+            .adapter_info()
+            .expect("retained bridge adapter identity")
+    );
+    bridge
 }
 
 fn render_dense(bridge: &mut VelloDrmBridge, scene: &Scene) -> Vec<u8> {
@@ -58,11 +68,13 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
     );
 }
 
-fn settled_builder() -> FrameBuilder {
-    let mut frame = FrameBuilder::new((NATIVE_WIDTH, NATIVE_HEIGHT));
-    // The test needs state transitions, not a time-dependent animation sample. This is a local
-    // theme override; benchmark and compositor inputs keep their normal motion policy.
-    frame.theme = Theme::dark().with_reduce_motion(true);
+fn settled_builder() -> PopulatedShellFixture {
+    // The test needs state transitions, not a time-dependent animation sample. The explicit
+    // fixture receives reduced motion before its initial layout; benchmark inputs stay normal.
+    let mut frame = PopulatedShellFixture::new(
+        (NATIVE_WIDTH, NATIVE_HEIGHT),
+        Theme::dark().with_reduce_motion(true),
+    );
     frame.relayout();
     let warm = frame.paint();
     assert!(
@@ -77,10 +89,22 @@ fn assert_legacy_and_segmented_match(
     label: &str,
     expect_quick_settings: bool,
 ) {
+    let _ = legacy_and_segmented_pixels(frame, label, expect_quick_settings);
+}
+
+fn legacy_and_segmented_pixels(
+    frame: &mut FrameBuilder,
+    label: &str,
+    expect_quick_settings: bool,
+) -> Vec<u8> {
     // Keep both recordings on the same builder and unchanged Chrome state. `Scene::encoding_eq`
     // is intentionally not an oracle here: independently recorded text/image Blob identities are
     // conservative, while the native pixels are the contract this test protects.
     let legacy = frame.paint();
+    assert!(
+        !legacy.encoding().is_empty(),
+        "{label}: legacy frame must record source commands"
+    );
     let segmented = frame.paint_with_damage();
     assert!(
         !segmented.scene.encoding().is_empty(),
@@ -106,6 +130,7 @@ fn assert_legacy_and_segmented_match(
     let legacy_pixels = render_dense(&mut legacy_bridge, &legacy);
     let segmented_pixels = render_dense(&mut segmented_bridge, &segmented.scene);
     assert_xrgb_pixels_eq(&segmented_pixels, &legacy_pixels, label);
+    legacy_pixels
 }
 
 fn assert_damage_covers(rect: Rect, damage: &[FineDamageRect], label: &str) {
@@ -159,12 +184,19 @@ fn paint_retained_and_compare(
 fn native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle() {
     let mut frame = settled_builder();
 
-    assert_legacy_and_segmented_match(&mut frame, "initial desktop", false);
+    assert!(!frame.chrome().overlays.quick_settings);
+    let initial_pixels = legacy_and_segmented_pixels(&mut frame, "initial desktop", false);
     frame.with_chrome(|chrome| chrome.overlays.quick_settings = true);
     frame.host.set_quick_settings_capture_openness(1_000);
-    assert_legacy_and_segmented_match(&mut frame, "Quick Settings open", true);
+    assert!(frame.chrome().overlays.quick_settings);
+    let open_pixels = legacy_and_segmented_pixels(&mut frame, "Quick Settings open", true);
+    assert!(
+        open_pixels != initial_pixels,
+        "opening Quick Settings must change actual output pixels"
+    );
     frame.host.set_quick_settings_capture_openness(0);
     frame.with_chrome(|chrome| chrome.overlays.quick_settings = false);
+    assert!(!frame.chrome().overlays.quick_settings);
     assert_legacy_and_segmented_match(&mut frame, "Quick Settings close", false);
 }
 
@@ -263,10 +295,14 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
 fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     let mut frame = settled_builder();
     let baseline = frame.paint_with_damage();
+    assert!(!baseline.scene.encoding().is_empty());
     assert!(
         baseline.damage_regions.is_none(),
         "the first retained frame has no complete predecessor"
     );
+    let mut liveness_bridge = bridge();
+    let baseline_pixels = render_dense(&mut liveness_bridge, &baseline.scene);
+    let prior_workspace_count = frame.chrome().tree().workspaces.len();
 
     frame.with_chrome(|chrome| {
         chrome.add_workspace("retained root rebuild");
@@ -276,6 +312,17 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     frame.pump_apps(&mut document, &document_root);
     frame.relayout();
     let changed = frame.paint_with_damage();
+    assert_eq!(
+        frame.chrome().tree().workspaces.len(),
+        prior_workspace_count + 1,
+        "the root rebuild action must add its workspace"
+    );
+    assert!(!changed.scene.encoding().is_empty());
+    let changed_pixels = render_dense(&mut liveness_bridge, &changed.scene);
+    assert!(
+        changed_pixels != baseline_pixels,
+        "the rebuilt workspace root must change actual output pixels"
+    );
     assert!(
         changed.damage_regions.is_none(),
         "workspace content root replacement is an opaque retained boundary"
@@ -295,6 +342,138 @@ fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
     );
 
     assert_legacy_and_segmented_match(&mut frame, "workspace root rebuild", false);
+}
+
+#[test]
+fn explicit_populated_fixture_preserves_semantic_inventory_and_cpu_actions() {
+    let guard = DenyAmbientStarts::new();
+    let mut fixture = PopulatedShellFixture::new((NATIVE_WIDTH, NATIVE_HEIGHT), Theme::dark());
+    let initial_scene = fixture.paint();
+    assert!(!initial_scene.encoding().is_empty());
+    assert_eq!(fixture.viewport(), (3840.0, 2160.0));
+    assert_eq!(
+        fixture.host().fixture_provider_ids(),
+        vec!["notes", "editor", "records"]
+    );
+
+    let chrome = fixture.chrome();
+    assert_eq!(chrome.active_local_user(), "shell-fixture");
+    let tree = chrome.tree();
+    assert_eq!(
+        tree.workspaces
+            .iter()
+            .map(|workspace| workspace.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Home", "Research", "Design"]
+    );
+    let home = tree.active_workspace().expect("Home stays active");
+    assert_eq!(home.name, "Home");
+    let group = &home.strips[0].window_groups[0];
+    assert_eq!(
+        group
+            .tabs
+            .iter()
+            .map(|tab| tab.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Notes", "Files", "Terminal", "Document"]
+    );
+    assert_eq!(group.active_tab, group.tabs[0].id, "Notes stays active");
+    assert_eq!(group.width, crate::shell::state::WindowWidth::Wide);
+    assert_eq!(
+        home.collaborators
+            .iter()
+            .map(|person| (
+                person.id.as_str(),
+                person.name.as_str(),
+                person.cursor_color.as_deref(),
+                person.role_id.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![("alice", "Alice", Some("#ec4899"), Some("editor"))]
+    );
+    let research = &tree.workspaces[1];
+    assert_eq!(
+        research
+            .collaborators
+            .iter()
+            .map(|person| (
+                person.id.as_str(),
+                person.name.as_str(),
+                person.cursor_color.as_deref(),
+                person.role_id.as_deref(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("alice", "Alice", Some("#ec4899"), Some("editor")),
+            ("bob", "Bob", Some("#f97316"), Some("viewer")),
+        ]
+    );
+    assert!(tree.workspaces[2].collaborators.is_empty());
+    let expected_records = group
+        .tabs
+        .iter()
+        .map(|tab| ui::record::RecordId::for_tab(tab.id).to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_records = chrome
+        .records()
+        .open_records()
+        .into_iter()
+        .map(|record| record.id.to_string())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_records, expected_records);
+    drop(tree);
+    drop(chrome);
+
+    let mut fixture_children = std::fs::read_dir(fixture.parent.path())
+        .expect("fixture parent remains owned")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("fixture child entries");
+    assert_eq!(fixture_children.len(), 1, "one owned Files fixture child");
+    let child = fixture_children
+        .pop()
+        .expect("owned Files fixture child")
+        .path();
+    assert_eq!(
+        std::fs::read(child.join("Welcome.txt")).expect("fixture Welcome.txt"),
+        b"Shell capture fixture\n"
+    );
+
+    for target in ["topbar_tray_pill", "topbar_overview_button"] {
+        assert!(
+            fixture
+                .widget_registry()
+                .get(target)
+                .is_some_and(|rect| rect.area() > 0.0),
+            "{target} remains an actual painted control"
+        );
+    }
+    let mut document = AutoCommit::new();
+    let mut focus = None;
+    let open_qs = dispatch_populated_fixture_click(
+        &mut fixture,
+        "topbar_tray_pill",
+        &mut document,
+        &mut focus,
+    );
+    assert!(!open_qs.encoding().is_empty());
+    assert!(fixture.chrome().overlays.quick_settings);
+    let close_qs = dispatch_populated_fixture_click(
+        &mut fixture,
+        "topbar_tray_pill",
+        &mut document,
+        &mut focus,
+    );
+    assert!(!close_qs.encoding().is_empty());
+    assert!(!fixture.chrome().overlays.quick_settings);
+    let open_overview = dispatch_populated_fixture_click(
+        &mut fixture,
+        "topbar_overview_button",
+        &mut document,
+        &mut focus,
+    );
+    assert!(!open_overview.encoding().is_empty());
+    assert!(fixture.chrome().overlays.overview);
+    assert_eq!(guard.attempts(), 0);
 }
 
 fn rect_scene() -> Scene {
@@ -347,7 +526,7 @@ fn previous_sections(
 
 #[test]
 fn damage_policy_allows_only_a_bounded_quick_settings_change() {
-    let mut frame = FrameBuilder::new((1_600, 900));
+    let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
     frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
     let candidate = sections(rect_scene(), Scene::new());
     assert!(
@@ -365,7 +544,7 @@ fn damage_policy_allows_only_a_bounded_quick_settings_change() {
 
 #[test]
 fn damage_policy_rejects_an_opaque_section_change_after_a_proven_baseline() {
-    let mut frame = FrameBuilder::new((1_600, 900));
+    let mut frame = PopulatedShellFixture::new((1_600, 900), Theme::dark());
     frame.last_produced_sections = Some(previous_sections(false, Scene::new(), Scene::new()));
     assert!(
         frame
