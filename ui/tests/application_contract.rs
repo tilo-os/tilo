@@ -208,7 +208,9 @@ fn legacy_recovery_is_validated_but_never_adopted() {
     )
     .err()
     .unwrap();
-    assert!(matches!(error, LaunchError::RecoveryRequired));
+    assert!(
+        matches!(error, LaunchError::ComponentSetup { source, .. } if matches!(*source, LaunchError::RecoveryRequired))
+    );
     let mut bad = frozen.clone();
     bad.version = 9;
     assert!(matches!(
@@ -218,7 +220,7 @@ fn legacy_recovery_is_validated_but_never_adopted() {
             existing(&checkout),
             RestoreInput::LegacyRecovery(bad)
         ),
-        Err(LaunchError::Restore(ThawError::UnsupportedVersion { .. }))
+        Err(LaunchError::ComponentSetup { source, .. }) if matches!(*source, LaunchError::Restore(ThawError::UnsupportedVersion { .. }))
     ));
     let mut bad = frozen;
     bad.state = b"bad".to_vec();
@@ -229,7 +231,7 @@ fn legacy_recovery_is_validated_but_never_adopted() {
             existing(&checkout),
             RestoreInput::LegacyRecovery(bad)
         ),
-        Err(LaunchError::Restore(_))
+        Err(LaunchError::ComponentSetup { source, .. }) if matches!(*source, LaunchError::Restore(_))
     ));
     assert_eq!(body(&host.records, &checkout), "initialized");
     assert_eq!(calls(), 1);
@@ -708,4 +710,212 @@ fn invalid_save_never_replaces_a_valid_local_envelope() {
         Err(ThawError::InvalidView(_))
     ));
     assert_eq!(std::fs::read(host.view_path(11)).unwrap(), bytes);
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "fault matrix keeps last-owner transfer, pending-history comparison and repair in one auditable scenario"
+)]
+fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
+    use ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
+    for case in ["definition", "target", "foreign", "malformed", "revoked"] {
+        let host = ProbeHost::new();
+        let mut component =
+            instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+        let checkout = component.record().clone();
+        let saved = component.close().recovery.unwrap();
+        drop(component);
+        host.records
+            .with_history(&checkout.id, |doc, history| {
+                doc.put(ROOT, "body", "history edit").unwrap();
+                assert!(history.commit_action_authored(
+                    doc,
+                    Some(0),
+                    Some("caret=7".into()),
+                    Some(author())
+                ));
+            })
+            .unwrap();
+        host.records.try_flush().unwrap();
+        let path = app_state::DocStore::room_record_dir_at(
+            &host.root(),
+            APP,
+            ROOM,
+            &checkout.id.storage_key(),
+        )
+        .unwrap()
+        .join(app_state::DOCUMENT_FILE);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        host.records
+            .with(&checkout.id, |doc| {
+                doc.put(ROOT, "body", "failed save").unwrap();
+            })
+            .unwrap();
+        assert!(host.records.try_flush().is_err());
+        host.records
+            .with(&checkout.id, |doc| {
+                doc.put(ROOT, "body", "pending edit").unwrap();
+            })
+            .unwrap();
+        let snapshot = |doc: &mut automerge::AutoCommit, history: &mut ui::state::UndoLog| {
+            let last = history.peek_last_undo().unwrap();
+            (
+                doc.pending_ops(),
+                doc.base_heads(),
+                history.revision(),
+                std::ptr::from_ref(history),
+                last.before.clone(),
+                last.after.clone(),
+                last.widget_metadata.clone(),
+                last.author.clone(),
+            )
+        };
+        let before = host.records.with_history(&checkout.id, snapshot).unwrap();
+        assert!(before.0 > 0);
+        assert_eq!(before.2, 1);
+        let mut definition = definition(probe_factory);
+        let authority = permissions();
+        if case == "revoked" {
+            definition.required.push(denied_scope());
+            *authority.borrow_mut() = PermissionContext::from_capabilities(
+                Actor::person(None, "probe-author"),
+                vec![CapOverride::grant(
+                    Subject::person("probe-author"),
+                    Scope::Workspace,
+                    Verb::Admin,
+                )],
+            );
+        }
+        let target = existing(&checkout);
+        let context = HostContext::prepare(
+            &definition,
+            host.records,
+            host.views.clone(),
+            DEVICE.into(),
+            11,
+            authority.clone(),
+            author(),
+            provenance(),
+            &target,
+        )
+        .unwrap();
+        let wake = context.wake_handle();
+        let mut bad = saved;
+        match case {
+            "definition" => definition.app_id = "foreign.app",
+            "target" => {}
+            "foreign" => bad.app_id = "foreign.app".into(),
+            "malformed" => bad.view.viewport.height = f64::NAN,
+            "revoked" => *authority.borrow_mut() = permissions().borrow().clone(),
+            _ => unreachable!(),
+        }
+        let target = if case == "target" {
+            LaunchTarget::New
+        } else {
+            target
+        };
+        // Only the context owns the record now; RecordOwners entries are weak.
+        let error = definition
+            .instantiate(context, target, RestoreInput::Local(bad))
+            .err()
+            .unwrap();
+        assert!(!wake.is_active());
+        let LaunchError::ComponentSetup {
+            source,
+            record,
+            records,
+        } = error
+        else {
+            panic!("Ready validation must retain its last owner: {case}")
+        };
+        match case {
+            "definition" | "target" | "foreign" => {
+                assert!(matches!(*source, LaunchError::BindingMismatch));
+            }
+            "malformed" => assert!(matches!(
+                *source,
+                LaunchError::Restore(ThawError::InvalidView(_))
+            )),
+            "revoked" => assert!(
+                matches!(*source, LaunchError::CapabilityDenied(scope) if scope == denied_scope())
+            ),
+            _ => unreachable!(),
+        }
+        assert_eq!(record.id, checkout.id);
+        assert_eq!(body(&records, &record), "pending edit");
+        assert_eq!(records.with_history(&record.id, snapshot).unwrap(), before);
+        assert!(records.durability_error(&record.id).is_some());
+        assert_eq!(calls(), 1);
+        definition.app_id = APP;
+        *authority.borrow_mut() = PermissionContext::from_capabilities(
+            Actor::person(None, "probe-author"),
+            vec![CapOverride::grant(
+                Subject::person("probe-author"),
+                Scope::Workspace,
+                Verb::Admin,
+            )],
+        );
+        let target = existing(&record);
+        let context = HostContext::prepare(
+            &definition,
+            records.clone(),
+            host.views,
+            DEVICE.into(),
+            11,
+            authority,
+            author(),
+            provenance(),
+            &target,
+        )
+        .unwrap();
+        let mut retry = definition
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        assert_eq!(initializations(), 1);
+        assert_eq!(records.with_history(&record.id, snapshot).unwrap(), before);
+        std::fs::remove_dir(&path).unwrap();
+        assert!(retry.close().record_error.is_none());
+    }
+}
+
+#[test]
+fn component_destructor_panics_reach_the_outer_caller_after_scope_closes() {
+    for closing in [false, true] {
+        let host = ProbeHost::new();
+        let mut component =
+            instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+        panic_on_next_root_drop();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if closing {
+                component.close();
+            } else {
+                drop(component);
+            }
+        }));
+        let panic = result.expect_err("component teardown must not suppress an app panic");
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"probe destructor panic")
+        );
+        assert!(drop_was_closed());
+    }
+}
+
+#[test]
+fn failed_setup_destructor_panic_is_not_converted_to_a_launch_error() {
+    let host = ProbeHost::new();
+    let definition = definition(invalid_contribution);
+    let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
+    panic_on_next_root_drop();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = definition.instantiate(context, LaunchTarget::New, RestoreInput::None);
+    }));
+    let panic = result.expect_err("failed construction must preserve its destructor panic");
+    assert_eq!(
+        panic.downcast_ref::<&str>(),
+        Some(&"probe destructor panic")
+    );
+    assert!(drop_was_closed());
 }
