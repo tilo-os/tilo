@@ -66,6 +66,9 @@ pub fn key_press(logical: &str, mods: Mods) -> KeyPress {
 }
 
 #[cfg(test)]
+pub(crate) use ambient::{DenyAmbientStarts, ambient_start};
+
+#[cfg(test)]
 mod ambient {
 
     static DENY_AMBIENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -106,6 +109,3 @@ mod ambient {
         }
     }
 }
-
-#[cfg(test)]
-pub(crate) use ambient::{DenyAmbientStarts, ambient_start};
