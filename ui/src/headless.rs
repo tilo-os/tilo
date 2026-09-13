@@ -415,6 +415,7 @@ pub struct FrameHarness {
     action_registry: qos_actions::ActionRegistry,
     action_transport: Box<dyn qos_actions::ActionTransport>,
     pending_control_invocations: HashSet<qos_actions::InvocationId>,
+    bound_invocations: HashMap<qos_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
     /// Per-pass frame profiler, installed by the perf harness via
     /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
     /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
@@ -573,6 +574,7 @@ impl FrameHarness {
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             pending_control_invocations: HashSet::new(),
+            bound_invocations: HashMap::new(),
             profiler: None,
         };
         // Match `App::rebuild_theme`: reduced motion is both a paint-time
@@ -624,7 +626,18 @@ impl FrameHarness {
     /// scenario cannot pass against a path the user never takes.
     pub fn perform_undo(&mut self) -> bool {
         let author = self.author.clone();
-        let done = self.state.undo_as(Some(&author), None, None).is_some();
+        let done = if let Some(binding) = self
+            .focused
+            .and_then(|node| self.bindings.binding_for(node))
+        {
+            binding
+                .history_request(&mut self.state.doc, crate::undo::UndoRequest::Undo)
+                .ok()
+                .flatten()
+                .is_some()
+        } else {
+            self.state.undo_as(Some(&author), None, None).is_some()
+        };
         if done {
             self.relayout();
         }
@@ -634,7 +647,18 @@ impl FrameHarness {
     /// Redo the last undone action. The mirror of [`Self::perform_undo`].
     pub fn perform_redo(&mut self) -> bool {
         let author = self.author.clone();
-        let done = self.state.redo_as(Some(&author), None, None).is_some();
+        let done = if let Some(binding) = self
+            .focused
+            .and_then(|node| self.bindings.binding_for(node))
+        {
+            binding
+                .history_request(&mut self.state.doc, crate::undo::UndoRequest::Redo)
+                .ok()
+                .flatten()
+                .is_some()
+        } else {
+            self.state.redo_as(Some(&author), None, None).is_some()
+        };
         if done {
             self.relayout();
         }
@@ -652,7 +676,11 @@ impl FrameHarness {
     /// anything happened.
     fn drain_undo_requests(&mut self) -> bool {
         let mut requests = Vec::new();
-        for &node in self.node_map.keys() {
+        let mut visited = HashSet::new();
+        for (&node, pointer) in &self.node_map {
+            if !visited.insert(pointer.cast::<()>()) {
+                continue;
+            }
             // SAFETY: same invariant as every other `node_map` dereference in
             // this driver — pointers are valid until the next `relayout`.
             if let Ok(Some(req)) = unsafe {
@@ -663,14 +691,22 @@ impl FrameHarness {
                     |widget| widget.take_undo_request(),
                 )
             } {
-                requests.push(req);
+                requests.push((self.bindings.binding_for(node), req));
             }
         }
         let mut acted = false;
-        for req in requests {
-            acted |= match req {
-                crate::undo::UndoRequest::Undo => self.perform_undo(),
-                crate::undo::UndoRequest::Redo => self.perform_redo(),
+        for (binding, req) in requests {
+            acted |= if let Some(binding) = binding {
+                binding
+                    .history_request(&mut self.state.doc, req)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            } else {
+                match req {
+                    crate::undo::UndoRequest::Undo => self.perform_undo(),
+                    crate::undo::UndoRequest::Redo => self.perform_redo(),
+                }
             };
         }
         acted
@@ -679,8 +715,23 @@ impl FrameHarness {
     /// Hand the live undo status to every laid-out widget, so a control
     /// renders and reports the same truth it would live.
     fn publish_undo_status(&mut self) {
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            None,
+        )
+        .unwrap_or_default();
+        let _ = crate::bound_dispatch::refresh_bound_controls(self.root.as_mut(), &snapshots);
         let status = self.undo_status();
-        for &node in self.node_map.keys() {
+        let mut visited = HashSet::new();
+        for (&node, pointer) in &self.node_map {
+            if !visited.insert(pointer.cast::<()>()) {
+                continue;
+            }
+            let status = self.bindings.binding_for(node).map_or_else(
+                || status.clone(),
+                |binding| binding.undo_status(&mut self.state.doc).unwrap_or_default(),
+            );
             // SAFETY: as in `drain_undo_requests`.
             let _ = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
@@ -1765,7 +1816,81 @@ impl FrameHarness {
         self.drain_undo_requests();
     }
 
+    /// Invoke one explicit component destination using its current captured owner.
+    ///
+    /// # Errors
+    /// Refuses unavailable, denied, stale or ambiguous destinations and action failures.
+    pub fn invoke_bound_action(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+        self.invoke_bound_action_checked(address, arguments)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+    }
+    fn invoke_bound_action_checked(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
+    {
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            Some(&address.address),
+        )?;
+        let target = crate::bound_dispatch::select_bound_target(
+            &snapshots,
+            &address.address,
+            Some(address.instance_id),
+        )?
+        .ok_or_else(|| qos_actions::DoorError::Unknown(address.address.clone()))?;
+        let invocation = qos_actions::InvocationId::new();
+        let started = crate::bound_dispatch::invoke_resource_action(
+            self.root.as_mut(),
+            &mut self.state.doc,
+            &target,
+            self.action_transport.as_mut(),
+            None,
+            Some(arguments),
+            &self.author.0,
+            false,
+            false,
+            invocation,
+            None,
+        )?;
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            self.bound_invocations.insert(invocation, target);
+        }
+        Ok(started)
+    }
+
     fn dispatch_control_invocations(&mut self) {
+        for (target, intent) in
+            crate::bound_dispatch::drain_control_invocations(self.root.as_mut()).unwrap_or_default()
+        {
+            let invocation = qos_actions::InvocationId::new();
+            match crate::bound_dispatch::invoke_resource_action(
+                self.root.as_mut(),
+                &mut self.state.doc,
+                &target,
+                self.action_transport.as_mut(),
+                None,
+                Some(&intent.arguments),
+                &self.author.0,
+                false,
+                false,
+                invocation,
+                None,
+            ) {
+                Ok(crate::widget::ResourceOperationStart::Accepted) => {
+                    self.bound_invocations.insert(invocation, target);
+                }
+                Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
+                Err(error) => tracing::warn!(%error, "headless: bound control refused"),
+            }
+        }
+
         while let Some(intent) = self.root.take_control_invocation() {
             let mut resources = Vec::new();
             crate::widget::collect_widget_resources(
@@ -1782,93 +1907,85 @@ impl FrameHarness {
             {
                 resources.push(resource);
             }
-            let Some(spec) = qos_actions::door::resolve(&resources, &intent.address) else {
-                tracing::warn!(
-                    resource = %intent.address.resource,
-                    action = %intent.address.action,
-                    "headless: action-bound control has a stale address"
-                );
-                continue;
-            };
-            if !matches!(
-                spec.contract.confirmation,
-                qos_actions::ConfirmationPolicy::None
-            ) {
-                tracing::warn!(
-                    resource = %intent.address.resource,
-                    action = %intent.address.action,
-                    "headless: refusing to manufacture action confirmation"
-                );
-                continue;
-            }
-            let kind = spec.kind;
-            let execution = spec.contract.execution.clone();
-            let result = spec.contract.result.clone();
-            if kind == qos_actions::OperationKind::Document {
-                let before = self.state.doc.get_heads();
-                match qos_actions::door::invoke_json(
-                    &mut self.state.doc,
+            let invocation = qos_actions::InvocationId::new();
+            let result = (|| {
+                let (arguments, resource, spec) =
+                    crate::bound_dispatch::resolve_resource_invocation(
+                        &resources,
+                        &intent.address,
+                        None,
+                        Some(&intent.arguments),
+                        false,
+                    )?;
+                let encoded = crate::bound_dispatch::encode_resource_action(
                     &resources,
                     &intent.address,
-                    &intent.arguments,
-                    self.author.0.as_bytes(),
+                    arguments.as_ref(),
+                    None,
+                )?;
+                let before = (spec.kind == qos_actions::OperationKind::Document)
+                    .then(|| self.state.doc.get_heads());
+                let started = crate::bound_dispatch::execute_resource_operation(
+                    self.root.as_mut(),
+                    &mut self.state.doc,
+                    &self.state.root,
                     &self.action_registry,
                     self.action_transport.as_mut(),
-                ) {
-                    Ok(dispatched) if dispatched.mutated_local() => {
-                        self.state.record_committed_action_authored(
-                            before,
-                            None,
-                            None,
-                            Some(self.author.clone()),
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(%error, "headless: document action refused"),
+                    &intent.address,
+                    resource,
+                    spec,
+                    encoded,
+                    &self.author.0,
+                    &self.author.0,
+                    false,
+                    invocation,
+                    None,
+                )?;
+                if let Some(before) = before {
+                    self.state.record_committed_action_authored(
+                        before,
+                        None,
+                        None,
+                        Some(self.author.clone()),
+                    );
                 }
-                continue;
-            }
-
-            let encoded = match qos_actions::door::encode_json(
-                &resources,
-                &intent.address,
-                &intent.arguments,
-            ) {
-                Ok(encoded) => encoded,
-                Err(error) => {
-                    tracing::warn!(%error, "headless: action arguments refused");
-                    continue;
-                }
-            };
-            let invocation = qos_actions::InvocationId::new();
-            match self.root.start_resource_operation(
-                invocation,
-                kind,
-                &encoded.type_id,
-                &encoded.payload,
-                &self.state.doc,
-                &self.state.root,
-            ) {
-                Ok(Some(crate::widget::ResourceOperationStart::Completed(output))) => {
-                    if let Err(error) = result.validate(&output) {
-                        tracing::warn!(%error, "headless: operation result violated its contract");
-                    }
-                }
-                Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-                    if matches!(execution, qos_actions::ExecutionMode::Immediate) =>
-                {
-                    tracing::warn!("headless: an immediate action remained pending");
-                }
-                Ok(Some(crate::widget::ResourceOperationStart::Accepted)) => {
+                Ok::<_, qos_actions::DoorError>(started)
+            })();
+            match result {
+                Ok(crate::widget::ResourceOperationStart::Accepted) => {
                     self.pending_control_invocations.insert(invocation);
                 }
-                Ok(None) => tracing::warn!("headless: no widget accepted the bound operation"),
-                Err(error) => tracing::warn!(%error, "headless: bound operation failed"),
+                Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
+                Err(error) => tracing::warn!(%error, "headless: control action refused"),
             }
         }
     }
 
     fn poll_control_invocations(&mut self) {
+        let bound = self
+            .bound_invocations
+            .iter()
+            .map(|(id, target)| (*id, target.clone()))
+            .collect::<Vec<_>>();
+        for (invocation, target) in bound {
+            let update = crate::bound_dispatch::poll_resource_operation(
+                self.root.as_mut(),
+                &self.state.doc,
+                &target,
+                invocation,
+                false,
+            );
+            if update.is_err()
+                || update
+                    .as_ref()
+                    .ok()
+                    .and_then(|update| update.as_ref())
+                    .is_some_and(qos_actions::InvocationUpdate::is_terminal)
+            {
+                self.bound_invocations.remove(&invocation);
+            }
+        }
+
         let invocations = self
             .pending_control_invocations
             .iter()
@@ -3577,7 +3694,14 @@ mod tests {
         let input = TextInput::local()
             .with_id("title-input")
             .with_on_change_path("title");
-        let mut driver = Driver::new(State::new(), Box::new(input), (400, 200));
+        let mut driver = Driver::new_with_controlled_inputs(
+            State::new(),
+            Box::new(input),
+            (400, 200),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("task-4-fixture-author".into()),
+        );
 
         driver
             .perform_named(
@@ -3609,7 +3733,14 @@ mod tests {
         let button = Button::new("save", "Save", None).on_click(move || {
             observed.set(observed.get() + 1);
         });
-        let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
+        let mut driver = Driver::new_with_controlled_inputs(
+            State::new(),
+            Box::new(button),
+            (400, 200),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("task-4-fixture-author".into()),
+        );
 
         driver
             .perform_named("save", &crate::a11y::Action::Activate)
@@ -4166,7 +4297,14 @@ mod undo_driver_tests {
             }))
             .push(Box::new(crate::widget::UndoButton::undo()))
             .push(Box::new(crate::widget::UndoButton::redo()));
-        Driver::new(State::new(), Box::new(row), (400, 120))
+        Driver::new_with_controlled_inputs(
+            State::new(),
+            Box::new(row),
+            (400, 120),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("task-4-fixture-author".into()),
+        )
     }
 
     /// One real edit, typed through the driver and committed by the driver —
@@ -4491,7 +4629,14 @@ mod dispatched_action_driver_tests {
             .push(Box::new(ActionEditor::new()))
             .push(Box::new(crate::widget::UndoButton::undo()))
             .push(Box::new(crate::widget::UndoButton::redo()));
-        Driver::new(State::new(), Box::new(row), (400, 120))
+        Driver::new_with_controlled_inputs(
+            State::new(),
+            Box::new(row),
+            (400, 120),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("task-4-fixture-author".into()),
+        )
     }
 
     fn body(d: &mut Driver) -> String {

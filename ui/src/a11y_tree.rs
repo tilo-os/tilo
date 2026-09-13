@@ -209,6 +209,7 @@ pub struct SemanticTree {
     /// (a closure is neither `PartialEq` nor `Clone`-comparable) so nodes stay
     /// diffable; refreshed wholesale each frame.
     prompted: PromptedMap,
+    bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
     duplicate_ids: Vec<SemanticId>,
 }
 
@@ -243,6 +244,7 @@ impl SemanticTree {
             order: vec![root.clone()],
             root,
             prompted: HashMap::new(),
+            bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
         }
     }
@@ -264,7 +266,7 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        self.refresh_impl::<false>(root, node_map, focused, resources)
+        self.refresh_impl::<false>(root, node_map, focused, resources, &[])
     }
     pub(crate) fn refresh_bound(
         &mut self,
@@ -273,7 +275,35 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        self.refresh_impl::<true>(root, node_map, focused, resources)
+        self.refresh_impl::<true>(root, node_map, focused, resources, &[])
+    }
+    pub(crate) fn refresh_components(
+        &mut self,
+        root: &dyn Widget,
+        node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
+        focused: Option<TaffyNodeId>,
+        resources: &[Resource],
+        components: &[crate::bound_dispatch::BoundResourceSnapshot],
+    ) -> TreeDelta {
+        self.refresh_impl::<true>(root, node_map, focused, resources, components)
+    }
+    #[cfg(test)]
+    pub(crate) fn bound_actions_for_test(
+        &self,
+    ) -> Vec<(SemanticId, crate::bound_dispatch::BoundActionTarget)> {
+        self.bound_actions
+            .iter()
+            .map(|((id, _), target)| (id.clone(), target.clone()))
+            .collect()
+    }
+    pub(crate) fn bound_target(
+        &self,
+        id: &SemanticId,
+        action: &str,
+    ) -> Option<crate::bound_dispatch::BoundActionTarget> {
+        self.bound_actions
+            .get(&(id.clone(), action.to_owned()))
+            .cloned()
     }
     fn refresh_impl<const BOUND: bool>(
         &mut self,
@@ -281,6 +311,7 @@ impl SemanticTree {
         node_map: &HashMap<TaffyNodeId, *mut dyn Widget>,
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
+        components: &[crate::bound_dispatch::BoundResourceSnapshot],
     ) -> TreeDelta {
         // Reverse map widget *data* pointer -> taffy id, keyed on the thin
         // data address (`*const ()`) rather than the fat `*const dyn Widget`
@@ -298,6 +329,7 @@ impl SemanticTree {
             nodes: HashMap::new(),
             order: Vec::new(),
             prompted: HashMap::new(),
+            bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
             ptr_to_taffy: &ptr_to_taffy,
             focused,
@@ -311,8 +343,14 @@ impl SemanticTree {
 
         // Resource affordances hang off the root as their own subtrees.
         for res in resources {
-            let child = builder.visit_resource(res);
+            let child = builder.visit_resource(res, None);
             root_children.push(child);
+        }
+
+        for component in components {
+            for resource in &component.resources {
+                root_children.push(builder.visit_resource(resource, Some(&component.binding)));
+            }
         }
 
         builder.nodes.insert(
@@ -338,6 +376,7 @@ impl SemanticTree {
         self.order = builder.order;
         self.root = root_id;
         self.prompted = builder.prompted;
+        self.bound_actions = builder.bound_actions;
         self.duplicate_ids = builder.duplicate_ids;
         delta
     }
@@ -606,6 +645,7 @@ struct Build<'a, const BOUND: bool> {
     nodes: HashMap<SemanticId, SemanticNode>,
     order: Vec<SemanticId>,
     prompted: PromptedMap,
+    bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
     ptr_to_taffy: &'a HashMap<*const (), TaffyNodeId>,
     focused: Option<TaffyNodeId>,
     duplicate_ids: Vec<SemanticId>,
@@ -784,22 +824,49 @@ impl<const BOUND: bool> Build<'_, BOUND> {
         id
     }
 
-    fn visit_resource(&mut self, res: &Resource) -> SemanticId {
-        let id = SemanticId::resource(res.id.as_str());
+    fn visit_resource(
+        &mut self,
+        res: &Resource,
+        binding: Option<&crate::bound_dispatch::CallbackBinding>,
+    ) -> SemanticId {
+        let id = binding.map_or_else(
+            || SemanticId::resource(res.id.as_str()),
+            |binding| {
+                SemanticId(format!(
+                    "ri:{}:{}:{}",
+                    binding.instance_id,
+                    binding.lifetime_id,
+                    res.id.as_str()
+                ))
+            },
+        );
 
         let mut actions: Vec<SemanticAction> = Vec::new();
         for spec in &res.actions {
             actions.push(self.resource_action(&id, spec));
+            if let Some(binding) = binding {
+                self.bound_actions.insert(
+                    (id.clone(), spec.id.clone()),
+                    crate::bound_dispatch::BoundActionTarget {
+                        binding: binding.clone(),
+                        address: crate::bound_dispatch::BoundActionAddress {
+                            instance_id: binding.instance_id,
+                            address: qos_actions::ActionAddress::new(res.id.as_str(), &spec.id),
+                        },
+                    },
+                );
+            }
         }
 
         let mut children: Vec<SemanticId> = Vec::new();
         for child in &res.children {
-            children.push(self.visit_resource(child));
+            children.push(self.visit_resource(child, binding));
         }
 
         let node = SemanticNode {
             id: id.clone(),
-            durable_identity: true,
+            // Component semantic addresses remain valid only for this captured lifetime.
+            durable_identity: binding.is_none(),
             role: Role::Group,
             name: Some(res.label.clone()),
             value: None,

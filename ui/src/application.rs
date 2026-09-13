@@ -54,6 +54,8 @@ pub struct HostContext {
     action_context: qos_actions::ActionContext,
     wake_scope: WakeScope,
     construction: Rc<()>,
+    lifetime_id: uuid::Uuid,
+    queued_controls: Rc<RefCell<std::collections::VecDeque<qos_actions::ControlInvocation>>>,
     closing: Rc<Cell<bool>>,
 }
 impl HostContext {
@@ -125,6 +127,8 @@ impl HostContext {
             action_context,
             wake_scope: WakeScope::new(),
             construction: Rc::new(()),
+            lifetime_id: uuid::Uuid::new_v4(),
+            queued_controls: Rc::default(),
             closing: Rc::new(Cell::new(false)),
         })
     }
@@ -170,7 +174,11 @@ impl HostContext {
         crate::bound_dispatch::CallbackBinding {
             lifetime: self.wake_scope.handle(),
             closing: self.closing.clone(),
+            registry_owner: Rc::downgrade(&self.construction),
+            lifetime_id: self.lifetime_id,
+            queued_controls: self.queued_controls.clone(),
             instance_id: self.instance_id,
+            app_id: self.app_id.clone(),
             records: self.records.clone(),
             checkout: self.record.clone(),
             permissions: self.permissions.clone(),
@@ -327,10 +335,39 @@ pub struct AppComponent {
     pub(crate) invocations: Vec<qos_actions::InvocationId>,
     pending_reports: Vec<ComponentCloseReport>,
     report_drained: bool,
+    registry_owner: Rc<()>,
+    providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
     pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         self.context.callback_binding()
+    }
+
+    /// The only action-facing loan of component root and registry. Captured
+    /// lifetime, registry owner and canonical identity are checked before lending.
+    pub(crate) fn with_live_component<R>(
+        &mut self,
+        captured: &crate::bound_dispatch::CallbackBinding,
+        callback: impl FnOnce(
+            &crate::bound_dispatch::CallbackBinding,
+            &mut dyn AppWidget,
+            &qos_actions::ActionRegistry,
+        ) -> R,
+    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        let _entry = captured.enter()?;
+        let current = self.callback_binding();
+        if !captured.same_component(&current) {
+            return Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime);
+        }
+        let root = self
+            .root
+            .as_deref_mut()
+            .ok_or(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)?;
+        let registry = self
+            .registry
+            .as_ref()
+            .ok_or(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)?;
+        Ok(callback(&current, root, registry))
     }
 
     pub fn new(
@@ -338,6 +375,7 @@ impl AppComponent {
         root: Box<dyn AppWidget>,
         registry: qos_actions::ActionRegistry,
     ) -> Self {
+        let registry_owner = context.construction.clone();
         Self {
             context,
             root: Some(root),
@@ -348,7 +386,46 @@ impl AppComponent {
             invocations: vec![],
             pending_reports: vec![],
             report_drained: false,
+            providers: Rc::new(RefCell::new(ProviderPayloads {
+                owner: Rc::downgrade(&registry_owner),
+                next: Some(0),
+                payloads: HashMap::new(),
+            })),
+            registry_owner,
         }
+    }
+
+    /// Return only weak proxies; payload ownership remains with this component.
+    pub(crate) fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        let binding = self.callback_binding();
+        let Ok(_entry) = binding.enter() else {
+            return vec![];
+        };
+        let Some(root) = self.root.as_deref() else {
+            return vec![];
+        };
+        root.search_providers()
+            .into_iter()
+            .filter_map(|provider| {
+                // The host independently collects nested component boundaries.
+                // A forwarded proxy must not acquire this outer component's owner.
+                if provider.callback_binding().is_some() {
+                    return None;
+                }
+                let name = provider.name().to_owned();
+                let mut owned = self.providers.borrow_mut();
+                let slot = owned.next?;
+                owned.next = slot.checked_add(1);
+                owned.payloads.insert(slot, Rc::from(provider));
+                Some(Box::new(ComponentProvider {
+                    name,
+                    binding: binding.clone(),
+                    owner: Rc::downgrade(&self.registry_owner),
+                    store: Rc::downgrade(&self.providers),
+                    slot,
+                }) as Box<dyn crate::search::SearchProvider>)
+            })
+            .collect()
     }
     pub fn record(&self) -> &RecordCheckout {
         self.context.record()
@@ -503,6 +580,9 @@ impl AppComponent {
             self.root.take(),
             self.registry.take(),
             std::mem::take(&mut self.invocations),
+            std::mem::take(&mut self.providers.borrow_mut().payloads)
+                .into_values()
+                .collect::<Vec<_>>(),
         );
         let result = if let Some(root) = owned.0.as_deref_mut() {
             let result = self
@@ -519,8 +599,104 @@ impl AppComponent {
         } else {
             Ok(())
         };
-        drop_component_owned(owned.0, (owned.1, owned.2));
+        drop_component_owned(owned.0, (owned.1, owned.2, owned.3));
         result
+    }
+}
+
+struct ProviderPayloads {
+    owner: std::rc::Weak<()>,
+    next: Option<u64>,
+    payloads: HashMap<u64, Rc<dyn crate::search::SearchProvider>>,
+}
+struct ComponentProvider {
+    name: String,
+    binding: crate::bound_dispatch::CallbackBinding,
+    owner: std::rc::Weak<()>,
+    store: std::rc::Weak<RefCell<ProviderPayloads>>,
+    slot: u64,
+}
+impl ComponentProvider {
+    fn invoke<R>(
+        &self,
+        callback: impl FnOnce(&dyn crate::search::SearchProvider) -> R,
+    ) -> Option<R> {
+        let _entry = self.binding.enter().ok()?;
+        let store = self.store.upgrade()?;
+        let provider = {
+            let owned = store.try_borrow().ok()?;
+            if !std::rc::Weak::ptr_eq(&self.owner, &owned.owner) {
+                return None;
+            }
+            owned.payloads.get(&self.slot)?.clone()
+        };
+        Some(callback(provider.as_ref()))
+    }
+}
+impl crate::search::SearchProvider for ComponentProvider {
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        Some(self.binding.clone())
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn action_directory_generation(&self) -> Option<u64> {
+        self.invoke(|provider| provider.action_directory_generation())
+            .flatten()
+    }
+    fn action_directory_cursor_is_current(&self, cursor: &crate::search::SearchCursor) -> bool {
+        self.invoke(|provider| provider.action_directory_cursor_is_current(cursor))
+            .unwrap_or(false)
+    }
+    fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
+        self.invoke(|provider| provider.search(query))
+            .unwrap_or_default()
+    }
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<crate::search::SearchResult> {
+        self.invoke(|provider| provider.search_limited(query, limit))
+            .unwrap_or_default()
+    }
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&crate::search::SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> crate::search::SearchPage {
+        self.invoke(|provider| provider.search_page(query, cursor, work_budget, result_limit))
+            .unwrap_or_else(|| crate::search::SearchPage {
+                results: vec![],
+                next: None,
+                inspected: 0,
+            })
+    }
+    fn resolve_action_resource(
+        &self,
+        address: &qos_actions::ActionAddress,
+    ) -> Option<qos_actions::Resource> {
+        self.invoke(|provider| provider.resolve_action_resource(address))
+            .flatten()
+            .and_then(|resource| crate::bound_dispatch::filter_resource(&self.binding, resource))
+    }
+}
+impl Drop for ComponentProvider {
+    fn drop(&mut self) {
+        let Ok(_entry) = self.binding.enter() else {
+            return;
+        };
+        let Some(store) = self.store.upgrade() else {
+            return;
+        };
+        let payload = {
+            let Ok(mut owned) = store.try_borrow_mut() else {
+                return;
+            };
+            if !std::rc::Weak::ptr_eq(&self.owner, &owned.owner) {
+                return;
+            }
+            owned.payloads.remove(&self.slot)
+        };
+        drop(payload);
     }
 }
 struct CloseComponentOnExit<'a>(&'a mut AppComponent);
@@ -848,6 +1024,56 @@ mod bound_lifetime_tests {
         assert!(new_rx.try_recv().is_err());
         assert!(matches!(
             binding.with_document(&mut AutoCommit::new(), |_, _| panic!("closed entry ran")),
+            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+        ));
+    }
+
+    #[test]
+    fn task4_component_loan_checks_captured_registry_and_lifetime_before_delivery() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().into());
+        let records = owners.open("dev.qos.mount-probe", "A").unwrap();
+        let views = Rc::new(InstanceViewStore::new(temp.path().to_path_buf(), "D", "A").unwrap());
+        let definition = ApplicationDefinition {
+            app_id: "dev.qos.mount-probe",
+            title: "Mount probe",
+            icon: IconDescriptor::Glyph("P"),
+            record_kind: RecordKind::new("probe"),
+            required: vec![],
+            optional: vec![],
+            create: factory,
+        };
+        let context = HostContext::prepare(
+            &definition,
+            records,
+            views,
+            "D".into(),
+            7,
+            Rc::new(RefCell::new(PermissionContext::permissive())),
+            UserId("probe-author".into()),
+            qos_actions::ActionContext::default(),
+            &LaunchTarget::New,
+        )
+        .unwrap();
+        let mut component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let binding = component.callback_binding();
+        component
+            .with_live_component(&binding, |admitted, root, _registry| {
+                assert_eq!(admitted.instance_id, 7);
+                assert_eq!(root.app_title(), "Mount probe");
+            })
+            .unwrap();
+        let mut foreign = binding.clone();
+        foreign.registry_owner = std::rc::Weak::new();
+        assert!(matches!(
+            component.with_live_component(&foreign, |_, _, _| panic!("foreign registry delivered")),
+            Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
+        ));
+        component.close();
+        assert!(matches!(
+            component.with_live_component(&binding, |_, _, _| panic!("closed component delivered")),
             Err(crate::bound_dispatch::BoundDispatchError::ClosedLifetime)
         ));
     }

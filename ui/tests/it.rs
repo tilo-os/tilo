@@ -144,3 +144,5 @@ mod application_contract;
 
 #[path = "bound_component_dispatch.rs"]
 mod bound_component_dispatch;
+
+mod instance_undo;
