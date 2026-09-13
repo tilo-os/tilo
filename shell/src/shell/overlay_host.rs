@@ -1497,6 +1497,18 @@ type QsFastFields = (
     Option<crate::shell::qs_actions::BatteryInfo>,
 );
 
+fn collaborator_rows_for_state(state: &crate::shell::chrome_state::ChromeState) -> Vec<RosterRow> {
+    let tree = state.tree();
+    state.explicit_local_user().map_or_else(
+        || collaborator_roster_rows(&tree),
+        |local| {
+            crate::shell::collaborators_overlay::collaborator_roster_rows_with_local_user(
+                &tree, local,
+            )
+        },
+    )
+}
+
 impl ShellOverlayHost {
     #[allow(
         clippy::too_many_lines,
@@ -5216,7 +5228,7 @@ impl ShellOverlayHost {
         let peer_id = self.followed_peer.as_deref()?;
         let chrome = self.chrome.as_ref()?;
         let state = chrome.borrow();
-        collaborator_roster_rows(&state.tree())
+        collaborator_rows_for_state(&state)
             .into_iter()
             .find(|row| row.id == peer_id && row.followable)
     }
@@ -9448,7 +9460,7 @@ impl ShellOverlayHost {
         if let CollaboratorsHit::ToggleFollow(index) = hit {
             let target = self.chrome.as_ref().and_then(|chrome| {
                 let state = chrome.borrow();
-                collaborator_roster_rows(&state.tree())
+                collaborator_rows_for_state(&state)
                     .get(index)
                     .filter(|row| row.followable)
                     .cloned()
@@ -12746,7 +12758,7 @@ impl ShellOverlayHost {
                 |chrome| {
                     let state = chrome.borrow();
                     (
-                        collaborator_roster_rows(&state.tree()),
+                        collaborator_rows_for_state(&state),
                         state.collab_unavailable.clone(),
                     )
                 },
@@ -15040,7 +15052,7 @@ impl ShellOverlayHost {
         let key = PresenceKey::Workspace {
             id: workspace.room.to_string(),
         };
-        let rows = collaborator_roster_rows(&tree);
+        let rows = collaborator_rows_for_state(&state);
         let Some(pointers) = presence.pointers.get(&key) else {
             return Vec::new();
         };
