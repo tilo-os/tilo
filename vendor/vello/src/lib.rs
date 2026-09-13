@@ -335,6 +335,37 @@ pub enum Error {
 )]
 pub(crate) type Result<T, E = Error> = std::result::Result<T, E>;
 
+/// State of the outstanding adaptive bump-counter readbacks.
+#[cfg(feature = "wgpu")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BumpBudgetPoll {
+    /// At least one counter map callback has not completed.
+    Pending,
+    /// Counter work has settled; this does not establish GPU frame completion.
+    Complete {
+        /// At least one collected render dropped geometry.
+        overflowed: bool,
+    },
+}
+
+/// A counter readback could not establish whether the render fit its budget.
+#[cfg(feature = "wgpu")]
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum BumpBudgetError {
+    /// The counter buffer could not be mapped.
+    #[error("bump counter mapping failed")]
+    MapFailed,
+    /// A requested counter download is absent.
+    #[error("bump counter download is missing")]
+    MissingDownload,
+    /// The mapped counter data has an unexpected length.
+    #[error("bump counter download has invalid length")]
+    InvalidDownload,
+    /// The device could not be polled.
+    #[error("bump counter device poll failed: {0}")]
+    Poll(String),
+}
+
 /// Renders a scene into a texture or surface.
 ///
 /// Currently, each renderer only supports a single surface format, if it
@@ -3138,6 +3169,31 @@ impl Renderer {
         Ok(Some(stats))
     }
 
+    /// Poll outstanding counter readbacks without waiting for the GPU.
+    ///
+    /// Pending work retains any overflow collected by earlier renders. Only a
+    /// completed poll consumes that overflow. Readback errors remain visible on
+    /// subsequent polls, including errors found by ordinary render collection;
+    /// replacing the renderer is required to discard a failed observation.
+    ///
+    /// An idle renderer, or one with measurement deliberately disabled, has no
+    /// outstanding counter work and reports complete. This method does not prove
+    /// GPU submission or frame completion: callers must establish that separately.
+    pub fn poll_bump_budget(&mut self, device: &Device) -> Result<BumpBudgetPoll, BumpBudgetError> {
+        let (changed, overflowed) = self.budget.collect(device, &mut self.engine);
+        self.unsettled_bump_overflow.record(overflowed);
+        if changed {
+            self.engine.clear_pool();
+        }
+        self.budget.check_readback()?;
+        if self.budget.has_pending_readback() {
+            return Ok(BumpBudgetPoll::Pending);
+        }
+        Ok(BumpBudgetPoll::Complete {
+            overflowed: self.unsettled_bump_overflow.take(),
+        })
+    }
+
     /// Collect the bump counters submitted since the previous call to this
     /// method. Returns `true` when any of them overflowed and therefore
     /// dropped geometry. One-shot/readback renderers call this after waiting
@@ -3512,6 +3568,354 @@ mod tests {
             ImageFormat, Mix,
         },
     };
+
+    fn checked_bump_device() -> (Device, Queue) {
+        let (device, queue) =
+            headless_device().expect("checked bump tests require a real GPU adapter");
+        eprintln!("checked bump adapter: {:?}", device.adapter_info());
+        (device, queue)
+    }
+
+    fn checked_bump_wait(device: &Device) {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(2)),
+            })
+            .expect("counter fixture must complete within two seconds");
+    }
+
+    fn checked_bump_download(
+        renderer: &mut Renderer,
+        device: &Device,
+        queue: &Queue,
+        bytes: Vec<u8>,
+    ) -> recording::BufferProxy {
+        let mut recording = Recording::default();
+        let proxy = recording.upload("vello.bump_buf", bytes);
+        recording.download(proxy);
+        recording.free_buffer(proxy);
+        renderer
+            .engine
+            .run_recording(
+                device,
+                queue,
+                &recording,
+                &[],
+                "checked bump fixture",
+                #[cfg(feature = "wgpu-profiler")]
+                &mut renderer.profiler,
+            )
+            .expect("real counter download must submit");
+        renderer.engine.clear_pool();
+        proxy
+    }
+
+    fn checked_bump_fixture(device: &Device, queue: &Queue, used: BumpAllocators) -> Renderer {
+        let mut renderer = Renderer::new(device, RendererOptions::default()).unwrap();
+        let proxy = checked_bump_download(
+            &mut renderer,
+            device,
+            queue,
+            bytemuck::bytes_of(&used).to_vec(),
+        );
+        renderer.budget.begin_readback(&renderer.engine, proxy);
+        checked_bump_wait(device);
+        renderer
+    }
+
+    fn checked_bump_params() -> RenderParams {
+        RenderParams {
+            base_color: Color::BLACK,
+            width: 16,
+            height: 16,
+            antialiasing_method: AaConfig::Area,
+        }
+    }
+
+    #[test]
+    fn checked_bump_pending_retains_download_and_overflow() {
+        use bump_budget::test_helpers::{pending_proxy, set_ready};
+        let (device, queue) = checked_bump_device();
+        let mut renderer = checked_bump_fixture(
+            &device,
+            &queue,
+            BumpAllocators {
+                failed: 1,
+                lines: 1_000_000,
+                ..Default::default()
+            },
+        );
+        // The ordinary render collects the overflow before checked settlement.
+        renderer
+            .render_to_texture(
+                &device,
+                &queue,
+                &solid_scene(),
+                &target(&device),
+                &checked_bump_params(),
+            )
+            .unwrap();
+        checked_bump_wait(&device);
+        let proxy = pending_proxy(&renderer.budget);
+        set_ready(&mut renderer.budget, None);
+        for _ in 0..3 {
+            assert_eq!(
+                renderer.poll_bump_budget(&device),
+                Ok(BumpBudgetPoll::Pending)
+            );
+            assert!(renderer.engine.get_download(proxy).is_some());
+            assert!(!renderer.budget.wants_readback());
+        }
+        set_ready(&mut renderer.budget, Some(true));
+        assert_eq!(
+            renderer.poll_bump_budget(&device),
+            Ok(BumpBudgetPoll::Complete { overflowed: true })
+        );
+        assert!(renderer.engine.get_download(proxy).is_none());
+        assert_eq!(
+            renderer.poll_bump_budget(&device),
+            Ok(BumpBudgetPoll::Complete { overflowed: false })
+        );
+    }
+
+    #[test]
+    fn checked_bump_idle_renderer_has_no_outstanding_counter_work() {
+        let (device, _) = checked_bump_device();
+        let mut renderer = Renderer::new(&device, RendererOptions::default()).unwrap();
+        assert!(renderer.budget.wants_measurement());
+        assert!(!renderer.budget.has_pending_readback());
+        assert_eq!(
+            renderer.poll_bump_budget(&device),
+            Ok(BumpBudgetPoll::Complete { overflowed: false })
+        );
+    }
+
+    #[test]
+    fn checked_bump_map_failure_is_not_completion() {
+        use bump_budget::test_helpers::{pending_proxy, set_ready};
+        let (device, queue) = checked_bump_device();
+        let mut renderer = checked_bump_fixture(&device, &queue, Default::default());
+        let proxy = pending_proxy(&renderer.budget);
+        renderer.engine.get_download(proxy).unwrap().unmap();
+        set_ready(&mut renderer.budget, Some(false));
+        // Exercise failure discovered by the real ordinary render's collection.
+        renderer
+            .render_to_texture(
+                &device,
+                &queue,
+                &solid_scene(),
+                &target(&device),
+                &checked_bump_params(),
+            )
+            .unwrap();
+        checked_bump_wait(&device);
+        assert!(renderer.engine.get_download(proxy).is_none());
+        for _ in 0..2 {
+            assert_eq!(
+                renderer.poll_bump_budget(&device),
+                Err(BumpBudgetError::MapFailed)
+            );
+        }
+    }
+
+    #[test]
+    fn checked_bump_failed_map_download_never_returns_to_pool() {
+        use bump_budget::test_helpers::{pending_proxy, set_ready};
+        let (device, queue) = checked_bump_device();
+        let mut renderer = checked_bump_fixture(&device, &queue, Default::default());
+        let proxy = pending_proxy(&renderer.budget);
+        renderer.engine.get_download(proxy).unwrap().unmap();
+        set_ready(&mut renderer.budget, Some(false));
+        assert_eq!(
+            renderer.budget.collect(&device, &mut renderer.engine),
+            (false, false)
+        );
+        assert!(renderer.engine.get_download(proxy).is_none());
+        assert_eq!(renderer.memory_stats().pooled_buffer_bytes, 0);
+        assert_eq!(
+            renderer.poll_bump_budget(&device),
+            Err(BumpBudgetError::MapFailed)
+        );
+        assert_eq!(renderer.memory_stats().pooled_buffer_bytes, 0);
+    }
+
+    #[test]
+    fn checked_bump_missing_download_is_error() {
+        use bump_budget::test_helpers::{pending_proxy, set_ready};
+        let (device, queue) = checked_bump_device();
+        for (missing_at_begin, callback_pending) in [(true, false), (false, false), (false, true)] {
+            let mut renderer = checked_bump_fixture(&device, &queue, Default::default());
+            let proxy = pending_proxy(&renderer.budget);
+            renderer.engine.get_download(proxy).unwrap().unmap();
+            renderer.engine.free_download(proxy);
+            if missing_at_begin {
+                renderer = Renderer::new(&device, RendererOptions::default()).unwrap();
+                renderer.budget.begin_readback(&renderer.engine, proxy);
+            }
+            if callback_pending {
+                set_ready(&mut renderer.budget, None);
+            }
+            let pooled = renderer.memory_stats().pooled_buffer_bytes;
+            assert_eq!(
+                renderer.poll_bump_budget(&device),
+                Err(BumpBudgetError::MissingDownload)
+            );
+            assert_eq!(
+                renderer.poll_bump_budget(&device),
+                Err(BumpBudgetError::MissingDownload)
+            );
+            assert_eq!(renderer.memory_stats().pooled_buffer_bytes, pooled);
+        }
+    }
+
+    #[test]
+    fn checked_bump_poll_failure_remains_error_after_later_success() {
+        use bump_budget::test_helpers::{fail_poll, pending_proxy};
+        let (device, queue) = checked_bump_device();
+        let mut renderer = checked_bump_fixture(&device, &queue, Default::default());
+        let proxy = pending_proxy(&renderer.budget);
+        // Replace only the external poll outcome, while collection operates on
+        // the same actual mapped download and tracker as normal rendering.
+        fail_poll(&mut renderer.budget, &mut renderer.engine);
+        let expected = Err(BumpBudgetError::Poll(wgpu::PollError::Timeout.to_string()));
+        assert_eq!(renderer.poll_bump_budget(&device), expected);
+        assert!(renderer.engine.get_download(proxy).is_none());
+        assert_eq!(renderer.memory_stats().pooled_buffer_bytes, 0);
+        let proxy = checked_bump_download(&mut renderer, &device, &queue, vec![0; 32]);
+        renderer.budget.begin_readback(&renderer.engine, proxy);
+        checked_bump_wait(&device);
+        assert_eq!(renderer.poll_bump_budget(&device), expected);
+        assert!(renderer.engine.get_download(proxy).is_none());
+        assert_eq!(renderer.memory_stats().pooled_buffer_bytes, 32);
+    }
+
+    #[test]
+    fn checked_bump_invalid_download_is_error_and_not_recycled() {
+        let (device, queue) = checked_bump_device();
+        let mut renderer = Renderer::new(&device, RendererOptions::default()).unwrap();
+        let proxy = checked_bump_download(&mut renderer, &device, &queue, vec![0; 16]);
+        renderer.budget.begin_readback(&renderer.engine, proxy);
+        checked_bump_wait(&device);
+        assert_eq!(
+            renderer.poll_bump_budget(&device),
+            Err(BumpBudgetError::InvalidDownload)
+        );
+        assert!(renderer.engine.get_download(proxy).is_none());
+        assert_eq!(renderer.memory_stats().pooled_buffer_bytes, 0);
+        assert_eq!(
+            renderer.poll_bump_budget(&device),
+            Err(BumpBudgetError::InvalidDownload)
+        );
+    }
+
+    #[test]
+    fn checked_bump_collection_preserves_growth_and_recycles_once() {
+        use bump_budget::test_helpers::pending_proxy;
+        let (device, queue) = checked_bump_device();
+        let mut renderer = checked_bump_fixture(
+            &device,
+            &queue,
+            BumpAllocators {
+                failed: 1,
+                lines: 1_000_000,
+                ..Default::default()
+            },
+        );
+        let proxy = pending_proxy(&renderer.budget);
+        assert_eq!(
+            renderer.budget.collect(&device, &mut renderer.engine),
+            (true, true)
+        );
+        assert_eq!(renderer.budget.budget().lines, 2_000_000);
+        assert!(renderer.engine.get_download(proxy).is_none());
+        assert_eq!(renderer.memory_stats().pooled_buffer_bytes, 32);
+        assert_eq!(
+            renderer.budget.collect(&device, &mut renderer.engine),
+            (false, false)
+        );
+        assert_eq!(renderer.memory_stats().pooled_buffer_bytes, 32);
+        // Checked collection must clear obsolete pool classes on growth too.
+        let proxy = checked_bump_download(
+            &mut renderer,
+            &device,
+            &queue,
+            bytemuck::bytes_of(&BumpAllocators {
+                lines: 2_000_000,
+                ..Default::default()
+            })
+            .to_vec(),
+        );
+        renderer.budget.begin_readback(&renderer.engine, proxy);
+        checked_bump_wait(&device);
+        assert_eq!(
+            renderer.poll_bump_budget(&device),
+            Ok(BumpBudgetPoll::Complete { overflowed: false })
+        );
+        assert_eq!(renderer.budget.budget().lines, 4_000_000);
+        assert_eq!(renderer.memory_stats().pooled_buffer_bytes, 0);
+    }
+
+    #[test]
+    fn checked_bump_strict_gpu_render_matches_completed_dense_counters() {
+        use bump_budget::test_helpers::pending_proxy;
+        let (device, queue) = checked_bump_device();
+        let mut strict = Renderer::new(&device, RendererOptions::default()).unwrap();
+        let mut dense = Renderer::new(&device, RendererOptions::default()).unwrap();
+        let scene = gradient_scene();
+        let params = checked_bump_params();
+        strict
+            .render_to_texture(&device, &queue, &scene, &target(&device), &params)
+            .unwrap();
+        dense
+            .render_to_texture(&device, &queue, &scene, &target(&device), &params)
+            .unwrap();
+        checked_bump_wait(&device);
+        let counters = |renderer: &Renderer| {
+            renderer
+                .engine
+                .get_download(pending_proxy(&renderer.budget))
+                .unwrap()
+                .slice(..)
+                .get_mapped_range()
+                .to_vec()
+        };
+        let strict_counters = counters(&strict);
+        assert_eq!(strict_counters, counters(&dense));
+        assert!(
+            strict_counters[4..].iter().any(|value| *value != 0),
+            "real scene must use bump allocations"
+        );
+        // The completed dense reference uses the existing tracker collection;
+        // this small scene stays below the unchanged effective viewport floors.
+        assert_eq!(
+            dense.budget.collect(&device, &mut dense.engine),
+            (false, false)
+        );
+        assert_eq!(
+            strict.poll_bump_budget(&device),
+            Ok(BumpBudgetPoll::Complete { overflowed: false })
+        );
+        assert_eq!(strict.budget.budget(), dense.budget.budget());
+        assert!(strict.budget.budget().lines > 0);
+        assert_eq!(strict.memory_stats(), dense.memory_stats());
+    }
+
+    #[test]
+    fn checked_bump_disabled_measurement_reports_no_counter_work() {
+        let (device, _) = checked_bump_device();
+        let mut renderer = Renderer::new(&device, RendererOptions::default()).unwrap();
+        bump_budget::test_helpers::disable_measurement(&mut renderer.budget);
+        assert!(!renderer.budget.wants_measurement());
+        assert!(!renderer.budget.wants_readback());
+        assert!(!renderer.budget.has_pending_readback());
+        let before = renderer.memory_stats();
+        assert_eq!(
+            renderer.poll_bump_budget(&device),
+            Ok(BumpBudgetPoll::Complete { overflowed: false })
+        );
+        assert_eq!(renderer.memory_stats(), before);
+    }
 
     #[test]
     fn geometry_recording_uploads_requires_one_scene_and_one_config() {
