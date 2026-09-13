@@ -543,6 +543,7 @@ struct Parked {
     /// change hashes in *this* document's graph, so sharing a stack across
     /// records would revert the wrong history.
     history: crate::state::UndoLog,
+    action_state: crate::bound_dispatch::RecordActionState,
 }
 
 /// The records one app process has open, and which is live. Owns
@@ -692,6 +693,7 @@ impl RecordSet {
                     kind: want.kind.clone(),
                     autosave,
                     history,
+                    action_state: crate::bound_dispatch::RecordActionState::default(),
                 },
             );
             return self.finish_checkout(state, room, want);
@@ -702,6 +704,7 @@ impl RecordSet {
             if let Some(slot) = self.open.get_mut(&prev) {
                 let mut outgoing = outgoing;
                 if let Some(saver) = slot.autosave.as_mut() {
+                    slot.action_state.commit_for_save(&mut outgoing);
                     saver.request(&mut outgoing);
                 }
                 slot.doc = Some(outgoing);
@@ -720,6 +723,7 @@ impl RecordSet {
                     kind: want.kind.clone(),
                     autosave,
                     history,
+                    action_state: crate::bound_dispatch::RecordActionState::default(),
                 },
             );
             doc
@@ -902,6 +906,7 @@ impl RecordSet {
                     kind: want.kind.clone(),
                     autosave,
                     history,
+                    action_state: crate::bound_dispatch::RecordActionState::default(),
                 },
             );
         }
@@ -957,6 +962,7 @@ impl RecordSet {
                 kind: want.kind.clone(),
                 autosave: Some(autosave),
                 history,
+                action_state: crate::bound_dispatch::RecordActionState::default(),
             },
         );
         Ok(RecordOpenOutcome::Loaded)
@@ -966,7 +972,17 @@ impl RecordSet {
     /// `None` for a record not held here, or the one currently checked
     /// out (the live document is the toolkit's).
     pub fn document_mut(&mut self, id: &RecordId) -> Option<&mut AutoCommit> {
-        self.open.get_mut(id).and_then(|p| p.doc.as_mut())
+        let parked = self.open.get_mut(id)?;
+        if let Some(doc) = parked.doc.as_mut() {
+            parked
+                .action_state
+                .finish_external(doc, &mut parked.history);
+        }
+        parked.action_state.generation = parked
+            .action_state
+            .generation
+            .and_then(|generation| generation.checked_add(1));
+        parked.doc.as_mut()
     }
 
     /// An open record's document together with its history, so a caller
@@ -976,6 +992,15 @@ impl RecordSet {
         id: &RecordId,
     ) -> Option<(&mut AutoCommit, &mut crate::state::UndoLog)> {
         let parked = self.open.get_mut(id)?;
+        if let Some(doc) = parked.doc.as_mut() {
+            parked
+                .action_state
+                .finish_external(doc, &mut parked.history);
+        }
+        parked.action_state.generation = parked
+            .action_state
+            .generation
+            .and_then(|generation| generation.checked_add(1));
         let doc = parked.doc.as_mut()?;
         Some((doc, &mut parked.history))
     }
@@ -986,6 +1011,7 @@ impl RecordSet {
     pub fn tick_open(&mut self) {
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
+                slot.action_state.commit_for_save(doc);
                 saver.request(doc);
             }
         }
@@ -996,6 +1022,7 @@ impl RecordSet {
     pub fn flush_open(&mut self) {
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
+                slot.action_state.commit_for_save(doc);
                 saver.request(doc);
                 saver.flush();
             }
@@ -1008,6 +1035,7 @@ impl RecordSet {
         if let Some(slot) = self.active.as_ref().and_then(|id| self.open.get_mut(id))
             && let Some(saver) = slot.autosave.as_mut()
         {
+            slot.action_state.commit_for_save(live);
             saver.request(live);
         }
     }
@@ -1019,11 +1047,13 @@ impl RecordSet {
             && let Some(slot) = self.open.get_mut(&id)
             && let Some(saver) = slot.autosave.as_mut()
         {
+            slot.action_state.commit_for_save(live);
             saver.request(live);
             saver.flush();
         }
         for slot in self.open.values_mut() {
             if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
+                slot.action_state.commit_for_save(doc);
                 saver.request(doc);
                 saver.flush();
             }
@@ -1202,6 +1232,7 @@ impl RecordReservation {
                 kind: self.checkout.kind.clone(),
                 autosave: Some(autosave),
                 history,
+                action_state: crate::bound_dispatch::RecordActionState::default(),
             },
         );
         if let Some(slot) = set.open.get_mut(&self.checkout.id)
@@ -1345,8 +1376,10 @@ impl RecordStore {
                         errors.push(format!("{id}: {e}"));
                         continue;
                     }
+                    slot.action_state.commit_for_save(doc);
                     saver.request_checkpoint(doc);
                 } else {
+                    slot.action_state.commit_for_save(doc);
                     saver.request(doc);
                 }
                 if let Err(e) = saver.try_flush() {
@@ -1411,6 +1444,42 @@ impl RecordStore {
         Ok(f(document))
     }
 
+    pub(crate) fn read_checked<R>(
+        &self,
+        id: &RecordId,
+        read: impl FnOnce(&AutoCommit) -> R,
+    ) -> Result<R, RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let document = set
+            .open
+            .get(id)
+            .and_then(|parked| parked.doc.as_ref())
+            .ok_or(RecordOpenError::MissingRecord)?;
+        Ok(read(document))
+    }
+
+    /// One exclusive record admission for the document and owned action frame.
+    pub(crate) fn with_action_state<R>(
+        &self,
+        id: &RecordId,
+        callback: impl FnOnce(
+            &mut AutoCommit,
+            &mut crate::state::UndoLog,
+            &mut crate::bound_dispatch::RecordActionState,
+        ) -> R,
+    ) -> Result<R, RecordOpenError> {
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+        let parked = set.open.get_mut(id).ok_or(RecordOpenError::MissingRecord)?;
+        let doc = parked.doc.as_mut().ok_or(RecordOpenError::MissingRecord)?;
+        Ok(callback(doc, &mut parked.history, &mut parked.action_state))
+    }
+
+    pub(crate) fn action_generation(&self, id: &RecordId) -> Result<Option<u64>, RecordOpenError> {
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
+        let parked = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
+        Ok(parked.action_state.generation)
+    }
+
     /// Do something with a record's document. `None` if the record is not open here.
     pub fn with<R>(&self, id: &RecordId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
         let mut set = self.0.borrow_mut();
@@ -1419,8 +1488,7 @@ impl RecordStore {
 
     /// Read a record's document.
     pub fn read<R>(&self, id: &RecordId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
-        let mut set = self.0.borrow_mut();
-        set.document_mut(id).map(|d| f(d))
+        self.read_checked(id, f).ok()
     }
 
     /// Do something with a record's document *and* its history — commit an
@@ -1433,6 +1501,17 @@ impl RecordStore {
         let mut set = self.0.borrow_mut();
         let (doc, history) = set.document_and_history_mut(id)?;
         Some(f(doc, history))
+    }
+
+    /// Inspect committed history without turning a pending burst into a boundary.
+    pub fn read_history<R>(
+        &self,
+        id: &RecordId,
+        read: impl FnOnce(&AutoCommit, &crate::state::UndoLog) -> R,
+    ) -> Option<R> {
+        let set = self.0.try_borrow().ok()?;
+        let parked = set.open.get(id)?;
+        Some(read(parked.doc.as_ref()?, &parked.history))
     }
 
     /// Every record this store holds.

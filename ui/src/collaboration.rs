@@ -673,7 +673,7 @@ enum SdkCommand {
     Primary(CollabRequest),
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
-    PrimaryReady(mpsc::SyncSender<Result<(), String>>),
+    PrimaryReady(mpsc::SyncSender<Result<RouteSpec, String>>),
     InstallEncryption {
         spec: RouteSpec,
         group: Box<channel_crypto::ChannelGroup>,
@@ -1434,8 +1434,43 @@ fn sdk_join_identity(_cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_porta
     Err(runtime_portal::NotAvailable::ServiceFdMissing)
 }
 
+/// Successful primary-route metadata; an epoch invalidates cursors even when
+/// the same route is re-announced. This is not an application-mintable credential.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PrimaryRouteWitness {
+    pub(crate) route: RouteSpec,
+    pub(crate) epoch: Uuid,
+}
+#[derive(Default)]
+struct PrimaryRouteState {
+    requested: Option<RouteSpec>,
+    accepted: Option<PrimaryRouteWitness>,
+}
+impl PrimaryRouteState {
+    fn announce(&mut self, route: RouteSpec) {
+        self.accepted = None;
+        self.requested = Some(route);
+    }
+    fn accept(&mut self, result: Result<RouteSpec, String>) -> Result<(), String> {
+        self.accepted = None;
+        let route = result?;
+        if self.requested.as_ref() != Some(&route) {
+            return Err("primary route acknowledgement differs from the latest Hello".into());
+        }
+        self.accepted = Some(PrimaryRouteWitness {
+            route,
+            epoch: Uuid::new_v4(),
+        });
+        Ok(())
+    }
+    fn current(&self, healthy: bool) -> Option<&PrimaryRouteWitness> {
+        healthy.then_some(self.accepted.as_ref()).flatten()
+    }
+}
+
 pub struct CollaborationManager {
     backend: Backend,
+    primary_route: PrimaryRouteState,
     /// When `Some`, [`Self::send_signed_op`] mints a signed envelope and
     /// dispatches [`CollabRequest::SignedOperation`]. This explicit
     /// policy-envelope API is separate from document mutations, which the SDK
@@ -1547,6 +1582,7 @@ impl CollaborationManager {
         identity.participant_kind = participant_kind;
         let sdk = Self::spawn_sdk(source, identity)?;
         let mut manager = Self {
+            primary_route: PrimaryRouteState::default(),
             backend: Backend::Sdk(sdk),
             identity: None,
         };
@@ -1565,6 +1601,7 @@ impl CollaborationManager {
     /// this barrier a caller can publish transient presence immediately after
     /// construction, before the broker knows where to deliver it.
     fn await_primary_route(&mut self) -> Result<(), runtime_portal::NotAvailable> {
+        self.primary_route.accepted = None;
         let Backend::Sdk(channel) = &mut self.backend else {
             return Err(runtime_portal::NotAvailable::ServiceFdMissing);
         };
@@ -1582,10 +1619,12 @@ impl CollaborationManager {
             ));
         }
         match ready_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(runtime_portal::NotAvailable::ConnectionFailed(
-                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, error),
-            )),
+            Ok(result) => self.primary_route.accept(result).map_err(|error| {
+                runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    error,
+                ))
+            }),
             Err(mpsc::RecvTimeoutError::Timeout) => Err(
                 runtime_portal::NotAvailable::ConnectionFailed(std::io::Error::new(
                     std::io::ErrorKind::TimedOut,
@@ -1726,6 +1765,7 @@ impl CollaborationManager {
     pub(crate) fn disabled() -> Self {
         Self {
             backend: Backend::Disabled,
+            primary_route: PrimaryRouteState::default(),
             identity: None,
         }
     }
@@ -1746,6 +1786,7 @@ impl CollaborationManager {
         match Self::spawn_sdk(SdkConnectSource::Env, identity) {
             Ok(sdk) => {
                 let mut manager = Self {
+                    primary_route: PrimaryRouteState::default(),
                     backend: Backend::Sdk(sdk),
                     identity: None,
                 };
@@ -1795,6 +1836,7 @@ impl CollaborationManager {
         )
         .expect("spawn_sdk from Fd source must succeed in tests");
         let mut manager = Self {
+            primary_route: PrimaryRouteState::default(),
             backend: Backend::Sdk(sdk),
             identity: None,
         };
@@ -1892,6 +1934,10 @@ impl CollaborationManager {
 
     /// True when connected to a live broker — used by the
     /// event loop to keep ticking so the stream drains promptly.
+    pub(crate) fn primary_route(&self) -> Option<&PrimaryRouteWitness> {
+        self.primary_route.current(self.is_connected())
+    }
+
     pub fn is_connected(&self) -> bool {
         matches!(&self.backend, Backend::Sdk(channel) if channel.state.is_healthy())
     }
@@ -1942,6 +1988,22 @@ impl CollaborationManager {
     /// shed under saturation; any durable enqueue failure visibly disconnects
     /// the manager, so callers never continue under the illusion it was sent.
     pub fn send(&mut self, req: CollabRequest) {
+        if let CollabRequest::Hello {
+            app_id,
+            cluster_id,
+            record,
+            ..
+        } = &req
+        {
+            self.primary_route.announce(RouteSpec {
+                app_id: app_id.clone(),
+                cluster_id: *cluster_id,
+                record: record.clone(),
+            });
+            if let Backend::Sdk(channel) = &mut self.backend {
+                channel.action_directory_published = false;
+            }
+        }
         if let Backend::Sdk(ch) = &self.backend {
             let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Primary(req), &ch.state);
         }
@@ -2435,7 +2497,8 @@ async fn drive_shovel(
                     &mut routes,
                     &spec,
                 )
-                .await;
+                .await
+                .map(|()| spec);
                 primary = primary_result.is_ok().then_some(key);
             }
             SdkCommand::Primary(request) => {
@@ -3766,6 +3829,34 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
                 payload,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod task4_route_tests {
+    use super::{PrimaryRouteState, RouteSpec};
+    #[test]
+    fn task4_primary_witness_requires_latest_success_and_current_health() {
+        let a = RouteSpec::record("a", uuid::Uuid::nil(), "record-a");
+        let b = RouteSpec::record("b", uuid::Uuid::nil(), "record-b");
+        let mut state = PrimaryRouteState::default();
+        assert!(state.current(true).is_none());
+        state.announce(a.clone());
+        state.accept(Ok(a.clone())).unwrap();
+        let first = state.current(true).unwrap().clone();
+        assert_eq!(first.route, a);
+        assert!(state.current(false).is_none());
+        state.announce(a.clone());
+        assert!(state.current(true).is_none());
+        state.accept(Ok(a.clone())).unwrap();
+        assert_ne!(state.current(true).unwrap().epoch, first.epoch);
+        state.announce(b.clone());
+        assert!(state.accept(Ok(a)).is_err());
+        assert!(state.current(true).is_none());
+        assert!(state.accept(Err("refused".into())).is_err());
+        assert!(state.current(true).is_none());
+        state.accept(Ok(b)).unwrap();
+        assert!(state.current(true).is_some());
     }
 }
 

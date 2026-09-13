@@ -110,6 +110,44 @@ mod component_adapter {
         fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
             Some(self.component.callback_binding())
         }
+        fn visit_components(
+            &mut self,
+            request: &mut crate::bound_dispatch::ComponentRequest<'_>,
+        ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
+            let binding = self.component.callback_binding();
+            if binding.closing.get() {
+                return Ok(());
+            }
+            let Ok(_entry) = binding.lifetime.enter_if_open() else {
+                return Ok(());
+            };
+            if request
+                .target
+                .is_none_or(|target| target.instance_id == binding.instance_id)
+            {
+                let target = request.target.unwrap_or(&binding);
+                if let Some((invocation, accepted)) = self
+                    .component
+                    .with_live_component(target, &mut *request.visit)?
+                {
+                    if accepted {
+                        if !self.component.invocations.contains(&invocation) {
+                            self.component.invocations.push(invocation);
+                        }
+                    } else {
+                        self.component.invocations.retain(|id| *id != invocation);
+                    }
+                }
+                request.found = true;
+                if request.target.is_some() {
+                    return Ok(());
+                }
+            }
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.visit_components(request)?;
+            }
+            Ok(())
+        }
         fn take_collab_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -191,6 +229,7 @@ mod component_adapter {
                         return;
                     };
                     root.sync(document, record_root);
+                    let _ = binding.drain_owned_tree(root, document);
                 })
                 .unwrap_or(());
         }
@@ -230,7 +269,9 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return false;
                     };
-                    root.update(document, record_root)
+                    let updated = root.update(document, record_root);
+                    let _ = binding.drain_owned_tree(root, document);
+                    updated
                 })
                 .unwrap_or(false)
         }
@@ -384,6 +425,7 @@ mod component_adapter {
                             taffy,
                         );
                     }
+                    let _ = binding.drain_owned_tree(root, document);
                 })
                 .unwrap_or(());
         }
@@ -729,22 +771,12 @@ mod component_adapter {
             root.opening()
         }
         fn needs_commit(&self) -> bool {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return false;
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return false;
-            };
-            root.needs_commit()
+            // Consumed under the canonical record admission.
+            false
         }
         fn take_commit_context(&mut self) -> Option<qos_actions::ActionContext> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            root.take_commit_context()
+            // Consumed under the canonical record admission.
+            None
         }
         fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
             let binding = self.component.callback_binding();
@@ -752,7 +784,15 @@ mod component_adapter {
                 return None;
             };
             let root = self.component.root.as_deref_mut()?;
-            root.take_control_invocation()
+            if let Some(intent) = root.take_control_invocation() {
+                let mut queued = binding.queued_controls.borrow_mut();
+                if queued.len() >= 64 {
+                    queued.pop_front();
+                }
+                queued.push_back(intent);
+            }
+            // The private host sweep consumes the queue with this captured owner.
+            None
         }
         fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
             let binding = self.component.callback_binding();
@@ -766,26 +806,12 @@ mod component_adapter {
         }
         fn refresh_control_action_availability(
             &mut self,
-            allowed: &HashSet<qos_actions::ActionAddress>,
+            _allowed: &HashSet<qos_actions::ActionAddress>,
         ) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.refresh_control_action_availability(allowed);
+            // The private host sweep supplies this component's own authority.
         }
         fn on_commit(&mut self) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.on_commit();
+            // Consumed under the canonical record admission.
         }
         fn get_state(&self) -> Option<String> {
             let binding = self.component.callback_binding();
@@ -1090,14 +1116,7 @@ mod component_adapter {
                 .unwrap_or(None)
         }
         fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return Vec::new();
-            };
-            let Some(root) = self.component.root.as_deref() else {
-                return Vec::new();
-            };
-            root.search_providers()
+            self.component.search_providers()
         }
         fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
             let binding = self.component.callback_binding();
@@ -1111,30 +1130,15 @@ mod component_adapter {
                 .unwrap_or(());
         }
         fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            root.take_committed_action()
+            // Consumed under the canonical record admission.
+            None
         }
-        fn set_undo_status(&mut self, status: &crate::undo::UndoStatus) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_undo_status(status);
+        fn set_undo_status(&mut self, _: &crate::undo::UndoStatus) {
+            // Individual bound nodes receive their own record/instance status.
         }
         fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref_mut()?;
-            root.take_undo_request()
+            // The host captures the origin from its admitted node map.
+            None
         }
         fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
             let binding = self.component.callback_binding();

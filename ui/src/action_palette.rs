@@ -78,8 +78,9 @@ enum RowResolution {
     /// An exported action, deliberately retained as an inert address. It is
     /// resolved against the latest resource forest only when activated.
     Address(qos_actions::ActionAddress),
+    Bound(crate::bound_dispatch::BoundActionTarget),
     /// A legacy search-provider hit — hand the opaque id back to the app.
-    Navigate(String),
+    Navigate(String, Option<crate::bound_dispatch::CallbackBinding>),
 }
 
 /// A resource-scoped action's path to an [`EncodedAction`].
@@ -113,6 +114,7 @@ enum ActionKind {
 
 /// Live state while the field is collecting a prompted action's argument.
 struct ArgState {
+    bound: Option<crate::bound_dispatch::BoundActionTarget>,
     address: qos_actions::ActionAddress,
 }
 
@@ -130,6 +132,7 @@ enum PendingInput {
 
 /// A palette activation after address resolution and argument collection.
 pub struct PendingOperation {
+    pub(crate) bound: Option<crate::bound_dispatch::BoundActionTarget>,
     /// The address whose current authority must still be present at dispatch.
     pub address: qos_actions::ActionAddress,
     pub encoded: EncodedAction,
@@ -173,6 +176,7 @@ pub struct ActionPalette {
     provider_index: HashMap<String, RowResolution>,
     /// The focused instance's open resources (their exported actions are rows).
     resources: Vec<Resource>,
+    bound_resources: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
     /// Searchable-content sources folded in as navigable result groups.
     providers: Vec<Box<dyn SearchProvider>>,
     provider_cursors: Vec<Option<SearchCursor>>,
@@ -191,7 +195,7 @@ pub struct ActionPalette {
     pending_dispatch: Option<PendingOperation>,
     ambient_context: Option<ActionContext>,
     /// A navigation target, set on activation, drained by `take_navigation`.
-    pending_nav: Option<String>,
+    pending_nav: Option<(String, Option<crate::bound_dispatch::CallbackBinding>)>,
     /// The palette's outer rect (field + results), set by `layout`.
     rect: Rect,
     /// The field's own layout tree, rebuilt each `layout` so its `handle_event`
@@ -223,6 +227,7 @@ impl ActionPalette {
             provider_rows: Vec::new(),
             provider_index: HashMap::new(),
             resources: Vec::new(),
+            bound_resources: Vec::new(),
             providers: Vec::new(),
             provider_cursors: Vec::new(),
             provider_complete: Vec::new(),
@@ -272,7 +277,7 @@ impl ActionPalette {
             .values()
             .filter_map(|resolution| match resolution {
                 RowResolution::Address(address) => Some(address.resource.clone()),
-                RowResolution::Navigate(_) => None,
+                RowResolution::Navigate(..) | RowResolution::Bound(_) => None,
             })
             .collect::<Vec<_>>();
         ids.sort_unstable();
@@ -303,6 +308,26 @@ impl ActionPalette {
 
     /// Open (focus) the palette: reset the query, argument, and any pending
     /// outcome, and rebuild the (empty-query) result set.
+    pub(crate) fn load_bound_resources(
+        &mut self,
+        snapshots: Vec<crate::bound_dispatch::BoundResourceSnapshot>,
+    ) {
+        self.bound_resources = snapshots;
+        let query = self.field.value().to_string();
+        self.rebuild(&query);
+    }
+    pub(crate) fn activate_bound(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+    ) -> bool {
+        let key = target.key();
+        if self.index.contains_key(&key) {
+            self.resolve_activation(&key);
+            true
+        } else {
+            false
+        }
+    }
     pub fn open(&mut self) {
         self.open = true;
         self.arg = None;
@@ -390,6 +415,7 @@ impl ActionPalette {
                 ..SearchAdvance::default()
             };
         };
+        let binding = provider.callback_binding();
         let page = provider.search_page(
             &self.search_query,
             cursor.as_ref(),
@@ -405,7 +431,7 @@ impl ActionPalette {
         }
 
         let inspected = page.inspected;
-        let added = self.merge_provider_page(page.results);
+        let added = self.merge_provider_page(page.results, binding.as_ref());
         self.refresh_progressive_results();
         let pending = self.provider_complete.iter().any(|done| !*done);
         self.results.set_empty_text(if pending {
@@ -429,7 +455,11 @@ impl ActionPalette {
         }
     }
 
-    fn merge_provider_page(&mut self, results: Vec<SearchResult>) -> usize {
+    fn merge_provider_page(
+        &mut self,
+        results: Vec<SearchResult>,
+        binding: Option<&crate::bound_dispatch::CallbackBinding>,
+    ) -> usize {
         let before = self.provider_rows.len();
         let mut known = self
             .provider_rows
@@ -437,14 +467,33 @@ impl ActionPalette {
             .map(|row| row.action_id.clone())
             .collect::<std::collections::HashSet<_>>();
         for hit in results {
-            let row_id = format!("{NAV_PREFIX}{}", hit.action_id);
+            let row_id = binding.map_or_else(
+                || format!("{NAV_PREFIX}{}", hit.action_id),
+                |binding| format!("{NAV_PREFIX}{}:{}", binding.lifetime_id, hit.action_id),
+            );
             if !known.insert(row_id.clone()) {
                 continue;
             }
             let resolution = if hit.has_action_address() {
-                hit.action_address().map(RowResolution::Address)
+                hit.action_address().map(|address| {
+                    binding.map_or_else(
+                        || RowResolution::Address(address.clone()),
+                        |binding| {
+                            RowResolution::Bound(crate::bound_dispatch::BoundActionTarget {
+                                binding: (*binding).clone(),
+                                address: crate::bound_dispatch::BoundActionAddress {
+                                    instance_id: binding.instance_id,
+                                    address: address.clone(),
+                                },
+                            })
+                        },
+                    )
+                })
             } else {
-                Some(RowResolution::Navigate(hit.action_id.clone()))
+                Some(RowResolution::Navigate(
+                    hit.action_id.clone(),
+                    binding.cloned(),
+                ))
             };
             let Some(resolution) = resolution else {
                 continue;
@@ -548,7 +597,7 @@ impl ActionPalette {
     /// widget and document operations to the deterministic executor.
     pub fn take_operation(&mut self) -> Option<PendingOperation> {
         let mut pending = self.pending_dispatch.take()?;
-        let authority = self.authority_for(&pending.address)?;
+        let authority = self.authority_for(&pending.address, pending.bound.as_ref())?;
         let spec = qos_actions::door::resolve(&authority, &pending.address)?;
         if !spec.contract.availability.is_available()
             || spec.kind != pending.kind
@@ -574,7 +623,29 @@ impl ActionPalette {
         Some(pending)
     }
 
-    fn authority_for(&self, address: &qos_actions::ActionAddress) -> Option<Vec<Resource>> {
+    fn authority_for(
+        &self,
+        address: &qos_actions::ActionAddress,
+        bound: Option<&crate::bound_dispatch::BoundActionTarget>,
+    ) -> Option<Vec<Resource>> {
+        if let Some(target) = bound {
+            let _entry = target.binding.enter().ok()?;
+            let snapshot = self
+                .bound_resources
+                .iter()
+                .find(|snapshot| snapshot.binding.same_component(&target.binding))?;
+            let resources = snapshot
+                .resources
+                .iter()
+                .cloned()
+                .filter_map(|resource| {
+                    crate::bound_dispatch::filter_resource(&target.binding, resource)
+                })
+                .collect::<Vec<_>>();
+            return qos_actions::door::resolve(&resources, address)
+                .is_some()
+                .then_some(resources);
+        }
         qos_actions::door::resolve(&self.resources, address)
             .is_some()
             .then(|| self.resources.clone())
@@ -583,7 +654,31 @@ impl ActionPalette {
     /// Drain a completed content activation: the opaque `action_id` of the
     /// chosen search-provider row, for the app to navigate to.
     pub fn take_navigation(&mut self) -> Option<String> {
+        if self
+            .pending_nav
+            .as_ref()
+            .is_some_and(|(_, binding)| binding.is_none())
+        {
+            self.pending_nav.take().map(|(id, _)| id)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn take_scoped_navigation(
+        &mut self,
+    ) -> Option<(String, Option<crate::bound_dispatch::CallbackBinding>)> {
         self.pending_nav.take()
+    }
+
+    pub(crate) fn referenced_bound_targets(&self) -> Vec<crate::bound_dispatch::BoundActionTarget> {
+        self.index
+            .values()
+            .filter_map(|resolution| match resolution {
+                RowResolution::Bound(target) => Some(target.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     fn dispatch_encoded(
@@ -613,8 +708,13 @@ impl ActionPalette {
     /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
         match self.index.get(id).cloned() {
-            Some(RowResolution::Address(address)) => {
-                let Some(kind) = self.action_kind_for_address(&address) else {
+            Some(resolution @ (RowResolution::Address(_) | RowResolution::Bound(_))) => {
+                let (address, bound) = match resolution {
+                    RowResolution::Address(address) => (address, None),
+                    RowResolution::Bound(target) => (target.address.address.clone(), Some(target)),
+                    RowResolution::Navigate(..) => return,
+                };
+                let Some(kind) = self.action_kind_for_address(&address, bound.as_ref()) else {
                     let query = self.field.value().to_string();
                     self.rebuild(&query);
                     return;
@@ -628,6 +728,7 @@ impl ActionPalette {
                     } => {
                         self.queue_or_confirm(
                             PendingOperation {
+                                bound,
                                 address,
                                 encoded,
                                 context,
@@ -646,27 +747,32 @@ impl ActionPalette {
                         self.field.set_placeholder(&prompt);
                         self.field.set_focused(true);
                         self.results.set_groups(Vec::new());
-                        self.arg = Some(ArgState { address });
+                        self.arg = Some(ArgState { bound, address });
                     }
                     ActionKind::Typed { prompt, .. } => {
                         self.field = SearchField::new();
                         self.field.set_placeholder(&prompt);
                         self.field.set_focused(true);
                         self.results.set_groups(Vec::new());
-                        self.arg = Some(ArgState { address });
+                        self.arg = Some(ArgState { bound, address });
                     }
                 }
             }
-            Some(RowResolution::Navigate(target)) => {
-                self.pending_nav = Some(target);
+            Some(RowResolution::Navigate(target, binding)) => {
+                self.pending_nav = Some((target, binding));
                 self.open = false;
             }
             None => {}
         }
     }
 
-    fn action_kind_for_address(&self, address: &qos_actions::ActionAddress) -> Option<ActionKind> {
-        let fa = flatten(&self.resources)
+    fn action_kind_for_address(
+        &self,
+        address: &qos_actions::ActionAddress,
+        bound: Option<&crate::bound_dispatch::BoundActionTarget>,
+    ) -> Option<ActionKind> {
+        let resources = self.authority_for(address, bound)?;
+        let fa = flatten(&resources)
             .into_iter()
             .find(|fa| fa.key == address.encode())?;
         if !fa.action.contract.availability.is_available() {
@@ -753,6 +859,41 @@ impl ActionPalette {
                     )),
                 );
                 rows.push(r);
+            }
+        }
+
+        for snapshot in &self.bound_resources {
+            let Ok(_entry) = snapshot.binding.enter() else {
+                continue;
+            };
+            for resource in snapshot.resources.iter().cloned().filter_map(|resource| {
+                crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
+            }) {
+                for fa in flatten(&[resource]) {
+                    if !fa.action.contract.availability.is_available() {
+                        continue;
+                    }
+                    let title = format!(
+                        "{} — {} · {}",
+                        fa.resource_label, fa.action.label, snapshot.binding.instance_id
+                    );
+                    if fuzzy_score(query, &title).is_none() {
+                        continue;
+                    }
+                    let target = crate::bound_dispatch::BoundActionTarget {
+                        binding: snapshot.binding.clone(),
+                        address: crate::bound_dispatch::BoundActionAddress {
+                            instance_id: snapshot.binding.instance_id,
+                            address: qos_actions::ActionAddress::new(
+                                fa.resource_id.as_str(),
+                                &fa.action.id,
+                            ),
+                        },
+                    };
+                    let key = target.key();
+                    rows.push(SearchResult::new(ACTIONS_KIND, title, key.clone()));
+                    index.insert(key, RowResolution::Bound(target));
+                }
             }
         }
 
@@ -924,7 +1065,8 @@ impl ActionPalette {
                 let value = self.field.value().to_string();
                 if let Some(state) = self.arg.take() {
                     let address = state.address;
-                    let Some(fresh) = self.action_kind_for_address(&address) else {
+                    let bound = state.bound;
+                    let Some(fresh) = self.action_kind_for_address(&address, bound.as_ref()) else {
                         self.exit_argument_mode();
                         return true;
                     };
@@ -981,6 +1123,7 @@ impl ActionPalette {
                     };
                     self.queue_or_confirm(
                         PendingOperation {
+                            bound,
                             address,
                             encoded,
                             context,
