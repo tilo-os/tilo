@@ -99,6 +99,9 @@ mod scrollable_test;
 mod scrollbar_render_test;
 #[path = "strip_view_test.rs"]
 mod strip_view_test;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[path = "synthetic_key_event.rs"]
+mod synthetic_key_event;
 #[path = "tabs_test.rs"]
 mod tabs_test;
 #[path = "textinput_local_mode.rs"]

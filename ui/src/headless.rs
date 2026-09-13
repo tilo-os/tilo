@@ -2625,31 +2625,29 @@ fn next_widget_path(
     (name, path, current)
 }
 
-/// Build a `WindowEvent::KeyboardInput` winit itself would have delivered.
-///
-/// `KeyEvent::platform_specific` is `pub(crate)` in winit, so the struct
-/// can't be built field-by-field from outside that crate. Zero-initialising
-/// and overwriting every field we care about is the same workaround the
-/// compositor's own driver uses (`shell/src/bin/shots/driver.rs`).
+/// Build a deterministic `WindowEvent::KeyboardInput` for the headless driver.
 fn key_event(key: &Key, state: ElementState) -> WindowEvent {
-    // SAFETY: `KeyEvent`'s only unwritten field is the platform payload,
-    // which on Linux is a plain `Option`-shaped struct for which an
-    // all-zero bit pattern is a valid value, and which nothing downstream
-    // of `handle_event` reads.
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = state;
-    ev.repeat = false;
-    ev.text = match (&key, state) {
-        (Key::Character(c), ElementState::Pressed) => Some(c.clone()),
+    let text = match (key, state) {
+        (Key::Character(value), ElementState::Pressed) => Some(value.clone()),
         _ => None,
     };
+    let event = winit::event::KeyEvent::synthetic(
+        winit::event::RawKeyEvent {
+            physical_key: winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            ),
+            state,
+        },
+        key.clone(),
+        text.clone(),
+        winit::keyboard::KeyLocation::Standard,
+        false,
+        text,
+        key.clone(),
+    );
     WindowEvent::KeyboardInput {
         device_id: winit::event::DeviceId::dummy(),
-        event: ev,
+        event,
         is_synthetic: false,
     }
 }
@@ -2947,6 +2945,45 @@ fn write_headless_output(
 mod tests {
     use super::*;
     use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn synthetic_key_helper_preserves_keyboard_route_and_modifier_supplements() {
+        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+
+        let key = Key::Character("Q".into());
+        let pressed = key_event(&key, ElementState::Pressed);
+        let released = key_event(&key, ElementState::Released);
+
+        for (window_event, expected_state, expected_text) in [
+            (pressed, ElementState::Pressed, Some("Q")),
+            (released, ElementState::Released, None),
+        ] {
+            let WindowEvent::KeyboardInput {
+                device_id,
+                event,
+                is_synthetic,
+            } = window_event
+            else {
+                panic!("key_event must use WindowEvent::KeyboardInput");
+            };
+            assert_eq!(device_id, winit::event::DeviceId::dummy());
+            assert!(!is_synthetic);
+            assert_eq!(
+                event.physical_key,
+                winit::keyboard::PhysicalKey::Unidentified(
+                    winit::keyboard::NativeKeyCode::Unidentified
+                )
+            );
+            assert_eq!(event.logical_key, key);
+            assert_eq!(event.text.as_deref(), expected_text);
+            assert_eq!(event.location, winit::keyboard::KeyLocation::Standard);
+            assert_eq!(event.state, expected_state);
+            assert!(!event.repeat);
+            assert_eq!(event.text_with_all_modifiers(), expected_text);
+            assert_eq!(event.key_without_modifiers(), key);
+        }
+    }
 
     /// The frame harness is the app wrapper used by scenarios. Keep Tab
     /// coverage here rather than only in direct widget tests: the live host
