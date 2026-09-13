@@ -625,6 +625,9 @@ impl TextStyle {
         self.size * self.line_height
     }
 
+    /// Resolve the integer weight accepted by cosmic-text: the last explicit
+    /// `wght` overrides the named tier, rounds to nearest, then clamps to 1..1000.
+    /// Painting uses each shaped glyph's resulting weight, including span bold.
     pub(crate) fn effective_weight(&self) -> Weight {
         let value = self
             .font_variations
@@ -1924,7 +1927,11 @@ impl TextRenderer {
                         face_id,
                         font_weight,
                         glyphs: std::mem::take(&mut glyphs),
-                        normalized_coords: self.normalized_coords(face_id, &variations),
+                        normalized_coords: self.normalized_coords(
+                            face_id,
+                            &variations,
+                            font_weight,
+                        ),
                     });
                 }
                 current = Some(key);
@@ -1941,7 +1948,7 @@ impl TextRenderer {
                     face_id,
                     font_weight,
                     glyphs,
-                    normalized_coords: self.normalized_coords(face_id, &variations),
+                    normalized_coords: self.normalized_coords(face_id, &variations, font_weight),
                 });
             }
             if let Some(marker) = exercised_hyphen
@@ -1955,7 +1962,11 @@ impl TextRenderer {
                         x: hyphen.x,
                         y: run.line_y + hyphen.y,
                     }],
-                    normalized_coords: self.normalized_coords(hyphen.font_id, &variations),
+                    normalized_coords: self.normalized_coords(
+                        hyphen.font_id,
+                        &variations,
+                        hyphen.font_weight,
+                    ),
                 });
             }
         }
@@ -2029,21 +2040,23 @@ impl TextRenderer {
         &self,
         face_id: cosmic_text::fontdb::ID,
         variations: &[FontVariation],
+        font_weight: Weight,
     ) -> Vec<vello::NormalizedCoord> {
         use skrifa::{FontRef, MetadataProvider, Tag};
 
-        if variations.is_empty() {
-            return Vec::new();
-        }
         self.font_system
             .db()
             .with_face_data(face_id, |data, index| {
                 let font = FontRef::from_index(data, index).ok()?;
-                let location = font.axes().location(
-                    variations
-                        .iter()
-                        .map(|axis| (Tag::new(&axis.tag.0), axis.value)),
-                );
+                let settings = variations
+                    .iter()
+                    .filter(|axis| axis.tag != OpenTypeTag::WEIGHT)
+                    .map(|axis| (Tag::new(&axis.tag.0), axis.value))
+                    .chain(std::iter::once((
+                        Tag::new(b"wght"),
+                        f32::from(font_weight.0),
+                    )));
+                let location = font.axes().location(settings);
                 Some(
                     location
                         .coords()
@@ -2067,8 +2080,7 @@ impl TextRenderer {
     ) {
         draw_rich_backgrounds(scene, layout, transform);
 
-        // Glyphs batch by (face, colour, size, baseline-shift) so a
-        // super/subscript run flushes as its own batch with the right size & y.
+        // Glyphs batch by face, shaped weight, color, size and baseline shift.
         for run in layout.buffer.layout_runs() {
             self.draw_rich_run(scene, &run, layout, transform, color);
         }
@@ -2094,6 +2106,7 @@ impl TextRenderer {
             .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
         let mut face: Option<cosmic_text::fontdb::ID> = None;
         let mut cur_color: Option<cosmic_text::Color> = None;
+        let mut cur_weight: Option<Weight> = None;
         let mut cur_shift = BaselineShift::None;
         let mut batch: Vec<cosmic_text::LayoutGlyph> = Vec::new();
         let mut size = 16.0f32;
@@ -2104,8 +2117,9 @@ impl TextRenderer {
             }
             let global_byte = layout.glyph_global_byte(run.line_i, g.start);
             let g_shift = layout.baseline_at(global_byte);
-            // Flush when face, colour, glyph size, or baseline-shift change.
+            // Glyphs batch by face, shaped weight, color, size and baseline shift.
             let changed = face != Some(g.font_id)
+                || cur_weight != Some(g.font_weight)
                 || cur_color != g.color_opt
                 || (g.font_size - batch_size).abs() > f32::EPSILON
                 || cur_shift != g_shift;
@@ -2127,6 +2141,7 @@ impl TextRenderer {
                 batch.clear();
             }
             face = Some(g.font_id);
+            cur_weight = Some(g.font_weight);
             cur_color = g.color_opt;
             cur_shift = g_shift;
             size = g.font_size;
@@ -2189,6 +2204,12 @@ impl TextRenderer {
         let Some(vello_font) = self.vello_font(face_id, first.font_weight) else {
             return;
         };
+        debug_assert!(
+            glyphs
+                .iter()
+                .all(|glyph| glyph.font_weight == first.font_weight)
+        );
+        let normalized_coords = self.normalized_coords(face_id, variations, first.font_weight);
 
         let vello_glyphs = glyphs.iter().map(|g| vello::Glyph {
             id: u32::from(g.glyph_id),
@@ -2196,7 +2217,6 @@ impl TextRenderer {
             y: line_y + g.y,
         });
 
-        let normalized_coords = self.normalized_coords(face_id, variations);
         scene
             .draw_glyphs(&vello_font)
             .font_size(size)
@@ -3013,7 +3033,11 @@ mod tests {
 
     #[test]
     fn variable_axes_are_normalized_in_the_faces_native_axis_order() {
-        let renderer = TextRenderer::new();
+        let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            "en-US",
+        );
+        let renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
         let face = renderer
             .font_system
             .db()
@@ -3021,7 +3045,7 @@ mod tests {
                 families: &[Family::Name("Adwaita Sans")],
                 ..cosmic_text::fontdb::Query::default()
             })
-            .expect("the product image ships the Adwaita Sans variable face");
+            .expect("the controlled catalog supplies Adwaita Sans");
         let coords = renderer.normalized_coords(
             face,
             &[
@@ -3034,6 +3058,7 @@ mod tests {
                     value: 32.0,
                 },
             ],
+            Weight(700),
         );
         assert_eq!(coords.len(), 2, "Adwaita exposes opsz and wght");
         assert!(
