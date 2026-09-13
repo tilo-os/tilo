@@ -6,7 +6,9 @@
 //! portal frontend/policy controller; this module additionally bounds all
 //! untrusted keys and values before committing them.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -15,8 +17,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
 use zbus::zvariant::{OwnedValue, Str};
 
@@ -25,9 +30,12 @@ use super::{PortalContext, auth::authenticate_frontend_call};
 
 const MAX_TABLE: usize = 96;
 const MAX_ID: usize = 512;
+#[cfg(target_os = "linux")]
 const MAX_APP: usize = 255;
+#[cfg(target_os = "linux")]
 const MAX_PERMISSIONS: usize = 64;
 const MAX_VALUE: usize = 16 * 1024;
+#[cfg(target_os = "linux")]
 const MAX_ENTRIES: usize = 4096;
 
 #[allow(
@@ -486,6 +494,7 @@ impl PermissionStoreBackend {
     ) -> zbus::Result<()>;
 }
 
+#[cfg(target_os = "linux")]
 fn default_path() -> PathBuf {
     let base = super::private_state_root().unwrap_or_else(|| PathBuf::from("/dev/null"));
     base.join("qos/portal/permissions.json")
@@ -496,6 +505,7 @@ fn failed(message: &str) -> zbus::fdo::Error {
 fn invalid(message: &str) -> zbus::fdo::Error {
     zbus::fdo::Error::InvalidArgs(message.into())
 }
+#[cfg(target_os = "linux")]
 fn checked_text(value: &str) -> bool {
     value.len() <= MAX_VALUE && !value.contains('\0')
 }
@@ -504,11 +514,13 @@ fn valid_key(value: &str, max: usize, label: &str) -> zbus::fdo::Result<()> {
         .then_some(())
         .ok_or_else(|| invalid(&format!("invalid {label}")))
 }
+#[cfg(target_os = "linux")]
 fn checked_permission_list(values: Vec<String>) -> zbus::fdo::Result<Vec<String>> {
     (values.len() <= MAX_PERMISSIONS && values.iter().all(|v| checked_text(v)))
         .then_some(values)
         .ok_or_else(|| invalid("invalid permission list"))
 }
+#[cfg(target_os = "linux")]
 fn checked_permissions(
     values: HashMap<String, Vec<String>>,
 ) -> zbus::fdo::Result<BTreeMap<String, Vec<String>>> {

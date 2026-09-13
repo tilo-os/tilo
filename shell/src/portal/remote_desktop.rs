@@ -29,28 +29,46 @@
 )]
 
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd as StdOwnedFd;
+#[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
+#[cfg(target_os = "linux")]
 use zbus::zvariant::OwnedFd;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::network::streaming::RemoteAction;
+#[cfg(target_os = "linux")]
 use crate::shell::state::{Capability, Expiry};
 
 use super::PortalCaller;
-use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
+use super::lifecycle::PortalLifecycle;
+#[cfg(target_os = "linux")]
+use super::lifecycle::{LifecycleEntry, LifecycleResource};
 #[cfg(target_os = "linux")]
 use super::{CapabilityKind, PortalContext, auth::authenticate_call, flow};
 
+#[cfg(target_os = "linux")]
 const MAX_LIVE_SESSIONS: usize = 64;
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+    )
+)]
 const MAX_RESTORE_RECORDS: usize = 256;
 const RESTORE_VENDOR: &str = "qos";
 const RESTORE_DATA_VERSION: u32 = 1;
@@ -184,13 +202,41 @@ impl RemoteInputInjector for ChannelInjector {
 #[derive(Clone, Debug, Default)]
 struct RemoteDesktopSession {
     owner: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     app_id: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     caller: Option<PortalCaller>,
     /// Devices the user granted (bitmask). `Notify*` is gated on this.
     devices: u32,
     /// The user consented at `SelectDevices` (so `Start` needn't re-ask).
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     consented: bool,
     /// Serializes concurrent SelectDevices calls across the async prompt.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     selecting: bool,
     /// `Start` has committed the session; `Notify*` only injects after.
     started: bool,
@@ -199,16 +245,44 @@ struct RemoteDesktopSession {
     /// access merely because the same app previously used the clipboard.
     clipboard_requested: bool,
     /// Serializes concurrent Start calls.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     starting: bool,
     /// The sender-context EIS server reads this before every event. Closing a
     /// session flips it before dropping the map entry, so a retained client FD
     /// can never inject after the authenticated session ended.
     eis_live: Arc<AtomicBool>,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     eis_connected: bool,
     /// The effective standard v2 persistence request selected by the user.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     persist_mode: u32,
     /// A validated restore record skips the duplicate consent prompt, but is
     /// still bound to the same authenticated application id.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     restored: bool,
 }
 
@@ -222,12 +296,40 @@ struct RemoteRestoreData {
 
 #[derive(Default)]
 struct RemoteRestoreStore {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     memory: HashMap<String, RemoteRestoreData>,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     durable: HashMap<String, RemoteRestoreData>,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     path: Option<PathBuf>,
 }
 
 impl RemoteRestoreStore {
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     fn load() -> Self {
         let path = std::env::var_os("XDG_STATE_HOME")
             .map(PathBuf::from)
@@ -258,6 +360,13 @@ impl RemoteRestoreStore {
         }
     }
 
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     fn get(&self, key: &str) -> Option<RemoteRestoreData> {
         self.memory
             .get(key)
@@ -265,6 +374,13 @@ impl RemoteRestoreStore {
             .cloned()
     }
 
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     fn insert(&mut self, key: String, record: RemoteRestoreData) -> Result<(), String> {
         let target = if record.persist_mode == 2 {
             &mut self.durable
@@ -285,6 +401,13 @@ impl RemoteRestoreStore {
         self.persist()
     }
 
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     fn persist(&self) -> Result<(), String> {
         let Some(path) = &self.path else {
             return if self.durable.is_empty() {
@@ -314,8 +437,22 @@ pub struct RemoteDesktopBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
     injector: RemoteInputInjectorHandle,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     lifecycle: PortalLifecycle,
     sessions: Arc<Mutex<HashMap<String, RemoteDesktopSession>>>,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     restore: Arc<Mutex<RemoteRestoreStore>>,
 }
 
@@ -1159,6 +1296,7 @@ fn remote_action_from_eis(request: reis::request::EisRequest) -> Option<RemoteAc
     }
 }
 
+#[cfg(target_os = "linux")]
 fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
     let v = options.get(key)?.try_clone().ok()?;
     u32::try_from(v).ok()
@@ -1168,9 +1306,7 @@ fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
 mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
-    use crate::portal::{
-        CallerMap, GrantStoreHandle, PortalCaller, PromptQueueHandle, PromptResolver,
-    };
+    use crate::portal::{CallerMap, GrantStoreHandle, PromptQueueHandle, PromptResolver};
     #[cfg(target_os = "linux")]
     use crate::shell::state::{Workspace, WorkspaceId};
 

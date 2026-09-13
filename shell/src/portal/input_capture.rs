@@ -9,10 +9,14 @@
 )]
 
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::io;
+#[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd as StdOwnedFd;
+#[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
@@ -21,20 +25,29 @@ use reis::calloop::{EisRequestSource, EisRequestSourceEvent};
 use reis::enumflags2::BitFlags;
 #[cfg(target_os = "linux")]
 use reis::request::{Connection as EisConnection, Device, DeviceCapability, EisRequest, Seat};
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedFd, OwnedValue, Value};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::{ObjectPath, OwnedFd};
+use zbus::zvariant::{OwnedValue, Value};
 
 use super::PortalCaller;
 #[cfg(target_os = "linux")]
 use super::auth::authenticate_call;
+#[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 #[cfg(target_os = "linux")]
 use super::{CapabilityKind, PortalContext, flow};
+#[cfg(target_os = "linux")]
 use crate::shell::state::{Capability, Expiry};
 
+#[cfg(target_os = "linux")]
 const MAX_SESSIONS: usize = 32;
+#[cfg(target_os = "linux")]
 const MAX_BARRIERS: usize = 64;
 
 pub mod capability {
@@ -107,27 +120,81 @@ impl EisTransport {
 #[derive(Clone, Debug)]
 enum PortalSignal {
     Activated {
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                dead_code,
+                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+            )
+        )]
         session: String,
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                dead_code,
+                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+            )
+        )]
         activation_id: u32,
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                dead_code,
+                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+            )
+        )]
         cursor: (f64, f64),
         barrier_id: u32,
     },
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     Deactivated {
         session: String,
         activation_id: u32,
         cursor: (f64, f64),
     },
-    Disabled {
-        session: String,
-    },
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
+    Disabled { session: String },
     ZonesChanged {
+        #[cfg_attr(
+            not(target_os = "linux"),
+            expect(
+                dead_code,
+                reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+            )
+        )]
         session: String,
     },
 }
 #[derive(Clone)]
 struct CaptureSession {
     owner: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     app_id: String,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     caller: PortalCaller,
     started: bool,
     enabled: bool,
@@ -135,6 +202,13 @@ struct CaptureSession {
     /// Requested through Clipboard before Start. Access itself is live only
     /// while `active` has been armed by a barrier.
     clipboard_requested: bool,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     capabilities: u32,
     zone_set: u32,
     barriers: Vec<PointerBarrier>,
@@ -985,6 +1059,7 @@ fn close_session(state: &Arc<Mutex<CaptureState>>, key: &str) {
         transport.send(EisCommand::Close);
     }
 }
+#[cfg(target_os = "linux")]
 fn parse_barrier(raw: &HashMap<String, OwnedValue>) -> Option<PointerBarrier> {
     let id = opt_u32(raw, "barrier_id")?;
     if id == 0 {

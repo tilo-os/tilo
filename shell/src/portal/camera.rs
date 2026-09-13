@@ -27,7 +27,9 @@ use zbus::interface;
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
 
 use crate::shell::state::{Capability, GRANT_ONCE};
 

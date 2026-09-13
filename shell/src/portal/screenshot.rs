@@ -1,5 +1,7 @@
 //! `org.freedesktop.impl.portal.Screenshot` backend.
-use super::desktop_services::{PortalResult, ScreenshotRequest, ScreenshotTarget};
+use super::desktop_services::ScreenshotTarget;
+#[cfg(target_os = "linux")]
+use super::desktop_services::{PortalResult, ScreenshotRequest};
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource, PortalLifecycle};
 #[cfg(target_os = "linux")]
@@ -9,7 +11,9 @@ use std::collections::HashMap;
 use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
-use zbus::zvariant::{ObjectPath, OwnedValue};
+#[cfg(target_os = "linux")]
+use zbus::zvariant::ObjectPath;
+use zbus::zvariant::OwnedValue;
 #[cfg(target_os = "linux")]
 pub struct ScreenshotBackend {
     ctx: PortalContext,
@@ -24,6 +28,7 @@ impl ScreenshotBackend {
         Self { ctx, lifecycle }
     }
 }
+#[cfg(target_os = "linux")]
 fn bool_opt(options: &HashMap<String, OwnedValue>, key: &str, default: bool) -> bool {
     options
         .get(key)
@@ -55,6 +60,7 @@ fn target(
         Ok(Some(target))
     }
 }
+#[cfg(target_os = "linux")]
 fn color_value(color: (f64, f64, f64)) -> Option<OwnedValue> {
     OwnedValue::try_from(zbus::zvariant::Value::new(color)).ok()
 }

@@ -3442,7 +3442,6 @@ where
 )]
 mod tests {
     use super::*;
-    use crate::compositor::backend::drm::devices::ModeInfo;
 
     fn test_keyboard_settings() -> KeyboardSettings {
         KeyboardSettings::default()

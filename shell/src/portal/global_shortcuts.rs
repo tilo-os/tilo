@@ -28,7 +28,9 @@ use tokio::sync::oneshot;
 use winit::event::Modifiers;
 use winit::keyboard::PhysicalKey;
 #[cfg(any(test, target_os = "linux"))]
-use zbus::zvariant::{OwnedValue, Str};
+use zbus::zvariant::OwnedValue;
+#[cfg(target_os = "linux")]
+use zbus::zvariant::Str;
 
 use super::PortalCaller;
 use super::desktop_services::PortalResult;
@@ -39,7 +41,7 @@ use crate::shell::portal_dialog::{
     PortalDialogQueue, ShortcutBindingDecision, ShortcutBindingRequest, ShortcutBindingRow,
 };
 
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 const MAX_SESSIONS: usize = 128;
 #[cfg(any(test, target_os = "linux"))]
 const MAX_SHORTCUTS: usize = 64;
@@ -71,7 +73,7 @@ pub struct GlobalShortcut {
 }
 
 impl GlobalShortcut {
-    #[cfg(any(test, target_os = "linux"))]
+    #[cfg(target_os = "linux")]
     fn wire(&self) -> ShortcutWire {
         let mut options = HashMap::new();
         if let Some(description) = &self.description {
@@ -389,6 +391,13 @@ struct Session {
     caller: PortalCaller,
     shortcuts: Vec<GlobalShortcut>,
     #[cfg(any(test, target_os = "linux"))]
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
+        )
+    )]
     binding: bool,
 }
 
@@ -1021,7 +1030,7 @@ fn valid_id(value: &str) -> bool {
 fn valid_text(value: &str) -> bool {
     value.len() <= MAX_TEXT_BYTES && !value.chars().any(char::is_control)
 }
-#[cfg(any(test, target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn valid_parent(value: &str) -> bool {
     value.len() <= MAX_TEXT_BYTES && !value.chars().any(char::is_control)
 }
