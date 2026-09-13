@@ -12418,7 +12418,7 @@ mod injected_startup_tests {
             workspace_roots: Vec::new(),
             record_roots: Vec::new(),
             remote_accounts: vec![account.clone()],
-            trusted_humans: Default::default(),
+            trusted_humans: crate::identity_directory::TrustedHumanDirectory::default(),
         });
         assert_eq!(widget.current_path, dir.path());
         assert_eq!(widget.displayed_entries().len(), 1);
@@ -12433,6 +12433,9 @@ mod injected_startup_tests {
         assert_eq!(widget.current_path, dir.path());
         assert!(widget.workspace_roots.is_empty());
         assert_eq!(widget.remote_account_snapshot(), vec![account]);
-        assert_eq!(widget.trusted_humans, Default::default());
+        assert_eq!(
+            widget.trusted_humans,
+            crate::identity_directory::TrustedHumanDirectory::default()
+        );
     }
 }

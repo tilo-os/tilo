@@ -697,6 +697,7 @@ pub fn spawn_signal_emitter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use crate::shell::state::WorkspaceId;
 
     fn flatpak_entries(root: &Path, app_id: &str) -> Vec<desktop_entry::DesktopEntry> {
@@ -892,10 +893,10 @@ mod tests {
     // `tests/portal_test.rs`'s hermetic fixture: a `UnixStream::pair()`
     // carries a server and a raw-proxy client — no real session bus or broker needed.
 
+    #[cfg(target_os = "linux")]
     const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 
     #[cfg(target_os = "linux")]
-
     async fn bring_up_pair(
         bridge: NotificationBridge,
         callers: CallerMap,
@@ -919,7 +920,6 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-
     async fn notifications_proxy(client: &zbus::Connection) -> zbus::Proxy<'_> {
         zbus::proxy::Builder::<zbus::Proxy<'_>>::new(client)
             .destination(BUS_NAME)

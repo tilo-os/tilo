@@ -12272,7 +12272,7 @@ mod wake_integration_tests {
             self.capture("event");
         }
 
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "capture-root"
         }
 
@@ -12396,11 +12396,11 @@ mod wake_integration_tests {
             let view = app.capture_view();
             app.restore_view(&view);
         }
-        let mut requests = std::mem::take(&mut *captures.borrow_mut());
+        let requests = std::mem::take(&mut *captures.borrow_mut());
         for label in ["layout", "sync", "capture-view", "restore-view"] {
             assert!(requests.iter().any(|(actual, _)| *actual == label));
         }
-        for (_, mut request) in requests.drain(..) {
+        for (_, mut request) in requests {
             let completion = {
                 let _other = other.enter();
                 request.begin()

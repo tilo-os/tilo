@@ -13,7 +13,7 @@ pub use crate::shell::test_control::{
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -2199,7 +2199,6 @@ fn write_snapshot_png(
 /// Cap on the per-line size: `read_line` buffers the whole line regardless
 /// of size, so an unbounded no-newline stream could OOM the compositor. 64
 /// KiB is well above any legitimate command and below meaningful memory pressure.
-
 #[allow(
     clippy::too_many_lines,
     reason = "Connection pumping preserves request order, response framing, and frame-state mutation in one transaction to make test-control behavior deterministic."
@@ -2611,10 +2610,6 @@ fn vt_switch_chord(event: &WindowEvent, modifiers: Modifiers) -> Option<i32> {
 
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
-
-/// Sequence for same-directory workspace-salt claim files. The final file is
-/// published with a hard link, so concurrent sessions can never replace the
-/// salt another session already used to mint durable object ids.
 
 /// Load this machine's desktop state and bring it up to the invariants
 /// later stages assume: a persist path, a durable room identity per

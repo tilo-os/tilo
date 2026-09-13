@@ -57,6 +57,7 @@ use crate::collab::hdr_metadata::{ContentLightLevel, Hdr10Metadata, MasteringDis
 /// Keep event emission below aligned with this value: `ready2` was added in
 /// version 2 and sending it on a version-1 image-description object disconnects
 /// clients with "has no event 2".
+#[cfg(target_os = "linux")]
 const MAX_VERSION: u32 = 1;
 
 /// Advertised capability set for `wp_color_manager_v1`.
@@ -189,6 +190,13 @@ struct ParametricBuilderInner {
     tf_power_eexp: Option<u32>,
     /// Primary color volume luminance range: (`min_lum` × `10_000`,
     /// `max_lum`, `reference_lum`) — cd/m².
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
+        )
+    )]
     luminances: Option<(u32, u32, u32)>,
     /// Mastering display primaries in the same wire encoding as
     /// `primaries_custom`.
@@ -200,6 +208,13 @@ struct ParametricBuilderInner {
     /// Max frame-average light level — cd/m².
     max_fall: Option<u32>,
     /// Set once `create` runs so a second `create` is caught cleanly.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
+        )
+    )]
     consumed: bool,
 }
 
@@ -307,6 +322,7 @@ impl ParametricBuilder {
 
     /// Mark the builder as consumed so the second `create` request
     /// can be caught with `already_set`.
+    #[cfg(target_os = "linux")]
     fn mark_consumed(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.consumed = true;
@@ -511,6 +527,13 @@ struct ColorManagementSurfaceInner {
     /// Guards `get_surface` from creating a second per-surface manager.
     /// Set the first time a `wp_color_management_surface_v1` is minted
     /// for this `wl_surface`.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "the Linux Wayland dispatcher consumes this shared color state; retain the complete model"
+        )
+    )]
     manager_attached: bool,
 }
 
@@ -527,12 +550,14 @@ impl ColorManagementSurfaceData {
         self.current().map(|d| (d.colorimetry, d.hdr))
     }
 
+    #[cfg(target_os = "linux")]
     fn set_current(&self, data: ImageDescriptionData) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.current = Some(data);
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn clear_current(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.current = None;

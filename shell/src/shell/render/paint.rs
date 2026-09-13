@@ -2951,13 +2951,13 @@ mod tests {
     use winit::dpi::PhysicalPosition;
     use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
 
-    fn bridge_or_skip(w: u32, h: u32) -> Option<VelloDrmBridge> {
+    fn required_bridge(w: u32, h: u32) -> VelloDrmBridge {
         let bridge = VelloDrmBridge::new(w, h).expect("renderer gate requires a real wgpu adapter");
         eprintln!(
             "renderer gate adapter: {:?}",
             bridge.adapter_info().expect("bridge adapter identity")
         );
-        Some(bridge)
+        bridge
     }
 
     impl VelloDrmBridge {
@@ -3210,9 +3210,7 @@ mod tests {
     )]
     fn tracked_short_destination_and_prepared_damage_mismatch_abort_without_writes() {
         let (width, height) = (32_u32, 24_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         let pitch = usize::try_from(width).expect("test width") * 4;
         let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
         let left = [vello::FineDamageRect {
@@ -3306,9 +3304,7 @@ mod tests {
     )]
     fn tracked_swizzle_error_unmaps_before_the_next_paint() {
         let (width, height) = (32_u32, 24_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         let pitch = usize::try_from(width).expect("test width") * 4;
         let scene = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
         let damage = [vello::FineDamageRect {
@@ -3366,9 +3362,7 @@ mod tests {
         reason = "fixed test dimensions are bounded by their literal fixture values"
     )]
     fn saturated_bridge_history_epoch_disables_tracking_but_not_full_paint() {
-        let Some(mut bridge) = bridge_or_skip(16, 12) else {
-            return;
-        };
+        let mut bridge = required_bridge(16, 12);
         bridge.xrgb_history_epoch = Some(u64::MAX);
         bridge.set_base_color(Color::from_rgb8(0x20, 0x30, 0x40));
         assert!(!bridge.xrgb_history_available());
@@ -3385,9 +3379,7 @@ mod tests {
     )]
     fn history_bridge_accepts_gap_and_oversized_damage_as_real_full_boundaries() {
         let (width, height) = (32_u32, 24_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         let pitch = usize::try_from(width).expect("test width") * 4 + 16;
         let mut destination = vec![0xA7; pitch * usize::try_from(height).expect("test height")];
         let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
@@ -3488,9 +3480,7 @@ mod tests {
     )]
     fn history_bridge_accepts_nonzero_scanout_epoch_across_two_targets() {
         let (width, height) = (32_u32, 24_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         let pitch = usize::try_from(width).expect("test width") * 4;
         let scene = rect_scene(width, height, Color::from_rgb8(0x20, 0x30, 0x40));
         let damage = [vello::FineDamageRect {
@@ -3566,9 +3556,7 @@ mod tests {
     )]
     fn history_two_targets_repair_padded_destination_from_current_staging() {
         let (width, height) = (64_u32, 48_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         let pitch = usize::try_from(width)
             .expect("test width")
             .checked_mul(4)
@@ -3734,12 +3722,8 @@ mod tests {
     fn native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets() {
         const WIDTH: u32 = 3_840;
         const HEIGHT: u32 = 2_160;
-        let Some(mut one_bridge) = bridge_or_skip(WIDTH, HEIGHT) else {
-            return;
-        };
-        let Some(mut two_bridge) = bridge_or_skip(WIDTH, HEIGHT) else {
-            return;
-        };
+        let mut one_bridge = required_bridge(WIDTH, HEIGHT);
+        let mut two_bridge = required_bridge(WIDTH, HEIGHT);
         let width = usize::try_from(WIDTH).expect("native width");
         let height = usize::try_from(HEIGHT).expect("native height");
         let pitch = width
@@ -3945,9 +3929,7 @@ mod tests {
     #[test]
     fn versioned_damage_retains_full_pixels_and_copies_only_dirty_rectangles() {
         let (width, height) = (64_u32, 48_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         let pitch = width as usize * 4 + 16;
         let first = rect_scene(width, height, Color::from_rgb8(0x11, 0x22, 0x33));
         let damage = [vello::FineDamageRect {
@@ -3998,9 +3980,7 @@ mod tests {
             )
             .expect("second versioned paint");
 
-        let Some(mut oracle) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut oracle = required_bridge(width, height);
         let mut expected = vec![0x4E; pitch * height as usize];
         oracle
             .paint_into_xrgb8888(&second, &mut expected, pitch)
@@ -4040,9 +4020,7 @@ mod tests {
     #[test]
     fn overlapping_disjoint_and_edge_damage_matches_dense_oracle() {
         let (width, height) = (64_u32, 48_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         let pitch = width as usize * 4 + 32;
         let first = rect_scene(width, height, Color::from_rgb8(0x08, 0x18, 0x28));
         let damage = [
@@ -4102,9 +4080,7 @@ mod tests {
             )
             .expect("damage paint");
 
-        let Some(mut oracle) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut oracle = required_bridge(width, height);
         let mut expected = vec![0; pitch * height as usize];
         oracle
             .paint_into_xrgb8888(&second, &mut expected, pitch)
@@ -4115,9 +4091,7 @@ mod tests {
     #[test]
     fn revision_gap_and_empty_damage_force_full_readback() {
         let (width, height) = (32_u32, 24_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         bridge.set_phase_timing_enabled(true);
         let pitch = width as usize * 4;
         let rect = [vello::FineDamageRect {
@@ -4177,9 +4151,7 @@ mod tests {
     #[test]
     fn failed_versioned_paint_invalidates_sparse_backing_before_retry() {
         let (width, height) = (32_u32, 24_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         bridge.set_phase_timing_enabled(true);
         let pitch = width as usize * 4;
         let damage = [vello::FineDamageRect {
@@ -4251,9 +4223,7 @@ mod tests {
     #[test]
     fn sparse_overflow_recovers_dense_without_publishing_partial_pixels() {
         let (width, height) = (384_u32, 256_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         if !bridge.renderer.sparse_fine_supported() {
             return;
         }
@@ -4300,9 +4270,7 @@ mod tests {
             "sparse attempt plus recovery remains globally bounded"
         );
 
-        let Some(mut oracle) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut oracle = required_bridge(width, height);
         let mut expected = vec![0; pitch * height as usize];
         oracle
             .paint_into_xrgb8888(&overflowing, &mut expected, pitch)
@@ -4325,9 +4293,7 @@ mod tests {
     )]
     fn tracked_sparse_overflow_full_boundary_invalidates_the_other_target() {
         let (width, height) = (384_u32, 256_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         if !bridge.renderer.sparse_fine_supported() {
             return;
         }
@@ -4463,9 +4429,7 @@ mod tests {
     #[test]
     fn base_color_and_resize_invalidate_versioned_sparse_backing() {
         let (width, height) = (32_u32, 24_u32);
-        let Some(mut bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut bridge = required_bridge(width, height);
         bridge.set_phase_timing_enabled(true);
         let pitch = width as usize * 4;
         let damage = [vello::FineDamageRect {
@@ -4541,9 +4505,7 @@ mod tests {
 
     #[test]
     fn bridge_paint_returns_non_empty_buffer_for_non_empty_scene() {
-        let Some(mut bridge) = bridge_or_skip(64, 64) else {
-            return;
-        };
+        let mut bridge = required_bridge(64, 64);
         // Fill with cyan so the buffer is definitely not the (dark) base color.
         let scene = rect_scene(64, 64, Color::from_rgb8(0, 255, 255));
         let bytes = bridge.paint(&scene).expect("paint");
@@ -4561,9 +4523,7 @@ mod tests {
 
     #[test]
     fn diagnostic_zero_pitch_records_readback_but_no_output_bytes() {
-        let Some(mut bridge) = bridge_or_skip(8, 4) else {
-            return;
-        };
+        let mut bridge = required_bridge(8, 4);
         bridge.set_phase_timing_enabled(true);
         bridge
             .paint_into_xrgb8888(&Scene::new(), &mut [], 0)
@@ -4577,9 +4537,7 @@ mod tests {
 
     #[test]
     fn diagnostic_xrgb_counts_written_bytes_without_changing_pixels() {
-        let Some(mut bridge) = bridge_or_skip(8, 4) else {
-            return;
-        };
+        let mut bridge = required_bridge(8, 4);
         bridge.set_phase_timing_enabled(true);
         let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
         let mut destination = vec![0_u8; 8 * 4 * 4];
@@ -4598,9 +4556,7 @@ mod tests {
 
     #[test]
     fn bridge_resize_changes_buffer_size() {
-        let Some(mut bridge) = bridge_or_skip(1600, 900) else {
-            return;
-        };
+        let mut bridge = required_bridge(1600, 900);
         let bytes = bridge.paint(&Scene::new()).expect("paint at initial size");
         assert_eq!(bytes.len(), 1600 * 900 * 4);
 
@@ -4613,9 +4569,7 @@ mod tests {
 
     #[test]
     fn bridge_paint_uses_base_color_for_empty_scene() {
-        let Some(mut bridge) = bridge_or_skip(32, 32) else {
-            return;
-        };
+        let mut bridge = required_bridge(32, 32);
         // Pick a distinctive base color so the empty background is distinguishable from any other clear.
         bridge.set_base_color(Color::from_rgb8(0x12, 0x34, 0x56));
         let bytes = bridge.paint(&Scene::new()).expect("paint empty");
@@ -4636,9 +4590,7 @@ mod tests {
     fn paint_into_xrgb8888_matches_paint_swizzled() {
         // The direct XRGB path must produce the same pixels as tight-RGBA `paint()` output
         // swizzled to XRGB8888.
-        let Some(mut bridge) = bridge_or_skip(40, 24) else {
-            return;
-        };
+        let mut bridge = required_bridge(40, 24);
         let scene = rect_scene(40, 24, Color::from_rgb8(10, 200, 90));
 
         let rgba = bridge.paint(&scene).expect("paint").to_vec();
@@ -4665,9 +4617,7 @@ mod tests {
     #[test]
     fn paint_into_xrgb8888_respects_destination_pitch() {
         // A destination whose pitch exceeds width*4 (the common DRM dumb-buffer case) must leave trailing padding untouched and place each row at `row * dst_pitch`.
-        let Some(mut bridge) = bridge_or_skip(8, 4) else {
-            return;
-        };
+        let mut bridge = required_bridge(8, 4);
         bridge.set_base_color(Color::from_rgb8(0x11, 0x22, 0x33));
         let pitch = 64;
         let mut dst = vec![0xEEu8; pitch * 4];
@@ -4694,9 +4644,7 @@ mod tests {
     #[test]
     fn bridge_handles_non_aligned_width_via_padding() {
         // Width=33 → tight stride=132, padded to 256 — verifies the row-pitch stripping in `paint`.
-        let Some(mut bridge) = bridge_or_skip(33, 16) else {
-            return;
-        };
+        let mut bridge = required_bridge(33, 16);
         bridge.set_base_color(Color::from_rgb8(0xAA, 0xBB, 0xCC));
         let bytes = bridge.paint(&Scene::new()).expect("paint non-aligned");
         assert_eq!(bytes.len(), 33 * 16 * 4);
@@ -4708,9 +4656,7 @@ mod tests {
     #[test]
     fn overflow_recovery_retries_before_xrgb_output() {
         let (width, height) = (384, 256);
-        let Some(mut xrgb_bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut xrgb_bridge = required_bridge(width, height);
         let scene = opaque_rect_stack_scene(width, height);
         let pitch = width as usize * 4;
         let mut xrgb = vec![0_u8; pitch * height as usize];
@@ -4728,9 +4674,7 @@ mod tests {
 
         // Use a separate cold renderer so this comparison cannot inherit the XRGB bridge's grown
         // budget. Both public outputs must agree after their own recovery path.
-        let Some(mut rgba_bridge) = bridge_or_skip(width, height) else {
-            return;
-        };
+        let mut rgba_bridge = required_bridge(width, height);
         let rgba = rgba_bridge
             .paint(&scene)
             .expect("cold opaque-stack RGBA paint")
@@ -4744,9 +4688,7 @@ mod tests {
 
     #[test]
     fn zero_destination_pitch_unmaps_before_the_next_frame() {
-        let Some(mut bridge) = bridge_or_skip(8, 4) else {
-            return;
-        };
+        let mut bridge = required_bridge(8, 4);
         let scene = rect_scene(8, 4, Color::from_rgb8(0x12, 0x34, 0x56));
         bridge
             .paint_into_xrgb8888(&scene, &mut [], 0)

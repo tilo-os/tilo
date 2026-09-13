@@ -9,19 +9,26 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_os = "linux")]
 use zbus::interface;
+#[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
+#[cfg(target_os = "linux")]
 use zbus::object_server::SignalContext;
 use zbus::zvariant::{OwnedValue, Value};
 
+#[cfg(target_os = "linux")]
 use crate::notifications::IncomingNotification;
 
 #[cfg(target_os = "linux")]
 use super::{PortalContext, auth::authenticate_call};
 
 const MAX_ACTIVE_PORTAL_NOTIFICATIONS: usize = 256;
+#[cfg(target_os = "linux")]
 const MAX_TITLE_CHARS: usize = 512;
+#[cfg(target_os = "linux")]
 const MAX_BODY_CHARS: usize = 16 * 1024;
+#[cfg(target_os = "linux")]
 const MAX_BUTTONS: usize = 3;
 
 type NotificationKey = (String, String);
@@ -80,6 +87,7 @@ impl NotificationPortalHandle {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn drain_actions(&self) -> Vec<PortalNotificationAction> {
         let actions = self
             .pending_actions
@@ -180,6 +188,7 @@ impl NotificationPortalHandle {
         (numeric_id, evicted)
     }
 
+    #[cfg(target_os = "linux")]
     fn remove(&self, key: &NotificationKey) -> Option<u32> {
         let mut state = self.state.lock().ok()?;
         let numeric = state.records.remove(key)?.numeric_id;
@@ -253,6 +262,7 @@ impl NotificationBackend {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn display_timeout(notification: &HashMap<String, OwnedValue>) -> i32 {
         let hints = notification
             .get("display-hint")
@@ -266,6 +276,7 @@ impl NotificationBackend {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn body(notification: &HashMap<String, OwnedValue>) -> String {
         let plain = Self::string_field(notification, "body").unwrap_or_default();
         let markup = Self::string_field(notification, "markup-body");
@@ -275,6 +286,7 @@ impl NotificationBackend {
         )
     }
 
+    #[cfg(target_os = "linux")]
     fn actions(
         notification: &HashMap<String, OwnedValue>,
     ) -> (Vec<(String, String)>, HashMap<String, ActionSpec>) {
@@ -403,14 +415,17 @@ impl NotificationBackend {
     ) -> zbus::Result<()>;
 }
 
+#[cfg(target_os = "linux")]
 fn valid_action(action: &str) -> bool {
     !action.is_empty() && action.len() <= 255 && !action.chars().any(char::is_control)
 }
 
+#[cfg(target_os = "linux")]
 fn clone_field(values: &HashMap<String, OwnedValue>, key: &str) -> Option<OwnedValue> {
     values.get(key).and_then(|value| value.try_clone().ok())
 }
 
+#[cfg(target_os = "linux")]
 fn truncate_chars(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
