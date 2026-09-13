@@ -134,3 +134,5 @@ mod workspace_view_test;
 #[cfg(feature = "webview-wpe")]
 #[path = "wpe_engine.rs"]
 mod wpe_engine;
+
+mod canonical_record_owner;
