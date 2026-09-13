@@ -176,6 +176,21 @@ impl Default for WakeHandle {
 }
 
 impl WakeHandle {
+    pub(crate) fn enter_if_open(&self) -> Result<WakeScopeGuard, WakeBindError> {
+        let route = self.route.as_ref().ok_or(WakeBindError::Closed)?;
+        if !route
+            .upgrade()
+            .is_some_and(|route| route.open.load(Ordering::Acquire))
+        {
+            return Err(WakeBindError::Closed);
+        }
+        let previous = CURRENT.with(|current| current.replace(Some(route.clone())));
+        Ok(WakeScopeGuard {
+            previous,
+            thread_affinity: PhantomData,
+        })
+    }
+
     pub fn new() -> Self {
         Self {
             route: CURRENT.with(|current| current.borrow().clone()),

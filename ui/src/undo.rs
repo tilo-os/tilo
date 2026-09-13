@@ -242,6 +242,46 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
     true
 }
 
+/// Bound host variant. The exclusive owner keeps root and both maps stable.
+pub(crate) unsafe fn record_dispatched_action_bound(
+    state: &mut crate::state::State,
+    root: *mut dyn crate::widget::Widget,
+    nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+    bindings: &crate::bound_dispatch::BoundNodeMap,
+    author: &crate::permissions::UserId,
+) -> bool {
+    let mut brackets = Vec::new();
+    {
+        // SAFETY: the host provides its live, exclusively owned root. This borrow
+        // ends before any descendant pointer is admitted below.
+        let root = unsafe { &mut *root };
+        if let Ok(_entry) = crate::bound_dispatch::enter_widget(root)
+            && let Some(before) = root.take_committed_action()
+        {
+            brackets.push(before);
+        }
+    }
+    for &node in nodes.keys() {
+        // SAFETY: host owns this live stable layout; each exclusive callback ends
+        // before the next target is borrowed. No target reference escapes.
+        if let Ok(Some(before)) = unsafe {
+            crate::bound_dispatch::mutate_bound_node(bindings, nodes, node, |widget| {
+                widget.take_committed_action()
+            })
+        } {
+            brackets.push(before);
+        }
+    }
+    let Some(before) = earliest_bracket(state, brackets) else {
+        return false;
+    };
+    if state.doc.get_heads() == before {
+        return false;
+    }
+    state.record_committed_action_authored(before, None, None, Some(author.clone()));
+    true
+}
+
 /// The bracket the others descend from, or `None` when there were none.
 ///
 /// A change graph has no total order over heads, so "earliest" is asked of the
