@@ -87,6 +87,9 @@ thread_local! {
     static REENTRY: RefCell<Option<RefusedNode>> = const { RefCell::new(None) };
     static QUEUED_CONTROL: RefCell<Option<qos_actions::ControlInvocation>> = const { RefCell::new(None) };
     static LEGACY_INVOKED: Cell<bool> = const { Cell::new(false) };
+    static LEGACY_START: Cell<Option<bool>> = const { Cell::new(None) };
+    static LEGACY_START_CALLS: Cell<usize> = const { Cell::new(0) };
+    static EXPECTED_WRITE: Cell<bool> = const { Cell::new(false) };
     static COMMAND_CALLS: Cell<usize> = const { Cell::new(0) };
 }
 thread_local! { static CANCELLED: Cell<usize> = const { Cell::new(0) }; static CLOSED_DROPS: Cell<usize> = const { Cell::new(0) }; }
@@ -329,6 +332,23 @@ impl Root {
     }
 }
 impl Widget for Root {
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+        if let Some(accept) = LEGACY_START.get() {
+            LEGACY_START_CALLS.set(LEGACY_START_CALLS.get().saturating_add(1));
+            Ok(accept.then(qos_actions::ActionOutput::default))
+        } else {
+            self.0
+                .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
+        }
+    }
+
     fn sync(&mut self, d: &mut AutoCommit, p: &ObjId) {
         self.0.sync(d, p);
     }
@@ -382,9 +402,9 @@ impl Widget for Root {
         permissions: &ui::permissions::PermissionContext,
     ) {
         assert!(
-            !permissions.check(&ui::permissions::PermissionScope::workspace(
+            permissions.check(&ui::permissions::PermissionScope::workspace(
                 ui::permissions::Verb::Write
-            )),
+            )) == EXPECTED_WRITE.get(),
             "draw received outer authority"
         );
         self.mark("draw-permissions");
@@ -436,6 +456,9 @@ impl Widget for Root {
     }
     fn restore_view_state(&mut self, _: &ui::view::ViewContribution) {
         self.mark("restore-view");
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("dispatch-root")
     }
     fn name(&self) -> &'static str {
         "Root"
@@ -661,6 +684,7 @@ fn real_driver_measure_and_focus_walks_capture_only_the_component_mount() {
         "measure",
         "apply",
         "draw",
+        "draw-permissions",
         "focus-order",
         "focus",
         "accessibility",
@@ -992,7 +1016,7 @@ fn root_callback_ledger_uses_real_tile_routes_and_omits_legacy_commands() {
                     "en-US",
                 );
                 let mut renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
-                tile.children_mut()[0].draw_with_presence(
+                tile.draw_with_presence(
                     &mut vello::Scene::new(),
                     vello::kurbo::Affine::IDENTITY,
                     &mut renderer,
@@ -1232,6 +1256,7 @@ fn terminal_operation_is_removed_before_later_close() {
 }
 
 thread_local! {
+    static NESTED_REPLACE: RefCell<Option<std::rc::Rc<Cell<bool>>>> = const { RefCell::new(None) };
     static NESTED: RefCell<Option<AppComponent>> = const { RefCell::new(None) };
     static INVALID_VIEW: Cell<bool> = const { Cell::new(false) };
 }
@@ -1252,13 +1277,16 @@ fn nested_factory(
         })
         .map_err(ui::launch::LaunchError::Record)?;
     let child = NESTED.with_borrow_mut(Option::take).unwrap();
+    let tile = TileHost::from_component(child);
+    let child: Box<dyn Widget> = if let Some(replace) = NESTED_REPLACE.with_borrow_mut(Option::take)
+    {
+        Box::new(ReplacingHost(tile, replace))
+    } else {
+        Box::new(tile)
+    };
     Ok(AppComponent::new(
         context,
-        Box::new(Root(
-            Column::new().push(Box::new(TileHost::from_component(child))),
-            record,
-            false,
-        )),
+        Box::new(Root(Column::new().push(child), record, false)),
         qos_actions::ActionRegistry::new(),
     ))
 }
@@ -1449,5 +1477,272 @@ impl Widget for ReplacingHost {
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.0]
+    }
+}
+
+fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> ui::headless::Driver {
+    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        "en-US",
+    );
+    ui::headless::Driver::new_with_controlled_inputs(
+        ui::State::new(),
+        root,
+        viewport,
+        ui::Theme::dark(),
+        ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
+        ui::permissions::UserId("probe-author".into()),
+    )
+}
+
+#[test]
+fn driver_tile_paint_observes_current_component_permissions() {
+    let host = ProbeHost::new();
+    let definition = definition(factory);
+    let permissions = crate::support::application::permissions();
+    let context = HostContext::prepare(
+        &definition,
+        host.records.clone(),
+        host.views,
+        "D".into(),
+        1,
+        permissions.clone(),
+        crate::support::application::author(),
+        crate::support::application::provenance(),
+        &LaunchTarget::New,
+    )
+    .unwrap();
+    let component = definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap();
+    CAPTURES.with_borrow_mut(Vec::clear);
+    let mut driver = controlled_driver(
+        Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
+        (400, 300),
+    );
+    assert!(
+        CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
+        "ordinary Driver paint did not reach the permission-aware root"
+    );
+    *permissions.borrow_mut() = ui::permissions::PermissionContext::permissive();
+    EXPECTED_WRITE.set(true);
+    CAPTURES.with_borrow_mut(Vec::clear);
+    driver.relayout();
+    assert!(
+        CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
+        "later paint did not read the current permission snapshot"
+    );
+    EXPECTED_WRITE.set(false);
+}
+
+fn fill_factory(
+    mut context: HostContext,
+    _: LaunchTarget,
+    _: RestoreInput,
+) -> Result<AppComponent, ui::launch::LaunchError> {
+    context
+        .initialize_new_record(|_| Ok(()))
+        .map_err(ui::launch::LaunchError::Record)?;
+    Ok(AppComponent::new(
+        context,
+        Box::new(Root(Column::new().with_no_padding(), String::new(), false)),
+        qos_actions::ActionRegistry::new(),
+    ))
+}
+
+#[test]
+fn canonical_fill_geometry_matches_legacy_tile_at_multiple_viewports() {
+    for viewport in [(400, 300), (900, 600)] {
+        let host = ProbeHost::new();
+        let definition = definition(fill_factory);
+        let component = definition
+            .instantiate(
+                host.prepare(&definition, 1, &LaunchTarget::New).unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let canonical = controlled_driver(
+            Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
+            viewport,
+        );
+        let legacy = controlled_driver(
+            Box::new(
+                Column::new().push(Box::new(TileHost::new(ui::widget::TileContent::App(
+                    Box::new(Root(Column::new().with_no_padding(), String::new(), false)),
+                )))),
+            ),
+            viewport,
+        );
+        let actual = canonical.targets()["dispatch-root"];
+        let expected = legacy.targets()["dispatch-root"];
+        assert!(expected.width() > f64::from(viewport.0) / 2.0);
+        assert!(
+            expected.x0 > 0.0 && expected.y0 > 0.0,
+            "fixture exercises a nonzero host origin"
+        );
+        assert_eq!(
+            actual, expected,
+            "canonical wrapper changed fill geometry at {viewport:?}"
+        );
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one nested replacement must preserve live parent, independent recovery ownership and durable retry"
+)]
+fn nested_replacement_reports_reach_driver_while_parent_remains_open() {
+    let child_host = ProbeHost::new();
+    let child = component(&child_host, 2);
+    let checkout = child.record().clone();
+    child_host.records.try_flush().unwrap();
+    let record_path = app_state::DocStore::room_record_dir_at(
+        &child_host.root(),
+        crate::support::application::APP,
+        crate::support::application::ROOM,
+        &checkout.id.storage_key(),
+    )
+    .unwrap()
+    .join(app_state::DOCUMENT_FILE);
+    std::fs::remove_file(&record_path).unwrap();
+    std::fs::create_dir(&record_path).unwrap();
+    let view_path = child_host.view_path(2);
+    std::fs::create_dir_all(&view_path).unwrap();
+    child_host
+        .records
+        .with(&checkout.id, |doc| {
+            doc.put(ROOT, "unsaved", "nested-retained").unwrap();
+        })
+        .unwrap();
+    NESTED.with_borrow_mut(|n| *n = Some(child));
+    let replace = std::rc::Rc::new(Cell::new(false));
+    NESTED_REPLACE.with_borrow_mut(|n| *n = Some(replace.clone()));
+    let parent_host = ProbeHost::new();
+    let definition = definition(nested_factory);
+    let mut parent = definition
+        .instantiate(
+            parent_host
+                .prepare(&definition, 1, &LaunchTarget::New)
+                .unwrap(),
+            LaunchTarget::New,
+            RestoreInput::None,
+        )
+        .unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    parent
+        .mount(move |event| {
+            sender.send(event).unwrap();
+        })
+        .unwrap();
+    let mut driver = controlled_driver(Box::new(TileHost::from_component(parent)), (400, 300));
+    replace.set(true);
+    CAPTURES.with_borrow_mut(Vec::clear);
+    driver.relayout();
+    assert_eq!(
+        driver.component_close_reports().len(),
+        1,
+        "open parent hid its replaced child's recovery"
+    );
+    let mut reports = driver.take_component_close_reports();
+    assert!(
+        driver.take_component_close_reports().is_empty(),
+        "nested report transferred twice"
+    );
+    let live = CAPTURES.with_borrow(|c| {
+        c.iter()
+            .find(|(_, label, _)| *label == "draw-permissions")
+            .unwrap()
+            .2
+            .clone()
+    });
+    assert!(
+        live.writer().try_set(1),
+        "parent was closed to obtain child recovery"
+    );
+    assert!(receiver.try_recv().is_ok());
+    drop(driver);
+    assert!(!live.writer().try_set(2));
+    drop(child_host.records);
+    drop(child_host.owners);
+    drop(child_host.views);
+    drop(parent_host);
+    let report = reports.last_mut().unwrap();
+    assert_eq!(report.recovery.as_ref().unwrap().instance_id, 2);
+    assert!(report.view_error.is_some() && report.record_error.is_some());
+    assert_eq!(
+        report
+            .record_retry
+            .as_ref()
+            .unwrap()
+            .read(&checkout.id, |doc| {
+                doc.get(ROOT, "unsaved")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .unwrap(),
+        "nested-retained"
+    );
+    std::fs::remove_dir(view_path).unwrap();
+    std::fs::remove_dir(record_path).unwrap();
+    report.retry_view().unwrap();
+    report.retry_record().unwrap();
+    assert!(report.view_retry.is_none() && report.record_retry.is_none());
+    let mut owners = ui::record::RecordOwners::new(child_host.temp.path().join("state"));
+    let saved = owners
+        .open(
+            crate::support::application::APP,
+            crate::support::application::ROOM,
+        )
+        .unwrap();
+    saved.try_open_record(&checkout).unwrap();
+    assert_eq!(
+        saved
+            .read(&checkout.id, |doc| {
+                doc.get(ROOT, "unsaved")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .to_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .unwrap(),
+        "nested-retained"
+    );
+}
+
+#[test]
+fn mutable_container_traversal_invokes_legacy_fallback_once() {
+    for accept in [true, false] {
+        LEGACY_START.set(Some(accept));
+        LEGACY_START_CALLS.set(0);
+        let mut tree = Column::new().push(Box::new(ui::widget::Row::new().push(Box::new(
+            ui::widget::Container::new().with_child(Box::new(TileHost::new(
+                ui::widget::TileContent::App(Box::new(Root(Column::new(), String::new(), false))),
+            ))),
+        ))));
+        let result = tree
+            .start_resource_operation_with_document(
+                qos_actions::InvocationId::new(),
+                qos_actions::OperationKind::Effect,
+                "legacy",
+                &[],
+                &mut AutoCommit::new(),
+                &ROOT,
+            )
+            .unwrap();
+        assert_eq!(result.is_some(), accept);
+        assert_eq!(
+            LEGACY_START_CALLS.get(),
+            1,
+            "legacy accepting/declining handler was revisited"
+        );
+        LEGACY_START.set(None);
     }
 }
