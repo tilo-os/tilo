@@ -1382,6 +1382,20 @@ impl RecordStore {
         self.0.borrow_mut().open_record(want, None)
     }
 
+    /// Resolve legacy tile intent without panicking on an overlapping record borrow.
+    /// Canonical stores retain their Existing-only identity/storage errors;
+    /// legacy stores retain the existing open/create behavior.
+    pub(crate) fn open_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
+        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
+        if set.canonical_root.is_some() {
+            return set.try_open_record(want).map(|_| ());
+        }
+        set.open_record(want, None);
+        set.document_mut(&want.id)
+            .map(|_| ())
+            .ok_or(RecordOpenError::MissingRecord)
+    }
+
     /// Exact runtime owner identity; namespace equality is insufficient for reentry.
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         std::rc::Rc::ptr_eq(&self.0, &other.0)
