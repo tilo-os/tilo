@@ -21,7 +21,11 @@ impl BoundProbe {
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
         let layout = tile.build_layout(&mut tree, &ui::Theme::dark(), &mut nodes);
-        let node = *nodes.keys().next().unwrap();
+        // Select the actual probe leaf, not a nondeterministic retained wrapper.
+        let node = *nodes
+            .keys()
+            .find(|node| tree.children(**node).unwrap().is_empty())
+            .unwrap();
         let mut bindings = BoundNodeMap::new();
         // SAFETY: heap-owned tile and this matching layout remain stable until Drop.
         unsafe {
@@ -406,4 +410,74 @@ fn bound_revision_restore_and_inverse_keep_exact_instance() {
         history.next_undo_in(&author(), 11).unwrap().instance_id,
         Some(11)
     );
+}
+
+#[test]
+fn foreign_noop_commit_notification_preserves_pending_owner() {
+    use crate::support::application::{probe_commit_drains, request_probe_commit};
+    let host = ProbeHost::new();
+    let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+    let checkout = first.record().clone();
+    let mut a = BoundProbe::new(first);
+    let mut b = BoundProbe::new(
+        instantiate_probe(&host, 12, existing(&checkout), RestoreInput::None).unwrap(),
+    );
+    host.records
+        .with_history(&checkout.id, |doc, history| {
+            let before = doc.get_heads();
+            doc.put(ROOT, "redo-b", true).unwrap();
+            history.record_committed_action_in(doc, before, None, None, author(), 12);
+            history.undo_in(doc, &author(), 12, None, None).unwrap();
+        })
+        .unwrap();
+    let revision = host
+        .records
+        .read_history(&checkout.id, |_, history| history.revision())
+        .unwrap();
+    let mut outer = AutoCommit::new();
+    let outer_before = outer.get_heads();
+    a.invoke(&mut outer, |widget, doc, _| {
+        widget.set_state("A metadata");
+        doc.put(ROOT, "a", "first").unwrap();
+    })
+    .unwrap();
+    b.invoke(&mut outer, |widget, _, _| {
+        widget.set_state("B metadata");
+        request_probe_commit();
+    })
+    .unwrap();
+    assert_eq!(probe_commit_drains(), 1);
+    host.records
+        .read_history(&checkout.id, |_, history| {
+            assert_eq!(history.revision(), revision);
+            assert!(history.next_undo_in(&author(), 11).is_none());
+            assert!(history.next_redo_in(&author(), 12).is_some());
+        })
+        .unwrap();
+    a.invoke(&mut outer, |_, doc, _| {
+        doc.put(ROOT, "a", "continued").unwrap();
+        request_probe_commit();
+    })
+    .unwrap();
+    assert_eq!(probe_commit_drains(), 2);
+    host.records
+        .with_history(&checkout.id, |doc, history| {
+            let entry = history.next_undo_in(&author(), 11).unwrap();
+            assert_eq!(entry.widget_metadata.as_deref(), Some("A metadata"));
+            assert_eq!(entry.author.as_ref(), Some(&author()));
+            assert!(history.next_redo_in(&author(), 12).is_some());
+            let changes = doc.get_changes(&entry.before);
+            let context = changes
+                .last()
+                .unwrap()
+                .message()
+                .and_then(|message| qos_actions::ActionContext::from_change_message(message))
+                .unwrap();
+            assert_eq!(context.action_label.as_str(), "A metadata");
+            history.undo_in(doc, &author(), 11, None, None).unwrap();
+            assert!(history.next_undo_in(&author(), 11).is_none());
+            assert!(doc.get(ROOT, "a").unwrap().is_none());
+        })
+        .unwrap();
+    assert_eq!(outer.get_heads(), outer_before);
 }
