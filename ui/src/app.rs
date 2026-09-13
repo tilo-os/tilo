@@ -405,20 +405,8 @@ struct LocalResourceCache {
     allowed: std::collections::HashSet<qos_actions::ActionAddress>,
 }
 
-fn find_action_resource<'a>(
-    resources: &'a [qos_actions::Resource],
-    id: &str,
-) -> Option<&'a qos_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource);
-        }
-        if let Some(found) = find_action_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
+#[cfg(test)]
+use crate::bound_dispatch::find_action_resource;
 
 /// Runtime audit result for one interactive control.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -579,6 +567,22 @@ pub struct App {
     /// input gating, Ctrl+K, accessibility and broker publication. Keep one
     /// exact snapshot until the host crosses a state-mutation boundary.
     resource_cache: RefCell<Option<ResourceCache>>,
+    bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
+    bound_publication: crate::bound_dispatch::BoundPublication,
+    bound_directory_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    #[cfg(test)]
+    bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
+    bound_directory_stamp: Option<(
+        Vec<crate::bound_dispatch::BoundDirectoryWitness>,
+        u64,
+        Vec<String>,
+        String,
+    )>,
+    bound_invocations: std::collections::HashMap<
+        qos_actions::InvocationId,
+        crate::bound_dispatch::BoundActionTarget,
+    >,
     local_resource_cache: RefCell<Option<LocalResourceCache>>,
     resource_generation: Cell<u64>,
     permission_generation: Cell<u64>,
@@ -1037,6 +1041,14 @@ impl App {
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
+            bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
+            bound_publication: crate::bound_dispatch::BoundPublication::default(),
+            bound_directory_route: None,
+            last_published_bound_route: None,
+            #[cfg(test)]
+            bound_broker_route_for_test: None,
+            bound_directory_stamp: None,
+            bound_invocations: std::collections::HashMap::new(),
             local_resource_cache: RefCell::new(None),
             resource_generation: Cell::new(0),
             permission_generation: Cell::new(0),
@@ -1482,7 +1494,7 @@ impl App {
         }
 
         let mut declared = Vec::new();
-        crate::widget::collect_widget_resources(
+        crate::bound_dispatch::collect_unbound_resources(
             self.root_widget.as_ref(),
             &self.state.doc,
             &mut declared,
@@ -1586,16 +1598,39 @@ impl App {
 
     fn collect_local_resources(&self) -> Vec<qos_actions::Resource> {
         let (key, permission_generation) = self.ensure_local_resource_cache();
-        self.local_resource_cache
+        let mut resources = self
+            .local_resource_cache
             .borrow()
             .as_ref()
             .filter(|cache| {
                 cache.key == key && cache.permission_generation == permission_generation
             })
-            .map_or_else(Vec::new, |cache| cache.resources.clone())
+            .map_or_else(Vec::new, |cache| cache.resources.clone());
+        if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &self.bound_resource_cache,
+            self.resource_generation.get(),
+        ) {
+            resources.extend(
+                snapshots
+                    .into_iter()
+                    .flat_map(|snapshot| snapshot.resources),
+            );
+        }
+        resources
     }
 
     fn refresh_control_action_availability(&mut self) {
+        let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &self.bound_resource_cache,
+            self.resource_generation.get(),
+        )
+        .unwrap_or_default();
+        let _ =
+            crate::bound_dispatch::refresh_bound_controls(self.root_widget.as_mut(), &snapshots);
         let cache_key = self.ensure_local_resource_cache();
         if self.last_control_availability.as_ref() == Some(&cache_key) {
             return;
@@ -1620,11 +1655,25 @@ impl App {
     pub fn collect_resources(&self) -> Vec<qos_actions::Resource> {
         let _entry = self.enter_wake_scope();
         let key = self.ensure_resource_cache();
-        self.resource_cache
+        let mut resources = self
+            .resource_cache
             .borrow()
             .as_ref()
             .filter(|cache| cache.key == key)
-            .map_or_else(Vec::new, |cache| cache.complete.clone())
+            .map_or_else(Vec::new, |cache| cache.complete.clone());
+        if let Ok(snapshots) = crate::bound_dispatch::discover_cached_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &self.bound_resource_cache,
+            self.resource_generation.get(),
+        ) {
+            resources.extend(
+                snapshots
+                    .into_iter()
+                    .flat_map(|snapshot| snapshot.resources),
+            );
+        }
+        resources
     }
 
     /// Audit every retained control binding against the fresh resource tree.
@@ -1689,6 +1738,95 @@ impl App {
         )
     }
 
+    fn bound_broker_route(&self) -> Option<&crate::collaboration::PrimaryRouteWitness> {
+        #[cfg(test)]
+        if let Some(route) = &self.bound_broker_route_for_test {
+            return Some(route);
+        }
+        self.collab_manager.primary_route()
+    }
+    fn publication_app_id(&self) -> String {
+        if crate::bound_dispatch::has_matching_broker_component(
+            self.root_widget.as_ref(),
+            self.bound_broker_route(),
+        ) && let Some(witness) = self.bound_broker_route()
+        {
+            return witness.route.app_id.clone();
+        }
+        crate::collaboration::local_app_id()
+    }
+    fn require_bound_broker_route(
+        &self,
+        binding: &crate::bound_dispatch::CallbackBinding,
+    ) -> Result<(), qos_actions::DoorError> {
+        if binding.matches_broker_route(self.bound_broker_route()) {
+            return Ok(());
+        }
+        Err(qos_actions::DoorError::Unavailable {
+            code: "bound_broker_route_unavailable".into(),
+            reason:
+                "This component has no matching admitted app, workspace and record action route"
+                    .into(),
+        })
+    }
+
+    /// Transport-only projection. Each component is validated with its own
+    /// registry before its domain resource is assigned an opaque publication alias.
+    fn publication_resources(&mut self) -> Vec<qos_actions::Resource> {
+        fn remove_reserved(mut resource: qos_actions::Resource) -> Option<qos_actions::Resource> {
+            if resource
+                .id
+                .as_str()
+                .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
+            {
+                return None;
+            }
+            resource.children = resource
+                .children
+                .into_iter()
+                .filter_map(remove_reserved)
+                .collect();
+            Some(resource)
+        }
+        let key = self.ensure_resource_cache();
+        let mut resources = self
+            .resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key)
+            .map_or_else(Vec::new, |cache| cache.complete.clone())
+            .into_iter()
+            .filter_map(remove_reserved)
+            .collect::<Vec<_>>();
+        let components = crate::bound_dispatch::discover_cached_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &self.bound_resource_cache,
+            self.resource_generation.get(),
+        )
+        .unwrap_or_default();
+        for component in components {
+            if self.require_bound_broker_route(&component.binding).is_err() {
+                continue;
+            }
+            if !crate::bound_dispatch::validate_bound_resources(
+                self.root_widget.as_mut(),
+                &component.binding,
+                &component.resources,
+            )
+            .unwrap_or(false)
+            {
+                continue;
+            }
+            for resource in component.resources {
+                if let Ok(resource) = self.bound_publication.project(&component.binding, resource) {
+                    resources.push(resource);
+                }
+            }
+        }
+        resources
+    }
+
     /// Publish the live resource/action tree through the session broker.
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
@@ -1696,17 +1834,23 @@ impl App {
         if !self.collab_manager.is_connected() {
             return;
         }
+        let route = self.bound_broker_route().cloned();
+        if self.last_published_bound_route != route {
+            self.last_published_actions = None;
+            self.last_published_bound_route = route;
+        }
+        let publication_app_id = self.publication_app_id();
         // This is independent of the legacy eager surface below.  The
         // broker owns the capability and asks the UI thread to materialise a
         // bounded page; large apps therefore do not become a flattened RPC
         // catalogue just because they are visible in shell search.
         self.collab_manager
-            .publish_action_directory(crate::collaboration::local_app_id());
-        let resources = self.collect_resources();
+            .publish_action_directory(publication_app_id.clone());
+        let resources = self.publication_resources();
         // Use this exact snapshot for coverage as well as publication. That
         // prevents recursive/repeated resource collection and makes the audit
         // correspond to the catalogue about to cross the wire.
-        let binding_coverage = self.control_action_coverage_for(&resources);
+        let binding_coverage = self.control_action_coverage_for(&self.collect_resources());
         if binding_coverage
             .iter()
             .any(|entry| entry.status == ControlBindingStatus::StaleAddress)
@@ -1727,39 +1871,11 @@ impl App {
                 .is_some_and(|actions| !actions.is_empty())
             {
                 self.collab_manager.send(CollabRequest::PublishActions {
-                    app_id: crate::collaboration::local_app_id(),
+                    app_id: publication_app_id,
                     actions: Vec::new(),
                 });
                 self.last_published_actions = Some(Vec::new());
             }
-            return;
-        }
-        let mut operation_handlers = self.root_widget.resource_operation_handlers();
-        operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
-        let violations =
-            qos_actions::validate_surface(&resources, &self.action_registry, &operation_handlers);
-        if !violations.is_empty() {
-            for violation in &violations {
-                tracing::error!(
-                    address = %violation.address,
-                    reason = %violation.reason,
-                    "refusing to publish an invalid resource/action surface"
-                );
-            }
-            // Withdraw anything previously published. A stale, apparently
-            // valid catalogue is more dangerous than an empty one.
-            if self
-                .last_published_actions
-                .as_ref()
-                .is_none_or(Vec::is_empty)
-            {
-                return;
-            }
-            self.collab_manager.send(CollabRequest::PublishActions {
-                app_id: crate::collaboration::local_app_id(),
-                actions: Vec::new(),
-            });
-            self.last_published_actions = Some(Vec::new());
             return;
         }
         let descriptors = qos_actions::door::survey(&resources);
@@ -1793,13 +1909,51 @@ impl App {
             })
             .collect();
         self.collab_manager.send(CollabRequest::PublishActions {
-            app_id: crate::collaboration::local_app_id(),
+            app_id: publication_app_id,
             actions,
         });
         self.last_published_actions = Some(descriptors);
     }
 
     fn action_directory_revision(&mut self) -> String {
+        let route = self.bound_broker_route().cloned();
+        if self.bound_directory_route != route {
+            self.bound_directory_stamp = None;
+            self.bound_directory_route = route;
+        }
+        let Ok(witnesses) =
+            crate::bound_dispatch::directory_witness(self.root_widget.as_ref(), &self.state.doc)
+        else {
+            return format!("v4:{}", uuid::Uuid::new_v4());
+        };
+        if !witnesses.is_empty() {
+            let providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref())
+                .into_iter()
+                .map(|provider| {
+                    format!(
+                        "{}:{:?}:{:?}",
+                        provider.name(),
+                        provider
+                            .callback_binding()
+                            .map(|binding| binding.lifetime_id),
+                        provider.action_directory_generation()
+                    )
+                })
+                .collect::<Vec<_>>();
+            let local = self.resource_generation.get();
+            if let Some((old, generation, old_providers, revision)) = &self.bound_directory_stamp
+                && witnesses.iter().all(|witness| witness.generation.is_some())
+                && old == &witnesses
+                && *generation == local
+                && *old_providers == providers
+            {
+                return revision.clone();
+            }
+            let revision = format!("v4:{}", uuid::Uuid::new_v4());
+            self.bound_directory_stamp = Some((witnesses, local, providers, revision.clone()));
+            return revision;
+        }
+
         // Automerge heads are the authority generation for document-backed
         // resources. Remote revisions never call legacy `resources()`: that
         // hook predates paging and may allocate an unbounded contextual tree.
@@ -1814,16 +1968,15 @@ impl App {
             .root_widget
             .action_directory_revision(&self.state.doc)
             .unwrap_or_default();
-        let provider_generations = self
-            .root_widget
-            .search_providers()
-            .into_iter()
-            .filter_map(|provider| {
-                provider
-                    .action_directory_generation()
-                    .map(|generation| format!("{}:{generation}", provider.name()))
-            })
-            .collect::<Vec<_>>();
+        let provider_generations =
+            crate::bound_dispatch::search_providers(self.root_widget.as_ref())
+                .into_iter()
+                .filter_map(|provider| {
+                    provider
+                        .action_directory_generation()
+                        .map(|generation| format!("{}:{generation}", provider.name()))
+                })
+                .collect::<Vec<_>>();
         format!(
             "v3:{}:{}:{}",
             heads.join(","),
@@ -1867,11 +2020,28 @@ impl App {
         may_descend: bool,
     ) -> Option<runtime_collab::ActionDirectoryRow> {
         let descriptors = qos_actions::door::survey(std::slice::from_ref(resource));
-        let explicit = crate::widget::resolve_action_directory_visibility(
+        let target = self
+            .bound_publication
+            .target(&qos_actions::ActionAddress::new(resource.id.as_str(), ""))
+            .ok()
+            .flatten();
+        let explicit = crate::bound_dispatch::publication_visibility(
             self.root_widget.as_ref(),
             &self.state.doc,
-            resource.id.as_str(),
-        );
+            target.as_ref().map(|target| &target.binding),
+            target.as_ref().map_or(resource.id.as_str(), |target| {
+                target.address.address.resource.as_str()
+            }),
+        )
+        .and_then(|mut address| {
+            if let Some(target) = &target {
+                address.resource = self
+                    .bound_publication
+                    .alias(&target.binding, &address.resource)
+                    .ok()?;
+            }
+            Some(address)
+        });
         // A view operation is a safe derived disclosure policy: it does not
         // mutate or trigger an external effect, and the broker still checks
         // its action contract before forwarding this container label.
@@ -2071,7 +2241,7 @@ impl App {
                         exhausted = true;
                         break;
                     };
-                    let Some(page) = page else {
+                    let Some((mut page, binding)) = page else {
                         widget_index = widget_index.saturating_add(1);
                         provider_cursor = None;
                         inspected = inspected.saturating_add(1);
@@ -2089,6 +2259,36 @@ impl App {
                             stale_cursor: false,
                             budget_exhausted: true,
                         };
+                    }
+                    if let Some(binding) = binding {
+                        if self.require_bound_broker_route(&binding).is_ok()
+                            && crate::bound_dispatch::validate_bound_resources(
+                                self.root_widget.as_mut(),
+                                &binding,
+                                &page.resources,
+                            )
+                            .unwrap_or(false)
+                        {
+                            page.resources = page
+                                .resources
+                                .into_iter()
+                                .filter_map(|resource| {
+                                    crate::bound_dispatch::filter_resource(&binding, resource)
+                                })
+                                .filter_map(|resource| {
+                                    self.bound_publication.project(&binding, resource).ok()
+                                })
+                                .collect();
+                        } else {
+                            page.resources.clear();
+                        }
+                    } else {
+                        page.resources.retain(|resource| {
+                            !resource
+                                .id
+                                .as_str()
+                                .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
+                        });
                     }
                     let before_index = widget_index;
                     let before_cursor = provider_cursor.clone();
@@ -2143,11 +2343,7 @@ impl App {
                     budget_exhausted: !exhausted,
                 };
             }
-            let parent = crate::widget::resolve_widget_resource(
-                self.root_widget.as_ref(),
-                &self.state.doc,
-                &query.parent_resource,
-            );
+            let parent = self.resolve_publication_resource(&query.parent_resource, "");
             let parent_actions = parent.as_ref().map_or_else(Vec::new, |resource| {
                 resource
                     .actions
@@ -2200,9 +2396,7 @@ impl App {
             };
         }
 
-        let providers = self
-            .root_widget
-            .search_providers()
+        let providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref())
             .into_iter()
             .filter(|provider| provider.action_directory_generation().is_some())
             .collect::<Vec<_>>();
@@ -2240,16 +2434,63 @@ impl App {
                 let Some(address) = hit.action_address() else {
                     continue;
                 };
+                let binding = providers[provider_index].callback_binding();
+                if binding
+                    .as_ref()
+                    .is_some_and(|binding| self.require_bound_broker_route(binding).is_err())
+                {
+                    continue;
+                }
                 let resource = providers[provider_index]
                     .resolve_action_resource(&address)
                     .or_else(|| {
-                        crate::widget::resolve_widget_resource(
-                            self.root_widget.as_ref(),
-                            &self.state.doc,
-                            &address.resource,
-                        )
+                        if let Some(binding) = &binding {
+                            crate::bound_dispatch::resolve_component_resource(
+                                self.root_widget.as_mut(),
+                                &self.state.doc,
+                                binding,
+                                &address.resource,
+                                &address.action,
+                            )
+                            .ok()
+                            .flatten()
+                        } else {
+                            crate::bound_dispatch::resolve_unbound_resource(
+                                self.root_widget.as_ref(),
+                                &self.state.doc,
+                                &address.resource,
+                            )
+                        }
+                    })
+                    .and_then(|resource| {
+                        binding.as_ref().map_or(Some(resource.clone()), |binding| {
+                            crate::bound_dispatch::filter_resource(binding, resource)
+                        })
                     });
-                let Some(resource) = resource else { continue };
+                let Some(mut resource) = resource else {
+                    continue;
+                };
+                if let Some(binding) = providers[provider_index].callback_binding() {
+                    if !crate::bound_dispatch::validate_bound_resources(
+                        self.root_widget.as_mut(),
+                        &binding,
+                        std::slice::from_ref(&resource),
+                    )
+                    .unwrap_or(false)
+                    {
+                        continue;
+                    }
+                    let Ok(projected) = self.bound_publication.project(&binding, resource) else {
+                        continue;
+                    };
+                    resource = projected;
+                } else if resource
+                    .id
+                    .as_str()
+                    .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
+                {
+                    continue;
+                }
                 let Some(row) = Self::directory_action_row(&resource, &address.action) else {
                     continue;
                 };
@@ -2296,6 +2537,55 @@ impl App {
         }
     }
 
+    fn resolve_publication_resource(
+        &mut self,
+        resource_id: &str,
+        action_id: &str,
+    ) -> Option<qos_actions::Resource> {
+        let address = qos_actions::ActionAddress::new(resource_id, action_id);
+        match self.bound_publication.target(&address) {
+            Ok(Some(target)) => {
+                self.require_bound_broker_route(&target.binding).ok()?;
+                let resource = crate::bound_dispatch::resolve_component_resource(
+                    self.root_widget.as_mut(),
+                    &self.state.doc,
+                    &target.binding,
+                    &target.address.address.resource,
+                    action_id,
+                )
+                .ok()
+                .flatten()?;
+                if !crate::bound_dispatch::validate_bound_resources(
+                    self.root_widget.as_mut(),
+                    &target.binding,
+                    std::slice::from_ref(&resource),
+                )
+                .unwrap_or(false)
+                {
+                    return None;
+                }
+                self.bound_publication
+                    .project(&target.binding, resource)
+                    .ok()
+            }
+            Err(_) => None,
+            Ok(None) => crate::bound_dispatch::resolve_unbound_resource(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                resource_id,
+            )
+            .or_else(|| {
+                crate::bound_dispatch::search_providers(self.root_widget.as_ref())
+                    .into_iter()
+                    .filter(|provider| {
+                        provider.callback_binding().is_none()
+                            && provider.action_directory_generation().is_some()
+                    })
+                    .find_map(|provider| provider.resolve_action_resource(&address))
+            }),
+        }
+    }
+
     fn resolve_action_directory(
         &mut self,
         revision: &str,
@@ -2305,23 +2595,7 @@ impl App {
         if revision != self.action_directory_revision() {
             return runtime_collab::ActionDirectoryResolution::StaleRevision;
         }
-        let resource = crate::widget::resolve_widget_resource(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            resource_id,
-        )
-        .or_else(|| {
-            self.root_widget
-                .search_providers()
-                .into_iter()
-                .filter(|provider| provider.action_directory_generation().is_some())
-                .find_map(|provider| {
-                    provider.resolve_action_resource(&qos_actions::ActionAddress::new(
-                        resource_id,
-                        action_id,
-                    ))
-                })
-        });
+        let resource = self.resolve_publication_resource(resource_id, action_id);
         resource
             .as_ref()
             .and_then(|resource| Self::directory_action_row(resource, action_id))
@@ -2443,7 +2717,7 @@ impl App {
             Err(error) => qos_actions::InvocationUpdate::Failed {
                 invocation,
                 error: qos_actions::ActionFailure {
-                    code: error.code().to_string(),
+                    code: crate::bound_dispatch::door_error_code(&error).to_string(),
                     message: error.to_string(),
                     details: None,
                     retryable: false,
@@ -2460,28 +2734,13 @@ impl App {
         argument: Option<&str>,
         confirmed_by_broker: bool,
     ) -> Result<ResolvedResourceInvocation<'a>, qos_actions::DoorError> {
-        let typed_arguments = argument
-            .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
-            .map(|json| {
-                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
-                    .map_err(|error| qos_actions::DoorError::InvalidArguments(error.to_string()))
-            })
-            .transpose()?;
-        let resource = find_action_resource(resources, &address.resource)
-            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
-        let resolved = resource
-            .actions
-            .iter()
-            .find(|candidate| candidate.id == address.action)
-            .ok_or_else(|| qos_actions::DoorError::Unknown(address.clone()))?;
-        if !matches!(
-            resolved.contract.confirmation,
-            qos_actions::ConfirmationPolicy::None
-        ) && !confirmed_by_broker
-        {
-            return Err(qos_actions::DoorError::ConfirmationRequired);
-        }
-        Ok((typed_arguments, resource, resolved))
+        crate::bound_dispatch::resolve_resource_invocation(
+            resources,
+            address,
+            argument,
+            None,
+            confirmed_by_broker,
+        )
     }
 
     fn encode_resource_action(
@@ -2490,11 +2749,7 @@ impl App {
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
     ) -> Result<qos_actions::EncodedAction, qos_actions::DoorError> {
-        if let Some(arguments) = typed_arguments {
-            qos_actions::door::encode_json(resources, address, arguments)
-        } else {
-            qos_actions::door::encode(resources, address, argument)
-        }
+        crate::bound_dispatch::encode_resource_action(resources, address, typed_arguments, argument)
     }
 
     /// Admit a locally initiated operation at the session broker before the
@@ -2511,13 +2766,33 @@ impl App {
         argument: Option<&str>,
         confirmation_evidence: Option<&serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
-        if !self.collab_manager.is_connected() {
+        Self::dispatch_broker_request(
+            &mut self.next_broker_request_id,
+            self.collab_manager.is_connected(),
+            address,
+            typed_arguments,
+            argument,
+            confirmation_evidence,
+            |request| self.collab_manager.send(request),
+        )
+    }
+
+    fn dispatch_broker_request(
+        next_request_id: &mut Option<u64>,
+        connected: bool,
+        address: &qos_actions::ActionAddress,
+        typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+        argument: Option<&str>,
+        confirmation_evidence: Option<&serde_json::Value>,
+        send: impl FnOnce(CollabRequest),
+    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+        if !connected {
             return Err(qos_actions::DoorError::Unavailable {
                 code: "authoritative_host_unavailable".into(),
                 reason: "This operation requires the workspace action broker, but collaboration is offline".into(),
             });
         }
-        let request_id = self.take_broker_request_id()?;
+        let request_id = Self::allocate_broker_request_id(next_request_id)?;
         let arguments = typed_arguments.cloned().unwrap_or_else(|| {
             let mut arguments = serde_json::Map::new();
             if let Some(value) = argument {
@@ -2528,28 +2803,33 @@ impl App {
             }
             arguments
         });
-        self.collab_manager
-            .send(CollabRequest::InvokePublishedAction {
-                request_id,
-                peer_id: crate::collaboration::CURRENT_CONNECTION_PEER_ID,
-                resource: address.resource.clone(),
-                action: address.action.clone(),
-                arguments,
-                confirmation: confirmation_evidence
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!({})),
-            });
+        send(CollabRequest::InvokePublishedAction {
+            request_id,
+            peer_id: crate::collaboration::CURRENT_CONNECTION_PEER_ID,
+            resource: address.resource.clone(),
+            action: address.action.clone(),
+            arguments,
+            confirmation: confirmation_evidence
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
+        });
         Ok(crate::widget::ResourceOperationStart::Accepted)
     }
 
+    #[cfg(test)]
     fn take_broker_request_id(&mut self) -> Result<u64, qos_actions::DoorError> {
-        let request_id = self.next_broker_request_id.take().ok_or_else(|| {
+        Self::allocate_broker_request_id(&mut self.next_broker_request_id)
+    }
+    fn allocate_broker_request_id(
+        next_request_id: &mut Option<u64>,
+    ) -> Result<u64, qos_actions::DoorError> {
+        let request_id = next_request_id.take().ok_or_else(|| {
             qos_actions::DoorError::Unavailable {
                 code: "broker_request_identity_exhausted".into(),
                 reason: "This app has exhausted its broker request identities; restart it before invoking another hosted operation".into(),
             }
         })?;
-        self.next_broker_request_id = request_id.checked_add(1);
+        *next_request_id = request_id.checked_add(1);
         Ok(request_id)
     }
 
@@ -2584,46 +2864,23 @@ impl App {
                 confirmation_evidence,
             );
         }
-        let mut context = qos_actions::ActionContext::for_resource(
-            &spec.label,
-            resource.id.as_str(),
-            &resource.kind,
-            &resource.label,
-        );
-        if let Some(ambient) = ambient_context {
-            context = context.enriched_by(ambient);
-        }
-        // A directed invocation has already crossed the broker's current
-        // admission, permission, and confirmation boundary. That broker is
-        // the authoritative host for a HostRequired/legacy ServerPreferred
-        // document action, so apply it here and let the ordinary signed CRDT
-        // sync broadcast the resulting change. An unbrokered caller still
-        // enters locus-aware dispatch and fails closed without a host.
-        let mutated_local = if confirmed_by_broker
-            && action.locus() == qos_actions::ExecutionLocus::ServerPreferred
-        {
-            qos_actions::apply_local_with_context(
-                &mut self.state.doc,
-                action.as_ref(),
-                encoded,
-                Some(actor.as_bytes()),
-                context,
-            )
-            .map_err(|error| qos_actions::DoorError::Failed(error.to_string()))?;
-            true
-        } else {
-            qos_actions::dispatch_by_with_context(
-                &mut self.state.doc,
-                action.as_ref(),
-                encoded,
-                self.action_transport.as_mut(),
-                Some(actor.as_bytes()),
-                context,
-            )
-            .map_err(|error| qos_actions::DoorError::Failed(error.to_string()))?
-            .mutated_local()
-        };
-        if mutated_local {
+        let started = crate::bound_dispatch::execute_resource_operation(
+            self.root_widget.as_mut(),
+            &mut self.state.doc,
+            &self.state.root,
+            &self.action_registry,
+            self.action_transport.as_mut(),
+            address,
+            resource,
+            spec,
+            encoded,
+            actor,
+            &self.local_author.0,
+            confirmed_by_broker,
+            qos_actions::InvocationId::new(),
+            ambient_context,
+        )?;
+        if before != self.state.doc.get_heads() {
             self.state.record_committed_action_authored(
                 before,
                 None,
@@ -2634,9 +2891,7 @@ impl App {
             self.layout_dirty = true;
             self.invalidate_widget_resource_cache();
         }
-        Ok(crate::widget::ResourceOperationStart::Completed(
-            qos_actions::ActionOutput::default(),
-        ))
+        Ok(started)
     }
 
     #[allow(
@@ -2644,7 +2899,217 @@ impl App {
         clippy::too_many_lines,
         reason = "the authority door deliberately keeps address, actor, confirmation, broker admission, evidence, invocation, and provenance explicit in one auditable boundary"
     )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "host broker admission retains exact origin and supplied evidence"
+    )]
+    fn invoke_bound_target(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        argument: Option<&str>,
+        actor: &str,
+        confirmed: bool,
+        broker_admitted: bool,
+        evidence: Option<&serde_json::Value>,
+        invocation: Option<qos_actions::InvocationId>,
+        ambient: Option<&qos_actions::ActionContext>,
+    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+        self.invoke_bound_target_with_broker(
+            target,
+            argument,
+            actor,
+            confirmed,
+            broker_admitted,
+            evidence,
+            invocation,
+            ambient,
+            None,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "host admission and optional synchronous broker delivery remain explicit"
+    )]
+    fn invoke_bound_target_with_broker(
+        &mut self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        argument: Option<&str>,
+        actor: &str,
+        confirmed: bool,
+        broker_admitted: bool,
+        evidence: Option<&serde_json::Value>,
+        invocation: Option<qos_actions::InvocationId>,
+        ambient: Option<&qos_actions::ActionContext>,
+        broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
+    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+        let _entry = target.binding.enter().map_err(|error| {
+            crate::bound_dispatch::BoundActionError::Dispatch(error).into_door()
+        })?;
+        if broker_admitted {
+            self.require_bound_broker_route(&target.binding)?;
+        }
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            Some(&target.address.address),
+        )
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.binding.same_component(&target.binding))
+            .ok_or_else(|| qos_actions::DoorError::Unknown(target.address.address.clone()))?;
+        let (arguments, _, spec) = crate::bound_dispatch::resolve_resource_invocation(
+            &snapshot.resources,
+            &target.address.address,
+            argument,
+            None,
+            confirmed,
+        )?;
+        let kind = spec.kind;
+        if !broker_admitted
+            && ((kind == qos_actions::OperationKind::Effect
+                && invocation.is_none()
+                && (broker_delivery.is_some() || self.collab_manager.is_connected()))
+                || (kind == qos_actions::OperationKind::Document
+                    && spec.locus == qos_actions::ExecutionLocus::ServerPreferred))
+        {
+            self.require_bound_broker_route(&target.binding)?;
+            if !crate::bound_dispatch::validate_bound_resources(
+                self.root_widget.as_mut(),
+                &target.binding,
+                &snapshot.resources,
+            )
+            .unwrap_or(false)
+            {
+                return Err(qos_actions::DoorError::Unknown(
+                    target.address.address.clone(),
+                ));
+            }
+            let alias = self
+                .bound_publication
+                .alias(&target.binding, &target.address.address.resource)
+                .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+            if let Some(send) = broker_delivery {
+                return Self::dispatch_broker_request(
+                    &mut self.next_broker_request_id,
+                    true,
+                    &qos_actions::ActionAddress::new(alias, target.address.address.action.clone()),
+                    arguments.as_ref(),
+                    argument,
+                    evidence,
+                    send,
+                );
+            }
+            self.publish_action_surface();
+            return self.invoke_via_broker(
+                &qos_actions::ActionAddress::new(alias, target.address.address.action.clone()),
+                arguments.as_ref(),
+                argument,
+                evidence,
+            );
+        }
+        let id = invocation.unwrap_or_default();
+        let started = crate::bound_dispatch::invoke_resource_action(
+            self.root_widget.as_mut(),
+            &mut self.state.doc,
+            target,
+            self.action_transport.as_mut(),
+            argument,
+            None,
+            actor,
+            confirmed,
+            broker_admitted,
+            id,
+            ambient,
+        )
+        .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        // A post-delivery fault retains canonical writes and must still refresh
+        // the host projection. Generation is advanced by the checked frame.
+        self.needs_sync = true;
+        self.layout_dirty = true;
+        self.invalidate_widget_resource_cache();
+        let started = started?;
+        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+            self.bound_invocations.insert(id, target.clone());
+            if invocation.is_none() {
+                self.local_invocations
+                    .insert(id, (target.address.address.clone(), kind));
+            }
+        }
+        Ok(started)
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "existing external action door inputs"
+    )]
     fn invoke_resource_action(
+        &mut self,
+        address: &qos_actions::ActionAddress,
+        argument: Option<&str>,
+        actor: &str,
+        confirmation_satisfied: bool,
+        broker_admitted: bool,
+        confirmation_evidence: Option<&serde_json::Value>,
+        invocation: Option<qos_actions::InvocationId>,
+        ambient_context: Option<&qos_actions::ActionContext>,
+    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+        if let Some(target) = self
+            .bound_publication
+            .target(address)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)?
+        {
+            self.require_bound_broker_route(&target.binding)?;
+            return self.invoke_bound_target(
+                &target,
+                argument,
+                actor,
+                confirmation_satisfied,
+                broker_admitted,
+                confirmation_evidence,
+                invocation,
+                ambient_context,
+            );
+        }
+        let snapshots = crate::bound_dispatch::discover_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            Some(address),
+        )
+        .map_err(|error| crate::bound_dispatch::BoundActionError::Dispatch(error).into_door())?;
+        let target = crate::bound_dispatch::select_bound_target(&snapshots, address, None)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        if let Some(target) = target {
+            return self.invoke_bound_target(
+                &target,
+                argument,
+                actor,
+                confirmation_satisfied,
+                broker_admitted,
+                confirmation_evidence,
+                invocation,
+                ambient_context,
+            );
+        }
+        self.invoke_unbound_resource_action(
+            address,
+            argument,
+            actor,
+            confirmation_satisfied,
+            broker_admitted,
+            confirmation_evidence,
+            invocation,
+            ambient_context,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "legacy broker and semantic orchestration retains the existing explicit door inputs"
+    )]
+    fn invoke_unbound_resource_action(
         &mut self,
         address: &qos_actions::ActionAddress,
         argument: Option<&str>,
@@ -2661,7 +3126,7 @@ impl App {
             self.collect_resources()
         };
         if qos_actions::door::resolve(&resources, address).is_none() {
-            let fallback = crate::widget::resolve_widget_resource(
+            let fallback = crate::bound_dispatch::resolve_unbound_resource(
                 self.root_widget.as_ref(),
                 &self.state.doc,
                 &address.resource,
@@ -2778,13 +3243,21 @@ impl App {
                 qos_actions::ActionOutput::default(),
             ));
         }
-        let started = match self.root_widget.start_resource_operation_with_document(
-            operation_invocation,
-            kind,
-            &encoded.type_id,
-            &encoded.payload,
+        let started = match crate::bound_dispatch::execute_resource_operation(
+            self.root_widget.as_mut(),
             &mut self.state.doc,
             &self.state.root,
+            &self.action_registry,
+            self.action_transport.as_mut(),
+            address,
+            resource,
+            resolved,
+            encoded,
+            actor,
+            &self.local_author.0,
+            broker_admitted,
+            operation_invocation,
+            ambient_context,
         ) {
             Ok(started) => started,
             Err(message) => {
@@ -2793,7 +3266,7 @@ impl App {
                         invocation: operation_invocation,
                         error: qos_actions::ActionFailure {
                             code: "action_failed".into(),
-                            message: message.clone(),
+                            message: message.to_string(),
                             details: None,
                             retryable: false,
                         },
@@ -2803,36 +3276,9 @@ impl App {
                         update,
                     });
                 }
-                return Err(qos_actions::DoorError::Failed(message));
+                return Err(message);
             }
         };
-        let Some(started) = started else {
-            if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
-                self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                    address: address.clone(),
-                    update: qos_actions::InvocationUpdate::Failed {
-                        invocation: operation_invocation,
-                        error: qos_actions::ActionFailure {
-                            code: "unknown_action".into(),
-                            message: "the published effect had no operation handler".into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    },
-                });
-            }
-            return Err(qos_actions::DoorError::Unknown(address.clone()));
-        };
-        if matches!(started, crate::widget::ResourceOperationStart::Accepted)
-            && matches!(
-                resolved.contract.execution,
-                qos_actions::ExecutionMode::Immediate
-            )
-        {
-            return Err(qos_actions::DoorError::Failed(
-                "an immediate operation cannot remain pending".into(),
-            ));
-        }
         if invocation.is_none()
             && matches!(started, crate::widget::ResourceOperationStart::Accepted)
         {
@@ -2845,33 +3291,17 @@ impl App {
             // mutation or input event accompanied the invocation.
             self.needs_sync = true;
         }
-        if let crate::widget::ResourceOperationStart::Completed(output) = &started {
-            if let Err(message) = resolved.contract.result.validate(output) {
-                if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
-                    self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                        address: address.clone(),
-                        update: qos_actions::InvocationUpdate::Failed {
-                            invocation: operation_invocation,
-                            error: qos_actions::ActionFailure {
-                                code: "invalid_result".into(),
-                                message: message.clone(),
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                    });
-                }
-                return Err(qos_actions::DoorError::Failed(message));
-            }
-            if kind == qos_actions::OperationKind::Effect && invocation.is_none() {
-                self.collab_manager.send(CollabRequest::RecordLocalEffect {
-                    address: address.clone(),
-                    update: qos_actions::InvocationUpdate::Succeeded {
-                        invocation: operation_invocation,
-                        output: output.clone(),
-                    },
-                });
-            }
+        if let crate::widget::ResourceOperationStart::Completed(output) = &started
+            && kind == qos_actions::OperationKind::Effect
+            && invocation.is_none()
+        {
+            self.collab_manager.send(CollabRequest::RecordLocalEffect {
+                address: address.clone(),
+                update: qos_actions::InvocationUpdate::Succeeded {
+                    invocation: operation_invocation,
+                    output: output.clone(),
+                },
+            });
         }
         // Effect/view operations are allowed to switch presentation-only
         // resources without touching Automerge.
@@ -2884,6 +3314,36 @@ impl App {
     /// and enter through the same door/lifecycle as every other caller.
     fn dispatch_control_invocations(&mut self) -> usize {
         let mut dispatched = 0_usize;
+        let bound = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut())
+            .unwrap_or_default();
+        for (target, intent) in bound {
+            let argument = format!(
+                "{}{}",
+                qos_actions::ARGUMENTS_JSON_PREFIX,
+                serde_json::Value::Object(intent.arguments)
+            );
+            let actor = self.local_author.0.clone();
+            match self.invoke_bound_target(
+                &target,
+                Some(&argument),
+                &actor,
+                false,
+                false,
+                None,
+                None,
+                None,
+            ) {
+                Ok(_) => dispatched = dispatched.saturating_add(1),
+                Err(qos_actions::DoorError::ConfirmationRequired) => {
+                    self.open_action_palette();
+                    if let Some(palette) = self.action_palette.as_mut() {
+                        palette.activate_bound(&target);
+                    }
+                    dispatched = dispatched.saturating_add(1);
+                }
+                Err(error) => tracing::warn!(%error, "bound control invocation refused"),
+            }
+        }
         while let Some(intent) = self.root_widget.take_control_invocation() {
             let local_resources = self.collect_local_resources();
             let Some(resolved) = qos_actions::door::resolve(&local_resources, &intent.address)
@@ -2951,6 +3411,10 @@ impl App {
     /// progress/item/terminal update to the broker. A terminal update removes
     /// the job before it is sent, making terminal delivery at-most-once even
     /// if a widget accidentally returns the same update again.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "directed and local terminal delivery share the existing status sweep"
+    )]
     fn poll_directed_invocations(&mut self) -> bool {
         let invocations = self
             .directed_invocations
@@ -2959,13 +3423,30 @@ impl App {
             .collect::<Vec<_>>();
         let mut changed = false;
         for (invocation, pending) in invocations {
-            let Some(mut update) = self.root_widget.poll_resource_operation(
-                invocation,
-                pending.cancellation_requested,
-                &self.state.doc,
-                &self.state.root,
-            ) else {
-                continue;
+            let polled = if let Some(target) = self.bound_invocations.get(&invocation) {
+                crate::bound_dispatch::poll_resource_operation(
+                    self.root_widget.as_mut(),
+                    &self.state.doc,
+                    target,
+                    invocation,
+                    pending.cancellation_requested,
+                )
+            } else {
+                Ok(self.root_widget.poll_resource_operation(
+                    invocation,
+                    pending.cancellation_requested,
+                    &self.state.doc,
+                    &self.state.root,
+                ))
+            };
+            let mut update = match polled {
+                Ok(Some(update)) => update,
+                Ok(None) => continue,
+                Err(_) => {
+                    self.bound_invocations.remove(&invocation);
+                    self.directed_invocations.remove(&invocation);
+                    continue;
+                }
             };
             if update.invocation() != invocation
                 || matches!(update, qos_actions::InvocationUpdate::Accepted { .. })
@@ -2981,6 +3462,7 @@ impl App {
                 };
             }
             if update.is_terminal() {
+                self.bound_invocations.remove(&invocation);
                 self.directed_invocations.remove(&invocation);
             }
             self.collab_manager.send(CollabRequest::UpdateInvocation {
@@ -2995,16 +3477,34 @@ impl App {
             .map(|(invocation, (address, kind))| (*invocation, address.clone(), *kind))
             .collect::<Vec<_>>();
         for (invocation, address, kind) in local_invocations {
-            let Some(update) = self.root_widget.poll_resource_operation(
-                invocation,
-                false,
-                &self.state.doc,
-                &self.state.root,
-            ) else {
-                continue;
+            let polled = if let Some(target) = self.bound_invocations.get(&invocation) {
+                crate::bound_dispatch::poll_resource_operation(
+                    self.root_widget.as_mut(),
+                    &self.state.doc,
+                    target,
+                    invocation,
+                    false,
+                )
+            } else {
+                Ok(self.root_widget.poll_resource_operation(
+                    invocation,
+                    false,
+                    &self.state.doc,
+                    &self.state.root,
+                ))
+            };
+            let update = match polled {
+                Ok(Some(update)) => update,
+                Ok(None) => continue,
+                Err(_) => {
+                    self.bound_invocations.remove(&invocation);
+                    self.local_invocations.remove(&invocation);
+                    continue;
+                }
             };
             let invalid_identity = update.invocation() != invocation;
             if update.is_terminal() || invalid_identity {
+                self.bound_invocations.remove(&invocation);
                 self.local_invocations.remove(&invocation);
             }
             if (update.is_terminal() || invalid_identity)
@@ -3037,10 +3537,24 @@ impl App {
 
     pub fn open_action_palette(&mut self) {
         let _entry = self.enter_wake_scope();
-        let resources = self.collect_local_resources();
-        let providers = self.root_widget.search_providers();
+        let (key, generation) = self.ensure_local_resource_cache();
+        let resources = self
+            .local_resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key && cache.permission_generation == generation)
+            .map_or_else(Vec::new, |cache| cache.resources.clone());
+        let bound = crate::bound_dispatch::discover_cached_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &self.bound_resource_cache,
+            self.resource_generation.get(),
+        )
+        .unwrap_or_default();
+        let providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref());
         let mut palette = crate::action_palette::ActionPalette::new();
         palette.load_open_resources(&resources);
+        palette.load_bound_resources(bound);
         palette.set_providers(providers);
         palette.open();
         self.action_palette = Some(palette);
@@ -3082,26 +3596,27 @@ impl App {
         self.action_palette.as_ref()
     }
 
-    fn action_palette_handle_key(&mut self, event: &WindowEvent) -> bool {
-        if self.action_palette.is_none() {
-            return false;
-        }
+    fn refresh_action_palette_resources(&mut self) {
         // A palette can stay open while document state or the local actor's
         // permissions change. Refresh its authority snapshot immediately
         // before activation; rows retain addresses, never the callbacks or
         // encoded actions from the frame in which search found them.
+        // The unbound cache includes projected retained semantic controls as
+        // well as app resources. Keep both when refreshing a pending row.
+        let (key, generation) = self.ensure_local_resource_cache();
         let mut resources = self
-            .collect_resources()
-            .into_iter()
-            .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-            .collect::<Vec<_>>();
+            .local_resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| cache.key == key && cache.permission_generation == generation)
+            .map_or_else(Vec::new, |cache| cache.resources.clone());
         let lazy_resource_ids = self
             .action_palette
             .as_ref()
             .map(crate::action_palette::ActionPalette::referenced_action_resource_ids)
             .unwrap_or_default();
         for id in lazy_resource_ids {
-            if let Some(resource) = crate::widget::resolve_widget_resource(
+            if let Some(resource) = crate::bound_dispatch::resolve_unbound_resource(
                 self.root_widget.as_ref(),
                 &self.state.doc,
                 &id,
@@ -3111,9 +3626,46 @@ impl App {
                 resources.push(resource);
             }
         }
+        let mut bound = crate::bound_dispatch::discover_cached_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &self.bound_resource_cache,
+            self.resource_generation.get(),
+        )
+        .unwrap_or_default();
+        let targets = self
+            .action_palette
+            .as_ref()
+            .map(crate::action_palette::ActionPalette::referenced_bound_targets)
+            .unwrap_or_default();
+        for target in targets {
+            if let Some(snapshot) = bound
+                .iter_mut()
+                .find(|snapshot| snapshot.binding.same_component(&target.binding))
+                && qos_actions::door::resolve(&snapshot.resources, &target.address.address)
+                    .is_none()
+                && let Ok(Some(resource)) = crate::bound_dispatch::resolve_component_resource(
+                    self.root_widget.as_mut(),
+                    &self.state.doc,
+                    &target.binding,
+                    &target.address.address.resource,
+                    &target.address.address.action,
+                )
+            {
+                snapshot.resources.push(resource);
+            }
+        }
         if let Some(palette) = self.action_palette.as_mut() {
             palette.refresh_open_resources(&resources);
+            palette.load_bound_resources(bound);
         }
+    }
+
+    fn action_palette_handle_key(&mut self, event: &WindowEvent) -> bool {
+        if self.action_palette.is_none() {
+            return false;
+        }
+        self.refresh_action_palette_resources();
         let Some(palette) = self.action_palette.as_mut() else {
             return false;
         };
@@ -3131,16 +3683,29 @@ impl App {
             // Confirmation was collected by the palette, but the request has
             // not crossed the session broker yet. Host-required documents are
             // therefore submitted to that broker rather than applied here.
-            let result = self.invoke_resource_action(
-                &pending.address,
-                argument.as_deref(),
-                &actor,
-                true,
-                false,
-                Some(pending.confirmation_evidence()),
-                None,
-                Some(&pending.context),
-            );
+            let result = if let Some(target) = pending.bound.as_ref() {
+                self.invoke_bound_target(
+                    target,
+                    argument.as_deref(),
+                    &actor,
+                    true,
+                    false,
+                    Some(pending.confirmation_evidence()),
+                    None,
+                    Some(&pending.context),
+                )
+            } else {
+                self.invoke_resource_action(
+                    &pending.address,
+                    argument.as_deref(),
+                    &actor,
+                    true,
+                    false,
+                    Some(pending.confirmation_evidence()),
+                    None,
+                    Some(&pending.context),
+                )
+            };
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
             } else {
@@ -3152,13 +3717,22 @@ impl App {
         let navigation = self
             .action_palette
             .as_mut()
-            .and_then(super::action_palette::ActionPalette::take_navigation);
-        if let Some(action_id) = navigation {
-            let nav_before = self.state.doc.get_heads();
-            self.root_widget
-                .activate_search_result(&action_id, &mut self.state.doc, &root);
-            if self.state.doc.get_heads() != nav_before {
-                self.state.record_committed_action(nav_before, None, None);
+            .and_then(super::action_palette::ActionPalette::take_scoped_navigation);
+        if let Some((action_id, binding)) = navigation {
+            if let Some(binding) = binding {
+                let _ = crate::bound_dispatch::activate_bound_search(
+                    self.root_widget.as_mut(),
+                    &mut self.state.doc,
+                    &binding,
+                    &action_id,
+                );
+            } else {
+                let nav_before = self.state.doc.get_heads();
+                self.root_widget
+                    .activate_search_result(&action_id, &mut self.state.doc, &root);
+                if self.state.doc.get_heads() != nav_before {
+                    self.state.record_committed_action(nav_before, None, None);
+                }
             }
             self.needs_sync = true;
             self.layout_dirty = true;
@@ -4427,7 +5001,76 @@ impl App {
         self.invalidate_widget_resource_cache();
     }
 
+    /// Unique admitted node visits keep child reports and requests off shell history.
+    fn service_history(&mut self) -> bool {
+        // SAFETY: App exclusively owns this stable live layout for the sweep.
+        let mut changed = unsafe {
+            crate::undo::record_dispatched_action_bound(
+                &mut self.state,
+                std::ptr::from_mut(self.root_widget.as_mut()),
+                &self.node_map,
+                &self.bindings,
+                &self.local_author,
+            )
+        };
+        let mut visited = std::collections::HashSet::new();
+        for (&node, pointer) in &self.node_map {
+            if !visited.insert(pointer.cast::<()>()) {
+                continue;
+            }
+            let binding = self.bindings.binding_for(node);
+            // SAFETY: no target reference escapes and this layout is unchanged.
+            let request = unsafe {
+                crate::bound_dispatch::mutate_bound_node(
+                    &self.bindings,
+                    &self.node_map,
+                    node,
+                    |widget| widget.take_undo_request(),
+                )
+            }
+            .ok()
+            .flatten();
+            if let Some(request) = request {
+                let entry = if let Some(binding) = &binding {
+                    binding
+                        .history_request(&mut self.state.doc, request)
+                        .ok()
+                        .flatten()
+                } else {
+                    match request {
+                        crate::undo::UndoRequest::Undo => {
+                            self.state.undo_as(Some(&self.local_author), None, None)
+                        }
+                        crate::undo::UndoRequest::Redo => {
+                            self.state.redo_as(Some(&self.local_author), None, None)
+                        }
+                    }
+                };
+                changed |= entry.is_some();
+            }
+            let status = if let Some(binding) = binding {
+                binding.undo_status(&mut self.state.doc).unwrap_or_default()
+            } else {
+                self.state.undo_status(Some(&self.local_author))
+            };
+            // SAFETY: the same unique admitted node remains live and exclusive.
+            let _ = unsafe {
+                crate::bound_dispatch::mutate_bound_node(
+                    &self.bindings,
+                    &self.node_map,
+                    node,
+                    |widget| widget.set_undo_status(&status),
+                )
+            };
+        }
+        changed
+    }
+
     fn commit_action(&mut self) {
+        if self.service_history() {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
@@ -4959,11 +5602,19 @@ impl App {
     pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
         let _entry = self.enter_wake_scope();
         let resources = self.collect_declared_resources();
-        self.semantic_tree.refresh_bound(
+        let components = crate::bound_dispatch::discover_cached_bound_resources(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &self.bound_resource_cache,
+            self.resource_generation.get(),
+        )
+        .unwrap_or_default();
+        self.semantic_tree.refresh_components(
             self.root_widget.as_ref(),
             &self.node_map,
             self.focused_node,
             &resources,
+            &components,
         )
     }
 
@@ -4997,6 +5648,20 @@ impl App {
         let Some(action) = self.semantic_tree.action(id, name).cloned() else {
             return Ok(false);
         };
+        if let Some(target) = self.semantic_tree.bound_target(id, name) {
+            let actor = self.local_author.0.clone();
+            match self.invoke_bound_target(&target, arg, &actor, false, false, None, None, None) {
+                Ok(_) => return Ok(true),
+                Err(qos_actions::DoorError::ConfirmationRequired) => {
+                    self.open_action_palette();
+                    return Ok(self
+                        .action_palette
+                        .as_mut()
+                        .is_some_and(|palette| palette.activate_bound(&target)));
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
         match action.kind {
             SemanticActionKind::App(encoded) => self.dispatch_encoded_semantic(encoded),
             SemanticActionKind::AppPrompted { .. } => {
@@ -7422,20 +8087,35 @@ impl AppHandler {
                     let current_focus_idx = app
                         .focused_node
                         .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                    let entry = match request {
-                        crate::undo::UndoRequest::Undo => app.state.undo_as(
-                            Some(&app.local_author),
-                            current_focus_idx,
-                            current_meta,
-                        ),
-                        crate::undo::UndoRequest::Redo => app.state.redo_as(
-                            Some(&app.local_author),
-                            current_focus_idx,
-                            current_meta,
-                        ),
+                    let entry = if let Some(binding) = app
+                        .focused_node
+                        .and_then(|node| app.bindings.binding_for(node))
+                    {
+                        binding
+                            .history_request(&mut app.state.doc, request)
+                            .ok()
+                            .flatten()
+                    } else {
+                        match request {
+                            crate::undo::UndoRequest::Undo => app.state.undo_as(
+                                Some(&app.local_author),
+                                current_focus_idx,
+                                current_meta,
+                            ),
+                            crate::undo::UndoRequest::Redo => app.state.redo_as(
+                                Some(&app.local_author),
+                                current_focus_idx,
+                                current_meta,
+                            ),
+                        }
                     };
                     if let Some(entry) = entry {
-                        app.apply_undo_entry(entry);
+                        if entry.instance_id.is_some() {
+                            app.needs_sync = true;
+                            app.layout_dirty = true;
+                        } else {
+                            app.apply_undo_entry(entry);
+                        }
                     }
                 }
                 is_undo_redo = true;
@@ -8296,13 +8976,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
-        // The button-driven twin of the Ctrl+K palette dispatch: record one
-        // undo boundary so Ctrl+Z reverts it.
-        if let Some(before) = app.root_widget.take_committed_action()
-            && app.state.doc.get_heads() != before
-        {
-            app.state.record_committed_action(before, None, None);
+        if app.service_history() {
             app.needs_sync = true;
+            app.layout_dirty = true;
             window.request_redraw();
         }
 
@@ -10372,7 +11048,7 @@ mod action_palette_tests {
         use std::sync::atomic::Ordering;
 
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut app = App::new(
+        let mut app = App::new_with_controlled_inputs(
             State::new(),
             Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
         );
@@ -10399,7 +11075,7 @@ mod action_palette_tests {
         use std::sync::atomic::Ordering;
 
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let mut app = App::new(
+        let mut app = App::new_with_controlled_inputs(
             State::new(),
             Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
         );
@@ -10419,7 +11095,7 @@ mod action_palette_tests {
 
     #[test]
     fn exhausted_permission_generation_evicts_the_old_authority_projection() {
-        let mut app = App::new(State::new(), Box::new(Publisher));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
         assert_eq!(app.collect_local_resources().len(), 1);
         app.permission_generation.set(u64::MAX);
@@ -10460,7 +11136,7 @@ mod action_palette_tests {
 
     #[test]
     fn ctrl_k_scopes_to_resources_then_dispatch_mutates_doc_and_records_undo() {
-        let mut app = App::new(State::new(), Box::new(Publisher));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
 
         let res = app.collect_resources();
@@ -10561,7 +11237,7 @@ mod action_palette_tests {
 
     #[test]
     fn denied_lazy_search_action_never_crosses_the_host_permission_door() {
-        let mut app = App::new(State::new(), Box::new(Publisher));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
         app.set_permission_ctx(PermissionContext::from_capabilities(
             collab_types::caps::Actor::person(None, "restricted"),
@@ -10594,7 +11270,7 @@ mod action_palette_tests {
     #[test]
     fn ctrl_k_invokes_a_projected_semantic_view_control() {
         let button = Button::new("drive-me", "Drive me", None);
-        let mut app = App::new(State::new(), Box::new(button));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
         app.init_layout();
         app.set_focused_node(None);
         assert!(!app.root_widget.is_focused());
@@ -11381,7 +12057,7 @@ mod semantic_tree_app_tests {
     }
 
     fn app() -> App {
-        let mut app = App::new(State::new(), Box::new(CounterCard::new()));
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(CounterCard::new()));
         app.action_registry_mut()
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
@@ -11732,7 +12408,10 @@ mod semantic_tree_app_tests {
 
     #[test]
     fn action_bound_control_never_auto_confirms_destructive_action() {
-        let mut app = App::new(State::new(), Box::new(CounterCard::with_destructive(true)));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(CounterCard::with_destructive(true)),
+        );
         app.action_registry_mut()
             .register::<CounterAction>(COUNTER_TYPE);
         app.init_layout();
@@ -11756,7 +12435,7 @@ mod semantic_tree_app_tests {
                 .unwrap();
             Ok(receiver)
         });
-        let mut app = App::new(State::new(), root);
+        let mut app = App::new_with_controlled_inputs(State::new(), root);
         app.init_layout();
         activate_bound_button(&mut app);
         assert_eq!(app.dispatch_control_invocations(), 1);
@@ -12671,17 +13350,116 @@ mod bound_component_tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     thread_local! { static CAPTURES: RefCell<Vec<(&'static str, crate::LatestRequest<u32>)>> = const { RefCell::new(vec![]) }; }
-    struct Probe;
+    thread_local! { static DISCOVERY_COUNT: Cell<usize> = const { Cell::new(0) }; }
+    thread_local! { static CONTROL_AUTHORITY: RefCell<Vec<(bool, bool)>> = const { RefCell::new(vec![]) }; }
+    thread_local! { static COMPOUND_MODE: Cell<u8> = const { Cell::new(0) }; }
+    #[derive(Default)]
+    struct Probe {
+        strict: bool,
+        collision: Option<String>,
+        actions: crate::action_host::ActionHost,
+    }
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct FollowUp;
+    impl qos_actions::Action for FollowUp {
+        fn apply(&self, doc: &mut automerge::AutoCommit) -> Result<(), qos_actions::ActionError> {
+            doc.put(ROOT, "follow-up", true)?;
+            Ok(())
+        }
+    }
+    #[derive(Debug, serde::Serialize)]
+    struct EmptyFollowUp {
+        refuse: bool,
+    }
+    impl qos_actions::Action for EmptyFollowUp {
+        fn apply(&self, doc: &mut automerge::AutoCommit) -> Result<(), qos_actions::ActionError> {
+            if self.refuse {
+                doc.put(ROOT, "failed-action", true)?;
+                Err(qos_actions::ActionError::Refused(
+                    "controlled failure".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
     impl Probe {
         fn capture(label: &'static str) {
             CAPTURES.with_borrow_mut(|v| v.push((label, crate::LatestRequest::new())));
         }
     }
+
+    struct LazyProbe;
+    impl crate::search::SearchProvider for LazyProbe {
+        fn name(&self) -> &'static str {
+            "Probe lazy"
+        }
+        fn action_directory_generation(&self) -> Option<u64> {
+            Some(0)
+        }
+        fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
+            match query {
+                "lazy" => vec![crate::search::SearchResult::for_action(
+                    "Probe",
+                    "Lazy",
+                    qos_actions::ActionAddress::new("bound:lazy", "view"),
+                )],
+                "opaque" => vec![crate::search::SearchResult::new(
+                    "Probe", "Opaque", "opaque",
+                )],
+                _ => vec![],
+            }
+        }
+        fn resolve_action_resource(
+            &self,
+            address: &qos_actions::ActionAddress,
+        ) -> Option<qos_actions::Resource> {
+            (address.resource == "bound:lazy" && address.action == "view").then(|| {
+                qos_actions::Resource::new("bound:lazy", "probe", "Lazy").with_action(
+                    qos_actions::ActionSpec::operation(
+                        "view",
+                        "View",
+                        qos_actions::OperationKind::View,
+                        "bound.view",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(qos_actions::ActionContract::view()),
+                )
+            })
+        }
+    }
     impl Widget for Probe {
+        fn refresh_control_action_availability(
+            &mut self,
+            allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
+        ) {
+            CONTROL_AUTHORITY.with_borrow_mut(|seen| {
+                seen.push((
+                    self.strict,
+                    allowed.contains(&qos_actions::ActionAddress::new("bound:probe", "apply")),
+                ));
+            });
+        }
+
+        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+            vec![Box::new(LazyProbe)]
+        }
+        fn activate_search_result(
+            &mut self,
+            id: &str,
+            doc: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+        ) {
+            assert_eq!(id, "opaque");
+            doc.put(ROOT, "navigation", true).unwrap();
+        }
+
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &["bound.follow-up"]
+            &["bound.follow-up", "bound.view"]
         }
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
+            DISCOVERY_COUNT.set(DISCOVERY_COUNT.get().saturating_add(1));
             let mut action = qos_actions::ActionSpec::operation(
                 "follow-up",
                 "Follow up",
@@ -12693,7 +13471,66 @@ mod bound_component_tests {
             action.contract.execution =
                 qos_actions::ExecutionMode::Background { cancellable: true };
             action.contract.result = qos_actions::ResultSpec::Job;
-            vec![qos_actions::Resource::new("bound:probe", "probe", "Probe").with_action(action)]
+            if self.strict {
+                action.contract.confirmation = qos_actions::ConfirmationPolicy::Confirm;
+            }
+            vec![
+                qos_actions::Resource::new(
+                    self.collision.as_deref().unwrap_or("bound:probe"),
+                    "probe",
+                    "Probe",
+                )
+                .with_action(action)
+                .with_action(
+                    qos_actions::ActionSpec::immediate(
+                        "apply",
+                        "Apply follow up",
+                        "bound.apply",
+                        &FollowUp,
+                    )
+                    .unwrap(),
+                )
+                .with_action(
+                    qos_actions::ActionSpec::operation(
+                        "view",
+                        "View",
+                        qos_actions::OperationKind::View,
+                        "bound.view",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(qos_actions::ActionContract::view()),
+                ),
+            ]
+        }
+        fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+            self.resources(doc)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id)
+        }
+        fn action_directory_visibility(
+            &self,
+            _: &automerge::AutoCommit,
+            id: &str,
+        ) -> Option<qos_actions::ActionAddress> {
+            (self.strict && id == "bound:probe")
+                .then(|| qos_actions::ActionAddress::new(id, "follow-up"))
+        }
+        fn action_directory_resource_page(
+            &self,
+            doc: &automerge::AutoCommit,
+            cursor: &[u8],
+            max_results: usize,
+        ) -> Option<crate::widget::ActionDirectoryResourcePage> {
+            Some(crate::widget::ActionDirectoryResourcePage {
+                resources: if cursor.is_empty() && max_results > 0 {
+                    self.resources(doc)
+                } else {
+                    vec![]
+                },
+                next_cursor: vec![],
+                exhausted: true,
+            })
         }
         #[allow(
             clippy::panic_in_result_fn,
@@ -12708,15 +13545,66 @@ mod bound_component_tests {
             doc: &mut automerge::AutoCommit,
             path: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            if type_id == "bound.view" {
+                if COMPOUND_MODE.get() == 1 {
+                    self.actions.dispatch(doc, "bound.apply", &FollowUp);
+                }
+                Self::capture("bound-view");
+                return Ok(Some(crate::widget::ResourceOperationStart::Completed(
+                    qos_actions::ActionOutput::default(),
+                )));
+            }
             assert_eq!(type_id, "bound.follow-up");
             assert_eq!(path, &ROOT);
             assert_eq!(
                 doc.get(ROOT, "marker").unwrap().unwrap().0.to_str(),
                 Some("child")
             );
-            doc.put(ROOT, "follow-up", true).unwrap();
+            let mode = COMPOUND_MODE.get();
+            if matches!(mode, 3 | 4 | 6) {
+                doc.put(ROOT, "raw-before", true).unwrap();
+            }
+            match mode {
+                2 | 3 => {}
+                7 => self.actions.dispatch_with_context(
+                    doc,
+                    "bound.apply",
+                    &FollowUp,
+                    qos_actions::ActionContext::for_resource(
+                        "Declared follow-up",
+                        "bound:probe",
+                        "probe",
+                        "Probe",
+                    ),
+                ),
+                8 => {
+                    let mut queue = qos_actions::OptimisticQueue::new(doc);
+                    self.actions
+                        .dispatch_optimistic(doc, &mut queue, "bound.apply", &FollowUp)
+                        .unwrap();
+                }
+                9 | 10 => {
+                    assert_eq!(
+                        self.actions
+                            .try_dispatch(doc, "bound.empty", &EmptyFollowUp { refuse: mode == 10 })
+                            .is_err(),
+                        mode == 10
+                    );
+                }
+                11 => {
+                    doc.put(ROOT, "raw-unwind", true).unwrap();
+                    panic!("controlled compound unwind");
+                }
+                _ => self.actions.dispatch(doc, "bound.apply", &FollowUp),
+            }
+            if matches!(mode, 5 | 6) {
+                doc.put(ROOT, "raw-after", true).unwrap();
+            }
             Self::capture("mutable-operation");
             Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        }
+        fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+            self.actions.take_committed()
         }
         fn poll_resource_operation(
             &mut self,
@@ -12857,19 +13745,42 @@ mod bound_component_tests {
     }
     #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
     fn factory(
-        mut context: HostContext,
-        _: LaunchTarget,
+        context: HostContext,
+        target: LaunchTarget,
         _: RestoreInput,
     ) -> Result<AppComponent, crate::launch::LaunchError> {
-        context
-            .initialize_new_record(|doc| {
-                doc.put(ROOT, "marker", "child").map_err(|e| e.to_string())
-            })
-            .map_err(crate::launch::LaunchError::Record)?;
+        build_probe(context, &target, false)
+    }
+    #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
+    fn strict_factory(
+        context: HostContext,
+        target: LaunchTarget,
+        _: RestoreInput,
+    ) -> Result<AppComponent, crate::launch::LaunchError> {
+        build_probe(context, &target, true)
+    }
+    fn build_probe(
+        mut context: HostContext,
+        target: &LaunchTarget,
+        strict: bool,
+    ) -> Result<AppComponent, crate::launch::LaunchError> {
+        if matches!(target, LaunchTarget::New) {
+            context
+                .initialize_new_record(|doc| {
+                    doc.put(ROOT, "marker", "child").map_err(|e| e.to_string())
+                })
+                .map_err(crate::launch::LaunchError::Record)?;
+        }
+        let mut registry = qos_actions::ActionRegistry::new();
+        registry.register::<FollowUp>("bound.apply");
         Ok(AppComponent::new(
             context,
-            Box::new(Probe),
-            qos_actions::ActionRegistry::new(),
+            Box::new(Probe {
+                strict,
+                collision: None,
+                actions: crate::action_host::ActionHost::new(),
+            }),
+            registry,
         ))
     }
     #[test]
@@ -13028,5 +13939,1184 @@ mod bound_component_tests {
         assert_eq!(app.component_close_reports().len(), 1);
         assert_eq!(app.take_component_close_reports().len(), 1);
         assert!(app.take_component_close_reports().is_empty());
+    }
+    struct ActionFixture {
+        _temp: tempfile::TempDir,
+        app: App,
+        records: crate::record::RecordStore,
+        bindings: Vec<crate::bound_dispatch::CallbackBinding>,
+        permissions: Rc<RefCell<crate::permissions::PermissionContext>>,
+    }
+    impl ActionFixture {
+        fn new() -> Self {
+            Self::with_same_record(false)
+        }
+        fn with_same_record(shared: bool) -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let mut owners = crate::record::RecordOwners::new(temp.path().into());
+            let records = owners
+                .open(
+                    "dev.qos.binding-probe",
+                    "00000000-0000-0000-0000-000000000004",
+                )
+                .unwrap();
+            let views = Rc::new(
+                crate::application_view::InstanceViewStore::new(
+                    temp.path().into(),
+                    "D",
+                    "00000000-0000-0000-0000-000000000004",
+                )
+                .unwrap(),
+            );
+            let permissions = Rc::new(RefCell::new(
+                crate::permissions::PermissionContext::from_capabilities(
+                    crate::permissions::Actor::person(None, "fixture-user"),
+                    vec![
+                        crate::permissions::CapOverride::grant(
+                            crate::permissions::Subject::person("fixture-user"),
+                            crate::permissions::Scope::Workspace,
+                            crate::permissions::Verb::Admin,
+                        )
+                        .with_expiry(110),
+                    ],
+                )
+                .at_unix_time(100),
+            ));
+            let mut column = Column::new();
+            let mut bindings: Vec<crate::bound_dispatch::CallbackBinding> = Vec::new();
+            for (instance, create) in [
+                (11, factory as crate::application::ComponentFactory),
+                (12, strict_factory),
+            ] {
+                let definition = ApplicationDefinition {
+                    app_id: "dev.qos.binding-probe",
+                    title: "Probe",
+                    icon: IconDescriptor::Glyph("P"),
+                    record_kind: crate::record::RecordKind::new("probe"),
+                    required: vec![],
+                    optional: vec![],
+                    create,
+                };
+                let target = if shared && !bindings.is_empty() {
+                    LaunchTarget::Record {
+                        checkout: bindings[0].checkout.clone(),
+                        reveal: None,
+                    }
+                } else {
+                    LaunchTarget::New
+                };
+                let context = HostContext::prepare(
+                    &definition,
+                    records.clone(),
+                    views.clone(),
+                    "D".into(),
+                    instance,
+                    permissions.clone(),
+                    crate::permissions::UserId("fixture-user".into()),
+                    qos_actions::ActionContext::default(),
+                    &target,
+                )
+                .unwrap();
+                let component = definition
+                    .instantiate(context, target, RestoreInput::None)
+                    .unwrap();
+                bindings.push(component.callback_binding());
+                column = column.push(Box::new(TileHost::from_component(component)));
+            }
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(column));
+            app.init_layout();
+            Self {
+                _temp: temp,
+                app,
+                records,
+                bindings,
+                permissions,
+            }
+        }
+        fn broker() -> Self {
+            let mut fixture = Self::with_same_record(true);
+            fixture.app.bound_broker_route_for_test =
+                Some(crate::collaboration::PrimaryRouteWitness {
+                    route: fixture.bindings[0].broker_route().unwrap(),
+                    epoch: uuid::Uuid::new_v4(),
+                });
+            fixture
+        }
+        fn target(&self, index: usize, action: &str) -> crate::bound_dispatch::BoundActionTarget {
+            let binding = self.bindings[index].clone();
+            crate::bound_dispatch::BoundActionTarget {
+                address: crate::bound_dispatch::BoundActionAddress {
+                    instance_id: binding.instance_id,
+                    address: qos_actions::ActionAddress::new("bound:probe", action),
+                },
+                binding,
+            }
+        }
+    }
+
+    #[test]
+    fn task4_bound_publication_preserves_contracts_and_directed_owner() {
+        let mut fixture = ActionFixture::broker();
+        let outer = fixture.app.state.doc.get_heads();
+        let address = qos_actions::ActionAddress::new("bound:probe", "follow-up");
+        let actor = fixture.app.local_author.0.clone();
+        let error = fixture
+            .app
+            .invoke_resource_action(&address, None, &actor, true, false, None, None, None)
+            .unwrap_err();
+        assert_eq!(
+            crate::bound_dispatch::door_error_code(&error),
+            "ambiguous_action_target"
+        );
+        let resources = fixture.app.publication_resources();
+        let first = fixture
+            .app
+            .bound_publication
+            .alias(&fixture.bindings[0], "bound:probe")
+            .unwrap();
+        let second = fixture
+            .app
+            .bound_publication
+            .alias(&fixture.bindings[1], "bound:probe")
+            .unwrap();
+        assert_ne!(first, second);
+        let descriptor = |id: &str| {
+            qos_actions::door::resolve(
+                &resources,
+                &qos_actions::ActionAddress::new(id, "follow-up"),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            descriptor(&first).contract.confirmation,
+            qos_actions::ConfirmationPolicy::None
+        );
+        assert_eq!(
+            descriptor(&second).contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
+        );
+        let revision = fixture.app.action_directory_revision();
+        assert!(matches!(
+            fixture
+                .app
+                .resolve_action_directory(&revision, &second, "follow-up"),
+            runtime_collab::ActionDirectoryResolution::Found(_)
+        ));
+        fixture
+            .app
+            .invoke_resource_action(
+                &qos_actions::ActionAddress::new(&second, "follow-up"),
+                None,
+                &actor,
+                true,
+                true,
+                Some(&serde_json::json!({"confirm": true})),
+                Some(qos_actions::InvocationId::new()),
+                None,
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .records
+                .read_history(&fixture.bindings[0].checkout.id, |_, history| history
+                    .next_undo_in(&fixture.bindings[0].author, 11)
+                    .is_none())
+                .unwrap()
+        );
+        fixture
+            .records
+            .with_history(&fixture.bindings[1].checkout.id, |doc, history| {
+                assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
+                assert_eq!(
+                    history
+                        .next_undo_in(&fixture.bindings[1].author, 12)
+                        .unwrap()
+                        .instance_id,
+                    Some(12)
+                );
+            })
+            .unwrap();
+        assert_eq!(fixture.app.state.doc.get_heads(), outer);
+    }
+
+    #[test]
+    fn task4_bound_cache_tracks_permission_time_and_never_reuses_exhaustion() {
+        let mut fixture = ActionFixture::new();
+        DISCOVERY_COUNT.set(0);
+        let _ = fixture.app.collect_resources();
+        let first = DISCOVERY_COUNT.get();
+        let _ = fixture.app.collect_resources();
+        assert_eq!(DISCOVERY_COUNT.get(), first);
+        let expired = fixture.permissions.borrow().clone().at_unix_time(120);
+        *fixture.permissions.borrow_mut() = expired;
+        let resources = fixture.app.collect_resources();
+        assert!(
+            qos_actions::door::resolve(
+                &resources,
+                &qos_actions::ActionAddress::new("bound:probe", "follow-up")
+            )
+            .is_none()
+        );
+        assert!(DISCOVERY_COUNT.get() > first);
+        let expired = fixture.permissions.borrow().clone();
+        *fixture.permissions.borrow_mut() = expired.at_unix_time(100);
+        fixture
+            .records
+            .with_action_state(&fixture.bindings[0].checkout.id, |_, _, state| {
+                state.generation = Some(u64::MAX);
+            })
+            .unwrap();
+        fixture.bindings[0]
+            .with_document(&mut fixture.app.state.doc, |_, _| {})
+            .unwrap();
+        let _ = fixture.app.collect_resources();
+        let before = DISCOVERY_COUNT.get();
+        let _ = fixture.app.collect_resources();
+        assert!(DISCOVERY_COUNT.get() > before);
+        assert_eq!(
+            fixture
+                .records
+                .action_generation(&fixture.bindings[0].checkout.id)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn task4_semantic_and_palette_targets_keep_equal_id_lifetimes() {
+        let mut fixture = ActionFixture::new();
+        fixture.app.refresh_semantic_tree();
+        let targets = fixture.app.semantic_tree.bound_actions_for_test();
+        let (id, _) = targets
+            .iter()
+            .find(|(_, target)| {
+                target.address.instance_id == 12 && target.address.address.action == "view"
+            })
+            .unwrap();
+        let outer = fixture.app.state.doc.get_heads();
+        assert!(
+            fixture
+                .app
+                .invoke_semantic_action(id, "view", None)
+                .unwrap()
+        );
+        fixture.app.open_action_palette();
+        let target = fixture.target(0, "view");
+        assert!(
+            fixture
+                .app
+                .action_palette
+                .as_mut()
+                .unwrap()
+                .activate_bound(&target)
+        );
+        let pending = fixture
+            .app
+            .action_palette
+            .as_mut()
+            .unwrap()
+            .take_operation()
+            .unwrap();
+        assert!(
+            pending
+                .bound
+                .as_ref()
+                .unwrap()
+                .binding
+                .same_component(&target.binding)
+        );
+        assert_eq!(fixture.app.state.doc.get_heads(), outer);
+        fixture.app.close_components();
+        assert!(
+            fixture
+                .app
+                .invoke_bound_target(
+                    &target,
+                    None,
+                    &fixture.app.local_author.0.clone(),
+                    true,
+                    false,
+                    None,
+                    None,
+                    None
+                )
+                .is_err()
+        );
+    }
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one controlled lifetime traces publication through refusal and delivery"
+    )]
+    fn task4_bound_directory_limits_cursors_and_alias_refusal() {
+        let mut fixture = ActionFixture::broker();
+        let query = runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: String::new(),
+            cursor: vec![],
+            needle: String::new(),
+            parent_resource: String::new(),
+            max_results: 1,
+            max_bytes: 8192,
+            max_work: 16,
+            max_depth: 8,
+        };
+        let first = fixture.app.action_directory_page(query.clone());
+        assert_eq!(first.rows.len(), 1);
+        assert!(!first.next_cursor.is_empty());
+        let second = fixture
+            .app
+            .action_directory_page(runtime_collab::ActionDirectoryQuery {
+                revision: first.revision.clone(),
+                cursor: first.next_cursor.clone(),
+                ..query.clone()
+            });
+        assert_eq!(second.rows.len(), 1);
+        assert_ne!(first.rows[0].resource, second.rows[0].resource);
+        assert_eq!(first.rows[0].visibility_action.as_deref(), Some("view"));
+        assert_eq!(
+            second.rows[0].visibility_action.as_deref(),
+            Some("follow-up")
+        );
+        let eager = fixture.app.publication_resources();
+        for page in [&first, &second] {
+            assert!(
+                eager
+                    .iter()
+                    .any(|resource| resource.id.as_str() == page.rows[0].resource)
+            );
+        }
+        let alias = second.rows[0].resource.clone();
+        let previous_permissions = fixture.permissions.borrow().clone();
+        *fixture.permissions.borrow_mut() =
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+        let stale = fixture
+            .app
+            .action_directory_page(runtime_collab::ActionDirectoryQuery {
+                revision: first.revision.clone(),
+                cursor: first.next_cursor,
+                ..query
+            });
+        assert!(stale.stale_cursor);
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "follow-up")
+                .is_none()
+        );
+        let actor = fixture.app.local_author.0.clone();
+        assert!(
+            fixture
+                .app
+                .invoke_resource_action(
+                    &qos_actions::ActionAddress::new(&alias, "follow-up"),
+                    None,
+                    &actor,
+                    true,
+                    true,
+                    None,
+                    None,
+                    None,
+                )
+                .is_err()
+        );
+        *fixture.permissions.borrow_mut() = previous_permissions;
+        for malformed in [
+            format!("{}broken", crate::bound_dispatch::PUBLICATION_PREFIX),
+            format!("{alias}:extra"),
+            format!(
+                "{}{}",
+                crate::bound_dispatch::PUBLICATION_PREFIX,
+                "x".repeat(4096)
+            ),
+        ] {
+            assert!(
+                fixture
+                    .app
+                    .bound_publication
+                    .target(&qos_actions::ActionAddress::new(&malformed, "view"))
+                    .is_err()
+            );
+            assert!(
+                fixture
+                    .app
+                    .resolve_publication_resource(&malformed, "view")
+                    .is_none()
+            );
+        }
+        fixture.app.close_components();
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "follow-up")
+                .is_none()
+        );
+        let mut replacement = ActionFixture::broker();
+        fixture.app.bound_broker_route_for_test =
+            replacement.app.bound_broker_route_for_test.clone();
+        fixture.app.root_widget = std::mem::replace(
+            &mut replacement.app.root_widget,
+            Box::new(crate::widget::Text::new("empty")),
+        );
+        fixture.app.invalidate_widget_resource_cache();
+        let replacements = fixture.app.publication_resources();
+        assert!(!replacements.is_empty());
+        assert!(
+            replacements
+                .iter()
+                .all(|resource| resource.id.as_str() != alias)
+        );
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "view")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn task4_compound_view_and_noop_effect_preserve_pending_typing() {
+        for (action, mode) in [("view", 0), ("follow-up", 2), ("view", 1)] {
+            COMPOUND_MODE.set(mode);
+            let mut fixture = ActionFixture::with_same_record(true);
+            let a = fixture.bindings[0].clone();
+            let b = fixture.bindings[1].clone();
+            a.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "first").unwrap();
+            })
+            .unwrap();
+            let pending_before = fixture
+                .records
+                .read(
+                    &a.checkout.id,
+                    automerge::transaction::Transactable::pending_ops,
+                )
+                .unwrap();
+            let target = fixture.target(1, action);
+            fixture
+                .app
+                .invoke_bound_target(
+                    &target,
+                    None,
+                    "fixture-user",
+                    true,
+                    false,
+                    None,
+                    Some(qos_actions::InvocationId(uuid::Uuid::from_u128(91))),
+                    None,
+                )
+                .unwrap();
+            if mode == 0 {
+                assert_eq!(
+                    fixture
+                        .records
+                        .read(
+                            &a.checkout.id,
+                            automerge::transaction::Transactable::pending_ops
+                        )
+                        .unwrap(),
+                    pending_before
+                );
+            }
+            let b_entry = fixture
+                .records
+                .read_history(&a.checkout.id, |_, history| {
+                    history.next_undo_in(&b.author, b.instance_id).cloned()
+                })
+                .unwrap();
+            assert_eq!(b_entry.is_some(), mode == 1);
+            if mode != 1 {
+                assert!(
+                    fixture
+                        .records
+                        .read_history(&a.checkout.id, |_, history| history
+                            .next_undo_in(&a.author, a.instance_id)
+                            .is_none())
+                        .unwrap()
+                );
+            }
+            a.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "continued").unwrap();
+            })
+            .unwrap();
+            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .unwrap()
+                .unwrap();
+            fixture
+                .records
+                .read(&a.checkout.id, |doc| {
+                    assert_eq!(doc.get(ROOT, "typing").unwrap().is_some(), mode == 1);
+                    assert_eq!(doc.get(ROOT, "follow-up").unwrap().is_some(), mode == 1);
+                })
+                .unwrap();
+            COMPOUND_MODE.set(0);
+        }
+    }
+
+    #[test]
+    fn task4_undeclared_effect_spans_are_retained_excluded_and_keep_custody() {
+        for mode in [3, 4, 5, 6] {
+            COMPOUND_MODE.set(mode);
+            CAPTURES.with_borrow_mut(Vec::clear);
+            let mut fixture = ActionFixture::with_same_record(true);
+            let a = fixture.bindings[0].clone();
+            let b = fixture.bindings[1].clone();
+            a.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "prior").unwrap();
+            })
+            .unwrap();
+            let generation = fixture.records.action_generation(&a.checkout.id).unwrap();
+            let target = fixture.target(1, "follow-up");
+            let error = fixture
+                .app
+                .invoke_bound_target(
+                    &target,
+                    None,
+                    "fixture-user",
+                    true,
+                    false,
+                    None,
+                    Some(qos_actions::InvocationId(uuid::Uuid::from_u128(92))),
+                    None,
+                )
+                .unwrap_err();
+            assert_eq!(
+                crate::bound_dispatch::door_error_code(&error),
+                "undeclared_document_mutation"
+            );
+            assert!(error.to_string().contains("retained"));
+            assert_ne!(
+                fixture.records.action_generation(&a.checkout.id).unwrap(),
+                generation
+            );
+            b.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "later", true).unwrap();
+            })
+            .unwrap();
+            b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .unwrap()
+                .unwrap();
+            if mode != 3 {
+                b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                    .unwrap()
+                    .unwrap();
+            }
+            assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
+            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .unwrap()
+                .unwrap();
+            fixture
+                .records
+                .read(&a.checkout.id, |doc| {
+                    assert!(doc.get(ROOT, "later").unwrap().is_none());
+                    assert!(doc.get(ROOT, "typing").unwrap().is_none());
+                    assert!(doc.get(ROOT, "follow-up").unwrap().is_none());
+                    assert_eq!(
+                        doc.get(ROOT, "raw-before").unwrap().is_some(),
+                        matches!(mode, 3 | 4 | 6)
+                    );
+                    assert_eq!(
+                        doc.get(ROOT, "raw-after").unwrap().is_some(),
+                        matches!(mode, 5 | 6)
+                    );
+                })
+                .unwrap();
+            drop(fixture);
+            assert!(CAPTURES.with_borrow(|captures| {
+                captures.iter().any(|(name, _)| *name == "mutable-cancel")
+            }));
+            COMPOUND_MODE.set(0);
+        }
+    }
+
+    #[test]
+    fn task4_compound_contextual_optimistic_noop_and_failed_producers() {
+        for mode in [7, 8, 9, 10] {
+            COMPOUND_MODE.set(mode);
+            let mut fixture = ActionFixture::with_same_record(true);
+            let a = fixture.bindings[0].clone();
+            let b = fixture.bindings[1].clone();
+            a.with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "prior").unwrap();
+            })
+            .unwrap();
+            let target = fixture.target(1, "follow-up");
+            fixture
+                .app
+                .invoke_bound_target(&target, None, "fixture-user", true, false, None, None, None)
+                .unwrap();
+            assert_eq!(
+                b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo,
+                mode < 9
+            );
+            if mode < 9 {
+                b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                    .unwrap()
+                    .unwrap();
+                assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
+            } else {
+                assert!(
+                    fixture
+                        .records
+                        .read_history(&a.checkout.id, |_, history| history
+                            .next_undo_in(&a.author, a.instance_id)
+                            .is_none())
+                        .unwrap()
+                );
+            }
+            a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                .unwrap()
+                .unwrap();
+            fixture
+                .records
+                .read(&a.checkout.id, |doc| {
+                    assert!(doc.get(ROOT, "typing").unwrap().is_none());
+                    assert!(doc.get(ROOT, "follow-up").unwrap().is_none());
+                    assert!(doc.get(ROOT, "failed-action").unwrap().is_none());
+                })
+                .unwrap();
+            COMPOUND_MODE.set(0);
+        }
+    }
+
+    #[test]
+    fn task4_compound_unwind_restores_frame_and_preserves_unrelated_redo() {
+        COMPOUND_MODE.set(11);
+        let mut fixture = ActionFixture::with_same_record(true);
+        let a = fixture.bindings[0].clone();
+        let b = fixture.bindings[1].clone();
+        a.with_document(&mut fixture.app.state.doc, |doc, _| {
+            doc.put(ROOT, "typing", "prior").unwrap();
+        })
+        .unwrap();
+        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+            .unwrap()
+            .unwrap();
+        let target = fixture.target(1, "follow-up");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = fixture.app.invoke_bound_target(
+                &target,
+                None,
+                "fixture-user",
+                true,
+                false,
+                None,
+                None,
+                None,
+            );
+        }));
+        assert!(result.is_err());
+        COMPOUND_MODE.set(0);
+        assert!(a.undo_status(&mut fixture.app.state.doc).unwrap().can_redo);
+        assert!(!b.undo_status(&mut fixture.app.state.doc).unwrap().can_undo);
+        b.with_document(&mut fixture.app.state.doc, |doc, _| {
+            doc.put(ROOT, "later", true).unwrap();
+        })
+        .unwrap();
+        b.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+            .unwrap()
+            .unwrap();
+        a.history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Redo)
+            .unwrap()
+            .unwrap();
+        fixture
+            .records
+            .read(&a.checkout.id, |doc| {
+                assert!(doc.get(ROOT, "raw-unwind").unwrap().is_some());
+                assert!(doc.get(ROOT, "typing").unwrap().is_some());
+                assert!(doc.get(ROOT, "later").unwrap().is_none());
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn task4_pending_status_selects_its_owner_without_closing_typing() {
+        let mut fixture = ActionFixture::new();
+        let binding = fixture.bindings[0].clone();
+        let outer = fixture.app.state.doc.get_heads();
+        binding
+            .with_document(&mut fixture.app.state.doc, |doc, _| {
+                doc.put(ROOT, "typing", "pending").unwrap();
+            })
+            .unwrap();
+        let pending = fixture
+            .records
+            .read(
+                &binding.checkout.id,
+                automerge::transaction::Transactable::pending_ops,
+            )
+            .unwrap();
+        assert!(
+            binding
+                .undo_status(&mut fixture.app.state.doc)
+                .unwrap()
+                .can_undo
+        );
+        assert!(
+            !fixture.bindings[1]
+                .undo_status(&mut fixture.app.state.doc)
+                .unwrap()
+                .can_undo
+        );
+        assert_eq!(
+            fixture
+                .records
+                .read(
+                    &binding.checkout.id,
+                    automerge::transaction::Transactable::pending_ops
+                )
+                .unwrap(),
+            pending
+        );
+        let entry = binding
+            .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.instance_id, Some(11));
+        assert!(
+            binding
+                .undo_status(&mut fixture.app.state.doc)
+                .unwrap()
+                .can_redo
+        );
+        assert!(
+            fixture
+                .records
+                .read(&binding.checkout.id, |doc| doc
+                    .get(ROOT, "typing")
+                    .unwrap()
+                    .is_none())
+                .unwrap()
+        );
+        assert_eq!(fixture.app.state.doc.get_heads(), outer);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one controlled lifetime traces publication through refusal and delivery"
+    )]
+    fn task4_qualified_broker_request_retains_chosen_contract_and_directed_owner() {
+        let mut fixture = ActionFixture::broker();
+        let target = fixture.target(1, "follow-up");
+        let resources = fixture.app.publication_resources();
+        let actor = fixture.app.local_author.0.clone();
+        let evidence = serde_json::json!({"token": "controlled-confirmation"});
+        let mut requests = Vec::new();
+        // This seam captures submission only; no broker acceptance is simulated.
+        fixture
+            .app
+            .invoke_bound_target_with_broker(
+                &target,
+                None,
+                &actor,
+                true,
+                false,
+                Some(&evidence),
+                None,
+                None,
+                Some(&mut |request| requests.push(request)),
+            )
+            .unwrap();
+        assert_eq!(requests.len(), 1);
+        let CollabRequest::InvokePublishedAction {
+            request_id,
+            peer_id,
+            resource,
+            action,
+            arguments,
+            confirmation,
+        } = requests.pop().unwrap()
+        else {
+            panic!("expected action request")
+        };
+        assert_eq!(peer_id, crate::collaboration::CURRENT_CONNECTION_PEER_ID);
+        assert_eq!(request_id, 0);
+        assert!(arguments.is_empty());
+        assert_eq!(confirmation, evidence);
+        let descriptor = qos_actions::door::resolve(
+            &resources,
+            &qos_actions::ActionAddress::new(&resource, &action),
+        )
+        .unwrap();
+        assert_eq!(
+            descriptor.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
+        );
+        assert!(
+            fixture
+                .app
+                .bound_publication
+                .target(&qos_actions::ActionAddress::new(&resource, &action))
+                .unwrap()
+                .unwrap()
+                .binding
+                .same_component(&target.binding)
+        );
+        for binding in &fixture.bindings {
+            assert!(
+                fixture
+                    .records
+                    .read(&binding.checkout.id, |doc| doc
+                        .get(ROOT, "follow-up")
+                        .unwrap()
+                        .is_none())
+                    .unwrap()
+            );
+        }
+        fixture
+            .app
+            .invoke_published_action(41, resource, action, None, &actor, None);
+        assert!(
+            fixture
+                .records
+                .read_history(&fixture.bindings[0].checkout.id, |_, history| history
+                    .next_undo_in(&fixture.bindings[0].author, 11)
+                    .is_none())
+                .unwrap()
+        );
+        assert!(
+            fixture
+                .records
+                .read(&target.binding.checkout.id, |doc| doc
+                    .get(ROOT, "follow-up")
+                    .unwrap()
+                    .is_some())
+                .unwrap()
+        );
+        assert_eq!(
+            fixture
+                .records
+                .read_history(&target.binding.checkout.id, |_, history| history.revision())
+                .unwrap(),
+            1
+        );
+        let before = fixture.app.next_broker_request_id;
+        let mut sent = false;
+        assert!(
+            App::dispatch_broker_request(
+                &mut fixture.app.next_broker_request_id,
+                false,
+                &target.address.address,
+                None,
+                None,
+                None,
+                |_| sent = true
+            )
+            .is_err()
+        );
+        assert!(!sent);
+        assert_eq!(fixture.app.next_broker_request_id, before);
+    }
+
+    #[test]
+    fn task4_checked_action_reuses_same_record_frame_and_refuses_cross_record() {
+        for shared in [true, false] {
+            let mut fixture = ActionFixture::with_same_record(shared);
+            let target = fixture.target(1, "apply");
+            let first = fixture.bindings[0].clone();
+            let outer = fixture.app.state.doc.get_heads();
+            let actor = fixture.app.local_author.0.clone();
+            let result = first
+                .with_document(&mut fixture.app.state.doc, |doc, _| {
+                    doc.put(ROOT, "before-nested", "A").unwrap();
+                    let result = crate::bound_dispatch::invoke_resource_action(
+                        fixture.app.root_widget.as_mut(),
+                        doc,
+                        &target,
+                        fixture.app.action_transport.as_mut(),
+                        None,
+                        None,
+                        &actor,
+                        true,
+                        false,
+                        qos_actions::InvocationId::new(),
+                        None,
+                    );
+                    doc.put(ROOT, "after-nested", "A").unwrap();
+                    result
+                })
+                .unwrap();
+            if shared {
+                result.unwrap();
+                first
+                    .history_request(&mut fixture.app.state.doc, crate::undo::UndoRequest::Undo)
+                    .unwrap()
+                    .unwrap();
+                fixture
+                    .records
+                    .read_history(&first.checkout.id, |doc, history| {
+                        assert!(doc.get(ROOT, "after-nested").unwrap().is_none());
+                        assert!(doc.get(ROOT, "before-nested").unwrap().is_some());
+                        assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
+                        assert_eq!(
+                            history.next_undo_in(&first.author, 12).unwrap().instance_id,
+                            Some(12)
+                        );
+                    })
+                    .unwrap();
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(crate::bound_dispatch::BoundActionError::Dispatch(
+                        crate::bound_dispatch::BoundDispatchError::CrossRecordReentry
+                    ))
+                ));
+                assert!(
+                    fixture
+                        .records
+                        .read(&target.binding.checkout.id, |doc| doc
+                            .get(ROOT, "follow-up")
+                            .unwrap()
+                            .is_none())
+                        .unwrap()
+                );
+            }
+            assert_eq!(fixture.app.state.doc.get_heads(), outer);
+        }
+    }
+    #[test]
+    fn task4_lazy_palette_and_opaque_navigation_keep_provider_owner() {
+        let mut fixture = ActionFixture::new();
+        fixture.app.open_action_palette();
+        let palette = fixture.app.action_palette.as_mut().unwrap();
+        palette.set_query("lazy");
+        for _ in 0..4 {
+            palette.advance_search_page();
+        }
+        let targets = palette.referenced_bound_targets();
+        assert_eq!(targets.len(), 2);
+        fixture.app.refresh_action_palette_resources();
+        let target = targets
+            .iter()
+            .find(|target| target.address.instance_id == 12)
+            .unwrap();
+        let palette = fixture.app.action_palette.as_mut().unwrap();
+        assert!(palette.activate_bound(target));
+        let pending = palette.take_operation().unwrap();
+        assert!(
+            pending
+                .bound
+                .unwrap()
+                .binding
+                .same_component(&target.binding)
+        );
+        fixture
+            .app
+            .invoke_bound_target(target, None, "fixture-user", true, false, None, None, None)
+            .unwrap();
+        fixture.app.open_action_palette();
+        let palette = fixture.app.action_palette.as_mut().unwrap();
+        palette.set_query("opaque");
+        for _ in 0..4 {
+            palette.advance_search_page();
+        }
+        assert_eq!(palette.len(), 2);
+        palette.set_cursor(1);
+        palette.activate_selected();
+        let (id, binding) = palette.take_scoped_navigation().unwrap();
+        let binding = binding.unwrap();
+        crate::bound_dispatch::activate_bound_search(
+            fixture.app.root_widget.as_mut(),
+            &mut fixture.app.state.doc,
+            &binding,
+            &id,
+        )
+        .unwrap();
+        for owner in &fixture.bindings {
+            assert_eq!(
+                fixture
+                    .records
+                    .read(&owner.checkout.id, |doc| doc
+                        .get(ROOT, "navigation")
+                        .unwrap()
+                        .is_some())
+                    .unwrap(),
+                owner.same_component(&binding)
+            );
+        }
+        assert!(fixture.app.state.doc.get_heads().is_empty());
+    }
+
+    #[test]
+    fn task4_reserved_publication_collision_never_routes_to_legacy_widget() {
+        let mut fixture = ActionFixture::broker();
+        let alias = fixture
+            .app
+            .bound_publication
+            .alias(&fixture.bindings[1], "bound:probe")
+            .unwrap();
+        let old = std::mem::replace(
+            &mut fixture.app.root_widget,
+            Box::new(crate::widget::Text::new("empty")),
+        );
+        fixture.app.root_widget = Box::new(
+            Column::new()
+                .push(Box::new(Probe {
+                    collision: Some(alias.clone()),
+                    ..Probe::default()
+                }))
+                .push(old),
+        );
+        fixture
+            .app
+            .action_registry
+            .register::<FollowUp>("bound.apply");
+        fixture.app.invalidate_widget_resource_cache();
+        let resources = fixture.app.publication_resources();
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|resource| resource.id.as_str() == alias)
+                .count(),
+            1
+        );
+        let descriptor = qos_actions::door::resolve(
+            &resources,
+            &qos_actions::ActionAddress::new(&alias, "follow-up"),
+        )
+        .unwrap();
+        assert_eq!(
+            descriptor.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm
+        );
+        assert!(
+            fixture
+                .app
+                .bound_publication
+                .alias(&fixture.bindings[0], &"x".repeat(4096))
+                .is_err()
+        );
+    }
+    #[test]
+    fn task4_bound_broker_route_refuses_wrong_app_workspace_record_and_missing_witness() {
+        let mut fixture = ActionFixture::broker();
+        let target = fixture.target(1, "follow-up");
+        let matching = fixture.app.bound_broker_route_for_test.clone().unwrap();
+        assert_eq!(fixture.app.publication_app_id(), matching.route.app_id);
+        let alias = fixture
+            .app
+            .bound_publication
+            .alias(&target.binding, "bound:probe")
+            .unwrap();
+        let revision = fixture.app.action_directory_revision();
+        let mut wrong_app = matching.clone();
+        wrong_app.route.app_id = "dev.qos.other".into();
+        let mut wrong_workspace = matching.clone();
+        wrong_workspace.route.cluster_id = uuid::Uuid::nil();
+        let mut wrong_record = matching.clone();
+        wrong_record.route.record = Some("different-record".into());
+        for witness in [
+            Some(wrong_app),
+            Some(wrong_workspace),
+            Some(wrong_record),
+            None,
+        ] {
+            fixture.app.bound_broker_route_for_test = witness;
+            let resources = fixture.app.publication_resources();
+            assert!(resources.iter().all(|resource| {
+                !resource
+                    .id
+                    .as_str()
+                    .starts_with(crate::bound_dispatch::PUBLICATION_PREFIX)
+            }));
+            assert!(
+                fixture
+                    .app
+                    .resolve_publication_resource(&alias, "follow-up")
+                    .is_none()
+            );
+            assert_ne!(fixture.app.action_directory_revision(), revision);
+            let next_id = fixture.app.next_broker_request_id;
+            let mut sent = false;
+            let error = fixture
+                .app
+                .invoke_bound_target_with_broker(
+                    &target,
+                    None,
+                    "fixture-user",
+                    true,
+                    false,
+                    None,
+                    None,
+                    None,
+                    Some(&mut |_| sent = true),
+                )
+                .unwrap_err();
+            assert_eq!(
+                crate::bound_dispatch::door_error_code(&error),
+                "bound_broker_route_unavailable"
+            );
+            assert!(!sent);
+            assert_eq!(fixture.app.next_broker_request_id, next_id);
+            fixture.app.invoke_published_action(
+                50,
+                alias.clone(),
+                "follow-up".into(),
+                None,
+                "fixture-user",
+                None,
+            );
+            assert!(
+                fixture
+                    .records
+                    .read(&target.binding.checkout.id, |doc| doc
+                        .get(ROOT, "follow-up")
+                        .unwrap()
+                        .is_none())
+                    .unwrap()
+            );
+            // Local component View actions do not need this manager's broker route.
+            fixture
+                .app
+                .invoke_bound_target(
+                    &fixture.target(1, "view"),
+                    None,
+                    "fixture-user",
+                    true,
+                    false,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        let mut replacement = matching;
+        replacement.epoch = uuid::Uuid::new_v4();
+        fixture.app.bound_broker_route_for_test = Some(replacement);
+        assert_ne!(fixture.app.action_directory_revision(), revision);
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "follow-up")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn task4_bound_control_authority_refreshes_without_an_outer_generation_change() {
+        let mut fixture = ActionFixture::new();
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        assert_eq!(
+            CONTROL_AUTHORITY.with_borrow(Clone::clone),
+            vec![(false, true), (true, true)]
+        );
+        *fixture.permissions.borrow_mut() =
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "fixture-user"),
+                vec![],
+            )
+            .at_unix_time(100);
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        assert_eq!(
+            CONTROL_AUTHORITY.with_borrow(Clone::clone),
+            vec![(false, false), (true, false)]
+        );
     }
 }

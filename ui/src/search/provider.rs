@@ -891,6 +891,12 @@ impl SearchResult {
 /// the registry floats the strongest title matches without discarding
 /// your field-aware hits.
 pub trait SearchProvider {
+    /// Toolkit provenance for a component-owned proxy. Applications cannot
+    /// construct a CallbackBinding; its payload remains owned by AppComponent.
+    #[doc(hidden)]
+    fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
+        None
+    }
     /// The kind label this provider produces, used for diagnostics and as the
     /// default group header. Individual results may still carry a different
     /// [`SearchResult::kind`].
