@@ -307,3 +307,5 @@ pub use permissions::{
 
 pub mod application;
 pub mod application_view;
+
+pub mod bound_dispatch;
