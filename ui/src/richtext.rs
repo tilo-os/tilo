@@ -821,7 +821,7 @@ mod tests {
     use super::*;
 
     fn layout(text: &str, width: f32) -> RichTextLayout {
-        let mut fs = crate::configured_font_system();
+        let mut fs = crate::font_catalog::fixture_font_system();
         RichTextLayout::shape(
             &mut fs,
             &[RichSpan::new(text)],
@@ -838,7 +838,7 @@ mod tests {
 
     #[test]
     fn shapes_caret_hit_and_selection() {
-        let mut fs = FontSystem::new();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let layout = RichTextLayout::shape(
             &mut fs,
             &[RichSpan::new("hello world")],
@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn center_alignment_offsets_text() {
-        let mut fs = FontSystem::new();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let left = RichTextLayout::shape(
             &mut fs,
             &[RichSpan::new("hi")],
@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn wrapping_produces_multiple_lines() {
-        let mut fs = FontSystem::new();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let long = "word ".repeat(60);
         let one = RichTextLayout::shape(
             &mut fs,
@@ -1040,7 +1040,7 @@ mod tests {
 
     #[test]
     fn paragraph_controls_shape_and_fragment_the_authoritative_layout() {
-        let mut fs = crate::configured_font_system();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let text = "Good typography makes a paragraph feel even before it is read. Spacing supports the argument without calling attention to itself.";
         let justified = RichTextLayout::shape_plain(
             &mut fs,
@@ -1078,7 +1078,7 @@ mod tests {
 
     #[test]
     fn balanced_wrap_avoids_a_short_final_line_without_adding_lines() {
-        let mut fs = crate::configured_font_system();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let text = "A balanced heading wraps its thought into lines of comparable visual weight.";
         let ordinary =
             RichTextLayout::shape_plain(&mut fs, text, &crate::TextStyle::new(21.0), Some(520.0));
@@ -1150,7 +1150,7 @@ mod tests {
             .fold(0.0f32, f32::max)
             + 0.5;
 
-        let mut fs = crate::configured_font_system();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let layout = RichTextLayout::shape(
             &mut fs,
             &[
@@ -1190,7 +1190,7 @@ mod tests {
 
         let text = "ทุกสองสัปดาห์";
         let style = TextStyle::new(18.0);
-        let mut fs = crate::configured_font_system();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let probe = RichTextLayout::shape_plain(&mut fs, &text[..9], &style, None);
         let width = probe.width() + 0.5;
         let layout = RichTextLayout::shape_plain(&mut fs, text, &style, Some(width));
@@ -1210,7 +1210,7 @@ mod tests {
 
         let text = "ทุกสองสัปดาห์";
         let style = TextStyle::new(18.0);
-        let mut fs = crate::configured_font_system();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let source = RichTextLayout::shape_plain(&mut fs, text, &style, None);
         let hinted = RichTextLayout::shape_plain(&mut fs, text, &style, Some(10_000.0));
 
@@ -1225,7 +1225,7 @@ mod tests {
         use crate::text_render::TextStyle;
 
         let style = TextStyle::new(18.0);
-        let mut fs = crate::configured_font_system();
+        let mut fs = crate::font_catalog::fixture_font_system();
 
         let cjk = "東京京都";
         let cjk_probe = RichTextLayout::shape_plain(&mut fs, "東京", &style, None);
@@ -1258,7 +1258,7 @@ mod tests {
 
         let text = "extensive";
         let style = TextStyle::new(20.0).with_auto_hyphenation("en-US");
-        let mut fs = crate::configured_font_system();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let probe = RichTextLayout::shape_plain(&mut fs, "exten-", &TextStyle::new(20.0), None);
         let layout = RichTextLayout::shape_styled(
             &mut fs,
@@ -1289,7 +1289,7 @@ mod tests {
 
     #[test]
     fn background_span_records_a_paintable_band() {
-        let mut fs = FontSystem::new();
+        let mut fs = crate::font_catalog::fixture_font_system();
         // "AAA" plain, "BBB" highlighted, "CCC" plain.
         let spans = [
             RichSpan::new("AAA"),
@@ -1338,7 +1338,7 @@ mod tests {
 
     #[test]
     fn super_run_shapes_smaller_and_offsets_up() {
-        let mut fs = FontSystem::new();
+        let mut fs = crate::font_catalog::fixture_font_system();
         let base_size = 20.0f32;
         // "x" normal, "2" superscript.
         let spans = [
@@ -1404,7 +1404,7 @@ mod tests {
 
     #[test]
     fn line_height_mult_scales_line_advance() {
-        let mut fs = FontSystem::new();
+        let mut fs = crate::font_catalog::fixture_font_system();
         // Force two lines so the gap between line tops reflects the line advance.
         let long = "word ".repeat(40);
         let single = RichTextLayout::shape(
