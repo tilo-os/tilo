@@ -138,3 +138,6 @@ mod wpe_engine;
 mod canonical_record_owner;
 
 mod application_contract;
+
+#[path = "bound_component_dispatch.rs"]
+mod bound_component_dispatch;
