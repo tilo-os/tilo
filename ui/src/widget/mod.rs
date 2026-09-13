@@ -1421,6 +1421,12 @@ pub trait Widget {
     /// perform its effect and dispatch the exact replayable metadata action in
     /// one host-owned turn instead of publishing a permanently disabled UI.
     ///
+    /// The default preserves a widget's existing read-only admission override.
+    /// Transparent containers that host mutable handlers must forward this
+    /// method to their children (as `Column`, `Row`, `Container` and `TileHost` do).
+    /// They must not then call the read-only fallback: that would visit a
+    /// declining handler twice. Custom containers retain this forwarding duty.
+    ///
     /// # Errors
     ///
     /// Returns the same admission/operation failures as
