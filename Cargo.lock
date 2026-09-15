@@ -138,6 +138,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "url",
  "uuid",
  "zeroize",
 ]
