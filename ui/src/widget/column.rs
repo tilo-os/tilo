@@ -251,6 +251,13 @@ impl Widget for Column {
                 },
                 flex_direction: taffy::FlexDirection::Column,
                 align_items: Some(taffy::AlignItems::FlexStart),
+                // A parent may legitimately stretch or explicitly size this
+                // Column taller than its content. Pack implicit Grid rows at
+                // the start so surplus block space does not inflate the
+                // requested gap between them.
+                align_content: self
+                    .intrinsic_height
+                    .then_some(taffy::AlignContent::Start),
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0_f32),
@@ -670,6 +677,62 @@ mod tests {
         assert_eq!(col.children[0].get_rect().y0, 0.0);
         assert_eq!(col.children[1].get_rect().y0, 30.0);
         assert_eq!(col.get_rect().height(), 40.0);
+    }
+
+    #[test]
+    fn intrinsic_column_keeps_requested_gap_when_parent_stretches_height() {
+        let theme = Theme::dark();
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(20.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let column_node = col.build_layout(&mut taffy, &theme, &mut node_map);
+        let host_node = taffy.parent_node(
+            Style {
+                size: taffy::Size {
+                    width: length(400.0_f32),
+                    height: length(300.0_f32),
+                },
+                ..Default::default()
+            },
+            &[column_node],
+        );
+
+        taffy
+            .compute_layout_with_measure(
+                host_node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        col.apply_layout(&taffy, column_node, Point::ZERO);
+
+        assert_eq!(taffy.layout(column_node).unwrap().size.height, 300.0);
+        assert_eq!(col.get_rect().height(), 300.0);
+        assert_eq!(col.children[0].get_rect().y0, 0.0);
+        assert_eq!(col.children[1].get_rect().y0, 30.0);
+        assert_eq!(
+            col.children[1].get_rect().y0 - col.children[0].get_rect().y1,
+            20.0
+        );
     }
 
     #[test]
