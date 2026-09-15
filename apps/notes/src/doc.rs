@@ -707,7 +707,7 @@ fn block_map(doc: &AutoCommit, list: &ObjId, id: &str) -> Option<(usize, ObjId)>
     }
 }
 
-fn valid_kind(kind: &str) -> bool {
+pub(crate) fn valid_kind(kind: &str) -> bool {
     matches!(
         kind,
         "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
