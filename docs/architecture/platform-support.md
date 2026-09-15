@@ -104,7 +104,10 @@ bash os/kernel/tests/boot-smoke.sh STAGE.tar.gz KERNEL_RELEASE NEW_OUTPUT_DIRECT
 It boots disklessly under QEMU TCG, records input hashes and serial output,
 and requires both userspace startup and signed/unsigned/tampered module checks.
 Run it on each native architecture; the ARM64 path has been exercised locally,
-while its x86-64 path still needs execution on an x86-64 builder.
+while its x86-64 path still needs execution on an x86-64 builder. The kernel
+workflow loads each native image, extracts its RPM and runs `test-rpm.sh` before
+signing. The exact RPM test passed locally on ARM64; the remote workflow has
+not yet run. Acceptance logs and input hashes are uploaded for both lanes.
 
 ## Acceptance sequence
 
