@@ -267,10 +267,22 @@ fn rotate_luma(image: &GrayImage, degrees: f64) -> GrayImage {
         {
             return Luma([255]);
         }
-        let source_x = (source_x.round() as u32).min(image.width().saturating_sub(1));
-        let source_y = (source_y.round() as u32).min(image.height().saturating_sub(1));
-        *image.get_pixel(source_x, source_y)
+        bilinear_luma(image, source_x, source_y)
     })
+}
+
+fn bilinear_luma(image: &GrayImage, x: f64, y: f64) -> Luma<u8> {
+    let x0 = (x.floor() as u32).min(image.width().saturating_sub(1));
+    let y0 = (y.floor() as u32).min(image.height().saturating_sub(1));
+    let x1 = x0.saturating_add(1).min(image.width().saturating_sub(1));
+    let y1 = y0.saturating_add(1).min(image.height().saturating_sub(1));
+    let fx = x - f64::from(x0);
+    let fy = y - f64::from(y0);
+    let top = f64::from(image.get_pixel(x0, y0)[0]) * (1.0 - fx)
+        + f64::from(image.get_pixel(x1, y0)[0]) * fx;
+    let bottom = f64::from(image.get_pixel(x0, y1)[0]) * (1.0 - fx)
+        + f64::from(image.get_pixel(x1, y1)[0]) * fx;
+    Luma([((top * (1.0 - fy) + bottom * fy).round() as u8)])
 }
 
 fn validate_dimensions(width: u32, height: u32) -> Result<(), Error> {
@@ -667,6 +679,23 @@ mod tests {
             }
         });
         assert!(estimate_skew_degrees(&checker).is_none());
+    }
+
+    #[test]
+    fn deskew_rotation_preserves_antialiased_glyph_edges() {
+        let source = GrayImage::from_fn(96, 96, |x, y| {
+            if (24..72).contains(&x) && (42..48).contains(&y) {
+                Luma([0])
+            } else {
+                Luma([255])
+            }
+        });
+        let rotated = rotate_luma(&source, 2.5);
+        assert!(
+            rotated.pixels().any(|pixel| pixel[0] > 0 && pixel[0] < 255),
+            "subpixel rotation should blend an edge instead of stair-stepping it"
+        );
+        assert_eq!(rotated.dimensions(), source.dimensions());
     }
 
     #[test]
