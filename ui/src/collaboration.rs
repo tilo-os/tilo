@@ -202,6 +202,9 @@ pub enum CollabRequest {
     LaunchPublishedApplication {
         request_id: u64,
         app_id: String,
+        /// Optional portable blob identity staged read-only by the session
+        /// before it launches the target application.
+        content_hash: Option<String>,
     },
     /// Lifecycle record for a broker-minted task lease. Only an admitted
     /// agent connection can make this request; the broker checks the lease.
@@ -846,8 +849,19 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(app_id);
             meter.bytes(metadata);
         }
-        CollabRequest::ClearContinuation { app_id }
-        | CollabRequest::LaunchPublishedApplication { app_id, .. } => meter.string_capacity(app_id),
+        CollabRequest::ClearContinuation { app_id } => {
+            meter.string_capacity(app_id);
+        }
+        CollabRequest::LaunchPublishedApplication {
+            app_id,
+            content_hash,
+            ..
+        } => {
+            meter.string_capacity(app_id);
+            if let Some(content_hash) = content_hash {
+                meter.string_capacity(content_hash);
+            }
+        }
         CollabRequest::WorkspaceControlInput { event, .. } => serialized_bytes(event, &mut meter),
         CollabRequest::CompleteInvocation { code, message, .. } => {
             meter.string_capacity(code);
@@ -3572,10 +3586,14 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx
                 .send_durable(CollabEvent::PublishedInvocationResult { request_id, result });
         }
-        CollabRequest::LaunchPublishedApplication { request_id, app_id } => {
+        CollabRequest::LaunchPublishedApplication {
+            request_id,
+            app_id,
+            content_hash,
+        } => {
             let result = route
                 .channel
-                .launch_published_application(&app_id)
+                .launch_published_application(&app_id, content_hash.as_deref())
                 .await
                 .map_err(|error| error.to_string())
                 .and_then(|(id, update)| {

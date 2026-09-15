@@ -16,6 +16,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -53,7 +55,8 @@ use crate::shell::collab_broker::{
 };
 use crate::shell::collab_outbound::PeerPublisher;
 use crate::shell::state::{
-    CapRole, Principal, WorkspaceTaskStatus, WorkspaceTree, WorkspaceTreeHandle,
+    CapRole, Capability, FsMode, GRANT_SESSION, Principal, WorkspaceTaskStatus, WorkspaceTree,
+    WorkspaceTreeHandle,
 };
 
 /// Launcher preambles are deliberately tiny: they only bind a socket to the
@@ -62,6 +65,90 @@ use crate::shell::state::{
 const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
+const MAX_LAUNCH_CONTENT_BYTES: usize = 64 * 1024 * 1024;
+
+fn stage_launch_content(
+    app_id: &str,
+    content_hash: &str,
+    workspace: &mut crate::shell::state::Workspace,
+) -> Result<Option<PathBuf>, String> {
+    if content_hash.is_empty() {
+        return Ok(None);
+    }
+    if content_hash.len() != 64
+        || !content_hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("launch content hash must be a lowercase 64-character blake3 value".into());
+    }
+    let bytes = qdoc::blobstore::get(content_hash)
+        .ok_or_else(|| "launch content is unavailable on this device".to_owned())?;
+    if bytes.is_empty()
+        || bytes.len() > MAX_LAUNCH_CONTENT_BYTES
+        || !qdoc::blobstore::verify(content_hash, &bytes)
+    {
+        return Err("launch content failed integrity validation".into());
+    }
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("qos-opened");
+    std::fs::create_dir_all(&dir).map_err(|error| format!("create launch staging: {error}"))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("protect launch staging: {error}"))?;
+    let extension = match qdoc::blobstore::sniff(&bytes).mime.as_str() {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ if bytes.get(4..8).is_some_and(|header| header == b"ftyp") => "mp4",
+        _ if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) => "webm",
+        _ if bytes.starts_with(b"RIFF")
+            && bytes.get(8..12).is_some_and(|header| header == b"AVI ") =>
+        {
+            "avi"
+        }
+        _ => "bin",
+    };
+    let path = dir.join(format!("{content_hash}.{extension}"));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| format!("stage launch content: {error}"))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std::fs::symlink_metadata(&path)
+                .map_err(|error| format!("inspect existing launch content: {error}"))?;
+            if !metadata.file_type().is_file() {
+                return Err("existing launch content is not a regular file".into());
+            }
+            let existing = std::fs::read(&path)
+                .map_err(|error| format!("read existing launch content: {error}"))?;
+            if existing.len() > MAX_LAUNCH_CONTENT_BYTES
+                || !qdoc::blobstore::verify(content_hash, &existing)
+            {
+                return Err("existing launch content failed integrity validation".into());
+            }
+        }
+        Err(error) => return Err(format!("stage launch content: {error}")),
+    }
+    workspace.grant_app(
+        app_id,
+        &Capability::Filesystem {
+            path: dir,
+            mode: FsMode::Read,
+            scope: GRANT_SESSION,
+        },
+    );
+    Ok(Some(path))
+}
 
 fn invocation_target_peer(requested: u64, current_connection: u64) -> u64 {
     if requested == ui::collaboration::CURRENT_CONNECTION_PEER_ID {
@@ -4831,6 +4918,13 @@ impl channel_handle::Server for CapnpChannelHandle {
             },
             Err(error) => return Promise::err(error),
         };
+        let content_hash = match request.get_content_hash() {
+            Ok(value) => match value.to_str() {
+                Ok(value) => value.to_owned(),
+                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+            },
+            Err(error) => return Promise::err(error),
+        };
         let Some(membership) = self.state.membership.as_ref() else {
             return Promise::err(capnp::Error::failed(
                 "the action broker has no workspace authority".into(),
@@ -4859,9 +4953,18 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             workspace
         };
+        let mut workspace = workspace;
+        let document = match stage_launch_content(&app_id, &content_hash, &mut workspace) {
+            Ok(document) => document,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
         let id = self.state.invocation_id.fetch_add(1, Ordering::Relaxed);
         let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
-        let update = match crate::shell::launcher::launch_in_workspace(&app_id, &workspace) {
+        let update = match crate::shell::launcher::launch_document_in_workspace(
+            &app_id,
+            &workspace,
+            document.as_deref(),
+        ) {
             Ok(_) => qos_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: qos_actions::ActionOutput::default(),
@@ -6602,6 +6705,55 @@ mod tests {
     use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
     use ed25519_dalek::Signer as _;
     use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId::new(),
+            "launcher test",
+        );
+        assert_eq!(
+            stage_launch_content("dev.qos.photos", "", &mut workspace).expect("plain launch"),
+            None
+        );
+        assert!(stage_launch_content("dev.qos.photos", "not-a-hash", &mut workspace).is_err());
+        assert!(stage_launch_content("dev.qos.photos", &"a".repeat(64), &mut workspace).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn launch_content_refuses_corrupt_or_symlinked_staging_targets() {
+        let runtime = tempfile::tempdir().expect("runtime directory");
+        let previous = std::env::var_os("XDG_RUNTIME_DIR");
+        // SAFETY: this serial test restores the process setting before exit.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        let hash = qdoc::blobstore::put(b"verified launch fixture").expect("store fixture");
+        let staged = runtime
+            .path()
+            .join("qos-opened")
+            .join(format!("{hash}.bin"));
+        std::fs::create_dir_all(staged.parent().expect("staging parent")).expect("staging dir");
+        std::fs::write(&staged, b"corrupt").expect("corrupt fixture");
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId::new(),
+            "launcher test",
+        );
+        assert!(stage_launch_content("dev.qos.photos", &hash, &mut workspace).is_err());
+        std::fs::remove_file(&staged).expect("remove corrupt fixture");
+        let target = runtime.path().join("outside");
+        std::fs::write(&target, b"outside").expect("outside fixture");
+        std::os::unix::fs::symlink(&target, &staged).expect("symlink fixture");
+        assert!(stage_launch_content("dev.qos.photos", &hash, &mut workspace).is_err());
+        // SAFETY: paired with the guarded process-wide override above.
+        unsafe {
+            if let Some(previous) = previous {
+                std::env::set_var("XDG_RUNTIME_DIR", previous);
+            } else {
+                std::env::remove_var("XDG_RUNTIME_DIR");
+            }
+        }
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum DirectoryResolveMode {
