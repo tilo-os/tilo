@@ -579,6 +579,12 @@ pub trait Widget {
         false
     }
 
+    /// Owned manual policy descriptor; the host invokes it outside widget borrows.
+    #[doc(hidden)]
+    fn manual_layout_policy(&self) -> Option<ManualPolicy> {
+        None
+    }
+
     /// Read-only resolved decisions for widgets with an explicit layout policy.
     /// `None` means the widget has no such policy; ordinary manual widgets remain
     /// valid. Values are available after build/settlement and carry real origins.
@@ -1755,16 +1761,18 @@ pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod composition;
-mod form;
 mod composition_parts;
+mod form;
 mod form_composition;
 mod layout_info;
+pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, Section};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
-    PageLayout, SectionLayout,
+    ManualConflict, ManualLayout, PageLayout, SectionLayout,
 };
-pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
+mod manual;
+pub use manual::{ChildMeasurement, Manual, ManualContext, ManualPolicy, MeasureConstraint};
 mod row;
 pub use row::Row;
 mod toggle;

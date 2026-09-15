@@ -289,6 +289,9 @@ pub struct InspectionNode {
     pub rect: [f64; 4],
     /// Absolute logical clip applied to children, if the widget clips them.
     pub child_clip: Option<[f64; 4]>,
+    /// Effective policy and authoring origins, when supplied by the widget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<crate::widget::LayoutInfo>,
     pub semantics: Option<AccessNode>,
     pub children: Vec<InspectionNode>,
 }
@@ -2777,6 +2780,7 @@ fn collect_inspection(
             focusable: false,
             rect: [0.0; 4],
             child_clip: None,
+            layout: None,
             semantics: None,
             children: vec![],
         };
@@ -2798,6 +2802,7 @@ fn collect_inspection(
         child_clip: widget
             .child_clip_rect()
             .map(|r| [r.x0, r.y0, r.width(), r.height()]),
+        layout: widget.layout_info(),
         semantics: widget.accessibility(),
         children,
     }

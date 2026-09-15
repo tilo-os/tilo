@@ -2,18 +2,20 @@
 
 ## Purpose & philosophy
 
-These guidelines are **as strict and detailed as the GNOME HIG**, but with one
-deliberate difference: they are meant to be **auto-enforcing at the code level**.
+The toolkit should make balanced, adaptive layouts easy to author. Shared
+patterns encode useful defaults for spacing, hierarchy, readable width, and
+interaction. When the same correction recurs across apps, improve the shared
+pattern so applications inherit the better default.
 
-GTK's age and history let you build applications that badly violate the GNOME
-HIG while still "working". qOS avoids that by making the right thing the *default*
-thing in the `ui` toolkit, and by having the toolkit **nudge or refuse** the
-wrong thing. When a rule here recurs across apps, the correct response is to
-promote a `ui` primitive that bakes the rule in — not to reimplement it (and
-re-violate it) per app.
+Automatic, guided, and fully manual composition are all supported. An application
+may position standard controls with authored dimensions and responsive rules,
+including on ordinary forms and app chrome, without exception approval. Shared
+control behavior, accessible names, reachable actions, and actual clipping still
+matter. A custom gap or rectangle alone does not establish poor quality.
 
-> Rule of thumb: if an app can express a bad-UX layout without effort, that is a
-> toolkit bug, not just an app bug.
+Use [Form composition](FORM_COMPOSITION.md) for the automatic/guided path and
+[Manual layout](MANUAL_LAYOUT.md) for shared child measurement, exact placement,
+mixed regions, and existing inspection tools.
 
 ---
 
@@ -228,6 +230,10 @@ version is the default and no app has to re-earn it.
 ---
 
 ## 8. Never hand-roll an interactive primitive
+
+Manual positioning of standard widgets is supported. The guidance below concerns
+reimplementing their interaction and editing behavior, not choosing their geometry.
+
 
 **Use the shared `ui` widget for every interactive primitive — text field,
 button, dialog, dropdown, checkbox, toggle, slider, tabs, menu, tooltip,

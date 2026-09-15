@@ -44,6 +44,8 @@ pub struct Row {
     /// tree; hot event/layout traversal must not allocate `taffy.children()`.
     child_nodes: Vec<NodeId>,
     rect: vello::kurbo::Rect,
+    /// Overflow extent used for culling independently of an exact allocation.
+    paint_rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     /// When set, the row keeps all children on one line (no flex wrap) —
@@ -76,6 +78,7 @@ impl Row {
             children: Vec::new(),
             child_nodes: Vec::new(),
             rect: vello::kurbo::Rect::ZERO,
+            paint_rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
             no_wrap: false,
@@ -227,11 +230,19 @@ impl Widget for Row {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        // See `Column::apply_layout` for why we max() against
-        // content_size — covers taffy under-reporting under a
-        // constrained-height parent.
-        let w = f64::from(layout.size.width.max(layout.content_size.width));
-        let h = f64::from(layout.size.height.max(layout.content_size.height));
+        let allocated = super::layout::allocation_or_content_size(taffy, node, &layout);
+        let w = f64::from(allocated.width);
+        let h = f64::from(allocated.height);
+        self.paint_rect = vello::kurbo::Rect::from_origin_size(
+            (
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+            ),
+            (
+                f64::from(layout.size.width.max(layout.content_size.width)),
+                f64::from(layout.size.height.max(layout.content_size.height)),
+            ),
+        );
         self.rect = vello::kurbo::Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -428,7 +439,7 @@ impl Widget for Row {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
+        if presence.should_cull(self.paint_rect) {
             return;
         }
         // Subtree cache — see `Column::draw_with_presence` for the
