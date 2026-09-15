@@ -15,7 +15,9 @@ path = "src/main.rs"
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+# Attachment export goes through the host FileChooser portal.  Mail must never
+# infer a writable Downloads path or grant itself broad filesystem authority.
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
 # The qOS resource + action model: Mail's collaborative-doc mutations (flags,
 # labels, local folders, drafts) are exported as replayable actions and a Ctrl+K
 # resource tree. See `src/actions.rs`.
@@ -24,6 +26,12 @@ qos-actions = { path = "../../crates/collab/actions" }
 # email accounts from here (Settings owns the write lifecycle); credentials
 # are sealed in the vault, never in the plaintext store.
 accounts = { path = "../../crates/system/accounts" }
+# Durable replace-after-portal-write; a failed/crashed export never leaves a
+# partially-written attachment at the destination the user chose.
+atomic-file = { path = "../../crates/system/atomic-file" }
+# Portable content store for draft attachments. Drafts carry only a verified
+# content identity; qdoc offers/fetches the bytes across collaborators.
+qdoc = { path = "../../crates/doc/qdoc" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

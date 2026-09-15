@@ -375,7 +375,7 @@ impl MailEngine for StubEngine {
                             request_id,
                             kind,
                             context: "send".into(),
-                            message: e.to_string(),
+                            message: e,
                         });
                     }
                 }
@@ -530,7 +530,7 @@ pub mod live {
         fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
             let creds = resolve_auth(account)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
-            let bytes = build_mime(&from, draft).map_err(|e| e.to_string())?;
+            let bytes = build_mime(&from, draft)?;
             self.rt
                 .block_on(smtp_send(account, draft, &creds, &bytes))?;
             Ok(bytes.len())
