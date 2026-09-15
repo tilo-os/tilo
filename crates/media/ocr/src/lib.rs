@@ -85,6 +85,35 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+impl Error {
+    /// A stable, people-facing explanation suitable for app notices.
+    ///
+    /// Engine stderr and filesystem details can contain implementation jargon,
+    /// paths, or sensitive document context, so callers must not display the
+    /// error's diagnostic `Display` representation directly.
+    #[must_use]
+    pub const fn user_message(&self) -> &'static str {
+        match self {
+            Self::TooLarge => "This image is too large for text recognition. Try a smaller scan.",
+            Self::InvalidLanguage => {
+                "That recognition language is not available. Choose another language and try again."
+            }
+            Self::Unavailable => {
+                "Text recognition is not installed. You can still keep and export the image."
+            }
+            Self::Engine(_) => {
+                "Text could not be recognized in this image. Check the language or try a clearer scan."
+            }
+            Self::Image(_) => {
+                "This image could not be prepared for text recognition. Try scanning it again."
+            }
+            Self::Io(_) => {
+                "Text recognition could not access its working files. Try again in a moment."
+            }
+        }
+    }
+}
+
 /// Contrast-normalise and orient an image before recognition. The returned
 /// image remains available to the UI for an honest before/after preview.
 ///
@@ -571,6 +600,32 @@ mod tests {
         }
         let missing = recognize_path(Path::new("/definitely/not/an/image.png"), "eng");
         assert!(matches!(missing, Err(Error::Unavailable)));
+    }
+
+    #[test]
+    fn people_facing_errors_are_actionable_and_never_expose_engine_diagnostics() {
+        let cases = [
+            (Error::TooLarge, "smaller scan"),
+            (Error::InvalidLanguage, "Choose another language"),
+            (Error::Unavailable, "still keep and export"),
+            (
+                Error::Engine("/private/document/path: secret engine failure".into()),
+                "clearer scan",
+            ),
+            (
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "/private/working/path",
+                )),
+                "Try again",
+            ),
+        ];
+        for (error, action) in cases {
+            let message = error.user_message();
+            assert!(message.contains(action), "{message:?} lacked {action:?}");
+            assert!(!message.contains("/private"));
+            assert!(!message.to_ascii_lowercase().contains("engine failure"));
+        }
     }
 
     #[cfg(unix)]
