@@ -332,25 +332,41 @@ impl SettingsApp {
     /// Dispatch to the per-category pane body.
     fn build_pane_body(&self) -> Box<dyn Widget> {
         match self.selected {
-            Category::Network => panes::network::build(),
-            Category::Bluetooth => panes::bluetooth::build(),
+            Category::Network => Box::new(
+                panes::network::NetworkPane::new()
+                    .with_operation_status(&self.local_operation_status),
+            ),
+            Category::Bluetooth => Box::new(
+                panes::bluetooth::BluetoothPane::new()
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::DeviceMesh => panes::device_mesh::build(),
-            Category::Sound => panes::sound::build(),
+            Category::Sound => Box::new(
+                panes::audio::AudioPane::new().with_operation_status(&self.local_operation_status),
+            ),
             Category::Displays if self.deterministic_hardware_for_shot => {
                 Box::new(panes::display::DisplayPane::with_dispatcher(
                     crate::dispatcher::dispatcher_or_real(None),
                     0.62,
                 ))
             }
-            Category::Displays => panes::display::build(),
+            Category::Displays => Box::new(
+                panes::display::DisplayPane::new()
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::MouseKeyboard => Box::new(
                 panes::mouse_keyboard::MouseKeyboardPane::new()
                     .with_operation_status(&self.local_operation_status),
             ),
             Category::KeyboardShortcuts => panes::keyboard_shortcuts::build(),
             Category::TimeDate => panes::time_date::build(),
-            Category::Users => panes::users::build(),
-            Category::Printers => panes::printers::build(),
+            Category::Users => Box::new(
+                panes::users::UsersPane::new().with_operation_status(&self.local_operation_status),
+            ),
+            Category::Printers => Box::new(
+                panes::printers::PrintersPane::new()
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::Power => Box::new(
                 panes::power::PowerPane::new().with_operation_status(&self.local_operation_status),
             ),
@@ -358,7 +374,10 @@ impl SettingsApp {
             Category::Accessibility => panes::accessibility::build(),
             Category::Notifications => panes::notifications::build(),
             Category::DefaultApps => panes::personal_apps::build(),
-            Category::Storage => panes::storage::build(),
+            Category::Storage => Box::new(
+                panes::storage::StoragePane::new()
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::ExternalAccounts => {
                 let mut pane = self
                     .account_directory_override
@@ -374,7 +393,10 @@ impl SettingsApp {
                         .with_account_tester(std::sync::Arc::clone(&self.account_tester)),
                 )
             }
-            Category::AgentModels => panes::agent_models::build(),
+            Category::AgentModels => Box::new(
+                panes::agent_models::AgentModelsPane::new()
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::RegionFormats => panes::region::build(),
             Category::Permissions => panes::permissions::build(),
             Category::Updates => Box::new(
@@ -467,6 +489,9 @@ impl SettingsApp {
                     crate::actions::UpdateOperation::InstallFirmware => {
                         doc.put(path, panes::updates::FIRMWARE_INSTALL_KEY, true)
                     }
+                    crate::actions::UpdateOperation::SetAutomatic { enabled } => {
+                        doc.put(path, panes::updates::AUTO_KEY, enabled)
+                    }
                     crate::actions::UpdateOperation::SetSchedule { schedule } => {
                         if !["System schedule", "Daily", "Weekly"].contains(&schedule.as_str()) {
                             return Err("unsupported update schedule".into());
@@ -543,6 +568,513 @@ impl SettingsApp {
                     }
                 }
             }
+            crate::actions::NETWORK_OPERATION_TYPE => {
+                let operation: crate::actions::NetworkOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::Network);
+                match operation {
+                    crate::actions::NetworkOperation::Refresh => {
+                        doc.put(path, panes::network::REFRESH_KEY, true)
+                    }
+                    crate::actions::NetworkOperation::SetWiredEnabled { enabled } => {
+                        let wired = os_actions::get_wired().map_err(|error| error.to_string())?;
+                        if wired.device.is_none() {
+                            return Err("wired networking is unavailable on this device".into());
+                        }
+                        doc.put(path, panes::network::WIRED_ENABLED_KEY, enabled)
+                    }
+                    crate::actions::NetworkOperation::SetAirplaneMode { enabled } => {
+                        doc.put(path, panes::network::AIRPLANE_KEY, enabled)
+                    }
+                    crate::actions::NetworkOperation::SetHotspot { enabled } => {
+                        doc.put(path, panes::network::HOTSPOT_KEY, enabled)
+                    }
+                    crate::actions::NetworkOperation::SetMobileBroadband { enabled } => {
+                        doc.put(path, panes::network::MOBILE_KEY, enabled)
+                    }
+                    crate::actions::NetworkOperation::RunDiagnostics => {
+                        doc.put(path, panes::network::DIAGNOSTICS_KEY, true)
+                    }
+                }
+            }
+            crate::actions::BLUETOOTH_OPERATION_TYPE => {
+                let operation: crate::actions::BluetoothOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::Bluetooth);
+                match operation {
+                    crate::actions::BluetoothOperation::StartScan => {
+                        doc.put(path, panes::bluetooth::SCAN_KEY, true)
+                    }
+                    crate::actions::BluetoothOperation::Refresh => {
+                        doc.put(path, panes::bluetooth::REFRESH_KEY, true)
+                    }
+                    operation @ (crate::actions::BluetoothOperation::Pair { .. }
+                    | crate::actions::BluetoothOperation::Connect { .. }
+                    | crate::actions::BluetoothOperation::Disconnect { .. }
+                    | crate::actions::BluetoothOperation::Forget { .. }) => {
+                        let (device_path, action) = match operation {
+                            crate::actions::BluetoothOperation::Pair { path } => (path, "pair"),
+                            crate::actions::BluetoothOperation::Connect { path } => {
+                                (path, "connect")
+                            }
+                            crate::actions::BluetoothOperation::Disconnect { path } => {
+                                (path, "disconnect")
+                            }
+                            crate::actions::BluetoothOperation::Forget { path } => (path, "forget"),
+                            _ => return Err("unsupported Bluetooth operation".into()),
+                        };
+                        let device = os_actions::bluez::devices()
+                            .map_err(|error| error.to_string())?
+                            .into_iter()
+                            .find(|device| device.path == device_path)
+                            .ok_or_else(|| "Bluetooth device is no longer available".to_string())?;
+                        let allowed = match action {
+                            "pair" => !device.paired,
+                            "connect" => device.paired && !device.connected,
+                            "disconnect" => device.connected,
+                            "forget" => device.paired,
+                            _ => false,
+                        };
+                        if !allowed {
+                            return Err(
+                                "Bluetooth device state changed; refresh and try again".into()
+                            );
+                        }
+                        doc.put(
+                            path,
+                            panes::bluetooth::device_action_key(&device_path, action),
+                            true,
+                        )
+                    }
+                }
+            }
+            crate::actions::STORAGE_OPERATION_TYPE => {
+                let operation: crate::actions::StorageOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::Storage);
+                match operation {
+                    crate::actions::StorageOperation::CleanupCaches => {
+                        doc.put(path, panes::storage::CLEAN_KEY, true)
+                    }
+                    crate::actions::StorageOperation::FreeSyncedFiles => {
+                        doc.put(path, panes::storage::SYNC_FREE_KEY, true)
+                    }
+                    crate::actions::StorageOperation::OpenDisks => {
+                        doc.put(path, panes::storage::DISKS_KEY, true)
+                    }
+                    crate::actions::StorageOperation::OpenBackups => {
+                        doc.put(path, panes::storage::BACKUPS_KEY, true)
+                    }
+                }
+            }
+            crate::actions::AUDIO_OPERATION_TYPE => {
+                let operation: crate::actions::AudioOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                let graph = media::audio::enumerate();
+                self.select(Category::Sound);
+                match operation {
+                    crate::actions::AudioOperation::SelectOutput { device_id } => {
+                        let device = graph.sink_by_id(device_id).ok_or_else(|| {
+                            "audio output device is no longer available".to_string()
+                        })?;
+                        doc.put(
+                            path,
+                            panes::audio::OUTPUT_DEVICE_KEY,
+                            device.description.as_str(),
+                        )
+                    }
+                    crate::actions::AudioOperation::SelectInput { device_id } => {
+                        let device = graph
+                            .sources
+                            .iter()
+                            .find(|device| device.id == device_id)
+                            .ok_or_else(|| {
+                                "audio input device is no longer available".to_string()
+                            })?;
+                        doc.put(
+                            path,
+                            panes::audio::INPUT_DEVICE_KEY,
+                            device.description.as_str(),
+                        )
+                    }
+                    crate::actions::AudioOperation::RoutePlayback {
+                        stream_id,
+                        device_id,
+                    } => {
+                        if !graph
+                            .playback_streams
+                            .iter()
+                            .any(|stream| stream.id == stream_id)
+                        {
+                            return Err("playback stream is no longer available".into());
+                        }
+                        let device = graph.sink_by_id(device_id).ok_or_else(|| {
+                            "audio output device is no longer available".to_string()
+                        })?;
+                        doc.put(
+                            path,
+                            panes::audio::stream_sink_key(stream_id),
+                            device.description.as_str(),
+                        )
+                    }
+                    crate::actions::AudioOperation::RouteRecording {
+                        stream_id,
+                        device_id,
+                    } => {
+                        if !graph
+                            .record_streams
+                            .iter()
+                            .any(|stream| stream.id == stream_id)
+                        {
+                            return Err("recording stream is no longer available".into());
+                        }
+                        let device = graph
+                            .sources
+                            .iter()
+                            .find(|device| device.id == device_id)
+                            .ok_or_else(|| {
+                                "audio input device is no longer available".to_string()
+                            })?;
+                        doc.put(
+                            path,
+                            panes::audio::stream_sink_key(stream_id),
+                            device.description.as_str(),
+                        )
+                    }
+                }
+            }
+            crate::actions::DISPLAY_OPERATION_TYPE => {
+                let operation: crate::actions::DisplayOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::Displays);
+                let snapshot = settings_store::hardware::DisplayHardwareSnapshot::load()
+                    .ok_or_else(|| "live display capabilities are unavailable".to_string())?;
+                let output = |connector: &str| {
+                    snapshot
+                        .outputs
+                        .iter()
+                        .find(|output| output.descriptor.connector == connector)
+                        .ok_or_else(|| "display output is no longer available".to_string())
+                };
+                match operation {
+                    crate::actions::DisplayOperation::SetEnabled { connector, enabled } => {
+                        let _ = output(&connector)?;
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "enabled"),
+                            enabled,
+                        )
+                    }
+                    crate::actions::DisplayOperation::SetMode { connector, mode } => {
+                        let output = output(&connector)?;
+                        if !output.descriptor.modes.contains(&mode) {
+                            return Err("display mode is no longer supported by that output".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "mode"),
+                            mode.label(),
+                        )
+                    }
+                    crate::actions::DisplayOperation::SetTransform {
+                        connector,
+                        transform,
+                    } => {
+                        let _ = output(&connector)?;
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "transform"),
+                            panes::display::transform_label(transform),
+                        )
+                    }
+                    crate::actions::DisplayOperation::SetHdr { connector, enabled } => {
+                        let output = output(&connector)?;
+                        if !output.descriptor.hdr {
+                            return Err("HDR is not available for that output".into());
+                        }
+                        doc.put(path, panes::display::output_key(&connector, "hdr"), enabled)
+                    }
+                    crate::actions::DisplayOperation::SetVrr { connector, enabled } => {
+                        let output = output(&connector)?;
+                        if !output.descriptor.vrr {
+                            return Err(
+                                "variable refresh rate is not available for that output".into()
+                            );
+                        }
+                        doc.put(path, panes::display::output_key(&connector, "vrr"), enabled)
+                    }
+                    crate::actions::DisplayOperation::SetColorProfile { connector, profile } => {
+                        let output = output(&connector)?;
+                        if let Some(profile) = &profile
+                            && !output.descriptor.color_profiles.contains(profile)
+                        {
+                            return Err(
+                                "colour profile is no longer available for that output".into()
+                            );
+                        }
+                        let label = profile.as_ref().map_or_else(
+                            || "System default".to_string(),
+                            |profile| {
+                                output.color_profile_labels.get(profile).map_or_else(
+                                    || profile.clone(),
+                                    |name| format!("{name} · {profile}"),
+                                )
+                            },
+                        );
+                        doc.put(
+                            path,
+                            panes::display::output_key(&connector, "color_profile"),
+                            label,
+                        )
+                    }
+                    crate::actions::DisplayOperation::Apply => {
+                        doc.put(path, panes::display::APPLY_DISPLAY_KEY, true)
+                    }
+                    crate::actions::DisplayOperation::Confirm => {
+                        doc.put(path, panes::display::KEEP_DISPLAY_KEY, true)
+                    }
+                    crate::actions::DisplayOperation::Revert => {
+                        doc.put(path, panes::display::REVERT_DISPLAY_KEY, true)
+                    }
+                }
+            }
+            crate::actions::PRINTER_OPERATION_TYPE => {
+                let operation: crate::actions::PrinterOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::Printers);
+                match operation {
+                    crate::actions::PrinterOperation::Refresh => {
+                        doc.put(path, panes::printers::REFRESH_KEY, true)
+                    }
+                    crate::actions::PrinterOperation::Discover => {
+                        doc.put(path, panes::printers::SCAN_KEY, true)
+                    }
+                    crate::actions::PrinterOperation::SetDefault { name } => {
+                        if !os_actions::printing::queues()
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|q| q.name == name)
+                        {
+                            return Err("printer queue is no longer available".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::printers::queue_action_key("default", &name),
+                            true,
+                        )
+                    }
+                    crate::actions::PrinterOperation::SetEnabled { name, enabled } => {
+                        let queue = os_actions::printing::queues()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .find(|q| q.name == name)
+                            .ok_or_else(|| "printer queue is no longer available".to_string())?;
+                        let allowed =
+                            (queue.state == os_actions::printing::QueueState::Paused) == enabled;
+                        if !allowed {
+                            return Err("printer queue state changed; refresh and try again".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::printers::queue_action_key("enabled", &name),
+                            true,
+                        )
+                    }
+                    crate::actions::PrinterOperation::Remove { name } => {
+                        if !os_actions::printing::queues()
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|q| q.name == name)
+                        {
+                            return Err("printer queue is no longer available".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::printers::queue_action_key("remove", &name),
+                            true,
+                        )
+                    }
+                    crate::actions::PrinterOperation::CancelJob { id } => {
+                        if !os_actions::printing::jobs()
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|job| job.id == id)
+                        {
+                            return Err("print job is no longer available".into());
+                        }
+                        doc.put(path, panes::printers::job_action_key("cancel", &id), true)
+                    }
+                    crate::actions::PrinterOperation::RetryJob { id } => {
+                        if !os_actions::printing::jobs()
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|job| job.id == id)
+                        {
+                            return Err("print job is no longer available".into());
+                        }
+                        doc.put(path, panes::printers::job_action_key("retry", &id), true)
+                    }
+                }
+            }
+            crate::actions::USER_OPERATION_TYPE => {
+                let operation: crate::actions::UserOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::Users);
+                let user = |username: &str| {
+                    crate::panes::users::users_for_display()
+                        .into_iter()
+                        .find(|user| user.username == username && !user.current)
+                        .ok_or_else(|| "user account is no longer available".to_string())
+                };
+                match operation {
+                    crate::actions::UserOperation::SetAdmin { username, admin } => {
+                        let live = user(&username)?;
+                        if live.admin == admin {
+                            return Err("user role already has that value".into());
+                        }
+                        doc.put(path, format!("settings.users.role.{username}"), true)
+                    }
+                    crate::actions::UserOperation::SetAutologin { username, enabled } => {
+                        let live = user(&username)?;
+                        if live.automatic_login == enabled {
+                            return Err("automatic-login state already has that value".into());
+                        }
+                        doc.put(path, format!("settings.users.autologin.{username}"), true)
+                    }
+                    crate::actions::UserOperation::Remove {
+                        username,
+                        remove_files,
+                    } => {
+                        let _ = user(&username)?;
+                        let key = if remove_files {
+                            format!("settings.users.confirm_remove.{username}")
+                        } else {
+                            format!("settings.users.confirm_remove_keep.{username}")
+                        };
+                        doc.put(path, key, true)
+                    }
+                }
+            }
+            crate::actions::AGENT_MODEL_OPERATION_TYPE => {
+                let operation: crate::actions::AgentModelOperation =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                self.select(Category::AgentModels);
+                let snapshot = panes::agent_models::live_snapshot()
+                    .map_err(|error| format!("local model manager is unavailable: {error}"))?;
+                let find_model = |id: &str| {
+                    snapshot
+                        .models
+                        .iter()
+                        .find(|model| model.package.id == id)
+                        .ok_or_else(|| "local model is no longer available".to_string())
+                };
+                match operation {
+                    crate::actions::AgentModelOperation::StageAccelerator => {
+                        let allowed = snapshot.accelerator_setup.as_ref().is_some_and(|setup| {
+                            matches!(
+                                setup.status,
+                                panes::agent_models::AcceleratorSetupState::Available
+                                    | panes::agent_models::AcceleratorSetupState::Error { .. }
+                            )
+                        });
+                        if !allowed {
+                            return Err("accelerator setup is not currently available".into());
+                        }
+                        doc.put(path, panes::agent_models::ACCELERATOR_SETUP_KEY, true)
+                    }
+                    crate::actions::AgentModelOperation::Install { id, revision } => {
+                        let package = snapshot.recommendation.as_ref().ok_or_else(|| {
+                            "a signed recommended model is not currently available".to_string()
+                        })?;
+                        let accelerator_ready = snapshot
+                            .accelerator_setup
+                            .as_ref()
+                            .is_none_or(|setup| !setup.status.blocks_model_setup());
+                        if package.id != id
+                            || package.revision != revision
+                            || snapshot.hardware.fit
+                                == panes::agent_models::HardwareFit::Unsupported
+                            || !accelerator_ready
+                        {
+                            return Err("recommended model or hardware capability changed; refresh and review it again".into());
+                        }
+                        doc.put(path, panes::agent_models::CONFIRM_KEY, true)
+                    }
+                    crate::actions::AgentModelOperation::Start { id } => {
+                        let model = find_model(&id)?;
+                        if !matches!(
+                            &model.phase,
+                            panes::agent_models::LocalModelPhase::Ready { running: false, .. }
+                        ) {
+                            return Err("local model state changed; refresh and try again".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::agent_models::model_key(
+                                &id,
+                                panes::agent_models::ModelAction::Start,
+                            ),
+                            true,
+                        )
+                    }
+                    crate::actions::AgentModelOperation::Stop { id } => {
+                        let model = find_model(&id)?;
+                        if !matches!(
+                            &model.phase,
+                            panes::agent_models::LocalModelPhase::Ready { running: true, .. }
+                        ) {
+                            return Err("local model state changed; refresh and try again".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::agent_models::model_key(
+                                &id,
+                                panes::agent_models::ModelAction::Stop,
+                            ),
+                            true,
+                        )
+                    }
+                    crate::actions::AgentModelOperation::Retry { id, revision } => {
+                        let model = find_model(&id)?;
+                        if model.package.revision != revision
+                            || !matches!(
+                                &model.phase,
+                                panes::agent_models::LocalModelPhase::Error { .. }
+                            )
+                        {
+                            return Err("local model state changed; refresh and try again".into());
+                        }
+                        doc.put(
+                            path,
+                            panes::agent_models::model_key(
+                                &id,
+                                panes::agent_models::ModelAction::Retry,
+                            ),
+                            true,
+                        )
+                    }
+                    crate::actions::AgentModelOperation::Remove { id } => {
+                        let model = find_model(&id)?;
+                        if !matches!(
+                            &model.phase,
+                            panes::agent_models::LocalModelPhase::Ready { .. }
+                                | panes::agent_models::LocalModelPhase::Error { .. }
+                        ) {
+                            return Err(
+                                "local model cannot be removed while its state is changing".into(),
+                            );
+                        }
+                        doc.put(
+                            path,
+                            panes::agent_models::model_key(
+                                &id,
+                                panes::agent_models::ModelAction::Remove,
+                            ),
+                            true,
+                        )
+                    }
+                }
+            }
             _ => return Ok(None),
         };
         accepted.map_err(|error| error.to_string())?;
@@ -566,6 +1098,14 @@ impl Widget for SettingsApp {
             crate::actions::UPDATE_OPERATION_TYPE,
             crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE,
             crate::actions::POWER_OPERATION_TYPE,
+            crate::actions::NETWORK_OPERATION_TYPE,
+            crate::actions::BLUETOOTH_OPERATION_TYPE,
+            crate::actions::STORAGE_OPERATION_TYPE,
+            crate::actions::AUDIO_OPERATION_TYPE,
+            crate::actions::DISPLAY_OPERATION_TYPE,
+            crate::actions::PRINTER_OPERATION_TYPE,
+            crate::actions::USER_OPERATION_TYPE,
+            crate::actions::AGENT_MODEL_OPERATION_TYPE,
         ]
     }
 
@@ -909,6 +1449,10 @@ impl Widget for SettingsApp {
         Ok(true)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "central router keeps validation beside dispatch"
+    )]
     fn start_resource_operation_with_document(
         &mut self,
         invocation: qos_actions::InvocationId,
@@ -923,6 +1467,14 @@ impl Widget for SettingsApp {
             crate::actions::UPDATE_OPERATION_TYPE
                 | crate::actions::KEYBOARD_SOURCE_OPERATION_TYPE
                 | crate::actions::POWER_OPERATION_TYPE
+                | crate::actions::NETWORK_OPERATION_TYPE
+                | crate::actions::BLUETOOTH_OPERATION_TYPE
+                | crate::actions::STORAGE_OPERATION_TYPE
+                | crate::actions::AUDIO_OPERATION_TYPE
+                | crate::actions::DISPLAY_OPERATION_TYPE
+                | crate::actions::PRINTER_OPERATION_TYPE
+                | crate::actions::USER_OPERATION_TYPE
+                | crate::actions::AGENT_MODEL_OPERATION_TYPE
         ) && kind == qos_actions::OperationKind::Effect
         {
             let start = self.start_local_device_operation(kind, type_id, payload, doc, path)?;
@@ -1288,6 +1840,99 @@ mod tests {
                 .is_none(),
             "a local invocation emits exactly one terminal update"
         );
+    }
+
+    #[test]
+    fn network_refresh_is_a_local_lifecycle_not_a_replicated_setting_action() {
+        use automerge::{ReadDoc, Value};
+
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let operation = crate::actions::NetworkOperation::Refresh;
+        let payload = serde_json::to_vec(&operation).expect("network operation serializes");
+        let invocation = qos_actions::InvocationId::new();
+        let start = app
+            .start_resource_operation_with_document(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::NETWORK_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .expect("refresh admission is local and bounded");
+        assert!(matches!(
+            start,
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        assert_eq!(app.selected(), Category::Network);
+        assert!(matches!(
+            doc.get(&root, panes::network::REFRESH_KEY),
+            Ok(Some((Value::Scalar(value), _)))
+                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+        ));
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &root)
+                .is_none()
+        );
+
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Succeeded {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::NETWORK_OPERATION_TYPE,
+                    &operation,
+                ),
+                message: "refreshed".into(),
+            });
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &root),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+
+    #[test]
+    fn bluetooth_refresh_waits_for_its_own_local_completion_token() {
+        use automerge::{ReadDoc, Value};
+
+        let mut app = SettingsApp::new();
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let operation = crate::actions::BluetoothOperation::Refresh;
+        let payload = serde_json::to_vec(&operation).expect("Bluetooth operation serializes");
+        let invocation = qos_actions::InvocationId::new();
+        let start = app
+            .start_resource_operation_with_document(
+                invocation,
+                qos_actions::OperationKind::Effect,
+                crate::actions::BLUETOOTH_OPERATION_TYPE,
+                &payload,
+                &mut doc,
+                &root,
+            )
+            .expect("Bluetooth refresh admission is valid");
+        assert!(matches!(
+            start,
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
+        assert_eq!(app.selected(), Category::Bluetooth);
+        assert!(matches!(
+            doc.get(&root, panes::bluetooth::REFRESH_KEY),
+            Ok(Some((Value::Scalar(value), _)))
+                if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+        ));
+        app.local_operation_status
+            .set(crate::actions::LocalOperationStatus::Succeeded {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::BLUETOOTH_OPERATION_TYPE,
+                    &operation,
+                ),
+                message: "refreshed".into(),
+            });
+        assert!(matches!(
+            app.poll_resource_operation(invocation, false, &doc, &root),
+            Some(qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
     }
 
     #[test]

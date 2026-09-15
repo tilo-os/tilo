@@ -1706,7 +1706,9 @@ impl UpdatesPane {
         let Some(b) = read_bool_opt(state, root, AUTO_KEY) else {
             return;
         };
+        let operation = crate::actions::UpdateOperation::SetAutomatic { enabled: b };
         if b == self.last_prefs.auto {
+            self.operation_succeeded(operation, "automatic-update timer was already selected");
             return;
         }
         self.last_prefs.auto = b;
@@ -1726,6 +1728,14 @@ impl UpdatesPane {
                     )
                 });
                 self.persist();
+                if effective == b {
+                    self.operation_succeeded(operation, "automatic-update timer changed");
+                } else {
+                    self.operation_failed(
+                        operation,
+                        "the system did not accept the automatic-update timer change",
+                    );
+                }
             }
             Err(e) => {
                 warn!(target: "qos::settings", op = "set_update_timer", error = %e, "automatic updates could not be changed");
@@ -1736,6 +1746,10 @@ impl UpdatesPane {
                 self.prefs.auto = effective;
                 self.last_prefs.auto = effective;
                 let _ = state.put(root, AUTO_KEY, automerge::ScalarValue::Boolean(effective));
+                self.operation_failed(
+                    operation,
+                    format!("Automatic updates could not be changed: {e}"),
+                );
             }
         }
         self.structure_dirty = true;

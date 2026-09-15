@@ -266,6 +266,9 @@ pub struct NetworkPane {
     tool_opener: ToolOpener,
     initial_wifi_enabled: bool,
     last_wifi_enabled: bool,
+    /// Shared only with the Settings operation host; it is process-local and
+    /// never written to the CRDT alongside the radio latches below.
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     needs_seed: bool,
     /// Track which `network.join.<ssid>` keys we already dispatched
     /// for, so a single button press doesn't re-fire on every frame.
@@ -353,6 +356,7 @@ impl NetworkPane {
             tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled: initial_wifi,
             last_wifi_enabled: initial_wifi,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -402,6 +406,7 @@ impl NetworkPane {
             tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled,
             last_wifi_enabled: initial_wifi_enabled,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -446,6 +451,7 @@ impl NetworkPane {
             tool_opener: Arc::new(os_actions::open_tool),
             initial_wifi_enabled: true,
             last_wifi_enabled: true,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             dispatched_connects: Vec::new(),
             connection_tx,
@@ -491,6 +497,37 @@ impl NetworkPane {
 
     pub fn vpns(&self) -> &[VpnInfo] {
         &self.vpns
+    }
+
+    /// Attach the host-owned lifecycle for typed device-local operations.
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    fn finish_local_operation(
+        &self,
+        operation: crate::actions::NetworkOperation,
+        result: Result<String, String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::NETWORK_OPERATION_TYPE,
+            &operation,
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: running } if running == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
     }
 
     fn vpn_key(name: &str) -> String {
@@ -1605,14 +1642,29 @@ impl NetworkPane {
             && *enabled != self.wired.connected
             && self.wired.device.is_some()
         {
-            match self.dispatcher.set_wired(*enabled) {
-                Ok(()) => self.wired.connected = *enabled,
+            let enabled = *enabled;
+            match self.dispatcher.set_wired(enabled) {
+                Ok(()) => {
+                    self.wired.connected = enabled;
+                    self.finish_local_operation(
+                        crate::actions::NetworkOperation::SetWiredEnabled { enabled },
+                        Ok(if enabled {
+                            "Wired networking enabled.".into()
+                        } else {
+                            "Wired networking disabled.".into()
+                        }),
+                    );
+                }
                 Err(e) => {
                     warn!(target: "qos::settings", op = "set_wired", error = %e, "network pane dispatch failed");
                     let _ = state.put(
                         root,
                         WIRED_ENABLED_KEY,
                         automerge::ScalarValue::Boolean(self.wired.connected),
+                    );
+                    self.finish_local_operation(
+                        crate::actions::NetworkOperation::SetWiredEnabled { enabled },
+                        Err(format!("Could not change wired networking: {e}")),
                     );
                 }
             }
@@ -1649,14 +1701,42 @@ impl NetworkPane {
                 _ => self.dispatcher.set_mobile_broadband(enabled),
             };
             match result {
-                Ok(()) => match op {
-                    "airplane" => self.radios.airplane_mode = enabled,
-                    "hotspot" => self.radios.hotspot_active = enabled,
-                    _ => self.radios.wwan_enabled = enabled,
-                },
+                Ok(()) => {
+                    let operation = match op {
+                        "airplane" => {
+                            self.radios.airplane_mode = enabled;
+                            crate::actions::NetworkOperation::SetAirplaneMode { enabled }
+                        }
+                        "hotspot" => {
+                            self.radios.hotspot_active = enabled;
+                            crate::actions::NetworkOperation::SetHotspot { enabled }
+                        }
+                        _ => {
+                            self.radios.wwan_enabled = enabled;
+                            crate::actions::NetworkOperation::SetMobileBroadband { enabled }
+                        }
+                    };
+                    self.finish_local_operation(
+                        operation,
+                        Ok(format!(
+                            "{} {}.",
+                            op,
+                            if enabled { "enabled" } else { "disabled" }
+                        )),
+                    );
+                }
                 Err(e) => {
                     warn!(target: "qos::settings", op, error = %e, "radio action failed");
                     let _ = state.put(root, key, old);
+                    let operation = match op {
+                        "airplane" => crate::actions::NetworkOperation::SetAirplaneMode { enabled },
+                        "hotspot" => crate::actions::NetworkOperation::SetHotspot { enabled },
+                        _ => crate::actions::NetworkOperation::SetMobileBroadband { enabled },
+                    };
+                    self.finish_local_operation(
+                        operation,
+                        Err(format!("Could not change {op} state: {e}")),
+                    );
                 }
             }
         }
@@ -1895,8 +1975,20 @@ impl NetworkPane {
         }
         let _ = state.put(root, DIAGNOSTICS_KEY, false);
         match os_actions::connection_diagnostics() {
-            Ok(d) => self.diagnostics = Some(d),
-            Err(e) => self.connection_notice = Some(format!("Diagnostics unavailable: {e}")),
+            Ok(d) => {
+                self.diagnostics = Some(d);
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::RunDiagnostics,
+                    Ok("Network diagnostics completed.".into()),
+                );
+            }
+            Err(e) => {
+                self.connection_notice = Some(format!("Diagnostics unavailable: {e}"));
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::RunDiagnostics,
+                    Err(format!("Diagnostics unavailable: {e}")),
+                );
+            }
         }
         self.structure_dirty = true;
     }
@@ -2136,9 +2228,19 @@ impl NetworkPane {
         }
         let _ = state.put(root, REFRESH_KEY, automerge::ScalarValue::Boolean(false));
         match (self.lister)() {
-            Ok(nets) => self.networks = nets,
+            Ok(nets) => {
+                self.networks = nets;
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::Refresh,
+                    Ok("Network list refreshed.".into()),
+                );
+            }
             Err(e) => {
                 warn!(target: "qos::settings", op = "list_wifi_networks", error = %e, "rescan failed");
+                self.finish_local_operation(
+                    crate::actions::NetworkOperation::Refresh,
+                    Err(format!("Could not refresh network list: {e}")),
+                );
             }
         }
         if let Ok(wired) = os_actions::get_wired() {
