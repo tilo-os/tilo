@@ -1198,6 +1198,10 @@ COPY \
 # from the pre-login screen (see the rule's header for the rationale).
 COPY os/etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49-qos-greeter-power.rules
 
+# Narrow fprintd account-selection grant for the pre-login `greetd` user.
+# Verification remains in PAM; enrollment/deletion stays privileged.
+COPY os/etc/polkit-1/rules.d/49-qos-greeter-fingerprint.rules /etc/polkit-1/rules.d/49-qos-greeter-fingerprint.rules
+
 # udev rule handing /sys/class/backlight/*/brightness to the `video`
 # group, so the compositor's brightness keys and quick-settings slider
 # can actually dim the panel from an unprivileged session. This is the
