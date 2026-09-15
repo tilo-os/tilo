@@ -14,6 +14,9 @@ source_epoch=${SOURCE_DATE_EPOCH:-0}
     exit 2
 }
 max_qpkg_bytes=${MAX_QPKG_BYTES:-10000000}
+target_dir=$(realpath -m "${CARGO_TARGET_DIR:-$repo_root/target}")
+release_dir=$target_dir/release
+thin_app_dir=$target_dir/thin-app
 
 out=$(realpath -m "$out")
 [[ $out != / && $out != "$repo_root" ]] || {
@@ -48,7 +51,7 @@ features=$(jq -r '.features | join(",")' "$runtime_plan")
 INCLUDE_PACKAGES="${runtime_packages[*]}" APP_FEATURES="$features" \
     "$repo_root/os/scripts/build-thin-apps.sh"
 mapfile -t app_binaries < <(
-    jq -r --arg root "$repo_root/target/thin-app" \
+    jq -r --arg root "$thin_app_dir" \
         '.catalog[] | $root + "/" + .binary' "$plan"
 )
 "$repo_root/os/scripts/verify-elf-hardening.sh" "${app_binaries[@]}"
@@ -57,27 +60,27 @@ runtime_version=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[
 [[ $runtime_version =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]
 if [[ -z $runtime_identity ]]; then
     runtime_identity="$out/work/runtime-publisher.json"
-    "$repo_root/target/release/tilo-runtime-bundle" key generate --out "$runtime_identity"
+    "$release_dir/tilo-runtime-bundle" key generate --out "$runtime_identity"
 fi
-runtime_dylib="$repo_root/target/thin-app/libruntime_dylib.so"
+runtime_dylib="$thin_app_dir/libruntime_dylib.so"
 rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
 [[ -f $runtime_dylib && -f $rust_libstd ]]
 OUT_DIR="$out/runtime" RUNTIME_VERSION="$runtime_version" FROM=/ \
     SOURCE_DATE_EPOCH="$source_epoch" \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
-    BUNDLE_BIN="$repo_root/target/release/tilo-runtime-bundle" \
+    BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
     EXTRA_LIBS="$runtime_dylib $rust_libstd" \
     "$repo_root/os/scripts/bake-runtime-bundle.sh"
 
 if [[ -z $identity ]]; then
     identity="$out/work/publisher.json"
-    "$repo_root/target/release/tilo-runtime-bundle" key generate --out "$identity"
+    "$release_dir/tilo-runtime-bundle" key generate --out "$identity"
 fi
-pubkey=$("$repo_root/target/release/tilo-runtime-bundle" key pubkey --identity "$identity")
+pubkey=$("$release_dir/tilo-runtime-bundle" key pubkey --identity "$identity")
 [[ $pubkey =~ ^[0-9a-fA-F]{64}$ ]]
 
 while IFS=$'\t' read -r name package binary id version manifest; do
-    built="$repo_root/target/thin-app/$binary"
+    built="$thin_app_dir/$binary"
     [[ -x $built ]] || { printf 'missing app binary: %s\n' "$built" >&2; exit 1; }
     payload="$out/work/payload-$name"
     staged_manifest="$out/work/manifest-$name.toml"
@@ -86,10 +89,10 @@ while IFS=$'\t' read -r name package binary id version manifest; do
     sed "s|^\(identity  *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$pubkey\"|" \
         "$repo_root/$manifest" > "$staged_manifest"
     qpkg="$out/qpkg/$name-$version-$(uname -m).qpkg"
-    "$repo_root/target/release/tilo-pkg" pack \
+    "$release_dir/tilo-pkg" pack \
         --manifest "$staged_manifest" --payload "$payload" \
         --identity "$identity" --output "$qpkg"
-    "$repo_root/target/release/tilo-pkg" verify --trusted-key "$pubkey" "$qpkg"
+    "$release_dir/tilo-pkg" verify --trusted-key "$pubkey" "$qpkg"
     qpkg_bytes=$(stat -c %s "$qpkg")
     (( qpkg_bytes < max_qpkg_bytes )) || {
         printf '%s is %s bytes (limit %s); shared-runtime packaging regressed\n' \
