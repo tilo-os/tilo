@@ -9,11 +9,33 @@ fn main() {
         &LaunchSpec::new("dev.qos.clocks", clocks::app_root)
             .shot_root(
                 |args: &LaunchArgs| -> Result<Box<dyn Widget>, LaunchError> {
+                    let scenario = args.scenario.as_deref().unwrap_or_default();
                     Ok(clocks::app_root_for_shot(
-                        args.scenario.as_deref().unwrap_or_default(),
+                        scenario.strip_suffix("-narrow").unwrap_or(scenario),
                     ))
                 },
             )
-            .scenarios(&["empty", "running", "world", "alarms", "stopwatch"]),
+            .scenarios(&[
+                "empty",
+                "running",
+                "world",
+                "alarms",
+                "stopwatch",
+                "running-narrow",
+                "world-narrow",
+                "alarms-narrow",
+                "stopwatch-narrow",
+            ])
+            .shot_viewport(|args| {
+                if args
+                    .scenario
+                    .as_deref()
+                    .is_some_and(|scenario| scenario.ends_with("-narrow"))
+                {
+                    (520, 820)
+                } else {
+                    (1280, 800)
+                }
+            }),
     );
 }
