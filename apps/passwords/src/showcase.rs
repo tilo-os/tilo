@@ -4544,10 +4544,9 @@ mod tests {
         assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
         app.transfer_dialog = None;
 
-        let payload = serde_json::to_vec(&crate::actions::PasswordOperation::RequestDelete {
-            id: id.0,
-        })
-        .unwrap();
+        let payload =
+            serde_json::to_vec(&crate::actions::PasswordOperation::RequestDelete { id: id.0 })
+                .unwrap();
         assert!(
             app.invoke_resource_operation(
                 ui::qos_actions::OperationKind::Effect,
