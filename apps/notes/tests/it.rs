@@ -52,3 +52,6 @@ mod two_peer_sync;
 mod welcome_page_renders_all_block_kinds;
 #[path = "workspace_persistence.rs"]
 mod workspace_persistence;
+
+#[path = "canonical_import.rs"]
+mod canonical_import;

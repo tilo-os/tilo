@@ -1178,7 +1178,12 @@ mod tests {
         assert_eq!(projects.children[1].label, "Notes");
 
         // The one palette surfaces the tree's actions as rows.
-        let mut palette = ui::ActionPalette::new();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+            "en-US",
+        );
+        let renderer = ui::TextRenderer::with_font_catalog(&catalog).unwrap();
+        let mut palette = ui::ActionPalette::with_text_renderer(renderer);
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
