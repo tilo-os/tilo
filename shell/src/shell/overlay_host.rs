@@ -16149,13 +16149,13 @@ impl ShellOverlayHost {
                 } else {
                     references.as_slice()
                 };
-                // A compact guide still needs a full line for the action
-                // name plus its keycap row. At the 130% accessibility text
-                // scale the former 30 px cadence put the next action name
-                // over the preceding keycap; retain a small visual gap
-                // rather than shrinking the text that makes the guide
-                // useful in the first place.
-                let reference_step = if compact { 42.0 } else { 38.0 };
+                // Action names and their keycaps are the point of this
+                // surface, so never turn the complete reference into a
+                // low-contrast footnote merely to preserve the mouse hint.
+                // Four columns still fit the full desktop reference at a
+                // normal panel width; the taller cadence gives every row a
+                // readable label and a distinct keycap line.
+                let reference_step = 46.0;
                 let reference_offset = if compact { 22.0 } else { 28.0 };
                 for (index, (label, chord)) in visible_references.iter().enumerate() {
                     let reference_columns = reference_columns.max(1);
@@ -16168,19 +16168,19 @@ impl ShellOverlayHost {
                     text_renderer.draw_text(
                         scene,
                         label,
-                        theme.tokens.typography.scale.xs,
-                        colors.text_dim,
+                        theme.tokens.typography.scale.sm,
+                        colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         Some(f64_to_f32_lossy(cell_width - 12.0)),
                     );
-                    let chord_size = theme.tokens.typography.scale.xs;
+                    let chord_size = theme.tokens.typography.scale.sm;
                     let (chord_width, chord_height) =
                         text_renderer.measure(chord, chord_size, None);
                     let pill = Rect::new(
                         x,
-                        y + 15.0,
+                        y + 19.0,
                         (x + f64::from(chord_width) + 22.0).min(x + cell_width - 12.0),
-                        y + 15.0 + f64::from(chord_height) + 8.0,
+                        y + 19.0 + f64::from(chord_height) + 10.0,
                     );
                     scene.fill(
                         Fill::NonZero,
@@ -16194,7 +16194,7 @@ impl ShellOverlayHost {
                         chord,
                         chord_size,
                         colors.text_primary,
-                        transform.pre_translate((pill.x0 + 7.0, pill.y0 + 4.0).into()),
+                        transform.pre_translate((pill.x0 + 7.0, pill.y0 + 5.0).into()),
                         Some(f64_to_f32_lossy((pill.width() - 14.0).max(0.0))),
                         TextWeight::Semibold,
                     );
@@ -21396,11 +21396,11 @@ mod palette_dispatch_tests {
         let body_height = 360.0;
         let essentials_y = 158.0;
         let reference_offset = 24.0;
-        let reference_step = 42.0;
+        let reference_step = 46.0;
         let visible = &rows[..rows.len().min(8)];
         let final_row = visible.len().div_ceil(2).saturating_sub(1);
         let final_pill_bottom =
-            essentials_y + reference_offset + usize_to_f64_lossy(final_row) * reference_step + 31.0;
+            essentials_y + reference_offset + usize_to_f64_lossy(final_row) * reference_step + 35.0;
 
         assert_eq!(
             rows.len(),
@@ -21425,7 +21425,7 @@ mod palette_dispatch_tests {
     fn compact_shortcut_recovery_actions_fit_their_cells() {
         let rows = shortcut_reference_rows(&settings_store::hardware::ShortcutConfig::default());
         let mut renderer = TextRenderer::new();
-        let chord_size = Theme::dark().tokens.typography.scale.xs;
+        let chord_size = Theme::dark().tokens.typography.scale.sm;
         // A 960-wide viewport yields a 920-wide panel and 864-wide body. The
         // compact guide uses two readable columns and shows its first eight recovery actions.
         let available_text_width = 864.0 / 2.0 - 26.0;
