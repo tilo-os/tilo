@@ -956,6 +956,14 @@ pub struct Tab {
     pub tile: TileContent,
 }
 
+/// Device-local identity needed to reconstruct a hosted document tab.
+/// It is persisted in the local profile but never projected into a room doc.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeDocumentReference {
+    pub provider_id: String,
+    pub path: std::path::PathBuf,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WindowGroup {
     pub id: GroupId,
@@ -2316,6 +2324,10 @@ pub struct WorkspaceTree {
     #[serde(default)]
     pub continuation_file_references:
         HashMap<TabId, crate::shell::personal_continuity::LaunchIntent>,
+    /// Native hosted documents on this device. Paths stay in local `state.json`;
+    /// room projection deliberately has no corresponding field.
+    #[serde(default)]
+    pub native_document_tabs: HashMap<TabId, NativeDocumentReference>,
     /// This tree's own peer salt, overriding the process-wide one — the
     /// static is wrong when one process holds **two** trees (e.g. two
     /// simulated peers). [`Self::local_salt`] prefers this field;
@@ -2357,6 +2369,7 @@ impl Default for WorkspaceTree {
             continuation_owned_tabs: HashMap::new(),
             continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
+            native_document_tabs: HashMap::new(),
             peer_salt_override: None,
             persist_path: None,
             fs_acl_path: None,

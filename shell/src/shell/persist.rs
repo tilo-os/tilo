@@ -303,6 +303,7 @@ fn is_legacy_demo_bootstrap(tree: &WorkspaceTree) -> bool {
         || !tree.continuation_owned_tabs.is_empty()
         || !tree.continuation_closed_tabs.is_empty()
         || !tree.continuation_file_references.is_empty()
+        || !tree.native_document_tabs.is_empty()
     {
         return false;
     }
