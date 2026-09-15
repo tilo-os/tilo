@@ -93,7 +93,7 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
     use gstreamer_app as gst_app;
 
     gst::init().ok()?;
-    let uri = crate::media::engine_source(path).to_uri();
+    let uri = crate::media::engine_source(path).to_uri().ok()?;
 
     let src = gst::ElementFactory::make("uridecodebin")
         .property("uri", &uri)
