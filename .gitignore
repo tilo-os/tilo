@@ -27,6 +27,7 @@ scripts/__pycache__/
 tools/__pycache__/
 tools/**/__pycache__/
 os/**/__pycache__/
+apps/**/__pycache__/
 
 # qOS signing keys — PRIVATE material is NEVER committed (see keys/README.md).
 # Public keys (keys/*.pub, keys/*.public.pem) ARE tracked — verifiers need them.
