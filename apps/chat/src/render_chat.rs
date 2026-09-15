@@ -1357,13 +1357,18 @@ impl ChatApp {
         if !collaborators {
             return h.x1;
         }
-        let call_w = 84.0;
-        let mem_w = 52.0;
+        // At enlarged text, keep the two immediate routes as independent
+        // 44px targets and let the labelled Call action own the available
+        // width; fixed 32px pills made their scaled captions collide.
+        let large = theme.text_scale > 1.25;
+        let call_w = if large { 132.0 } else { 84.0 };
+        let mem_w = if large { 56.0 } else { 52.0 };
         let gap = 8.0;
         let cy = h.center().y;
         // call button (accent when a call is live).
         let call_x0 = h.x1 - 16.0 - call_w;
-        let call_btn = Rect::new(call_x0, cy - 16.0, call_x0 + call_w, cy + 16.0);
+        let half_h = if large { 22.0 } else { 16.0 };
+        let call_btn = Rect::new(call_x0, cy - half_h, call_x0 + call_w, cy + half_h);
         let (cbg, ctx) = if self.call.active {
             (c.accent[5], Color::WHITE)
         } else {
@@ -1383,13 +1388,20 @@ impl ChatApp {
             12.5,
             ctx,
             call_btn.x0 + 12.0,
-            call_btn.center().y - 8.0,
+            call_btn.center().y - if large { 12.0 } else { 8.0 },
         );
-        ChatApp::push_hit(hits, call_btn, Hit::StartCall);
+        // Visual pills stay compact at 1×, but the semantic/pointer target is
+        // always 44px tall. The two bounds are intentionally distinct: visual
+        // density must not make a control hard to acquire.
+        ChatApp::push_hit(
+            hits,
+            Rect::new(call_btn.x0, cy - 22.0, call_btn.x1, cy + 22.0),
+            Hit::StartCall,
+        );
 
         // members pill — toggles the right flap (members / thread).
         let mem_x0 = call_x0 - gap - mem_w;
-        let mem = Rect::new(mem_x0, cy - 16.0, mem_x0 + mem_w, cy + 16.0);
+        let mem = Rect::new(mem_x0, cy - half_h, mem_x0 + mem_w, cy + half_h);
         let mem_on = self.right_flap_open();
         fill_round(
             scene,
@@ -1410,9 +1422,13 @@ impl ChatApp {
             12.5,
             if mem_on { c.accent[7] } else { c.text_dim },
             mem.x0 + 9.0,
-            mem.center().y - 8.0,
+            mem.center().y - if large { 12.0 } else { 8.0 },
         );
-        ChatApp::push_hit(hits, mem, Hit::ToggleRightFlap);
+        ChatApp::push_hit(
+            hits,
+            Rect::new(mem.x0, cy - 22.0, mem.x1, cy + 22.0),
+            Hit::ToggleRightFlap,
+        );
         mem_x0
     }
 
@@ -1798,6 +1814,7 @@ impl ChatApp {
         show_header: bool,
         text_w: f32,
     ) -> RowM {
+        let scale = f64::from(theme.text_scale);
         let editing = self.editing.as_ref() == Some(&m.id);
         // The editor measures its live working text so the timeline reflows as
         // you type; a static message measures its stored body.
@@ -1816,24 +1833,32 @@ impl ChatApp {
         };
         let att_h = match &m.attachment {
             None => 0.0,
-            Some(Attachment::File { .. }) => 70.0,
+            Some(Attachment::File { .. }) => 70.0 * scale,
             Some(Attachment::Image { w, h, .. }) => {
-                image_thumb_size(*w, *h, f64::from(text_w)).1 + 24.0
+                image_thumb_size(*w, *h, f64::from(text_w)).1 + 24.0 * scale
             }
             Some(Attachment::Video { w, h, .. }) => {
-                video_card_size(*w, *h, f64::from(text_w)).1 + 24.0
+                video_card_size(*w, *h, f64::from(text_w)).1 + 24.0 * scale
             }
         };
-        let react_h = if m.reactions.is_empty() { 0.0 } else { 32.0 };
+        let react_h = if m.reactions.is_empty() {
+            0.0
+        } else {
+            32.0 * scale
+        };
         // While editing, the "(edited)" marker is suppressed in favour of the
         // editor's own controls row.
-        let edited_h = if m.edited && !editing { 18.0 } else { 0.0 };
-        let thread_h = if model::reply_count(&self.messages, &m.id) > 0 {
-            46.0
+        let edited_h = if m.edited && !editing {
+            18.0 * scale
         } else {
             0.0
         };
-        let edit_ctrl_h = if editing { 30.0 } else { 0.0 };
+        let thread_h = if model::reply_count(&self.messages, &m.id) > 0 {
+            46.0 * scale
+        } else {
+            0.0
+        };
+        let edit_ctrl_h = if editing { 30.0 * scale } else { 0.0 };
         RowM {
             idx_id: m.id.clone(),
             show_header,
@@ -2414,6 +2439,7 @@ impl ChatApp {
         text_w: f32,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
         let (tw, th) = image_thumb_size(img_w, img_h, f64::from(text_w));
         let rect = Rect::new(x, y, x + tw, y + th);
         // Real decoded bytes from the shared background image cache. `get`
@@ -2463,7 +2489,7 @@ impl ChatApp {
         fill_round(
             scene,
             tf,
-            Rect::new(rect.x0, rect.y1 - 30.0, rect.x1, rect.y1),
+            Rect::new(rect.x0, rect.y1 - 30.0 * scale, rect.x1, rect.y1),
             12.0,
             Color::from_rgba8(0, 0, 0, 120),
         );
@@ -2482,8 +2508,8 @@ impl ChatApp {
             &format!("🖼  {name}"),
             12.0,
             Color::WHITE,
-            rect.x0 + 12.0,
-            rect.y1 - 22.0,
+            rect.x0 + 12.0 * scale.min(1.2),
+            rect.y1 - 22.0 * scale,
         );
         let dim = format!("{img_w}×{img_h}");
         label(
@@ -2494,7 +2520,7 @@ impl ChatApp {
             11.0,
             c.text_dim,
             rect.x0,
-            rect.y1 + 4.0,
+            rect.y1 + 4.0 * scale,
         );
     }
 
@@ -2519,6 +2545,7 @@ impl ChatApp {
         text_w: f32,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
         let (tw, th) = video_card_size(vid_w, vid_h, f64::from(text_w));
         let rect = Rect::new(x, y, x + tw, y + th);
         // A dark poster surface with a play affordance. A real decoded
@@ -2535,8 +2562,14 @@ impl ChatApp {
         );
         // Centred play button.
         let cc = rect.center();
-        fill_circle(scene, tf, cc, 25.0, Color::from_rgba8(0, 0, 0, 150));
-        fill_circle(scene, tf, cc, 24.0, c.lift(0.72));
+        fill_circle(
+            scene,
+            tf,
+            cc,
+            25.0 * scale.min(1.3),
+            Color::from_rgba8(0, 0, 0, 150),
+        );
+        fill_circle(scene, tf, cc, 24.0 * scale.min(1.3), c.lift(0.72));
         let (pw, ph) = tr.measure("▶", 20.0, None);
         text(
             scene,
@@ -2554,7 +2587,7 @@ impl ChatApp {
         fill_round(
             scene,
             tf,
-            Rect::new(rect.x0, rect.y1 - 30.0, rect.x1, rect.y1),
+            Rect::new(rect.x0, rect.y1 - 30.0 * scale, rect.x1, rect.y1),
             12.0,
             Color::from_rgba8(0, 0, 0, 120),
         );
@@ -2573,8 +2606,8 @@ impl ChatApp {
             &format!("🎬  {name}"),
             12.0,
             Color::WHITE,
-            rect.x0 + 12.0,
-            rect.y1 - 22.0,
+            rect.x0 + 12.0 * scale.min(1.2),
+            rect.y1 - 22.0 * scale,
         );
         let meta = if vid_w > 0 && vid_h > 0 {
             format!("{vid_w}×{vid_h} · {}", format_bytes(size))
@@ -2589,7 +2622,7 @@ impl ChatApp {
             11.0,
             c.text_dim,
             rect.x0,
-            rect.y1 + 4.0,
+            rect.y1 + 4.0 * scale,
         );
     }
 
@@ -2611,14 +2644,15 @@ impl ChatApp {
         text_w: f32,
     ) {
         let c = &theme.tokens.colors;
-        let chip = Rect::new(x, y, x + f64::from(text_w).min(360.0), y + 58.0);
+        let scale = f64::from(theme.text_scale);
+        let chip = Rect::new(x, y, x + f64::from(text_w).min(360.0), y + 58.0 * scale);
         fill_round(scene, tf, chip, 10.0, c.surfaces.raised);
         stroke_round(scene, tf, chip, 10.0, c.border_standard, 1.0);
         let icon = Rect::new(
-            chip.x0 + 10.0,
-            chip.y0 + 11.0,
-            chip.x0 + 46.0,
-            chip.y1 - 11.0,
+            chip.x0 + 10.0 * scale.min(1.2),
+            chip.y0 + 11.0 * scale,
+            chip.x0 + 46.0 * scale.min(1.2),
+            chip.y1 - 11.0 * scale,
         );
         fill_round(scene, tf, icon, 8.0, c.accent[5]);
         let (iw, ih) = tr.measure("📄", 16.0, None);
@@ -2642,8 +2676,8 @@ impl ChatApp {
             &fname,
             13.5,
             c.text_primary,
-            chip.x0 + 56.0,
-            chip.center().y - 14.0,
+            chip.x0 + 56.0 * scale.min(1.2),
+            chip.center().y - 14.0 * scale,
         );
         let meta = file_chip_meta(name, size);
         label(
@@ -2653,8 +2687,8 @@ impl ChatApp {
             &meta,
             11.0,
             c.text_dim,
-            chip.x0 + 56.0,
-            chip.center().y + 2.0,
+            chip.x0 + 56.0 * scale.min(1.2),
+            chip.center().y + 2.0 * scale,
         );
     }
 
@@ -2673,16 +2707,22 @@ impl ChatApp {
         text_w: f32,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
         let (card_w, card_h) = match att {
             Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, f64::from(text_w)),
             Attachment::Video { w, h, .. } => video_card_size(*w, *h, f64::from(text_w)),
-            Attachment::File { .. } => (f64::from(text_w).min(360.0), 58.0),
+            Attachment::File { .. } => (f64::from(text_w).min(360.0), 58.0 * scale),
         };
         let rect = Rect::new(x, y, x + card_w, y + card_h);
         fill_round(scene, tf, rect, 12.0, c.neutral[1]);
         stroke_round(scene, tf, rect, 12.0, c.border_standard, 1.0);
         let cx = rect.center().x;
-        let cy = rect.center().y - if card_h > 64.0 { 8.0 } else { 6.0 };
+        let cy = rect.center().y
+            - if card_h > 64.0 {
+                8.0 * scale
+            } else {
+                6.0 * scale
+            };
         let (lw, lh) = tr.measure("🔒", 18.0, None);
         text(
             scene,
@@ -2706,7 +2746,7 @@ impl ChatApp {
             12.0,
             c.text_dim,
             cx - f64::from(mw) / 2.0,
-            cy + 12.0,
+            cy + 16.0 * scale,
         );
         let fname = truncate_to(tr, att.name(), 11.0, rect.width() - 24.0);
         let (fw, _) = tr.measure(&fname, 11.0, None);
@@ -2718,7 +2758,7 @@ impl ChatApp {
             11.0,
             c.text_dim,
             cx - f64::from(fw) / 2.0,
-            cy + 28.0,
+            cy + 40.0 * scale,
         );
     }
 
@@ -2820,10 +2860,10 @@ impl ChatApp {
         let mut tx = rect.x0 + 16.0;
         if attach {
             let plus = Rect::new(
-                rect.x0 + 10.0,
-                rect.center().y - 14.0,
-                rect.x0 + 38.0,
-                rect.center().y + 14.0,
+                rect.x0 + 6.0,
+                rect.center().y - 22.0,
+                rect.x0 + 50.0,
+                rect.center().y + 22.0,
             );
             fill_round(scene, tf, plus, 8.0, c.lift(0.72));
             let (pw, ph) = tr.measure("+", 20.0, None);
@@ -2840,15 +2880,15 @@ impl ChatApp {
                 None,
             );
             ChatApp::push_hit(hits, plus, Hit::Attach);
-            tx = plus.x1 + 12.0;
+            tx = plus.x1 + 8.0;
         }
 
         // right cluster: emoji + send
         let send = Rect::new(
             rect.x1 - 56.0,
-            rect.center().y - 16.0,
+            rect.center().y - 22.0,
             rect.x1 - 12.0,
-            rect.center().y + 16.0,
+            rect.center().y + 22.0,
         );
         fill_round(
             scene,
@@ -2881,10 +2921,10 @@ impl ChatApp {
         ChatApp::push_hit(hits, send, Hit::Send);
 
         let emoji = Rect::new(
-            send.x0 - 40.0,
-            rect.center().y - 16.0,
+            send.x0 - 52.0,
+            rect.center().y - 22.0,
             send.x0 - 8.0,
-            rect.center().y + 16.0,
+            rect.center().y + 22.0,
         );
         let (ew, eh) = tr.measure("🙂", 16.0, None);
         text(
@@ -2921,6 +2961,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(self.layout_text_scale);
         let Some(parent_id) = self.thread_open.clone() else {
             return;
         };
@@ -2943,10 +2984,10 @@ impl ChatApp {
 
         // thread composer
         let comp = Rect::new(
-            panel.x0 + 12.0,
-            panel.y1 - 60.0,
-            panel.x1 - 12.0,
-            panel.y1 - 12.0,
+            panel.x0 + 12.0 * scale.min(1.2),
+            panel.y1 - 60.0 * scale,
+            panel.x1 - 12.0 * scale.min(1.2),
+            panel.y1 - 12.0 * scale.min(1.2),
         );
         if !self.can_participate() {
             self.composer_thread.set_focus(false);
@@ -2985,12 +3026,14 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) -> Rect {
         let c = &theme.tokens.colors;
-        let head = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 52.0);
+        let scale = f64::from(self.layout_text_scale);
+        let head = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 52.0 * scale);
         let narrow_detail = self.right_mode == crate::responsive::FlapMode::Overlay;
-        let title_x = if narrow_detail {
+        let labelled_back = narrow_detail && self.layout_text_scale <= 1.25;
+        let title_x = if labelled_back {
             panel.x0 + 92.0
         } else {
-            panel.x0 + 16.0
+            panel.x0 + 16.0 * scale.min(1.2)
         };
         label(
             scene,
@@ -3000,7 +3043,7 @@ impl ChatApp {
             15.0,
             c.text_primary,
             title_x,
-            panel.y0 + 12.0,
+            panel.y0 + 12.0 * scale,
         );
         let chn = self
             .channel(&self.active_channel)
@@ -3014,9 +3057,9 @@ impl ChatApp {
             11.5,
             c.text_dim,
             title_x,
-            panel.y0 + 31.0,
+            panel.y0 + 31.0 * scale,
         );
-        let close = if narrow_detail {
+        let close = if labelled_back {
             Rect::new(
                 panel.x0 + 12.0,
                 panel.y0 + 10.0,
@@ -3024,15 +3067,16 @@ impl ChatApp {
                 panel.y0 + 42.0,
             )
         } else {
+            let side = 44.0 * scale.min(1.2);
             Rect::new(
-                panel.x1 - 40.0,
-                panel.y0 + 12.0,
+                panel.x1 - side - 12.0,
+                panel.y0 + 8.0 * scale,
                 panel.x1 - 12.0,
-                panel.y0 + 40.0,
+                panel.y0 + 8.0 * scale + side,
             )
         };
         fill_round(scene, tf, close, 8.0, c.lift(0.72));
-        let close_label = if narrow_detail { "← Back" } else { "✕" };
+        let close_label = if labelled_back { "← Back" } else { "✕" };
         let (xw, xh) = tr.measure(close_label, 13.0, None);
         text(
             scene,
@@ -3050,8 +3094,8 @@ impl ChatApp {
         hline(
             scene,
             tf,
-            panel.x0 + 12.0,
-            panel.x1 - 12.0,
+            panel.x0 + 12.0 * scale.min(1.2),
+            panel.x1 - 12.0 * scale.min(1.2),
             head.y1,
             c.border_standard,
         );
@@ -3077,11 +3121,12 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let body = Rect::new(panel.x0, head.y1, panel.x1, panel.y1 - 70.0);
+        let scale = f64::from(self.layout_text_scale);
+        let body = Rect::new(panel.x0, head.y1, panel.x1, panel.y1 - 70.0 * scale);
         push_clip(scene, tf, body);
-        let tx = panel.x0 + 16.0 + 32.0 + 10.0;
-        let tw = (panel.x1 - tx - 14.0).max(60.0) as f32;
-        let mut y = body.y0 + 12.0;
+        let tx = panel.x0 + (16.0 + 32.0 + 10.0) * scale.min(1.2);
+        let tw = (panel.x1 - tx - 14.0 * scale.min(1.2)).max(60.0) as f32;
+        let mut y = body.y0 + 12.0 * scale;
 
         // parent message
         if let Some(parent) = self.message(parent_id).cloned() {
@@ -3091,7 +3136,7 @@ impl ChatApp {
                 tr,
                 theme,
                 &parent,
-                panel.x0 + 16.0,
+                panel.x0 + 16.0 * scale.min(1.2),
                 tx,
                 tw,
                 y,
@@ -3101,20 +3146,20 @@ impl ChatApp {
             let n = model::reply_count(&self.messages, parent_id);
             let s = format!("{n} {}", if n == 1 { "reply" } else { "replies" });
             let (sw, _) = tr.measure(&s, 11.5, None);
-            let dcy = y + 14.0;
+            let dcy = y + 14.0 * scale;
             hline(
                 scene,
                 tf,
-                panel.x0 + 16.0,
-                panel.center().x - f64::from(sw) / 2.0 - 10.0,
+                panel.x0 + 16.0 * scale.min(1.2),
+                panel.center().x - f64::from(sw) / 2.0 - 10.0 * scale,
                 dcy,
                 c.border_standard,
             );
             hline(
                 scene,
                 tf,
-                panel.center().x + f64::from(sw) / 2.0 + 10.0,
-                panel.x1 - 16.0,
+                panel.center().x + f64::from(sw) / 2.0 + 10.0 * scale,
+                panel.x1 - 16.0 * scale.min(1.2),
                 dcy,
                 c.border_standard,
             );
@@ -3126,9 +3171,9 @@ impl ChatApp {
                 11.5,
                 c.text_dim,
                 panel.center().x - f64::from(sw) / 2.0,
-                dcy - 7.0,
+                dcy - 7.0 * scale,
             );
-            y += 30.0;
+            y += 30.0 * scale;
         }
         let replies: Vec<Message> = self
             .messages
@@ -3137,7 +3182,18 @@ impl ChatApp {
             .cloned()
             .collect();
         for r in &replies {
-            y = self.draw_thread_message(scene, tf, tr, theme, r, panel.x0 + 16.0, tx, tw, y, hits);
+            y = self.draw_thread_message(
+                scene,
+                tf,
+                tr,
+                theme,
+                r,
+                panel.x0 + 16.0 * scale.min(1.2),
+                tx,
+                tw,
+                y,
+                hits,
+            );
         }
         scene.pop_layer();
     }
@@ -3157,6 +3213,7 @@ impl ChatApp {
         _hits: &mut Vec<(Rect, Hit)>,
     ) -> f64 {
         let c = &theme.tokens.colors;
+        let scale = f64::from(self.layout_text_scale);
         let mut yy = y;
         if let Some(u) = self.user(&m.author) {
             draw_avatar(
@@ -3164,8 +3221,8 @@ impl ChatApp {
                 tf,
                 tr,
                 theme,
-                Point::new(avx + 16.0, yy + 14.0),
-                14.0,
+                Point::new(avx + 16.0 * scale.min(1.2), yy + 14.0 * scale),
+                14.0 * scale.min(1.2),
                 &u.initials,
                 u.color_idx,
                 Some(u.status),
@@ -3190,10 +3247,10 @@ impl ChatApp {
             &model::clock(m.ts),
             11.0,
             c.text_dim,
-            tx + f64::from(nw) + 8.0,
-            yy + 2.0,
+            tx + f64::from(nw) + 8.0 * scale,
+            yy + 2.0 * scale,
         );
-        yy += 19.0;
+        yy += 19.0 * scale;
         if !m.text.is_empty() {
             let h = f64::from(tr.measure(&m.text, 14.0, Some(tw)).1);
             text(
@@ -3208,14 +3265,18 @@ impl ChatApp {
                 TextWeight::Regular,
                 Some(tw),
             );
-            yy += h + 4.0;
+            yy += h + 4.0 * scale;
         }
         if let Some(att) = &m.attachment {
             self.draw_attachment(scene, tf, tr, theme, att, tx, yy, tw);
             yy += match att {
-                Attachment::File { .. } => 66.0,
-                Attachment::Image { w, h, .. } => image_thumb_size(*w, *h, f64::from(tw)).1 + 24.0,
-                Attachment::Video { w, h, .. } => video_card_size(*w, *h, f64::from(tw)).1 + 24.0,
+                Attachment::File { .. } => 66.0 * scale,
+                Attachment::Image { w, h, .. } => {
+                    image_thumb_size(*w, *h, f64::from(tw)).1 + 24.0 * scale
+                }
+                Attachment::Video { w, h, .. } => {
+                    video_card_size(*w, *h, f64::from(tw)).1 + 24.0 * scale
+                }
             };
         }
         if !m.reactions.is_empty() {
@@ -3223,7 +3284,7 @@ impl ChatApp {
             for r in &m.reactions {
                 let lbl = format!("{} {}", r.emoji, r.count());
                 let (lw, _) = tr.measure(&lbl, 11.5, None);
-                let chip = Rect::new(x, yy, x + f64::from(lw) + 16.0, yy + 22.0);
+                let chip = Rect::new(x, yy, x + f64::from(lw) + 16.0 * scale, yy + 22.0 * scale);
                 fill_round(scene, tf, chip, 11.0, c.lift(0.35));
                 label(
                     scene,
@@ -3232,14 +3293,14 @@ impl ChatApp {
                     &lbl,
                     11.5,
                     c.text_primary,
-                    chip.x0 + 8.0,
-                    chip.center().y - 7.0,
+                    chip.x0 + 8.0 * scale,
+                    chip.center().y - 7.0 * scale,
                 );
-                x = chip.x1 + 5.0;
+                x = chip.x1 + 5.0 * scale;
             }
-            yy += 28.0;
+            yy += 28.0 * scale;
         }
-        yy + 10.0
+        yy + 10.0 * scale
     }
 
     // ----------------------------------------------------------- people roster
@@ -3481,7 +3542,7 @@ impl ChatApp {
             1.0,
         );
 
-        let head_h = 56.0;
+        let head_h = 56.0 * f64::from(self.layout_text_scale);
         self.draw_attach_picker_header(scene, tf, tr, theme, panel, head_h);
 
         if self.attach_entries.is_empty() {
@@ -3495,23 +3556,26 @@ impl ChatApp {
     /// clamped to stay inside the window at any size or entry count.
     fn attach_picker_rect(&self, tr: &mut TextRenderer) -> Rect {
         let comp = self.composer_rect(tr);
-        let w = 360.0_f64.min(self.rect.width() - 32.0).max(220.0);
+        let scale = f64::from(self.layout_text_scale);
+        let w = (360.0 * scale.min(1.25))
+            .min(self.rect.width() - 24.0)
+            .max(220.0);
         let x0 = comp
             .x0
             .min(self.rect.x1 - w - 12.0)
             .max(self.rect.x0 + 12.0);
 
-        let head_h = 56.0;
-        let row_h = 52.0;
-        let max_rows = 6usize;
+        let head_h = 56.0 * scale;
+        let row_h = 52.0 * scale;
+        let max_rows = self.attach_picker_max_rows();
         let shown = self.attach_entries.len().min(max_rows);
         let body_h = if self.attach_entries.is_empty() {
-            46.0
+            46.0 * scale
         } else {
             shown as f64 * row_h + 8.0
         };
         let more_h = if self.attach_entries.len() > max_rows {
-            20.0
+            20.0 * scale
         } else {
             0.0
         };
@@ -3519,6 +3583,18 @@ impl ChatApp {
         let y1 = comp.y0 - 10.0;
         let y0 = (y1 - panel_h).max(self.rect.y0 + 12.0);
         Rect::new(x0, y0, x0 + w, y1)
+    }
+
+    /// At increased text sizes the picker intentionally becomes a short,
+    /// readable sheet instead of shrinking its filenames to preserve six rows.
+    fn attach_picker_max_rows(&self) -> usize {
+        if self.layout_text_scale > 1.5 {
+            2
+        } else if self.layout_text_scale > 1.15 {
+            4
+        } else {
+            6
+        }
     }
 
     /// The picker's title, entry count, and the divider beneath them.
@@ -3532,6 +3608,7 @@ impl ChatApp {
         head_h: f64,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(self.layout_text_scale);
         label(
             scene,
             tr,
@@ -3539,8 +3616,8 @@ impl ChatApp {
             "Share a file",
             13.5,
             c.text_primary,
-            panel.x0 + 14.0,
-            panel.y0 + 12.0,
+            panel.x0 + 14.0 * scale.min(1.2),
+            panel.y0 + 12.0 * scale,
         );
         let count = format!("{}", self.attach_entries.len());
         let (cw, _) = tr.measure(&count, 11.5, None);
@@ -3551,8 +3628,8 @@ impl ChatApp {
             &count,
             11.5,
             c.text_dim,
-            panel.x1 - f64::from(cw) - 14.0,
-            panel.y0 + 14.0,
+            panel.x1 - f64::from(cw) - 14.0 * scale.min(1.2),
+            panel.y0 + 14.0 * scale,
         );
         if let Some(status) = &self.attachment_status
             && !(self.attachment_picker_pending.is_some() && status == "Loading attachments…")
@@ -3570,16 +3647,16 @@ impl ChatApp {
                 &status,
                 10.5,
                 color,
-                panel.x0 + 14.0,
-                panel.y0 + 30.0,
+                panel.x0 + 14.0 * scale.min(1.2),
+                panel.y0 + 30.0 * scale,
             );
         }
         hline(
             scene,
             tf,
-            panel.x0 + 12.0,
-            panel.x1 - 12.0,
-            panel.y0 + head_h - 4.0,
+            panel.x0 + 12.0 * scale.min(1.2),
+            panel.x1 - 12.0 * scale.min(1.2),
+            panel.y0 + head_h - 4.0 * scale,
             c.border_standard,
         );
     }
@@ -3596,6 +3673,7 @@ impl ChatApp {
         head_h: f64,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(self.layout_text_scale);
         let s = if self.attachment_picker_pending.is_some() {
             "Loading attachments…".to_owned()
         } else {
@@ -3610,8 +3688,8 @@ impl ChatApp {
             &s,
             12.5,
             c.text_dim,
-            panel.x0 + 14.0,
-            panel.y0 + head_h + 10.0,
+            panel.x0 + 14.0 * scale.min(1.2),
+            panel.y0 + head_h + 10.0 * scale,
         );
     }
 
@@ -3634,15 +3712,27 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
-        let row_h = 52.0;
-        let max_rows = 6usize;
+        let scale = f64::from(self.layout_text_scale);
+        let row_h = 52.0 * scale;
+        let max_rows = self.attach_picker_max_rows();
         let mut y = panel.y0 + head_h + 4.0;
         for e in self.attach_entries.iter().take(max_rows) {
-            let row = Rect::new(panel.x0 + 6.0, y, panel.x1 - 6.0, y + row_h - 6.0);
+            let row = Rect::new(
+                panel.x0 + 6.0,
+                y,
+                panel.x1 - 6.0,
+                y + row_h - 6.0 * scale.min(1.2),
+            );
             if row.contains(self.last_mouse) {
                 fill_round(scene, tf, row, 10.0, c.lift(0.35));
             }
-            let thumb = Rect::new(row.x0 + 6.0, row.y0 + 5.0, row.x0 + 62.0, row.y1 - 5.0);
+            let thumb_size = 52.0 * scale.min(1.15);
+            let thumb = Rect::new(
+                row.x0 + 6.0 * scale.min(1.2),
+                row.y0 + 5.0 * scale.min(1.2),
+                row.x0 + 6.0 * scale.min(1.2) + thumb_size,
+                row.y1 - 5.0 * scale.min(1.2),
+            );
             let key = e.key();
             // A video shows a play glyph (no image decode); an image decodes its
             // real thumbnail through the shared cache, with a neutral tile until
@@ -3695,7 +3785,7 @@ impl ChatApp {
                 ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
                 1.0,
             );
-            let name = truncate_to(tr, &e.name, 13.5, row.width() - 96.0);
+            let name = truncate_to(tr, &e.name, 13.5, row.x1 - thumb.x1 - 16.0);
             label(
                 scene,
                 tr,
@@ -3704,7 +3794,7 @@ impl ChatApp {
                 13.5,
                 c.text_primary,
                 thumb.x1 + 12.0,
-                row.center().y - 13.0,
+                row.center().y - 15.0 * scale.min(1.2),
             );
             label(
                 scene,
@@ -3714,7 +3804,7 @@ impl ChatApp {
                 11.0,
                 c.text_dim,
                 thumb.x1 + 12.0,
-                row.center().y + 3.0,
+                row.center().y + 4.0 * scale.min(1.2),
             );
             if self.attachment_pending.is_none() {
                 ChatApp::push_hit(hits, row, Hit::AttachPick(key));
