@@ -1,7 +1,40 @@
 //! Narrow startup inputs for the existing embedded app constructors.
 //! File paths are presentation data; they grant no filesystem authority.
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
+
+use super::state::{AppKind, TabId};
+
+/// An application the native shell can construct in-process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeAppRegistration {
+    pub package_id: &'static str,
+    pub display_name: &'static str,
+    pub kind: AppKind,
+    pub opens_extensions: &'static [&'static str],
+    pub opens_mime_types: &'static [&'static str],
+}
+
+/// Device-local launch data for one open hosted document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostedDocument {
+    pub provider_id: &'static str,
+    pub path: PathBuf,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostedDocumentState {
+    Ready(HostedDocument),
+    Unavailable {
+        provider_id: &'static str,
+        path: PathBuf,
+        reason: String,
+    },
+}
 
 #[derive(Clone, Default)]
 pub struct HostedTileInputs {
@@ -9,6 +42,8 @@ pub struct HostedTileInputs {
     pub picker_scope: Option<crate::portal::PickerScope>,
     fixture: Option<Arc<FixtureDirectory>>,
     file_services: Option<file_explorer::files_app::HostedFileServices>,
+    native_apps: Arc<[NativeAppRegistration]>,
+    documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
 }
 
 struct FixtureDirectory(PathBuf);
@@ -20,6 +55,46 @@ impl Drop for FixtureDirectory {
 }
 
 impl HostedTileInputs {
+    /// Native host startup data for the real Files widget. This chooses its
+    /// initial directory; it does not claim to sandbox filesystem access.
+    /// # Errors
+    /// Returns an error if the directory cannot be resolved or is not a directory.
+    pub fn for_host_directory(directory: &std::path::Path) -> std::io::Result<Self> {
+        let directory = directory.canonicalize()?;
+        if !directory.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "Files needs a directory",
+            ));
+        }
+        Ok(Self {
+            files: Some(file_explorer::StartupInputs {
+                initial_dir: directory,
+                workspace_roots: Vec::new(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+            }),
+            native_apps: Arc::from([
+                NativeAppRegistration {
+                    package_id: "org.nirios.Files",
+                    display_name: "Files",
+                    kind: AppKind::FileExplorer,
+                    opens_extensions: &[],
+                    opens_mime_types: &[],
+                },
+                NativeAppRegistration {
+                    package_id: "org.nirios.Editor",
+                    display_name: "Editor",
+                    kind: AppKind::Other("Editor".into()),
+                    opens_extensions: &["txt"],
+                    opens_mime_types: &["text/plain"],
+                },
+            ]),
+            ..Self::default()
+        })
+    }
+
     /// Explicit deterministic inputs for scratch scenes, tests and captures.
     /// The real Files widget reads only this owned temporary directory; Terminal
     /// uses its existing null backend. This does not advertise a host provider.
@@ -72,6 +147,8 @@ impl HostedTileInputs {
             }),
             fixture: Some(fixture),
             file_services,
+            native_apps: Arc::default(),
+            documents: Rc::default(),
         })
     }
 
@@ -81,6 +158,91 @@ impl HostedTileInputs {
 
     pub(crate) fn is_fixture(&self) -> bool {
         self.fixture.is_some()
+    }
+
+    /// The real hosted application catalogue for this native session.
+    pub fn native_apps(&self) -> &[NativeAppRegistration] {
+        &self.native_apps
+    }
+
+    pub(crate) fn native_app_for_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<NativeAppRegistration> {
+        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+        let mime = mime_guess::from_path(path).first_raw();
+        self.native_apps
+            .iter()
+            .find(|app| {
+                app.opens_extensions.iter().any(|claim| *claim == extension)
+                    || mime.is_some_and(|mime| app.opens_mime_types.contains(&mime))
+            })
+            .cloned()
+    }
+
+    pub(crate) fn bind_document(&self, tab: TabId, document: HostedDocument) {
+        self.documents
+            .borrow_mut()
+            .insert(tab, HostedDocumentState::Ready(document));
+    }
+
+    /// Release launch data once its tab leaves any workspace, without rereading files.
+    /// Returns whether persisted references changed.
+    pub(crate) fn prune_documents(&self, tree: &mut super::state::WorkspaceTree) -> bool {
+        if tree.native_document_tabs.is_empty() && self.documents.borrow().is_empty() {
+            return false;
+        }
+        let live: std::collections::HashSet<_> = tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        let before = tree.native_document_tabs.len();
+        tree.native_document_tabs
+            .retain(|tab, _| live.contains(tab));
+        self.documents
+            .borrow_mut()
+            .retain(|tab, _| live.contains(tab));
+        before != tree.native_document_tabs.len()
+    }
+
+    pub(crate) fn restore_documents(&self, tree: &mut super::state::WorkspaceTree) {
+        // Old profiles can contain already closed tabs. Filter before filesystem I/O.
+        self.prune_documents(tree);
+        let references = &tree.native_document_tabs;
+        for (&tab, reference) in references {
+            let Some(app) = self
+                .native_apps
+                .iter()
+                .find(|app| app.package_id == reference.provider_id)
+            else {
+                continue;
+            };
+            let restored = reference
+                .path
+                .canonicalize()
+                .and_then(|path| std::fs::read_to_string(&path).map(|text| (path, text)));
+            let state = match restored {
+                Ok((path, text)) => HostedDocumentState::Ready(HostedDocument {
+                    provider_id: app.package_id,
+                    path,
+                    text,
+                }),
+                Err(error) => HostedDocumentState::Unavailable {
+                    provider_id: app.package_id,
+                    path: reference.path.clone(),
+                    reason: format!("{} is unavailable: {error}", reference.path.display()),
+                },
+            };
+            self.documents.borrow_mut().insert(tab, state);
+        }
+    }
+
+    pub(crate) fn document(&self, tab: TabId) -> Option<HostedDocumentState> {
+        self.documents.borrow().get(&tab).cloned()
     }
 }
 
@@ -167,5 +329,131 @@ mod tests {
             result,
             Err(HostedTileError::RequiredServiceMissing("Files startup"))
         ));
+    }
+}
+
+#[cfg(test)]
+mod desktop_catalog_tests {
+    use super::*;
+    #[test]
+    fn desktop_native_catalog_includes_constructible_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let inputs = HostedTileInputs::for_host_directory(dir.path()).unwrap();
+        assert!(
+            inputs
+                .native_apps()
+                .iter()
+                .any(|app| app.display_name == "Files" && app.kind == AppKind::FileExplorer)
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod document_lifecycle_tests {
+    use super::*;
+    use crate::compositor::macos::{Options, prepare};
+    use crate::shell::{state::NativeDocumentReference, window_actions};
+
+    #[test]
+    #[serial_test::serial]
+    fn closed_hosted_documents_are_pruned_and_restart_retains_live_documents() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("note.txt");
+        std::fs::write(&path, "live document\n").unwrap();
+        let options = Options {
+            state_dir: directory.path().join("state"),
+            files_dir: directory.path().to_path_buf(),
+            shots: None,
+        };
+        let tabs = {
+            let session = prepare(&options).unwrap();
+            let inputs = session.chrome.borrow().hosted_inputs.clone();
+            let reference = NativeDocumentReference {
+                provider_id: "org.nirios.Editor".into(),
+                path: path.canonicalize().unwrap(),
+            };
+            let mut tabs = Vec::new();
+            for _ in 0..2 {
+                let tab = window_actions::open_hosted(
+                    &mut session.chrome.borrow_mut(),
+                    AppKind::Other("Editor".into()),
+                    "note.txt",
+                    window_actions::Destination::Here,
+                );
+                session
+                    .tree
+                    .write()
+                    .native_document_tabs
+                    .insert(tab, reference.clone());
+                inputs.bind_document(
+                    tab,
+                    HostedDocument {
+                        provider_id: "org.nirios.Editor",
+                        path: reference.path.clone(),
+                        text: "live document\n".into(),
+                    },
+                );
+                tabs.push(tab);
+            }
+            let mut driver =
+                ui::headless::Driver::new(ui::State::new(), Box::new(session.host), (1280, 800));
+            driver.set_modifiers(&["meta".into()]);
+            driver.key("w");
+            driver.set_modifiers(&[]);
+            assert!(
+                !session
+                    .tree
+                    .read()
+                    .native_document_tabs
+                    .contains_key(&tabs[1]),
+                "closing a tab must remove its persisted document reference"
+            );
+            assert!(
+                inputs.document(tabs[1]).is_none(),
+                "closing must release cached text"
+            );
+            assert!(matches!(
+                inputs.document(tabs[0]),
+                Some(HostedDocumentState::Ready(_))
+            ));
+            // Simulate an older profile that retained the already closed tab.
+            session
+                .tree
+                .write()
+                .native_document_tabs
+                .insert(tabs[1], reference);
+            session.tree.read().flush_to_disk();
+            drop(driver);
+            drop(session.chrome);
+            drop(session.records);
+            drop(session.tree);
+            tabs
+        };
+        let reopened = prepare(&options).unwrap();
+        assert!(
+            !reopened
+                .tree
+                .read()
+                .native_document_tabs
+                .contains_key(&tabs[1])
+        );
+        let restored = reopened.chrome.borrow().hosted_inputs.clone();
+        assert!(
+            restored.document(tabs[1]).is_none(),
+            "stale references must be filtered before restoration"
+        );
+        assert!(
+            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.text == "live document\n")
+        );
+        let mut driver =
+            ui::headless::Driver::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
+        // Tree reconciliation can remove tabs without using the close gesture.
+        assert!(crate::shell::tab_binding::remove_tab(
+            &mut reopened.tree.write(),
+            tabs[0]
+        ));
+        driver.profile_frame();
+        assert!(reopened.tree.read().native_document_tabs.is_empty());
+        assert!(restored.document(tabs[0]).is_none());
     }
 }
