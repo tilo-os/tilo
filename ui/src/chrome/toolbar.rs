@@ -13,6 +13,28 @@ use vello::peniko::{Color, Fill};
 /// Standard toolbar height, so callers can reserve space consistently.
 pub const TOOLBAR_HEIGHT: f64 = 50.0;
 
+/// Resolved toolbar geometry for the active system text scale. Applications
+/// that pack or reserve toolbar rows should use this instead of duplicating
+/// the component's padding/gap arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToolbarMetrics {
+    pub row_height: f64,
+    pub left_padding: f64,
+    pub item_gap: f64,
+    pub group_gap: f64,
+}
+
+#[must_use]
+pub fn metrics(text_scale: f32) -> ToolbarMetrics {
+    let scale = f64::from(text_scale.clamp(0.75, 2.0));
+    ToolbarMetrics {
+        row_height: TOOLBAR_HEIGHT * scale,
+        left_padding: 14.0 * scale,
+        item_gap: 6.0 * scale,
+        group_gap: 14.0 * scale,
+    }
+}
+
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
 /// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
 #[allow(
@@ -72,15 +94,7 @@ impl ToolbarItem {
     }
 }
 
-/// Draw a themed toolbar in `rect`; returns each item's clickable rect in order.
-pub fn draw(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    items: &[ToolbarItem],
-) -> Vec<Rect> {
+fn draw_toolbar_background(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
     scene.fill(
         Fill::NonZero,
         transform,
@@ -95,87 +109,115 @@ pub fn draw(
         None,
         &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
     );
+}
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one toolbar item renderer receives its shared paint context and resolved geometry"
+)]
+fn draw_item(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    item: &ToolbarItem,
+    x: f64,
+    cy: f64,
+    scale: f64,
+) -> Rect {
     let white = Color::from_rgb8(0xff, 0xff, 0xff);
+    let bh = 34.0 * scale;
+    let item_width = item.width * scale;
+    let rect = Rect::new(x, cy - bh / 2.0, x + item_width, cy + bh / 2.0);
+    if item.active {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.accent_primary,
+            None,
+            &RoundedRect::from_rect(rect, 6.0 * scale),
+        );
+    }
+    let color = if item.active {
+        white
+    } else {
+        theme.text_primary
+    };
+    let (label_width, _) = tr.measure(&item.label, 15.0, None);
+    let lx = x + (item_width - f64::from(label_width)) / 2.0;
+    let ly = cy - 9.0 * scale;
+    if item.cue == LabelCue::Bold {
+        tr.draw_text_weighted(
+            scene,
+            &item.label,
+            15.0,
+            color,
+            translated(transform, lx, ly),
+            None,
+            TextWeight::Bold,
+        );
+    } else {
+        tr.draw_text(
+            scene,
+            &item.label,
+            15.0,
+            color,
+            translated(transform, lx, ly),
+            None,
+        );
+    }
+    let decoration_y = match item.cue {
+        LabelCue::Underline => Some(ly + 18.0 * scale),
+        LabelCue::Strike => Some(ly + 9.0 * scale),
+        _ => None,
+    };
+    if let Some(y) = decoration_y {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            color,
+            None,
+            &Rect::new(lx, y, lx + f64::from(label_width), y + 1.5 * scale),
+        );
+    }
+    rect
+}
+
+/// Draw a themed toolbar in `rect`; returns each item's clickable rect in order.
+pub fn draw(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    items: &[ToolbarItem],
+) -> Vec<Rect> {
+    let metrics = metrics(tr.text_scale());
+    let scale = metrics.row_height / TOOLBAR_HEIGHT;
+    draw_toolbar_background(scene, transform, theme, rect);
     let cy = rect.y0 + rect.height() / 2.0;
-    let bh = 34.0;
-    let mut x = rect.x0 + 14.0;
+    let mut x = rect.x0 + metrics.left_padding;
     let mut rects = Vec::with_capacity(items.len());
     for item in items {
         if item.group_start {
-            let sep = Rect::new(x + 2.0, cy - 12.0, x + 3.0, cy + 12.0);
+            let separator = Rect::new(
+                x + 2.0 * scale,
+                cy - 12.0 * scale,
+                x + 3.0 * scale,
+                cy + 12.0 * scale,
+            );
             scene.fill(
                 Fill::NonZero,
                 transform,
                 theme.tokens.colors.border_standard,
                 None,
-                &sep,
+                &separator,
             );
-            x += 14.0;
+            x += metrics.group_gap;
         }
-        let r = Rect::new(x, cy - bh / 2.0, x + item.width, cy + bh / 2.0);
-        if item.active {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.accent_primary,
-                None,
-                &RoundedRect::from_rect(r, 6.0),
-            );
-        }
-        let color = if item.active {
-            white
-        } else {
-            theme.text_primary
-        };
-        let (lw, _) = tr.measure(&item.label, 15.0, None);
-        let lx = x + (item.width - f64::from(lw)) / 2.0;
-        let ly = cy - 9.0;
-        if item.cue == LabelCue::Bold {
-            tr.draw_text_weighted(
-                scene,
-                &item.label,
-                15.0,
-                color,
-                translated(transform, lx, ly),
-                None,
-                TextWeight::Bold,
-            );
-        } else {
-            tr.draw_text(
-                scene,
-                &item.label,
-                15.0,
-                color,
-                translated(transform, lx, ly),
-                None,
-            );
-        }
-        match item.cue {
-            LabelCue::Underline => {
-                let uy = ly + 18.0;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    color,
-                    None,
-                    &Rect::new(lx, uy, lx + f64::from(lw), uy + 1.5),
-                );
-            }
-            LabelCue::Strike => {
-                let sy = ly + 9.0;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    color,
-                    None,
-                    &Rect::new(lx, sy, lx + f64::from(lw), sy + 1.5),
-                );
-            }
-            _ => {}
-        }
-        rects.push(r);
-        x += item.width + 6.0;
+        let item_rect = draw_item(scene, transform, tr, theme, item, x, cy, scale);
+        x = item_rect.x1 + metrics.item_gap;
+        rects.push(item_rect);
     }
     rects
 }
@@ -211,5 +253,27 @@ mod tests {
         let mid = rects[1].center();
         assert_eq!(hit(&rects, mid), Some(1));
         assert_eq!(hit(&rects, Point::new(5000.0, 5.0)), None);
+    }
+
+    #[test]
+    fn two_x_geometry_scales_hit_targets_without_changing_item_order() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        let items = vec![
+            ToolbarItem::new("New", 64.0),
+            ToolbarItem::new("B", 34.0).group_start(true),
+        ];
+        let m = metrics(2.0);
+        let rect = Rect::new(0.0, 0.0, 500.0, m.row_height);
+        let rects = draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, rect, &items);
+
+        assert_eq!(m.row_height, TOOLBAR_HEIGHT * 2.0);
+        assert_eq!(rects[0].width(), 128.0);
+        assert_eq!(rects[0].height(), 68.0);
+        assert!(rects[1].x0 - rects[0].x1 >= m.group_gap);
+        assert_eq!(hit(&rects, rects[0].center()), Some(0));
+        assert_eq!(hit(&rects, rects[1].center()), Some(1));
     }
 }
