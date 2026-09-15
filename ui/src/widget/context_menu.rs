@@ -14,6 +14,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::icons::{Icon, draw_icon};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -25,7 +26,13 @@ pub type MenuAction = Arc<dyn Fn() + Send + Sync>;
 /// Separators are purely visual and ignored by [`ContextMenu::click_item`].
 #[derive(Clone)]
 pub enum MenuItem {
-    Action { label: String, action: MenuAction },
+    Action {
+        label: String,
+        action: MenuAction,
+        /// `Some` reserves the leading selection gutter and publishes a
+        /// semantic checked state. `None` is an ordinary command row.
+        checked: Option<bool>,
+    },
     Separator,
 }
 
@@ -50,6 +57,20 @@ impl MenuItem {
         MenuItem::Action {
             label: label.into(),
             action: Arc::new(action),
+            checked: None,
+        }
+    }
+
+    /// A persistent choice/toggle row. Checked and unchecked peers share the
+    /// same leading gutter, so labels never jump as state changes.
+    pub fn checked_action<F>(label: impl Into<String>, checked: bool, action: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        MenuItem::Action {
+            label: label.into(),
+            action: Arc::new(action),
+            checked: Some(checked),
         }
     }
 
@@ -60,6 +81,15 @@ impl MenuItem {
     pub fn label(&self) -> Option<&str> {
         match self {
             MenuItem::Action { label, .. } => Some(label.as_str()),
+            MenuItem::Separator => None,
+        }
+    }
+
+    /// Semantic checked state for choice/toggle rows. `None` means this is a
+    /// regular command, rather than an unchecked choice.
+    pub fn checked(&self) -> Option<bool> {
+        match self {
+            MenuItem::Action { checked, .. } => *checked,
             MenuItem::Separator => None,
         }
     }
@@ -82,6 +112,9 @@ pub struct ContextMenu {
     /// `take_selection()` after dispatching the event and mutates itself.
     /// The legacy `Arc` callback still fires too.
     selection: Option<usize>,
+    /// The finger currently owning menu interaction. Touch is captured from
+    /// press through release so an underlying file row cannot also activate.
+    active_touch: Option<u64>,
 }
 
 impl Default for ContextMenu {
@@ -100,6 +133,7 @@ impl ContextMenu {
             hovered: None,
             last_cursor: Point::ZERO,
             selection: None,
+            active_touch: None,
         }
     }
 
@@ -146,6 +180,7 @@ impl ContextMenu {
     /// Safe to call when already closed.
     pub fn close(&mut self) {
         self.open = false;
+        self.active_touch = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -252,7 +287,9 @@ fn wrapping_step(i: usize, n: usize, down: bool) -> usize {
     }
 }
 
-const ROW_HEIGHT: f64 = 28.0;
+/// Menus are shared by pointer and touch surfaces; never shrink an action
+/// below the platform's 44 logical-pixel minimum target.
+const ROW_HEIGHT: f64 = 44.0;
 const SEPARATOR_HEIGHT: f64 = 9.0;
 const MENU_WIDTH: f64 = 220.0;
 const PADDING: f64 = 6.0;
@@ -356,7 +393,7 @@ impl Widget for ContextMenu {
         let mut y = self.rect.y0 + PADDING;
         for (idx, item) in self.items.iter().enumerate() {
             match item {
-                MenuItem::Action { label, .. } => {
+                MenuItem::Action { label, checked, .. } => {
                     if self.hovered == Some(idx) {
                         let hl = Rect::new(
                             self.rect.x0 + 4.0,
@@ -375,12 +412,29 @@ impl Widget for ContextMenu {
                         );
                     }
                     let label_y = y + (ROW_HEIGHT - f64::from(text_size)) / 2.0;
+                    let label_x = if checked.is_some() {
+                        let icon_rect =
+                            Rect::new(self.rect.x0 + 10.0, y + 7.0, self.rect.x0 + 24.0, y + 21.0);
+                        if *checked == Some(true) {
+                            draw_icon(
+                                scene,
+                                transform,
+                                icon_rect,
+                                Icon::Check,
+                                theme.tokens.colors.text_primary,
+                                1.8,
+                            );
+                        }
+                        self.rect.x0 + 32.0
+                    } else {
+                        self.rect.x0 + 10.0
+                    };
                     text_renderer.draw_text(
                         scene,
                         label,
                         text_size,
                         theme.tokens.colors.text_primary,
-                        transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
+                        transform.pre_translate(Vec2::new(label_x, label_y)),
                         None,
                     );
                     y += ROW_HEIGHT;
@@ -472,6 +526,40 @@ impl Widget for ContextMenu {
                     *handled = true;
                 }
             }
+            WindowEvent::Touch(touch) => {
+                let point = Point::new(
+                    touch.location.x / scale_factor,
+                    touch.location.y / scale_factor,
+                );
+                match touch.phase {
+                    winit::event::TouchPhase::Started if self.active_touch.is_none() => {
+                        self.active_touch = Some(touch.id);
+                        self.last_cursor = point;
+                        self.hovered = self.item_at([point.x, point.y]);
+                        *handled = true;
+                    }
+                    winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
+                        self.last_cursor = point;
+                        self.hovered = self.item_at([point.x, point.y]);
+                        *handled = true;
+                    }
+                    winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
+                        self.active_touch = None;
+                        if let Some(idx) = self.item_at([point.x, point.y]) {
+                            self.click_item(idx);
+                        } else {
+                            self.close();
+                        }
+                        *handled = true;
+                    }
+                    winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
+                        self.active_touch = None;
+                        self.close();
+                        *handled = true;
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
     }
@@ -506,7 +594,7 @@ impl Widget for ContextMenu {
             .iter()
             .enumerate()
             .filter_map(|(index, item)| {
-                let MenuItem::Action { label, .. } = item else {
+                let MenuItem::Action { label, checked, .. } = item else {
                     return None;
                 };
                 action_position = action_position.saturating_add(1);
@@ -518,6 +606,7 @@ impl Widget for ContextMenu {
                             focusable: true,
                             focused: self.open && self.hovered == Some(index),
                             hidden: !self.open,
+                            checked: *checked,
                             ..Default::default()
                         }),
                 )
@@ -582,6 +671,20 @@ mod a11y_tests {
         assert_eq!(node.children[1].name.as_deref(), Some("Sharing & Access…"));
         assert!(node.children.iter().all(|child| child.state.focusable));
     }
+
+    #[test]
+    fn accessibility_exposes_checked_state_without_polluting_the_label() {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::checked_action("List", true, || {}));
+        menu.push(MenuItem::checked_action("Grid", false, || {}));
+        menu.open_at([10.0, 20.0]);
+
+        let node = Widget::accessibility(&menu).unwrap();
+        assert_eq!(node.children[0].name.as_deref(), Some("List"));
+        assert_eq!(node.children[0].state.checked, Some(true));
+        assert_eq!(node.children[1].name.as_deref(), Some("Grid"));
+        assert_eq!(node.children[1].state.checked, Some(false));
+    }
 }
 
 #[cfg(test)]
@@ -643,6 +746,15 @@ mod tests {
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
+    }
+    fn touch(phase: winit::event::TouchPhase, id: u64, point: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: synth_device(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            force: None,
+            id,
+        })
     }
     fn key(named: NamedKey) -> WindowEvent {
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
@@ -755,6 +867,26 @@ mod tests {
         let sep_y = r.y0 + PADDING + ROW_HEIGHT + SEPARATOR_HEIGHT / 2.0;
         dispatch(&mut m, &cursor_at(Point::new(r.x0 + 10.0, sep_y)));
         assert_eq!(m.hovered(), None, "cursor over a separator clears hover");
+    }
+
+    #[test]
+    fn rows_are_touch_sized_and_touch_release_activates_once() {
+        let (mut menu, fired) = open_menu();
+        assert!(ROW_HEIGHT >= 44.0);
+        let rect = menu.get_rect();
+        let point = Point::new(rect.x0 + 20.0, rect.y0 + PADDING + ROW_HEIGHT / 2.0);
+
+        assert!(dispatch(
+            &mut menu,
+            &touch(winit::event::TouchPhase::Started, 7, point)
+        ));
+        assert!(dispatch(
+            &mut menu,
+            &touch(winit::event::TouchPhase::Ended, 7, point)
+        ));
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(menu.take_selection(), Some(0));
+        assert!(!menu.is_open());
     }
 
     #[test]

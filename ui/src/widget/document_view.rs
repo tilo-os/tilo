@@ -155,7 +155,24 @@ where
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let child = self.child.build_layout(taffy, theme, node_map);
-        let node = taffy.parent_node(Style::default(), &[child]);
+        // A dynamic page is a transparent layout boundary, not an intrinsic
+        // desktop-width island. Constrain it to its parent so percent-width
+        // cards and wrapping rows reflow correctly on narrow windows.
+        let node = taffy.parent_node(
+            Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::auto(),
+                },
+                min_size: taffy::Size {
+                    width: taffy::Dimension::length(0.0),
+                    height: taffy::Dimension::auto(),
+                },
+                flex_shrink: 1.0,
+                ..Style::default()
+            },
+            &[child],
+        );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }

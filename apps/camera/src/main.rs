@@ -80,6 +80,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         if args.shots.is_some() && std::env::var_os("CAMERA_SHOT_NOW").is_none() {
             std::env::set_var("CAMERA_SHOT_NOW", "1800000000");
         }
+        if args.has("--crop") {
+            std::env::set_var("CAMERA_CROP", "1");
+        }
     }
 
     let disk = args.has("--disk") || std::env::var_os("CAMERA_SHOTS_DISK").is_some();
@@ -131,6 +134,7 @@ pub fn main() {
                 "--confirm-delete",
                 "--disk",
                 "--library-loading",
+                "--crop",
             ])
             .allowed_options(&[
                 "--screen",

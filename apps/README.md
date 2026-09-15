@@ -131,7 +131,8 @@ semantic actions and records their mutations in shared history.
 | `music` | Streaming + local library: swappable YouTube-Music backend (rustypipe InnerTube under `live`), GStreamer `playbin` audio (`audio`), lrclib synced lyrics, iroh P2P library sync — all off by default over a bundled sample library. |
 | `tube` | Privacy YouTube client: Invidious metadata, SponsorBlock skip, DeArrow de-clickbait; openh264 H.264 decode; optional rustypipe `live` backend and Grayjay device sync over the Noise protocol. |
 | `video_editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/openh264 preview decode and GStreamer export, both feature-gated. |
-| `camera` | Camera + gallery + QR/barcode scanner (real decode via rqrr, encode via qrcode); live v4l2 capture via GStreamer behind a feature. |
+| `image_editor` | Non-destructive raster editor and reusable typed node-graph test bed; edits stay independently adjustable, projects are CRDT-native, and preview/export traverse the same DAG. |
+| `camera` | Camera + gallery + QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; live v4l2 capture via GStreamer. |
 | `imager` | Install-media creator + qOS installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config. |
 | `maps` | OpenStreetMap client: Nominatim search, OSRM routing (car/bike/foot), Transitous/MOTIS transit; Vello vector basemap; device location via the XDG Location portal (GeoClue2). |
 | `weather` | Weather from the keyless Open-Meteo API: current conditions, 24h chart, 7-day forecast; reads display units from the shared Settings store. |
@@ -150,6 +151,7 @@ semantic actions and records their mutations in shared history.
 | Crate | What it is |
 |---|---|
 | `settings` | OS settings hub; owns the shared external-accounts and region/format stores consumed by Mail/Calendar/Sheets/Weather; drives hardware via the `os-actions` crate. |
+| `passwords` | Password and secret manager: encrypted metadata and credentials, strong-password generation, exact-origin matching, and consent-brokered app access. |
 | `permissions` | qOS's OS-wide permission model (roles / members / contexts / registered `PermissionDef`s) — both a reusable library and a standalone role/permission editor. |
 | `themes` | Theme studio: browse presets, edit the OS token set live, duplicate/export themes. |
 | `store` | Unified qOS app store: verified registry packages plus Flatpak/Flathub search, details, remotes, install, update, launch, and removal. |
@@ -157,6 +159,7 @@ semantic actions and records their mutations in shared history.
 | `disks` | Disk utility: `lsblk` + `smartctl` topology, proportional partition map, SMART health summary. |
 | `backups` | Snapshot/backup manager: sources, snapshot timeline, storage gauges, retention policy, restore sheet. |
 | `monitor` | Activity monitor: `sysinfo` process table + resource dashboard, process tree, Vello charts. |
+| `print-centre` | Print Centre: live queues, per-job progress/recovery, IPP diagnostics and supplies, secure driverless discovery, and scanner inventory over the shared printing service. |
 | `logs` | systemd-journal viewer: `journalctl -o json`, unit/boot/priority filters, live tail. |
 | `firewall` | firewalld/nftables front-end: zone rail, per-zone rules table, services; applies via `firewall-cmd`. |
 | `vpn` | WireGuard / OpenVPN client: saved connection fleet, live detail pane with animated throughput chart. |
@@ -179,7 +182,7 @@ semantic actions and records their mutations in shared history.
 
 | Crate | What it is |
 |---|---|
-| `file-explorer` | Spatial file manager: walkdir / trash / infer / mime_guess; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
+| `file-explorer` | Spatial file manager with safe native ZIP/TAR inspection, extraction and creation; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
 | `agent` | `qos-agent`: a participant without a window. Consumes the broker-published live catalogue for arbitrary applications, plans typed arguments from their descriptors, invokes through broker permission/confirmation policy, and follows invocation receipts through terminal status. |
 | `browser` | Web browser embedding Servo (libservo + surfman + glow) with adblock; chrome is a `ui` widget (migrated off iced). |
 
