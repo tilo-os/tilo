@@ -312,5 +312,9 @@ required-features = ["webview-wpe"]
 name = "it"
 path = "tests/it.rs"
 
+[[test]]
+name = "hosted-platform"
+path = "tests/hosted_platform.rs"
+
 [lints]
 workspace = true
