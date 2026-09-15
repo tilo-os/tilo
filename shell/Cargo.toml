@@ -75,6 +75,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 zeroize.workspace = true
 chacha20poly1305.workspace = true
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 rustls.workspace = true
 rcgen.workspace = true
 chrono = { workspace = true, default-features = true }

@@ -297,6 +297,16 @@ pub type ClipboardManagerBridge = std::rc::Rc<
     dyn Fn(ClipboardManagerAction) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot>,
 >;
 
+/// Secret operations stay behind a narrow bridge to the certified personal
+/// fabric. This enum intentionally has no `Debug` implementation so a future
+/// diagnostic cannot accidentally format a passphrase.
+pub enum WifiSecretAction {
+    Lookup { ssid: String },
+    Share { ssid: String, password: String },
+}
+
+pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
+
 pub(crate) struct CaptureMirrorHandoffLayer {
     pub rgba: std::sync::Arc<[u8]>,
     pub width: u32,
@@ -946,6 +956,7 @@ pub struct ShellOverlayHost {
     /// Privileged in-process access to the compositor's bounded clipboard
     /// history. Absent in screenshots and embedders.
     clipboard_manager_bridge: Option<ClipboardManagerBridge>,
+    wifi_secret_bridge: Option<WifiSecretBridge>,
     /// Session-local control path into the typed app broker. Follow never
     /// enters the replicated workspace document or crosses the network.
     follow_bridge: Option<FollowBridge>,
@@ -1879,6 +1890,7 @@ impl ShellOverlayHost {
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
             clipboard_manager_bridge: None,
+            wifi_secret_bridge: None,
             follow_bridge: None,
             follow_presence_bridge: None,
             peer_sync_overlay: PeerSyncOverlay::default(),
@@ -2765,6 +2777,12 @@ impl ShellOverlayHost {
     /// Attach the compositor-owned clipboard history to trusted shell chrome.
     pub fn set_clipboard_manager_bridge(&mut self, bridge: ClipboardManagerBridge) {
         self.clipboard_manager_bridge = Some(bridge);
+    }
+
+    /// Attach the encrypted same-person credential store. Sessions without a
+    /// provisioned identity simply keep the existing password prompt.
+    pub fn set_wifi_secret_bridge(&mut self, bridge: WifiSecretBridge) {
+        self.wifi_secret_bridge = Some(bridge);
     }
 
     fn clipboard_manager_call(
@@ -9666,6 +9684,7 @@ impl ShellOverlayHost {
                 }
                 st.bump();
             }
+            let _ = self.try_connect_with_shared_wifi_password();
         } else if matches!(
             current_level,
             crate::shell::quick_settings::QsLevel::Bluetooth
@@ -16224,6 +16243,16 @@ impl ShellOverlayHost {
             st.bump();
         }
         let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
+        let share_result = if result.is_ok() {
+            self.wifi_secret_bridge.as_ref().map(|bridge| {
+                bridge(WifiSecretAction::Share {
+                    ssid: ssid.clone(),
+                    password: password.clone(),
+                })
+            })
+        } else {
+            None
+        };
         let mut st = chrome.borrow_mut();
         match result {
             Ok(()) => {
@@ -16236,7 +16265,13 @@ impl ShellOverlayHost {
                 st.quick_settings.wifi = true;
                 st.push_notification(
                     format!("Connected to {ssid}"),
-                    "This network is saved; the machine will rejoin it automatically.",
+                    if share_result.as_ref().is_some_and(Result::is_err) {
+                        "Saved on this device, but encrypted sharing is temporarily unavailable."
+                    } else if share_result.is_some() {
+                        "Saved and encrypted separately for each of your certified devices."
+                    } else {
+                        "This network is saved; the machine will rejoin it automatically."
+                    },
                 );
             }
             Err(e) => {
@@ -16252,6 +16287,58 @@ impl ShellOverlayHost {
             }
         }
         st.bump();
+    }
+
+    /// Use a credential from another certified device without ever putting it
+    /// into the visible password editor. A rejected saved secret leaves the
+    /// ordinary prompt in place so the person can correct it.
+    fn try_connect_with_shared_wifi_password(&self) -> bool {
+        let (Some(chrome), Some(bridge)) = (self.chrome.clone(), self.wifi_secret_bridge.as_ref())
+        else {
+            return false;
+        };
+        let Some(ssid) = chrome
+            .borrow()
+            .quick_settings
+            .wifi_password
+            .as_ref()
+            .map(|prompt| prompt.ssid.clone())
+        else {
+            return false;
+        };
+        let Ok(Some(password)) = bridge(WifiSecretAction::Lookup { ssid: ssid.clone() }) else {
+            return false;
+        };
+        if let Some(prompt) = chrome.borrow_mut().quick_settings.wifi_password.as_mut() {
+            prompt.connecting = true;
+            prompt.error = None;
+        }
+        let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
+        let mut state = chrome.borrow_mut();
+        match result {
+            Ok(()) => {
+                state.quick_settings.wifi_password = None;
+                for network in &mut state.quick_settings.wifi_networks {
+                    network.connected = network.ssid == ssid;
+                }
+                state.quick_settings.wifi = true;
+                state.push_notification(
+                    format!("Connected to {ssid}"),
+                    "Used the encrypted credential from one of your certified devices.",
+                );
+            }
+            Err(error) => {
+                tracing::warn!(target: "qos::os_actions", op = "connect_wifi", error = %error, "shared wifi credential was rejected");
+                if let Some(prompt) = state.quick_settings.wifi_password.as_mut() {
+                    prompt.connecting = false;
+                    prompt.error = Some(
+                        "The saved password no longer works. Enter the current password.".into(),
+                    );
+                }
+            }
+        }
+        state.bump();
+        true
     }
 
     /// Routes a key press into the passphrase field, if one is up.
@@ -17314,6 +17401,50 @@ mod wifi_password_tests {
                 .any(|n| n.ssid == "Cafe WiFi" && n.connected),
             "the list the user lands back on shows the network they just joined"
         );
+    }
+
+    #[test]
+    fn successful_join_shares_the_password_through_the_secret_bridge() {
+        let (mut host, _chrome, _) = host_on_wifi_pane(false);
+        let shared = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let observed = shared.clone();
+        host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
+            WifiSecretAction::Share { ssid, password } => {
+                observed.borrow_mut().push((ssid, password));
+                Ok(None)
+            }
+            WifiSecretAction::Lookup { .. } => Ok(None),
+        }));
+        host.begin_wifi_password("Cafe WiFi");
+        for character in ["p", "w", "1"] {
+            press(&mut host, &ch(character));
+        }
+        press(&mut host, &Key::Named(NamedKey::Enter));
+        assert_eq!(
+            shared.borrow().as_slice(),
+            [("Cafe WiFi".to_string(), "pw1".to_string())]
+        );
+    }
+
+    #[test]
+    fn shared_password_connects_without_entering_the_visible_editor() {
+        let (mut host, chrome, recorder) = host_on_wifi_pane(false);
+        host.set_wifi_secret_bridge(std::rc::Rc::new(|action| match action {
+            WifiSecretAction::Lookup { ssid } if ssid == "Cafe WiFi" => {
+                Ok(Some("from-another-device".into()))
+            }
+            WifiSecretAction::Lookup { .. } | WifiSecretAction::Share { .. } => Ok(None),
+        }));
+        host.begin_wifi_password("Cafe WiFi");
+        assert!(host.try_connect_with_shared_wifi_password());
+        assert_eq!(
+            recorder.attempts.borrow().as_slice(),
+            [(
+                "Cafe WiFi".to_string(),
+                Some("from-another-device".to_string())
+            )]
+        );
+        assert!(chrome.borrow().quick_settings.wifi_password.is_none());
     }
 
     #[test]
