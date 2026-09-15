@@ -133,16 +133,6 @@ impl WeatherApp {
                 },
             );
         }
-        self.dispatch_durable_action(
-            doc,
-            &WeatherAction::SetLocationOrder {
-                ids: model
-                    .locations
-                    .iter()
-                    .map(|location| location.id.to_string())
-                    .collect(),
-            },
-        );
         if let Some(location) = model.selected_location() {
             self.dispatch_durable_action(
                 doc,
@@ -164,6 +154,7 @@ impl WeatherApp {
         }
         let mut persisted = WeatherDoc::read_model(state);
         let core = self.core.borrow();
+        let viewed_location = core.model.selected_location().map(|location| location.id);
         for (id, snapshot) in &core.model.snapshots {
             if persisted
                 .snapshots
@@ -184,6 +175,18 @@ impl WeatherApp {
         }
         // Units belong to this device's Settings/region preference.
         persisted.units = core.units;
+        // The city currently open in this window is presentation state. A
+        // collaborator reordering or adding places must not navigate another
+        // person's view; fall back to the durable default only if the viewed
+        // location was removed.
+        if let Some(index) = viewed_location.and_then(|id| {
+            persisted
+                .locations
+                .iter()
+                .position(|location| location.id == id)
+        }) {
+            persisted.selected = index;
+        }
         drop(core);
         self.core.borrow_mut().model = persisted;
         self.doc_heads = current_heads;
@@ -345,6 +348,7 @@ impl WeatherApp {
     ///   to capture the pushed detail + the Back button).
     /// * `"drag"` — a reorder drag of the second saved place is in flight.
     /// * `"scrolled"` — the forecast parked at the bottom.
+    /// * `"detail_scrolled"` — narrow pushed forecast parked at the bottom.
     /// * `"collapsed"` — the city list collapsed to its rail (wide viewport).
     /// * `"search"` — the live-search dropdown showing geocoded matches.
     /// * `"search_loading"` — the dropdown's in-flight loading state.
@@ -371,6 +375,11 @@ impl WeatherApp {
             }
             "drag" => self.core.borrow_mut().seed_drag(),
             "scrolled" => self.core.borrow_mut().seed_scrolled(),
+            "detail_scrolled" => {
+                self.nav.show_detail();
+                self.nav.snap();
+                self.core.borrow_mut().seed_scrolled();
+            }
             "collapsed" => {
                 self.set_overview_collapsed(true);
                 self.core.borrow_mut().set_overview_collapsible(true);
@@ -562,15 +571,16 @@ impl Widget for WeatherApp {
                         resource.actions.push(spec.reversible());
                     }
                     if index > 0 {
-                        let mut order: Vec<_> =
-                            core.model.locations.iter().map(|item| item.id).collect();
-                        let moved = order.remove(index);
-                        order.insert(0, moved);
+                        let rank = core
+                            .model
+                            .locations
+                            .first()
+                            .map_or(0.0, |first| first.order_rank - 1024.0);
                         if let Ok(spec) = ActionSpec::immediate(
                             "move-to-top",
                             "Move to top",
                             crate::actions::WEATHER_ACTION_TYPE,
-                            &crate::actions::location_order_action(&order),
+                            &crate::actions::location_rank_action(location.id, rank),
                         ) {
                             resource.actions.push(spec.reversible());
                         }
@@ -1401,7 +1411,7 @@ mod interaction_tests {
         h.key(Key::Named(NamedKey::ArrowDown), None);
         assert_eq!(
             h.app.core.borrow().search_highlight_label().as_deref(),
-            Some("Paris — Île-de-France, France"),
+            Some("FR · Paris, Île-de-France"),
             "Arrow Down exposes the first suggestion's place context"
         );
         h.key(Key::Named(NamedKey::Enter), None);
@@ -1813,6 +1823,7 @@ mod interaction_tests {
         h.redraw();
         assert_eq!(h.app.core.borrow().model.selected, 0);
         h.app.core.borrow_mut().take_outbox(); // drain startup
+        let _ = h.app.take_committed_action(); // drain first-run bootstrap
 
         h.key(Key::Named(NamedKey::ArrowDown), None);
         assert_eq!(
@@ -1830,12 +1841,12 @@ mod interaction_tests {
         assert!(fetched, "moving to a city queues its forecast fetch");
         assert_eq!(
             WeatherDoc::read_model(&h.state.doc).selected,
-            1,
-            "the new selection persisted to the CRDT"
+            0,
+            "navigating this window does not move a collaborator's durable default"
         );
         assert!(
-            h.app.take_committed_action().is_some(),
-            "the keyboard selection crossed one canonical ActionHost history boundary"
+            h.app.take_committed_action().is_none(),
+            "transient keyboard navigation does not create shared history noise"
         );
 
         h.key(Key::Named(NamedKey::ArrowUp), None);
@@ -1941,7 +1952,7 @@ mod interaction_tests {
     }
 
     #[test]
-    fn durable_action_does_not_drop_same_frame_device_local_provider_cache() {
+    fn local_navigation_does_not_drop_device_local_provider_cache() {
         let mut h = Harness::new(1280.0, 720.0);
         let id = h.app.core.borrow().model.locations[0].id;
         {
@@ -1956,7 +1967,7 @@ mod interaction_tests {
 
         h.key(Key::Named(NamedKey::ArrowDown), None);
 
-        assert_eq!(WeatherDoc::read_model(&h.state.doc).selected, 1);
+        assert_eq!(WeatherDoc::read_model(&h.state.doc).selected, 0);
         assert_eq!(
             h.app.core.borrow().model.snapshots[&id].current.temperature,
             31.25,
