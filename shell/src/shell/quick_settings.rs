@@ -17,6 +17,8 @@ pub enum QsLevel {
     Notifications,
     /// Private clipboard history, including authenticated same-person copies.
     Clipboard,
+    /// Certified personal devices, local audio outputs, and media routes.
+    Devices,
 }
 
 /// A `WiFi` entry in the drill-in list. `signal` is a strength bucket
@@ -234,6 +236,15 @@ mod tests {
         let mut q = QuickSettings::new();
         q.push_level(QsLevel::Clipboard);
         assert_eq!(q.current_level(), &QsLevel::Clipboard);
+        q.pop_level();
+        assert_eq!(q.current_level(), &QsLevel::Root);
+    }
+
+    #[test]
+    fn certified_devices_are_a_first_class_drill_in_level() {
+        let mut q = QuickSettings::new();
+        q.push_level(QsLevel::Devices);
+        assert_eq!(q.current_level(), &QsLevel::Devices);
         q.pop_level();
         assert_eq!(q.current_level(), &QsLevel::Root);
     }

@@ -306,6 +306,113 @@ pub fn request_media_handoff(
     Ok(request_id)
 }
 
+/// Build the bounded presentation model for Quick Settings. Every remote row
+/// comes from a snapshot authored by that certified device; local `PipeWire`
+/// outputs are deliberately kept separate from personal-fabric identities.
+pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host::DeviceFabricView {
+    use crate::shell::overlay_host::{
+        DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaOutputView,
+    };
+
+    let fabric = network.device_fabric();
+    let local_id = network
+        .local_device_fabric_identity()
+        .map(|(device, _)| device);
+    let mut devices = fabric
+        .snapshots()
+        .values()
+        .map(|snapshot| {
+            let caps = snapshot.presence.capabilities;
+            FabricDeviceView {
+                id: snapshot.owner.clone(),
+                label: snapshot.presence.label.clone(),
+                kind: snapshot.presence.kind,
+                is_local: local_id.as_ref() == Some(&snapshot.owner),
+                online: snapshot.presence.online,
+                audio_output: caps.audio_output,
+                video_output: caps.video_output,
+                display: caps.display,
+            }
+        })
+        .collect::<Vec<_>>();
+    devices.sort_by(|left, right| {
+        right
+            .is_local
+            .cmp(&left.is_local)
+            .then_with(|| right.online.cmp(&left.online))
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    let local_media = local_id
+        .as_ref()
+        .and_then(|device| fabric.snapshots().get(device))
+        .map(|snapshot| {
+            snapshot
+                .media
+                .iter()
+                .map(|session| FabricMediaView {
+                    session_id: session.id.clone(),
+                    title: session.title.clone(),
+                    playing: session.playing,
+                    has_video: session.has_video,
+                    targets: devices
+                        .iter()
+                        .filter(|device| {
+                            !device.is_local
+                                && fabric.handoff_media(&session.id, &device.id).is_ok()
+                        })
+                        .map(|device| device.id.clone())
+                        .collect(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut local_outputs = media::audio::enumerate()
+        .sinks
+        .into_iter()
+        .map(|sink| LocalMediaOutputView {
+            node_id: sink.id,
+            label: sink.description,
+            is_default: sink.is_default,
+            bluetooth_codec: sink.codec,
+        })
+        .collect::<Vec<_>>();
+    local_outputs.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+
+    DeviceFabricView {
+        devices,
+        local_media,
+        local_outputs,
+    }
+}
+
+/// Route existing local playback streams and future default-following streams
+/// to one currently enumerated output, including a connected Bluetooth sink.
+///
+/// # Errors
+///
+/// Returns an error if the node disappeared or `PipeWire` rejects any graph
+/// edit. The node id is resolved against a fresh graph before it is used.
+pub fn route_local_audio(node_id: u32) -> Result<(), String> {
+    let graph = media::audio::enumerate();
+    let sink = graph
+        .sink_by_id(node_id)
+        .ok_or_else(|| "that audio output is no longer connected".to_string())?;
+    let target_serial = sink.serial;
+    let control = media::audio::real_control();
+    control.set_default_sink(node_id)?;
+    for stream in graph.playback_streams {
+        control.route_stream(stream.id, target_serial)?;
+    }
+    Ok(())
+}
+
 fn build_local_snapshot(
     device: &crate::shell::personal_continuity::DeviceId,
     label: String,
