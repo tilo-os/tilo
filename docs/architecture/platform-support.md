@@ -69,8 +69,11 @@ Yoga Slim7x DTB. After host disk exhaustion during build-layer export, the
 preserved stage was packaged offline using the existing packaging tools image.
 All 7,485 regular RPM files match the preserved archive, including their modes;
 RPM owners are root, package digests and repository metadata checksums pass.
-This recovery artifact is local and unsigned. Module signature trailers were
-checked; independent cryptographic verification and boot tests remain pending.
+This recovery artifact is local and unsigned. A diskless QEMU ARM64 boot reached userspace with kernel 7.2.5. Its module
+loader accepted the original signed dummy module and rejected unsigned and
+tampered copies with EKEYREJECTED. This tests signature enforcement for that
+module; it does not cryptographically reverify every module. UEFI, full OS and
+physical-board acceptance remain pending.
 The kernel build now removes compiler intermediates after staging and validation,
 before the container builder exports its layer.
 
@@ -83,6 +86,25 @@ provides libvirt 12.0.0, while its edk2 package already contains qemuvars firmwa
 and enrolled Secure Boot variable templates. A maintained newer libvirt package,
 architecture-specific domain configuration and native VM acceptance are still
 required; compilation of the service crates does not satisfy this requirement.
+
+The pinned `virtio-win-0.1.302-1.noarch.rpm` was downloaded and verified against
+its manifest SHA-256. Inspection found 76 ARM64 PE driver files, including
+duplicated by-driver and by-OS layouts. Windows 11 ARM64 entries include
+storage (`vioscsi`, `viostor`), networking (`NetKVM`), display (`viogpudo`),
+input, serial, vsock, RNG and balloon drivers. The RPM's `noarch` label alone
+was not used as evidence. Guest installer architecture, Windows signature
+trust and actual device operation still need acceptance.
+
+The reusable native kernel check is:
+
+```sh
+bash os/kernel/tests/boot-smoke.sh STAGE.tar.gz KERNEL_RELEASE NEW_OUTPUT_DIRECTORY
+```
+
+It boots disklessly under QEMU TCG, records input hashes and serial output,
+and requires both userspace startup and signed/unsigned/tampered module checks.
+Run it on each native architecture; the ARM64 path has been exercised locally,
+while its x86-64 path still needs execution on an x86-64 builder.
 
 ## Acceptance sequence
 
