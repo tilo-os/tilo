@@ -110,6 +110,7 @@ jobs:
           python3 os/tests/uki_hardware_profile.py
           python3 os/tests/image_build_profile.py
           python3 os/tests/native_index_promotion.py
+          python3 apps/imager/packaging/test_generate_winget.py
           bash os/tests/release_security_invariants.sh
           bash os/tests/selinux_policy_store_invariants.sh
           bash os/tests/first_boot_service_readiness.sh
