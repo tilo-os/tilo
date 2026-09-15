@@ -1,9 +1,12 @@
-# file-explorer — Port-Parity Audit
+# Files — Historical Port-Parity Baseline
 
-Source: `src/main.rs` (iced 0.13, single file, ~553 lines) as of 2026-04-18.
-This document is the authoritative feature list the `ui` port must match.
-Anything not listed here is out of scope for v1 port parity (track separately
-if desired).
+Source: the retired Iced `src/main.rs` (single file, ~553 lines) as of
+2026-04-18. This document remains a regression baseline for the original
+workflows; it is **not** the current product scope and it must not be used to
+remove or defer capabilities now implemented by Files. The current app adds
+multi-selection, context menus, drag/drop, configurable Places, Trash,
+templates, collaboration, history/conflict review, resource actions, bounded
+search, and responsive/accessibility behaviour on top of this baseline.
 
 ## Convention
 Each feature is tagged with a category, a one-line behavioural summary taken
@@ -97,11 +100,13 @@ in `apps/file-explorer/tests/parity.rs` before `main.rs` is replaced.
   comparison, not the dir-first rule.
   *Test:* `sort_entries_always_places_directories_first`.
 
-## Explicitly out of scope (not in current Iced code — DO NOT add in port)
-The following features are in the design spec §7 expected list but **do not
-exist** in the current Iced file-explorer. The port preserves parity, so they
-are not implemented in this plan; each is tracked as a follow-on. The port
-must *not* introduce them without separate scope.
+## Historical differences from the Iced baseline
+
+The following features did not exist in the Iced application. They are no
+longer product exclusions: the qOS Files implementation supports the relevant
+modern workflows where they improve the current app. Keep this list only so a
+future parity investigation does not mistake a deliberate enhancement for a
+regression.
 - Drag-resize of the sidebar.
 - Collapse/expand of the sidebar.
 - Drag-reorder of sidebar shortcuts.
@@ -111,8 +116,9 @@ must *not* introduce them without separate scope.
 - Drag items from grid to sidebar/folders.
 - Multi-select with Ctrl/Shift.
 
-Follow-ups are tracked in `docs/superpowers/deferred/nirios-shell.md` under
-"file-explorer parity beyond iced baseline".
+The historical follow-up reference in
+`docs/superpowers/deferred/nirios-shell.md` may be useful when comparing the
+old port, but does not constrain current Files work.
 
 ## Coverage
 
