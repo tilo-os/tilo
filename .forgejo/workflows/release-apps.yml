@@ -157,7 +157,10 @@ jobs:
             fi
             echo 'publish=true' >> "$GITHUB_OUTPUT"
           else
-            echo 'matrix={"include":[{"arch":"x86_64","runner":"runner"}]}' >> "$GITHUB_OUTPUT"
+            matrix=$(python3 tools/app_release.py --architecture-matrix \
+              --ref "$GITHUB_REF" --event "$GITHUB_EVENT_NAME" \
+              --architectures "$REQUESTED_ARCHITECTURES")
+            echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
             echo 'publish=false' >> "$GITHUB_OUTPUT"
           fi
           case "$GITHUB_REF" in
