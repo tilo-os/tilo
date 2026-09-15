@@ -35,6 +35,7 @@ pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub mod device_fabric;
+pub mod device_fabric_runtime;
 pub mod doc_open;
 pub mod editor_app;
 mod file_picker_overlay;

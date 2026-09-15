@@ -641,7 +641,10 @@ impl DeviceFabric {
         })
     }
 
-    pub fn merged_settings(&self) -> BTreeMap<String, Value> {
+    /// Resolve each roaming key to its newest authenticated authored record.
+    /// Keeping the stamp and author lets runtimes distinguish a remote apply
+    /// from a fresh local edit instead of echoing every received preference.
+    pub fn merged_setting_records(&self) -> BTreeMap<String, RoamingSetting> {
         let mut winners: BTreeMap<&str, &RoamingSetting> = BTreeMap::new();
         for item in self
             .snapshots
@@ -657,7 +660,14 @@ impl DeviceFabric {
         }
         winners
             .into_iter()
-            .map(|(key, item)| (key.to_string(), item.value.clone()))
+            .map(|(key, item)| (key.to_string(), item.clone()))
+            .collect()
+    }
+
+    pub fn merged_settings(&self) -> BTreeMap<String, Value> {
+        self.merged_setting_records()
+            .into_iter()
+            .map(|(key, item)| (key, item.value))
             .collect()
     }
 
