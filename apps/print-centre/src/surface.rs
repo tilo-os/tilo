@@ -1496,23 +1496,6 @@ fn scan_setup_view(
                     .push(Box::new(Card::titled("Recognized text", copy(&snippet))));
             }
         }
-        let cards = Row::new()
-            .align_start()
-            .push(Box::new(
-                Container::new()
-                    .with_min_width(280.0)
-                    .with_flex_grow()
-                    .with_no_padding()
-                    .with_height(360.0)
-                    .with_child(Box::new(preview)),
-            ))
-            .push(Box::new(
-                Container::new()
-                    .with_min_width(280.0)
-                    .with_flex_grow()
-                    .with_no_padding()
-                    .with_child(Box::new(Card::new(Box::new(details)))),
-            ));
         let primary_actions = Row::new()
             .push(primary_command_action(
                 "print-centre.scan.save-document",
@@ -1562,6 +1545,29 @@ fn scan_setup_view(
             ));
         }
 
+        details = details
+            .push(gap(16.0))
+            .push(title("Page tools", 16.0))
+            .push(gap(8.0))
+            .push(Box::new(edit_actions));
+        let cards = Row::new()
+            .align_start()
+            .push(Box::new(
+                Container::new()
+                    .with_min_width(280.0)
+                    .with_flex_grow()
+                    .with_no_padding()
+                    .with_height(360.0)
+                    .with_child(Box::new(preview)),
+            ))
+            .push(Box::new(
+                Container::new()
+                    .with_min_width(280.0)
+                    .with_flex_grow()
+                    .with_no_padding()
+                    .with_child(Box::new(Card::new(Box::new(details)))),
+            ));
+
         let mut page_actions = Row::new();
         if selected_page > 0 {
             page_actions = page_actions.push(command_action(
@@ -1605,13 +1611,13 @@ fn scan_setup_view(
         let finish_actions = Row::new()
             .push(command_action(
                 "print-centre.scan.save-page",
-                "Save this page",
+                "Export this page",
                 tx,
                 UiCommand::SaveScannedPage,
             ))
             .push(command_action(
                 "print-centre.scan.done",
-                "Done",
+                "Back to Print Centre",
                 tx,
                 UiCommand::Dashboard,
             ));
@@ -1627,18 +1633,24 @@ fn scan_setup_view(
             body = body.push(notice_banner(notice)).push(gap(14.0));
         }
         body = body
-            .push(Box::new(cards))
-            .push(gap(16.0))
             .push(Box::new(primary_actions))
             .push(gap(16.0))
-            .push(Box::new(Card::titled(
-                "Improve this page",
-                Box::new(edit_actions),
-            )))
+            .push(Box::new(cards))
             .push(gap(12.0))
             .push(Box::new(Card::titled(
                 "Pages in this document",
-                Box::new(page_actions),
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(copy(&format!(
+                            "Page {} selected · {page_count} {} total",
+                            selected_page.saturating_add(1),
+                            if page_count == 1 { "page" } else { "pages" }
+                        )))
+                        .push(gap(10.0))
+                        .push(Box::new(page_actions)),
+                ),
             )))
             .push(gap(12.0))
             .push(Box::new(finish_actions));
