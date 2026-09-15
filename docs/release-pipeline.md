@@ -38,10 +38,10 @@ distributions can pin one by version and architecture without compiling apps
 again.
 
 The desktop release retains its complete ARM64 matrix and verifier behind the
-`QOS_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"0"` because
-no native `runner-arm64` host is registered, so tags publish only x86-64
-packages. Set it to `"1"` when that runner exists; no package or artifact
-definition needs to be restored.
+`QOS_DESKTOP_ARM64_RELEASES` capability switch. It is currently `"1"`: tagged
+and explicit full-native builds use the registered native `runner-arm64` pool
+and publish both architectures, while ordinary changes retain the amd64 lane.
+No package or artifact definition needs to change if scheduling is paused.
 
 The Fedora desktop lane also emits a small deterministic OS payload containing
 the same install-tested `shell`, `qos-launcher`, and `qos-unlock-helper`
