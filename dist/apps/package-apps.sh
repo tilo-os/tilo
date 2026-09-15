@@ -8,7 +8,11 @@ apps=${TILO_RELEASE_APPS:?space-separated app directory names are required}
 out=${TILO_APP_RELEASE_OUT:-$repo_root/dist/app-release}
 identity=${QPKG_PUBLISHER_IDENTITY_FILE:-}
 runtime_identity=${RUNTIME_BUNDLE_IDENTITY_FILE:-}
-source_epoch=${SOURCE_DATE_EPOCH:-$(git -C "$repo_root" log -1 --format=%ct)}
+source_epoch=${SOURCE_DATE_EPOCH:-0}
+[[ $source_epoch =~ ^[0-9]+$ ]] || {
+    printf 'SOURCE_DATE_EPOCH must be a non-negative integer\n' >&2
+    exit 2
+}
 max_qpkg_bytes=${MAX_QPKG_BYTES:-10000000}
 
 out=$(realpath -m "$out")
