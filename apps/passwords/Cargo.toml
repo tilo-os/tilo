@@ -1,0 +1,32 @@
+[package]
+name = "passwords"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "passwords"
+path = "src/lib.rs"
+
+[[bin]]
+name = "passwords"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+accounts = { path = "../../crates/system/accounts" }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+ui = { package = "qos-app", path = "../../crates/app/qos-app" }
+zeroize.workspace = true
+automerge.workspace = true
+taffy.workspace = true
+vello.workspace = true
+winit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -14,14 +14,16 @@ use serde::{Deserialize, Serialize};
 pub enum Screen {
     Camera,
     Scanner,
+    Document,
     Gallery,
     Settings,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 4] = [
+    pub const ALL: [Screen; 5] = [
         Screen::Camera,
         Screen::Scanner,
+        Screen::Document,
         Screen::Gallery,
         Screen::Settings,
     ];
@@ -29,7 +31,8 @@ impl Screen {
     pub fn label(self) -> &'static str {
         match self {
             Screen::Camera => "Camera",
-            Screen::Scanner => "Scan",
+            Screen::Scanner => "Codes",
+            Screen::Document => "Documents",
             Screen::Gallery => "Gallery",
             Screen::Settings => "Settings",
         }
@@ -39,6 +42,7 @@ impl Screen {
         match self {
             Screen::Camera => "camera",
             Screen::Scanner => "scanner",
+            Screen::Document => "document",
             Screen::Gallery => "gallery",
             Screen::Settings => "settings",
         }
@@ -48,6 +52,7 @@ impl Screen {
         match s {
             "camera" => Some(Screen::Camera),
             "scanner" => Some(Screen::Scanner),
+            "document" | "documents" => Some(Screen::Document),
             "gallery" => Some(Screen::Gallery),
             "settings" => Some(Screen::Settings),
             _ => None,

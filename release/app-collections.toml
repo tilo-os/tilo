@@ -5,7 +5,7 @@
 [collections.default]
 include = ["*"]
 # Browser links the promoted WPE engine and remains an OS-native integration
-# build. The other 46 apps are independently releasable qpkgs.
+# build. The other 50 apps are independently releasable qpkgs.
 exclude = ["browser"]
 
 [collections.desktop]

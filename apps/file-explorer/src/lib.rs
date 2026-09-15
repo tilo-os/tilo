@@ -30,6 +30,7 @@
 )]
 
 pub mod actions;
+pub mod archive;
 pub mod breadcrumb_bar;
 pub mod breadcrumbs;
 pub mod command;

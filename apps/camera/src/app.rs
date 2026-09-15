@@ -21,6 +21,7 @@ use qos_actions::EncodedAction;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -34,7 +35,10 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{Image, ImageFit, Toggle, ToggleFace, Widget};
+use ui::widget::{
+    Button, ButtonFace, CropSelection, Image, ImageCropEditor, ImageFit, Popover, Toggle,
+    ToggleFace, Widget,
+};
 use winit::event::WindowEvent;
 
 use crate::doc;
@@ -76,6 +80,69 @@ fn shrink(r: Rect, d: f64) -> Rect {
     Rect::new(r.x0 + d, r.y0 + d, r.x1 - d, r.y1 - d)
 }
 
+const fn scan_color_label(color: os_actions::printing::ScanColor) -> &'static str {
+    match color {
+        os_actions::printing::ScanColor::Color => "Color",
+        os_actions::printing::ScanColor::Grayscale => "Grayscale",
+        os_actions::printing::ScanColor::LineArt => "Black & white",
+    }
+}
+
+const fn scan_source_label(source: os_actions::printing::ScanSource) -> &'static str {
+    match source {
+        os_actions::printing::ScanSource::Flatbed => "Flatbed",
+        os_actions::printing::ScanSource::Feeder => "Feeder",
+        os_actions::printing::ScanSource::FeederDuplex => "Duplex feeder",
+    }
+}
+
+/// A deterministic paper-like fixture for screenshots and interaction tests.
+/// It deliberately contains varied blocks, rules and columns so crop,
+/// rotation, scaling and page previews exercise real contrast and geometry.
+fn sample_document_image() -> image::DynamicImage {
+    let page = image::RgbImage::from_fn(1240, 1754, |x, y| {
+        let in_rect = |x0, y0, x1, y1| x >= x0 && x < x1 && y >= y0 && y < y1;
+        if in_rect(80, 80, 1160, 230) {
+            if in_rect(130, 125, 600, 158) || in_rect(130, 174, 430, 193) {
+                image::Rgb([245, 248, 255])
+            } else {
+                image::Rgb([52, 99, 176])
+            }
+        } else if in_rect(80, 290, 500, 312)
+            || in_rect(80, 338, 740, 351)
+            || in_rect(80, 374, 650, 387)
+            || in_rect(80, 410, 790, 423)
+            || in_rect(80, 510, 330, 532)
+            || in_rect(80, 562, 1120, 575)
+            || in_rect(80, 600, 1020, 613)
+            || in_rect(80, 638, 1080, 651)
+            || in_rect(80, 790, 390, 812)
+            || in_rect(80, 842, 1110, 855)
+            || in_rect(80, 880, 950, 893)
+            || in_rect(80, 918, 1040, 931)
+            || in_rect(80, 1080, 410, 1102)
+            || in_rect(80, 1132, 1090, 1145)
+            || in_rect(80, 1170, 970, 1183)
+            || in_rect(80, 1208, 1050, 1221)
+        {
+            image::Rgb([55, 59, 67])
+        } else if in_rect(80, 700, 1160, 704)
+            || in_rect(80, 1000, 1160, 1004)
+            || in_rect(80, 1320, 1160, 1324)
+        {
+            image::Rgb([174, 179, 187])
+        } else if in_rect(80, 1390, 350, 1510)
+            || in_rect(405, 1390, 675, 1510)
+            || in_rect(730, 1390, 1160, 1510)
+        {
+            image::Rgb([229, 233, 239])
+        } else {
+            image::Rgb([246, 246, 242])
+        }
+    });
+    image::DynamicImage::ImageRgb8(page)
+}
+
 /// Where the library's pixels live.
 enum Storage {
     /// Live: real files under this directory.
@@ -103,6 +170,86 @@ struct RecState {
     started: i64,
 }
 
+enum DocumentJobResult {
+    Capture(Result<image::DynamicImage, String>),
+    Recognize {
+        page: usize,
+        result: Result<qos_ocr::Document, String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DocumentJobKind {
+    Capture,
+    Recognize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OcrLanguage {
+    English,
+    German,
+    French,
+    Spanish,
+}
+
+impl OcrLanguage {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::German => "German",
+            Self::French => "French",
+            Self::Spanish => "Spanish",
+        }
+    }
+
+    const fn code(self) -> &'static str {
+        match self {
+            Self::English => "eng",
+            Self::German => "deu",
+            Self::French => "fra",
+            Self::Spanish => "spa",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DocumentSettings {
+    scan: os_actions::printing::ScanSettings,
+    ocr_language: OcrLanguage,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DocumentChoice {
+    Resolution,
+    Color,
+    Source,
+    Language,
+}
+
+impl DocumentChoice {
+    const fn index(self) -> usize {
+        match self {
+            Self::Resolution => 0,
+            Self::Color => 1,
+            Self::Source => 2,
+            Self::Language => 3,
+        }
+    }
+}
+
+impl Default for DocumentSettings {
+    fn default() -> Self {
+        Self {
+            scan: os_actions::printing::ScanSettings {
+                resolution_dpi: 300,
+                color: os_actions::printing::ScanColor::Color,
+                source: os_actions::printing::ScanSource::Flatbed,
+            },
+            ocr_language: OcrLanguage::English,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum Action {
     Nav(Screen),
@@ -124,6 +271,18 @@ enum Action {
     /// Decode a QR/barcode out of a library photo (used when no camera feed
     /// is available, so the scanner stays useful offline).
     ScanLibraryItem(String),
+    CaptureDocument,
+    OpenDocumentChoice(DocumentChoice),
+    RotateDocument,
+    RecognizeDocument,
+    CopyDocumentText,
+    ExportDocument,
+    BeginDocumentCrop,
+    ApplyDocumentCrop,
+    CancelDocumentCrop,
+    MoveDocumentPageEarlier,
+    MoveDocumentPageLater,
+    RemoveDocumentPage,
     ShareSelected,
     CycleResolution,
     CycleFormat,
@@ -138,6 +297,14 @@ enum Action {
     OpenCameraPrivacySettings,
     OpenCameraChooser,
     SelectCamera(String),
+}
+
+#[derive(Clone, Debug)]
+struct TouchTarget {
+    id: u64,
+    rect: Rect,
+    action: Action,
+    cancelled: bool,
 }
 
 #[allow(
@@ -185,6 +352,24 @@ pub struct CameraApp {
     last_mouse: Point,
     gallery_scroll: f64,
     settings_scroll: f64,
+    document_scan: crate::document_scan::ScanSession,
+    document_settings: DocumentSettings,
+    document_choice: Option<DocumentChoice>,
+    document_choice_anchors: [Rect; 4],
+    document_popover: Popover,
+    scanner_devices: Vec<os_actions::printing::Scanner>,
+    document_save_picker: Option<ui::portal::PortalChannel>,
+    document_crop_selection: ui::LocalState<CropSelection>,
+    document_crop_editor: Option<ImageCropEditor>,
+    document_crop_page: Option<usize>,
+    document_preview: Option<(
+        usize,
+        crate::document_scan::Crop,
+        crate::document_scan::Rotation,
+        Image,
+    )>,
+    document_job: Option<mpsc::Receiver<DocumentJobResult>>,
+    document_job_kind: Option<DocumentJobKind>,
 
     // In-progress video recording (None unless the shutter is armed in video
     // mode). The worker owns its encoder and gets coalesced latest frames.
@@ -225,6 +410,7 @@ pub struct CameraApp {
     thumbs: HashMap<String, Image>,
 
     regions: Vec<(Rect, Action)>,
+    active_touch: Option<TouchTarget>,
     dirty: bool,
     initialized: bool,
 
@@ -255,6 +441,13 @@ impl CameraApp {
     }
 
     fn with(storage: Storage, initial_screen: Screen) -> Self {
+        let scanner_devices = match &storage {
+            Storage::Sample => vec![os_actions::printing::Scanner {
+                device: "sample:document-scanner".into(),
+                description: "Document scanner".into(),
+            }],
+            Storage::Disk(_) => os_actions::printing::scanners().unwrap_or_default(),
+        };
         Self {
             rect: Rect::ZERO,
             node: None,
@@ -281,6 +474,19 @@ impl CameraApp {
             last_mouse: Point::new(-1_000.0, -1_000.0),
             gallery_scroll: 0.0,
             settings_scroll: 0.0,
+            document_scan: crate::document_scan::ScanSession::default(),
+            document_settings: DocumentSettings::default(),
+            document_choice: None,
+            document_choice_anchors: [Rect::ZERO; 4],
+            document_popover: Popover::new(),
+            scanner_devices,
+            document_save_picker: None,
+            document_crop_selection: ui::LocalState::new(CropSelection::default()),
+            document_crop_editor: None,
+            document_crop_page: None,
+            document_preview: None,
+            document_job: None,
+            document_job_kind: None,
             recording: None,
             video_finalizing: false,
             latest_frame: None,
@@ -308,6 +514,7 @@ impl CameraApp {
             scan_view: None,
             thumbs: HashMap::new(),
             regions: Vec::new(),
+            active_touch: None,
             dirty: true,
             initialized: false,
             actions: ui::ActionHost::new(),
@@ -516,6 +723,20 @@ impl CameraApp {
             Action::DismissScan => "camera.dismiss-scan".into(),
             Action::Scan(index) => format!("camera.scan:{index}"),
             Action::ScanLibraryItem(id) => format!("camera.scan-library:{id}"),
+            Action::CaptureDocument => "camera.document.capture".into(),
+            Action::OpenDocumentChoice(choice) => {
+                format!("camera.document.choice:{}", choice.index())
+            }
+            Action::RotateDocument => "camera.document.rotate".into(),
+            Action::RecognizeDocument => "camera.document.recognize".into(),
+            Action::CopyDocumentText => "camera.document.copy-text".into(),
+            Action::ExportDocument => "camera.document.export".into(),
+            Action::BeginDocumentCrop => "camera.document.crop".into(),
+            Action::ApplyDocumentCrop => "camera.document.crop.apply".into(),
+            Action::CancelDocumentCrop => "camera.document.crop.cancel".into(),
+            Action::MoveDocumentPageEarlier => "camera.document.move-earlier".into(),
+            Action::MoveDocumentPageLater => "camera.document.move-later".into(),
+            Action::RemoveDocumentPage => "camera.document.remove".into(),
             Action::ShareSelected => "camera.share".into(),
             Action::CycleResolution => "camera.resolution".into(),
             Action::CycleFormat => "camera.format".into(),
@@ -734,6 +955,122 @@ impl CameraApp {
                     .focusable(true)
                     .checked(self.selected_camera.as_deref() == Some(device.as_str())),
             ),
+            Action::CaptureDocument => (
+                Role::Button,
+                "Scan document page".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.scanner_devices.is_empty() || self.document_job.is_some()),
+            ),
+            Action::OpenDocumentChoice(choice) => {
+                let (setting, value) = match choice {
+                    DocumentChoice::Resolution => (
+                        "scan resolution",
+                        format!("{} DPI", self.document_settings.scan.resolution_dpi),
+                    ),
+                    DocumentChoice::Color => (
+                        "scan color",
+                        scan_color_label(self.document_settings.scan.color).to_owned(),
+                    ),
+                    DocumentChoice::Source => (
+                        "paper source",
+                        scan_source_label(self.document_settings.scan.source).to_owned(),
+                    ),
+                    DocumentChoice::Language => (
+                        "text language",
+                        self.document_settings.ocr_language.label().to_owned(),
+                    ),
+                };
+                (
+                    Role::Button,
+                    format!("Choose {setting}, currently {value}"),
+                    AccessState::new()
+                        .focusable(true)
+                        .expanded(
+                            self.document_popover.is_open()
+                                && self.document_choice == Some(*choice),
+                        )
+                        .disabled(self.document_job.is_some()),
+                )
+            }
+            Action::RotateDocument => (
+                Role::Button,
+                "Rotate selected page clockwise".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
+            ),
+            Action::RecognizeDocument => (
+                Role::Button,
+                "Recognize text on selected page".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
+            ),
+            Action::CopyDocumentText => (
+                Role::Button,
+                "Copy recognized text from selected page".into(),
+                AccessState::new().focusable(true).disabled(
+                    self.document_job.is_some()
+                        || self
+                            .document_scan
+                            .pages
+                            .get(self.document_scan.selected)
+                            .and_then(|page| page.ocr.as_ref())
+                            .is_none(),
+                ),
+            ),
+            Action::ExportDocument => (
+                Role::Button,
+                "Save searchable PDF".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
+            ),
+            Action::BeginDocumentCrop => (
+                Role::Button,
+                "Crop selected page".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
+            ),
+            Action::ApplyDocumentCrop => (
+                Role::Button,
+                "Apply crop".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.document_crop_editor.is_none()),
+            ),
+            Action::CancelDocumentCrop => (
+                Role::Button,
+                "Cancel crop".into(),
+                AccessState::new().focusable(true),
+            ),
+            Action::MoveDocumentPageEarlier => (
+                Role::Button,
+                "Move selected page earlier".into(),
+                AccessState::new().focusable(true).disabled(
+                    self.document_job.is_some()
+                        || self.document_scan.pages.is_empty()
+                        || self.document_scan.selected == 0,
+                ),
+            ),
+            Action::MoveDocumentPageLater => (
+                Role::Button,
+                "Move selected page later".into(),
+                AccessState::new().focusable(true).disabled(
+                    self.document_job.is_some()
+                        || self.document_scan.pages.is_empty()
+                        || self.document_scan.selected + 1 >= self.document_scan.pages.len(),
+                ),
+            ),
+            Action::RemoveDocumentPage => (
+                Role::Button,
+                "Remove selected page".into(),
+                AccessState::new()
+                    .focusable(true)
+                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
+            ),
         };
         AccessNode::new(role)
             .with_name(name)
@@ -911,6 +1248,18 @@ impl CameraApp {
             Action::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
             Action::OpenCameraChooser => self.open_camera_chooser(),
             Action::SelectCamera(device) => self.select_camera(&device),
+            Action::CaptureDocument => self.capture_document_page(),
+            Action::OpenDocumentChoice(choice) => self.open_document_choice(choice),
+            Action::RotateDocument => self.rotate_document_page(),
+            Action::RecognizeDocument => self.recognize_document_page(),
+            Action::CopyDocumentText => self.copy_document_text(),
+            Action::ExportDocument => self.request_document_export(),
+            Action::BeginDocumentCrop => self.begin_document_crop(),
+            Action::ApplyDocumentCrop => self.apply_document_crop(),
+            Action::CancelDocumentCrop => self.cancel_document_crop(),
+            Action::MoveDocumentPageEarlier => self.move_document_page(false),
+            Action::MoveDocumentPageLater => self.move_document_page(true),
+            Action::RemoveDocumentPage => self.remove_document_page(),
             settings_action @ (Action::CycleResolution
             | Action::CycleFormat
             | Action::SetTimer(_)
@@ -929,11 +1278,405 @@ impl CameraApp {
         // Remember which viewfinder an overlay was summoned from so its
         // back button returns there.
         if matches!(s, Screen::Gallery | Screen::Settings)
-            && matches!(self.screen, Screen::Camera | Screen::Scanner)
+            && matches!(
+                self.screen,
+                Screen::Camera | Screen::Scanner | Screen::Document
+            )
         {
             self.return_to = self.screen;
         }
         self.screen = s;
+    }
+
+    fn capture_document_page(&mut self) {
+        if self.document_job.is_some() {
+            return;
+        }
+        self.cancel_document_crop();
+        let Some(scanner_device) = self
+            .scanner_devices
+            .first()
+            .map(|scanner| scanner.device.clone())
+        else {
+            self.toast = Some("Connect a document scanner to begin".into());
+            return;
+        };
+        match self.storage {
+            Storage::Sample => {
+                self.document_scan.add_page(sample_document_image());
+                self.toast = Some(format!("Page {} captured", self.document_scan.pages.len()));
+            }
+            Storage::Disk(_) => {
+                let (sender, receiver) = mpsc::channel();
+                self.document_job = Some(receiver);
+                self.document_job_kind = Some(DocumentJobKind::Capture);
+                let settings = self.document_settings.scan;
+                let spawn = std::thread::Builder::new()
+                    .name("camera-document-capture".into())
+                    .spawn(move || {
+                        let result = os_actions::printing::scan_page(&scanner_device, settings)
+                            .and_then(|bytes| {
+                                image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                                    .map_err(|error| {
+                                        format!("scanner returned an invalid PNG: {error}")
+                                    })
+                            });
+                        let _ = sender.send(DocumentJobResult::Capture(result));
+                    });
+                if let Err(error) = spawn {
+                    self.document_job = None;
+                    self.document_job_kind = None;
+                    self.toast = Some(format!("Could not start scanner: {error}"));
+                }
+            }
+        }
+    }
+
+    fn open_document_choice(&mut self, choice: DocumentChoice) {
+        if self.document_job.is_some() {
+            return;
+        }
+        let (label, items, selected): (&str, &[&str], usize) = match choice {
+            DocumentChoice::Resolution => (
+                "Scan resolution",
+                &["150 DPI", "300 DPI", "600 DPI"],
+                match self.document_settings.scan.resolution_dpi {
+                    150 => 0,
+                    600 => 2,
+                    _ => 1,
+                },
+            ),
+            DocumentChoice::Color => (
+                "Scan color",
+                &["Color", "Grayscale", "Black & white"],
+                match self.document_settings.scan.color {
+                    os_actions::printing::ScanColor::Color => 0,
+                    os_actions::printing::ScanColor::Grayscale => 1,
+                    os_actions::printing::ScanColor::LineArt => 2,
+                },
+            ),
+            DocumentChoice::Source => (
+                "Paper source",
+                &["Flatbed", "Feeder", "Duplex feeder"],
+                match self.document_settings.scan.source {
+                    os_actions::printing::ScanSource::Flatbed => 0,
+                    os_actions::printing::ScanSource::Feeder => 1,
+                    os_actions::printing::ScanSource::FeederDuplex => 2,
+                },
+            ),
+            DocumentChoice::Language => (
+                "Text language",
+                &["English", "German", "French", "Spanish"],
+                match self.document_settings.ocr_language {
+                    OcrLanguage::English => 0,
+                    OcrLanguage::German => 1,
+                    OcrLanguage::French => 2,
+                    OcrLanguage::Spanish => 3,
+                },
+            ),
+        };
+        self.document_choice = Some(choice);
+        self.document_popover.set_label(label);
+        self.document_popover.set_items(items.iter().copied());
+        self.document_popover.set_viewport(self.rect);
+        let anchor = self
+            .document_choice_anchors
+            .get(choice.index())
+            .copied()
+            .unwrap_or(Rect::ZERO);
+        self.document_popover.open_at(anchor, Some(selected));
+    }
+
+    fn apply_document_choice(&mut self, index: usize) {
+        match self.document_choice {
+            Some(DocumentChoice::Resolution) => {
+                if let Some(value) = [150, 300, 600].get(index) {
+                    self.document_settings.scan.resolution_dpi = *value;
+                }
+            }
+            Some(DocumentChoice::Color) => {
+                if let Some(value) = [
+                    os_actions::printing::ScanColor::Color,
+                    os_actions::printing::ScanColor::Grayscale,
+                    os_actions::printing::ScanColor::LineArt,
+                ]
+                .get(index)
+                {
+                    self.document_settings.scan.color = *value;
+                }
+            }
+            Some(DocumentChoice::Source) => {
+                if let Some(value) = [
+                    os_actions::printing::ScanSource::Flatbed,
+                    os_actions::printing::ScanSource::Feeder,
+                    os_actions::printing::ScanSource::FeederDuplex,
+                ]
+                .get(index)
+                {
+                    self.document_settings.scan.source = *value;
+                }
+            }
+            Some(DocumentChoice::Language) => {
+                if let Some(value) = [
+                    OcrLanguage::English,
+                    OcrLanguage::German,
+                    OcrLanguage::French,
+                    OcrLanguage::Spanish,
+                ]
+                .get(index)
+                {
+                    self.document_settings.ocr_language = *value;
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn rotate_document_page(&mut self) {
+        if self.document_job.is_some() {
+            return;
+        }
+        self.cancel_document_crop();
+        let Some(page) = self
+            .document_scan
+            .pages
+            .get_mut(self.document_scan.selected)
+        else {
+            return;
+        };
+        page.rotate_clockwise();
+        self.toast = Some("Page rotated; recognize text again when ready".into());
+    }
+
+    fn recognize_document_page(&mut self) {
+        if self.document_job.is_some() {
+            return;
+        }
+        let index = self.document_scan.selected;
+        let Some(image) = self
+            .document_scan
+            .pages
+            .get(index)
+            .map(crate::document_scan::Page::rendered)
+        else {
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        self.document_job = Some(receiver);
+        self.document_job_kind = Some(DocumentJobKind::Recognize);
+        let language = self.document_settings.ocr_language.code();
+        let spawn = std::thread::Builder::new()
+            .name("camera-document-ocr".into())
+            .spawn(move || {
+                let result =
+                    qos_ocr::recognize(&image, language).map_err(|error| error.to_string());
+                let _ = sender.send(DocumentJobResult::Recognize {
+                    page: index,
+                    result,
+                });
+            });
+        if let Err(error) = spawn {
+            self.document_job = None;
+            self.document_job_kind = None;
+            self.toast = Some(format!("Could not start text recognition: {error}"));
+        }
+    }
+
+    fn copy_document_text(&mut self) {
+        let Some(document) = self
+            .document_scan
+            .pages
+            .get(self.document_scan.selected)
+            .and_then(|page| page.ocr.as_ref())
+        else {
+            return;
+        };
+        let text = document.plain_text();
+        if text.trim().is_empty() {
+            self.toast = Some("No recognized text to copy".into());
+            return;
+        }
+        ui::clipboard_copy(&text);
+        self.toast = Some("Recognized text copied".into());
+    }
+
+    fn document_text_status(&self) -> String {
+        if self.document_job_kind == Some(DocumentJobKind::Recognize) {
+            return "Reading text…".into();
+        }
+        let Some(document) = self
+            .document_scan
+            .pages
+            .get(self.document_scan.selected)
+            .and_then(|page| page.ocr.as_ref())
+        else {
+            return "Text not recognized".into();
+        };
+        if document.language != self.document_settings.ocr_language.code() {
+            return "Language changed; update text".into();
+        }
+        let count = document.words.len();
+        if count == 1 {
+            "1 word recognized".into()
+        } else {
+            format!("{count} words recognized")
+        }
+    }
+
+    fn poll_document_job(&mut self) {
+        let Some(receiver) = self.document_job.as_ref() else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(mpsc::TryRecvError::Empty) => return,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.document_job = None;
+                self.document_job_kind = None;
+                self.toast = Some("Document processing stopped unexpectedly".into());
+                return;
+            }
+        };
+        self.document_job = None;
+        self.document_job_kind = None;
+        match result {
+            DocumentJobResult::Capture(Ok(image)) => {
+                self.document_scan.add_page(image);
+                self.toast = Some(format!("Page {} captured", self.document_scan.pages.len()));
+            }
+            DocumentJobResult::Capture(Err(error)) => self.toast = Some(error),
+            DocumentJobResult::Recognize {
+                page,
+                result: Ok(document),
+            } => {
+                let words = document.words.len();
+                if let Some(target) = self.document_scan.pages.get_mut(page) {
+                    target.ocr = Some(document);
+                    self.toast = Some(format!("Recognized {words} words"));
+                }
+            }
+            DocumentJobResult::Recognize {
+                result: Err(error), ..
+            } => self.toast = Some(format!("Text recognition failed: {error}")),
+        }
+    }
+
+    fn request_document_export(&mut self) {
+        if self.document_scan.pages.is_empty() || self.document_save_picker.is_some() {
+            return;
+        }
+        self.document_save_picker = Some(
+            ui::portal::PickRequest::save("Save scanned document", "Save", "Scanned document.pdf")
+                .thread_name("camera-document-save-picker")
+                .send(),
+        );
+    }
+
+    fn begin_document_crop(&mut self) {
+        if self.document_job.is_some() {
+            return;
+        }
+        let index = self.document_scan.selected;
+        let Some(page) = self.document_scan.pages.get(index) else {
+            return;
+        };
+        let (rgba, width, height, selection) = page.crop_editor_source();
+        self.document_crop_selection = ui::LocalState::new(selection);
+        self.document_crop_editor = Some(ImageCropEditor::new(
+            rgba,
+            width,
+            height,
+            self.document_crop_selection.clone(),
+        ));
+        self.document_crop_page = Some(index);
+    }
+
+    fn apply_document_crop(&mut self) {
+        let Some(index) = self.document_crop_page else {
+            return;
+        };
+        let selection = self.document_crop_selection.get();
+        self.toast = Some(
+            match self
+                .document_scan
+                .pages
+                .get_mut(index)
+                .ok_or("The selected page is no longer available")
+                .and_then(|page| page.set_normalized_crop(selection))
+            {
+                Ok(()) => "Crop applied; recognize text again when ready".into(),
+                Err(error) => error.into(),
+            },
+        );
+        self.cancel_document_crop();
+    }
+
+    fn cancel_document_crop(&mut self) {
+        self.document_crop_editor = None;
+        self.document_crop_page = None;
+    }
+
+    fn poll_document_export(&mut self) {
+        let Some(receiver) = self.document_save_picker.as_ref() else {
+            return;
+        };
+        let outcome = match receiver.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui::portal::PortalOutcome::Failed("The file picker stopped responding".into())
+            }
+        };
+        self.document_save_picker = None;
+        match outcome {
+            ui::portal::PortalOutcome::Opened(mut path) => {
+                if path.extension().is_none() {
+                    path.set_extension("pdf");
+                }
+                self.toast = Some(
+                    match std::fs::write(&path, self.document_scan.searchable_pdf()) {
+                        Ok(()) => format!(
+                            "Saved {}",
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("scanned document")
+                        ),
+                        Err(error) => format!("Could not save document: {error}"),
+                    },
+                );
+            }
+            ui::portal::PortalOutcome::Cancelled => {}
+            ui::portal::PortalOutcome::Failed(error) => {
+                self.toast = Some(format!("Could not open save location: {error}"));
+            }
+        }
+    }
+
+    fn move_document_page(&mut self, later: bool) {
+        if self.document_job.is_some() {
+            return;
+        }
+        self.cancel_document_crop();
+        let from = self.document_scan.selected;
+        let to = if later {
+            from.saturating_add(1)
+        } else {
+            from.saturating_sub(1)
+        };
+        if self.document_scan.move_page(from, to) {
+            self.toast = Some(format!("Page moved to position {}", to + 1));
+        }
+    }
+
+    fn remove_document_page(&mut self) {
+        if self.document_job.is_some() {
+            return;
+        }
+        self.cancel_document_crop();
+        let index = self.document_scan.selected;
+        if self.document_scan.remove_page(index) {
+            self.toast = Some("Page removed".into());
+        }
     }
 
     fn apply_back(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
@@ -1774,6 +2517,8 @@ impl Widget for CameraApp {
         reason = "sync is the one ordered document/lifecycle boundary"
     )]
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.poll_document_job();
+        self.poll_document_export();
         if !self.initialized {
             doc::init_defaults(state, path, self.initial_screen);
             self.initialized = true;
@@ -2141,8 +2886,22 @@ impl Widget for CameraApp {
         if self.pending_delete.is_none() && std::env::var_os("CAMERA_CONFIRM_DELETE").is_some() {
             self.pending_delete = self.selected_capture.clone();
         }
-        // Screenshot hook uses the same bounded scanner path as interaction.
-        if self.scanned.is_none()
+        if self.screen == Screen::Document
+            && self.document_scan.pages.is_empty()
+            && std::env::var_os("CAMERA_SCAN_FIRST").is_some()
+        {
+            self.capture_document_page();
+        }
+        if self.screen == Screen::Document
+            && !self.document_scan.pages.is_empty()
+            && self.document_crop_editor.is_none()
+            && std::env::var_os("CAMERA_CROP").is_some()
+        {
+            self.begin_document_crop();
+        }
+        // Screenshot hook uses the same bounded QR scanner path as interaction.
+        if self.screen != Screen::Document
+            && self.scanned.is_none()
             && self.pending_scan.is_none()
             && std::env::var_os("CAMERA_SCAN_FIRST").is_some()
             && let Some(id) = self
@@ -2215,7 +2974,7 @@ impl Widget for CameraApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.regions.clear();
         p::fill_rect(scene, t, self.rect, theme.tokens.colors.surfaces.base);
@@ -2228,6 +2987,7 @@ impl Widget for CameraApp {
         match self.screen {
             Screen::Camera => self.draw_camera(scene, t, tr, theme, full),
             Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
+            Screen::Document => self.draw_document_scanner(scene, t, tr, theme, full),
             Screen::Gallery => self.draw_gallery(scene, t, tr, theme, full),
             Screen::Settings => self.draw_settings(scene, t, tr, theme, full),
         }
@@ -2239,22 +2999,52 @@ impl Widget for CameraApp {
         }
         self.draw_hover_tooltip(scene, t, tr, theme);
         self.draw_toast(scene, t, tr, theme);
+        self.document_popover.draw(scene, t, tr, theme, presence);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the root input router keeps pointer, touch, keyboard, crop, and modal overlay precedence auditable in one place"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
         path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
-        use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
+        use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase};
         use winit::keyboard::{Key, NamedKey};
+
+        if self.document_popover.is_open() {
+            self.document_popover.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if let Some(index) = self.document_popover.take_selection() {
+                self.apply_document_choice(index);
+            }
+            self.dirty = true;
+            return;
+        }
+        if let Some(editor) = self.document_crop_editor.as_mut()
+            && editor.handle_event_at(event, scale_factor)
+        {
+            *handled = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -2267,6 +3057,68 @@ impl Widget for CameraApp {
             } => {
                 if self.hit(self.last_mouse, state, path) {
                     *handled = true;
+                }
+            }
+            WindowEvent::Touch(touch) => {
+                let point = Point::new(
+                    touch.location.x / scale_factor,
+                    touch.location.y / scale_factor,
+                );
+                match touch.phase {
+                    TouchPhase::Started if self.active_touch.is_none() => {
+                        if let Some((rect, action)) = self
+                            .regions
+                            .iter()
+                            .rev()
+                            .find(|(rect, _)| rect.contains(point))
+                            .cloned()
+                        {
+                            self.active_touch = Some(TouchTarget {
+                                id: touch.id,
+                                rect,
+                                action,
+                                cancelled: false,
+                            });
+                            *handled = true;
+                        }
+                    }
+                    TouchPhase::Moved => {
+                        if let Some(target) = self.active_touch.as_mut()
+                            && target.id == touch.id
+                        {
+                            if !target.rect.contains(point) {
+                                target.cancelled = true;
+                            }
+                            *handled = true;
+                        }
+                    }
+                    TouchPhase::Ended => {
+                        if self
+                            .active_touch
+                            .as_ref()
+                            .is_some_and(|target| target.id == touch.id)
+                        {
+                            let target = self.active_touch.take();
+                            if let Some(target) = target
+                                && !target.cancelled
+                                && target.rect.contains(point)
+                            {
+                                self.apply(target.action, state, path);
+                            }
+                            *handled = true;
+                        }
+                    }
+                    TouchPhase::Cancelled => {
+                        if self
+                            .active_touch
+                            .as_ref()
+                            .is_some_and(|target| target.id == touch.id)
+                        {
+                            self.active_touch = None;
+                            *handled = true;
+                        }
+                    }
+                    _ => {}
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -2314,8 +3166,9 @@ impl Widget for CameraApp {
                     Key::Character(c) => match c.as_str() {
                         "1" => Some(Action::Nav(Screen::Camera)),
                         "2" => Some(Action::Nav(Screen::Scanner)),
-                        "3" => Some(Action::Nav(Screen::Gallery)),
-                        "4" => Some(Action::Nav(Screen::Settings)),
+                        "3" => Some(Action::Nav(Screen::Document)),
+                        "4" => Some(Action::Nav(Screen::Gallery)),
+                        "5" => Some(Action::Nav(Screen::Settings)),
                         "g" | "G" => Some(Action::ToggleGrid),
                         "f" | "F" => Some(Action::CycleFacing),
                         "r" | "R"
@@ -2331,6 +3184,13 @@ impl Widget for CameraApp {
                     }
                     Key::Named(NamedKey::Escape) if matches!(self.screen, Screen::Scanner) => {
                         Some(Action::DismissScan)
+                    }
+                    Key::Named(NamedKey::Escape) if matches!(self.screen, Screen::Document) => {
+                        Some(if self.document_crop_editor.is_some() {
+                            Action::CancelDocumentCrop
+                        } else {
+                            Action::Nav(Screen::Camera)
+                        })
                     }
                     Key::Named(NamedKey::Escape) if matches!(self.screen, Screen::Gallery) => {
                         Some(Action::CloseDetail)
@@ -2358,13 +3218,16 @@ impl Widget for CameraApp {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+    fn needs_idle_sync(&self) -> bool {
+        self.document_save_picker.is_some() || self.document_job.is_some()
+    }
 
     fn accessibility(&self) -> Option<AccessNode> {
         // `regions` is rebuilt by `draw` from the actual screen and content.
         // Deduplicate identical actions: a backdrop and a visible back affordance
         // can share one action, but must not publish colliding semantic ids.
         let mut targets = HashSet::new();
-        let controls = self
+        let mut controls: Vec<AccessNode> = self
             .regions
             .iter()
             .filter_map(|(rect, action)| {
@@ -2374,6 +3237,11 @@ impl Widget for CameraApp {
                     .then(|| self.a11y_node(*rect, action))
             })
             .collect();
+        if let Some(editor) = self.document_crop_editor.as_ref()
+            && let Some(crop) = editor.accessibility()
+        {
+            controls.push(crop);
+        }
         if let Some(id) = self.pending_delete.as_deref() {
             let label = self
                 .captures
@@ -2406,6 +3274,11 @@ impl Widget for CameraApp {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if let Some(editor) = self.document_crop_editor.as_mut()
+            && editor.perform_semantic_action(target, action, state, path)
+        {
+            return true;
+        }
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
             return false;
         }
@@ -2542,7 +3415,7 @@ impl CameraApp {
     ) {
         // Keep the three mode targets inside a narrow/high-zoom viewport
         // instead of letting the fixed desktop-width pill clip off-screen.
-        let seg_w = (self.rect.width() - EDGE * 2.0).clamp(150.0, 240.0);
+        let seg_w = (self.rect.width() - EDGE * 2.0).clamp(260.0, 340.0);
         let seg = Rect::new(
             center_x - seg_w / 2.0,
             top_y,
@@ -2562,9 +3435,14 @@ impl CameraApp {
                 Action::SetMode(CaptureMode::Video),
             ),
             (
-                "Scan".to_string(),
+                "Codes".to_string(),
                 matches!(self.screen, Screen::Scanner),
                 Action::Nav(Screen::Scanner),
+            ),
+            (
+                "Docs".to_string(),
+                matches!(self.screen, Screen::Document),
+                Action::Nav(Screen::Document),
             ),
         ];
         self.segmented(scene, t, tr, theme, seg, items);
@@ -3036,7 +3914,11 @@ impl CameraApp {
         // Do not colour device/file failures as successes. The app keeps a
         // compact text toast state, so classify only the truthful failure
         // prefixes produced by its own operation paths.
-        let kind = if msg.starts_with("Save failed") || msg.starts_with("Couldn't") {
+        let kind = if msg.starts_with("Save failed")
+            || msg.starts_with("Couldn't")
+            || msg.starts_with("Could not")
+            || msg.starts_with("Text recognition failed")
+        {
             ToastKind::Error
         } else if msg.starts_with("Connect a camera")
             || msg.starts_with("Nothing recorded")
@@ -3046,12 +3928,27 @@ impl CameraApp {
         } else {
             ToastKind::Success
         };
+        let reserved_bottom = match self.screen {
+            Screen::Document => 130.0,
+            Screen::Camera | Screen::Scanner => 64.0,
+            Screen::Gallery | Screen::Settings => 0.0,
+        };
+        let area = if reserved_bottom > 0.0 {
+            Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x1,
+                self.rect.y1 - reserved_bottom,
+            )
+        } else {
+            self.rect
+        };
         paint_transient(
             scene,
             t,
             tr,
             theme,
-            self.rect,
+            area,
             ToastAnchor::BottomCenter,
             &ToastCard::new(msg, kind),
         );
@@ -3719,10 +4616,435 @@ impl CameraApp {
 }
 
 // ====================================================================
-// Scanner screen
+// Document scanner and code scanner screens
 // ====================================================================
 
 impl CameraApp {
+    fn draw_document_scanner(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        full: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        p::fill_rect(scene, t, full, c.surfaces.base);
+        let compact = full.width() < WIDE_MIN;
+        let content = shrink(full, EDGE);
+        p::text(
+            scene,
+            tr,
+            content.x0,
+            content.y0 + 4.0,
+            "Scan documents",
+            if compact { 25.0 } else { 30.0 },
+            c.text_primary,
+        );
+        p::text(
+            scene,
+            tr,
+            content.x0,
+            content.y0 + 40.0,
+            if compact {
+                "Scan, reorder, and edit pages."
+            } else {
+                "Capture a multi-page document and keep every page editable."
+            },
+            13.0,
+            c.text_dim,
+        );
+
+        let workspace = Rect::new(content.x0, content.y0 + 78.0, content.x1, content.y1 - 70.0);
+        let controls_w = if compact { workspace.width() } else { 286.0 };
+        let controls = Rect::new(
+            workspace.x0,
+            workspace.y0,
+            workspace.x0 + controls_w,
+            if compact {
+                workspace.y0 + 248.0
+            } else {
+                workspace.y1
+            },
+        );
+        p::fill_round(scene, t, controls, 16.0, c.surfaces.raised);
+        let scanner_name = self
+            .scanner_devices
+            .first()
+            .map_or("No scanner found", |scanner| scanner.description.as_str());
+        p::text(
+            scene,
+            tr,
+            controls.x0 + 18.0,
+            controls.y0 + 18.0,
+            scanner_name,
+            15.0,
+            c.text_primary,
+        );
+        let gap = 10.0;
+        let setting_w = (controls.width() - 46.0) / 2.0;
+        let left = controls.x0 + 18.0;
+        let right = left + setting_w + gap;
+        let settings = [
+            (
+                "RESOLUTION",
+                format!("{} DPI", self.document_settings.scan.resolution_dpi),
+                Rect::new(
+                    left,
+                    controls.y0 + 62.0,
+                    left + setting_w,
+                    controls.y0 + 106.0,
+                ),
+                Action::OpenDocumentChoice(DocumentChoice::Resolution),
+            ),
+            (
+                "COLOR",
+                scan_color_label(self.document_settings.scan.color).to_owned(),
+                Rect::new(
+                    right,
+                    controls.y0 + 62.0,
+                    right + setting_w,
+                    controls.y0 + 106.0,
+                ),
+                Action::OpenDocumentChoice(DocumentChoice::Color),
+            ),
+            (
+                "PAPER SOURCE",
+                scan_source_label(self.document_settings.scan.source).to_owned(),
+                Rect::new(
+                    left,
+                    controls.y0 + 128.0,
+                    left + setting_w,
+                    controls.y0 + 172.0,
+                ),
+                Action::OpenDocumentChoice(DocumentChoice::Source),
+            ),
+            (
+                "TEXT LANGUAGE",
+                self.document_settings.ocr_language.label().to_owned(),
+                Rect::new(
+                    right,
+                    controls.y0 + 128.0,
+                    right + setting_w,
+                    controls.y0 + 172.0,
+                ),
+                Action::OpenDocumentChoice(DocumentChoice::Language),
+            ),
+        ];
+        for (label, value, rect, action) in settings {
+            if let Action::OpenDocumentChoice(choice) = &action
+                && let Some(anchor) = self.document_choice_anchors.get_mut(choice.index())
+            {
+                *anchor = rect;
+            }
+            p::text(scene, tr, rect.x0, rect.y0 - 17.0, label, 10.0, c.text_dim);
+            Button::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                &ButtonFace::new(rect, &value)
+                    .icon(ui::icons::Icon::ChevronDown)
+                    .hovered(rect.contains(self.last_mouse))
+                    .disabled(self.document_job.is_some()),
+            );
+            if self.document_job.is_none() {
+                self.push_region(rect, action);
+            }
+        }
+        let scan_button = Rect::new(
+            controls.x0 + 18.0,
+            controls.y0 + 186.0,
+            controls.x1 - 18.0,
+            controls.y0 + 230.0,
+        );
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(
+                scan_button,
+                if self.document_job_kind == Some(DocumentJobKind::Capture) {
+                    "Scanning…"
+                } else {
+                    "Scan page"
+                },
+            )
+            .icon(ui::icons::Icon::FileText)
+            .primary()
+            .hovered(scan_button.contains(self.last_mouse))
+            .disabled(self.scanner_devices.is_empty() || self.document_job.is_some()),
+        );
+        if !self.scanner_devices.is_empty() && self.document_job.is_none() {
+            self.push_region(scan_button, Action::CaptureDocument);
+        }
+
+        let preview = if compact {
+            Rect::new(workspace.x0, controls.y1 + 14.0, workspace.x1, workspace.y1)
+        } else {
+            Rect::new(controls.x1 + 16.0, workspace.y0, workspace.x1, workspace.y1)
+        };
+        p::fill_round(scene, t, preview, 16.0, c.surfaces.raised);
+        if self.document_scan.pages.is_empty() {
+            let icon = Rect::new(
+                preview.center().x - 22.0,
+                preview.center().y - 58.0,
+                preview.center().x + 22.0,
+                preview.center().y - 14.0,
+            );
+            ui::icons::Icon::FileText.draw(scene, t, icon, c.text_dim);
+            p::text_center(
+                scene,
+                tr,
+                preview.center().x,
+                preview.center().y + 4.0,
+                "Your scanned pages appear here",
+                15.0,
+                c.text_primary,
+            );
+            p::text_center(
+                scene,
+                tr,
+                preview.center().x,
+                preview.center().y + 30.0,
+                "Start with one page; add and reorder more at any time.",
+                12.0,
+                c.text_dim,
+            );
+        } else {
+            let document_busy = self.document_job.is_some();
+            let can_move_earlier = !document_busy && self.document_scan.selected > 0;
+            let can_move_later =
+                !document_busy && self.document_scan.selected + 1 < self.document_scan.pages.len();
+            for (rect, icon, action, enabled) in [
+                (
+                    Rect::new(
+                        preview.x1 - 108.0,
+                        preview.y0 + 8.0,
+                        preview.x1 - 60.0,
+                        preview.y0 + 52.0,
+                    ),
+                    ui::icons::Icon::ChevronLeft,
+                    Action::MoveDocumentPageEarlier,
+                    can_move_earlier,
+                ),
+                (
+                    Rect::new(
+                        preview.x1 - 56.0,
+                        preview.y0 + 8.0,
+                        preview.x1 - 8.0,
+                        preview.y0 + 52.0,
+                    ),
+                    ui::icons::Icon::ChevronRight,
+                    Action::MoveDocumentPageLater,
+                    can_move_later,
+                ),
+            ] {
+                Button::paint(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &ButtonFace::new(rect, "")
+                        .icon(icon)
+                        .hovered(rect.contains(self.last_mouse))
+                        .disabled(!enabled),
+                );
+                if enabled {
+                    self.push_region(rect, action);
+                }
+            }
+            if self.document_crop_editor.is_none() && !document_busy {
+                let crop_button = Rect::new(
+                    preview.x1 - 196.0,
+                    preview.y0 + 8.0,
+                    preview.x1 - 116.0,
+                    preview.y0 + 52.0,
+                );
+                Button::paint(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &ButtonFace::new(crop_button, "Crop")
+                        .icon(ui::icons::Icon::Scissors)
+                        .hovered(crop_button.contains(self.last_mouse)),
+                );
+                self.push_region(crop_button, Action::BeginDocumentCrop);
+            }
+            let paper_width = (preview.width() - 64.0).min(330.0);
+            let paper_height = (preview.height() - 142.0).min(paper_width * 1.414);
+            let paper = Rect::new(
+                preview.center().x - paper_width / 2.0,
+                preview.center().y - paper_height / 2.0 - 24.0,
+                preview.center().x + paper_width / 2.0,
+                preview.center().y + paper_height / 2.0 - 24.0,
+            );
+            if let Some(editor) = self.document_crop_editor.as_mut() {
+                editor.paint_at(scene, t, theme, paper);
+            } else {
+                p::fill_round(scene, t, paper, 5.0, Color::from_rgb8(246, 246, 242));
+                let selected = self.document_scan.selected;
+                let page_key = self
+                    .document_scan
+                    .pages
+                    .get(selected)
+                    .map(|page| (page.crop, page.rotation));
+                let preview_is_current = self.document_preview.as_ref().is_some_and(
+                    |(cached_index, cached_crop, cached_rotation, _)| {
+                        Some((*cached_crop, *cached_rotation)) == page_key
+                            && *cached_index == selected
+                    },
+                );
+                if !preview_is_current && let Some(page) = self.document_scan.pages.get(selected) {
+                    let rendered = page.rendered().to_rgba8();
+                    let (width, height) = rendered.dimensions();
+                    self.document_preview = Some((
+                        selected,
+                        page.crop,
+                        page.rotation,
+                        Image::from_rgba(Arc::from(rendered.into_raw()), width, height)
+                            .with_fit(ImageFit::Contain),
+                    ));
+                }
+                if let Some((_, _, _, image)) = self.document_preview.as_mut() {
+                    image.paint_at(scene, t, paper);
+                }
+            }
+            p::stroke_round(scene, t, paper, 5.0, c.border_standard, 1.0);
+            p::text(
+                scene,
+                tr,
+                preview.x0 + 16.0,
+                preview.y0 + 14.0,
+                &format!(
+                    "Page {} of {}",
+                    self.document_scan.selected + 1,
+                    self.document_scan.pages.len()
+                ),
+                12.0,
+                c.text_dim,
+            );
+            let text_status = self.document_text_status();
+            let text_is_stale = self
+                .document_scan
+                .pages
+                .get(self.document_scan.selected)
+                .and_then(|page| page.ocr.as_ref())
+                .is_some_and(|document| {
+                    document.language != self.document_settings.ocr_language.code()
+                });
+            p::text(
+                scene,
+                tr,
+                preview.x0 + 16.0,
+                preview.y0 + 34.0,
+                &text_status,
+                11.0,
+                if text_is_stale {
+                    c.semantic.warning
+                } else {
+                    c.text_dim
+                },
+            );
+            let actions_width = (preview.width() - 32.0).min(360.0);
+            let actions = Rect::new(
+                preview.center().x - actions_width / 2.0,
+                preview.y1 - 60.0,
+                preview.center().x + actions_width / 2.0,
+                preview.y1 - 16.0,
+            );
+            let crop_active = self.document_crop_editor.is_some();
+            let action_specs: Vec<(&str, ui::icons::Icon, Action, bool)> = if crop_active {
+                vec![
+                    (
+                        "Cancel",
+                        ui::icons::Icon::X,
+                        Action::CancelDocumentCrop,
+                        false,
+                    ),
+                    (
+                        "Apply",
+                        ui::icons::Icon::Check,
+                        Action::ApplyDocumentCrop,
+                        false,
+                    ),
+                ]
+            } else {
+                let has_text = self
+                    .document_scan
+                    .pages
+                    .get(self.document_scan.selected)
+                    .and_then(|page| page.ocr.as_ref())
+                    .is_some();
+                let mut specs = vec![
+                    (
+                        "Turn",
+                        ui::icons::Icon::RotateCw,
+                        Action::RotateDocument,
+                        false,
+                    ),
+                    (
+                        if self.document_job_kind == Some(DocumentJobKind::Recognize) {
+                            "Reading…"
+                        } else {
+                            "Read"
+                        },
+                        ui::icons::Icon::FileText,
+                        Action::RecognizeDocument,
+                        false,
+                    ),
+                ];
+                if has_text {
+                    specs.push(("", ui::icons::Icon::Copy, Action::CopyDocumentText, false));
+                }
+                specs.extend([
+                    (
+                        "Save",
+                        ui::icons::Icon::Download,
+                        Action::ExportDocument,
+                        false,
+                    ),
+                    (
+                        "",
+                        ui::icons::Icon::Trash2,
+                        Action::RemoveDocumentPage,
+                        true,
+                    ),
+                ]);
+                specs
+            };
+            let gap = 8.0;
+            let action_width = (actions.width()
+                - gap * (action_specs.len().saturating_sub(1)) as f64)
+                / action_specs.len() as f64;
+            for (index, (label, icon, action, danger)) in action_specs.into_iter().enumerate() {
+                let rect = Rect::new(
+                    actions.x0 + index as f64 * (action_width + gap),
+                    actions.y0,
+                    actions.x0 + index as f64 * (action_width + gap) + action_width,
+                    actions.y1,
+                );
+                let mut face = ButtonFace::new(rect, label)
+                    .icon(icon)
+                    .hovered(rect.contains(self.last_mouse))
+                    .disabled(document_busy);
+                if danger {
+                    face = face.danger();
+                } else if matches!(&action, Action::ApplyDocumentCrop) {
+                    face = face.primary();
+                }
+                Button::paint(scene, t, tr, theme, &face);
+                if !document_busy {
+                    self.push_region(rect, action);
+                }
+            }
+        }
+
+        self.draw_mode_switcher(scene, t, tr, theme, full.center().x, full.y1 - 56.0);
+    }
+
     fn draw_scanner(
         &mut self,
         scene: &mut Scene,
@@ -5855,6 +7177,221 @@ mod tests {
         assert!(app.is_recording());
         app.apply(Action::SetMode(CaptureMode::Photo), &mut doc, &root);
         assert_eq!(app.mode, CaptureMode::Video, "mode locked while recording");
+    }
+
+    #[test]
+    fn document_route_captures_real_session_pages_in_sample_mode() {
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(Action::Nav(Screen::Document), &mut doc, &root);
+        assert_eq!(app.screen, Screen::Document);
+        assert!(app.document_scan.pages.is_empty());
+
+        app.apply(Action::CaptureDocument, &mut doc, &root);
+        assert_eq!(app.document_scan.pages.len(), 1);
+        let page = app.document_scan.pages[0].rendered();
+        assert_eq!((page.width(), page.height()), (1240, 1754));
+        assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
+
+        app.apply(Action::BeginDocumentCrop, &mut doc, &root);
+        assert!(app.document_crop_editor.is_some());
+        app.document_crop_selection.set(CropSelection {
+            left: 0.1,
+            top: 0.1,
+            right: 0.9,
+            bottom: 0.9,
+        });
+        app.apply(Action::ApplyDocumentCrop, &mut doc, &root);
+        assert!(app.document_crop_editor.is_none());
+        let page = app.document_scan.pages[0].rendered();
+        assert_eq!((page.width(), page.height()), (992, 1404));
+
+        app.apply(Action::RotateDocument, &mut doc, &root);
+        let page = app.document_scan.pages[0].rendered();
+        assert_eq!((page.width(), page.height()), (1404, 992));
+
+        let (sender, receiver) = mpsc::channel();
+        app.document_job = Some(receiver);
+        app.document_job_kind = Some(DocumentJobKind::Recognize);
+        app.apply(Action::RemoveDocumentPage, &mut doc, &root);
+        assert_eq!(app.document_scan.pages.len(), 1, "busy page is stable");
+        sender
+            .send(DocumentJobResult::Recognize {
+                page: 0,
+                result: Ok(qos_ocr::Document {
+                    words: Vec::new(),
+                    language: "eng".into(),
+                }),
+            })
+            .unwrap();
+        app.poll_document_job();
+        assert!(app.document_scan.pages[0].ocr.is_some());
+        assert!(app.document_job.is_none());
+
+        app.apply(Action::RemoveDocumentPage, &mut doc, &root);
+        assert!(app.document_scan.pages.is_empty());
+    }
+
+    #[test]
+    fn document_controls_update_the_typed_worker_settings() {
+        let (mut app, mut doc, root) = sample_app();
+        assert_eq!(app.document_settings, DocumentSettings::default());
+        app.document_choice_anchors = [Rect::new(10.0, 10.0, 140.0, 54.0); 4];
+
+        for (choice, selection) in [
+            (DocumentChoice::Resolution, 2),
+            (DocumentChoice::Color, 1),
+            (DocumentChoice::Source, 1),
+            (DocumentChoice::Language, 1),
+        ] {
+            app.apply(Action::OpenDocumentChoice(choice), &mut doc, &root);
+            assert!(app.document_popover.is_open());
+            app.document_popover.select(selection);
+            let selected = app.document_popover.take_selection().unwrap();
+            app.apply_document_choice(selected);
+        }
+
+        assert_eq!(app.document_settings.scan.resolution_dpi, 600);
+        assert_eq!(
+            app.document_settings.scan.color,
+            os_actions::printing::ScanColor::Grayscale
+        );
+        assert_eq!(
+            app.document_settings.scan.source,
+            os_actions::printing::ScanSource::Feeder
+        );
+        assert_eq!(app.document_settings.ocr_language.code(), "deu");
+
+        assert_eq!(
+            app.document_popover.items(),
+            &["English", "German", "French", "Spanish"]
+        );
+    }
+
+    #[test]
+    fn document_text_status_detects_stale_language_and_copy_uses_real_ocr_text() {
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(Action::CaptureDocument, &mut doc, &root);
+        assert_eq!(app.document_text_status(), "Text not recognized");
+        app.document_scan.pages[0].ocr = Some(qos_ocr::Document {
+            words: vec![qos_ocr::Word {
+                text: "Invoice".into(),
+                confidence: 98.0,
+                bounds: qos_ocr::Bounds {
+                    x: 10,
+                    y: 10,
+                    width: 80,
+                    height: 20,
+                },
+                page: 0,
+                block: 0,
+                paragraph: 0,
+                line: 0,
+                position: 0,
+            }],
+            language: "eng".into(),
+        });
+        assert_eq!(app.document_text_status(), "1 word recognized");
+        app.apply(Action::CopyDocumentText, &mut doc, &root);
+        assert_eq!(ui::clipboard_paste().as_deref(), Some("Invoice"));
+        assert_eq!(app.toast.as_deref(), Some("Recognized text copied"));
+
+        app.document_settings.ocr_language = OcrLanguage::German;
+        assert_eq!(app.document_text_status(), "Language changed; update text");
+    }
+
+    #[test]
+    fn touch_activates_document_choices_on_release_and_cancels_after_dragging_off() {
+        use winit::event::TouchPhase;
+
+        fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
+            WindowEvent::Touch(winit::event::Touch {
+                device_id: unsafe { std::mem::zeroed() },
+                phase,
+                location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+                force: None,
+                id: 17,
+            })
+        }
+        fn dispatch(
+            app: &mut CameraApp,
+            event: &WindowEvent,
+            doc: &mut AutoCommit,
+            node: NodeId,
+            tree: &TaffyTree<()>,
+        ) {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(
+                event,
+                1.0,
+                &winit::event::Modifiers::default(),
+                doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                tree,
+            );
+            assert!(handled);
+        }
+
+        let (mut app, mut doc, _root) = sample_app();
+        let rect = Rect::new(20.0, 20.0, 180.0, 64.0);
+        app.document_choice_anchors[0] = rect;
+        app.regions
+            .push((rect, Action::OpenDocumentChoice(DocumentChoice::Resolution)));
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+
+        dispatch(
+            &mut app,
+            &touch(TouchPhase::Started, rect.center()),
+            &mut doc,
+            node,
+            &tree,
+        );
+        assert!(
+            !app.document_popover.is_open(),
+            "touch-down is not activation"
+        );
+        dispatch(
+            &mut app,
+            &touch(TouchPhase::Ended, rect.center()),
+            &mut doc,
+            node,
+            &tree,
+        );
+        assert!(app.document_popover.is_open());
+
+        app.document_popover.close();
+        dispatch(
+            &mut app,
+            &touch(TouchPhase::Started, rect.center()),
+            &mut doc,
+            node,
+            &tree,
+        );
+        dispatch(
+            &mut app,
+            &touch(
+                TouchPhase::Moved,
+                Point::new(rect.x1 + 40.0, rect.y1 + 40.0),
+            ),
+            &mut doc,
+            node,
+            &tree,
+        );
+        dispatch(
+            &mut app,
+            &touch(TouchPhase::Ended, rect.center()),
+            &mut doc,
+            node,
+            &tree,
+        );
+        assert!(
+            !app.document_popover.is_open(),
+            "dragging off cancels the press"
+        );
     }
 
     #[test]

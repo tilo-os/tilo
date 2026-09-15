@@ -41,6 +41,7 @@
 pub mod actions;
 pub mod app;
 pub mod doc;
+pub mod document_scan;
 pub mod frame;
 pub mod library;
 pub mod media;

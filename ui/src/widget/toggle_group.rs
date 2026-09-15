@@ -17,7 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::{ActionEmitter, ControlBindingMetadata, TaffyTreeExt, Widget};
 
 /// Lossless `usize -> f64` widening for segment-strip geometry. Segment
@@ -46,6 +46,10 @@ impl Segment {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent cached interaction/layout flags are orthogonal states, not one state machine"
+)]
 pub struct ToggleGroup {
     id: Option<String>,
     segments: Vec<Segment>,
@@ -69,6 +73,14 @@ pub struct ToggleGroup {
     /// `is_focused` at the last cache emit, so a focus change invalidates
     /// the cached scene.
     last_focused: bool,
+    /// Fill the parent's available width, allowing compact app navigation on
+    /// phone-sized windows while retaining equal hit targets.
+    flexible_width: bool,
+    /// Visual treatment shared with the immediate-mode segmented painter.
+    style: SegmentedStyle,
+    /// Finger owning the current gesture. Selection commits on release, so a
+    /// scroll or cancelled touch never changes tabs on initial contact.
+    active_touch: Option<u64>,
 }
 
 impl ToggleGroup {
@@ -94,7 +106,34 @@ impl ToggleGroup {
             last_selected: usize::MAX,
             is_focused: false,
             last_focused: false,
+            flexible_width: false,
+            style: SegmentedStyle::Solid,
+            active_touch: None,
         }
+    }
+
+    /// Use the containing width instead of the 120px-per-segment intrinsic
+    /// width. Labels remain equal-width and elide through the normal painter.
+    #[must_use]
+    pub fn with_flexible_width(mut self) -> Self {
+        self.flexible_width = true;
+        self
+    }
+
+    /// Use the same themed treatment as [`SegmentedFace`].
+    #[must_use]
+    pub fn with_style(mut self, style: SegmentedStyle) -> Self {
+        self.style = style;
+        self.cache_dirty = true;
+        self
+    }
+
+    /// A low-chrome tab treatment with a short accent indicator.
+    #[must_use]
+    pub fn underline(mut self) -> Self {
+        self.style = SegmentedStyle::Underline;
+        self.cache_dirty = true;
+        self
     }
 
     #[must_use]
@@ -575,18 +614,24 @@ impl Widget for ToggleGroup {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // 120px per segment, 36px tall; segments always share the
+        // 120px per segment, 44px tall; segments always share the
         // available width equally in `apply_layout`.
         let width = usize_to_f32(self.segments.len().max(1)) * 120.0;
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(width),
-                height: Dimension::length(36.0),
+                width: if self.flexible_width {
+                    Dimension::percent(1.0)
+                } else {
+                    Dimension::length(width)
+                },
+                height: Dimension::length(44.0),
             },
             // A segmented strip has an intrinsic label-bearing width. In a
             // horizontal `Scrollable`, shrinking it to the viewport defeats
             // scrolling and makes labels collide. Non-scrollable parents can
             // clip it, which is still more honest than overlapping controls.
+            // Width is already resolved as a percentage in flexible mode;
+            // never let a tall sibling squash the 44px touch target.
             flex_shrink: 0.0,
             ..Default::default()
         });
@@ -640,86 +685,24 @@ impl Widget for ToggleGroup {
         let scene = &mut self.cached;
         let transform = Affine::IDENTITY;
 
-        let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.md);
         let outer_shape = RoundedRect::from_rect(self.rect, radius);
+        let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
+        let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
+            .style(self.style)
+            .radius(radius);
+        Self::paint(scene, transform, text_renderer, theme, &face);
 
-        // Clip each fill against the outer rounded rect so the end segments
-        // inherit the corner radius.
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &outer_shape,
-        );
-        for (i, seg_rect) in self.segment_rects.iter().enumerate() {
-            let fill = if i == self.selected {
-                colors.accent[ACCENT_PRIMARY_IDX]
-            } else {
-                colors.surfaces.raised
-            };
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+        // Non-solid treatments intentionally have no resting outline, but
+        // keyboard focus must remain unmistakable on every style.
+        if self.is_focused && self.style != SegmentedStyle::Solid {
+            scene.stroke(
+                &Stroke::new(2.0),
                 transform,
-                fill,
+                theme.tokens.colors.border_focus,
                 None,
-                seg_rect,
+                &outer_shape,
             );
-        }
-        scene.pop_layer();
-
-        // Each `stroke(Line, ...)` call is a single `DrawTag::COLOR` entry —
-        // what `separator_count` accounts for at the API level.
-        let separator_color = colors.border_standard;
-        let separator_stroke = Stroke::new(1.0);
-        for seg_rect in self
-            .segment_rects
-            .iter()
-            .take(self.segments.len().saturating_sub(1))
-        {
-            let x = seg_rect.x1;
-            let line = Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1));
-            scene.stroke(&separator_stroke, transform, separator_color, None, &line);
-        }
-
-        // Focus ring: prominent focus colour at 2px.
-        let (border_w, border_c) = if self.is_focused {
-            (2.0, colors.border_focus)
-        } else {
-            (1.0, colors.border_standard)
-        };
-        scene.stroke(
-            &Stroke::new(border_w),
-            transform,
-            border_c,
-            None,
-            &outer_shape,
-        );
-
-        // Vertical centering uses the typography scale because cosmic-text's
-        // measure returns the visual line height.
-        let text_size = theme.tokens.typography.scale.sm;
-        for (i, seg_rect) in self.segment_rects.iter().enumerate() {
-            let Some(segment) = self.segments.get(i) else {
-                continue;
-            };
-            let label = &segment.label;
-            let text_color = if i == self.selected {
-                selected_segment_ink(theme)
-            } else {
-                colors.text_primary
-            };
-            let (tw, th) = text_renderer.measure(label, text_size, None);
-            let text_x = seg_rect.center().x - (f64::from(tw) / 2.0);
-            let text_y = seg_rect.y0 + (seg_rect.height() - f64::from(th)) / 2.0;
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition is float matrix multiplication; it cannot \
-                          overflow or panic"
-            )]
-            let label_transform = transform * Affine::translate((text_x, text_y));
-            text_renderer.draw_text(scene, label, text_size, text_color, label_transform, None);
         }
         self.cache_rect = self.rect;
         out_scene.append(&self.cached, Some(out_transform));
@@ -812,6 +795,62 @@ impl Widget for ToggleGroup {
                         break;
                     }
                 }
+            }
+            WindowEvent::Touch(touch) => {
+                let pos = Point::new(
+                    touch.location.x / scale_factor,
+                    touch.location.y / scale_factor,
+                );
+                match touch.phase {
+                    winit::event::TouchPhase::Started
+                        if self.active_touch.is_none() && self.rect.contains(pos) =>
+                    {
+                        self.active_touch = Some(touch.id);
+                        *focus_target = Some(node_id);
+                        *handled = true;
+                    }
+                    winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
+                        *handled = true;
+                    }
+                    winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
+                        self.active_touch = None;
+                        if let Some(index) = self
+                            .segment_rects
+                            .iter()
+                            .position(|segment| segment.contains(pos))
+                        {
+                            self.request_selection(index);
+                        }
+                        *handled = true;
+                    }
+                    winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
+                        self.active_touch = None;
+                        *handled = true;
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if self.is_focused && key.state == ElementState::Pressed =>
+            {
+                let next = match &key.logical_key {
+                    Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => self
+                        .selected
+                        .checked_sub(1)
+                        .unwrap_or_else(|| self.segments.len().saturating_sub(1)),
+                    Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => self
+                        .selected
+                        .saturating_add(1)
+                        .checked_rem(self.segments.len().max(1))
+                        .unwrap_or(0),
+                    Key::Named(NamedKey::Home) => 0,
+                    Key::Named(NamedKey::End) => self.segments.len().saturating_sub(1),
+                    _ => return,
+                };
+                if !self.segments.is_empty() {
+                    self.request_selection(next);
+                }
+                *handled = true;
             }
             _ => {}
         }
@@ -1033,6 +1072,15 @@ mod tests {
         }
     }
 
+    fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            force: None,
+            id: 7,
+        })
+    }
     fn dispatch(g: &mut ToggleGroup, event: &WindowEvent) {
         let _ = dispatch_handled(g, event);
     }
@@ -1128,6 +1176,46 @@ mod tests {
             0,
             "unfocused controls do not consume keys"
         );
+    }
+
+    #[test]
+    fn retained_group_has_touch_sized_intrinsic_height() {
+        let mut group = ToggleGroup::new(vec![Segment::new("World"), Segment::new("Timers")], 0);
+        let mut tree = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = group.build_layout(&mut tree, &Theme::dark(), &mut map);
+        tree.compute_layout(node, taffy::Size::MAX_CONTENT).unwrap();
+        group.apply_layout(&tree, node, Point::ZERO);
+        assert!(group.get_rect().height() >= 44.0);
+    }
+
+    #[test]
+    fn touch_commits_on_release_and_keyboard_arrows_wrap() {
+        let mut group = group_at(
+            vec![
+                Segment::new("World"),
+                Segment::new("Alarms"),
+                Segment::new("Timers"),
+            ],
+            0,
+            Rect::new(0.0, 0.0, 300.0, 44.0),
+        );
+        dispatch(
+            &mut group,
+            &touch(winit::event::TouchPhase::Started, Point::new(250.0, 22.0)),
+        );
+        assert_eq!(group.selected(), 0, "touch down does not switch a tab");
+        dispatch(
+            &mut group,
+            &touch(winit::event::TouchPhase::Ended, Point::new(250.0, 22.0)),
+        );
+        assert_eq!(group.selected(), 2);
+
+        group.set_focus(true);
+        dispatch(&mut group, &key_press(NamedKey::ArrowRight));
+        assert_eq!(group.selected(), 0, "right arrow wraps to the first tab");
+        dispatch(&mut group, &key_press(NamedKey::End));
+        assert_eq!(group.selected(), 2);
     }
 
     #[test]
