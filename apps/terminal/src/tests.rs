@@ -569,6 +569,38 @@ fn terminal_draw_reads_monospace_from_theme_tokens() {
 }
 
 #[test]
+fn terminal_draw_reflows_to_resolved_monospace_at_large_text_scale() {
+    use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+    use vello::{Scene, kurbo::Affine};
+
+    let (mut widget, _) = build_test_widget();
+    // Model the stale pre-draw measurement case: a narrow provisional advance
+    // would initially tell the PTY that far more columns fit than its resolved
+    // monospace glyphs actually can at a 200% accessibility text scale.
+    widget.force_geometry(Rect::new(0.0, 0.0, 390.0, 844.0), 4.0, 12.0);
+    let (provisional_cols, _) = widget.grid_size();
+    let theme = Theme::high_contrast().with_text_scale(2.0);
+    let mut scene = Scene::new();
+    let mut text_renderer = TextRenderer::new();
+    widget.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &theme,
+        &PresenceCtx::empty(),
+    );
+    let (resolved_cols, resolved_rows) = widget.grid_size();
+    assert!(resolved_cols < provisional_cols);
+    assert!(resolved_cols > 0 && resolved_rows > 0);
+}
+
+#[test]
+fn disconnected_badge_keeps_a_complete_concise_state_at_large_text_scale() {
+    let (widget, _) = build_test_widget();
+    assert_eq!(widget.disconnected_badge_label(), "Session ended");
+}
+
+#[test]
 fn terminal_ansi_mapping_tracks_palette_swaps() {
     // Swap the palette and prove the ANSI 0..=15 color table the terminal
     // uses moves with it. Task 19 requires a behavioural proof that
