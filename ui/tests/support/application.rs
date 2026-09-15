@@ -27,6 +27,65 @@ thread_local! {
     static FOREIGN_CONTEXT: RefCell<Option<HostContext>> = const { RefCell::new(None) };
     static OPERATIONS: RefCell<Vec<Rc<RefCell<Vec<String>>>>> = const { RefCell::new(vec![]) };
     static PROVIDERS: RefCell<Option<Rc<RefCell<ProviderObservations>>>> = const { RefCell::new(None) };
+    static PRESENTATION: RefCell<Option<Rc<RefCell<PresentationObservations>>>> = const { RefCell::new(None) };
+}
+
+#[derive(Default)]
+pub struct PresentationObservations {
+    pub layouts: Vec<ui::Theme>,
+    pub draws: Vec<(ui::Theme, f32)>,
+    pub motion: Vec<bool>,
+}
+pub fn observe_presentation() -> Rc<RefCell<PresentationObservations>> {
+    let observations = Rc::new(RefCell::new(PresentationObservations::default()));
+    PRESENTATION.with_borrow_mut(|slot| *slot = Some(observations.clone()));
+    observations
+}
+/// An effective snapshot with intentionally distinct type and runner factors.
+pub fn presentation_inputs(theme_scale: f32) -> ui::application::ComponentRunnerInputs {
+    configure_presentation(runner_inputs(), theme_scale)
+}
+pub fn configure_presentation(
+    mut inputs: ui::application::ComponentRunnerInputs,
+    theme_scale: f32,
+) -> ui::application::ComponentRunnerInputs {
+    inputs.theme.name = "explicit presentation".into();
+    inputs.theme.tokens.font_size_base = 19.0;
+    inputs.theme.accent_primary = inputs.theme.status_success;
+    inputs.theme = inputs
+        .theme
+        .with_ui_scale(1.25)
+        .with_text_scale(theme_scale)
+        .with_reduce_motion(true);
+    inputs.theme.radius_standard = 17.5;
+    inputs.theme.padding_standard = 21.25;
+    inputs.theme.gap_standard = 8.75;
+    inputs.text_renderer.set_text_scale(1.5);
+    inputs
+}
+pub fn assert_presentation(theme: &ui::Theme, scale: f32, ui_scale: f32) {
+    assert_eq!(theme.text_scale, scale);
+    assert_eq!(theme.ui_scale, ui_scale);
+    assert_eq!(theme.name, "explicit presentation");
+    assert!(theme.reduce_motion);
+    assert_eq!(theme.accent_primary, theme.status_success);
+    assert!((theme.tokens.font_size_base - 19.0 * ui_scale * scale).abs() < 0.0001);
+    let base = ui::Theme::dark();
+    assert!(
+        (theme.tokens.typography.scale.sm - base.tokens.typography.scale.sm * ui_scale * scale)
+            .abs()
+            < 0.0001
+    );
+    assert!(
+        (theme.tokens.typography.scale.x4l - base.tokens.typography.scale.x4l * ui_scale * scale)
+            .abs()
+            < 0.0001
+    );
+    assert!((theme.tokens.spacing.s3 - base.tokens.spacing.s3 * ui_scale).abs() < 0.0001);
+    assert!((theme.tokens.radii.md - base.tokens.radii.md * ui_scale).abs() < 0.0001);
+    assert!((theme.padding_standard - 17.0 * ui_scale).abs() < 0.0001);
+    assert!((theme.gap_standard - 7.0 * ui_scale).abs() < 0.0001);
+    assert!((theme.radius_standard - 14.0 * f64::from(ui_scale)).abs() < 0.0001);
 }
 
 thread_local! {
@@ -177,6 +236,30 @@ pub fn definition(create: ui::application::ComponentFactory) -> ApplicationDefin
 pub fn probe_definition() -> &'static ApplicationDefinition {
     static DEFINITION: std::sync::OnceLock<ApplicationDefinition> = std::sync::OnceLock::new();
     DEFINITION.get_or_init(|| definition(probe_factory))
+}
+/// Runner conformance uses this one definition and the existing action factory.
+pub fn runner_probe_definition() -> &'static ApplicationDefinition {
+    static DEFINITION: std::sync::OnceLock<ApplicationDefinition> = std::sync::OnceLock::new();
+    DEFINITION.get_or_init(|| definition(action_probe_factory))
+}
+pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
+    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        "en-US",
+    );
+    ui::application::ComponentRunnerInputs {
+        theme: ui::Theme::dark(),
+        text_renderer: ui::TextRenderer::with_font_catalog(&catalog).unwrap(),
+    }
+}
+pub fn runner_permissions() -> Rc<RefCell<PermissionContext>> {
+    Rc::new(RefCell::new(
+        PermissionContext::from_capabilities(
+            Actor::person(Some(ui::permissions::Role::Owner), "probe-author"),
+            vec![],
+        )
+        .at_unix_time(100),
+    ))
 }
 pub struct ProbeHost {
     pub temp: tempfile::TempDir,
@@ -361,6 +444,7 @@ fn build_probe(
             caret: String::new(),
             focused: false,
             corrupt_restore: false,
+            rect: vello::kurbo::Rect::ZERO,
         }),
         registry,
     ))
@@ -397,6 +481,7 @@ pub fn omit_initialization(
             caret: String::new(),
             focused: false,
             corrupt_restore: false,
+            rect: vello::kurbo::Rect::ZERO,
         }),
         qos_actions::ActionRegistry::new(),
     ))
@@ -417,8 +502,16 @@ struct ProbeRoot {
     caret: String,
     focused: bool,
     corrupt_restore: bool,
+    rect: vello::kurbo::Rect,
 }
 impl Widget for ProbeRoot {
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        PRESENTATION.with_borrow(|slot| {
+            if let Some(observations) = slot {
+                observations.borrow_mut().motion.push(reduced);
+            }
+        });
+    }
     fn needs_commit(&self) -> bool {
         COMMIT_REQUEST.get()
     }
@@ -435,6 +528,10 @@ impl Widget for ProbeRoot {
         ))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one shared resource declares the runner action matrix"
+    )]
     fn resources(&self, _: &AutoCommit) -> Vec<qos_actions::Resource> {
         if !self.operational {
             return vec![];
@@ -461,11 +558,98 @@ impl Widget for ProbeRoot {
                     )
                     .unwrap()
                     .with_contract(qos_actions::ActionContract::view()),
+                )
+                .with_action(
+                    qos_actions::ActionSpec::operation(
+                        "effect",
+                        "Effect",
+                        qos_actions::OperationKind::Effect,
+                        "probe.effect",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(qos_actions::ActionContract::view()),
+                )
+                .with_action(
+                    qos_actions::ActionSpec::operation(
+                        "pending",
+                        "Pending",
+                        qos_actions::OperationKind::Effect,
+                        "probe.pending",
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(qos_actions::ActionContract {
+                        execution: qos_actions::ExecutionMode::Background { cancellable: true },
+                        result: qos_actions::ResultSpec::Job,
+                        ..qos_actions::ActionContract::view()
+                    }),
+                )
+                .with_action(
+                    qos_actions::ActionSpec::prompted(
+                        "prompt",
+                        "Prompt",
+                        "Value",
+                        "Value",
+                        qos_actions::ExecutionLocus::ClientLocal,
+                        |value| {
+                            qos_actions::EncodedAction::encode(
+                                "probe.edit",
+                                &ProbeAction(value.into()),
+                            )
+                            .unwrap()
+                        },
+                    )
+                    .requiring(qos_actions::PermissionRequirement::Write),
+                )
+                .with_action(
+                    qos_actions::ActionSpec::typed(
+                        "typed",
+                        "Typed",
+                        "Value",
+                        qos_actions::ExecutionLocus::ClientLocal,
+                        vec![
+                            qos_actions::ActionParam::required(
+                                "value",
+                                qos_actions::ParamType::Text,
+                                "Value",
+                            ),
+                            qos_actions::ActionParam::required(
+                                "enabled",
+                                qos_actions::ParamType::Boolean,
+                                "Enabled",
+                            ),
+                        ],
+                        |args| {
+                            assert_eq!(args.boolean("enabled"), Some(true));
+                            qos_actions::EncodedAction::encode(
+                                "probe.edit",
+                                &ProbeAction(args.text("value").unwrap().into()),
+                            )
+                            .unwrap()
+                        },
+                    )
+                    .requiring(qos_actions::PermissionRequirement::Write),
+                )
+                .with_action(
+                    qos_actions::ActionSpec::immediate(
+                        "confirm",
+                        "Confirm",
+                        "probe.edit",
+                        &ProbeAction("confirmed".into()),
+                    )
+                    .unwrap()
+                    .with_contract(qos_actions::ActionContract {
+                        confirmation: qos_actions::ConfirmationPolicy::Phrase {
+                            phrase: "JA".into(),
+                        },
+                        ..qos_actions::ActionContract::default()
+                    }),
                 ),
         ]
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["probe.view"]
+        &["probe.view", "probe.effect", "probe.pending"]
     }
     fn start_resource_operation_with_document(
         &mut self,
@@ -476,13 +660,34 @@ impl Widget for ProbeRoot {
         _: &mut AutoCommit,
         _: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if type_id != "probe.view" {
+        if !self.local_resource_operation_handlers().contains(&type_id) {
             return Ok(None);
+        }
+        if type_id == "probe.pending" {
+            self.operations.borrow_mut().push("pending".into());
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
         self.operations.borrow_mut().push(format!("{kind:?}"));
         Ok(Some(ui::widget::ResourceOperationStart::Completed(
             qos_actions::ActionOutput::default(),
         )))
+    }
+    fn poll_resource_operation(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        cancel: bool,
+        _: &AutoCommit,
+        _: &ObjId,
+    ) -> Option<qos_actions::InvocationUpdate> {
+        if !cancel {
+            return None;
+        }
+        assert!(!self.local.writer().try_set("cancelled after close".into()));
+        self.operations.borrow_mut().push("cancelled".into());
+        Some(qos_actions::InvocationUpdate::Cancelled {
+            invocation,
+            message: None,
+        })
     }
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         PROVIDERS.with_borrow(|providers| {
@@ -500,23 +705,57 @@ impl Widget for ProbeRoot {
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
-        _: &ui::Theme,
+        theme: &ui::Theme,
         map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let node = tree.new_leaf(taffy::Style::default()).unwrap();
+        PRESENTATION.with_borrow(|slot| {
+            if let Some(observations) = slot {
+                observations.borrow_mut().layouts.push(theme.clone());
+            }
+        });
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::length(80.0),
+                height: taffy::Dimension::length(30.0),
+            },
+            ..Default::default()
+        };
+        let node = tree.new_leaf(style).unwrap();
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, _: &taffy::TaffyTree<()>, _: taffy::NodeId, _: vello::kurbo::Point) {
+    fn apply_layout(
+        &mut self,
+        tree: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        let layout = tree.layout(node).unwrap();
+        let x = origin.x + f64::from(layout.location.x);
+        let y = origin.y + f64::from(layout.location.y);
+        self.rect = vello::kurbo::Rect::new(
+            x,
+            y,
+            x + f64::from(layout.size.width),
+            y + f64::from(layout.size.height),
+        );
     }
     fn draw(
         &mut self,
         _: &mut vello::Scene,
         _: vello::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
+        text: &mut ui::TextRenderer,
+        theme: &ui::Theme,
         _: &ui::PresenceCtx,
     ) {
+        PRESENTATION.with_borrow(|slot| {
+            if let Some(observations) = slot {
+                observations
+                    .borrow_mut()
+                    .draws
+                    .push((theme.clone(), text.text_scale()));
+            }
+        });
     }
     fn handle_event(
         &mut self,
@@ -535,7 +774,7 @@ impl Widget for ProbeRoot {
         "application-probe"
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
+        self.rect
     }
     fn is_focusable(&self) -> bool {
         true
@@ -617,6 +856,7 @@ pub fn invalid_contribution(
             caret: String::new(),
             focused: false,
             corrupt_restore: false,
+            rect: vello::kurbo::Rect::ZERO,
         }),
         qos_actions::ActionRegistry::new(),
     ))
@@ -651,6 +891,7 @@ pub fn restore_breaks_contribution(
             caret: String::new(),
             focused: false,
             corrupt_restore: true,
+            rect: vello::kurbo::Rect::ZERO,
         }),
         qos_actions::ActionRegistry::new(),
     ))

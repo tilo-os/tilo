@@ -176,6 +176,14 @@ impl Default for WakeHandle {
 }
 
 impl WakeHandle {
+    pub(crate) fn accepts(&self, event: &WakeEvent) -> bool {
+        self.is_active()
+            && self
+                .route
+                .as_ref()
+                .is_some_and(|route| Weak::ptr_eq(route, &event.route))
+    }
+
     pub(crate) fn enter_if_open(&self) -> Result<WakeScopeGuard, WakeBindError> {
         let route = self.route.as_ref().ok_or(WakeBindError::Closed)?;
         if !route
