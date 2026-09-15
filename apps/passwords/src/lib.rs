@@ -92,6 +92,15 @@ impl PasswordsModel {
                     || item.title.to_lowercase().contains(&query)
                     || item.username.to_lowercase().contains(&query)
                     || item
+                        .origins
+                        .iter()
+                        .any(|origin| origin.to_lowercase().contains(&query))
+                    || item.notes.to_lowercase().contains(&query)
+                    || item.fields.iter().any(|(name, value)| {
+                        name.to_lowercase().contains(&query)
+                            || value.to_lowercase().contains(&query)
+                    })
+                    || item
                         .tags
                         .iter()
                         .any(|tag| tag.to_lowercase().contains(&query))
@@ -238,6 +247,34 @@ mod tests {
         assert_eq!(health.reused, 2);
         assert_eq!(health.weak, 1);
         assert_eq!(health.older_than_year, 1);
+    }
+
+    #[test]
+    fn search_finds_context_but_never_the_secret_itself() {
+        let root = std::env::temp_dir().join(format!(
+            "qos-passwords-search-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut model = PasswordsModel::open_in(&root);
+        let mut item = SecretItem::login("Payroll", "ada", "DoNotIndexThis7");
+        item.add_origin("https://people.example/pay").unwrap();
+        item.notes = "Managed by Finance".into();
+        item.fields.insert("account number".into(), "A-1942".into());
+        item.tags.insert("work".into());
+        model.save_item(&mut item).unwrap();
+
+        for query in [
+            "people.example",
+            "finance",
+            "account number",
+            "a-1942",
+            "work",
+        ] {
+            assert_eq!(model.search(query).len(), 1, "query: {query}");
+        }
+        assert!(model.search("DoNotIndexThis7").is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
