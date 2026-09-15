@@ -56,23 +56,23 @@ pub fn store_card(
     // from the live theme so it stays legible in light and dark.
     // A flex-grow Container owns the width beside the fixed artwork. This is
     // important because a bare Column deliberately claims the full row width.
-    let category = item
-        .categories
-        .first()
-        .map_or_else(|| "General".to_owned(), |value| category_label(value));
     let identity = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(4.0)
+        .with_gap(3.0)
         .push(Box::new(
             Text::new(&item.name)
-                .with_scaled_size(if compact { 18.0 } else { 20.0 })
+                .with_scaled_size(if compact { 18.0 } else { 19.0 })
                 .with_weight(TextWeight::Semibold),
         ))
         .push(Box::new(
-            Text::new(&format!("{} · {category}", badge_line(item)))
-                .with_scaled_size(13.0)
-                .with_color(theme.text_dim),
+            Text::new(&if !compact && item.installed.is_installed() {
+                source_line(item)
+            } else {
+                badge_line(item)
+            })
+            .with_scaled_size(12.0)
+            .with_color(theme.text_dim),
         ));
 
     // The primary action button (Open / Update / Install / Remove-flatpak)
@@ -108,9 +108,7 @@ pub fn store_card(
     if let Some(binding) = detail_binding {
         details = details.on_action(binding);
     }
-    let details = details
-        .fit_content(40.0)
-        .tooltip(format!("Show details for {}", item.name));
+    let details = details.fit_content(40.0).tooltip(card_summary(item));
     let action_btn = action_btn.fit_content(40.0);
 
     let content: Box<dyn Widget> = if compact {
@@ -122,6 +120,7 @@ pub fn store_card(
                 Row::new()
                     .no_wrap()
                     .push(icon_artwork(item, images, large_text))
+                    .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
                     .push(Box::new(
                         Container::new()
                             .with_no_padding()
@@ -144,61 +143,84 @@ pub fn store_card(
                 .push(Box::new(action_btn)),
         ));
         Box::new(column)
+    } else if item.installed.is_installed() {
+        // Installed software is already a known quantity. Keep this row
+        // compact and operational: stable identity at left, one restrained
+        // provenance line, and one aligned action cluster. Full descriptive
+        // copy remains in the Details tooltip/sheet instead of repeating a
+        // paragraph in the "ready" shelf.
+        Box::new(
+            Row::new()
+                .no_wrap()
+                .with_fill_remaining_height()
+                .push(Box::new(super::Artwork::new(
+                    images,
+                    item.icon_url.as_deref(),
+                    &item.name,
+                    48.0,
+                    48.0,
+                )))
+                .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_child(Box::new(identity)),
+                ))
+                .push(Box::new(details))
+                .push(Box::new(action_btn)),
+        )
     } else {
         Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_gap(10.0)
+            Row::new()
+                .no_wrap()
+                .with_fill_remaining_height()
                 .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(super::Artwork::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_size(64.0, 64.0)
+                        .with_child(Box::new(super::Artwork::new(
                             images,
                             item.icon_url.as_deref(),
                             &item.name,
-                            48.0,
-                            48.0,
-                        )))
-                        .push(Box::new(
-                            Container::new()
+                            64.0,
+                            64.0,
+                        ))),
+                ))
+                .push(Box::new(Container::new().with_no_padding().with_width(8.0)))
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .filling()
+                        .with_child(Box::new(
+                            Column::new()
                                 .with_no_padding()
-                                .with_flex_grow()
-                                .with_child(Box::new(identity)),
+                                .with_fill_remaining_height()
+                                .with_gap(5.0)
+                                .push(Box::new(identity))
+                                .push(Box::new(
+                                    Text::new(&item.description)
+                                        .with_scaled_size(13.0)
+                                        .with_color(theme.text_dim),
+                                ))
+                                .push(Box::new(Spacer::new()))
+                                .push(Box::new(
+                                    Row::new()
+                                        .no_wrap()
+                                        .push(Box::new(Spacer::new()))
+                                        .push(Box::new(details))
+                                        .push(Box::new(action_btn)),
+                                )),
                         )),
-                ))
-                .push(Box::new(
-                    Text::new(&item.description)
-                        .with_scaled_size(14.0)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(details))
-                        .push(Box::new(action_btn)),
                 )),
         )
     };
-    // A very low-tint surface gives source metadata, artwork and the primary
-    // action a coherent visual field instead of the old generic list-row
-    // treatment. The colour is derived from the active system theme rather
-    // than a hard-coded brand wash, so custom and high-contrast themes retain
-    // their contrast guarantees.
-    let tint = match &item.source {
-        StoreSource::Qos { .. } => theme.tokens.colors.semantic.success,
-        StoreSource::Flathub => theme.tokens.colors.semantic.info,
-    };
-    let card_fill = theme.tokens.colors.tinted_chip_on(
-        theme.bg_app,
-        tint,
-        0.08,
-        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-    );
-    let card = Container::new()
-        .with_fill(card_fill.fill)
-        .with_child(content);
+    // Source is metadata, not branding. A neutral OS surface keeps the browse
+    // page calm and lets artwork plus the primary action establish hierarchy;
+    // qOS/Flatpak provenance remains explicit in the identity line.
+    let card_fill = theme.bg_primary;
+    let card = Container::new().with_fill(card_fill).with_child(content);
     if compact {
         Box::new(card)
     } else {
@@ -249,6 +271,35 @@ fn badge_line(item: &StoreItem) -> String {
     }
 }
 
+fn source_line(item: &StoreItem) -> String {
+    match &item.source {
+        StoreSource::Qos { .. } => "qOS verified".into(),
+        StoreSource::Flathub => "Flathub".into(),
+    }
+}
+
+/// Full card copy for the Details hover/focus affordance. The visual card
+/// deliberately keeps metadata quiet and bounded; assistive and pointer users
+/// can still inspect the unabridged source, category, version and description
+/// without relying on clipped paint.
+fn card_summary(item: &StoreItem) -> String {
+    let categories = if item.categories.is_empty() {
+        "General".to_owned()
+    } else {
+        item.categories
+            .iter()
+            .map(|value| category_label(value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "Show details for {}. {}. Categories: {categories}. {}",
+        item.name,
+        badge_line(item),
+        item.description
+    )
+}
+
 /// Turn registry category identifiers into human-facing labels without
 /// changing the stable value used by filtering and search.
 fn category_label(value: &str) -> String {
@@ -262,12 +313,44 @@ fn category_label(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::category_label;
+    use super::{card_summary, category_label};
+
+    use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
 
     #[test]
     fn registry_categories_are_presented_as_words() {
         assert_eq!(category_label("AudioVideo"), "Audio & video");
         assert_eq!(category_label("Development"), "Developer tools");
         assert_eq!(category_label("Games"), "Games");
+    }
+
+    #[test]
+    fn card_tooltip_preserves_full_quiet_metadata_and_description() {
+        let item = StoreItem {
+            id: "org.example.Editor".into(),
+            name: "Editor".into(),
+            description: "Write without distractions.".into(),
+            categories: vec!["Development".into(), "Productivity".into()],
+            icon_url: None,
+            screenshot_urls: Vec::new(),
+            homepage_url: None,
+            source_url: None,
+            install_ref_path: None,
+            source: StoreSource::Flathub,
+            trust: StoreTrust::Flathub,
+            versions: vec![StoreItemVersion {
+                version: "2.4".into(),
+                released_at_unix: 0,
+                download_url: None,
+                root_hash_hex: None,
+                size_bytes: 0,
+            }],
+            publisher_pubkey_hex: None,
+            installed: InstalledState::Not,
+        };
+        let summary = card_summary(&item);
+        assert!(summary.contains("Flathub · v2.4"));
+        assert!(summary.contains("Developer tools, Productivity"));
+        assert!(summary.contains("Write without distractions."));
     }
 }
