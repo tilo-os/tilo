@@ -514,7 +514,10 @@ impl ChatApp {
         fill_rect(scene, tf, self.rect, c.surfaces.base);
         fill_rect(scene, tf, self.rect, c.surfaces.overlay);
 
-        // title + participant count
+        let scale = f64::from(self.layout_text_scale);
+        // title + participant count. This is a full focused surface at large
+        // text, so all of its vertical reservations scale with its type rather
+        // than letting the title paint into the tile grid.
         let title = self
             .channel(&self.call.channel)
             .map_or_else(|| "Call".into(), |c| c.name.clone());
@@ -527,7 +530,7 @@ impl ChatApp {
             20.0,
             c.text_primary,
             self.rect.center().x - f64::from(tw) / 2.0,
-            self.rect.y0 + 28.0,
+            self.rect.y0 + 20.0 * scale,
             TextWeight::Bold,
             None,
         );
@@ -556,7 +559,7 @@ impl ChatApp {
             12.0,
             c.text_dim,
             self.rect.center().x - f64::from(sw) / 2.0,
-            self.rect.y0 + 56.0,
+            self.rect.y0 + 50.0 * scale,
         );
 
         // The host active-speaker treatment is shared by both layouts: a bright
@@ -808,8 +811,11 @@ impl ChatApp {
     /// geometry on a single frame.
     pub(crate) fn overlay_content_region(&self) -> Rect {
         let r = self.rect;
-        let inset = (r.width() * 0.05).clamp(16.0, 40.0);
-        let top = r.y0 + 72.0; // below the title (y0+28) + subtitle (y0+56)
+        let scale = f64::from(self.layout_text_scale);
+        let inset = ((r.width() * 0.05).clamp(16.0, 40.0) * scale.min(1.3)).min(r.width() * 0.12);
+        // below the scaled title and subtitle; the two lanes must never paint
+        // under the participant tiles in a 2× text session.
+        let top = r.y0 + 72.0 * scale;
         let (bar, _) = self.overlay_controls_layout();
         let bottom = (bar.y0 - 14.0).max(top + 1.0);
         Rect::new(r.x0 + inset, top, r.x1 - inset, bottom)
@@ -922,13 +928,20 @@ impl ChatApp {
             ("Collapse", false, false, true, Hit::CallExpand),
             ("Leave", false, true, true, Hit::CallLeave),
         ];
-        let gap = 8.0;
-        let row_gap = 8.0;
-        let bh = 32.0;
-        let side_pad = 24.0;
-        let inner_pad = 12.0;
+        let scale = f64::from(self.layout_text_scale);
+        let gap = 8.0 * scale.min(1.35);
+        let row_gap = 8.0 * scale.min(1.35);
+        // Controls are actual 44px targets at 1× and grow with enlarged text;
+        // the greedy wrap below turns a narrow high-text call into coherent
+        // rows instead of overlapping labels or a horizontal strip.
+        let bh = 44.0 * scale.min(1.5);
+        let side_pad = 24.0 * scale.min(1.25);
+        let inner_pad = 12.0 * scale.min(1.35);
         let max_row_w = (self.rect.width() - 2.0 * side_pad).max(120.0);
-        let widths: Vec<f64> = specs.iter().map(|s| overlay_button_width(s.0)).collect();
+        let widths: Vec<f64> = specs
+            .iter()
+            .map(|s| overlay_button_width(s.0) * scale)
+            .collect();
 
         // Greedy pack into rows that each fit `max_row_w`. `rows` always holds
         // at least one (possibly empty) row, so `last`/`last_mut` never miss —
@@ -1194,7 +1207,7 @@ impl ChatApp {
                 1.0,
             );
         }
-        let (lw, _) = tr.measure(label_txt, 13.0, None);
+        let (lw, lh) = tr.measure(label_txt, 13.0, None);
         label(
             scene,
             tr,
@@ -1203,7 +1216,7 @@ impl ChatApp {
             13.0,
             fg,
             rect.center().x - f64::from(lw) / 2.0,
-            rect.center().y - 8.0,
+            rect.center().y - f64::from(lh) / 2.0,
         );
     }
 
