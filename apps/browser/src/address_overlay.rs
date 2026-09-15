@@ -250,9 +250,15 @@ impl AddressSuggestions {
             &panel,
         );
 
-        let title_size = theme.tokens.typography.scale.sm;
-        let url_size = theme.tokens.typography.scale.xs;
-        let text_max = (f64::from(self.width) - ROW_PAD_X * 2.0).max(0.0) as f32;
+        // `TextRenderer` already applies the accessibility multiplier.  Using
+        // the theme's pre-scaled typography tokens here would apply it twice
+        // (4× glyphs at a 200% preference). Keep base sizes and scale only the
+        // surrounding geometry, exactly as shared `Text` does.
+        let title_size = 14.0;
+        let url_size = 12.0;
+        let scale = f64::from(self.text_scale);
+        let row_pad_x = ROW_PAD_X * scale;
+        let text_max = (f64::from(self.width) - row_pad_x * 2.0).max(0.0) as f32;
 
         let row_height = self.row_height();
         for (idx, entry) in self.items.iter().enumerate() {
@@ -299,13 +305,13 @@ impl AddressSuggestions {
             } else {
                 entry.title.as_str()
             };
-            let x = self.rect.x0 + ROW_PAD_X;
+            let x = self.rect.x0 + row_pad_x;
             text_renderer.draw_text(
                 scene,
                 title,
                 title_size,
                 theme.text_primary,
-                transform * Affine::translate((x, row_top + 8.0)),
+                transform * Affine::translate((x, row_top + 8.0 * scale)),
                 Some(text_max),
             );
             text_renderer.draw_text(
@@ -313,7 +319,8 @@ impl AddressSuggestions {
                 &entry.url,
                 url_size,
                 theme.text_dim,
-                transform * Affine::translate((x, row_top + 8.0 + f64::from(title_size) + 6.0)),
+                transform
+                    * Affine::translate((x, row_top + (8.0 + f64::from(title_size) + 6.0) * scale)),
                 Some(text_max),
             );
         }
@@ -458,6 +465,76 @@ impl Widget for AddressSuggestions {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let children = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let title = if entry.title.trim().is_empty() {
+                    entry.url.as_str()
+                } else {
+                    entry.title.as_str()
+                };
+                let row_top = self.rect.y0 + PAD + index as f64 * self.row_height();
+                AccessNode::new(Role::ListItem)
+                    .with_action_target(format!(
+                        "browser.address-suggestion:{}",
+                        blake3::hash(entry.url.as_bytes()).to_hex()
+                    ))
+                    .with_name(title)
+                    .with_description(entry.url.clone())
+                    .with_bounds(Rect::new(
+                        self.rect.x0,
+                        row_top,
+                        self.rect.x1,
+                        row_top + self.row_height(),
+                    ))
+                    .with_position(index.saturating_add(1), self.items.len())
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: index == self.selected,
+                        selected: index == self.selected,
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::List)
+                .with_name("Address suggestions")
+                .with_bounds(self.rect)
+                .with_state(AccessState {
+                    hidden: self.items.is_empty(),
+                    expanded: Some(!self.items.is_empty()),
+                    ..Default::default()
+                })
+                .with_children(children),
+        )
+    }
+
+    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        let [index] = path else {
+            return None;
+        };
+        (*index < self.items.len()).then(|| {
+            let top = self.rect.y0 + PAD + *index as f64 * self.row_height();
+            Rect::new(self.rect.x0, top, self.rect.x1, top + self.row_height())
+        })
+    }
+
+    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
+        let [index] = path else {
+            return false;
+        };
+        if *index >= self.items.len() {
+            return false;
+        }
+        self.selected = *index;
+        true
+    }
+
     /// While the overlay is up it behaves like a transient popover anchored
     /// over the page, so it reports its rect as a modal capture — matching
     /// the toolkit's other dropdown-style overlays.
@@ -562,6 +639,25 @@ mod tests {
             Some(1),
             "hit testing follows the larger visual row rather than the old 46px grid"
         );
+    }
+
+    #[test]
+    fn suggestions_expose_stable_selectable_screen_reader_rows() {
+        let mut w = AddressSuggestions::new();
+        w.set_suggestions(three());
+        w.set_anchor(Point::new(20.0, 40.0), 320.0);
+        let node = Widget::accessibility(&w).unwrap();
+        assert_eq!(node.children.len(), 3);
+        assert!(node.children[0].state.selected);
+        assert!(
+            node.children[0]
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with("browser.address-suggestion:"))
+        );
+        assert!(w.focus_synthetic_accessibility(&[2]));
+        assert_eq!(w.selected_index(), Some(2));
+        assert!(w.synthetic_accessibility_rect(&[2]).is_some());
     }
 
     #[test]

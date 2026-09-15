@@ -165,6 +165,20 @@ pub enum WebViewCommand {
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
+    /// Start a user-requested download of an absolute HTTP(S) URL.
+    StartDownload {
+        uri: String,
+    },
+    /// Finish `WebKit`'s asynchronous destination decision with the exact
+    /// absolute path granted by the desktop file portal.
+    SetDownloadDestination {
+        id: String,
+        path: String,
+    },
+    /// Cancel an awaiting or active download by its engine-issued stable id.
+    CancelDownload {
+        id: String,
+    },
 }
 
 /// Navigation / UI state changes from the engine to the host app, folded
@@ -190,6 +204,28 @@ pub enum WebViewEvent {
     },
     MediaElementUnavailable {
         request_id: u64,
+    },
+    /// `WebKit` received response metadata and is waiting for the host's file
+    /// portal to grant an explicit destination.
+    DownloadRequested {
+        id: String,
+        uri: String,
+        suggested_filename: String,
+    },
+    DownloadProgress {
+        id: String,
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+        progress: f64,
+    },
+    DownloadFinished {
+        id: String,
+        path: String,
+    },
+    DownloadFailed {
+        id: String,
+        error: String,
+        cancelled: bool,
     },
 }
 

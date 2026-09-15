@@ -1499,6 +1499,7 @@ dependencies = [
 name = "browser"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "blake3",
  "dirs 6.0.0",
