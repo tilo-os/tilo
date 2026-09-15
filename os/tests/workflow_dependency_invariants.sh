@@ -28,21 +28,10 @@ cosign_workflows=(
 )
 syft_workflow="$workflows/build-image.yml"
 
-while IFS=: read -r file line match; do
-  ref="${match#uses:}"
-  ref="${ref#${ref%%[![:space:]]*}}"
-  case "$ref" in
-    ./*|docker://*) continue ;;
-  esac
-  revision="${ref##*@}"
-  if [[ ! "$revision" =~ ^[0-9a-fA-F]{40}$ ]]; then
-    printf 'mutable workflow action: %s:%s: %s\n' "$file" "$line" "$ref" >&2
-    fail=1
-  fi
-done < <(grep -R -n -o -E 'uses:[[:space:]]*[^[:space:]#]+' "$workflows")
-
-if [ "$fail" = 0 ]; then
+if python3 "$repo/tools/check_workflow_actions.py"; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
+else
+  fail=1
 fi
 
 if grep -Fq 'command -v openssl >/dev/null || dnf install -y openssl' \
