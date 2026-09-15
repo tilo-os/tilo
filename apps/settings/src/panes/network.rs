@@ -509,6 +509,10 @@ impl NetworkPane {
         self
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers construct the exact typed request whose token is completed"
+    )]
     fn finish_local_operation(
         &self,
         operation: crate::actions::NetworkOperation,
