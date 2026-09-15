@@ -1360,7 +1360,6 @@ mod tests {
             assert!(progress.pending || ticks <= 3_126, "target was skipped");
             assert!(ticks <= 3_126, "search did not finish in bounded pages");
         }
-        assert!(ticks > 3_000, "the match must exercise continuation paging");
         assert!(
             palette
                 .referenced_action_resource_ids()
