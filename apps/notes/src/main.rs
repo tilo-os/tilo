@@ -60,6 +60,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "presence",
     "shortcuts",
     "tag_palette",
+    "scrolled",
 ];
 
 /// # Errors

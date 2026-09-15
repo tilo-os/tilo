@@ -428,6 +428,14 @@ fn mouse_event(state: ElementState, button: MouseButton) -> WindowEvent {
     }
 }
 
+fn scroll_event(lines: f32) -> WindowEvent {
+    WindowEvent::MouseWheel {
+        device_id: unsafe { std::mem::zeroed() },
+        delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines),
+        phase: winit::event::TouchPhase::Moved,
+    }
+}
+
 fn char_key_event(s: &str) -> WindowEvent {
     let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = Key::Character(SmolStr::new(s));
@@ -623,6 +631,11 @@ fn dispatch_scenario(
             app.palette_mut().set_visible(true);
             for s in ["R", "e", "l", "e", "a", "s", "e"] {
                 send(app, &char_key_event(s));
+            }
+        }
+        Some("scrolled") => {
+            for _ in 0..8 {
+                send(app, &scroll_event(-3.0));
             }
         }
         // Force the floating status bubble fully visible for the still.
