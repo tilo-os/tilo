@@ -4,6 +4,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$qOSTrustedOwnerSids = @(
+    'S-1-5-18',
+    'S-1-5-32-544',
+    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+)
 
 function Assert-qOSTrustedExecutable([string]$Candidate, [string]$Description) {
     if (-not [IO.Path]::IsPathFullyQualified($Candidate)) { throw "$Description must be absolute" }
@@ -22,7 +27,8 @@ function Assert-qOSTrustedExecutable([string]$Candidate, [string]$Description) {
     $Current = $Item
     while ($Current) {
         $Acl = Get-Acl -LiteralPath $Current.FullName
-        if ($Acl.Owner -notmatch '(?i)(SYSTEM|Administrators|TrustedInstaller)$') {
+        $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($OwnerSid -notin $qOSTrustedOwnerSids) {
             throw "$Description and every parent must have a trusted owner"
         }
         # Directory WriteData may only create an unrelated child. Reject rights
@@ -37,9 +43,9 @@ function Assert-qOSTrustedExecutable([string]$Candidate, [string]$Description) {
         if ($Current -is [IO.FileInfo]) {
             $Dangerous = $Dangerous -bor [Security.AccessControl.FileSystemRights]::Write
         }
-        foreach ($Rule in $Acl.Access) {
-            $TrustedPrincipal = $Rule.IdentityReference.Value -match
-                '(?i)(SYSTEM|Administrators|TrustedInstaller)$'
+        foreach ($Rule in @($Acl.GetAccessRules(
+                    $true, $true, [Security.Principal.SecurityIdentifier]))) {
+            $TrustedPrincipal = $Rule.IdentityReference.Value -in $qOSTrustedOwnerSids
             if ($Rule.AccessControlType -eq 'Allow' -and
                 ($Rule.FileSystemRights -band $Dangerous) -and -not $TrustedPrincipal) {
                 throw "$Description or a parent is writable by an untrusted principal"
@@ -72,11 +78,15 @@ try {
     }
     $Acl = Get-Acl -LiteralPath $Lease
     if (-not $Acl.AreAccessRulesProtected) { throw "credential lease must disable inherited ACLs" }
-    $CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    if ($Acl.Owner -cne $CurrentIdentity) { throw "credential lease must be owned by the runner identity" }
-    foreach ($Rule in $Acl.Access) {
+    $CurrentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ($Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $CurrentIdentitySid) {
+        throw "credential lease must be owned by the runner identity"
+    }
+    foreach ($Rule in @($Acl.GetAccessRules(
+                $true, $true, [Security.Principal.SecurityIdentifier]))) {
         $Principal = $Rule.IdentityReference.Value
-        $TrustedPrincipal = $Principal -ceq $CurrentIdentity -or $Principal -match '(?i)(SYSTEM|Administrators)$'
+        $TrustedPrincipal = $Principal -ceq $CurrentIdentitySid -or
+            $Principal -in $qOSTrustedOwnerSids
         if ($Rule.AccessControlType -eq 'Allow' -and -not $TrustedPrincipal) {
             throw "credential lease ACL grants another principal access"
         }
