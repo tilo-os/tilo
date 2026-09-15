@@ -423,23 +423,53 @@ impl MainPanel {
     /// The parser mints stable UUIDs once here; the resulting action can be
     /// replayed identically on every peer without the editor touching Automerge.
     pub fn seed_block_ops(body: &str) -> Vec<BlockEditOp> {
-        let specs = crate::markdown::parse(body);
+        Self::seed_block_ops_with_marks(body, |_| None).0
+    }
+
+    /// Produce the complete initial collaborative representation of a Markdown
+    /// page: UUID-addressed block inserts plus its non-empty native mark
+    /// snapshots. A caller supplies title-to-id resolution so `[[Page]]`
+    /// marks point at real stable resources before the payload is dispatched.
+    ///
+    /// Keeping the two action payloads together prevents a new or duplicated
+    /// page from becoming a metadata-only remote placeholder until someone
+    /// happens to open it locally.
+    pub fn seed_block_ops_with_marks<F>(
+        body: &str,
+        resolver: F,
+    ) -> (
+        Vec<BlockEditOp>,
+        Vec<(String, Vec<crate::actions::InlineMarkSpan>)>,
+    )
+    where
+        F: FnMut(&str) -> Option<PageId>,
+    {
+        let mut specs = crate::markdown::parse(body);
+        crate::markdown::resolve_link_ids(&mut specs, resolver);
         let blocks = crate::markdown::specs_to_blocks(&specs);
         let mut after = None;
-        blocks
-            .into_iter()
-            .map(|block| {
-                let id = block.id.clone();
-                let op = BlockEditOp::Insert {
-                    block_id: id.clone(),
-                    after: after.clone(),
-                    kind: block_kind_wire(&block.kind),
-                    text: block.text().to_string(),
-                };
-                after = Some(id);
-                op
-            })
-            .collect()
+        let mut ops = Vec::with_capacity(blocks.len());
+        let mut marks = Vec::new();
+        for block in blocks {
+            let id = block.id.clone();
+            let block_marks = block
+                .line
+                .marks()
+                .iter()
+                .map(crate::actions::InlineMarkSpan::from_ui)
+                .collect::<Vec<_>>();
+            ops.push(BlockEditOp::Insert {
+                block_id: id.clone(),
+                after: after.clone(),
+                kind: block_kind_wire(&block.kind),
+                text: block.text().to_string(),
+            });
+            if !block_marks.is_empty() {
+                marks.push((id.clone(), block_marks));
+            }
+            after = Some(id);
+        }
+        (ops, marks)
     }
 
     /// Drain local editor changes for the app's canonical action dispatcher.
