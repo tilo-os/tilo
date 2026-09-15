@@ -291,15 +291,19 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
                         .with_no_padding()
                         .with_intrinsic_height()
                         .with_gap(12.0)
-                        .push(Box::new(Text::new(&duration(remaining_ms)).with_size(48.0)))
+                        .push(Box::new(
+                            Row::new()
+                                .push(Box::new(Text::new(&duration(remaining_ms)).with_size(48.0)))
+                                .push(Box::new(Spacer::new()))
+                                .push(Box::new(
+                                    Text::new(if running { "Running" } else { "Paused" }).dimmed(),
+                                )),
+                        ))
                         .push(Box::new(
                             Container::new().with_no_padding().with_child(Box::new(
                                 ProgressBar::new(progress)
                                     .with_label(format!("{} remaining", timer.label)),
                             )),
-                        ))
-                        .push(Box::new(
-                            Text::new(if running { "Running" } else { "Paused" }).dimmed(),
                         ))
                         .push(Box::new(
                             Row::new()
@@ -525,7 +529,7 @@ fn surface(mode: &ui::LocalState<usize>, state: &ui::LocalState<ClockState>) -> 
         mode.get(),
     )
     .with_flexible_width()
-    .with_style(ui::widget::toggle_group::SegmentedStyle::Pill)
+    .with_style(ui::widget::toggle_group::SegmentedStyle::Underline)
     .with_id("clocks.mode")
     .on_view("clocks.mode.select", move |i| select.set(i));
     let nav = Row::new()
@@ -582,6 +586,7 @@ pub struct ClocksApp {
     state: ui::LocalState<ClockState>,
     generation: u64,
     last_saved: String,
+    last_notification: Option<(uuid::Uuid, String, String)>,
 }
 impl ClocksApp {
     #[must_use]
@@ -617,6 +622,7 @@ impl ClocksApp {
             state,
             generation: 0,
             last_saved: String::new(),
+            last_notification: None,
         }
     }
 }
@@ -697,16 +703,16 @@ impl Widget for ClocksApp {
         self.state
             .update(|s| due = s.tick(now, chrono::Local::now()));
         for event in due {
-            match event {
-                DueEvent::Alarm { label, .. } | DueEvent::Timer { label, .. } => {
-                    eprintln!("Clocks notification: {label}")
-                }
-            }
+            let (title, body) = match event {
+                DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label),
+                DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label),
+            };
+            self.last_notification = Some((uuid::Uuid::new_v4(), title, body));
         }
         self.generation = self.generation.saturating_add(1);
         self.state.with(|s| {
             let activity = s.shell_activity(now);
-            let snapshot = activity.map_or_else(
+            let mut snapshot = activity.map_or_else(
                 || ShellSnapshot {
                     version: 1,
                     active: false,
@@ -718,6 +724,9 @@ impl Widget for ClocksApp {
                     overlay: false,
                     generation: self.generation,
                     producer_pid: std::process::id(),
+                    notification_id: None,
+                    notification_title: String::new(),
+                    notification_body: String::new(),
                 },
                 |a| ShellSnapshot {
                     version: 1,
@@ -730,8 +739,16 @@ impl Widget for ClocksApp {
                     overlay: a.overlay,
                     generation: self.generation,
                     producer_pid: std::process::id(),
+                    notification_id: None,
+                    notification_title: String::new(),
+                    notification_body: String::new(),
                 },
             );
+            if let Some((id, title, body)) = &self.last_notification {
+                snapshot.notification_id = Some(*id);
+                snapshot.notification_title.clone_from(title);
+                snapshot.notification_body.clone_from(body);
+            }
             let _ = crate::transport::publish(&snapshot);
         });
         let encoded = self
