@@ -187,6 +187,7 @@ impl SlideSearchProvider {
                         id: element.id.clone(),
                         kind: element.kind,
                         text: element.text.clone(),
+                        z: element.z,
                     })
                     .collect(),
             })
