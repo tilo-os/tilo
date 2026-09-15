@@ -570,6 +570,15 @@ pub trait Widget {
     ) -> taffy::Size<f32> {
         taffy::Size::ZERO
     }
+    /// Adjust this node's style using its allocated size, before final geometry
+    /// is applied. Return true only when the style changed. Do not replace
+    /// children or mutate widget structure here. The shared host solver repeats
+    /// layout at most eight times and skips a frame that does not settle.
+    /// Overrides affect only this node; the host visits every registered widget.
+    fn adjust_layout_style(&mut self, _taffy: &mut TaffyTree<()>, _node: NodeId) -> bool {
+        false
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
     fn draw(
         &mut self,
@@ -1705,6 +1714,9 @@ impl TaffyTreeExt for TaffyTree<()> {
 }
 
 pub type Element = Box<dyn Widget>;
+
+mod layout;
+pub use layout::{WidgetLayoutError, compute_widget_layout};
 
 mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
