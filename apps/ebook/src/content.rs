@@ -18,6 +18,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
+use qos_actions::Action;
 
 use crate::doc::BooksDoc;
 use crate::epub::{MAX_EPUB_BYTES, content_id, parse_epub};
@@ -157,17 +158,18 @@ pub fn parse_shared_path_detailed(path: &Path) -> Result<(Book, PathBuf), String
 /// UI/document owner after [`parse_path_detailed`] has completed.
 pub fn record_imported_book(doc: &mut AutoCommit, path: &Path, mut book: Book) -> Book {
     book.cover_tint = tint_for(&book.id);
-    BooksDoc::restore_library_entry(
-        doc,
-        &LibraryEntry {
-            id: book.id.clone(),
-            shared: is_shared(path),
-            title: book.title.clone(),
-            author: book.author.clone(),
-            subject: book.subject.clone(),
-            added: now_ms(),
-        },
-    );
+    let entry = LibraryEntry {
+        id: book.id.clone(),
+        shared: is_shared(path),
+        title: book.title.clone(),
+        author: book.author.clone(),
+        subject: book.subject.clone(),
+        added: now_ms(),
+    };
+    // Imports are parsed/materialised outside the action, while the durable
+    // shelf admission itself follows the same typed replay path as agents and
+    // the command palette. File paths remain local capabilities.
+    let _ = crate::actions::restore_library_book_action(&entry).apply(doc);
     book
 }
 
