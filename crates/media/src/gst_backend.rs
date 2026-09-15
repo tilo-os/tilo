@@ -433,7 +433,14 @@ impl GstState {
         // its policy. Re-assert ours before the decoder is autoplugged.
         apply_decoder_ranks(self.policy);
         self.set_drop_policy(false);
-        self.playbin.set_property("uri", source.to_uri());
+        let uri = match source.to_uri() {
+            Ok(uri) => uri,
+            Err(error) => {
+                self.pending.push_back(MediaEvent::Error(error.to_string()));
+                return;
+            }
+        };
+        self.playbin.set_property("uri", uri);
         self.volume = volume.clamp(0.0, 1.0);
         self.apply_gain();
         // Preroll: a first frame and the duration become available without

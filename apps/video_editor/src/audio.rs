@@ -507,10 +507,12 @@ impl DecodedPcm {
             if !resolved.is_decodable() {
                 continue;
             }
-            paths.insert(
-                item.id,
-                crate::media::engine_source(&resolved.abs_path).to_uri(),
-            );
+            match crate::media::engine_source(&resolved.abs_path).to_uri() {
+                Ok(uri) => {
+                    paths.insert(item.id, uri);
+                }
+                Err(error) => tracing::warn!(%error, "media path cannot be decoded"),
+            }
         }
         Self {
             paths,
@@ -1319,7 +1321,9 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_gst)]
     fn a_source_that_carries_audio_decodes_to_real_samples() {
-        let uri = crate::media::engine_source(&sample("Ambient_Pad.wav")).to_uri();
+        let uri = crate::media::engine_source(&sample("Ambient_Pad.wav"))
+            .to_uri()
+            .expect("fixture file URL");
         let pcm = super::decode_pcm_for_test(&uri).expect("the fixture has an audio stream");
         assert!(
             pcm.len() > super::SAMPLE_RATE as usize / 4,
@@ -1339,7 +1343,9 @@ mod tests {
     fn an_unreadable_source_gives_up_long_before_the_deadline() {
         let junk = std::env::temp_dir().join(format!("qos-ve-junk-{}.mp4", std::process::id()));
         std::fs::write(&junk, b"not a container, not even close").expect("write the fixture");
-        let uri = crate::media::engine_source(&junk).to_uri();
+        let uri = crate::media::engine_source(&junk)
+            .to_uri()
+            .expect("fixture file URL");
 
         let began = std::time::Instant::now();
         let got = super::decode_pcm_for_test(&uri);
