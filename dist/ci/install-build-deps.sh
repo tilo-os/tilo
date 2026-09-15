@@ -19,7 +19,7 @@ debian)
     ;;
 fedora)
     dnf install -y --setopt=install_weak_deps=False \
-        curl jq gcc gcc-c++ make clang clang-devel cmake perl \
+        curl git jq gcc gcc-c++ make clang clang-devel cmake perl \
         pkgconf-pkg-config capnproto file rpm-build rpm-sign rpmlint \
         libxkbcommon-devel wayland-devel libseat-devel libinput-devel \
         systemd-devel libdrm-devel mesa-libgbm-devel mesa-libGL-devel \
