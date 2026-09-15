@@ -1,16 +1,16 @@
-//! The on-disk photo/video library.
+//! The on-disk capture history.
 //!
 //! Captures are ordinary files in a directory — the file system is the
-//! source of truth for what is in the gallery, not a bundled sample list.
+//! source of truth for captured media, not a bundled sample list.
 //! On a qOS install this directory lives under the user's Pictures (or the
-//! P2P workspace mount), so the library reflects real content the moment
+//! P2P workspace mount), so recent captures reflect real content the moment
 //! the app opens and stays in sync with anything else writing there.
 //!
 //! Responsibilities kept here (pure IO, no rendering / no CRDT):
 //!   * [`resolve_dir`]   — where captures live (overridable for tests).
-//!   * [`scan`]          — list the directory into [`Capture`] metadata.
+//!   * [`scan`]          — index the directory into [`Capture`] metadata.
 //!   * [`write_photo`]   — encode an RGBA frame to a timestamped JPEG/PNG.
-//!   * [`load_thumb`]    — decode + downscale a file for the gallery.
+//!   * [`load_thumb`]    — decode + downscale a file for the recent-capture peek.
 //!   * [`delete`]        — remove a backing file.
 
 use std::collections::HashSet;
@@ -26,8 +26,8 @@ use crate::video;
 /// the recorder writes Motion-JPEG AVI clips (see [`crate::video`]).
 const PHOTO_EXT: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 const VIDEO_EXT: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi"];
-/// A gallery is an index, not an unbounded filesystem crawl. Keep enough for
-/// a large personal roll while preserving predictable startup memory/time.
+/// Capture history is an index, not an unbounded filesystem crawl. Keep enough for
+/// an active device while preserving predictable startup memory/time.
 const MAX_LIBRARY_ITEMS: usize = 10_000;
 const MAX_IMAGE_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DECODE_PIXELS: u64 = 33_554_432;
@@ -72,7 +72,7 @@ fn mtime_secs(path: &Path) -> i64 {
 }
 
 /// Scan `dir` for image/video files, newest first. Missing directory ⇒ empty
-/// (a fresh install simply has an empty library until the first capture).
+/// (a fresh install simply has no captures until the first capture).
 /// `favorites` marks which file names are starred.
 pub fn scan<S: std::hash::BuildHasher>(dir: &Path, favorites: &HashSet<String, S>) -> Vec<Capture> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -140,7 +140,7 @@ pub fn scan<S: std::hash::BuildHasher>(dir: &Path, favorites: &HashSet<String, S
 }
 
 /// Turn a file stem like `IMG_20260701_193000` or `coast-drive` into a
-/// friendlier label for the gallery card.
+/// friendlier label for the capture resource.
 fn prettify_stem(stem: &str) -> String {
     let cleaned = stem.replace(['_', '-'], " ");
     let cleaned = cleaned.trim();
