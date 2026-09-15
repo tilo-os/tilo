@@ -18,7 +18,7 @@ extends = ["default"]
 include = ["file-explorer", "settings", "terminal"]
 
 [features]
-music = ["audio", "streaming", "live"]
+music = ["audio", "live"]
 video-player = ["decode", "portal"]
 camera = ["live-capture"]
 tube = ["live", "media"]
