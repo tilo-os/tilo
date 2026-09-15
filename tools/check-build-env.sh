@@ -12,7 +12,7 @@ set -uo pipefail
 MODULES=(
   xkbcommon libseat libinput libudev libdrm gbm gl egl
   wayland-client libpipewire-0.3 fuse3 dbus-1
-  libavcodec libavformat libavutil
+  libavcodec libavformat libavutil libswscale
   gstreamer-1.0 gstreamer-app-1.0 openssl
 )
 # Test subjects rather than build tools, but a missing one fails a test instead
@@ -41,6 +41,15 @@ for m in "${MODULES[@]}"; do
     printf '  MISSING %-20s\n' "$m"; missing=$((missing + 1))
   fi
 done
+
+# PipeWire/FFmpeg bindings load libclang at build time. A clang executable alone
+# does not prove the shared library is installed and loadable by bindgen.
+if p=$(python3 -c 'import ctypes, ctypes.util; path = ctypes.util.find_library("clang"); assert path; ctypes.CDLL(path); print(path)' 2>/dev/null); then
+  printf '  ok      %-20s %s\n' libclang "$p"
+else
+  printf '  MISSING %-20s (shared library; clang-libs on Fedora)\n' libclang
+  missing=$((missing + 1))
+fi
 
 # ci-measure.sh deliberately uses GNU time's stable machine-readable format;
 # the shell keyword cannot report peak RSS and is not a compatible fallback.
@@ -76,7 +85,7 @@ done
 
 echo
 if [ "$missing" -eq 0 ]; then
-  echo "all ${#MODULES[@]} libraries, ${#BINARIES[@]} binaries, ${#FONTS[@]} fonts, and ${#GSTREAMER_ELEMENTS[@]} media elements present"
+  echo "all ${#MODULES[@]} pkg-config libraries, libclang, ${#BINARIES[@]} binaries, ${#FONTS[@]} fonts, and ${#GSTREAMER_ELEMENTS[@]} media elements present"
 else
   echo "$missing missing — see DEVELOPMENT.md for the package that provides each"
 fi
