@@ -5,8 +5,8 @@ publishes only from protected `imager-v*` tags. Configure these runner labels:
 
 | Label | Host | Required tooling |
 |---|---|---|
-| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, GPG or KMS client, Podman, QEMU tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
-| `imager-linux-aarch64` | Linux ARM64 | same Linux toolchain, release utilities, and UDisks2 service, running natively |
+| `imager-linux-x86_64` | Linux x86-64 | Rust, Cap'n Proto compiler, Docker + Buildx, GPG or KMS client, Podman, QEMU/OVMF tools, zstd, Homebrew, Ruby, curl, jq, Node.js and npm, UDisks2, Flatpak + flatpak-builder with the 25.08 SDK |
+| `imager-linux-aarch64` | Linux ARM64 | same Linux toolchain, release utilities, Docker/Buildx, ARM64 QEMU/UEFI, and UDisks2 service, running natively |
 | `imager-windows-x86_64` | Windows x86-64 | Rust MSVC, Cap'n Proto compiler, Windows SDK `signtool`, Inno Setup 6, WinGet client |
 | `imager-macos-x86_64` | Intel macOS | Xcode CLI tools, Rust, Cap'n Proto compiler, `hdiutil`, `notarytool`, Homebrew |
 | `imager-macos-aarch64` | Apple silicon | same macOS toolchain, running natively, Homebrew |
@@ -58,6 +58,19 @@ tests and imager release invariants in `check.yml`; they never allocate these
 native release hosts. Manual rehearsals receive no signing lease. The broker
 must reject every non-protected, non-tag OIDC identity. Do not put a persistent
 private key or cloud credential on the native fleet.
+
+Installer media never allocate an OS generation. Set the protected
+`QOS_INSTALLER_OS_IMAGE` variable to one already-published, cosign-signed qOS
+multi-architecture manifest-list reference of the form
+`code.sandbox.example/qos/qos@sha256:<64 lowercase hex>`. Both native Linux lanes
+verify that same digest and its SLSA provenance, require its immutable `genN`
+tag to bind the exact digest, pull their native manifest,
+and require the generation embedded in the image to equal the single generation
+bound by provenance before layering the live installer. Provenance must also
+bind the exact checkout commit, preventing installer-owned OS files from being
+mixed with an older published root while retaining its generation. A manual rehearsal may
+override the variable with the `published_os_image` input, subject to all the
+same repository, digest, signature, provenance, and embedded-generation checks.
 
 The workflow materializes checksum-pinned `linuxdeploy`, `appimagetool`, and
 type-2 runtime binaries from the Forgejo cache separately for each Linux
@@ -158,6 +171,13 @@ and `/usr/share/qos/tpm2-pcr-signing.public.pem` for PCR authorization.
 The signer and every parent directory must be root-owned and not group/world
 writable, and it must not live in the checkout or runner temporary directory.
 Tagged releases fail closed when this protected variable is absent.
+The same direct signer is also used by both native `Release / OS` publication
+lanes before their child manifests can enter the multi-architecture index. Its
+server-side OIDC policy must therefore accept either the protected
+`release-imager.yml` semantic-tag identity above or `build-image.yml` on a
+protected `vMAJOR.MINOR.PATCH` tag, an authorized publishing dispatch from
+`main`, or an enabled continuous publication push to protected `main`. Reject
+all pull requests, branch rehearsals, non-main dispatches, and other workflows.
 
 For `linux`, `windows`, and `macos`, the broker configures the native signer and
 writes only these non-secret handles to the environment-file output, one
@@ -264,10 +284,12 @@ Before creating a release tag, verify all of the following:
   permitting the release bot, the GitHub fork exists, the bot has signed the
   Microsoft CLA, and no PR already exists for the package version.
 
-Dispatch `Release / imager` manually on `main` with `full_native` enabled first. That run
-does not sign or publish, but proves every native label and packaged UI. Only
-after it is green should a maintainer create a protected semantic tag such as
-`imager-v1.2.3`. A successful tag must finish the native matrix, release trust
+First publish and promote the multi-architecture qOS image from the exact commit
+to be tagged, then record its manifest-list digest in `QOS_INSTALLER_OS_IMAGE`.
+Dispatch `Release / imager` manually on that commit with `full_native` enabled.
+That run does not sign or publish, but proves every native label and packaged UI.
+Only after it is green should a maintainer create a protected semantic tag such
+as `imager-v1.2.3` on the same commit. A successful tag must finish the native matrix, release trust
 verification, Homebrew installation on four hosts, WinGet PR creation, and the
 landing-page production build in that order.
 
@@ -287,6 +309,7 @@ administrators):
 |---|---|
 | the six `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
 | `QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex qOS-main registry-owner Ed25519 public key |
+| `QOS_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.sandbox.example/qos/qos@sha256:...` manifest-list reference used by installer media |
 | `QOS_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
 | `QOS_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
@@ -298,9 +321,12 @@ administrators):
 | `IMAGER_WINDOWS_SIGNER` | optional alternative to the Windows broker; absolute OIDC-aware wrapper path |
 
 The live-medium builder separately needs protected secret `REGISTRY_TOKEN` for
-`code.sandbox.example`. Give its service account pull access to frozen inputs and
-only the minimum image-write access required by `build-image.sh`; rotate it
-independently of signing. The WPE buildroot snapshot workflow does **not** use
+`code.sandbox.example`. Give its service account read-only access to the published
+qOS image and its signature/attestation attachments. The workflow copies its
+short-lived Podman auth file into a private Docker config for Cosign, then
+destroys both after use; installer-media CI never
+pushes an OS image or allocates a generation. Rotate it independently of
+signing. The WPE buildroot snapshot workflow does **not** use
 that persistent token in steady state; its broker setup is described below.
 Forgejo provides the tag-release upload token as `github.token` and no
 additional release-upload secret is required.

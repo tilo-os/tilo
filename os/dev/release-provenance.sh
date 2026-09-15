@@ -43,6 +43,18 @@ if [ -n "$desktop_payload" ]; then
     && case "$desktop_payload" in *[!0-9a-f]*) false ;; *) true ;; esac \
     || { printf 'release provenance: invalid QOS_DESKTOP_PAYLOAD_SHA256\n' >&2; exit 1; }
 fi
+release_children="${QOS_RELEASE_CHILDREN_JSON:-[]}"
+printf '%s' "$release_children" | jq -e '
+  type == "array"
+  and (length == 0 or (map(.architecture) | sort) == ["aarch64", "x86_64"])
+  and (length == 0 or (map(.digest) | unique | length) == 2)
+  and all(.[];
+    (.architecture == "x86_64" or .architecture == "aarch64")
+    and (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$")))
+' >/dev/null || {
+  printf 'release provenance: invalid QOS_RELEASE_CHILDREN_JSON\n' >&2
+  exit 1
+}
 
 jq -n \
   --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
@@ -52,12 +64,16 @@ jq -n \
   --arg kernel "$KERNEL_RPMS_REF" \
   --arg app_collection "$app_collection" \
   --arg desktop_payload "$desktop_payload" \
+  --argjson release_children "$release_children" \
   --arg generation "$QOS_GENERATION" \
   --arg epoch "$SOURCE_DATE_EPOCH" \
   '{
     buildDefinition: {
       buildType: "https://qos.dev/buildtypes/bootc-os/v1",
-      externalParameters: {generation: ($generation|tonumber)},
+      externalParameters: ({generation: ($generation|tonumber)}
+        + if ($release_children | length) == 0 then {}
+          else {children: $release_children}
+          end),
       internalParameters: {
         sourceDateEpoch: ($epoch|tonumber),
         expectedReleaseDigest: $digest
