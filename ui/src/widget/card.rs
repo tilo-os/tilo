@@ -119,20 +119,14 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
+                .with_gap(CARD_TITLE_GAP)
                 .push(Box::new(title_row))
-                .push(vgap(CARD_TITLE_GAP))
                 .push(body),
         )
     } else {
         body
     };
     Box::new(Container::new().with_background().with_child(inner))
-}
-
-/// An intrinsic-height `Column` lays out as a block stack that ignores the
-/// taffy `gap`, so explicit spacers are how per-gap spacing is expressed there.
-fn vgap(px: f32) -> Element {
-    Box::new(Container::new().with_no_padding().with_height(px))
 }
 
 impl Widget for Card {
@@ -783,6 +777,21 @@ mod tests {
             .count();
         assert!(fills >= 1, "a card must paint a themed surface fill");
         let _ = Fill::NonZero;
+    }
+
+    #[test]
+    fn titled_card_keeps_title_gap_after_intrinsic_column_gap_fix() {
+        let mut c = Card::titled(
+            "Group",
+            Box::new(Container::new().with_no_padding().with_height(10.0)),
+        );
+        let _ = lay_out_card_mut(&mut c);
+
+        let surface = c.children()[0];
+        let column = surface.children()[0];
+        let title = column.children()[0].get_rect();
+        let body = column.children()[1].get_rect();
+        assert_eq!(body.y0 - title.y1, f64::from(CARD_TITLE_GAP));
     }
 
     fn lay_out_card_mut(c: &mut Card) -> Rect {
