@@ -30,6 +30,10 @@ enum TransferDialog {
     ExportPlaintext {
         acknowledged: bool,
     },
+    Backup,
+    Restore {
+        bytes: Zeroizing<Vec<u8>>,
+    },
     DeleteConfirm {
         id: SecretId,
         title: String,
@@ -52,6 +56,14 @@ struct EditorInputs {
     origin: TextInput,
     password: TextInput,
     notes: TextInput,
+}
+
+fn backup_input(label: &str) -> TextInput {
+    TextInput::local()
+        .with_kind(ui::widget::TextInputKind::Password)
+        .with_accessible_name(label)
+        .with_placeholder(label)
+        .with_secret(true)
 }
 
 impl EditorInputs {
@@ -176,6 +188,11 @@ pub struct PasswordsSurface {
     import_portal: Option<ui::portal::OpenFileChannel>,
     import_parse: Option<std::sync::mpsc::Receiver<Result<Vec<ImportLogin>, String>>>,
     export_portal: Option<ui::portal::PortalChannel>,
+    backup_portal: Option<ui::portal::PortalChannel>,
+    restore_portal: Option<ui::portal::OpenFileChannel>,
+    backup_password: TextInput,
+    backup_confirmation: TextInput,
+    backup_focus: usize,
     transfer_dialog: Option<TransferDialog>,
 }
 
@@ -429,6 +446,11 @@ impl PasswordsSurface {
             import_portal: None,
             import_parse: None,
             export_portal: None,
+            backup_portal: None,
+            restore_portal: None,
+            backup_password: backup_input("Backup password"),
+            backup_confirmation: backup_input("Confirm password"),
+            backup_focus: 0,
             transfer_dialog: None,
         }
         .loaded()
@@ -508,6 +530,11 @@ impl PasswordsSurface {
             import_portal: None,
             import_parse: None,
             export_portal: None,
+            backup_portal: None,
+            restore_portal: None,
+            backup_password: backup_input("Backup password"),
+            backup_confirmation: backup_input("Confirm password"),
+            backup_focus: 0,
             transfer_dialog,
         }
     }
@@ -1140,6 +1167,78 @@ impl PasswordsSurface {
         }
     }
 
+    fn clear_backup_form(&mut self) {
+        self.backup_password.set_text("");
+        self.backup_confirmation.set_text("");
+        self.backup_focus = 0;
+    }
+
+    fn request_backup(&mut self) {
+        if self.model.is_some() {
+            self.clear_backup_form();
+            self.transfer_dialog = Some(TransferDialog::Backup);
+            self.backup_password.set_focus(true);
+        }
+    }
+
+    fn request_restore(&mut self) {
+        if self.model.is_some() && self.restore_portal.is_none() {
+            self.status = "Choose an encrypted Passwords backup".into();
+            self.restore_portal = Some(crate::transfer::restore_request().send_open_file());
+        }
+    }
+
+    fn backup_form_error(&self, confirmation: bool) -> Option<&'static str> {
+        if self.backup_password.value().chars().count() < 12 {
+            Some("Use at least 12 characters")
+        } else if confirmation && self.backup_password.value() != self.backup_confirmation.value() {
+            Some("Passwords do not match")
+        } else {
+            None
+        }
+    }
+
+    fn begin_encrypted_backup(&mut self) {
+        if !matches!(self.transfer_dialog, Some(TransferDialog::Backup))
+            || self.backup_form_error(true).is_some()
+            || self.backup_portal.is_some()
+        {
+            return;
+        }
+        self.backup_portal = Some(crate::transfer::backup_request().send());
+    }
+
+    fn apply_encrypted_restore(&mut self) {
+        let Some(TransferDialog::Restore { bytes }) = self.transfer_dialog.take() else {
+            return;
+        };
+        let passphrase = Zeroizing::new(self.backup_password.value().to_owned());
+        let result = crate::transfer::import_encrypted_backup(&bytes, &passphrase);
+        match result {
+            Ok(items) => {
+                let count = items.len();
+                let Some(model) = &mut self.model else { return };
+                let mut restored = 0;
+                for mut item in items {
+                    if model.update(&mut item).is_ok() {
+                        restored += 1;
+                    }
+                }
+                self.refresh();
+                self.status = if restored == count {
+                    format!("Restored {restored} vault items")
+                } else {
+                    format!("Restored {restored} of {count} vault items")
+                };
+                self.clear_backup_form();
+            }
+            Err(error) => {
+                self.transfer_dialog = Some(TransferDialog::Restore { bytes });
+                self.status = error;
+            }
+        }
+    }
+
     fn begin_plaintext_export(&mut self) {
         let acknowledged = matches!(
             self.transfer_dialog,
@@ -1153,6 +1252,35 @@ impl PasswordsSurface {
     }
 
     fn poll_transfers(&mut self) {
+        if let Some(rx) = self.restore_portal.as_ref() {
+            match rx.try_recv() {
+                Ok(ui::portal::OpenFileOutcome::Opened(opened)) => {
+                    self.restore_portal = None;
+                    match crate::transfer::read_encrypted_backup(opened.into_file()) {
+                        Ok(bytes) => {
+                            self.clear_backup_form();
+                            self.transfer_dialog = Some(TransferDialog::Restore { bytes });
+                            self.backup_password.set_focus(true);
+                            self.status.clear();
+                        }
+                        Err(error) => self.status = error,
+                    }
+                }
+                Ok(ui::portal::OpenFileOutcome::Cancelled) => {
+                    self.restore_portal = None;
+                    self.status.clear();
+                }
+                Ok(ui::portal::OpenFileOutcome::Failed(error)) => {
+                    self.restore_portal = None;
+                    self.status = format!("Could not open the file chooser: {error}");
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.restore_portal = None;
+                    self.status = "The file chooser disconnected".into();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if let Some(rx) = self.import_portal.as_ref() {
             match rx.try_recv() {
                 Ok(ui::portal::OpenFileOutcome::Opened(opened)) => {
@@ -1229,6 +1357,37 @@ impl PasswordsSurface {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+        if let Some(rx) = self.backup_portal.as_ref() {
+            match rx.try_recv() {
+                Ok(ui::portal::PortalOutcome::Opened(mut path)) => {
+                    self.backup_portal = None;
+                    if path
+                        .extension()
+                        .and_then(|v| v.to_str())
+                        .is_none_or(|ext| !ext.eq_ignore_ascii_case("qospw"))
+                    {
+                        path.set_extension("qospw");
+                    }
+                    let passphrase = Zeroizing::new(self.backup_password.value().to_owned());
+                    let result = self.write_encrypted_backup(&path, &passphrase);
+                    self.status = result.map_or_else(
+                        |error| error,
+                        |count| format!("Backed up {count} vault items"),
+                    );
+                    self.clear_backup_form();
+                }
+                Ok(ui::portal::PortalOutcome::Cancelled) => self.backup_portal = None,
+                Ok(ui::portal::PortalOutcome::Failed(error)) => {
+                    self.backup_portal = None;
+                    self.status = format!("Could not open the save dialog: {error}");
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.backup_portal = None;
+                    self.status = "The save dialog disconnected".into();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
     }
 
     fn import_conflicts(&self, rows: &[ImportLogin]) -> usize {
@@ -1288,22 +1447,28 @@ impl PasswordsSurface {
     }
 
     fn write_plaintext_export(&self, path: &std::path::Path) -> Result<usize, String> {
-        use std::io::Write;
         let Some(model) = &self.model else {
             return Err("Export is unavailable in this preview".into());
         };
         let items = model.items();
         let csv = crate::transfer::export_browser_csv(&items);
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options
-            .open(path)
-            .map_err(|_| "Could not create the selected file".to_string())?;
-        file.write_all(csv.as_bytes())
-            .and_then(|()| file.sync_all())
+        atomic_file::write_with_mode(path, csv.as_bytes(), 0o600)
             .map_err(|_| "Could not finish writing the selected file".to_string())?;
+        Ok(items.len())
+    }
+
+    fn write_encrypted_backup(
+        &self,
+        path: &std::path::Path,
+        passphrase: &str,
+    ) -> Result<usize, String> {
+        let Some(model) = &self.model else {
+            return Err("Backup is unavailable in this preview".into());
+        };
+        let items = model.items();
+        let backup = crate::transfer::export_encrypted_backup(&items, passphrase)?;
+        atomic_file::write_with_mode(path, &backup, 0o600)
+            .map_err(|_| "Could not finish writing the selected backup".to_string())?;
         Ok(items.len())
     }
 
@@ -1331,6 +1496,8 @@ impl PasswordsSurface {
             }
             "import" => self.request_import(),
             "export" => self.request_export_confirmation(),
+            "backup" => self.request_backup(),
+            "restore" => self.request_restore(),
             _ => return true,
         }
         if self.drawer.is_overlay() {
@@ -1419,6 +1586,45 @@ impl PasswordsSurface {
                 .contains(point)
                 {
                     self.confirm_delete();
+                }
+            }
+            TransferDialog::Backup | TransferDialog::Restore { .. } => {
+                let restoring = matches!(dialog, TransferDialog::Restore { .. });
+                let x = rect.x0 + 28.0;
+                let first = Rect::new(x, rect.y0 + 106.0, rect.x1 - 28.0, rect.y0 + 154.0);
+                let second = Rect::new(x, rect.y0 + 170.0, rect.x1 - 28.0, rect.y0 + 218.0);
+                if first.contains(point) {
+                    self.backup_focus = 0;
+                    self.backup_password.set_focus(true);
+                    self.backup_confirmation.set_focus(false);
+                } else if !restoring && second.contains(point) {
+                    self.backup_focus = 1;
+                    self.backup_password.set_focus(false);
+                    self.backup_confirmation.set_focus(true);
+                } else if Rect::new(
+                    rect.x1 - 236.0,
+                    rect.y1 - 64.0,
+                    rect.x1 - 142.0,
+                    rect.y1 - 12.0,
+                )
+                .contains(point)
+                {
+                    self.transfer_dialog = None;
+                    self.clear_backup_form();
+                } else if Rect::new(
+                    rect.x1 - 140.0,
+                    rect.y1 - 64.0,
+                    rect.x1 - 12.0,
+                    rect.y1 - 12.0,
+                )
+                .contains(point)
+                    && self.backup_form_error(!restoring).is_none()
+                {
+                    if restoring {
+                        self.apply_encrypted_restore();
+                    } else {
+                        self.begin_encrypted_backup();
+                    }
                 }
             }
         }
@@ -1760,8 +1966,10 @@ impl PasswordsSurface {
                     vec![
                         SidebarNavItem::new("review", "Password review")
                             .selected(self.mode == ShowcaseMode::Health),
+                        SidebarNavItem::new("backup", "Back up vault…"),
+                        SidebarNavItem::new("restore", "Restore backup…"),
                         SidebarNavItem::new("import", "Import passwords"),
-                        SidebarNavItem::new("export", "Export CSV…"),
+                        SidebarNavItem::new("export", "Export plaintext CSV…"),
                     ],
                 ),
             ],
@@ -1804,11 +2012,12 @@ impl PasswordsSurface {
     }
 
     fn draw_transfer_dialog(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         transform: Affine,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         let Some(dialog) = &self.transfer_dialog else {
             return;
@@ -2000,6 +2209,115 @@ impl PasswordsSurface {
                 .style(ui::widget::ButtonStyle::Primary)
                 .disabled(!acknowledged);
                 ui::widget::Button::paint(scene, transform, tr, theme, &export);
+            }
+            TransferDialog::Backup | TransferDialog::Restore { .. } => {
+                let restoring = matches!(dialog, TransferDialog::Restore { .. });
+                Self::text(
+                    tr,
+                    scene,
+                    if restoring {
+                        "Unlock backup"
+                    } else {
+                        "Back up your vault"
+                    },
+                    24.0,
+                    c.text_primary,
+                    transform,
+                    x,
+                    rect.y0 + 28.0,
+                    TextWeight::Bold,
+                );
+                let description: &[(&str, f64)] = if compact && restoring {
+                    &[
+                        ("Enter the password used when this", 70.0),
+                        ("backup was created.", 90.0),
+                    ]
+                } else if compact {
+                    &[
+                        ("Encrypted locally. Preserves every item", 70.0),
+                        ("and custom field.", 90.0),
+                    ]
+                } else if restoring {
+                    &[(
+                        "Enter the password used when this backup was created.",
+                        70.0,
+                    )]
+                } else {
+                    &[(
+                        "Encrypted locally. Preserves every item and custom field.",
+                        70.0,
+                    )]
+                };
+                for (line, y) in description {
+                    Self::text(
+                        tr,
+                        scene,
+                        line,
+                        13.0,
+                        c.text_dim,
+                        transform,
+                        x,
+                        rect.y0 + y,
+                        TextWeight::Regular,
+                    );
+                }
+                let first = Rect::new(x, rect.y0 + 106.0, rect.x1 - 28.0, rect.y0 + 154.0);
+                self.backup_password.apply_layout_external(first);
+                Widget::draw(
+                    &mut self.backup_password,
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    presence,
+                );
+                if !restoring {
+                    let second = Rect::new(x, rect.y0 + 170.0, rect.x1 - 28.0, rect.y0 + 218.0);
+                    self.backup_confirmation.apply_layout_external(second);
+                    Widget::draw(
+                        &mut self.backup_confirmation,
+                        scene,
+                        transform,
+                        tr,
+                        theme,
+                        presence,
+                    );
+                }
+                if let Some(error) = self.backup_form_error(!restoring) {
+                    Self::text(
+                        tr,
+                        scene,
+                        error,
+                        12.0,
+                        c.semantic.danger,
+                        transform,
+                        x,
+                        rect.y0 + if restoring { 166.0 } else { 226.0 },
+                        TextWeight::Medium,
+                    );
+                }
+                let cancel = ButtonFace::new(
+                    Rect::new(
+                        rect.x1 - 236.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 142.0,
+                        rect.y1 - 20.0,
+                    ),
+                    "Cancel",
+                );
+                Button::paint(scene, transform, tr, theme, &cancel);
+                let action = ButtonFace::new(
+                    Rect::new(
+                        rect.x1 - 132.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 20.0,
+                        rect.y1 - 20.0,
+                    ),
+                    if restoring { "Restore" } else { "Choose file" },
+                )
+                .style(ui::widget::ButtonStyle::Primary)
+                .disabled(self.backup_form_error(!restoring).is_some());
+                Button::paint(scene, transform, tr, theme, &action);
             }
             TransferDialog::DeleteConfirm { title, .. } => {
                 Self::text(
@@ -3071,7 +3389,7 @@ impl Widget for PasswordsSurface {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
@@ -3146,7 +3464,7 @@ impl Widget for PasswordsSurface {
                 Rect::new(content.x0, content.y0, content.x0 + 48.0, content.y0 + 48.0),
                 false,
             );
-            self.draw_transfer_dialog(scene, tr, transform, theme);
+            self.draw_transfer_dialog(scene, tr, transform, theme, presence);
             return;
         }
         let side = self.drawer.sidebar_rect();
@@ -3165,7 +3483,7 @@ impl Widget for PasswordsSurface {
                 self.draw_detail(scene, tr, transform, theme, detail)
             }
         }
-        self.draw_transfer_dialog(scene, tr, transform, theme);
+        self.draw_transfer_dialog(scene, tr, transform, theme, presence);
     }
     fn handle_event(
         &mut self,
@@ -3181,6 +3499,71 @@ impl Widget for PasswordsSurface {
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = Point::new(position.x / scale, position.y / scale);
+        }
+        if matches!(
+            self.transfer_dialog,
+            Some(TransferDialog::Backup | TransferDialog::Restore { .. })
+        ) {
+            let restoring = matches!(self.transfer_dialog, Some(TransferDialog::Restore { .. }));
+            if let WindowEvent::KeyboardInput { event: key, .. } = event
+                && key.state == ElementState::Pressed
+                && key.logical_key == Key::Named(NamedKey::Tab)
+                && !restoring
+            {
+                self.backup_focus = 1 - self.backup_focus;
+                self.backup_password.set_focus(self.backup_focus == 0);
+                self.backup_confirmation.set_focus(self.backup_focus == 1);
+                *handled = true;
+                return;
+            }
+            let mut input_handled = false;
+            if matches!(event, WindowEvent::CursorMoved { .. }) {
+                self.backup_password.handle_event(
+                    event,
+                    scale,
+                    modifiers,
+                    state,
+                    path,
+                    &mut input_handled,
+                    focus,
+                    node,
+                    taffy,
+                );
+                if !restoring {
+                    self.backup_confirmation.handle_event(
+                        event,
+                        scale,
+                        modifiers,
+                        state,
+                        path,
+                        &mut input_handled,
+                        focus,
+                        node,
+                        taffy,
+                    );
+                }
+            } else {
+                let input = if self.backup_focus == 0 {
+                    &mut self.backup_password
+                } else {
+                    &mut self.backup_confirmation
+                };
+                input.handle_event(
+                    event,
+                    scale,
+                    modifiers,
+                    state,
+                    path,
+                    &mut input_handled,
+                    focus,
+                    node,
+                    taffy,
+                );
+            }
+            if input_handled {
+                *handled = true;
+                return;
+            }
         }
         if self.mode == ShowcaseMode::Editor {
             match event {
@@ -3627,7 +4010,10 @@ impl Widget for PasswordsSurface {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if self.transfer_dialog.is_some() {
                     match &event.logical_key {
-                        Key::Named(NamedKey::Escape) => self.transfer_dialog = None,
+                        Key::Named(NamedKey::Escape) => {
+                            self.transfer_dialog = None;
+                            self.clear_backup_form();
+                        }
                         Key::Named(NamedKey::Space) => {
                             if let Some(TransferDialog::ExportPlaintext { acknowledged }) =
                                 &mut self.transfer_dialog
@@ -3641,6 +4027,8 @@ impl Widget for PasswordsSurface {
                                 self.begin_plaintext_export()
                             }
                             Some(TransferDialog::DeleteConfirm { .. }) => self.confirm_delete(),
+                            Some(TransferDialog::Backup) => self.begin_encrypted_backup(),
+                            Some(TransferDialog::Restore { .. }) => self.apply_encrypted_restore(),
                             _ => {}
                         },
                         _ => return,
@@ -3797,6 +4185,8 @@ impl Widget for PasswordsSurface {
                         "wifi" => "passwords.filter.wifi",
                         "other" => "passwords.filter.other",
                         "review" => "passwords.review",
+                        "backup" => "passwords.backup",
+                        "restore" => "passwords.restore",
                         "import" => "passwords.import",
                         "export" => "passwords.export",
                         _ => "passwords.navigation.toggle",
@@ -4032,6 +4422,27 @@ impl Widget for PasswordsSurface {
                         .with_name("Delete permanently")
                         .with_action_target("passwords.delete.confirm"),
                 ],
+                TransferDialog::Backup => vec![
+                    AccessNode::new(Role::StaticText)
+                        .with_name("Encrypted locally; preserves every item and custom field"),
+                    AccessNode::new(Role::TextInput).with_name("Backup password"),
+                    AccessNode::new(Role::TextInput).with_name("Confirm password"),
+                    AccessNode::new(Role::Button)
+                        .with_name("Cancel backup")
+                        .with_action_target("passwords.transfer.cancel"),
+                    AccessNode::new(Role::Button)
+                        .with_name("Choose backup file")
+                        .with_action_target("passwords.transfer.backup"),
+                ],
+                TransferDialog::Restore { .. } => vec![
+                    AccessNode::new(Role::TextInput).with_name("Backup password"),
+                    AccessNode::new(Role::Button)
+                        .with_name("Cancel restore")
+                        .with_action_target("passwords.transfer.cancel"),
+                    AccessNode::new(Role::Button)
+                        .with_name("Restore vault items")
+                        .with_action_target("passwords.transfer.restore"),
+                ],
             };
             children = vec![
                 AccessNode::new(Role::Dialog)
@@ -4039,6 +4450,8 @@ impl Widget for PasswordsSurface {
                         TransferDialog::ImportPreview { .. } => "Review import",
                         TransferDialog::ExportPlaintext { .. } => "Export as plaintext CSV",
                         TransferDialog::DeleteConfirm { .. } => "Delete item?",
+                        TransferDialog::Backup => "Back up your vault",
+                        TransferDialog::Restore { .. } => "Unlock backup",
                     })
                     .with_state(AccessState::new().modal(true))
                     .with_children(controls),
@@ -4096,7 +4509,14 @@ impl Widget for PasswordsSurface {
             }
             ("passwords.import", Action::Activate) => self.request_import(),
             ("passwords.export", Action::Activate) => self.request_export_confirmation(),
-            ("passwords.transfer.cancel", Action::Activate) => self.transfer_dialog = None,
+            ("passwords.backup", Action::Activate) => self.request_backup(),
+            ("passwords.restore", Action::Activate) => self.request_restore(),
+            ("passwords.transfer.cancel", Action::Activate) => {
+                self.transfer_dialog = None;
+                self.clear_backup_form();
+            }
+            ("passwords.transfer.backup", Action::Activate) => self.begin_encrypted_backup(),
+            ("passwords.transfer.restore", Action::Activate) => self.apply_encrypted_restore(),
             ("passwords.transfer.import", Action::Activate) => self.apply_import(),
             ("passwords.transfer.ack", Action::Activate | Action::ToggleCheck) => {
                 if let Some(TransferDialog::ExportPlaintext { acknowledged }) =
@@ -4834,5 +5254,75 @@ mod tests {
         assert_eq!(rows[0].password.as_str(), "export-secret");
         let _ = std::fs::remove_file(written);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn encrypted_backup_and_restore_flow_preserves_complete_items() {
+        let base = std::env::temp_dir().join(format!(
+            "qos-passwords-backup-flow-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let source_root = base.join("source");
+        let restored_root = base.join("restored");
+        let destination = base.join("portable-vault");
+        std::fs::create_dir_all(&base).unwrap();
+        let mut source = crate::PasswordsModel::open_in(&source_root);
+        let mut item = SecretItem::login("Studio", "ada", "private-token");
+        item.fields.insert("workspace".into(), "design".into());
+        item.tags.extend(["work".into(), "favorite".into()]);
+        source.save_item(&mut item).unwrap();
+
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(source);
+        app.request_backup();
+        app.backup_password.set_text("a memorable backup password");
+        app.backup_confirmation
+            .set_text("a memorable backup password");
+        assert!(app.backup_form_error(true).is_none());
+        app.backup_portal = Some(ui::portal::inject_for_test(
+            ui::portal::PortalOutcome::Opened(destination.clone()),
+        ));
+        app.poll_transfers();
+        let backup_path = destination.with_extension("qospw");
+        assert!(std::fs::metadata(&backup_path).unwrap().len() > 32);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&backup_path)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        assert!(app.backup_password.value().is_empty());
+
+        let mut restored = PasswordsSurface::demo(ShowcaseMode::Vault);
+        restored.model = Some(crate::PasswordsModel::open_in(&restored_root));
+        restored.restore_portal = Some(ui::portal::inject_open_file_for_test(
+            std::fs::File::open(&backup_path).unwrap(),
+            "portable-vault.qospw",
+        ));
+        restored.poll_transfers();
+        assert!(matches!(
+            restored.transfer_dialog,
+            Some(TransferDialog::Restore { .. })
+        ));
+        restored
+            .backup_password
+            .set_text("a memorable backup password");
+        restored.apply_encrypted_restore();
+        let items = restored.model.as_ref().unwrap().items();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].fields.get("workspace").map(String::as_str),
+            Some("design")
+        );
+        assert!(items[0].tags.contains("favorite"));
+        assert!(restored.backup_password.value().is_empty());
+        let _ = std::fs::remove_dir_all(base);
     }
 }
