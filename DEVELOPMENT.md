@@ -29,9 +29,11 @@ Modules, and the Fedora packages providing them. Note `xkbcommon-devel`,
 | `fuse3` | `fuse3-devel` | `fs` |
 | `dbus-1` | `dbus-devel` | portals |
 | `libavcodec` `libavformat` `libavutil` | `libavcodec-free-devel` `libavformat-free-devel` | shell's default hdr-decode feature |
+| `libswscale` | `libswscale-free-devel` | FFmpeg software scaling used by the shell |
 | `gstreamer-1.0` `gstreamer-app-1.0` | `gstreamer1-devel` `gstreamer1-plugins-base-devel` | media apps |
 | `openssl` | `openssl-devel` | |
 | `capnp` (binary) | `capnproto` | runtime-collab schema |
+| `libclang` (shared library) | `clang-libs` | bindgen for PipeWire and FFmpeg bindings; Python 3 checks that it can load |
 | `bwrap` (binary) | `bubblewrap` | the launcher's confinement tests drive the real sandbox |
 | `rust-analyzer` (binary) | `rustup component add rust-analyzer` | the code editor's language-server test drives a real server |
 
