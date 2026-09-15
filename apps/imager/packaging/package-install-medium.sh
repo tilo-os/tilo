@@ -3,10 +3,24 @@
 # cross-platform Imager can expand and write byte-for-byte.
 set -euo pipefail
 
-: "${GITHUB_REF_NAME:?missing release tag}"
-version="${GITHUB_REF_NAME#imager-v}"
+release_tag="${QOS_INSTALLER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
+version="${QOS_INSTALLER_VERSION:-${release_tag#imager-v}}"
+channel="${QOS_INSTALLER_CHANNEL:-stable}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-  || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
+  || { printf 'installer version must be MAJOR.MINOR.PATCH\n' >&2; exit 2; }
+case "$channel" in
+  stable)
+    [ "$release_tag" = "imager-v$version" ] \
+      || { printf 'stable installer tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
+    ;;
+  rehearsal)
+    [ -n "${QOS_INSTALLER_RELEASE_TAG:-}" ] \
+      && [ -n "${QOS_INSTALLER_VERSION:-}" ] \
+      && [[ "$release_tag" =~ ^rehearsal-[0-9a-fA-F]{40}$ ]] \
+      || { printf 'rehearsal media require an explicit source-bound tag and version\n' >&2; exit 2; }
+    ;;
+  *) printf 'installer channel must be stable or rehearsal\n' >&2; exit 2 ;;
+esac
 
 input="${1:?usage: package-install-medium.sh INSTALLER.qcow2 ARCH [OUT]}"
 arch="${2:?missing architecture}"
@@ -33,9 +47,9 @@ rm -f "$raw"
 jq -n \
   --arg name 'qOS' \
   --arg version "$version" \
-  --arg channel stable \
+  --arg channel "$channel" \
   --arg arch "$arch" \
-  --arg url "https://code.podesta.ai/qos/qos/releases/download/${GITHUB_REF_NAME}/$(basename "$archive")" \
+  --arg url "https://code.podesta.ai/qos/qos/releases/download/${release_tag}/$(basename "$archive")" \
   --arg archive_sha256 "$archive_sha256" \
   --argjson archive_size "$archive_size" \
   --arg image_sha256 "$image_sha256" \

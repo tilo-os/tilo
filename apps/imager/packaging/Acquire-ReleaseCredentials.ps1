@@ -19,18 +19,33 @@ function Assert-qOSTrustedExecutable([string]$Candidate, [string]$Description) {
             throw "$Description must not come from the checkout or job temporary directory"
         }
     }
-    $Acl = Get-Acl -LiteralPath $Item.FullName
-    if ($Acl.Owner -notmatch '(?i)(SYSTEM|Administrators)$') {
-        throw "$Description must be owned by SYSTEM or Administrators"
-    }
-    $Dangerous = ([Security.AccessControl.FileSystemRights]::Write -bor
-        [Security.AccessControl.FileSystemRights]::Modify -bor
-        [Security.AccessControl.FileSystemRights]::FullControl)
-    foreach ($Rule in $Acl.Access) {
-        if ($Rule.AccessControlType -eq 'Allow' -and ($Rule.FileSystemRights -band $Dangerous) -and
-            $Rule.IdentityReference.Value -match '(?i)(Everyone|Authenticated Users|BUILTIN\\Users|INTERACTIVE)$') {
-            throw "$Description ACL permits an untrusted principal to replace it"
+    $Current = $Item
+    while ($Current) {
+        $Acl = Get-Acl -LiteralPath $Current.FullName
+        if ($Acl.Owner -notmatch '(?i)(SYSTEM|Administrators|TrustedInstaller)$') {
+            throw "$Description and every parent must have a trusted owner"
         }
+        # Directory WriteData may only create an unrelated child. Reject rights
+        # that can replace this component or change its ACL; reject all writes
+        # on the executable itself.
+        $Dangerous = ([Security.AccessControl.FileSystemRights]::Modify -bor
+            [Security.AccessControl.FileSystemRights]::FullControl -bor
+            [Security.AccessControl.FileSystemRights]::Delete -bor
+            [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+            [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+            [Security.AccessControl.FileSystemRights]::TakeOwnership)
+        if ($Current -is [IO.FileInfo]) {
+            $Dangerous = $Dangerous -bor [Security.AccessControl.FileSystemRights]::Write
+        }
+        foreach ($Rule in $Acl.Access) {
+            $TrustedPrincipal = $Rule.IdentityReference.Value -match
+                '(?i)(SYSTEM|Administrators|TrustedInstaller)$'
+            if ($Rule.AccessControlType -eq 'Allow' -and
+                ($Rule.FileSystemRights -band $Dangerous) -and -not $TrustedPrincipal) {
+                throw "$Description or a parent is writable by an untrusted principal"
+            }
+        }
+        $Current = if ($Current -is [IO.FileInfo]) { $Current.Directory } else { $Current.Parent }
     }
     return $Item.FullName
 }

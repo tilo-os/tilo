@@ -30,7 +30,7 @@ trusted_program() {
     printf 'forgejo-runner must be an absolute executable non-symlink\n' >&2
     return 1
   }
-  [ "$(realpath -e "$path")" = "$path" ] || {
+  [ "$(realpath "$path")" = "$path" ] || {
     printf 'forgejo-runner path must be canonical\n' >&2
     return 1
   }
@@ -52,7 +52,7 @@ private_metadata_file() {
     printf '%s must be an absolute regular non-symlink\n' "$description" >&2
     return 1
   }
-  [ "$(realpath -e "$path")" = "$path" ] || {
+  [ "$(realpath "$path")" = "$path" ] || {
     printf '%s path must be canonical\n' "$description" >&2
     return 1
   }

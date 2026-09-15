@@ -12,7 +12,10 @@ case "$*" in
   *PKNAME*) echo disk0 ;;
   *NAME,TYPE,PARTTYPE*)
     printf '%s part %s\n' "$QOS_ROOT_DEVROOT/linux-root" 0fc63daf-8483-4772-8e79-3d69d8477de4
-    printf '%s part %s\n' "$QOS_ROOT_DEVROOT/qos-root" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab ;;
+    printf '%s part %s\n' "$QOS_ROOT_DEVROOT/qos-root" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
+    if [ "${QOS_ROOT_TEST_DUPLICATE:-0}" = 1 ]; then
+      printf '%s part %s\n' "$QOS_ROOT_DEVROOT/qos-root-2" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
+    fi ;;
 esac
 EOF
 cat >"$work/bin/cryptsetup" <<'EOF'
@@ -41,13 +44,11 @@ test "$(readlink "$work/run/qos-root/device")" = "$work/dev/qos-root"
 echo 'ok: foreign Linux and removable qOS roots are ignored; same-disk qOS root selected'
 
 # Two same-disk qOS roots are ambiguous and must fail closed.
-cat >>"$work/bin/lsblk" <<'EOF'
-printf '%s part %s\n' "$QOS_ROOT_DEVROOT/qos-root-2" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab
-EOF
 touch "$work/dev/qos-root-2"
 if env QOS_ROOT_LOADER_PARTUUID=11111111-2222-3333-4444-555555555555 \
   QOS_ROOT_DEVROOT="$work/dev" QOS_ROOT_RUNTIME="$work/run" \
   QOS_ROOT_LSBLK="$work/bin/lsblk" QOS_ROOT_CRYPTSETUP_PROBE="$work/bin/cryptsetup" \
+  QOS_ROOT_TEST_DUPLICATE=1 \
   QOS_ROOT_ALLOW_NONBLOCK=1 "$repo/os/usr/libexec/qos-root-discover" 2>"$work/error"; then
   echo 'duplicate qOS roots were accepted' >&2; exit 1
 fi
