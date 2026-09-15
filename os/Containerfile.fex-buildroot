@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+# Resolve native FEX build tools once; consumers must use an immutable image.
+# FEX is built on ARM64. NASM runs natively and emits its x86 instruction tests.
+ARG BASE_REF
+FROM ${BASE_REF}
+RUN dnf install -y git cmake ninja-build pkgconf-pkg-config ccache clang lld \
+      llvm llvm-devel openssl-devel python3-clang python3-setuptools \
+      squashfs-tools squashfuse erofs-fuse erofs-utils \
+      qt6-qtdeclarative-devel gcc-c++ glibc-devel make perl xz \
+ && dnf clean all
+
+# NASM 3.02 changes SMSW operand-size encodings and breaks six upstream FEX
+# tests. Pin the assembler, not the expected CPU results. Verify the byte-level
+# contract as well so a future toolchain update fails before the expensive build.
+COPY os/external-assets/github-assets.tsv /tmp/external-assets.tsv
+COPY os/tests/fex-assembler.sh /usr/libexec/qos/test-fex-assembler
+ARG BUILD_JOBS=2
+RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    set -eu; \
+    case "$BUILD_JOBS" in ''|*[!0-9]*|0) echo 'BUILD_JOBS must be positive' >&2; exit 1;; esac; \
+    test "$BUILD_JOBS" -gt 0; \
+    cd /qos-assets; \
+    awk -F '\t' '$2 == "nasm-2.16.03.tar.xz" { print $1 "  " $2; found++ } END { if (found != 1) exit 1 }' \
+      /tmp/external-assets.tsv > /tmp/nasm.sha256; \
+    sha256sum --check --strict /tmp/nasm.sha256; \
+    mkdir /tmp/nasm-source; \
+    tar -xJf nasm-2.16.03.tar.xz -C /tmp/nasm-source --strip-components=1; \
+    cd /tmp/nasm-source; \
+    ./configure --prefix=/usr/local; \
+    make -j"$BUILD_JOBS"; \
+    make install; \
+    install -D -m 0644 LICENSE /usr/share/licenses/qos-fex-nasm/LICENSE; \
+    bash /usr/libexec/qos/test-fex-assembler /usr/local/bin/nasm; \
+    install -d /usr/lib/qos; \
+    cp /tmp/nasm.sha256 /usr/lib/qos/fex-nasm-source.sha256; \
+    rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/qos/fex-buildroot-packages.txt; \
+    uname -m > /usr/lib/qos/fex-buildroot-arch; \
+    rm -rf /tmp/nasm-source /tmp/nasm.sha256 /tmp/external-assets.tsv
