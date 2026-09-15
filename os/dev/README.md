@@ -305,4 +305,9 @@ in that same signature-required repository; the backend rejects other origins.
 Custom installer: `QOS_INSTALLER_IMAGE` `QOS_INSTALLER_OUTPUT`
 `QOS_INSTALLER_DISK` `QOS_TARGET_DISK` `QOS_TARGET_SIZE` `QOS_TARGET_IMGREF`.
 `QOS_INSTALLER_DEV_PASSWORD` is required only with `--dev-login`.
+PCR signing runs only when `QOS_REQUIRE_PCR_PREDICTION=1` (release CI) or the
+developer explicitly sets `QOS_ALLOW_LOCAL_PCR_SIGNING=1`; exporting a signer
+path alone never invokes it. `use-published-image.sh` verifies a digest-pinned
+qOS release and its provenance, loads it as `QOS_IMAGE`, and prints its verified
+embedded generation for installer-media builds.
 Disk image: `QOS_DISK_REG_PORT` (registry port), `QOS_RETAINED_GENERATIONS`.

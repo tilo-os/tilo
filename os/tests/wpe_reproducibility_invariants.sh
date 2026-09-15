@@ -146,8 +146,15 @@ else
 fi
 has "$image_script" 'QOS_WPE_BOOTSTRAP:=0' 'local WPE bootstrap is opt-in and off by default'
 has "$image_script" 'build-wpe-buildroot.sh' 'local bootstrap has an explicit implementation'
-has "$repo/.forgejo/workflows/release-imager.yml" 'QOS_REQUIRE_WPE_SIGNATURE=1' \
-  'installation-medium release requires WPE buildroot signature verification'
+if grep -Fq './os/dev/use-published-image.sh "$QOS_PUBLISHED_OS_IMAGE"' \
+     "$repo/.forgejo/workflows/release-imager.yml" \
+   && ! grep -Fq './os/dev/build-image.sh' "$repo/.forgejo/workflows/release-imager.yml" \
+   && grep -Fq 'cosign verify --key "$verify_key" "$image"' \
+     "$repo/os/dev/use-published-image.sh"; then
+  ok 'installation-medium release consumes the signed OS whose build verified WPE'
+else
+  bad 'installation-medium release can rebuild with or consume an unverified WPE input'
+fi
 has "$image_script" 'cosign verify --key "$QOS_REPO/keys/cosign.pub"' \
   'release helper verifies the WPE buildroot signature'
 
