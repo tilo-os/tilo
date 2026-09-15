@@ -358,13 +358,7 @@ pub(super) unsafe fn run_policy(
             (f64::from(layout.location.x), f64::from(layout.location.y)),
             (f64::from(layout.size.width), f64::from(layout.size.height)),
         );
-        overflow_bounds = overflow_bounds.union(Rect::from_origin_size(
-            effective.origin(),
-            (
-                f64::from(layout.size.width.max(layout.content_size.width)),
-                f64::from(layout.size.height.max(layout.content_size.height)),
-            ),
-        ));
+        overflow_bounds = overflow_bounds.union(descendant_bounds(tree, *child)?);
         let requested = requested.ok_or(WidgetLayoutError::UnplacedManualChild)?;
         if rect_array(effective) != rect_array(requested) && conflict.is_none() {
             conflict = Some(super::layout_info::ManualConflict {
@@ -386,6 +380,68 @@ pub(super) unsafe fn run_policy(
     }));
     Ok(changed)
 }
+/// Conservative solved-layout paint bounds, relative to the root's parent.
+/// Visit actual descendant origins: Taffy's content Size cannot carry negative
+/// overflow. Anonymous layout nodes participate without any widget callbacks.
+/// Taffy clipping bounds descendants; custom paint-only clips may be tighter.
+fn descendant_bounds(tree: &TaffyTree<()>, root: NodeId) -> Result<Rect, taffy::TaffyError> {
+    let unbounded = Rect::new(
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::INFINITY,
+    );
+    let mut pending = vec![(root, Point::ZERO, unbounded)];
+    let mut extent = Rect::ZERO;
+    while let Some((node, parent_origin, clip)) = pending.pop() {
+        let layout = tree.layout(node)?;
+        let origin = Point::new(
+            parent_origin.x + f64::from(layout.location.x),
+            parent_origin.y + f64::from(layout.location.y),
+        );
+        let allocation = Rect::from_origin_size(
+            origin,
+            (f64::from(layout.size.width), f64::from(layout.size.height)),
+        );
+        let children = tree.children(node)?;
+        // Composite content is accounted for by the traversal, so clipped
+        // descendants cannot leak back in through a container's aggregate size.
+        let own_bounds = if children.is_empty() {
+            Rect::from_origin_size(
+                origin,
+                (
+                    f64::from(layout.size.width.max(layout.content_size.width)),
+                    f64::from(layout.size.height.max(layout.content_size.height)),
+                ),
+            )
+        } else {
+            allocation
+        };
+        let visible = own_bounds.intersect(clip);
+        if visible.width() > 0.0 && visible.height() > 0.0 {
+            extent = extent.union(visible);
+        }
+        let overflow = tree.style(node)?.overflow;
+        let mut child_clip = clip;
+        if overflow.x != taffy::Overflow::Visible {
+            child_clip.x0 = child_clip.x0.max(allocation.x0);
+            child_clip.x1 = child_clip.x1.min(allocation.x1);
+        }
+        if overflow.y != taffy::Overflow::Visible {
+            child_clip.y0 = child_clip.y0.max(allocation.y0);
+            child_clip.y1 = child_clip.y1.min(allocation.y1);
+        }
+        if child_clip.width() > 0.0 && child_clip.height() > 0.0 {
+            pending.extend(
+                children
+                    .into_iter()
+                    .map(|child| (child, origin, child_clip)),
+            );
+        }
+    }
+    Ok(extent)
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "Taffy uses f32 logical geometry; author values are range-checked before conversion"
