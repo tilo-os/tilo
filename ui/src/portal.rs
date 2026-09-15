@@ -73,6 +73,72 @@ pub enum MultiOutcome {
 /// frame. `Some(rx)` means a picker is in flight; `None` means idle.
 pub type PortalChannel = Receiver<PortalOutcome>;
 
+/// Outcome of asking the desktop to open a path with an appropriate app, or
+/// reveal its containing directory. The request is fire-and-observe: callers
+/// drain this channel without ever blocking the UI thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchOutcome {
+    Opened,
+    Failed(String),
+}
+
+/// A pending desktop-open request.
+pub type LaunchChannel = Receiver<LaunchOutcome>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaunchKind {
+    Open,
+    Reveal,
+}
+
+/// Open a local file, or reveal its containing folder, through the XDG
+/// `OpenURI` portal. The portal receives an already-open descriptor rather than
+/// a string path, preserving the same capability boundary as file choosing.
+#[derive(Debug, Clone)]
+pub struct LaunchRequest {
+    #[cfg_attr(not(feature = "portal"), allow(dead_code))]
+    path: PathBuf,
+    #[cfg_attr(not(feature = "portal"), allow(dead_code))]
+    kind: LaunchKind,
+    thread_name: String,
+}
+
+impl LaunchRequest {
+    pub fn open(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            kind: LaunchKind::Open,
+            thread_name: "qos-portal-open-path".into(),
+        }
+    }
+
+    pub fn reveal(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            kind: LaunchKind::Reveal,
+            thread_name: "qos-portal-reveal-path".into(),
+        }
+    }
+
+    #[must_use]
+    pub fn thread_name(mut self, name: &str) -> Self {
+        self.thread_name = name.to_string();
+        self
+    }
+
+    pub fn send(self) -> LaunchChannel {
+        if suppressed() {
+            return inject_launch_for_test(LaunchOutcome::Opened);
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = self.thread_name.clone();
+        spawn_worker(&name, move || {
+            let _ = tx.send(launch(self));
+        });
+        rx
+    }
+}
+
 /// A file selected by the portal and opened by its worker before the result is
 /// handed to the UI. The descriptor, rather than the path used to obtain it,
 /// is the authority to read the selected file.
@@ -531,6 +597,13 @@ pub fn inject_for_test(outcome: PortalOutcome) -> PortalChannel {
     rx
 }
 
+/// Test counterpart of [`LaunchRequest::send`].
+pub fn inject_launch_for_test(outcome: LaunchOutcome) -> LaunchChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(outcome);
+    rx
+}
+
 /// Build a descriptor-retaining channel from a file a test has already opened.
 /// Production callers should use [`PickRequest::send_open_file`], which applies
 /// the portal worker's no-follow and regular-file checks.
@@ -612,6 +685,64 @@ fn multiple(req: PickRequest) -> MultiOutcome {
             Err(e) => e.into_multi(),
         }
     })
+}
+
+#[cfg(feature = "portal")]
+fn launch(req: LaunchRequest) -> LaunchOutcome {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(error) => return LaunchOutcome::Failed(format!("portal runtime: {error}")),
+    };
+    rt.block_on(async move {
+        use std::os::fd::AsFd;
+
+        let target = match req.kind {
+            LaunchKind::Open => req.path,
+            LaunchKind::Reveal => req.path.parent().map(Path::to_path_buf).unwrap_or(req.path),
+        };
+        if !target.is_absolute() {
+            return LaunchOutcome::Failed("desktop-open path must be absolute".into());
+        }
+        let file = match req.kind {
+            LaunchKind::Open => open_regular_file(&target),
+            LaunchKind::Reveal => open_directory(&target),
+        };
+        let file = match file {
+            Ok(file) => file,
+            Err(error) => return LaunchOutcome::Failed(format!("could not open path: {error}")),
+        };
+        let request = match req.kind {
+            LaunchKind::Open => {
+                ashpd::desktop::open_uri::OpenFileRequest::default()
+                    .send_file(&file.as_fd())
+                    .await
+            }
+            LaunchKind::Reveal => {
+                ashpd::desktop::open_uri::OpenDirectoryRequest::default()
+                    .send(&file.as_fd())
+                    .await
+            }
+        };
+        match request.and_then(|request| request.response()) {
+            Ok(()) => LaunchOutcome::Opened,
+            Err(error) => LaunchOutcome::Failed(error.to_string()),
+        }
+    })
+}
+
+#[cfg(all(feature = "portal", unix))]
+fn open_directory(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
+#[cfg(all(feature = "portal", not(unix)))]
+fn open_directory(path: &Path) -> std::io::Result<File> {
+    File::open(path)
 }
 
 /// A portal round-trip that did not return URIs.
@@ -716,6 +847,11 @@ fn single_open_file(_req: PickRequest) -> OpenFileOutcome {
 #[cfg(not(feature = "portal"))]
 fn multiple(_req: PickRequest) -> MultiOutcome {
     MultiOutcome::Failed(NO_PORTAL.to_string())
+}
+
+#[cfg(not(feature = "portal"))]
+fn launch(_req: LaunchRequest) -> LaunchOutcome {
+    LaunchOutcome::Failed(NO_PORTAL.to_string())
 }
 
 #[cfg(not(feature = "portal"))]
@@ -986,6 +1122,18 @@ mod tests {
 
         let rx = inject_multi_for_test(MultiOutcome::Cancelled);
         assert_eq!(rx.try_recv(), Ok(MultiOutcome::Cancelled));
+        let rx = inject_launch_for_test(LaunchOutcome::Opened);
+        assert_eq!(rx.try_recv(), Ok(LaunchOutcome::Opened));
+    }
+
+    #[test]
+    fn launch_request_records_open_and_reveal_without_changing_the_path() {
+        let open = LaunchRequest::open("/tmp/archive.zip");
+        assert_eq!(open.path, Path::new("/tmp/archive.zip"));
+        assert_eq!(open.kind, LaunchKind::Open);
+        let reveal = LaunchRequest::reveal("/tmp/archive.zip");
+        assert_eq!(reveal.path, Path::new("/tmp/archive.zip"));
+        assert_eq!(reveal.kind, LaunchKind::Reveal);
     }
 
     #[test]

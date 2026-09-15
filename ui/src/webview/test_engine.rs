@@ -26,6 +26,8 @@ struct Inner {
     events: Vec<WebViewEvent>,
     commands: Vec<WebViewCommand>,
     media_element: Option<MediaElementInfo>,
+    next_download: u64,
+    downloads: std::collections::HashMap<String, String>,
 }
 
 pub struct TestEngine {
@@ -139,6 +141,10 @@ impl TestEngine {
 }
 
 impl WebViewEngine for TestEngine {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the deterministic command interpreter keeps each WebView command's recorded test effect in one exhaustive match"
+    )]
     fn send(&self, cmd: WebViewCommand) {
         let mut inner = self.lock_inner();
         inner.commands.push(cmd.clone());
@@ -217,6 +223,44 @@ impl WebViewEngine for TestEngine {
                         },
                     );
                 inner.events.push(event);
+            }
+            WebViewCommand::StartDownload { uri } => {
+                if !(uri.starts_with("http://") || uri.starts_with("https://")) {
+                    drop(inner);
+                    return;
+                }
+                inner.next_download = inner.next_download.saturating_add(1);
+                let id = format!("test-download-{}", inner.next_download);
+                inner.downloads.insert(id.clone(), uri.clone());
+                inner.events.push(WebViewEvent::DownloadRequested {
+                    id,
+                    uri,
+                    suggested_filename: "download.bin".into(),
+                });
+            }
+            WebViewCommand::SetDownloadDestination { id, path } => {
+                if std::path::Path::new(&path).is_absolute()
+                    && inner.downloads.remove(&id).is_some()
+                {
+                    inner.events.push(WebViewEvent::DownloadProgress {
+                        id: id.clone(),
+                        received_bytes: 1024,
+                        total_bytes: Some(1024),
+                        progress: 1.0,
+                    });
+                    inner
+                        .events
+                        .push(WebViewEvent::DownloadFinished { id, path });
+                }
+            }
+            WebViewCommand::CancelDownload { id } => {
+                if inner.downloads.remove(&id).is_some() {
+                    inner.events.push(WebViewEvent::DownloadFailed {
+                        id,
+                        error: "Cancelled by user".into(),
+                        cancelled: true,
+                    });
+                }
             }
         }
         // Nothing below uses `inner` — drop the guard here rather than
@@ -347,6 +391,56 @@ mod tests {
         // b.test is gone: back from c leads to a.
         engine.send(WebViewCommand::GoBack);
         assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+    }
+
+    #[test]
+    fn download_lifecycle_requires_web_url_and_absolute_portal_destination() {
+        let engine = TestEngine::new();
+        engine.send(WebViewCommand::StartDownload {
+            uri: "file:///etc/passwd".into(),
+        });
+        assert!(engine.drain_events().is_empty());
+
+        engine.send(WebViewCommand::StartDownload {
+            uri: "https://example.test/archive.zip".into(),
+        });
+        let requested = engine.drain_events();
+        let id = match requested.as_slice() {
+            [WebViewEvent::DownloadRequested { id, .. }] => id.clone(),
+            _ => panic!("expected one genuine download request"),
+        };
+        engine.send(WebViewCommand::SetDownloadDestination {
+            id: id.clone(),
+            path: "relative/archive.zip".into(),
+        });
+        assert!(engine.drain_events().is_empty());
+        engine.send(WebViewCommand::CancelDownload { id: id.clone() });
+        assert!(matches!(
+            engine.drain_events().as_slice(),
+            [WebViewEvent::DownloadFailed {
+                id: failed_id,
+                cancelled: true,
+                ..
+            }] if failed_id == &id
+        ));
+
+        engine.send(WebViewCommand::StartDownload {
+            uri: "https://example.test/guide.pdf".into(),
+        });
+        let requested = engine.drain_events();
+        let id = match requested.as_slice() {
+            [WebViewEvent::DownloadRequested { id, .. }] => id.clone(),
+            _ => panic!("expected one genuine download request"),
+        };
+        engine.send(WebViewCommand::SetDownloadDestination {
+            id: id.clone(),
+            path: "/tmp/guide.pdf".into(),
+        });
+        assert!(matches!(
+            engine.drain_events().as_slice(),
+            [WebViewEvent::DownloadProgress { id: progress_id, .. }, WebViewEvent::DownloadFinished { id: finished_id, path }]
+                if progress_id == &id && finished_id == &id && path == "/tmp/guide.pdf"
+        ));
     }
 
     #[test]
