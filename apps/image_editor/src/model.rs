@@ -116,6 +116,58 @@ impl Project {
         }
         connected
     }
+
+    /// Remove an image-processing step without breaking the work after it.
+    ///
+    /// Each adjustment has one image input and may feed more than one later
+    /// step in the advanced graph. Splice its upstream image into every
+    /// downstream input before removing it. Work on a side branch therefore
+    /// stays live just like the familiar linear adjustment stack does.
+    pub fn remove_adjustment(&mut self, id: &str) -> bool {
+        if id == "source" || id == self.output || !self.operations.contains_key(id) {
+            return false;
+        }
+
+        let incoming = self
+            .graph
+            .edges
+            .iter()
+            .find(|edge| edge.to_node == id && edge.to_port == "image")
+            .cloned();
+        let outgoing = self
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| edge.from_node == id && edge.from_port == "image")
+            .cloned()
+            .collect::<Vec<_>>();
+
+        // Perform the splice on a copy so an unexpected imported graph shape
+        // can never turn Delete into a partially destructive operation.
+        let mut graph = self.graph.clone();
+        if graph.remove(id).is_none() {
+            return false;
+        }
+        if let Some(upstream) = incoming {
+            for downstream in outgoing {
+                if graph
+                    .connect(Edge {
+                        from_node: upstream.from_node.clone(),
+                        from_port: upstream.from_port.clone(),
+                        to_node: downstream.to_node,
+                        to_port: downstream.to_port,
+                    })
+                    .is_err()
+                {
+                    return false;
+                }
+            }
+        }
+
+        self.graph = graph;
+        self.operations.remove(id);
+        true
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -139,5 +191,70 @@ mod tests {
             ["source", "grade", "crop", "output"]
         );
         assert!(matches!(p.operations["grade"], Operation::Exposure { .. }));
+    }
+
+    #[test]
+    fn removing_a_middle_adjustment_preserves_every_later_step() {
+        let mut p = Project::blank();
+        assert!(p.insert_before_output("grade", "Exposure", Operation::Exposure { stops: 1.0 }));
+        assert!(p.insert_before_output(
+            "crop",
+            "Crop",
+            Operation::Crop {
+                x: 0.0,
+                y: 0.0,
+                width: 0.8,
+                height: 0.8
+            }
+        ));
+
+        assert!(p.remove_adjustment("grade"));
+        assert_eq!(
+            p.graph.evaluation_order().unwrap(),
+            ["source", "crop", "output"]
+        );
+        assert!(p.graph.edges.iter().any(|edge| {
+            edge.from_node == "source" && edge.to_node == "crop" && edge.to_port == "image"
+        }));
+        assert!(!p.operations.contains_key("grade"));
+    }
+
+    #[test]
+    fn removing_an_adjustment_splices_all_of_its_branches() {
+        let mut p = Project::blank();
+        assert!(p.insert_before_output("grade", "Exposure", Operation::Exposure { stops: 1.0 }));
+        p.graph.insert(node("preview", "Preview", 440.0, true));
+        p.operations.insert("preview".into(), Operation::Output);
+        p.graph
+            .connect(Edge {
+                from_node: "grade".into(),
+                from_port: "image".into(),
+                to_node: "preview".into(),
+                to_port: "image".into(),
+            })
+            .unwrap();
+
+        assert!(p.remove_adjustment("grade"));
+        assert!(
+            p.graph
+                .edges
+                .iter()
+                .any(|edge| { edge.from_node == "source" && edge.to_node == "output" })
+        );
+        assert!(
+            p.graph
+                .edges
+                .iter()
+                .any(|edge| { edge.from_node == "source" && edge.to_node == "preview" })
+        );
+    }
+
+    #[test]
+    fn structural_nodes_cannot_be_removed_as_adjustments() {
+        let mut p = Project::blank();
+        let before = p.clone();
+        assert!(!p.remove_adjustment("source"));
+        assert!(!p.remove_adjustment("output"));
+        assert_eq!(p, before);
     }
 }
