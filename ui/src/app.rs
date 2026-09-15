@@ -452,9 +452,9 @@ pub struct App {
     /// Diffed against `inner_size()` in `about_to_wait` to catch a resize
     /// that arrived without a `Resized` event.
     last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
-    /// `(width, height)` the taffy tree was last solved against — lets the
-    /// scroll-reposition fast path skip a full re-solve unless it changed.
-    last_layout_px: Option<(u32, u32)>,
+    /// Last successfully settled logical viewport. Scale changes count even
+    /// when physical pixels stay fixed; scroll-only frames reuse the solve.
+    last_layout_logical: Option<(f64, f64)>,
     pub theme: Theme,
     pub debug_mode: bool,
     pub focused_node: Option<NodeId>,
@@ -1085,7 +1085,7 @@ impl App {
             needs_sync: true,
             // Finalised below, once base_theme/a11y/text_scale all exist.
             last_frame_size: None,
-            last_layout_px: None,
+            last_layout_logical: None,
             theme: configured_theme.clone(),
             debug_mode: (inputs.debug_mode)(),
             focused_node: None,
@@ -6034,6 +6034,12 @@ impl App {
         // ran against, so without this they draw blank until the next event.
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
         self.needs_sync = false;
+        if self.root_widget.take_structure_dirty() {
+            // Fresh sync can replace delegates. Rebuild before any map access.
+            self.structure_dirty = true;
+            self.bindings.clear();
+            self.node_map.clear();
+        }
         self.invalidate_widget_resource_cache();
     }
 
@@ -6834,70 +6840,109 @@ fn run_layout_pass(
     scale_factor: f32,
     structure_rebuilt: bool,
 ) -> Option<(bool, u128, u128)> {
-    if !app.layout_dirty {
+    use crate::widget::layout::{
+        CompositionFocus, composition_geometry, settle_widget_composition,
+    };
+    let logical = crate::scale::logical_size((width, height), f64::from(scale_factor));
+    let viewport_changed = app.last_layout_logical != Some(logical);
+    if !app.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));
     }
-    let mut t_compute_us = 0u128;
-    // A frame dirty only because content scrolled needs `apply_layout` to
-    // push the offset down, but not a full `compute_layout` — re-solving the
-    // whole tree on every scroll frame was the dominant per-frame cost on
-    // long lists/grids.
-    let size_changed = app.last_layout_px != Some((width, height));
     let must_compute = structure_rebuilt
-        || size_changed
+        || app.structure_dirty
+        || viewport_changed
         || scroll_opt_disabled()
         || app.root_widget.layout_needs_measure();
-    if must_compute {
-        let node_map = &app.node_map;
-        let bindings = &app.bindings;
-        let text_renderer = &mut app.text_renderer;
-        let t0 = std::time::Instant::now();
-        let (logical_w, logical_h) =
-            crate::scale::logical_size((width, height), f64::from(scale_factor));
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "logical layout size is intentionally narrowed to f32 for taffy; identical to today's output"
-        )]
-        // SAFETY: App exclusively owns this exact tree and its admitted maps.
-        let compute_result = unsafe {
-            crate::widget::compute_widget_layout(
-                &mut app.taffy,
-                root_node,
-                taffy::Size {
-                    width: AvailableSpace::Definite(logical_w as f32),
-                    height: AvailableSpace::Definite(logical_h as f32),
-                },
-                node_map,
-                bindings,
-                text_renderer,
-            )
-        };
-        if let Err(err) = compute_result {
-            tracing::error!(?err, "compute_layout_with_measure failed; skipping frame");
-            return None;
+    let mut t_compute_us = 0u128;
+    let mut t_apply_us = 0u128;
+    let mut current_root = root_node;
+    let mut recomposed = false;
+    let view = app.root_widget.view_state();
+    // SAFETY: the admitted maps belong to App's exclusively owned tree.
+    let focus =
+        unsafe { CompositionFocus::capture(app.focused_node, &app.node_map, &app.bindings) };
+    let result = settle_widget_composition(viewport_changed, |rebuild| {
+        if rebuild || app.structure_dirty {
+            recomposed = true;
+            // Capture before build replaces controls. Shared view hooks carry
+            // root-owned scroll/mode; persisted Scrollable offsets also survive.
+            let autofocus = app.autofocus_on_structure_change;
+            app.autofocus_on_structure_change = false;
+            app.rebuild_structure();
+            app.autofocus_on_structure_change = autofocus;
+            if let Some(view) = &view {
+                app.root_widget.restore_view_state(view);
+            }
+            // Sync may legitimately replace newly mounted delegates. Never
+            // inspect or measure stale raw pointers from that build.
+            if app.structure_dirty {
+                return Ok((None, true));
+            }
+            if !app.focus_trap_active
+                && let Some(focus) = &focus
+            {
+                // SAFETY: rebuild completed, and sync retained this topology.
+                app.focused_node = unsafe { focus.restore(&app.node_map, &app.bindings) };
+            }
+            current_root = app
+                .root_node
+                .ok_or(crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
         }
-        t_compute_us = t0.elapsed().as_micros();
-        app.last_layout_px = Some((width, height));
-        if let Some(p) = app.profiler.as_mut() {
-            p.record(
-                crate::profiling::Pass::BuildLayout,
-                std::time::Duration::from_micros(u64::try_from(t_compute_us).unwrap_or(u64::MAX)),
+        if must_compute || rebuild {
+            let start = std::time::Instant::now();
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "Taffy uses f32 logical pixels"
+            )]
+            // SAFETY: App exclusively owns this exact stable tree and maps.
+            unsafe {
+                crate::widget::compute_widget_layout(
+                    &mut app.taffy,
+                    current_root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(logical.0 as f32),
+                        height: AvailableSpace::Definite(logical.1 as f32),
+                    },
+                    &app.node_map,
+                    &app.bindings,
+                    &mut app.text_renderer,
+                )?;
+            }
+            t_compute_us = t_compute_us.saturating_add(start.elapsed().as_micros());
+        }
+        let start = std::time::Instant::now();
+        app.root_widget
+            .apply_layout(&app.taffy, current_root, vello::kurbo::Point::ORIGIN);
+        t_apply_us = t_apply_us.saturating_add(start.elapsed().as_micros());
+        let dirty = app.root_widget.take_structure_dirty();
+        // Translation-only frames avoid both composition and a tree snapshot.
+        let geometry = if viewport_changed {
+            composition_geometry(&app.taffy, current_root)?
+        } else {
+            vec![]
+        };
+        Ok((Some(geometry), dirty))
+    });
+    if let Err(error) = result {
+        tracing::error!(?error, "widget layout did not settle; skipping frame");
+        app.layout_dirty = true;
+        return None;
+    }
+    app.last_layout_logical = Some(logical);
+    app.layout_dirty = false;
+    if must_compute || recomposed {
+        app.update_focusable_order();
+    }
+    if let Some(profiler) = app.profiler.as_mut() {
+        for (pass, micros) in [
+            (crate::profiling::Pass::BuildLayout, t_compute_us),
+            (crate::profiling::Pass::ApplyLayout, t_apply_us),
+        ] {
+            profiler.record(
+                pass,
+                std::time::Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX)),
             );
         }
-    }
-    let t1 = std::time::Instant::now();
-    app.root_widget
-        .apply_layout(&app.taffy, root_node, vello::kurbo::Point::new(0.0, 0.0));
-    let t_apply_us = t1.elapsed().as_micros();
-    if let Some(p) = app.profiler.as_mut() {
-        p.record(
-            crate::profiling::Pass::ApplyLayout,
-            std::time::Duration::from_micros(u64::try_from(t_apply_us).unwrap_or(u64::MAX)),
-        );
-    }
-    app.layout_dirty = false;
-    if must_compute {
-        app.update_focusable_order();
     }
     Some((true, t_compute_us, t_apply_us))
 }
@@ -16674,10 +16719,14 @@ mod card_grid_host_tests {
         let root = app.root_node.unwrap();
         run_layout_pass(&mut app, root, 300, 2000, 1.0, true).unwrap();
         assert_eq!(button_keys(&app), vec!["row-1", "row-2", "row-3"]);
-        // New delegates are registered and solved by the host. VirtualList's
-        // separate post-build sync/apply contract is outside this grid test.
+        // Rebuilding and post-build sync must preserve actual delegate geometry.
         for node in &app.focusable_order {
             assert!(app.taffy.layout(*node).unwrap().size.height > 0.0);
+            assert!(
+                app.inspect_node(*node, |widget| widget.get_rect().height())
+                    .unwrap()
+                    > 0.0
+            );
         }
     }
 
@@ -16859,5 +16908,430 @@ mod card_grid_host_tests {
             assert_eq!(app.root_widget.children()[0].get_rect().height(), height);
             assert_eq!(app.focusable_order.len(), count);
         }
+    }
+}
+
+#[cfg(test)]
+mod viewport_composition_tests {
+    use super::*;
+    use crate::widget::TaffyTreeExt;
+    use crate::widget::{Button, Element};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    /// Legacy composition deliberately does not report its breakpoint changes.
+    struct ResponsiveRoot {
+        rect: KurboRect,
+        children: Vec<Element>,
+        nodes: Vec<NodeId>,
+        builds: Rc<Cell<usize>>,
+        editing: bool,
+        scroll: Rc<Cell<(f32, f32)>>,
+        oscillate: Rc<Cell<bool>>,
+        paints: Rc<Cell<usize>>,
+    }
+    impl ResponsiveRoot {
+        fn new(builds: Rc<Cell<usize>>) -> Self {
+            Self {
+                rect: KurboRect::ZERO,
+                children: vec![],
+                nodes: vec![],
+                builds,
+                editing: false,
+                scroll: Rc::new(Cell::new((0.0, 120.0))),
+                oscillate: Rc::default(),
+                paints: Rc::default(),
+            }
+        }
+    }
+    impl Widget for ResponsiveRoot {
+        fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+            for child in &mut self.children {
+                child.sync(doc, path);
+            }
+        }
+        fn name(&self) -> &str {
+            "ResponsiveRoot"
+        }
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            scale: f64,
+            modifiers: &winit::event::Modifiers,
+            doc: &mut automerge::AutoCommit,
+            path: &automerge::ObjId,
+            handled: &mut bool,
+            focus: &mut Option<NodeId>,
+            _: NodeId,
+            taffy: &TaffyTree<()>,
+        ) {
+            for (child, node) in self.children.iter_mut().zip(&self.nodes) {
+                child.handle_event(
+                    event, scale, modifiers, doc, path, handled, focus, *node, taffy,
+                );
+            }
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.builds.set(self.builds.get() + 1);
+            let count = if self.rect.width() >= 1100.0 {
+                3
+            } else if self.rect.width() >= 800.0 {
+                2
+            } else {
+                1
+            };
+            self.children = (0..count)
+                .map(|index| {
+                    Box::new(Button::new(&format!("action-{index}"), "Action", None)) as Element
+                })
+                .collect();
+            if self.editing {
+                self.children = vec![
+                    Box::new(
+                        crate::widget::TextInput::new(vec![crate::presence::PathSegment::Field(
+                            "body".into(),
+                        )])
+                        .with_on_change_path("body")
+                        .with_id("editor"),
+                    ),
+                    Box::new(Button::new("other", "Other", None)),
+                ];
+                if self.rect.width() < 1100.0 {
+                    self.children.reverse();
+                }
+                self.children.push(Box::new(
+                    crate::widget::Scrollable::new_vertical()
+                        .with_height(100.0)
+                        .with_persisted_offset(self.scroll.clone())
+                        .with_child(Box::new(
+                            crate::widget::Container::new()
+                                .with_no_padding()
+                                .with_height(1000.0),
+                        )),
+                ));
+            }
+            self.nodes = self
+                .children
+                .iter_mut()
+                .map(|child| child.build_layout(taffy, theme, map))
+                .collect();
+            let node = taffy.parent_node(
+                taffy::Style {
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::length(if self.editing {
+                            400.0
+                        } else if self.oscillate.get() && self.rect.height() == 100.0 {
+                            101.0
+                        } else {
+                            100.0
+                        }),
+                    },
+                    ..Default::default()
+                },
+                &self.nodes,
+            );
+            map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(
+            &mut self,
+            taffy: &TaffyTree<()>,
+            node: NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = KurboRect::from_origin_size(
+                origin,
+                (f64::from(layout.size.width), f64::from(layout.size.height)),
+            );
+            for (child, node) in self.children.iter_mut().zip(&self.nodes) {
+                child.apply_layout(taffy, *node, origin);
+            }
+        }
+        fn draw(
+            &mut self,
+            scene: &mut Scene,
+            affine: Affine,
+            text: &mut TextRenderer,
+            theme: &Theme,
+            presence: &PresenceCtx,
+        ) {
+            self.paints.set(self.paints.get() + 1);
+            for child in &mut self.children {
+                child.draw(scene, affine, text, theme, presence);
+            }
+        }
+        fn get_rect(&self) -> KurboRect {
+            self.rect
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.children.iter().map(|child| child.as_ref()).collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
+            self.children
+                .iter_mut()
+                .map(|child| child.as_mut() as &mut dyn Widget)
+                .collect()
+        }
+        fn layout_needs_measure(&self) -> bool {
+            false
+        }
+    }
+    fn frame(app: &mut App, width: u32) {
+        app.layout_dirty = true;
+        run_layout_pass(app, app.root_node.unwrap(), width, 400, 1.0, false).unwrap();
+    }
+    #[test]
+    fn legacy_composition_matches_fresh_at_multiple_viewports_before_paint() {
+        let builds = Rc::new(Cell::new(0));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(ResponsiveRoot::new(builds.clone())),
+        );
+        app.init_layout();
+        for (width, count) in [(1200, 3), (920, 2), (600, 1), (1200, 3), (920, 2)] {
+            frame(&mut app, width);
+            assert_eq!(app.root_widget.children().len(), count, "viewport {width}");
+            let mut fresh = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(ResponsiveRoot::new(Rc::new(Cell::new(0)))),
+            );
+            fresh.init_layout();
+            frame(&mut fresh, width);
+            assert_eq!(
+                app.root_widget
+                    .children()
+                    .iter()
+                    .map(|child| child.get_rect())
+                    .collect::<Vec<_>>(),
+                fresh
+                    .root_widget
+                    .children()
+                    .iter()
+                    .map(|child| child.get_rect())
+                    .collect::<Vec<_>>()
+            );
+        }
+        let before = builds.get();
+        frame(&mut app, 920);
+        assert_eq!(
+            builds.get(),
+            before,
+            "translation-only frames do not rebuild composition"
+        );
+        run_layout_pass(&mut app, NodeId::from(0usize), 920, 400, 1.0, false).unwrap();
+        assert_eq!(
+            builds.get(),
+            before,
+            "paint-only frames do not rebuild composition"
+        );
+    }
+    #[test]
+    fn logical_viewport_changes_recompose_even_at_unchanged_physical_size() {
+        let builds = Rc::new(Cell::new(0));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(ResponsiveRoot::new(builds.clone())),
+        );
+        app.init_layout();
+        frame(&mut app, 1200);
+        let node = app.root_node.unwrap();
+        run_layout_pass(&mut app, node, 1200, 400, 2.0, false).unwrap();
+        assert_eq!(app.root_widget.children().len(), 1);
+        let before = builds.get();
+        let node = app.root_node.unwrap();
+        app.layout_dirty = true;
+        run_layout_pass(&mut app, node, 600, 200, 1.0, false).unwrap();
+        assert_eq!(
+            builds.get(),
+            before,
+            "equal logical viewport does not recompose"
+        );
+    }
+
+    #[test]
+    fn pending_structure_rebuild_is_measured_at_an_unchanged_viewport() {
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(ResponsiveRoot::new(Rc::default())),
+        );
+        app.init_layout();
+        frame(&mut app, 1200);
+        app.structure_dirty = true;
+        frame(&mut app, 1200);
+        assert_eq!(app.root_widget.get_rect().width(), 1200.0);
+        assert!(
+            app.root_widget
+                .children()
+                .iter()
+                .all(|child| child.get_rect().height() > 0.0)
+        );
+    }
+
+    fn editing_fixture() -> (State, ResponsiveRoot) {
+        use automerge::transaction::Transactable;
+        let mut state = State::new();
+        let body = state
+            .doc
+            .put_object(&automerge::ROOT, "body", automerge::ObjType::Text)
+            .unwrap();
+        state.doc.splice_text(&body, 0, 0, "hello world").unwrap();
+        let mut root = ResponsiveRoot::new(Rc::default());
+        root.editing = true;
+        (state, root)
+    }
+
+    #[test]
+    fn resize_restores_fresh_editor_by_identity_with_selection_and_scroll() {
+        let (state, root) = editing_fixture();
+        let scroll = root.scroll.clone();
+        let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+        app.init_layout();
+        frame(&mut app, 1200);
+        app.set_focused_node(Some(app.focusable_order[0]));
+        app.mutate_node(app.focused_node.unwrap(), |widget| {
+            widget.set_state("5:b:1")
+        })
+        .unwrap();
+        for width in [920, 600, 1200] {
+            frame(&mut app, width);
+            let node = app.focused_node.expect("editor remains focused");
+            let expected_index = if width >= 1100 { 0 } else { 1 };
+            assert_eq!(
+                node, app.focusable_order[expected_index],
+                "focus follows identity across reordered controls"
+            );
+            assert_eq!(
+                app.inspect_node(node, |widget| widget.accessibility().unwrap().semantic_key)
+                    .unwrap()
+                    .as_deref(),
+                Some("editor")
+            );
+            assert_eq!(
+                app.inspect_node(node, |widget| widget.get_state())
+                    .unwrap()
+                    .as_deref(),
+                Some("5:b:1")
+            );
+            assert_eq!(
+                app.inspect_node(node, |widget| widget.accessibility().unwrap().value)
+                    .unwrap()
+                    .as_deref(),
+                Some("hello world")
+            );
+            assert_eq!(scroll.get(), (0.0, 120.0));
+            assert!(
+                app.inspect_node(node, |widget| widget.get_rect().width())
+                    .unwrap()
+                    > 0.0
+            );
+        }
+    }
+
+    fn harness(state: State, root: ResponsiveRoot, width: u32) -> crate::headless::FrameHarness {
+        crate::headless::FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(root),
+            (width, 400),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("resize-test".into()),
+        )
+    }
+
+    #[test]
+    fn headless_resize_matches_fresh_and_preserves_selected_edit_target() {
+        let builds = Rc::new(Cell::new(0));
+        let mut driver = harness(State::new(), ResponsiveRoot::new(builds.clone()), 1200);
+        for width in [920, 600, 1200] {
+            driver.resize((width, 400)).unwrap();
+            let fresh = harness(State::new(), ResponsiveRoot::new(Rc::default()), width);
+            assert_eq!(driver.inspection().root.rect, fresh.inspection().root.rect);
+            assert_eq!(
+                driver
+                    .inspection()
+                    .root
+                    .children
+                    .iter()
+                    .map(|child| child.rect)
+                    .collect::<Vec<_>>(),
+                fresh
+                    .inspection()
+                    .root
+                    .children
+                    .iter()
+                    .map(|child| child.rect)
+                    .collect::<Vec<_>>()
+            );
+        }
+        let before = builds.get();
+        driver.resize((1200, 400)).unwrap();
+        assert_eq!(builds.get(), before);
+
+        let (state, root) = editing_fixture();
+        let scroll = root.scroll.clone();
+        let mut editor = harness(state, root, 1200);
+        editor.tab(false).expect("the editor is the first tab stop");
+        editor.set_modifiers(&["ctrl".into()]);
+        editor.key("a");
+        editor.set_modifiers(&[]);
+        editor.resize((920, 400)).unwrap();
+        assert_eq!(
+            editor
+                .focused_access_node()
+                .unwrap()
+                .semantic_key
+                .as_deref(),
+            Some("editor")
+        );
+        assert_eq!(scroll.get(), (0.0, 120.0));
+        editor.type_text("X");
+        assert_eq!(
+            editor.focused_access_node().unwrap().value.as_deref(),
+            Some("X"),
+            "typing replaces the selection retained across fresh composition"
+        );
+    }
+
+    #[test]
+    fn oscillating_composition_is_bounded_and_headless_skips_paint() {
+        let root = ResponsiveRoot::new(Rc::default());
+        let oscillate = root.oscillate.clone();
+        let paints = root.paints.clone();
+        let builds = root.builds.clone();
+        let mut driver = harness(State::new(), root, 1200);
+        oscillate.set(true);
+        let before = builds.get();
+        let painted = paints.get();
+        assert!(matches!(
+            driver.resize((920, 400)),
+            Err(crate::widget::WidgetLayoutError::CompositionDidNotSettle)
+        ));
+        assert!(builds.get() - before <= 8);
+        assert_eq!(
+            paints.get(),
+            painted,
+            "failed settlement never reaches paint"
+        );
+        oscillate.set(false);
+        driver.resize((920, 400)).unwrap();
+        assert_eq!(paints.get(), painted + 1);
+
+        let root = ResponsiveRoot::new(Rc::default());
+        root.oscillate.set(true);
+        let builds = root.builds.clone();
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+        app.init_layout();
+        let root = app.root_node.unwrap();
+        assert!(run_layout_pass(&mut app, root, 1200, 400, 1.0, false).is_none());
+        assert!(builds.get() <= 8);
+        assert!(app.last_layout_logical.is_none());
     }
 }
