@@ -12,8 +12,8 @@
 //!
 //! The one non-filesystem case is the `qos-demo://` scheme used only by the
 //! ephemeral `--shots`/demo seed: it synthesises a real PNG in memory so the
-//! offline screenshot drives the exact same decode+cache+paint path a real
-//! FUSE image would, without shipping binary fixtures or touching the network.
+//! offline screenshot drives the exact same decode+cache+paint path as a real
+//! qdoc image, without shipping binary fixtures or touching the network.
 
 use std::io::Cursor;
 use std::sync::Arc;

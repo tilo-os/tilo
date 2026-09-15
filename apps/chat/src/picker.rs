@@ -41,9 +41,9 @@ impl PickEntry {
 /// `image` dependency).
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 
-/// Video containers the picker offers. These post as inline video cards; the
-/// bytes hydrate from the FUSE mount by reference (no decode in the default
-/// build — see [`crate::model::Attachment::Video`]).
+/// Video containers the picker offers. The selected local source is imported
+/// into qdoc's content-addressed blob store before the inline card is posted;
+/// default builds do not decode video frames (see [`crate::model::Attachment::Video`]).
 const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi", "ogv"];
 
 fn has_ext(name: &str, exts: &[&str]) -> bool {
