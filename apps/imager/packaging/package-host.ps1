@@ -1,6 +1,13 @@
 $ErrorActionPreference = "Stop"
 $Out = if ($args.Count -gt 0) { $args[0] } else { "dist/qos-imager" }
 $Version = if ($env:QOS_VERSION) { $env:QOS_VERSION -replace '^imager-v', '' -replace '^v', '' } else { "0.1.0" }
+$ReleaseRepository = if ($env:QOS_RELEASE_REPOSITORY) { $env:QOS_RELEASE_REPOSITORY } else { "qos/releases" }
+$ReleaseServer = if ($env:GITHUB_SERVER_URL) { $env:GITHUB_SERVER_URL.TrimEnd('/') } else { "https://code.podesta.ai" }
+if ($ReleaseRepository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+    throw "release repository must be OWNER/REPOSITORY"
+}
+if ($ReleaseServer -notmatch '^https://[^/]+$') { throw "release server must be an HTTPS origin" }
+$ReleasePage = "$ReleaseServer/$ReleaseRepository"
 $RequireNative = $env:QOS_REQUIRE_NATIVE_PACKAGES -eq "1"
 if ($env:QOS_REQUIRE_SIGNING -eq "1" -and -not $env:QOS_WINDOWS_CERT_PFX -and -not $env:QOS_WINDOWS_SIGNER) {
     throw "QOS_WINDOWS_SIGNER or QOS_WINDOWS_CERT_PFX is required for a release build"
@@ -103,7 +110,7 @@ Publisher: qOS Project
 PackageName: qOS Imager
 License: AGPL-3.0-only
 ShortDescription: Create and verify customised qOS installation media.
-PackageUrl: https://code.podesta.ai/qos/qos
+PackageUrl: $ReleasePage
 ManifestType: defaultLocale
 ManifestVersion: 1.9.0
 "@

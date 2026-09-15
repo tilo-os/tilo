@@ -4,6 +4,12 @@
 set -euo pipefail
 
 release_tag="${QOS_INSTALLER_RELEASE_TAG:-${GITHUB_REF_NAME:-}}"
+release_repository="${QOS_RELEASE_REPOSITORY:-qos/releases}"
+release_server="${GITHUB_SERVER_URL:-https://code.podesta.ai}"
+[[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
+[[ "$release_server" =~ ^https://[^/]+$ ]] \
+  || { printf 'release server must be an HTTPS origin\n' >&2; exit 2; }
 version="${QOS_INSTALLER_VERSION:-${release_tag#imager-v}}"
 channel="${QOS_INSTALLER_CHANNEL:-stable}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
@@ -49,7 +55,7 @@ jq -n \
   --arg version "$version" \
   --arg channel "$channel" \
   --arg arch "$arch" \
-  --arg url "https://code.podesta.ai/qos/qos/releases/download/${release_tag}/$(basename "$archive")" \
+  --arg url "${release_server}/${release_repository}/releases/download/${release_tag}/$(basename "$archive")" \
   --arg archive_sha256 "$archive_sha256" \
   --argjson archive_size "$archive_size" \
   --arg image_sha256 "$image_sha256" \

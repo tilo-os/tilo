@@ -27,6 +27,8 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
 
 bash "$repo/os/tests/forgejo_release_publication.sh" \
   || bad 'Forgejo release publication is not idempotent and immutable'
+bash "$repo/os/tests/public_release_origin.sh" \
+  || bad 'installer catalog is not bound to the configured public release origin'
 bash "$repo/os/tests/winget_acceptance_monitor.sh" \
   || bad 'WinGet acceptance monitor is not fail-closed and version-bound'
 
@@ -64,10 +66,11 @@ else
 fi
 
 grep -Fq 'id-token: write' "$workflow" \
-  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 7 ] \
+  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 8 ] \
   && grep -Fq 'IMAGER_LINUX_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINDOWS_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_MACOS_CREDENTIAL_BROKER' "$workflow" \
+  && grep -Fq 'IMAGER_RELEASE_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_HOMEBREW_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINGET_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$workflow" \
@@ -80,7 +83,7 @@ grep -Fq 'id-token: write' "$workflow" \
 
 grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   && grep -Fq 'Acquire-ReleaseCredentials.ps1' "$workflow" \
-  && [ "$(grep -Fc 'acquire-release-token.sh' "$workflow")" -eq 3 ] \
+  && [ "$(grep -Fc 'acquire-release-token.sh' "$workflow")" -eq 4 ] \
   && grep -Fq 'credential output must not preexist' \
     "$repo/apps/imager/packaging/acquire-release-token.sh" \
   && grep -Fq 'lease file has an extended' \
@@ -103,6 +106,26 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   && [ "$(grep -Fc 'if: always()' "$workflow")" -ge 2 ] \
   && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
   || bad 'release credential outputs or signing identities are insufficiently constrained'
+
+publisher="$repo/apps/imager/packaging/publish-forgejo-release.sh"
+if grep -Fq "release_repository=\"\${QOS_RELEASE_REPOSITORY:-qos/releases}\"" "$publisher" \
+   && grep -Fq 'release repository must be public' "$publisher" \
+   && grep -Fq 'release repository must be separate from the source repository' "$publisher" \
+   && grep -Fq 'release "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
+   && grep -Fq 'IMAGER_PUBLIC_RELEASE_REPOSITORY' "$workflow" \
+   && sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq 'persist-credentials: false' \
+   && ! sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq '${{ github.token }}' \
+   && grep -Fq '.releaseRoot = $release_root' "$repo/apps/imager/packaging/publish-site-release.sh" \
+   && grep -Fq 'landing page does not consume the public releaseRoot manifest field' "$repo/apps/imager/packaging/publish-site-release.sh" \
+   && ! grep -Fq 'qos/qos/releases/download' \
+      "$repo/apps/imager/packaging/package-install-medium.sh" \
+      "$repo/apps/imager/packaging/build-release-catalog.sh" \
+      "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
+      "$repo/apps/imager/packaging/package-host.ps1" "$workflow"; then
+  ok 'public binaries use a dedicated public repository and a target-only OIDC lease'
+else
+  bad 'binary publication can target the private source repository or reuse its job token'
+fi
 
 mac_broker="$repo/apps/imager/packaging/acquire-release-credentials.sh"
 token_broker="$repo/apps/imager/packaging/acquire-release-token.sh"
