@@ -2,6 +2,9 @@
 os/output/
 os/external-assets/cache/
 os/external-assets/cosign-cache/
+# OEM firmware is staged locally for an explicit hardware image, never committed.
+os/hardware/firmware/*
+!os/hardware/firmware/.gitkeep
 os/quick-desktop
 **/target/
 # rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):
@@ -23,6 +26,7 @@ scripts/headless-examples/__pycache__/
 scripts/__pycache__/
 tools/__pycache__/
 tools/**/__pycache__/
+os/**/__pycache__/
 
 # qOS signing keys — PRIVATE material is NEVER committed (see keys/README.md).
 # Public keys (keys/*.pub, keys/*.public.pem) ARE tracked — verifiers need them.
@@ -58,3 +62,4 @@ os/dev/composefs/stage/
 
 # Vendored crates carry their own lock files; ours is the workspace one.
 vendor/*/Cargo.lock
+.gstack/

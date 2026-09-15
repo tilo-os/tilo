@@ -47,8 +47,9 @@ if [ "$DEV_LOGIN" = 1 ] && [ -z "${QOS_INSTALLER_DEV_PASSWORD:-}" ]; then
   die "--dev-login requires a non-empty QOS_INSTALLER_DEV_PASSWORD"
 fi
 
-# Containerfile.installer is `FROM localhost/qos:latest`, so the base desktop
-# image must already exist in ROOTLESS podman storage (the build is rootless).
+# The selected base must already exist in ROOTLESS podman storage. Pass that
+# exact reference through to the Containerfile so a model-specific build cannot
+# silently layer its installer on a different localhost/qos:latest image.
 podman image exists "$QOS_IMAGE" \
   || die "$QOS_IMAGE not in rootless podman storage — run ./os/dev/build-image.sh first"
 
@@ -98,6 +99,7 @@ install -Dm0644 "$QOS_OS_DIR/etc/greetd/config.toml" \
 install -Dm0644 "$QOS_OS_DIR/etc/greetd/config.installer.toml" \
   "$INSTALLER_CONTEXT/rootfs/etc/greetd/config.toml"
 podman build \
+  --build-arg "QOS_BASE_IMAGE=$QOS_IMAGE" \
   --build-arg "QOS_INSTALLER_DEV_SSH=$DEV_LOGIN" \
   -t "$QOS_INSTALLER_IMAGE" -f "$QOS_OS_DIR/Containerfile.installer" "$INSTALLER_CONTEXT"
 cleanup_installer_context
