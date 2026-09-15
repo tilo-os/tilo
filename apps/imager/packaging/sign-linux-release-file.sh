@@ -15,13 +15,42 @@ expected="${expected//[[:space:]]/}"
 
 selector="${QOS_LINUX_VERIFY_KEY:-${QOS_LINUX_SIGNING_KEY:-}}"
 [ -n "$selector" ] || { printf 'no Linux release-key selector was configured\n' >&2; exit 1; }
-mapfile -t fingerprints < <(
-  gpg --batch --with-colons --fingerprint "$selector" 2>/dev/null \
-    | awk -F: '$1 == "pub" { want = 1; next }
-                 want && $1 == "fpr" { print toupper($10); want = 0 }'
-)
+release_gpg=(gpg --batch)
+verify_home=
+cleanup() {
+  if [ -n "$verify_home" ]; then
+    gpgconf --homedir "$verify_home" --kill all >/dev/null 2>&1 || true
+    rm -rf -- "$verify_home"
+  fi
+}
+trap cleanup EXIT
+if [ -n "${QOS_LINUX_VERIFY_KEY:-}" ]; then
+  [ -f "$QOS_LINUX_VERIFY_KEY" ] && [ ! -L "$QOS_LINUX_VERIFY_KEY" ] \
+    || { printf 'QOS_LINUX_VERIFY_KEY must be a regular public-key file\n' >&2; exit 1; }
+  mapfile -t fingerprints < <(
+    gpg --batch --with-colons --show-keys --fingerprint \
+      "$QOS_LINUX_VERIFY_KEY" 2>/dev/null \
+      | awk -F: '$1 == "pub" { want = 1; next }
+                   want && $1 == "fpr" { print toupper($10); want = 0 }'
+  )
+else
+  mapfile -t fingerprints < <(
+    gpg --batch --with-colons --fingerprint "$selector" 2>/dev/null \
+      | awk -F: '$1 == "pub" { want = 1; next }
+                   want && $1 == "fpr" { print toupper($10); want = 0 }'
+  )
+fi
 [ "${#fingerprints[@]}" -eq 1 ] && [ "${fingerprints[0]}" = "$expected" ] \
   || { printf 'Linux release key does not match protected release policy\n' >&2; exit 1; }
+
+if [ -n "${QOS_LINUX_VERIFY_KEY:-}" ]; then
+  verify_home="$(mktemp -d "${TMPDIR:-/tmp}/qos-imager-verify.XXXXXX")"
+  chmod 0700 "$verify_home"
+  gpg --batch --homedir "$verify_home" --import-options import-minimal \
+    --import "$QOS_LINUX_VERIFY_KEY" >/dev/null 2>&1 \
+    || { printf 'could not import the Linux release verification key\n' >&2; exit 1; }
+  release_gpg=(gpg --batch --homedir "$verify_home")
+fi
 
 if [ -n "${QOS_LINUX_SIGNER:-}" ]; then
   "$QOS_LINUX_SIGNER" "$artifact" "$signature"
@@ -34,7 +63,7 @@ else
 fi
 [ -s "$signature" ] || { printf 'Linux signer did not create %s\n' "$signature" >&2; exit 1; }
 
-identity="$(gpg --batch --status-fd 1 --verify "$signature" "$artifact" 2>/dev/null \
+identity="$("${release_gpg[@]}" --status-fd 1 --verify "$signature" "$artifact" 2>/dev/null \
   | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3 " " $NF; exit }')"
 read -r signing_fingerprint primary_fingerprint <<<"$identity"
 if [ "$signing_fingerprint" != "$expected" ] \

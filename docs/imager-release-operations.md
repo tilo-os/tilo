@@ -74,7 +74,7 @@ descriptor used by the sandboxed writer.
 
 ## Short-lived credentials
 
-The six credentialed jobs set Forgejo's native `enable-openid-connect: true`.
+The seven credentialed jobs set Forgejo's native `enable-openid-connect: true`.
 Do not add GitHub's `permissions: id-token: write`: Forgejo ignores that field
 and emits a workflow warning. Repository capabilities come from Authorized
 Integrations; the native key is what causes Forgejo to inject
@@ -164,9 +164,11 @@ writes only these non-secret handles to the environment-file output, one
 newline-terminated `NAME=value` per line:
 
 - Linux: `QOS_LINUX_SIGNER=/absolute/root-owned/wrapper` and
-  `QOS_LINUX_VERIFY_KEY=<public-key fingerprint>`; the broker imports only the
-  public verification key into the job keyring. The wrapper receives input and
-  output-signature paths and emits an armored detached OpenPGP signature. Set
+  `QOS_LINUX_VERIFY_KEY=/absolute/root-owned/release-public-key.asc`; packaging
+  imports that public key into a fresh isolated job keyring and verifies its
+  complete fingerprint against the independent protected policy. The wrapper
+  receives input and output-signature paths and emits an armored detached
+  OpenPGP signature. Set
   protected repository variable `IMAGER_LINUX_SIGNING_FINGERPRINT` to the same
   full fingerprint. This policy value is deliberately supplied independently
   of the broker: a broker returning a different public key cannot silently
@@ -246,8 +248,8 @@ Before creating a release tag, verify all of the following:
   tooling in the table above; Linux hosts can use rootful Podman for live-media
   assembly, and Windows/macOS hosts have access to their native GUI session for
   the packaged smoke launch;
-- all six broker-path variables above are protected; the Linux full fingerprint
-  is independently set in protected variable
+- all six broker-path variables plus the direct PCR signer path above are
+  protected; the Linux full fingerprint is independently set in protected variable
   `IMAGER_LINUX_SIGNING_FINGERPRINT`; `IMAGER_WINDOWS_PUBLISHER` pins the full
   Authenticode certificate subject; `IMAGER_MAC_TEAM_ID` and
   `IMAGER_MAC_CERT_SHA256` pin the Apple team and leaf signing certificate;

@@ -8,13 +8,15 @@ containerfile="$repo/os/Containerfile"
 # shellcheck source=lib/containerfile.sh
 . "$here/lib/containerfile.sh"
 
-# Captured from the 173 effective rootfs copy mappings immediately before the
-# consolidation. Sorting intentionally ignores instruction order: destinations
-# are unique, and the source-stage/source/destination triple defines each COPY's
-# installed bytes and path. Modes remain source modes except at the explicitly
-# equivalent COPY --chmod=0755 sites checked below. COPY preserves ownership,
-# mtimes and symlinks through scratch stages; no RUN mutates those stages.
-expected_contract=b7df48344d5f410a4fadfc20b3a728ff4164e6095b7a800be81524822f95abe5
+# Captured from the 178 effective rootfs copy mappings after rebasing the
+# consolidation over main's app-host, native AT-SPI, and VirtIO media additions.
+# Compared with the original 173-entry contract, these are exactly five added
+# mappings and no removals. Sorting intentionally ignores instruction order:
+# destinations are unique, and the source-stage/source/destination triple defines
+# each COPY's installed bytes and path. Modes remain source modes except at the
+# explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
+# ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
+expected_contract=9b90479025b4e597a048d5df0205df1de39d393ce35595d3a0c48cea095159ad
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

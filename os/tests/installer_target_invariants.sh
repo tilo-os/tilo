@@ -229,7 +229,9 @@ if [ -x "$prediction_signer" ] \
    && ! grep -Eq 'PRIVATE[_-]?KEY|private-key' "$prediction_signer" \
    && grep -Fq 'QOS_REQUIRE_PCR_PREDICTION' "$repo_root/os/dev/build-custom-installer.sh" \
    && grep -Fq 'sign-target-prediction.sh" "$QOS_IMAGE"' "$repo_root/os/dev/build-image.sh" \
-   && grep -Fq 'QOS_REQUIRE_PCR_PREDICTION:' "$os_image_workflow" \
+   && grep -Fq 'if [[ "$publish" == true ]]; then' "$os_image_workflow" \
+   && grep -Fq "echo 'QOS_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
+   && grep -Fq "echo 'QOS_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq 'if [[ -n "$QOS_PCR_PREDICTION_SIGNER" ]]; then' "$os_image_workflow" \
    && grep -Fq 'sign-target-prediction.sh "$repro_image"' "$os_image_workflow" \
    && grep -Fq 'enable-openid-connect: true' "$os_image_workflow" \
