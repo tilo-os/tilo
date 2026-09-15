@@ -13,12 +13,19 @@
 //! search) — never during `--shots` or layout — so the screenshot path stays
 //! hermetic and no thread or socket is created for a headless render.
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
 
 use crate::backend::{
     AlbumPage, ArtistPage, HomeContent, MusicBackend, PlaylistPage, ResolvedStream, SearchBundle,
     SearchKind, default_backend, preferred_backend,
 };
+
+/// Network work is deliberately back-pressured. A fast key-repeat or an agent
+/// cannot enqueue an unbounded number of expensive searches/resolves while the
+/// serial source is waiting on the network.
+const REQUEST_QUEUE_LIMIT: usize = 16;
+const MAX_QUERY_BYTES: usize = 512;
+const MAX_EXTERNAL_ID_BYTES: usize = 512;
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
@@ -119,7 +126,7 @@ pub enum StreamUpdate {
 
 /// Handle to the background worker: a request sender + an update receiver.
 pub struct StreamWorker {
-    tx: Sender<StreamRequest>,
+    tx: SyncSender<StreamRequest>,
     rx: Receiver<StreamUpdate>,
     startup_error: Option<String>,
 }
@@ -146,7 +153,7 @@ impl StreamWorker {
     }
 
     fn spawn_inner(force_offline: bool) -> Self {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<StreamRequest>();
+        let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
         let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
 
         let startup_error = std::thread::Builder::new()
@@ -176,9 +183,13 @@ impl StreamWorker {
         if let Some(error) = &self.startup_error {
             return Err(error.clone());
         }
-        self.tx
-            .send(req)
-            .map_err(|error| format!("music worker is unavailable: {error}"))
+        validate_request(&req)?;
+        self.tx.try_send(req).map_err(|error| match error {
+            TrySendError::Full(_) => {
+                "music worker is busy; wait for the current request or try again".to_string()
+            }
+            TrySendError::Disconnected(_) => "music worker is unavailable".to_string(),
+        })
     }
 
     /// Non-blocking drain of any updates ready this frame.
@@ -188,7 +199,7 @@ impl StreamWorker {
 
     #[cfg(test)]
     fn unavailable_for_test() -> Self {
-        let (tx, _request_rx) = std::sync::mpsc::channel::<StreamRequest>();
+        let (tx, _request_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
         let (_update_tx, rx) = std::sync::mpsc::channel::<StreamUpdate>();
         Self {
             tx,
@@ -196,6 +207,36 @@ impl StreamWorker {
             startup_error: Some("test worker startup failure".to_string()),
         }
     }
+}
+
+fn validate_request(request: &StreamRequest) -> Result<(), String> {
+    let valid_id = |value: &str| !value.is_empty() && value.len() <= MAX_EXTERNAL_ID_BYTES;
+    match request {
+        StreamRequest::Search { query, .. } | StreamRequest::SearchMore { query, .. } => {
+            if query.trim().is_empty() {
+                return Err("music search needs a non-empty query".to_string());
+            }
+            if query.len() > MAX_QUERY_BYTES {
+                return Err(format!(
+                    "music search is limited to {MAX_QUERY_BYTES} UTF-8 bytes"
+                ));
+            }
+        }
+        StreamRequest::Resolve {
+            track_id, video_id, ..
+        } => {
+            if !valid_id(track_id) || !valid_id(video_id) {
+                return Err("music track identifiers are empty or too long".to_string());
+            }
+        }
+        StreamRequest::Artist(id) | StreamRequest::Album(id) | StreamRequest::Playlist(id) => {
+            if !valid_id(id) {
+                return Err("music resource identifier is empty or too long".to_string());
+            }
+        }
+        StreamRequest::Home => {}
+    }
+    Ok(())
 }
 
 fn run_worker(req_rx: &Receiver<StreamRequest>, up_tx: &Sender<StreamUpdate>, force_offline: bool) {
@@ -342,9 +383,9 @@ mod tests {
 
     #[test]
     fn worker_announces_backend_and_offline_resolve_fails_gracefully() {
-        let w = StreamWorker::spawn();
-        // Ask it to resolve a synthetic id. In the default (offline) build this
-        // must come back as a ResolveFailed, never a hang or panic.
+        let w = StreamWorker::spawn_offline();
+        // Pin the hermetic backend: a unit test must never depend on the host's
+        // network or spend the live request deadline probing a synthetic id.
         w.request(StreamRequest::Resolve {
             track_id: "tk_x".into(),
             video_id: "synthetic".into(),
@@ -353,9 +394,7 @@ mod tests {
         .expect("worker request is accepted");
 
         // Drain with a bounded wait — the worker replies on its own thread. A
-        // `live` build first probes the rangeable-source instances (a bounded
-        // few-second budget) before falling back, so give it comfortable slack;
-        // it breaks out the instant a terminal update lands.
+        // It breaks out the instant a terminal update lands.
         let mut announced = false;
         let mut failed_or_resolved = false;
         for _ in 0..2000 {
@@ -366,9 +405,6 @@ mod tests {
                         assert_eq!(track_id, "tk_x");
                         failed_or_resolved = true;
                     }
-                    // A `live` build with network could actually resolve it;
-                    // either terminal outcome satisfies "never hangs".
-                    StreamUpdate::Resolved { .. } => failed_or_resolved = true,
                     _ => {}
                 }
             }
@@ -394,5 +430,47 @@ mod tests {
             })
             .expect_err("startup failure must be surfaced to the caller");
         assert!(error.contains("startup failure"));
+    }
+
+    #[test]
+    fn request_boundary_rejects_oversized_values() {
+        let worker = StreamWorker::spawn_offline();
+        let error = worker
+            .request(StreamRequest::Search {
+                query: "x".repeat(MAX_QUERY_BYTES + 1),
+                request_id: 1,
+            })
+            .expect_err("oversized query must be refused before enqueue");
+        assert!(error.contains("limited"));
+
+        let error = worker
+            .request(StreamRequest::Resolve {
+                track_id: "track".into(),
+                video_id: "v".repeat(MAX_EXTERNAL_ID_BYTES + 1),
+                request_id: 2,
+            })
+            .expect_err("oversized external id must be refused before enqueue");
+        assert!(error.contains("too long"));
+    }
+
+    #[test]
+    fn request_queue_is_bounded_and_never_blocks_the_caller() {
+        let (tx, request_rx) = std::sync::mpsc::sync_channel(REQUEST_QUEUE_LIMIT);
+        let (_update_tx, rx) = std::sync::mpsc::channel();
+        let worker = StreamWorker {
+            tx,
+            rx,
+            startup_error: None,
+        };
+        for _ in 0..REQUEST_QUEUE_LIMIT {
+            worker
+                .request(StreamRequest::Home)
+                .expect("capacity remains available");
+        }
+        let error = worker
+            .request(StreamRequest::Home)
+            .expect_err("one more request is back-pressured");
+        assert!(error.contains("busy"));
+        drop(request_rx);
     }
 }

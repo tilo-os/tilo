@@ -1,6 +1,6 @@
 # Music — qOS application manifest.
 #
-# The live half (features `live`, `streaming`, `lyrics`, `p2p`)
+# The live half (features `live`, `lyrics`, `p2p`)
 # resolves audio streams off googlevideo's rotating CDN names and
 # syncs over iroh QUIC, neither of which is allowlistable —
 # `mode = "host"`. MPRIS goes over the session bus.

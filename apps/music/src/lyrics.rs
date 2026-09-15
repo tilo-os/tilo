@@ -204,6 +204,8 @@ fn live_fetch_uncached(meta: &TrackMeta) -> Option<Lyrics> {
 /// moves on to the next strategy rather than burning retries on a real miss.
 #[cfg(any(feature = "lyrics", feature = "live"))]
 fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<String> {
+    use std::io::Read;
+    const MAX_LYRICS_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
     for attempt in 0..3u64 {
         match client.get(url).send() {
             Ok(resp) => {
@@ -218,7 +220,19 @@ fn get_text_retry(client: &reqwest::blocking::Client, url: &str) -> Option<Strin
                 if !status.is_success() {
                     return None;
                 }
-                if let Ok(body) = resp.text() {
+                if resp
+                    .content_length()
+                    .is_some_and(|len| len > MAX_LYRICS_RESPONSE_BYTES)
+                {
+                    return None;
+                }
+                let mut body = String::new();
+                if resp
+                    .take(MAX_LYRICS_RESPONSE_BYTES + 1)
+                    .read_to_string(&mut body)
+                    .is_ok()
+                    && body.len() <= MAX_LYRICS_RESPONSE_BYTES as usize
+                {
                     return Some(body);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(300 * (attempt + 1)));
