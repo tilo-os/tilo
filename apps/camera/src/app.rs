@@ -181,7 +181,7 @@ enum DocumentJobResult {
     Capture(Result<image::DynamicImage, String>),
     Recognize {
         page: usize,
-        result: Result<qos_ocr::Document, qos_ocr::Error>,
+        result: Result<qos_ocr::Recognition, qos_ocr::Error>,
     },
 }
 
@@ -1628,7 +1628,7 @@ impl CameraApp {
         let spawn = std::thread::Builder::new()
             .name("camera-document-ocr".into())
             .spawn(move || {
-                let result = qos_ocr::recognize(&image, language);
+                let result = qos_ocr::recognize_detailed(&image, language);
                 let _ = sender.send(DocumentJobResult::Recognize {
                     page: index,
                     result,
@@ -1675,11 +1675,19 @@ impl CameraApp {
             return "Language changed; update text".into();
         }
         let count = document.words.len();
-        if count == 1 {
-            "1 word recognized".into()
+        let summary = if count == 1 {
+            "1 word recognized".to_owned()
         } else {
             format!("{count} words recognized")
-        }
+        };
+        self.document_scan
+            .pages
+            .get(self.document_scan.selected)
+            .and_then(|page| page.ocr_deskew_degrees)
+            .map_or_else(
+                || summary.clone(),
+                |angle| format!("{summary} · Straightened {:.1}°", angle.abs()),
+            )
     }
 
     fn poll_document_job(&mut self) {
@@ -1708,12 +1716,21 @@ impl CameraApp {
             }
             DocumentJobResult::Recognize {
                 page,
-                result: Ok(document),
+                result: Ok(recognition),
             } => {
-                let words = document.words.len();
+                let words = recognition.document.words.len();
                 if let Some(target) = self.document_scan.pages.get_mut(page) {
-                    target.ocr = Some(document);
-                    self.toast = Some(format!("Recognized {words} words"));
+                    target.ocr = Some(recognition.document);
+                    target.ocr_deskew_degrees = recognition.deskew_degrees;
+                    self.toast = Some(recognition.deskew_degrees.map_or_else(
+                        || format!("Recognized {words} words"),
+                        |angle| {
+                            format!(
+                                "Recognized {words} words · Straightened {:.1}°",
+                                angle.abs()
+                            )
+                        },
+                    ));
                 }
             }
             DocumentJobResult::Recognize {
@@ -6976,14 +6993,22 @@ mod tests {
         sender
             .send(DocumentJobResult::Recognize {
                 page: 0,
-                result: Ok(qos_ocr::Document {
-                    words: Vec::new(),
-                    language: "eng".into(),
+                result: Ok(qos_ocr::Recognition {
+                    document: qos_ocr::Document {
+                        words: Vec::new(),
+                        language: "eng".into(),
+                    },
+                    deskew_degrees: Some(-2.5),
                 }),
             })
             .unwrap();
         app.poll_document_job();
         assert!(app.document_scan.pages[0].ocr.is_some());
+        assert_eq!(app.document_scan.pages[0].ocr_deskew_degrees, Some(-2.5));
+        assert_eq!(
+            app.toast.as_deref(),
+            Some("Recognized 0 words · Straightened 2.5°")
+        );
         assert!(app.document_job.is_none());
 
         app.apply(Action::RemoveDocumentPage, &mut doc, &root);
@@ -7078,6 +7103,11 @@ mod tests {
             language: "eng".into(),
         });
         assert_eq!(app.document_text_status(), "1 word recognized");
+        app.document_scan.pages[0].ocr_deskew_degrees = Some(1.5);
+        assert_eq!(
+            app.document_text_status(),
+            "1 word recognized · Straightened 1.5°"
+        );
         app.apply(Action::CopyDocumentText, &mut doc, &root);
         assert_eq!(ui::clipboard_paste().as_deref(), Some("Invoice"));
         assert_eq!(app.toast.as_deref(), Some("Recognized text copied"));
