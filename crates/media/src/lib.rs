@@ -95,7 +95,9 @@ pub use audio::{
 pub use cache::{
     FrameCache, FrameKey, SourceKey, bucket_ms_for_fps, bucket_of, read_ahead_targets,
 };
-pub use dmabuf::{ColorRange, Colorimetry, DmabufImage, DmabufPlane, YuvMatrix};
+pub use dmabuf::{ColorRange, Colorimetry, YuvMatrix};
+#[cfg(unix)]
+pub use dmabuf::{DmabufImage, DmabufPlane};
 pub use encode::{
     AudioCodec, BitrateUnits, EncodeReport, EncoderKind, EncoderSpec, HwEncPolicy, Selection,
     VideoCodec,
