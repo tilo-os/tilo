@@ -343,6 +343,24 @@ impl NoteTreeView {
         }
     }
 
+    pub fn expanded_pages(&self) -> Vec<PageId> {
+        let mut ids = self.expanded.iter().copied().collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
+    pub fn restore_expanded_pages(&mut self, ids: &[PageId], workspace: &Workspace) {
+        self.expanded = ids
+            .iter()
+            .copied()
+            .filter(|id| workspace.get(*id).is_some())
+            .collect();
+        self.did_initial_expand = true;
+        // Re-run the existing ancestor revelation even for an unchanged selection.
+        self.last_selection = None;
+        self.sync_from_workspace(workspace);
+    }
+
     /// Open the inline rename editor on the given page.
     pub fn begin_rename(&mut self, id: PageId, initial_title: &str) {
         // Plain chrome + the row's own text size so the field reads as the

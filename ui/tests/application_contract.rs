@@ -111,7 +111,7 @@ fn instance_store_scopes_device_and_workspace_and_preserves_bad_bytes() {
             "device" => bad.device_id = "E".into(),
             "workspace" => bad.workspace_id = "B".into(),
             "instance" => bad.instance_id = 12,
-            "version" => bad.version = 2,
+            "version" => bad.version = 3,
             "geometry" => bad.view.viewport.width = f64::NAN,
             "record" => bad.record_id.clear(),
             "kind" => bad.record_kind.clear(),
@@ -362,7 +362,7 @@ fn local_view(scroll: f64, caret: &str) -> View {
 }
 fn envelope(device: &str, room: &str, scroll: f64) -> SavedInstanceView {
     SavedInstanceView {
-        version: 1,
+        version: 2,
         app_id: format!("test.{room}.{device}"),
         device_id: device.into(),
         workspace_id: room.into(),
@@ -370,6 +370,7 @@ fn envelope(device: &str, room: &str, scroll: f64) -> SavedInstanceView {
         record_id: format!("record:{room}:{device}"),
         record_kind: "test".into(),
         view: local_view(scroll, "caret=1"),
+        application: None,
     }
 }
 
@@ -1411,5 +1412,378 @@ mod save_status_fixture {
             assert_eq!(DELIVERED.with(|seen| seen.borrow().len()), delivered);
             STORE.with(|store| *store.borrow_mut() = None);
         }
+    }
+}
+
+// Catches interpreting old postcard bytes as a V2 struct or rewriting them on load.
+#[test]
+fn v1_local_envelope_loads_as_v2_without_rewriting_exact_source() {
+    let host = ProbeHost::new();
+    let mut component =
+        instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+    let checkout = component.record().clone();
+    component.close();
+    let bytes = postcard::to_stdvec(&(
+        1u32,
+        APP,
+        DEVICE,
+        ROOM,
+        11u64,
+        checkout.id.as_str(),
+        checkout.kind.as_str(),
+        local_view(37.0, "caret=9"),
+    ))
+    .unwrap();
+    let path = host.view_path(11);
+    std::fs::write(&path, &bytes).unwrap();
+    let loaded = host.views.load(11).unwrap().unwrap();
+    assert_eq!(loaded.version, 2);
+    assert_eq!(loaded.view.scroll, vec![37.0]);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    for invalid in [
+        bytes[..bytes.len() - 1].to_vec(),
+        [bytes.as_slice(), &[0]].concat(),
+    ] {
+        std::fs::write(&path, &invalid).unwrap();
+        assert!(host.views.load(11).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), invalid);
+    }
+}
+
+mod paired_local {
+    use super::*;
+    use automerge::{AutoCommit, ObjId, ReadDoc};
+    use std::cell::RefCell;
+    use ui::application::{AppComponent, ApplicationDefinition};
+    use ui::application_view::{ApplicationFocusRestore, ApplicationLocalView};
+    use ui::view::ViewContribution;
+    use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+
+    #[derive(Default)]
+    #[allow(
+        clippy::struct_excessive_bools,
+        reason = "independent capture/finalizer faults and focus policy/state in a contract fixture"
+    )]
+    struct Presentation {
+        scroll: f64,
+        payload: u8,
+        fail_capture: bool,
+        fail_finish: bool,
+        own_focus: bool,
+        focused: bool,
+        events: Vec<String>,
+    }
+    thread_local! { static STATE: RefCell<Rc<RefCell<Presentation>>> = RefCell::default(); }
+    struct LocalRoot(Rc<RefCell<Presentation>>);
+    impl Widget for LocalRoot {
+        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            tree: &mut taffy::TaffyTree<()>,
+            _: &ui::Theme,
+            _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            tree.new_leaf(taffy::Style::default()).unwrap()
+        }
+        fn apply_layout(
+            &mut self,
+            _: &taffy::TaffyTree<()>,
+            _: taffy::NodeId,
+            _: vello::kurbo::Point,
+        ) {
+        }
+        fn draw(
+            &mut self,
+            _: &mut vello::Scene,
+            _: vello::kurbo::Affine,
+            _: &mut ui::TextRenderer,
+            _: &ui::Theme,
+            _: &ui::presence::PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _: &winit::event::WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut AutoCommit,
+            _: &ObjId,
+            _: &mut bool,
+            _: &mut Option<taffy::NodeId>,
+            _: taffy::NodeId,
+            _: &taffy::TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "Local pair"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+        fn is_focusable(&self) -> bool {
+            true
+        }
+        fn is_focused(&self) -> bool {
+            self.0.borrow().focused
+        }
+        fn set_focus(&mut self, focused: bool) {
+            self.0.borrow_mut().focused = focused;
+        }
+        fn get_state(&self) -> Option<String> {
+            Some("current caret".into())
+        }
+        fn set_state(&mut self, state: &str) {
+            self.0
+                .borrow_mut()
+                .events
+                .push(format!("ephemeral:{state}"));
+        }
+        fn view_state(&self) -> Option<ViewContribution> {
+            Some(ViewContribution {
+                scroll: vec![self.0.borrow().scroll],
+                view_mode: None,
+            })
+        }
+        fn restore_view_state(&mut self, view: &ViewContribution) {
+            let mut state = self.0.borrow_mut();
+            state.events.push("generic".into());
+            state.scroll = view.scroll[0];
+        }
+    }
+    impl AppWidget for LocalRoot {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Local pair"
+        }
+        fn app_icon(&self) -> IconDescriptor {
+            IconDescriptor::Glyph("")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+        fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
+            let mut state = self.0.borrow_mut();
+            state.events.push("capture".into());
+            if state.fail_capture {
+                return Err(ThawError::State("second contribution refused".into()));
+            }
+            Ok(Some(ApplicationLocalView {
+                app_id: APP.into(),
+                version: 1,
+                payload: vec![state.payload],
+            }))
+        }
+        #[allow(
+            clippy::panic_in_result_fn,
+            reason = "assert the immutable record loan at the application contract boundary"
+        )]
+        fn restore_application_view(
+            &mut self,
+            local: &ApplicationLocalView,
+            doc: &AutoCommit,
+        ) -> Result<ApplicationFocusRestore, ThawError> {
+            assert_eq!(
+                doc.get(ROOT, "body").unwrap().unwrap().0.to_str(),
+                Some("current canonical body")
+            );
+            let mut state = self.0.borrow_mut();
+            state.events.push("prepare".into());
+            state.payload = local.payload[0];
+            Ok(if state.own_focus {
+                ApplicationFocusRestore::Application
+            } else {
+                ApplicationFocusRestore::Generic
+            })
+        }
+        fn finish_application_view_restore(&mut self) -> Result<(), ThawError> {
+            let mut state = self.0.borrow_mut();
+            state.events.push("finish".into());
+            if state.fail_finish {
+                return Err(ThawError::State("finish refused".into()));
+            }
+            Ok(())
+        }
+    }
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "ComponentFactory has an owned target signature"
+    )]
+    fn factory(
+        mut context: HostContext,
+        target: LaunchTarget,
+        _: RestoreInput,
+    ) -> Result<AppComponent, LaunchError> {
+        if matches!(target, LaunchTarget::New) {
+            context
+                .initialize_new_record(|doc| {
+                    doc.put(ROOT, "body", "current canonical body")
+                        .map_err(|e| e.to_string())
+                })
+                .map_err(LaunchError::Record)?;
+        }
+        Ok(AppComponent::new(
+            context,
+            Box::new(LocalRoot(STATE.with(|state| state.borrow().clone()))),
+            qos_actions::ActionRegistry::new(),
+        ))
+    }
+    fn fixture() -> (ProbeHost, ApplicationDefinition, Rc<RefCell<Presentation>>) {
+        let host = ProbeHost::new();
+        let state = Rc::new(RefCell::new(Presentation {
+            scroll: 12.0,
+            payload: 7,
+            ..Default::default()
+        }));
+        STATE.with(|slot| *slot.borrow_mut() = state.clone());
+        (host, definition(factory), state)
+    }
+    #[test]
+    fn second_capture_failure_retains_complete_previous_pair_during_owned_close() {
+        let (host, definition, state) = fixture();
+        let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
+        let mut component = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let mut saved = envelope(DEVICE, ROOM, 12.0);
+        saved.app_id = APP.into();
+        saved.record_id = component.record().id.as_str().into();
+        saved.record_kind = component.record().kind.as_str().into();
+        saved.application = Some(ApplicationLocalView {
+            app_id: APP.into(),
+            version: 1,
+            payload: vec![7],
+        });
+        host.views.save(&saved).unwrap();
+        let bytes = std::fs::read(host.view_path(11)).unwrap();
+        state.borrow_mut().scroll = 90.0;
+        state.borrow_mut().payload = 99;
+        state.borrow_mut().fail_capture = true;
+        assert!(component.capture_local_view().is_err());
+        let report = component.close();
+        assert!(report.view_error.is_some());
+        assert!(report.view_retry.is_none());
+        let retained = report.recovery.unwrap();
+        assert_eq!(retained.view.scroll, vec![12.0]);
+        assert_eq!(retained.application.unwrap().payload, vec![7]);
+        assert_eq!(std::fs::read(host.view_path(11)).unwrap(), bytes);
+        assert!(component.capture_local_view().is_err());
+    }
+    #[test]
+    fn local_hooks_bracket_generic_restore_and_clear_only_uncorrelated_ephemeral() {
+        for own_focus in [false, true] {
+            let (host, definition, state) = fixture();
+            let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
+            let mut first = definition
+                .instantiate(context, LaunchTarget::New, RestoreInput::None)
+                .unwrap();
+            assert_eq!(state.borrow().events, ["capture"]);
+            let mut saved = first.close().recovery.unwrap();
+            saved.view = local_view(44.0, "old caret");
+            saved.view.viewport.width = 333.0;
+            saved.view.viewport.height = 222.0;
+            state.borrow_mut().events.clear();
+            state.borrow_mut().own_focus = own_focus;
+            let target = existing(first.record());
+            let context = host.prepare(&definition, 11, &target).unwrap();
+            let before = host
+                .records
+                .read(&first.record().id, |doc| {
+                    (doc.base_heads(), doc.pending_ops())
+                })
+                .unwrap();
+            let mut restored = definition
+                .instantiate(context, target, RestoreInput::Local(saved))
+                .unwrap();
+            let expected = if own_focus {
+                vec!["prepare", "generic", "finish", "capture"]
+            } else {
+                vec![
+                    "prepare",
+                    "generic",
+                    "ephemeral:old caret",
+                    "finish",
+                    "capture",
+                ]
+            };
+            assert_eq!(state.borrow().events, expected);
+            assert_eq!(restored.capture_local_view().unwrap().viewport.width, 333.0);
+            assert_eq!(
+                host.records
+                    .read(&first.record().id, |doc| (
+                        doc.base_heads(),
+                        doc.pending_ops()
+                    ))
+                    .unwrap(),
+                before
+            );
+            assert!(restored.close().view_error.is_none());
+        }
+    }
+    #[test]
+    fn failed_finalizer_retains_setup_record_and_original_view_bytes() {
+        let (host, definition, state) = fixture();
+        let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
+        let mut first = definition
+            .instantiate(context, LaunchTarget::New, RestoreInput::None)
+            .unwrap();
+        let saved = first.close().recovery.unwrap();
+        let bytes = std::fs::read(host.view_path(11)).unwrap();
+        state.borrow_mut().fail_finish = true;
+        let target = existing(first.record());
+        let context = host.prepare(&definition, 11, &target).unwrap();
+        let error = definition
+            .instantiate(context, target, RestoreInput::Local(saved))
+            .err()
+            .unwrap();
+        assert!(matches!(error, LaunchError::ComponentSetup { .. }));
+        assert_eq!(std::fs::read(host.view_path(11)).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn v2_application_envelope_roundtrips_and_default_hook_refuses_payload() {
+    use ui::application_view::ApplicationLocalView;
+    let host = ProbeHost::new();
+    let mut first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
+    let mut saved = first.close().recovery.unwrap();
+    assert_eq!(saved.version, 2);
+    assert!(saved.application.is_none());
+    saved.application = Some(ApplicationLocalView {
+        app_id: APP.into(),
+        version: 17,
+        payload: vec![0, 1, 255],
+    });
+    host.views.save(&saved).unwrap();
+    let original = std::fs::read(host.view_path(11)).unwrap();
+    let decoded = host.views.load(11).unwrap().unwrap();
+    let local = decoded.application.as_ref().unwrap();
+    assert_eq!(
+        local.version, 17,
+        "the store leaves app schema validation to its owner"
+    );
+    assert_eq!(local.payload, [0, 1, 255]);
+    let error = instantiate_probe(
+        &host,
+        11,
+        existing(first.record()),
+        RestoreInput::Local(decoded),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(error, LaunchError::ComponentSetup { .. }));
+    assert_eq!(std::fs::read(host.view_path(11)).unwrap(), original);
+    let mut foreign = saved;
+    foreign.application.as_mut().unwrap().app_id = "foreign.app".into();
+    assert!(host.views.save(&foreign).is_err());
+    assert_eq!(std::fs::read(host.view_path(11)).unwrap(), original);
+    for invalid in [
+        original[..original.len() - 1].to_vec(),
+        [original.as_slice(), &[0]].concat(),
+    ] {
+        std::fs::write(host.view_path(11), &invalid).unwrap();
+        assert!(host.views.load(11).is_err());
+        assert_eq!(std::fs::read(host.view_path(11)).unwrap(), invalid);
     }
 }

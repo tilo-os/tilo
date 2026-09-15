@@ -2,6 +2,20 @@
 use crate::view::{ThawError, View};
 use std::path::{Path, PathBuf};
 
+/// Opaque application-owned local presentation; never document bytes.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ApplicationLocalView {
+    pub app_id: String,
+    pub version: u32,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApplicationFocusRestore {
+    Generic,
+    Application,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SavedInstanceView {
     pub version: u32,
@@ -12,10 +26,51 @@ pub struct SavedInstanceView {
     pub record_id: String,
     pub record_kind: String,
     pub view: View,
+    pub application: Option<ApplicationLocalView>,
 }
 
 impl SavedInstanceView {
     pub(crate) fn validate(&self) -> Result<(), ThawError> {
+        if self.version != 2 {
+            return Err(ThawError::UnsupportedVersion {
+                found: self.version,
+                supported: 2,
+            });
+        }
+        for identity in [
+            &self.app_id,
+            &self.device_id,
+            &self.workspace_id,
+            &self.record_id,
+            &self.record_kind,
+        ] {
+            validate_identity(identity)?;
+        }
+        if self
+            .application
+            .as_ref()
+            .is_some_and(|local| local.app_id != self.app_id)
+        {
+            return Err(ThawError::BindingMismatch);
+        }
+        self.view.validate()
+    }
+}
+
+// Postcard is positional: preserve the exact original eight-field schema.
+#[derive(serde::Deserialize)]
+struct SavedInstanceViewV1 {
+    version: u32,
+    app_id: String,
+    device_id: String,
+    workspace_id: String,
+    instance_id: u64,
+    record_id: String,
+    record_kind: String,
+    view: View,
+}
+impl SavedInstanceViewV1 {
+    fn upgrade(self) -> Result<SavedInstanceView, ThawError> {
         if self.version != 1 {
             return Err(ThawError::UnsupportedVersion {
                 found: self.version,
@@ -31,8 +86,40 @@ impl SavedInstanceView {
         ] {
             validate_identity(identity)?;
         }
-        self.view.validate()
+        self.view.validate()?;
+        Ok(SavedInstanceView {
+            version: 2,
+            app_id: self.app_id,
+            device_id: self.device_id,
+            workspace_id: self.workspace_id,
+            instance_id: self.instance_id,
+            record_id: self.record_id,
+            record_kind: self.record_kind,
+            view: self.view,
+            application: None,
+        })
     }
+}
+fn decode_envelope(bytes: &[u8]) -> Result<SavedInstanceView, ThawError> {
+    let (version, _): (u32, _) = postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
+    let (instance, remainder) = match version {
+        1 => {
+            let (old, remainder): (SavedInstanceViewV1, _) =
+                postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?;
+            (old.upgrade()?, remainder)
+        }
+        2 => postcard::take_from_bytes(bytes).map_err(ThawError::Envelope)?,
+        found => {
+            return Err(ThawError::UnsupportedVersion {
+                found,
+                supported: 2,
+            });
+        }
+    };
+    if !remainder.is_empty() {
+        return Err(ThawError::InvalidView("trailing envelope bytes".into()));
+    }
+    Ok(instance)
 }
 
 /// Exact explicit namespace retained across construction, close and save retry.
@@ -114,11 +201,7 @@ impl InstanceViewStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(ThawError::Io(error)),
         };
-        let (instance, remainder): (SavedInstanceView, _) =
-            postcard::take_from_bytes(&bytes).map_err(ThawError::Envelope)?;
-        if !remainder.is_empty() {
-            return Err(ThawError::InvalidView("trailing envelope bytes".into()));
-        }
+        let instance = decode_envelope(&bytes)?;
         self.validate(&instance, instance_id)?;
         Ok(Some(instance))
     }

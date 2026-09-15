@@ -1,5 +1,8 @@
 //! Checked application construction shared by hosts, independent of any runner.
-use crate::application_view::{InstanceViewStore, SavedInstanceView, validate_identity};
+use crate::application_view::{
+    ApplicationFocusRestore, ApplicationLocalView, InstanceViewStore, SavedInstanceView,
+    validate_identity,
+};
 use crate::launch::LaunchError;
 use crate::permissions::{PermissionContext, PermissionScope, UserId};
 use crate::record::{
@@ -204,9 +207,9 @@ impl HostContext {
             operation_context: self.action_context.clone(),
         }
     }
-    fn envelope(&self, view: View) -> SavedInstanceView {
+    fn envelope(&self, view: View, application: Option<ApplicationLocalView>) -> SavedInstanceView {
         SavedInstanceView {
-            version: 1,
+            version: 2,
             app_id: self.app_id.clone(),
             device_id: self.device_id.clone(),
             workspace_id: self.views.workspace_id().into(),
@@ -214,6 +217,7 @@ impl HostContext {
             record_id: self.record.id.as_str().into(),
             record_kind: self.record.kind.as_str().into(),
             view,
+            application,
         }
     }
     fn validate_restore(&self, restore: &RestoreInput) -> Result<(), LaunchError> {
@@ -316,7 +320,7 @@ impl ApplicationDefinition {
         let record = context.record.clone();
         let construction = context.construction.clone();
         let local = match &restore {
-            RestoreInput::Local(saved) => Some(saved.view.clone()),
+            RestoreInput::Local(saved) => Some(saved.clone()),
             _ => None,
         };
         let entry = context.wake_scope.enter();
@@ -326,15 +330,18 @@ impl ApplicationDefinition {
             {
                 return Err(LaunchError::BindingMismatch);
             }
-            if let Some(view) = local {
+            if let Some(saved) = local {
                 component
-                    .restore_local_view(&view)
+                    .restore_local_pair_owned(&saved)
                     .map_err(LaunchError::Restore)?;
+            } else {
+                // Retain both validated contributions atomically on fresh construction too.
+                let (view, application) = component
+                    .capture_local_pair_owned(&component.local_view)
+                    .map_err(LaunchError::Restore)?;
+                component.local_view = view;
+                component.application_view = application;
             }
-            // Also validate widget contributions from a fresh construction.
-            component
-                .capture_local_view()
-                .map_err(LaunchError::Restore)?;
             component.prepared = true;
             Ok(component)
         });
@@ -349,6 +356,7 @@ pub struct AppComponent {
     pub(crate) root: Option<Box<dyn AppWidget>>,
     registry: Option<qos_actions::ActionRegistry>,
     local_view: View,
+    application_view: Option<ApplicationLocalView>,
     close_report: Option<ComponentCloseReport>,
     prepared: bool,
     pub(crate) invocations: Vec<qos_actions::InvocationId>,
@@ -423,6 +431,7 @@ impl AppComponent {
             root: Some(root),
             registry: Some(registry),
             local_view: View::default(),
+            application_view: None,
             close_report: None,
             prepared: false,
             invocations: vec![],
@@ -492,9 +501,13 @@ impl AppComponent {
         if self.context.closing.get() {
             return Err(ThawError::InvalidView("component is closing".into()));
         }
-        self.capture_local_view_owned()
+        self.capture_local_pair_owned(&self.local_view)
+            .map(|(view, _)| view)
     }
-    fn capture_local_view_owned(&self) -> Result<View, ThawError> {
+    fn capture_local_pair_owned(
+        &self,
+        inherited: &View,
+    ) -> Result<(View, Option<ApplicationLocalView>), ThawError> {
         let _entry = self.context.wake_scope.enter();
         let root = self
             .root
@@ -503,14 +516,55 @@ impl AppComponent {
         let mut view = crate::view::capture_widget_view_bound(
             root,
             crate::view::capture_tree_focus_bound(root),
-            self.local_view.viewport,
+            inherited.viewport,
         );
         if view.open_resource.is_none() {
-            view.open_resource
-                .clone_from(&self.local_view.open_resource);
+            view.open_resource.clone_from(&inherited.open_resource);
         }
         view.validate()?;
-        Ok(view)
+        let application = root.capture_application_view()?;
+        self.context
+            .envelope(view.clone(), application.clone())
+            .validate()?;
+        Ok((view, application))
+    }
+
+    fn restore_local_pair_owned(&mut self, saved: &SavedInstanceView) -> Result<(), ThawError> {
+        saved.validate()?;
+        let _entry = self.context.wake_scope.enter();
+        let root = self
+            .root
+            .as_deref_mut()
+            .ok_or_else(|| ThawError::InvalidView("component is closed".into()))?;
+        // Split root/context loans: preparation, generic restore and finalization share
+        // exactly one immutable latest-record loan and one component lifetime.
+        self.context
+            .read_record(|doc| {
+                let policy = if let Some(local) = &saved.application {
+                    root.restore_application_view(local, doc)?
+                } else {
+                    ApplicationFocusRestore::Generic
+                };
+                let mut view = saved.view.clone();
+                if policy == ApplicationFocusRestore::Application
+                    && let Some(focus) = &mut view.focus
+                {
+                    focus.ephemeral.clear();
+                }
+                crate::view::restore_widget_view_bound(root, &view);
+                if let Some(focus) = &view.focus {
+                    crate::view::restore_tree_focus_bound(root, focus);
+                }
+                if saved.application.is_some() {
+                    root.finish_application_view_restore()?;
+                }
+                Ok(())
+            })
+            .map_err(|error| ThawError::State(error.to_string()))??;
+        let (view, application) = self.capture_local_pair_owned(&saved.view)?;
+        self.local_view = view;
+        self.application_view = application;
+        Ok(())
     }
     /// Local hooks cover scroll, mode and focused ephemeral state. App-specific fields
     /// absent from `View` are unsupported; they must not be smuggled in as document bytes.
@@ -555,14 +609,18 @@ impl AppComponent {
             teardown_error: None,
         };
         self.context.closing.set(true);
-        match self.capture_local_view_owned() {
-            Ok(view) => {
+        match self.capture_local_pair_owned(&self.local_view) {
+            Ok((view, application)) => {
                 self.local_view = view.clone();
-                report.recovery = Some(self.context.envelope(view));
+                self.application_view.clone_from(&application);
+                report.recovery = Some(self.context.envelope(view, application));
             }
             Err(error) => {
                 report.view_error = Some(error.to_string());
-                report.recovery = Some(self.context.envelope(self.local_view.clone()));
+                report.recovery = Some(
+                    self.context
+                        .envelope(self.local_view.clone(), self.application_view.clone()),
+                );
             }
         }
         self.context.wake_scope.close();

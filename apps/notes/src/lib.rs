@@ -59,3 +59,5 @@ pub use status_bar::{StatusBarState, StatusModel};
 
 #[cfg(test)]
 extern crate self as notes;
+
+pub mod local_view;
