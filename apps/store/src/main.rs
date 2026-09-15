@@ -128,13 +128,25 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .shots
         .as_deref()
         .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
-    store::shots::render_scenario_to_path(
+    store::shots::render_scenario_to_path_with_preferences(
         args.viewport
             .unwrap_or(store::shots::DEFAULT_SHOTS_VIEWPORT),
         out,
         args.scenario.as_deref(),
+        args.text_scale,
+        shot_reduce_motion(),
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn shot_reduce_motion() -> bool {
+    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        })
 }
 
 /// The Widget the main event loop owns. Wraps a `StoreApp` and
