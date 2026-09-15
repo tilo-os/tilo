@@ -8,6 +8,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 
 use serde::Deserialize;
@@ -35,6 +37,35 @@ struct CatalogRelease {
     archive_size: u64,
     image_sha256: String,
     image_size: u64,
+}
+
+/// A local, non-replicated update from the verified release fetch worker.
+#[derive(Clone, Debug)]
+pub enum DownloadEvent {
+    Downloading { received: u64, total: u64 },
+    Verifying,
+    Expanding { written: u64, total: u64 },
+    Finished(Result<Source, String>),
+}
+
+/// Cancellation narrows the authority of this process-local network job. The
+/// partial archive remains in the cache so a later attempt resumes safely.
+#[derive(Clone, Debug, Default)]
+pub struct DownloadControl(Arc<AtomicBool>);
+
+impl DownloadControl {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+pub struct DownloadJob {
+    pub events: Receiver<DownloadEvent>,
+    pub control: DownloadControl,
 }
 
 /// Releases authenticated by the signature on this Imager build, filtered to
@@ -108,12 +139,15 @@ fn cache_root() -> PathBuf {
         .join("qos-imager")
 }
 
-fn sha256(path: &Path) -> Result<String, String> {
+fn sha256_controlled(path: &Path, control: &DownloadControl) -> Result<String, String> {
     let mut file =
         File::open(path).map_err(|error| format!("Could not open downloaded data: {error}"))?;
     let mut hash = Sha256::new();
     let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
     loop {
+        if control.is_cancelled() {
+            return Err("qOS installer download cancelled.".into());
+        }
         let read = file
             .read(&mut buffer)
             .map_err(|error| format!("Could not verify downloaded data: {error}"))?;
@@ -141,25 +175,54 @@ fn content_range(value: &str) -> Option<(u64, u64, u64)> {
     Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
 }
 
-fn copy_download(
+fn copy_download_observed(
     response: reqwest::blocking::Response,
     archive: &mut File,
     limit: u64,
+    already_received: u64,
+    control: &DownloadControl,
+    notify: &mut impl FnMut(DownloadEvent),
 ) -> Result<u64, String> {
-    let result = std::io::copy(&mut response.take(limit.saturating_add(1)), archive);
+    let mut input = response.take(limit.saturating_add(1));
+    let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
+    let mut downloaded = 0_u64;
+    let result = loop {
+        if control.is_cancelled() {
+            break Err("qOS installer download cancelled.".to_string());
+        }
+        let read = input
+            .read(&mut buffer)
+            .map_err(|error| format!("The qOS installer download was interrupted: {error}"))?;
+        if read == 0 {
+            break Ok(downloaded);
+        }
+        let chunk = buffer
+            .get(..read)
+            .ok_or_else(|| "Could not bound the qOS installer response.".to_string())?;
+        archive
+            .write_all(chunk)
+            .map_err(|error| format!("Could not save the qOS installer: {error}"))?;
+        downloaded = downloaded.saturating_add(read as u64);
+        notify(DownloadEvent::Downloading {
+            received: already_received.saturating_add(downloaded),
+            total: already_received.saturating_add(limit),
+        });
+    };
     // Make successfully received chunks durable even when the connection ends
     // early, so the next attempt can ask only for the missing suffix.
     archive
         .flush()
         .map_err(|error| format!("Could not save the qOS installer: {error}"))?;
-    result.map_err(|error| format!("The qOS installer download was interrupted: {error}"))
+    result
 }
 
-fn append_range(
+fn append_range_observed(
     response: reqwest::blocking::Response,
     archive_part: &Path,
     partial_size: u64,
     expected_size: u64,
+    control: &DownloadControl,
+    notify: &mut impl FnMut(DownloadEvent),
 ) -> Result<bool, String> {
     let parsed_range = response
         .headers()
@@ -185,7 +248,14 @@ fn append_range(
         .append(true)
         .open(archive_part)
         .map_err(|error| format!("Could not resume the download cache: {error}"))?;
-    let downloaded = copy_download(response, &mut archive, response_size)?;
+    let downloaded = copy_download_observed(
+        response,
+        &mut archive,
+        response_size,
+        partial_size,
+        control,
+        notify,
+    )?;
     let total = archive
         .metadata()
         .map_or(u64::MAX, |metadata| metadata.len());
@@ -199,12 +269,33 @@ fn append_range(
     Err("The qOS installer download was interrupted before it completed.".into())
 }
 
+#[cfg(test)]
 fn download_archive(
     client: &reqwest::blocking::Client,
     url: &str,
     trusted_origin: &reqwest::Url,
     archive_part: &Path,
     expected_size: u64,
+) -> Result<(), String> {
+    download_archive_observed(
+        client,
+        url,
+        trusted_origin,
+        archive_part,
+        expected_size,
+        &DownloadControl::default(),
+        &mut |_| {},
+    )
+}
+
+fn download_archive_observed(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    trusted_origin: &reqwest::Url,
+    archive_part: &Path,
+    expected_size: u64,
+    control: &DownloadControl,
+    notify: &mut impl FnMut(DownloadEvent),
 ) -> Result<(), String> {
     let mut partial_size = archive_part.metadata().map_or(0, |metadata| metadata.len());
     if partial_size > expected_size {
@@ -232,7 +323,14 @@ fn download_archive(
         }
 
         if resume && response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-            if append_range(response, archive_part, partial_size, expected_size)? {
+            if append_range_observed(
+                response,
+                archive_part,
+                partial_size,
+                expected_size,
+                control,
+                notify,
+            )? {
                 return Ok(());
             }
             partial_size = 0;
@@ -276,7 +374,8 @@ fn download_archive(
         // first, then safely consume that response as the new complete file.
         let mut archive = File::create(archive_part)
             .map_err(|error| format!("Could not create the download cache: {error}"))?;
-        let downloaded = copy_download(response, &mut archive, expected_size)?;
+        let downloaded =
+            copy_download_observed(response, &mut archive, expected_size, 0, control, notify)?;
         let total = archive
             .metadata()
             .map_or(u64::MAX, |metadata| metadata.len());
@@ -292,7 +391,15 @@ fn download_archive(
     Err("The qOS installer server did not honor a safe download restart.".into())
 }
 
-fn verified_image(release: &QosRelease) -> Result<Source, String> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "the authenticated download, expansion, and atomic cache publication form one fail-closed transaction"
+)]
+fn verified_image_observed(
+    release: &QosRelease,
+    control: &DownloadControl,
+    notify: &mut impl FnMut(DownloadEvent),
+) -> Result<Source, String> {
     validate_digest(&release.archive_sha256)?;
     validate_digest(&release.image_sha256)?;
     if release.archive_size == 0 || release.size == 0 {
@@ -303,7 +410,8 @@ fn verified_image(release: &QosRelease) -> Result<Source, String> {
         .map_err(|error| format!("Could not create the download cache: {error}"))?;
     let image = root.join("qos-installer.img");
     if image.is_file() {
-        if sha256(&image)? == release.image_sha256 {
+        notify(DownloadEvent::Verifying);
+        if sha256_controlled(&image, control)? == release.image_sha256 {
             return Ok(source_for(release, &image));
         }
         fs::remove_file(&image)
@@ -319,35 +427,74 @@ fn verified_image(release: &QosRelease) -> Result<Source, String> {
         .map_err(|error| format!("Could not initialize the downloader: {error}"))?;
     let trusted_origin = reqwest::Url::parse("https://code.sandbox.example/")
         .map_err(|error| format!("Could not initialize the trusted release origin: {error}"))?;
-    download_archive(
+    notify(DownloadEvent::Downloading {
+        received: archive_part.metadata().map_or(0, |metadata| metadata.len()),
+        total: release.archive_size,
+    });
+    download_archive_observed(
         &client,
         &release.url,
         &trusted_origin,
         &archive_part,
         release.archive_size,
+        control,
+        notify,
     )?;
-    if sha256(&archive_part)? != release.archive_sha256 {
+    notify(DownloadEvent::Verifying);
+    if sha256_controlled(&archive_part, control)? != release.archive_sha256 {
         let _ = fs::remove_file(&archive_part);
         return Err("The downloaded qOS installer did not match its signed catalog.".into());
     }
 
     let compressed = File::open(&archive_part)
         .map_err(|error| format!("Could not open the verified installer: {error}"))?;
-    let decoder = zstd::stream::read::Decoder::new(compressed)
+    let mut decoder = zstd::stream::read::Decoder::new(compressed)
         .map_err(|error| format!("Could not unpack the qOS installer: {error}"))?;
     let mut expanded = File::create(&image_part)
         .map_err(|error| format!("Could not create the expanded installer: {error}"))?;
-    let expanded_size = std::io::copy(
-        &mut decoder.take(release.size.saturating_add(1)),
-        &mut expanded,
-    )
-    .map_err(|error| format!("Could not unpack the qOS installer: {error}"))?;
+    let mut expanded_size = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
+    while expanded_size <= release.size {
+        if control.is_cancelled() {
+            let _ = fs::remove_file(&image_part);
+            return Err("qOS installer download cancelled.".into());
+        }
+        let allowed = release
+            .size
+            .saturating_add(1)
+            .saturating_sub(expanded_size)
+            .min(buffer.len() as u64) as usize;
+        if allowed == 0 {
+            break;
+        }
+        let writable = buffer
+            .get_mut(..allowed)
+            .ok_or_else(|| "Could not bound the expanded qOS installer.".to_string())?;
+        let read = decoder
+            .read(writable)
+            .map_err(|error| format!("Could not unpack the qOS installer: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        let chunk = buffer
+            .get(..read)
+            .ok_or_else(|| "Could not bound the expanded qOS installer.".to_string())?;
+        expanded
+            .write_all(chunk)
+            .map_err(|error| format!("Could not unpack the qOS installer: {error}"))?;
+        expanded_size = expanded_size.saturating_add(read as u64);
+        notify(DownloadEvent::Expanding {
+            written: expanded_size,
+            total: release.size,
+        });
+    }
     expanded
         .flush()
         .map_err(|error| format!("Could not save the expanded installer: {error}"))?;
+    notify(DownloadEvent::Verifying);
     if expanded_size != release.size
         || expanded.metadata().map_or(0, |meta| meta.len()) != release.size
-        || sha256(&image_part)? != release.image_sha256
+        || sha256_controlled(&image_part, control)? != release.image_sha256
     {
         let _ = fs::remove_file(&image_part);
         return Err("The expanded qOS installer did not match its signed catalog.".into());
@@ -369,15 +516,23 @@ fn source_for(release: &QosRelease, image: &Path) -> Source {
 }
 
 /// Download and verify without blocking the UI thread.
-pub fn spawn_download(release: QosRelease) -> Receiver<Result<Source, String>> {
+pub fn spawn_download(release: QosRelease) -> DownloadJob {
     let (tx, rx) = mpsc::channel();
+    let control = DownloadControl::default();
+    let worker_control = control.clone();
     std::thread::Builder::new()
         .name("qos-release-download".into())
         .spawn(move || {
-            let _ = tx.send(verified_image(&release));
+            let result = verified_image_observed(&release, &worker_control, &mut |event| {
+                let _ = tx.send(event);
+            });
+            let _ = tx.send(DownloadEvent::Finished(result));
         })
         .ok();
-    rx
+    DownloadJob {
+        events: rx,
+        control,
+    }
 }
 
 #[cfg(test)]
@@ -618,6 +773,74 @@ mod tests {
         assert_eq!(fs::read(&part).unwrap(), payload[..6]);
         server.join().unwrap();
         assert!(requests.lock().unwrap()[0].contains("range: bytes=6-"));
+    }
+
+    #[test]
+    fn observed_download_reports_bounded_byte_progress() {
+        let payload = b"installer bytes with progress";
+        let (url, origin, _requests, server) = serve(vec![HttpResponse {
+            status: "200 OK",
+            headers: vec![],
+            body: payload.to_vec(),
+            advertised_size: None,
+        }]);
+        let cache = tempfile::tempdir().unwrap();
+        let part = cache.path().join("installer.part");
+        let mut events = Vec::new();
+
+        download_archive_observed(
+            &test_client(),
+            &url,
+            &origin,
+            &part,
+            payload.len() as u64,
+            &DownloadControl::default(),
+            &mut |event| events.push(event),
+        )
+        .unwrap();
+
+        server.join().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            DownloadEvent::Downloading { received, total }
+                if *received == payload.len() as u64 && *total == payload.len() as u64
+        )));
+    }
+
+    #[test]
+    fn cancellation_preserves_the_resumable_partial_archive() {
+        let payload = b"more authenticated installer bytes";
+        let split = 8;
+        let (url, origin, _requests, server) = serve(vec![HttpResponse {
+            status: "206 Partial Content",
+            headers: vec![format!(
+                "Content-Range: bytes {split}-{}/{}",
+                payload.len() - 1,
+                payload.len()
+            )],
+            body: payload[split..].to_vec(),
+            advertised_size: None,
+        }]);
+        let cache = tempfile::tempdir().unwrap();
+        let part = cache.path().join("installer.part");
+        fs::write(&part, &payload[..split]).unwrap();
+        let control = DownloadControl::default();
+        control.cancel();
+
+        let error = download_archive_observed(
+            &test_client(),
+            &url,
+            &origin,
+            &part,
+            payload.len() as u64,
+            &control,
+            &mut |_| {},
+        )
+        .unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.contains("cancelled"));
+        assert_eq!(fs::read(&part).unwrap(), payload[..split]);
     }
 
     #[test]
