@@ -269,8 +269,12 @@ impl SessionPool {
 
 /// The identity a session is keyed by: the source's resolved URI, so the same
 /// file reached as a local path and as a workspace path shares one pipeline.
+/// Unresolvable sources keep distinct diagnostic keys; those keys are never
+/// sent to a decoder, which reports the URI conversion error separately.
 pub fn session_key(source: &Source) -> String {
-    source.to_uri()
+    source
+        .to_uri()
+        .unwrap_or_else(|_| format!("unresolved:{source:?}"))
 }
 
 #[cfg(test)]

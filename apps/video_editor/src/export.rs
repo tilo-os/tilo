@@ -1287,7 +1287,9 @@ mod tests {
     /// the decode came back empty, and "empty" read as "silent".
     #[cfg(feature = "gst")]
     fn decoded_audio(path: &std::path::Path) -> Vec<f32> {
-        let uri = crate::media::engine_source(path).to_uri();
+        let uri = crate::media::engine_source(path)
+            .to_uri()
+            .expect("fixture file URL");
         let pcm = crate::audio::decode_pcm_for_test(&uri).unwrap_or_else(|| {
             panic!(
                 "no readable audio stream in {} -- the level cannot be judged",

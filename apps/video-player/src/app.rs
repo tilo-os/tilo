@@ -262,7 +262,7 @@ fn local_source_token(source: &media::Source, generation: u64) -> String {
     // boundary. The monotonic generation prevents a same-path reopen from
     // accepting stale dynamic stream/chapter actions.
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in source.to_uri().bytes() {
+    for byte in media::session::session_key(source).bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
@@ -835,11 +835,9 @@ impl PlayerApp {
     }
 
     fn ensure_queued(&mut self, source: media::Source, title: String) -> String {
-        if let Some(entry) = self
-            .queue
-            .iter()
-            .find(|entry| entry.source.to_uri() == source.to_uri())
-        {
+        if let Some(entry) = self.queue.iter().find(|entry| {
+            media::session::session_key(&entry.source) == media::session::session_key(&source)
+        }) {
             return entry.id.clone();
         }
         let id = format!("local-queue-{}", local_source_token(&source, 0));
