@@ -8,7 +8,7 @@ Release hosts produce this matrix (architecture is part of every filename):
 
 | Host | Native downloads | Package-manager publication |
 |---|---|---|
-| Linux x86-64 + ARM64 | signed AppImage, signed portable tarball | Homebrew tap formula |
+| Linux x86-64 + ARM64 | signed Flatpak, AppImage, and portable tarball | Homebrew tap formula |
 | Windows x86-64 | signed standalone EXE, modern Inno Setup EXE, portable zip | WinGet manifest |
 | macOS x86-64 + Apple silicon | signed/notarized DMG and app zip | Homebrew cask |
 
