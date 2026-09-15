@@ -985,6 +985,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # image where those are unreachable on real hardware.
 COPY --from=desktop-binaries / /
 COPY \
+    os/usr/lib/systemd/user/tilo-model-storage.service \
     os/usr/lib/systemd/user/tilo-models.service \
     os/usr/lib/systemd/user/tilo-model-gateway.service \
     os/usr/lib/systemd/user/tilo-app-host.service \
