@@ -14,7 +14,10 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,6 +93,10 @@ struct LaunchedProcess {
     /// Kept host-side; it is not trusted when read back from a sandbox.
     workspace_id: Option<String>,
     start_time: u64,
+    /// True only for a qpkg launch carrying compositor-minted service
+    /// identity. Host/Flatpak launches are attributed to a room for placement
+    /// and portals but their Wayland app ids remain compatibility-owned.
+    confined: bool,
 }
 
 static LAUNCHED_PROCESSES: std::sync::LazyLock<Mutex<HashMap<u32, LaunchedProcess>>> =
@@ -126,7 +133,12 @@ fn proc_stat(pid: u32) -> Option<(u32, u64)> {
     Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
 }
 
-fn register_launched_process(pid: u32, package_id: &str, workspace_id: Option<&str>) {
+fn register_launched_process(
+    pid: u32,
+    package_id: &str,
+    workspace_id: Option<&str>,
+    confined: bool,
+) {
     let Some((_, start_time)) = proc_stat(pid) else {
         return;
     };
@@ -137,9 +149,38 @@ fn register_launched_process(pid: u32, package_id: &str, workspace_id: Option<&s
                 package_id: package_id.to_string(),
                 workspace_id: workspace_id.map(str::to_string),
                 start_time,
+                confined,
             },
         );
     }
+}
+
+const LAUNCH_REGISTRATION_FD_ENV: &str = "QOS_INTERNAL_LAUNCH_REGISTRATION_FD";
+
+/// Hand the launcher a private inherited descriptor that its process entry
+/// waits on before doing any launch work. `Command::spawn` can therefore
+/// return after exec, the compositor registers the real pid, and only then
+/// releases the launcher without a fork/exec race.
+fn install_launch_registration_gate(command: &mut Command) -> io::Result<UnixStream> {
+    let (release, wait) = UnixStream::pair()?;
+    let wait_fd = wait.as_raw_fd();
+    command.env(LAUNCH_REGISTRATION_FD_ENV, wait_fd.to_string());
+    // SAFETY: the closure runs after fork and before exec and calls only the
+    // async-signal-safe `fcntl(2)`. The closure retains the child copy through
+    // exec; the launcher closes it immediately after reading release.
+    unsafe {
+        command.pre_exec(move || {
+            let inherited_fd = wait.as_raw_fd();
+            let flags = libc::fcntl(inherited_fd, libc::F_GETFD);
+            if flags == -1
+                || libc::fcntl(inherited_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(release)
 }
 
 /// Durable room ids for live, launcher-verified instances of `package_id`.
@@ -303,10 +344,20 @@ fn unregister_launched_process(pid: u32) {
     lock(&TRUSTED_SERVICE_LAUNCHES).remove(&pid);
 }
 
-/// Resolve a host process (normally xdg-dbus-proxy) to the qOS package
-/// supervising one of its ancestors. The walk is bounded and refuses stale
-/// registry entries. Unknown/direct session-bus callers stay unattributed.
-pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
+/// Host-owned identity of a process descended from a launcher supervised by
+/// the compositor. Neither field is read from the sandbox environment or from
+/// a Wayland protocol string.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VerifiedLaunchIdentity {
+    pub package_id: String,
+    pub workspace_id: Option<String>,
+    pub confined: bool,
+}
+
+/// Resolve a descendant to the exact live launch record that owns it.
+/// Kernel parent links and process start-times prevent app-id spoofing and PID
+/// reuse; the bounded walk fails closed for daemonised or unknown clients.
+pub(crate) fn verified_launch_for_descendant(mut pid: u32) -> Option<VerifiedLaunchIdentity> {
     const MAX_ANCESTORS: usize = 32;
     for _ in 0..MAX_ANCESTORS {
         let (parent_pid, start_time) = proc_stat(pid)?;
@@ -314,7 +365,11 @@ pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
             && let Some(known) = map.get(&pid)
             && known.start_time == start_time
         {
-            return Some(known.package_id.clone());
+            return Some(VerifiedLaunchIdentity {
+                package_id: known.package_id.clone(),
+                workspace_id: known.workspace_id.clone(),
+                confined: known.confined,
+            });
         }
         if parent_pid == 0 || parent_pid == pid {
             return None;
@@ -322,6 +377,13 @@ pub(crate) fn verified_package_for_descendant(mut pid: u32) -> Option<String> {
         pid = parent_pid;
     }
     None
+}
+
+/// Resolve a host process (normally xdg-dbus-proxy) to the qOS package
+/// supervising one of its ancestors. The walk is bounded and refuses stale
+/// registry entries. Unknown/direct session-bus callers stay unattributed.
+pub(crate) fn verified_package_for_descendant(pid: u32) -> Option<String> {
+    verified_launch_for_descendant(pid).map(|identity| identity.package_id)
 }
 
 const FILES_PACKAGE_ID: &str = "dev.qos.file-explorer";
@@ -1788,6 +1850,22 @@ pub fn spawn_launch(
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
+        let mut launch_gate = match install_launch_registration_gate(&mut cmd) {
+            Ok(gate) => gate,
+            Err(error) => {
+                push_event(LaunchEvent {
+                    package_id: app.package_id.clone(),
+                    display_name: app.display_name.clone(),
+                    managed_agent_id: app.managed_agent_id.clone(),
+                    managed_workspace_id: app.managed_workspace_id.clone(),
+                    kind: LaunchEventKind::SpawnFailed {
+                        detail: error.to_string(),
+                    },
+                });
+                return;
+            }
+        };
+
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -1811,7 +1889,15 @@ pub fn spawn_launch(
             .as_ref()
             .map(|identity| identity.workspace_id.as_str())
             .or(command.portal_workspace_id.as_deref());
-        register_launched_process(child.id(), &app.package_id, workspace_id);
+        register_launched_process(
+            child.id(),
+            &app.package_id,
+            workspace_id,
+            command.service_identity.is_some(),
+        );
+        // The child cannot exec the launcher (and therefore cannot reach the
+        // public Wayland socket) until both registries above are complete.
+        let _ = launch_gate.write_all(&[1]);
         push_event(LaunchEvent {
             package_id: app.package_id.clone(),
             display_name: app.display_name.clone(),
@@ -3133,7 +3219,7 @@ mod tests {
     #[test]
     fn dbus_proxy_descendant_resolves_only_while_launcher_identity_is_live() {
         let parent = std::process::id();
-        register_launched_process(parent, "dev.qos.mail", Some("room-mail"));
+        register_launched_process(parent, "dev.qos.mail", Some("room-mail"), true);
         let mut child = std::process::Command::new("sh")
             .args(["-c", "sleep 2"])
             .spawn()
@@ -3141,6 +3227,14 @@ mod tests {
         assert_eq!(
             verified_package_for_descendant(child.id()).as_deref(),
             Some("dev.qos.mail")
+        );
+        assert_eq!(
+            verified_launch_for_descendant(child.id()),
+            Some(VerifiedLaunchIdentity {
+                package_id: "dev.qos.mail".into(),
+                workspace_id: Some("room-mail".into()),
+                confined: true,
+            })
         );
         unregister_launched_process(parent);
         assert_eq!(verified_package_for_descendant(child.id()), None);
@@ -3206,6 +3300,7 @@ mod tests {
                 package_id: "dev.qos.spoof".into(),
                 workspace_id: Some("room-spoof".into()),
                 start_time: u64::MAX,
+                confined: true,
             },
         );
         assert_eq!(verified_package_for_descendant(pid), None);

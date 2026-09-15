@@ -13,6 +13,8 @@
     )
 )]
 
+use std::io::Read;
+use std::os::fd::{FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -21,6 +23,33 @@ use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registry;
 use launcher::run::{LaunchMode, RunError, RunOptions, run};
+
+const LAUNCH_REGISTRATION_FD_ENV: &str = "QOS_INTERNAL_LAUNCH_REGISTRATION_FD";
+
+fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
+    if fd < 3 {
+        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+    }
+    // SAFETY: the compositor transfers ownership of this inherited descriptor
+    // specifically through `LAUNCH_REGISTRATION_FD_ENV`.
+    let mut gate = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut release = [0_u8; 1];
+    gate.read_exact(&mut release)
+}
+
+fn wait_for_shell_registration() -> Result<(), String> {
+    let Ok(raw_fd) = std::env::var(LAUNCH_REGISTRATION_FD_ENV) else {
+        return Ok(());
+    };
+    // SAFETY: process startup is single-threaded; remove the internal handoff
+    // before any launched app environment can inherit it.
+    unsafe { std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV) };
+    let fd = raw_fd
+        .parse::<RawFd>()
+        .map_err(|_| "invalid launch-registration descriptor".to_string())?;
+    wait_for_registration_fd(fd)
+        .map_err(|error| format!("launch-registration handoff failed: {error}"))
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -232,6 +261,10 @@ fn exit_code(code: i32) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    if let Err(error) = wait_for_shell_registration() {
+        eprintln!("qos-launcher: {error}");
+        return ExitCode::from(126);
+    }
     // Hidden subcommand: parsed BEFORE clap so its argv shape (positional
     // paths, `--` separator) doesn't collide with clap's flag parsing.
     let raw_args: Vec<String> = std::env::args().collect();
@@ -864,10 +897,20 @@ fn _link_run_error(_: &RunError) {}
 mod admit_share_tests {
     use super::*;
     use std::io::{Cursor, Read, Write};
+    use std::os::fd::IntoRawFd;
+    use std::os::unix::net::UnixStream;
 
     struct ScriptedStream {
         written: Vec<u8>,
         response: Cursor<Vec<u8>>,
+    }
+
+    #[test]
+    fn registration_descriptor_releases_process_entry_exactly_once() {
+        let (mut release, wait) = UnixStream::pair().unwrap();
+        let writer = std::thread::spawn(move || release.write_all(&[1]));
+        wait_for_registration_fd(wait.into_raw_fd()).unwrap();
+        writer.join().unwrap().unwrap();
     }
 
     impl Read for ScriptedStream {
