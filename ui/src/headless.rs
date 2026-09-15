@@ -500,6 +500,11 @@ impl FrameHarness {
         self.relayout();
     }
 
+    /// Shared final-output boundary for prepared CLI capture and audit.
+    pub(crate) fn prepare_component_output(&mut self) {
+        self.pump_component_wakes();
+    }
+
     fn drain_component_wakes(&self) {
         if let Some(wake) = &self.component_wake {
             wake.drain();

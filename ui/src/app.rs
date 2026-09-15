@@ -4335,16 +4335,43 @@ impl App {
     }
 
     fn reconcile_configured_theme(&mut self) -> bool {
-        if self.last_theme_store_check.elapsed() < Duration::from_millis(750) {
+        self.reconcile_configured_theme_with(
+            Instant::now(),
+            || {
+                settings_store::settings_path()
+                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
+            },
+            Self::apply_configured_theme,
+        )
+    }
+
+    fn reconcile_configured_theme_with(
+        &mut self,
+        now: Instant,
+        stamp: impl FnOnce() -> Option<std::time::SystemTime>,
+        apply: impl FnOnce(&mut Self),
+    ) -> bool {
+        // Prepared components retain the caller's presentation and local services.
+        if matches!(self.palette_source, PaletteSource::Host) {
             return false;
         }
-        self.last_theme_store_check = Instant::now();
-        let stamp = settings_store::settings_path()
-            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if now.saturating_duration_since(self.last_theme_store_check) < Duration::from_millis(750) {
+            return false;
+        }
+        self.last_theme_store_check = now;
+        let stamp = stamp();
         if stamp == self.theme_store_stamp {
             return false;
         }
         self.theme_store_stamp = stamp;
+        apply(self);
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
+        true
+    }
+
+    fn apply_configured_theme(&mut self) {
         self.base_theme = Theme::configured();
         // Screen reader is a device/personal setting, not a per-application
         // opt-in. Every qOS app watches the same file and changes its real
@@ -4356,10 +4383,6 @@ impl App {
             Self::configure_screen_reader(reader);
         }
         self.a11y.screen_reader = self.screen_reader.is_some();
-        self.rebuild_theme();
-        self.layout_dirty = true;
-        self.structure_dirty = true;
-        true
     }
 
     /// The smallest-area matching rect wins, so a nested child beats its
@@ -6119,7 +6142,7 @@ impl App {
     /// With records in play, the App's autosave writes the room index
     /// instead of the live document — sending the live doc to both would put
     /// a record's content in the room index.
-    fn autosave_tick(&mut self) {
+    fn autosave_tick(&mut self) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         match self.records.as_mut() {
             Some(set) => {
                 set.tick(&mut self.state.doc);
@@ -6135,6 +6158,33 @@ impl App {
                 }
             }
         }
+        // Collect through the same live component boundary used by dispatch.
+        // Distinct embedded owners participate; repeated views share one tick.
+        let mut owners: Vec<crate::record::RecordStore> = Vec::new();
+        let mut visit = |binding: &crate::bound_dispatch::CallbackBinding,
+                         _: &mut dyn crate::widget::AppWidget,
+                         _: &qos_actions::ActionRegistry| {
+            if !owners
+                .iter()
+                .any(|owner| owner.same_owner(&binding.records))
+            {
+                owners.push(binding.records.clone());
+            }
+            None
+        };
+        let traversal =
+            self.root_widget
+                .visit_components(&mut crate::bound_dispatch::ComponentRequest {
+                    target: None,
+                    found: false,
+                    visit: &mut visit,
+                });
+        // Release component callback loans before requesting writer work. Owners
+        // already collected still progress if another live component refuses entry.
+        for owner in owners {
+            owner.tick();
+        }
+        traversal
     }
 
     /// Called on event-loop teardown so a `kill` right after the last
@@ -9125,7 +9175,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Level-triggered rather than hooked into individual mutations:
         // widgets write to the document from many places.
-        app.autosave_tick();
+        if let Err(error) = app.autosave_tick() {
+            crate::diag!("[app] component autosave tick refused: {error:?}");
+        }
 
         if app.reconcile_fullscreen(&window) {
             window.request_redraw();
@@ -15617,6 +15669,220 @@ mod prepared_runner_tests {
     use crate::widget::TileHost;
     use automerge::ReadDoc;
     use winit::keyboard::{Key, NamedKey};
+
+    fn editable_component(host: &ProbeHost, instance: u64) -> AppComponent {
+        runner_probe_definition()
+            .instantiate(
+                host.prepare_with_permissions(
+                    runner_probe_definition(),
+                    instance,
+                    &LaunchTarget::New,
+                    runner_permissions(),
+                )
+                .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn prepared_native_due_theme_poll_preserves_explicit_inputs_without_discovery() {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 11);
+        let mut app = App::from_component(component, presentation_inputs(2.0)).unwrap();
+        let observed = observe_presentation();
+        let checks = std::cell::Cell::new(0);
+        let applies = std::cell::Cell::new(0);
+        let due = app.last_theme_store_check + Duration::from_millis(750);
+        let changed = app.reconcile_configured_theme_with(
+            due,
+            || {
+                checks.set(checks.get() + 1);
+                Some(std::time::SystemTime::UNIX_EPOCH)
+            },
+            |app| {
+                applies.set(applies.get() + 1);
+                app.base_theme = Theme::light();
+                // This controlled stand-in never creates a narrator or reads settings.
+                app.a11y.screen_reader = true;
+            },
+        );
+        draw_prepared_component_test_frame(&mut app);
+        assert_eq!(
+            checks.get(),
+            0,
+            "prepared polling must not consult its source"
+        );
+        assert_eq!(applies.get(), 0);
+        assert!(!changed);
+        assert!(app.theme_store_stamp.is_none());
+        assert!(app.screen_reader.is_none());
+        assert!(!app.a11y.screen_reader);
+        assert_presentation(&app.base_theme, 2.0, 1.25);
+        let observation = observed.borrow();
+        let (theme, renderer_scale) = observation.draws.last().unwrap();
+        assert_eq!(*renderer_scale, 1.5);
+        assert_presentation(theme, 1.5, 1.25);
+        app.close_components();
+    }
+
+    #[test]
+    fn legacy_theme_poll_keeps_due_stamp_and_reload_behavior_with_controlled_sources() {
+        let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
+            Box::new(crate::widget::Column::new())
+        });
+        let start = app.last_theme_store_check;
+        let checks = std::cell::Cell::new(0);
+        let applies = std::cell::Cell::new(0);
+        let stamp = Some(std::time::SystemTime::UNIX_EPOCH);
+        for (millis, source_stamp, expected_checks, expected_applies, expected_changed) in [
+            (749, stamp, 0, 0, false),
+            (750, stamp, 1, 1, true),
+            (1500, stamp, 2, 1, false),
+            (2250, None, 3, 2, true),
+        ] {
+            app.layout_dirty = false;
+            app.structure_dirty = false;
+            let changed = app.reconcile_configured_theme_with(
+                start + Duration::from_millis(millis),
+                || {
+                    checks.set(checks.get() + 1);
+                    source_stamp
+                },
+                |app| {
+                    applies.set(applies.get() + 1);
+                    app.base_theme = Theme::light();
+                },
+            );
+            assert_eq!(changed, expected_changed);
+            assert_eq!(checks.get(), expected_checks);
+            assert_eq!(applies.get(), expected_applies);
+            assert_eq!(app.layout_dirty, expected_changed);
+            assert_eq!(app.structure_dirty, expected_changed);
+            assert!(app.screen_reader.is_none());
+        }
+        assert!(app.theme_store_stamp.is_none());
+        assert_eq!(app.theme.name, Theme::light().name);
+    }
+
+    fn wait_for_saved_record(host: &ProbeHost, binding: &crate::bound_dispatch::CallbackBinding) {
+        assert!(host.records.same_owner(&binding.records));
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
+        loop {
+            let status = host.records.save_status(&binding.checkout.id).unwrap();
+            if status == crate::record::RecordSaveStatus::Saved {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "original writer did not acknowledge: {status:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn assert_saved_body(
+        host: &ProbeHost,
+        binding: &crate::bound_dispatch::CallbackBinding,
+        expected: &str,
+    ) {
+        wait_for_saved_record(host, binding);
+        let path = app_state::DocStore::room_record_dir_at(
+            &host.root(),
+            APP,
+            ROOM,
+            &binding.checkout.id.storage_key(),
+        )
+        .unwrap()
+        .join(app_state::DOCUMENT_FILE);
+        let doc = automerge::AutoCommit::load_with_options(
+            &std::fs::read(path).unwrap(),
+            automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Error),
+        )
+        .unwrap();
+        assert_eq!(
+            doc.get(automerge::ROOT, "body")
+                .unwrap()
+                .unwrap()
+                .0
+                .to_str(),
+            Some(expected)
+        );
+    }
+
+    fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
+        let target = crate::bound_dispatch::BoundActionTarget {
+            binding: binding.clone(),
+            address: crate::bound_dispatch::BoundActionAddress {
+                instance_id: binding.instance_id,
+                address: qos_actions::ActionAddress::new("probe:shared", "edit"),
+            },
+        };
+        app.invoke_bound_target(
+            &target,
+            None,
+            "probe-author",
+            false,
+            false,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(body(&binding.records, &binding.checkout), "edited");
+        assert_eq!(
+            binding.records.save_status(&binding.checkout.id).unwrap(),
+            crate::record::RecordSaveStatus::Saving
+        );
+    }
+
+    #[test]
+    fn prepared_native_autosave_tick_acknowledges_original_writer_before_close() {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 11);
+        let binding = component.callback_binding();
+        let mut app = App::from_component(component, runner_inputs()).unwrap();
+        assert!(app.autosave.is_none() && app.records.is_none());
+        assert_saved_body(&host, &binding, "initialized");
+        edit_bound_record(&mut app, &binding);
+        app.autosave_tick().unwrap();
+        assert_saved_body(&host, &binding, "edited");
+        assert!(binding.lifetime.is_active());
+        assert!(app.component_close_reports().is_empty());
+        app.close_components();
+    }
+
+    #[test]
+    fn prepared_native_autosave_tick_reaches_distinct_embedded_owners_before_close() {
+        let first_host = ProbeHost::new();
+        let first = editable_component(&first_host, 11);
+        let first_binding = first.callback_binding();
+        let mut app = App::from_component(first, runner_inputs()).unwrap();
+        let second_host = ProbeHost::new();
+        let mut second = editable_component(&second_host, 22);
+        let second_binding = second.callback_binding();
+        assert!(!first_binding.records.same_owner(&second_binding.records));
+        let handle = app.wake_scope.as_ref().unwrap().handle();
+        second.mount(move |_| handle.wake()).unwrap();
+        let first_root =
+            std::mem::replace(&mut app.root_widget, Box::new(crate::widget::Column::new()));
+        app.root_widget = Box::new(
+            crate::widget::Column::new()
+                .push(first_root)
+                .push(Box::new(TileHost::from_component(second))),
+        );
+        assert_saved_body(&first_host, &first_binding, "initialized");
+        assert_saved_body(&second_host, &second_binding, "initialized");
+        edit_bound_record(&mut app, &first_binding);
+        edit_bound_record(&mut app, &second_binding);
+        app.autosave_tick().unwrap();
+        assert_saved_body(&first_host, &first_binding, "edited");
+        assert_saved_body(&second_host, &second_binding, "edited");
+        assert!(first_binding.lifetime.is_active() && second_binding.lifetime.is_active());
+        assert!(app.component_close_reports().is_empty());
+        app.close_components();
+    }
 
     enum Runner {
         App(Box<App>),
