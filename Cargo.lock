@@ -10107,7 +10107,11 @@ name = "passwords"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "argon2",
+ "atomic-file",
  "automerge",
+ "chacha20poly1305",
+ "getrandom 0.2.17",
  "qos-app",
  "runtime-dylib",
  "serde",
