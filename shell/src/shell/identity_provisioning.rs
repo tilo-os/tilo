@@ -618,6 +618,22 @@ pub struct DiskIdentityStore {
     path: PathBuf,
 }
 
+/// Environment marker used only within the shell process to carry the result
+/// of the pre-compositor Secret Service probe into native compositor startup.
+/// It is deliberately one-way: an unavailable existing key can request the
+/// recovery surface, but no environment value can bypass identity checks.
+pub const IDENTITY_RECOVERY_ENV: &str = "TILO_IDENTITY_RECOVERY";
+
+/// Whether an existing schema-2 identity should be recovered interactively.
+///
+/// A locked/missing Secret Service is recoverable only through the trusted
+/// onboarding surface (unlock the host keyring or restore an encrypted copy).
+/// Do not broaden this to every startup error: malformed metadata, permission
+/// failures, and broken device certificates must continue to fail closed.
+pub fn is_secret_service_unavailable(error: &io::Error) -> bool {
+    runtime_identity::is_secret_service_unavailable_io(error)
+}
+
 impl DiskIdentityStore {
     /// Uses the canonical runtime resolver shared by Settings, first boot,
     /// and the launcher, so the boot chain cannot disagree because of a
@@ -977,6 +993,21 @@ mod tests {
         assert!(needs_first_run_flow(&store));
         store.save(&fixture_record()).unwrap();
         assert!(!needs_first_run_flow(&store));
+    }
+
+    #[test]
+    fn only_the_secret_service_unavailable_error_enters_recovery() {
+        assert!(is_secret_service_unavailable(
+            &io::Error::from_raw_os_error(libc::ENOKEY)
+        ));
+        assert!(!is_secret_service_unavailable(&io::Error::new(
+            io::ErrorKind::InvalidData,
+            "identity JSON malformed",
+        )));
+        assert!(!is_secret_service_unavailable(&io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "identity directory is not private",
+        )));
     }
 
     #[cfg(unix)]

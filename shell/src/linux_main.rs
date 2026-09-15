@@ -151,12 +151,41 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
             };
             let paths = firstboot::collaboration_identity_paths();
             if let Err(error) = firstboot::ensure_collaboration_identity(identity_dir, &paths) {
-                if provision_requested {
+                if identity_provisioning::is_secret_service_unavailable(&error) {
+                    // A schema-2 record is still the person's identity. A
+                    // locked/unavailable Secret Service is not permission to
+                    // replace it or mint a second one; let native trusted
+                    // chrome offer keyring recovery or encrypted restore.
+                    tracing::warn!(
+                        "existing Tilo identity is present but its Secret Service key is unavailable; opening trusted recovery"
+                    );
+                    if !provision_requested {
+                        if compositor::parse_mode_from_args() == Mode::Hosted {
+                            tracing::error!(
+                                "hosted mode cannot recover an identity; start a native Tilo session to unlock or restore it"
+                            );
+                            return Some(std::process::ExitCode::FAILURE);
+                        }
+                        // SAFETY: startup is single-threaded until native
+                        // compositor initialization, and this marker only
+                        // selects a stricter recovery surface.
+                        unsafe {
+                            std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1");
+                        }
+                    }
+                } else if provision_requested {
                     tracing::error!("could not provision collaboration identity: {error}");
+                    return Some(std::process::ExitCode::FAILURE);
                 } else {
                     tracing::error!("Tilo identity chain is incomplete or invalid: {error}");
+                    return Some(std::process::ExitCode::FAILURE);
                 }
-                return Some(std::process::ExitCode::FAILURE);
+                if provision_requested {
+                    // The pre-graphical migration unit cannot show the
+                    // recovery surface. Treat this one recoverable state as
+                    // a successful no-op so the real compositor can do it.
+                    return Some(std::process::ExitCode::SUCCESS);
+                }
             }
             if provision_requested {
                 tracing::info!("Tilo collaboration identity is provisioned");

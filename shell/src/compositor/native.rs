@@ -3613,6 +3613,28 @@ fn attach_peer_presence(
     ));
 }
 
+/// A deferred first-login transport starts precisely once: after the trusted
+/// identity ceremony has released the desktop, never while it is still
+/// collecting secrets.
+fn take_deferred_peer_sync_activation(deferred: &mut bool, onboarding_active: bool) -> bool {
+    if *deferred && !onboarding_active {
+        *deferred = false;
+        true
+    } else {
+        false
+    }
+}
+
+#[allow(clippy::fn_params_excessive_bools)]
+fn should_activate_first_use(
+    identity_missing: bool,
+    progress_pending: bool,
+    identity_recovery: bool,
+    test_control_session: bool,
+) -> bool {
+    !test_control_session && (identity_missing || progress_pending || identity_recovery)
+}
+
 fn spawn_session_identity_broker(
     chrome: &crate::shell::chrome_state::Chrome,
 ) -> Option<crate::identity_broker::IdentityBrokerHandle> {
@@ -4298,26 +4320,37 @@ pub fn run() -> ! {
         .path()
         .parent()
         .is_some_and(crate::onboarding_view::has_pending_progress);
+    // `main` probes the existing schema-2 record before entering the
+    // compositor. If Secret Service is locked, that probe must not terminate
+    // the login: trusted recovery chrome owns the next step. This marker is
+    // process-local and cannot make an identity valid or bypass verification.
+    let identity_recovery =
+        std::env::var_os(crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV)
+            .is_some_and(|value| value == "1");
     let identity_missing =
         crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
-    let onboarding_identity_dir =
-        if should_activate_first_use(identity_missing, progress_pending, test_control_session) {
-            if let Some(identity_dir) = identity_store
-                .path()
-                .parent()
-                .map(std::path::Path::to_path_buf)
-            {
-                Some(identity_dir)
-            } else {
-                tracing::error!(
-                    path = %identity_store.path().display(),
-                    "identity path has no parent; refusing to start an identity-less desktop"
-                );
-                std::process::exit(1);
-            }
+    let onboarding_identity_dir = if should_activate_first_use(
+        identity_missing,
+        progress_pending,
+        identity_recovery,
+        test_control_session,
+    ) {
+        if let Some(identity_dir) = identity_store
+            .path()
+            .parent()
+            .map(std::path::Path::to_path_buf)
+        {
+            Some(identity_dir)
         } else {
-            None
-        };
+            tracing::error!(
+                path = %identity_store.path().display(),
+                "identity path has no parent; refusing to start an identity-less desktop"
+            );
+            std::process::exit(1);
+        }
+    } else {
+        None
+    };
     // A first-login compositor must not create or advertise a transport
     // identity before the identity ceremony completes. Keep a one-shot
     // deferred start so that completion brings this session online, rather
@@ -4373,7 +4406,14 @@ pub fn run() -> ! {
             == crate::compositor::InstallMode::HostDesktop
         {
             eprintln!("tilo compositor: showing host-desktop identity setup from the first frame");
-            frame_builder.enable_host_desktop_onboarding(identity_dir);
+            if identity_recovery {
+                frame_builder.enable_host_desktop_recovery_onboarding(identity_dir);
+            } else {
+                frame_builder.enable_host_desktop_onboarding(identity_dir);
+            }
+        } else if identity_recovery {
+            eprintln!("tilo compositor: showing existing-identity recovery from the first frame");
+            frame_builder.enable_recovery_onboarding(identity_dir);
         } else {
             eprintln!("tilo compositor: showing full first-login setup from the first frame");
             frame_builder.enable_onboarding(identity_dir);
@@ -6810,6 +6850,72 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+
+    #[test]
+    fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
+        let mut deferred = true;
+        assert!(!take_deferred_peer_sync_activation(&mut deferred, true));
+        assert!(deferred, "onboarding retains the pending start");
+        assert!(take_deferred_peer_sync_activation(&mut deferred, false));
+        assert!(!deferred, "the current-session start is one-shot");
+        assert!(!take_deferred_peer_sync_activation(&mut deferred, false));
+    }
+
+    #[test]
+    fn output_presentation_removal_stays_pending_until_a_full_frame_submits() {
+        let mut pending = false;
+        let mut previous_surface_count = 1;
+
+        assert!(update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            false,
+        ));
+        assert_eq!(previous_surface_count, 0);
+        assert!(
+            pending,
+            "an off-cadence removal must survive until the next submitted frame"
+        );
+
+        pending = false;
+        assert!(!update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            false,
+        ));
+        assert!(update_output_presentation_repaint_pending(
+            &mut pending,
+            &mut previous_surface_count,
+            0,
+            true,
+        ));
+    }
+
+    #[test]
+    fn unfinished_post_identity_setup_reactivates_trusted_first_use_chrome() {
+        assert!(should_activate_first_use(false, true, false, false));
+        assert!(
+            !should_activate_first_use(false, false, false, false),
+            "an established user without a journal must not see first-use again"
+        );
+        assert!(
+            should_activate_first_use(false, false, true, false),
+            "an existing identity whose Secret Service key is unavailable must enter recovery"
+        );
+        assert!(
+            !should_activate_first_use(true, true, true, true),
+            "the explicit development control session remains isolated"
+        );
+    }
+
+    #[test]
+    fn portal_screencast_never_publishes_a_locked_frame() {
+        assert!(portal_screencast_should_publish(true, false));
+        assert!(!portal_screencast_should_publish(true, true));
+        assert!(!portal_screencast_should_publish(false, false));
+    }
 
     #[test]
     fn switching_tabs_leaves_the_hidden_surface_and_enters_the_visible_one() {
