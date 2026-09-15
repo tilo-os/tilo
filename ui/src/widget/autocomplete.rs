@@ -151,6 +151,10 @@ pub struct Autocomplete {
     rect: Rect,
     last_pointer: Point,
     outcome: AutocompleteOutcome,
+    /// Last effective accessibility type scale. Dropdown geometry is queried
+    /// during pointer routing, outside the draw call that supplies the theme,
+    /// so retain it alongside the externally-applied field rectangle.
+    text_scale: f64,
 }
 
 impl Autocomplete {
@@ -168,6 +172,7 @@ impl Autocomplete {
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             outcome: AutocompleteOutcome::None,
+            text_scale: 1.0,
         }
     }
 
@@ -394,9 +399,9 @@ impl Autocomplete {
             return None;
         }
         let h = if self.suggestions.is_empty() {
-            STATUS_ROW_H + 8.0
+            STATUS_ROW_H * self.text_scale.max(1.0) + 8.0
         } else {
-            count_f64(self.suggestions.len().min(self.max_visible)) * ROW_H + 8.0
+            count_f64(self.suggestions.len().min(self.max_visible)) * self.row_height() + 8.0
         };
         Some(Rect::new(
             self.rect.x0,
@@ -406,9 +411,14 @@ impl Autocomplete {
         ))
     }
 
-    fn row_rect(panel: Rect, i: usize) -> Rect {
-        let y0 = panel.y0 + 4.0 + count_f64(i) * ROW_H;
-        Rect::new(panel.x0 + 4.0, y0, panel.x1 - 4.0, y0 + ROW_H)
+    fn row_height(&self) -> f64 {
+        ROW_H * self.text_scale.max(1.0)
+    }
+
+    fn row_rect(&self, panel: Rect, i: usize) -> Rect {
+        let row_height = self.row_height();
+        let y0 = panel.y0 + 4.0 + count_f64(i) * row_height;
+        Rect::new(panel.x0 + 4.0, y0, panel.x1 - 4.0, y0 + row_height)
     }
 
     /// The dropdown row under a logical point, if any.
@@ -418,13 +428,40 @@ impl Autocomplete {
             return None;
         }
         (0..self.suggestions.len().min(self.max_visible))
-            .find(|&i| Self::row_rect(panel, i).contains(pt))
+            .find(|&i| self.row_rect(panel, i).contains(pt))
     }
 
     /// Paints one suggestion row: hover/armed background, optional icon,
     /// right-aligned detail, then the label clipped to what's left of the
     /// row. Split out of `draw_overlay` so that function stays a plain
     /// walk over the visible rows.
+    fn draw_row_background(
+        scene: &mut Scene,
+        transform: Affine,
+        tokens: &crate::tokens::Tokens,
+        accent: vello::peniko::Color,
+        row: Rect,
+        armed: bool,
+        hovered: bool,
+    ) {
+        let color = if armed {
+            Some(accent)
+        } else if hovered {
+            Some(tokens.colors.surface_white_10)
+        } else {
+            None
+        };
+        if let Some(color) = color {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                color,
+                None,
+                &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
+            );
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "an internal per-row painting step; each argument is independently needed by the row and bundling them would only hide that"
@@ -442,23 +479,7 @@ impl Autocomplete {
     ) {
         let armed = self.highlight == Some(i);
         let hovered = self.hover == Some(i) && !armed;
-        if armed {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
-            );
-        } else if hovered {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                tokens.colors.surface_white_10,
-                None,
-                &RoundedRect::from_rect(row, f64::from(tokens.radii.sm)),
-            );
-        }
+        Self::draw_row_background(scene, transform, tokens, accent, row, armed, hovered);
         let on_accent = tokens
             .colors
             .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
@@ -481,13 +502,15 @@ impl Autocomplete {
         };
         let text_size = tokens.typography.scale.base;
         let detail_size = tokens.typography.scale.sm;
+        let large_text = self.text_scale >= 1.5;
+        let icon_px = ICON_PX * self.text_scale.min(1.5);
         let mut x = row.x0 + ROW_PAD_X;
         if let Some(icon) = s.icon {
-            let iy = row.y0 + (ROW_H - ICON_PX) / 2.0;
+            let iy = row.y0 + (row.height() - icon_px) / 2.0;
             draw_icon(
                 scene,
                 transform,
-                Rect::new(x, iy, x + ICON_PX, iy + ICON_PX),
+                Rect::new(x, iy, x + icon_px, iy + icon_px),
                 icon,
                 if armed {
                     on_accent
@@ -496,34 +519,52 @@ impl Autocomplete {
                 },
                 LUCIDE_DEFAULT_STROKE_PX,
             );
-            x += ICON_PX + 10.0;
+            x += icon_px + 10.0;
         }
-        let ty = row.y0 + (ROW_H - f64::from(text_size)) / 2.0;
+        let ty = if large_text && s.detail.is_some() {
+            row.y0 + 7.0
+        } else {
+            row.y0 + (row.height() - f64::from(text_size) * self.text_scale) / 2.0
+        };
         // Right-aligned detail first, so we can bound the label width.
         let mut label_x1 = row.x1 - ROW_PAD_X;
         if let Some(detail) = &s.detail {
             let (dw, _) = text_renderer.measure(detail, detail_size, None);
-            let dx = row.x1 - ROW_PAD_X - f64::from(dw);
+            let detail_width = px((row.x1 - ROW_PAD_X - x).max(0.0));
+            let dx = if large_text {
+                x
+            } else {
+                row.x1 - ROW_PAD_X - f64::from(dw)
+            };
+            let detail = text_renderer.elide_to_width(detail, detail_size, detail_width);
             text_renderer.draw_text(
                 scene,
-                detail,
+                &detail,
                 detail_size,
                 dim_color,
                 transform.pre_translate(Vec2::new(
                     dx,
-                    row.y0 + (ROW_H - f64::from(detail_size)) / 2.0,
+                    if large_text {
+                        row.y0 + row.height() / 2.0 + 2.0
+                    } else {
+                        row.y0 + (row.height() - f64::from(detail_size)) / 2.0
+                    },
                 )),
                 None,
             );
-            label_x1 = dx - 8.0;
+            if !large_text {
+                label_x1 = dx - 8.0;
+            }
         }
+        let label_width = px((label_x1 - x).max(0.0));
+        let label = text_renderer.elide_to_width(&s.label, text_size, label_width);
         text_renderer.draw_text(
             scene,
-            &s.label,
+            &label,
             text_size,
             text_color,
             transform.pre_translate(Vec2::new(x, ty)),
-            Some(px((label_x1 - x).max(0.0))),
+            None,
         );
     }
 }
@@ -610,13 +651,13 @@ impl Widget for Autocomplete {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(34.0),
+                height: Dimension::length(34.0 * theme.text_scale.max(1.0)),
             },
             flex_grow: 1.0,
             flex_shrink: 1.0,
@@ -645,6 +686,7 @@ impl Widget for Autocomplete {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.text_scale = f64::from(theme.text_scale);
         // The field itself; the suggestion list floats in `draw_overlay`.
         self.input.apply_layout_external(self.rect);
         self.input
@@ -659,6 +701,7 @@ impl Widget for Autocomplete {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.text_scale = f64::from(theme.text_scale);
         let Some(panel) = self.dropdown_rect() else {
             return;
         };
@@ -699,7 +742,7 @@ impl Widget for Autocomplete {
             return;
         }
         for (i, s) in self.suggestions.iter().enumerate().take(self.max_visible) {
-            let row = Self::row_rect(panel, i);
+            let row = self.row_rect(panel, i);
             self.draw_row(scene, transform, text_renderer, tokens, accent, row, i, s);
         }
     }
@@ -1081,7 +1124,7 @@ mod tests {
         drive(&mut ac, &char_key("a")); // → "alpha","album"
         let panel = ac.dropdown_rect().expect("dropdown open");
         // Click the second row ("album").
-        let row = Autocomplete::row_rect(panel, 1);
+        let row = ac.row_rect(panel, 1);
         let c = row.center();
         drive(&mut ac, &mouse_move(c.x, c.y));
         assert!(drive(&mut ac, &left_press()));
@@ -1165,5 +1208,33 @@ mod tests {
         assert_eq!(ac.highlighted().unwrap().value, "Paris");
         drive(&mut ac, &named(NamedKey::ArrowDown));
         assert_eq!(ac.highlighted().unwrap().value, "Parma");
+    }
+
+    #[test]
+    fn large_text_scales_dropdown_rows_and_hit_geometry_together() {
+        let mut ac = Autocomplete::new();
+        ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 68.0));
+        ac.set_suggestions(vec![
+            Suggestion::new("A very long destination name").with_detail("First detail"),
+            Suggestion::new("Second destination").with_detail("Second detail"),
+        ]);
+        ac.open();
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark().with_text_scale(2.0);
+        text.set_text_scale(theme.text_scale);
+        ac.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let panel = ac.dropdown_rect().expect("large-text dropdown");
+        let first = ac.row_rect(panel, 0);
+        let second = ac.row_rect(panel, 1);
+        assert_eq!(first.height(), ROW_H * 2.0);
+        assert_eq!(first.y1, second.y0, "rows do not overlap");
+        assert_eq!(ac.row_at(second.center()), Some(1));
     }
 }

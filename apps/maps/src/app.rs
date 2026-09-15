@@ -132,6 +132,14 @@ struct AccessibilityTarget {
     state: ui::a11y::AccessState,
 }
 
+fn stable_access_key(id: &str) -> u64 {
+    // FNV-1a keeps accessibility child identity stable across responsive
+    // reordering without depending on a process-random hash seed.
+    id.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3)
+    })
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent render/interaction cache (drag state, focus, \
@@ -989,14 +997,13 @@ impl MapsApp {
         tiles: u32,
         name: Option<String>,
     ) {
-        // Id + name + tile count are resolved here, at authoring time, and carried
-        // in the action so `apply` stays free of the RNG / wall-clock.
+        // The footprint itself is the stable resource identity. Two peers that
+        // independently download the same area therefore address one row after
+        // merge instead of creating timestamp-named duplicates.
         let name = name.unwrap_or_else(|| self.region_name(bounds));
         let id = format!(
-            "region-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_micros())
+            "region:{:.6}:{:.6}:{:.6}:{:.6}:z{z0}-{z1}",
+            bounds.min.lat, bounds.min.lon, bounds.max.lat, bounds.max.lon,
         );
         let region = crate::model::DownloadedRegion {
             id,
@@ -1438,9 +1445,14 @@ impl MapsApp {
     /// Open Directions in Transit mode to the selected place, forcing the
     /// destination to the current selection. The place-card "Transit" shortcut
     /// and the `t` key land here.
-    fn enter_transit(&mut self) {
+    fn enter_transit(&mut self, doc: &mut AutoCommit) {
         self.set_dest_to_selection();
-        self.model.mode = TravelMode::Transit;
+        self.perform(
+            doc,
+            &MapsAction::SetTravelMode {
+                mode: TravelMode::Transit,
+            },
+        );
         self.recompute_transit();
     }
 
@@ -1519,9 +1531,9 @@ impl MapsApp {
         }
     }
 
-    fn set_mode(&mut self, mode: TravelMode) {
+    fn set_mode(&mut self, mode: TravelMode, doc: &mut AutoCommit) {
         if self.model.mode != mode {
-            self.model.mode = mode;
+            self.perform(doc, &MapsAction::SetTravelMode { mode });
             self.model.panel = Panel::Directions;
             // Transit plans a public-transport journey; the road modes route.
             if mode.is_transit() {
@@ -2170,7 +2182,7 @@ impl MapsApp {
                 self.endpoints.dismiss();
                 self.scroll = 0.0;
             }
-            Hit::Mode(m) => self.set_mode(*m),
+            Hit::Mode(m) => self.set_mode(*m, doc),
             Hit::SelectPlace(id) => {
                 self.select_place(id);
             }
@@ -2190,21 +2202,29 @@ impl MapsApp {
                 self.nav_open = false;
             }
             Hit::Directions => self.enter_directions(),
-            Hit::Transit => self.enter_transit(),
+            Hit::Transit => self.enter_transit(doc),
             Hit::ToggleSave => self.toggle_save_selected(doc),
             Hit::ClearRoute => self.clear_route(doc),
             Hit::UseMyLocation => self.use_my_location(),
             Hit::TransitTimeMode(m) => {
-                self.model.transit_time.mode = *m;
+                let mut value = self.model.transit_time;
+                value.mode = *m;
+                self.perform(doc, &MapsAction::SetTransitTime { value });
                 self.replan_for_time();
             }
             Hit::TransitTimeDelta(d) => {
-                let v = (self.model.transit_time.offset_min + *d).clamp(0, 1440);
-                self.model.transit_time.offset_min = v;
+                let mut value = self.model.transit_time;
+                value.offset_min = (value.offset_min + *d).clamp(0, 1440);
+                self.perform(doc, &MapsAction::SetTransitTime { value });
                 self.replan_for_time();
             }
             Hit::TransitTimeNow => {
-                self.model.transit_time = crate::model::TransitTime::default();
+                self.perform(
+                    doc,
+                    &MapsAction::SetTransitTime {
+                        value: crate::model::TransitTime::default(),
+                    },
+                );
                 self.replan_for_time();
             }
             Hit::Journey(i) => {
@@ -4421,7 +4441,10 @@ impl MapsApp {
                     .result_id(*index)
                     .map_or_else(|| index.to_string(), str::to_string);
                 (
-                    format!("Search result {}", index + 1),
+                    self.search.result_name(*index).map_or_else(
+                        || format!("Search result {}", index + 1),
+                        |name| format!("Open {name}"),
+                    ),
                     format!("maps.search-result:{id}"),
                     Role::Button,
                     AccessState::new().focusable(true),
@@ -4464,7 +4487,10 @@ impl MapsApp {
                 AccessState::new().focusable(true),
             ),
             Hit::SelectPoi(id) => (
-                format!("Open nearby place {id}"),
+                self.pois.iter().find(|poi| poi.id == *id).map_or_else(
+                    || "Open nearby place".to_string(),
+                    |poi| format!("Open {}", poi.name),
+                ),
                 format!("maps.poi:{id}"),
                 Role::Button,
                 AccessState::new().focusable(true),
@@ -4660,6 +4686,8 @@ impl Widget for MapsApp {
             "maps.toggle-traffic",
             "maps.open-place",
             "maps.directions",
+            "maps.open-poi",
+            "maps.directions-poi",
         ]
     }
 
@@ -5090,6 +5118,23 @@ impl Widget for MapsApp {
         if resources.is_empty() {
             resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
         }
+        if let Some(workspace) = resources.first_mut() {
+            workspace
+                .children
+                .extend(self.model.results.iter().take(12).map(|place| {
+                    Resource::new(
+                        format!("maps.search-result:{}", place.id),
+                        "maps.search-result",
+                        place.name.clone(),
+                    )
+                }));
+            workspace.children.extend(
+                self.nearby_pois()
+                    .into_iter()
+                    .take(12)
+                    .map(|poi| Resource::new(format!("maps.poi:{}", poi.id), "maps.poi", poi.name)),
+            );
+        }
         for resource in &mut resources {
             self.decorate_live_resource(resource);
         }
@@ -5119,6 +5164,23 @@ impl Widget for MapsApp {
             .or_else(|| {
                 (id == "maps.workspace")
                     .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))
+            })
+            .or_else(|| {
+                id.strip_prefix("maps.search-result:").and_then(|place_id| {
+                    self.model
+                        .results
+                        .iter()
+                        .find(|place| place.id == place_id)
+                        .map(|place| Resource::new(id, "maps.search-result", place.name.clone()))
+                })
+            })
+            .or_else(|| {
+                id.strip_prefix("maps.poi:").and_then(|poi_id| {
+                    self.pois
+                        .iter()
+                        .find(|poi| poi.id == poi_id)
+                        .map(|poi| Resource::new(id, "maps.poi", poi.name.clone()))
+                })
             })?;
         self.decorate_live_resource(&mut resource);
         Some(resource)
@@ -5157,6 +5219,17 @@ impl Widget for MapsApp {
                 self.select_place(&id);
                 if type_id == "maps.directions" {
                     self.enter_directions();
+                }
+            }
+            (OperationKind::View, "maps.open-poi" | "maps.directions-poi") => {
+                let id: String =
+                    serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+                if !self.pois.iter().any(|poi| poi.id == id) {
+                    return Err("Map point of interest is no longer in this viewport".into());
+                }
+                self.select_poi(&id);
+                if type_id == "maps.directions-poi" {
+                    self.poi_directions();
                 }
             }
             _ => return Ok(false),
@@ -5338,22 +5411,27 @@ impl Widget for MapsApp {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.info_sheet.modal_capture()
+        self.info_sheet
+            .modal_capture()
+            .or_else(|| self.offline_panel.modal_capture())
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         if let Some(dialog) = self.info_sheet.accessibility() {
             return Some(dialog);
         }
+        if let Some(dialog) = self.offline_panel.accessibility() {
+            return Some(dialog);
+        }
         let children = self
             .accessibility_targets()
             .into_iter()
-            .enumerate()
-            .map(|(index, target)| {
+            .map(|target| {
+                let key = stable_access_key(&target.target);
                 ui::a11y::AccessNode::new(target.role)
                     .with_name(target.label)
                     .with_state(target.state)
-                    .with_key(index as u64)
+                    .with_key(key)
                     .with_action_target(target.target)
                     .with_bounds(target.rect)
             })
@@ -5366,6 +5444,9 @@ impl Widget for MapsApp {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
+        if self.offline_panel.is_open() {
+            return self.offline_panel.accessibility_rect(path);
+        }
         let [index] = path else {
             return None;
         };
@@ -5381,6 +5462,21 @@ impl Widget for MapsApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if self.offline_panel.is_open() {
+            // Text input needs the framework's exact-rectangle pointer
+            // fallback so it can place its caret. All buttons dispatch through
+            // the same effect path as pointer input.
+            if target == "maps.offline.search" {
+                return false;
+            }
+            if matches!(action, ui::a11y::Action::Activate)
+                && let Some(action) = self.offline_panel.semantic_action(target)
+            {
+                self.dispatch_offline(action, state);
+                return true;
+            }
+            return false;
+        }
         if !matches!(
             action,
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
@@ -5568,6 +5664,23 @@ impl MapsApp {
                     .insert(0, spec.with_contract(ActionContract::view()));
             }
         }
+        if resource.kind == "maps.poi"
+            && let Some(poi_id) = resource.id.as_str().strip_prefix("maps.poi:")
+            && self.pois.iter().any(|poi| poi.id == poi_id)
+        {
+            for (id, label, type_id) in [
+                ("open", "Open place", "maps.open-poi"),
+                ("directions", "Get directions", "maps.directions-poi"),
+            ] {
+                if let Ok(spec) =
+                    ActionSpec::operation(id, label, OperationKind::View, type_id, &poi_id)
+                {
+                    resource
+                        .actions
+                        .push(spec.with_contract(ActionContract::view()));
+                }
+            }
+        }
         for child in &mut resource.children {
             self.decorate_live_resource(child);
         }
@@ -5704,7 +5817,7 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("t") => {
-                self.enter_transit();
+                self.enter_transit(doc);
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("f") => {
@@ -6763,11 +6876,12 @@ mod tests {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut a = app_at(1280.0, 800.0);
+        let mut doc = AutoCommit::new();
         a.select_place("marienplatz");
         a.enter_directions();
 
         for mode in [TravelMode::Foot, TravelMode::Bike, TravelMode::Car] {
-            a.set_mode(mode);
+            a.set_mode(mode, &mut doc);
             let mut scene = Scene::new();
             a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
             assert!(
@@ -6786,7 +6900,7 @@ mod tests {
 
         // Changing the anchor for a road mode re-derives the clock but does NOT
         // refetch a transit journey (OSRM is not time-dependent).
-        a.set_mode(TravelMode::Car);
+        a.set_mode(TravelMode::Car, &mut doc);
         let route = a.model.route.clone().expect("road route present");
         a.model.transit_time = crate::model::TransitTime::default();
         let (dep, arr) = a.road_trip_clock(route.duration_s);
@@ -6801,8 +6915,9 @@ mod tests {
     #[test]
     fn mode_switch_recomputes_route() {
         let mut a = app_at(1280.0, 800.0);
+        let mut doc = AutoCommit::new();
         a.model.selected = Some("marienplatz".to_string());
-        a.set_mode(TravelMode::Foot);
+        a.set_mode(TravelMode::Foot, &mut doc);
         let route = a.model.route.expect("route present");
         assert_eq!(route.mode, TravelMode::Foot);
     }
@@ -7005,6 +7120,7 @@ mod tests {
     #[test]
     fn transit_mode_triggers_fetch_and_opens_directions() {
         let mut a = app_at(1280.0, 800.0);
+        let mut doc = AutoCommit::new();
         // Select a place other than the sample's default so the stale sample
         // departures are dropped (destination-specific).
         a.select_place("hofgarten");
@@ -7015,7 +7131,7 @@ mod tests {
         a.model.panel = Panel::Explore;
         a.model.mode = TravelMode::Car;
 
-        a.set_mode(TravelMode::Transit);
+        a.set_mode(TravelMode::Transit, &mut doc);
         assert_eq!(
             a.model.panel,
             Panel::Directions,
@@ -8560,6 +8676,48 @@ mod tests {
             &automerge::ROOT,
         ));
         assert!(a.map_controls.traffic_enabled());
+    }
+
+    #[test]
+    fn offline_dialog_is_modal_semantic_and_operable() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1_280.0, 800.0);
+        a.offline_panel.open(0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+
+        let node = Widget::accessibility(&a).expect("offline dialog is semantic");
+        assert_eq!(node.role, ui::a11y::Role::Dialog);
+        assert!(node.state.modal);
+        assert_eq!(node.name.as_deref(), Some("Offline maps"));
+        assert!(node.children.iter().all(|child| {
+            child
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.starts_with("maps.offline."))
+        }));
+        let close_index = node
+            .children
+            .iter()
+            .position(|child| child.action_target.as_deref() == Some("maps.offline.close"))
+            .expect("close control");
+        assert_eq!(
+            Widget::synthetic_accessibility_rect(&a, &[close_index]),
+            node.children[close_index]
+                .bounds
+                .map(ui::a11y::AccessBounds::to_rect)
+        );
+
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut a,
+            "maps.offline.close",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(!a.offline_panel.is_open());
     }
 
     #[test]

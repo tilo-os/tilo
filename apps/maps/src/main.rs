@@ -170,6 +170,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot_to_png(
         shot_app(args),
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        args.text_scale.unwrap_or(1.0),
         out,
         floating_navigation_stage(args),
     )
@@ -195,6 +196,7 @@ fn apply_panel(s: &str, panel: &mut Option<maps::Panel>, transit_mode: &mut bool
 fn render_shot_to_png(
     mut app: maps::MapsApp,
     viewport: (u32, u32),
+    text_scale: f32,
     out: &std::path::Path,
     floating_navigation: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -204,6 +206,7 @@ fn render_shot_to_png(
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     }
+    .with_text_scale(text_scale)
     .with_reduce_motion(matches!(
         std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
