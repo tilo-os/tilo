@@ -8,6 +8,39 @@ use image::{DynamicImage, GenericImageView, imageops};
 use qos_ocr::Document;
 use ui::widget::CropSelection;
 
+/// Translate the unstructured SANE/process boundary into short recovery copy.
+///
+/// Scanner backends vary widely in wording, so this deliberately recognizes
+/// broad, stable phrases and never repeats their raw diagnostic in the UI.
+#[must_use]
+pub fn capture_error_message(error: &str) -> &'static str {
+    let error = error.to_ascii_lowercase();
+    if error.contains("permission denied")
+        || error.contains("access denied")
+        || error.contains("not authorized")
+    {
+        "Camera does not have permission to use this scanner. Check scanner permissions and try again."
+    } else if error.contains("busy") || error.contains("in use") {
+        "This scanner is busy. Wait for its current task to finish, then try again."
+    } else if error.contains("paper jam") || error.contains("document jam") {
+        "Clear the scanner's paper jam, then try this page again."
+    } else if error.contains("no document")
+        || error.contains("out of documents")
+        || error.contains("feeder empty")
+    {
+        "Add a page to the scanner feeder, then try again."
+    } else if error.contains("not found")
+        || error.contains("no device")
+        || error.contains("disconnected")
+        || error.contains("cannot connect")
+        || error.contains("could not start scanner")
+    {
+        "Camera cannot reach this scanner. Check its connection, then choose it again."
+    } else {
+        "The page could not be scanned. Check the scanner and try again."
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rotation {
     None,
@@ -212,6 +245,26 @@ impl ScanSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_errors_become_actionable_without_leaking_backend_output() {
+        assert_eq!(
+            capture_error_message("scanimage: open of device failed: Device busy"),
+            "This scanner is busy. Wait for its current task to finish, then try again."
+        );
+        assert_eq!(
+            capture_error_message("sane_start: Document feeder out of documents"),
+            "Add a page to the scanner feeder, then try again."
+        );
+        let raw = "scanner failed: vendor-secret 0x9af2 internal transport panic";
+        let message = capture_error_message(raw);
+        assert_eq!(
+            message,
+            "The page could not be scanned. Check the scanner and try again."
+        );
+        assert!(!message.contains("vendor-secret"));
+        assert!(!message.contains("0x9af2"));
+    }
     #[test]
     fn editing_a_page_invalidates_only_its_ocr() {
         let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
