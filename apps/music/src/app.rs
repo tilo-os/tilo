@@ -1199,6 +1199,7 @@ impl MusicApp {
                         id: tid.clone(),
                         label: self.track_label(tid),
                         liked: self.lib.is_liked(tid),
+                        rank: p.track_ranks.get(tid).copied().unwrap_or_default(),
                     })
                     .collect(),
             })
@@ -1247,6 +1248,37 @@ impl MusicApp {
             membership: None,
             playback: self.pb.clone(),
         }
+    }
+
+    fn membership_resource(
+        &self,
+        playlist_id: &str,
+        track_id: &str,
+    ) -> Option<crate::actions::PlaylistMembershipResource> {
+        let playlist = self.lib.playlist(playlist_id)?;
+        let index = playlist.track_ids.iter().position(|id| id == track_id)?;
+        let track = self.lib.track(track_id)?;
+        Some(crate::actions::PlaylistMembershipResource {
+            playlist: playlist.id.clone(),
+            track: crate::actions::TrackRef {
+                id: track.id.clone(),
+                label: self.track_label(&track.id),
+                liked: self.lib.is_liked(&track.id),
+                rank: playlist
+                    .track_ranks
+                    .get(&track.id)
+                    .copied()
+                    .unwrap_or_default(),
+            },
+            index,
+            total: playlist.track_ids.len(),
+            up_rank: playlist
+                .rank_for_move(&track.id, index.saturating_sub(1))
+                .unwrap_or_default(),
+            down_rank: playlist
+                .rank_for_move(&track.id, index.saturating_add(1))
+                .unwrap_or_default(),
+        })
     }
 
     /// Build only the data needed to resolve one resource at the authority
@@ -1318,19 +1350,7 @@ impl MusicApp {
         }
         if let Some((playlist_id, track_id)) = crate::actions::parse_playlist_track_resource_id(id)
         {
-            let playlist = self.lib.playlist(&playlist_id)?;
-            let index = playlist.track_ids.iter().position(|id| id == &track_id)?;
-            let track = self.lib.track(&track_id)?;
-            ctx.membership = Some(crate::actions::PlaylistMembershipResource {
-                playlist: playlist.id.clone(),
-                track: crate::actions::TrackRef {
-                    id: track.id.clone(),
-                    label: self.track_label(&track.id),
-                    liked: self.lib.is_liked(&track.id),
-                },
-                index,
-                total: playlist.track_ids.len(),
-            });
+            ctx.membership = Some(self.membership_resource(&playlist_id, &track_id)?);
             return Some(ctx);
         }
         let playlist_id = id
@@ -2154,9 +2174,16 @@ impl MusicApp {
         else {
             return;
         };
+        let Some(rank) = self
+            .lib
+            .playlist(playlist)
+            .and_then(|playlist| playlist.rank_for_move(&track, to))
+        else {
+            return;
+        };
         self.perform_action(
             state,
-            &crate::actions::move_track_action(playlist, &track, from, to),
+            &crate::actions::move_track_action(playlist, &track, rank),
         );
         self.reload_library(state);
     }
@@ -2410,7 +2437,17 @@ impl MusicApp {
     }
 
     fn on_add_to_playlist(&mut self, playlist: &str, track: &str, state: &mut AutoCommit) {
-        self.perform_action(state, &crate::actions::add_track_action(playlist, track));
+        let Some(rank) = self
+            .lib
+            .playlist(playlist)
+            .map(crate::model::Playlist::append_rank)
+        else {
+            return;
+        };
+        self.perform_action(
+            state,
+            &crate::actions::add_track_action(playlist, track, rank),
+        );
         self.reload_library(state);
         let pl = self
             .lib
@@ -2445,7 +2482,7 @@ impl MusicApp {
         // second action bracketed into the same undo boundary.
         let added_track = self.new_playlist_track.take();
         if let Some(track) = &added_track {
-            self.perform_action(state, &crate::actions::add_track_action(&id, track));
+            self.perform_action(state, &crate::actions::add_track_action(&id, track, 0));
         }
         self.reload_library(state);
         self.name_prompt = None;
@@ -5409,6 +5446,47 @@ mod tests {
             app.pb.current.is_some(),
             "semantic play uses the playback reducer"
         );
+    }
+
+    #[test]
+    fn playlist_semantics_expose_stable_edit_actions() {
+        use ui::a11y::Action as A11yAction;
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = app_with_doc();
+        let playlist = app.lib.playlists[0].clone();
+        let first = playlist.track_ids[0].clone();
+        app.view = View::Playlist(playlist.id.clone());
+        let tree = app.accessibility().expect("music semantics");
+        let page = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some(playlist.name.as_str()))
+            .expect("playlist page");
+        let list = page
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some(format!("{} items", playlist.name).as_str()))
+            .expect("playlist rows");
+        let row = &list.children[0];
+        assert!(row.key.is_some(), "membership identity survives reordering");
+        let move_down = row
+            .children
+            .iter()
+            .find(|node| {
+                node.action_target
+                    .as_deref()
+                    .is_some_and(|target| target.starts_with("music.move-down-playlist-track."))
+            })
+            .and_then(|node| node.action_target.clone())
+            .expect("move down action");
+        assert!(app.perform_semantic_action(
+            &move_down,
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.lib.playlist(&playlist.id).unwrap().track_ids[1], first);
     }
 
     #[test]

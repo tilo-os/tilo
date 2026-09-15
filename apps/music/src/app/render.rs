@@ -125,6 +125,7 @@ fn accessible_track(
 
     let liked = lib.is_liked(&track.id);
     AccessNode::new(Role::ListItem)
+        .with_hashed_key(format!("track:{}", track.id))
         .with_name(&track.title)
         .with_description(format!(
             "{}; {}; {}",
@@ -151,6 +152,7 @@ fn accessible_album(
     total: usize,
 ) -> ui::a11y::AccessNode {
     ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
+        .with_hashed_key(format!("album:{}", album.id))
         .with_name(&album.title)
         .with_description(format!(
             "{}; {}",
@@ -167,6 +169,7 @@ fn accessible_artist(
     total: usize,
 ) -> ui::a11y::AccessNode {
     ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
+        .with_hashed_key(format!("artist:{}", artist.id))
         .with_name(&artist.name)
         .with_description(format!(
             "{}; {} monthly listeners",
@@ -181,11 +184,54 @@ fn accessible_playlist(
     position: usize,
     total: usize,
 ) -> ui::a11y::AccessNode {
+    let resource = crate::actions::playlist_resource_id(&playlist.id);
     ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
+        .with_hashed_key(format!("playlist:{}", playlist.id))
         .with_name(&playlist.name)
         .with_description(format!("{} songs", playlist.track_ids.len()))
         .with_position(position, total)
         .with_action_target(format!("music.open-playlist.{}", playlist.id))
+        .with_children(vec![
+            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                .with_name(format!("Rename {}", playlist.name))
+                .with_action_target(format!("music.rename-playlist.{resource}")),
+            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                .with_name(format!("Delete {}", playlist.name))
+                .with_action_target(format!("music.delete-playlist.{resource}")),
+        ])
+}
+
+fn accessible_playlist_track(
+    lib: &crate::model::Library,
+    playlist: &crate::model::Playlist,
+    track: &crate::model::Track,
+    position: usize,
+) -> ui::a11y::AccessNode {
+    use ui::a11y::{AccessNode, Role};
+    let total = playlist.track_ids.len();
+    let resource = crate::actions::playlist_track_resource_id(&playlist.id, &track.id);
+    let mut node = accessible_track(lib, track, position, total);
+    let mut actions = vec![
+        AccessNode::new(Role::Button)
+            .with_name(format!("Remove {} from {}", track.title, playlist.name))
+            .with_action_target(format!("music.remove-playlist-track.{resource}")),
+    ];
+    if position > 1 {
+        actions.push(
+            AccessNode::new(Role::Button)
+                .with_name(format!("Move {} up", track.title))
+                .with_action_target(format!("music.move-up-playlist-track.{resource}")),
+        );
+    }
+    if position < total {
+        actions.push(
+            AccessNode::new(Role::Button)
+                .with_name(format!("Move {} down", track.title))
+                .with_action_target(format!("music.move-down-playlist-track.{resource}")),
+        );
+    }
+    node.children.extend(actions);
+    node
 }
 
 fn accessible_result_playlist(
@@ -194,6 +240,7 @@ fn accessible_result_playlist(
     total: usize,
 ) -> ui::a11y::AccessNode {
     ui::a11y::AccessNode::new(ui::a11y::Role::ListItem)
+        .with_hashed_key(format!("result-playlist:{}", playlist.id))
         .with_name(&playlist.title)
         .with_description(format!(
             "{}; {} songs",
@@ -341,6 +388,17 @@ fn eq_bars(playing: bool, reduce_motion: bool) -> [f64; 3] {
         *o = 0.15 + 0.85 * (0.5 + 0.5 * (ti * speed + phase).sin());
     }
     out
+}
+
+/// Shared responsive column policy for artwork grids. Compact windows retain
+/// two useful tiles while roomy desktop canvases gain density without letting
+/// cards become billboard-sized.
+fn artwork_grid_columns(available: f64, target: f64, gap: f64) -> usize {
+    if (300.0..600.0).contains(&available) {
+        2
+    } else {
+        ((available + gap) / (target + gap)).floor().max(1.0) as usize
+    }
 }
 
 /// A shimmering skeleton placeholder block: a rounded base with a soft
@@ -967,6 +1025,7 @@ impl Widget for MusicApp {
             "Playback controls".to_string()
         };
         let player = AccessNode::new(Role::Group)
+            .with_hashed_key("player")
             .with_name("Music player")
             .with_value(format!("{current}; volume {}%", self.pb.volume))
             .with_description(player_status)
@@ -992,6 +1051,7 @@ impl Widget for MusicApp {
             )
         };
         let navigation = AccessNode::new(Role::List)
+            .with_hashed_key("navigation")
             .with_name("Music navigation")
             .with_children(
                 crate::actions::NAVIGATION_VIEWS
@@ -1012,6 +1072,7 @@ impl Widget for MusicApp {
             );
 
         let search = AccessNode::new(Role::TextInput)
+            .with_hashed_key("search")
             .with_name("Search songs, albums, artists, and playlists")
             .with_description("Shortcut: slash or Control F")
             .with_value(self.search_input.value())
@@ -1163,19 +1224,15 @@ impl Widget for MusicApp {
                     .iter()
                     .find(|playlist| playlist.id == *id)
                 {
-                    let items = playlist
-                        .track_ids
-                        .iter()
-                        .filter_map(|track| self.lib.track(track))
-                        .collect::<Vec<_>>();
-                    let total = items.len();
                     list_items.extend(
-                        items
-                            .into_iter()
+                        playlist
+                            .track_ids
+                            .iter()
+                            .filter_map(|track| self.lib.track(track))
                             .take(ACCESSIBLE_PAGE_LIMIT)
                             .enumerate()
                             .map(|(index, track)| {
-                                accessible_track(&self.lib, track, index + 1, total)
+                                accessible_playlist_track(&self.lib, playlist, track, index + 1)
                             }),
                     );
                 }
@@ -1203,6 +1260,11 @@ impl Widget for MusicApp {
                 );
             }
             View::Playlists => {
+                page_content.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("New playlist")
+                        .with_action_target("music.new-playlist"),
+                );
                 let total = self.lib.playlists.len();
                 list_items.extend(
                     self.lib
@@ -1215,7 +1277,8 @@ impl Widget for MusicApp {
             }
             View::Home => {
                 let albums = self.lib.albums_sorted();
-                let total = self.lib.playlists.len() + albums.len();
+                let tracks = self.lib.top_tracks(6);
+                let total = self.lib.playlists.len() + albums.len().min(6) + tracks.len();
                 list_items.extend(
                     self.lib
                         .playlists
@@ -1227,10 +1290,21 @@ impl Widget for MusicApp {
                 list_items.extend(
                     albums
                         .into_iter()
+                        .take(6)
                         .take(ACCESSIBLE_PAGE_LIMIT.saturating_sub(used))
                         .enumerate()
                         .map(|(index, album)| {
                             accessible_album(&self.lib, album, used + index + 1, total)
+                        }),
+                );
+                let used = list_items.len();
+                list_items.extend(
+                    tracks
+                        .into_iter()
+                        .take(ACCESSIBLE_PAGE_LIMIT.saturating_sub(used))
+                        .enumerate()
+                        .map(|(index, track)| {
+                            accessible_track(&self.lib, track, used + index + 1, total)
                         }),
                 );
             }
@@ -1309,6 +1383,7 @@ impl Widget for MusicApp {
             );
         }
         let page = AccessNode::new(Role::TabPanel)
+            .with_hashed_key(format!("page:{page_name}"))
             .with_name(page_name)
             .with_children(page_content);
 
@@ -1391,6 +1466,7 @@ impl Widget for MusicApp {
             "music.toggle-mute" => Action::ToggleMute,
             "music.empty-search" => Action::Nav(View::Search),
             "music.retry-search" => Action::RetrySearch,
+            "music.new-playlist" => Action::BeginNewPlaylist,
             _ => {
                 if let Some(id) = target.strip_prefix("music.nav.") {
                     let Some(view) = Self::top_level_view(id) else {
@@ -1429,6 +1505,52 @@ impl Widget for MusicApp {
                         return false;
                     }
                     Action::Nav(View::Playlist(id.to_string()))
+                } else if let Some(resource) = target.strip_prefix("music.rename-playlist.") {
+                    let Some(id) = resource.strip_prefix("music.playlist:") else {
+                        return false;
+                    };
+                    if self.lib.playlist(id).is_none() {
+                        return false;
+                    }
+                    Action::BeginRenamePlaylist(id.to_string())
+                } else if let Some(resource) = target.strip_prefix("music.delete-playlist.") {
+                    let Some(id) = resource.strip_prefix("music.playlist:") else {
+                        return false;
+                    };
+                    if self.lib.playlist(id).is_none() {
+                        return false;
+                    }
+                    Action::DeletePlaylist(id.to_string())
+                } else if let Some(resource) = target.strip_prefix("music.remove-playlist-track.") {
+                    let Some((playlist, track)) =
+                        crate::actions::parse_playlist_track_resource_id(resource)
+                    else {
+                        return false;
+                    };
+                    Action::RemoveFromPlaylist { playlist, track }
+                } else if let Some((resource, delta)) = target
+                    .strip_prefix("music.move-up-playlist-track.")
+                    .map(|resource| (resource, -1isize))
+                    .or_else(|| {
+                        target
+                            .strip_prefix("music.move-down-playlist-track.")
+                            .map(|resource| (resource, 1))
+                    })
+                {
+                    let Some((playlist, track)) =
+                        crate::actions::parse_playlist_track_resource_id(resource)
+                    else {
+                        return false;
+                    };
+                    let Some(from) = self
+                        .lib
+                        .playlist(&playlist)
+                        .and_then(|playlist| playlist.track_ids.iter().position(|id| id == &track))
+                    else {
+                        return false;
+                    };
+                    let to = from.saturating_add_signed(delta);
+                    Action::MovePlaylistItem { playlist, from, to }
                 } else {
                     return false;
                 }
@@ -2936,7 +3058,10 @@ impl MusicApp {
         let pad = 28.0;
         let pls = self.gather_playlists();
         let chip_h = 64.0;
-        let cols = 2usize;
+        // Compact windows need complete playlist names more than they need a
+        // nominal two-column layout. A single calm column also gives each
+        // quick pick a proper touch target instead of two truncated slivers.
+        let cols = if body.width() < 520.0 { 1 } else { 2 };
         let gap = 16.0;
         let chip_w = (body.width() - 2.0 * pad - gap * (cols as f64 - 1.0)) / cols as f64;
         for (i, p) in pls.iter().enumerate() {
@@ -3187,9 +3312,9 @@ impl MusicApp {
     ) -> f64 {
         let pad = 28.0;
         let gap = 20.0;
-        let target = 168.0;
+        let target = 164.0;
         let avail = body.width() - 2.0 * pad;
-        let cols = ((avail + gap) / (target + gap)).floor().max(1.0) as usize;
+        let cols = artwork_grid_columns(avail, target, gap);
         let card_w = (avail - gap * (cols as f64 - 1.0)) / cols as f64;
         let card_h = card_w + 52.0;
 
@@ -3371,9 +3496,9 @@ impl MusicApp {
     ) -> f64 {
         let pad = 28.0;
         let gap = 22.0;
-        let target = 176.0;
+        let target = 164.0;
         let avail = body.width() - 2.0 * pad;
-        let cols = ((avail + gap) / (target + gap)).floor().max(1.0) as usize;
+        let cols = artwork_grid_columns(avail, target, gap);
         let card_w = (avail - gap * (cols as f64 - 1.0)) / cols as f64;
         let card_h = card_w + 56.0;
 
@@ -3524,9 +3649,9 @@ impl MusicApp {
     ) -> f64 {
         let pad = 28.0;
         let gap = 22.0;
-        let target = 176.0;
+        let target = 164.0;
         let avail = body.width() - 2.0 * pad;
-        let cols = ((avail + gap) / (target + gap)).floor().max(1.0) as usize;
+        let cols = artwork_grid_columns(avail, target, gap);
         let card_w = (avail - gap * (cols as f64 - 1.0)) / cols as f64;
         let card_h = card_w + 50.0;
 
@@ -3590,9 +3715,9 @@ impl MusicApp {
     ) -> f64 {
         let pad = 28.0;
         let gap = 22.0;
-        let target = 176.0;
+        let target = 164.0;
         let avail = body.width() - 2.0 * pad;
-        let cols = ((avail + gap) / (target + gap)).floor().max(1.0) as usize;
+        let cols = artwork_grid_columns(avail, target, gap);
         let card_w = (avail - gap * (cols as f64 - 1.0)) / cols as f64;
         let card_h = card_w + 56.0;
 
