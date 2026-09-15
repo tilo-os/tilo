@@ -4981,10 +4981,18 @@ impl CameraApp {
         p::fill_rect(scene, t, full, c.surfaces.base);
         let compact = full.width() < WIDE_MIN;
         let content = shrink(full, EDGE);
+        // Compact app shells place their shared navigation reveal control in
+        // the upper-left 44px target. Keep only the headline clear of it; the
+        // subtitle can return to the content edge on the next line.
+        let title_x = if compact {
+            content.x0 + 52.0
+        } else {
+            content.x0
+        };
         p::text(
             scene,
             tr,
-            content.x0,
+            title_x,
             content.y0 + 4.0,
             "Scan documents",
             if compact { 25.0 } else { 30.0 },
