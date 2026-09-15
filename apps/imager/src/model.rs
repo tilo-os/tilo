@@ -70,11 +70,12 @@ pub struct SourceIdentity {
 }
 
 impl SourceIdentity {
-    /// Capture the strongest stable identity exposed by the current host.
-    pub fn from_metadata(metadata: &std::fs::Metadata) -> Option<Self> {
+    /// Capture the identity of the open file, without resolving its path again.
+    pub fn from_file(file: &std::fs::File) -> Option<Self> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
+            let metadata = file.metadata().ok()?;
             Some(Self {
                 volume: metadata.dev(),
                 file: metadata.ino(),
@@ -82,15 +83,45 @@ impl SourceIdentity {
         }
         #[cfg(target_os = "windows")]
         {
-            use std::os::windows::fs::MetadataExt;
+            use std::os::windows::io::AsRawHandle;
+
+            // BY_HANDLE_FILE_INFORMATION from the Windows SDK's fileapi.h.
+            // FILETIME consists of two DWORDs, with DWORD alignment.
+            #[repr(C)]
+            #[derive(Default)]
+            struct FileInformation {
+                attributes: u32,
+                creation_time: [u32; 2],
+                access_time: [u32; 2],
+                write_time: [u32; 2],
+                volume_serial: u32,
+                size_high: u32,
+                size_low: u32,
+                links: u32,
+                index_high: u32,
+                index_low: u32,
+            }
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn GetFileInformationByHandle(
+                    handle: *mut std::ffi::c_void,
+                    information: *mut FileInformation,
+                ) -> i32;
+            }
+            let mut information = FileInformation::default();
+            // SAFETY: file owns a live handle throughout the call, and the
+            // output points to a writable SDK-compatible structure.
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+                return None;
+            }
             Some(Self {
-                volume: u64::from(metadata.volume_serial_number()?),
-                file: metadata.file_index()?,
+                volume: u64::from(information.volume_serial),
+                file: (u64::from(information.index_high) << 32) | u64::from(information.index_low),
             })
         }
         #[cfg(not(any(unix, target_os = "windows")))]
         {
-            let _ = metadata;
+            let _ = file;
             None
         }
     }
@@ -1115,6 +1146,32 @@ pub fn fmt_rate(bps: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn source_identity_tracks_the_file_across_handles_and_renames() {
+        use super::SourceIdentity;
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original.img");
+        let renamed = directory.path().join("renamed.img");
+        std::fs::write(&original, b"same bytes").unwrap();
+        let file = std::fs::File::open(&original).unwrap();
+        let identity = SourceIdentity::from_file(&file).expect("native file identity");
+        assert_eq!(
+            SourceIdentity::from_file(&file.try_clone().unwrap()),
+            Some(identity)
+        );
+        std::fs::rename(&original, &renamed).unwrap();
+        std::fs::write(&original, b"same bytes").unwrap();
+        assert_eq!(SourceIdentity::from_file(&file), Some(identity));
+        assert_eq!(
+            SourceIdentity::from_file(&std::fs::File::open(&renamed).unwrap()),
+            Some(identity)
+        );
+        let replacement = SourceIdentity::from_file(&std::fs::File::open(&original).unwrap())
+            .expect("replacement file identity");
+        assert_ne!(replacement, identity);
+    }
+
     use super::*;
 
     #[test]
