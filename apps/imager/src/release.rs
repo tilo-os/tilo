@@ -629,7 +629,7 @@ mod tests {
             size: 1,
             channel: "stable".into(),
             local_path: String::new(),
-            url: "https://code.sandbox.example/qos/qos/releases/download/imager-v1.0.0/qos.img.zst"
+            url: "https://code.sandbox.example/qos/releases/releases/download/imager-v1.0.0/qos.img.zst"
                 .into(),
             archive_sha256: "a".repeat(64),
             archive_size: 1,

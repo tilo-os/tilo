@@ -7,7 +7,7 @@ cask "qos-imager" do
   url "@BASE_URL@/qos-imager-macos-#{arch}.dmg"
   name "qOS Imager"
   desc "Create and verify customised qOS installation media"
-  homepage "https://code.sandbox.example/qos/qos"
+  homepage "@RELEASE_PAGE@"
 
   app "qOS Imager.app"
 end

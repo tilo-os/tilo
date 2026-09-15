@@ -91,13 +91,13 @@ done
 
 token="$tmp/token"
 token_stdout="$("${base[@]}" "$repo/apps/imager/packaging/acquire-release-token.sh" \
-  homebrew "$trusted/broker" "$token")"
+  release "$trusted/broker" "$token")"
 [ -z "$token_stdout" ]
 [ "$(cat "$token")" = one-token-without-newline ]
 rm -f "$token"
 for rejected in token-newline lax; do
   if "${base[@]}" CASE="$rejected" \
-      "$repo/apps/imager/packaging/acquire-release-token.sh" homebrew "$trusted/broker" "$token" \
+      "$repo/apps/imager/packaging/acquire-release-token.sh" release "$trusted/broker" "$token" \
       >/dev/null 2>&1; then
     printf 'imager token helper accepted %s broker output\n' "$rejected" >&2
     exit 1

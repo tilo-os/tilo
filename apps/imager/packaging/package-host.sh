@@ -10,6 +10,13 @@ require_native_packages="${QOS_REQUIRE_NATIVE_PACKAGES:-0}"
 version="${QOS_VERSION:-0.1.0}"
 version="${version#imager-v}"
 version="${version#v}"
+release_repository="${QOS_RELEASE_REPOSITORY:-qos/releases}"
+release_server="${GITHUB_SERVER_URL:-https://code.sandbox.example}"
+[[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
+[[ "$release_server" =~ ^https://[^/]+$ ]] \
+  || { printf 'release server must be an HTTPS origin\n' >&2; exit 2; }
+release_page="${release_server}/${release_repository}"
 machine="$(uname -m)"
 case "$machine" in
   x86_64|amd64) package_arch="x86_64" ;;
@@ -259,8 +266,9 @@ case "$host" in
     cp apps/imager/packaging/linux/qos-imager "$appdir/usr/bin/qos-imager"
     cp apps/imager/packaging/linux/qos-imager.desktop \
       "$appdir/usr/share/applications/org.qos.Imager.desktop"
-    cp apps/imager/packaging/linux/org.qos.Imager.metainfo.xml \
-      "$appdir/usr/share/metainfo/org.qos.Imager.appdata.xml"
+    sed "s|https://code.sandbox.example/qos/releases|$release_page|g" \
+      apps/imager/packaging/linux/org.qos.Imager.metainfo.xml \
+      >"$appdir/usr/share/metainfo/org.qos.Imager.appdata.xml"
     cp apps/imager/packaging/linux/AppRun "$appdir/AppRun"
     cp apps/imager/packaging/linux/qos-imager.svg "$appdir/qos-imager.svg"
     cp apps/imager/packaging/linux/qos-imager.svg "$appdir/.DirIcon"

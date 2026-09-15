@@ -1,6 +1,6 @@
 class QosImager < Formula
   desc "Create and verify customised qOS installation media"
-  homepage "https://code.sandbox.example/qos/qos"
+  homepage "@RELEASE_PAGE@"
   version "@VERSION@"
   license "AGPL-3.0-only"
 
