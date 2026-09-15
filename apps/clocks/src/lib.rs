@@ -128,6 +128,16 @@ pub struct ShellSnapshot {
     pub overlay: bool,
     pub generation: u64,
     pub producer_pid: u32,
+    /// Stable identity for the latest due event. It is deliberately separate
+    /// from `generation`: live snapshots are refreshed often, while a due
+    /// event must be announced exactly once even if the shell observes it
+    /// after the timer has already left the active set.
+    #[serde(default)]
+    pub notification_id: Option<Uuid>,
+    #[serde(default)]
+    pub notification_title: String,
+    #[serde(default)]
+    pub notification_body: String,
 }
 
 fn snapshot_active_default() -> bool {
@@ -576,6 +586,7 @@ mod tests {
         let legacy = r#"{"version":1,"label":"Tea","remaining_secs":30,"stopwatch":false,"overlay":true,"generation":4,"producer_pid":7}"#;
         let parsed: ShellSnapshot = serde_json::from_str(legacy).unwrap();
         assert!(parsed.active, "older live snapshots remain active");
+        assert!(parsed.notification_id.is_none());
 
         let inactive = ShellSnapshot {
             version: 1,
@@ -588,9 +599,39 @@ mod tests {
             overlay: false,
             generation: 5,
             producer_pid: 7,
+            notification_id: None,
+            notification_title: String::new(),
+            notification_body: String::new(),
         };
         let encoded = serde_json::to_string(&inactive).unwrap();
         assert!(encoded.contains("\"active\":false"));
+    }
+
+    #[test]
+    fn due_notice_survives_an_inactive_shell_snapshot() {
+        let notification_id = Uuid::new_v4();
+        let snapshot = ShellSnapshot {
+            version: 1,
+            active: false,
+            activity_id: None,
+            label: String::new(),
+            remaining_secs: 0,
+            stopwatch: false,
+            paused: false,
+            overlay: false,
+            generation: 12,
+            producer_pid: 7,
+            notification_id: Some(notification_id),
+            notification_title: "Timer finished".into(),
+            notification_body: "Tea".into(),
+        };
+
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        let decoded: ShellSnapshot = serde_json::from_str(&encoded).unwrap();
+        assert!(!decoded.active);
+        assert_eq!(decoded.notification_id, Some(notification_id));
+        assert_eq!(decoded.notification_title, "Timer finished");
+        assert_eq!(decoded.notification_body, "Tea");
     }
 
     #[test]
