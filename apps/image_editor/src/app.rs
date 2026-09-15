@@ -38,6 +38,8 @@ fn compact_toolbar_for(width: f64) -> bool {
 #[derive(Clone, Copy)]
 enum ToolbarCommand {
     Open,
+    Undo,
+    Redo,
     Exposure,
     Contrast,
     Colour,
@@ -90,12 +92,17 @@ pub struct ImageEditorApp {
     toolbar_pending: Rc<Cell<Option<ToolbarCommand>>>,
     more_open: bool,
     more_rect: Rect,
+    undo_stack: Vec<Project>,
+    redo_stack: Vec<Project>,
+    gesture_checkpoint: Option<Project>,
 }
 impl ImageEditorApp {
     pub fn new() -> Self {
         let pending = Rc::new(Cell::new(None));
         let specs = [
             (ToolbarCommand::Open, "Open", ui::icons::Icon::FolderOpen),
+            (ToolbarCommand::Undo, "Undo", ui::icons::Icon::Undo2),
+            (ToolbarCommand::Redo, "Redo", ui::icons::Icon::Redo2),
             (
                 ToolbarCommand::Exposure,
                 "Exposure",
@@ -183,6 +190,9 @@ impl ImageEditorApp {
             toolbar_pending: pending,
             more_open: false,
             more_rect: Rect::ZERO,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            gesture_checkpoint: None,
         }
     }
     pub fn seed_shot(&mut self, doc: &mut AutoCommit, path: &std::path::Path, advanced: bool) {
@@ -216,6 +226,9 @@ impl ImageEditorApp {
         self.advanced_graph = advanced;
         ProjectDoc::write(doc, &self.project);
         self.rendered_project = None;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.gesture_checkpoint = None;
     }
     pub fn open_more_for_shot(&mut self) {
         self.more_open = true;
@@ -346,6 +359,7 @@ impl ImageEditorApp {
             self.notice = "No compatible input is available".into();
             return true;
         };
+        self.begin_gesture();
         match self
             .editor
             .finish_connection(&mut self.project.graph, &target.node, &target.port)
@@ -360,9 +374,78 @@ impl ImageEditorApp {
                     "Those steps cannot be connected; the previous path is unchanged".into();
             }
         }
+        self.finish_gesture();
         true
     }
+
+    fn push_undo(&mut self, project: Project) {
+        if self.undo_stack.last() == Some(&project) {
+            return;
+        }
+        if self.undo_stack.len() == 100 {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(project);
+    }
+
+    fn checkpoint(&mut self) {
+        self.push_undo(self.project.clone());
+        self.redo_stack.clear();
+    }
+
+    fn begin_gesture(&mut self) {
+        if self.gesture_checkpoint.is_none() {
+            self.gesture_checkpoint = Some(self.project.clone());
+        }
+    }
+
+    fn finish_gesture(&mut self) {
+        if let Some(before) = self.gesture_checkpoint.take()
+            && before != self.project
+        {
+            self.push_undo(before);
+            self.redo_stack.clear();
+        }
+    }
+
+    fn restore_project(&mut self, state: &mut AutoCommit, project: Project, label: &str) {
+        self.project = project;
+        if !self
+            .editor
+            .selection
+            .iter()
+            .any(|id| self.project.graph.nodes.contains_key(id))
+        {
+            self.editor.select_only(self.project.output.clone());
+        }
+        ProjectDoc::write(state, &self.project);
+        self.rendered_project = None;
+        self.rebuild_crop_editor();
+        self.notice = format!("{label}. The final image was recomputed.");
+    }
+
+    fn undo(&mut self, state: &mut AutoCommit) {
+        self.finish_gesture();
+        let Some(previous) = self.undo_stack.pop() else {
+            self.notice = "Nothing to undo".into();
+            return;
+        };
+        self.redo_stack.push(self.project.clone());
+        self.restore_project(state, previous, "Undid the last change");
+    }
+
+    fn redo(&mut self, state: &mut AutoCommit) {
+        self.finish_gesture();
+        let Some(next) = self.redo_stack.pop() else {
+            self.notice = "Nothing to redo".into();
+            return;
+        };
+        self.push_undo(self.project.clone());
+        self.restore_project(state, next, "Redid the change");
+    }
+
     fn add(&mut self, state: &mut AutoCommit, op: Operation, title: &str) {
+        self.checkpoint();
         self.serial += 1;
         let id = format!("{}-{}", title.to_lowercase(), self.serial);
         if self.project.insert_before_output(&id, title, op) {
@@ -377,6 +460,7 @@ impl ImageEditorApp {
             self.notice = "That file is not a supported image".into();
             return false;
         }
+        self.checkpoint();
         if let Some(Operation::Source { path: source }) = self.project.operations.get_mut("source")
         {
             *source = path.to_string_lossy().into_owned();
@@ -602,7 +686,7 @@ impl ImageEditorApp {
             y,
             width,
             height,
-        }) = self.project.operations.get_mut(&id)
+        }) = self.project.operations.get(&id)
         else {
             return;
         };
@@ -615,6 +699,20 @@ impl ImageEditorApp {
         if (*x, *y, *width, *height) == next {
             return;
         }
+        if self.gesture_checkpoint.is_none() {
+            // Detached/programmatic crop commits are still independently
+            // undoable; pointer/touch drags use their coalesced checkpoint.
+            self.checkpoint();
+        }
+        let Some(Operation::Crop {
+            x,
+            y,
+            width,
+            height,
+        }) = self.project.operations.get_mut(&id)
+        else {
+            return;
+        };
         (*x, *y, *width, *height) = next;
         ProjectDoc::write(state, &self.project);
         self.rendered_project = None;
@@ -683,6 +781,19 @@ impl ImageEditorApp {
         let Some(id) = self.editor.selection.iter().next().cloned() else {
             return false;
         };
+        if !matches!(
+            self.project.operations.get(&id),
+            Some(
+                Operation::Exposure { .. }
+                    | Operation::Contrast { .. }
+                    | Operation::Saturation { .. }
+            )
+        ) {
+            return false;
+        }
+        if self.gesture_checkpoint.is_none() {
+            self.checkpoint();
+        }
         let normalized = normalized.clamp(0.0, 1.0) as f32;
         let Some(operation) = self.project.operations.get_mut(&id) else {
             return false;
@@ -737,6 +848,18 @@ impl ImageEditorApp {
         let Some(id) = self.editor.selection.iter().next().cloned() else {
             return;
         };
+        if !matches!(
+            self.project.operations.get(&id),
+            Some(
+                Operation::Exposure { .. }
+                    | Operation::Contrast { .. }
+                    | Operation::Saturation { .. }
+                    | Operation::Rotate { .. }
+            )
+        ) {
+            return;
+        }
+        self.checkpoint();
         let Some(op) = self.project.operations.get_mut(&id) else {
             return;
         };
@@ -763,6 +886,8 @@ impl ImageEditorApp {
         }
         match command {
             ToolbarCommand::Open => self.request_open(),
+            ToolbarCommand::Undo => self.undo(state),
+            ToolbarCommand::Redo => self.redo(state),
             ToolbarCommand::Exposure => {
                 self.add(state, Operation::Exposure { stops: 0.5 }, "Exposure")
             }
@@ -831,7 +956,7 @@ impl Widget for ImageEditorApp {
         );
         let compact = compact_toolbar_for(self.rect.width());
         let gap = 6.0;
-        let top_count = if compact { 4 } else { self.toolbar.len() - 1 };
+        let top_count = if compact { 5 } else { self.toolbar.len() - 1 };
         let advanced_graph = self.advanced_graph;
         let width = ((self.rect.width() - 24.0 - gap * (top_count - 1) as f64) / top_count as f64)
             .min(if compact { 104.0 } else { 96.0 });
@@ -840,12 +965,12 @@ impl Widget for ImageEditorApp {
             let top_level = if compact {
                 matches!(
                     command,
-                    ToolbarCommand::Open | ToolbarCommand::More | ToolbarCommand::Export
-                ) || if advanced_graph {
-                    matches!(command, ToolbarCommand::Graph)
-                } else {
-                    matches!(command, ToolbarCommand::Exposure)
-                }
+                    ToolbarCommand::Open
+                        | ToolbarCommand::Undo
+                        | ToolbarCommand::Redo
+                        | ToolbarCommand::More
+                        | ToolbarCommand::Export
+                )
             } else {
                 !matches!(command, ToolbarCommand::More)
             };
@@ -952,6 +1077,11 @@ impl Widget for ImageEditorApp {
             TextWeight::Semibold,
         );
         for (command, button) in &mut self.toolbar {
+            button.set_enabled(match command {
+                ToolbarCommand::Undo => !self.undo_stack.is_empty(),
+                ToolbarCommand::Redo => !self.redo_stack.is_empty(),
+                _ => true,
+            });
             button.set_style(if matches!(command, ToolbarCommand::Export) {
                 ButtonStyle::Primary
             } else if (matches!(command, ToolbarCommand::Graph) && self.advanced_graph)
@@ -1466,6 +1596,36 @@ impl Widget for ImageEditorApp {
         if *handled {
             return;
         }
+        let starts_direct_gesture = matches!(
+            e,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } | WindowEvent::Touch(ui::winit::event::Touch {
+                phase: ui::winit::event::TouchPhase::Started,
+                ..
+            })
+        );
+        let ends_direct_gesture = matches!(
+            e,
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } | WindowEvent::Touch(ui::winit::event::Touch {
+                phase: ui::winit::event::TouchPhase::Ended
+                    | ui::winit::event::TouchPhase::Cancelled,
+                ..
+            })
+        );
+        if starts_direct_gesture
+            && !self.advanced_graph
+            && !self.compare_original
+            && self.crop_editor.is_some()
+        {
+            self.begin_gesture();
+        }
         if !self.advanced_graph
             && !self.compare_original
             && let Some(editor) = self.crop_editor.as_mut()
@@ -1483,6 +1643,9 @@ impl Widget for ImageEditorApp {
             );
             if *handled {
                 self.commit_crop_editor(state);
+                if ends_direct_gesture {
+                    self.finish_gesture();
+                }
                 return;
             }
         }
@@ -1584,6 +1747,7 @@ impl Widget for ImageEditorApp {
                     self.inspector_dragging = false;
                     *handled = true;
                 }
+                self.finish_gesture();
                 self.panning_from = None;
             }
             WindowEvent::MouseInput {
@@ -1602,6 +1766,7 @@ impl Widget for ImageEditorApp {
                     let (minus, plus) = self.inspector_controls();
                     let slider = self.inspector_slider_rect();
                     if self.selected_slider().is_some() && slider.contains(self.cursor) {
+                        self.begin_gesture();
                         self.inspector_dragging = true;
                         self.inspector_focused = true;
                         self.panning_from = None;
@@ -1631,6 +1796,7 @@ impl Widget for ImageEditorApp {
                     && self.graph_connection_touch.is_none()
                     && let Some((node, port)) = self.graph_port_at(self.cursor, true)
                 {
+                    self.begin_gesture();
                     self.editor.begin_connection(
                         &self.project.graph,
                         &node,
@@ -1651,6 +1817,7 @@ impl Widget for ImageEditorApp {
                         .find(|id| self.node_rect(id).is_some_and(|r| r.contains(self.cursor)))
                         .cloned()
                 {
+                    self.begin_gesture();
                     let point = ui::graph_editor::GraphPoint {
                         x: self.cursor.x - self.graph_rect.x0,
                         y: self.cursor.y - self.graph_rect.y0,
@@ -1688,15 +1855,16 @@ impl Widget for ImageEditorApp {
                                     x: point.x - self.graph_rect.x0,
                                     y: point.y - self.graph_rect.y0,
                                 };
-                                if let Some((node, port)) = self.graph_port_at(point, true)
-                                    && self.editor.begin_connection(
+                                if let Some((node, port)) = self.graph_port_at(point, true) {
+                                    self.begin_gesture();
+                                    if self.editor.begin_connection(
                                         &self.project.graph,
                                         &node,
                                         &port,
                                         graph_point,
-                                    )
-                                {
-                                    self.graph_connection_touch = Some(touch.id);
+                                    ) {
+                                        self.graph_connection_touch = Some(touch.id);
+                                    }
                                 } else {
                                     let node = self
                                         .project
@@ -1709,6 +1877,7 @@ impl Widget for ImageEditorApp {
                                         })
                                         .cloned();
                                     if let Some(id) = node {
+                                        self.begin_gesture();
                                         if self.editor.begin_node_drag(
                                             &self.project.graph,
                                             &id,
@@ -1732,6 +1901,7 @@ impl Widget for ImageEditorApp {
                             let (minus, plus) = self.inspector_controls();
                             let slider = self.inspector_slider_rect();
                             if self.selected_slider().is_some() && slider.contains(point) {
+                                self.begin_gesture();
                                 self.inspector_touch = Some(touch.id);
                                 self.inspector_focused = true;
                                 self.panning_from = None;
@@ -1844,6 +2014,7 @@ impl Widget for ImageEditorApp {
                                 self.graph_pan_touch = None;
                                 self.editor.end_pan();
                             }
+                            self.finish_gesture();
                             *handled = true;
                             return;
                         }
@@ -1855,6 +2026,7 @@ impl Widget for ImageEditorApp {
                         }
                         if self.inspector_touch == Some(touch.id) {
                             self.inspector_touch = None;
+                            self.finish_gesture();
                         }
                         self.touches.remove(&touch.id);
                         self.pinch_distance = None;
@@ -1864,7 +2036,21 @@ impl Widget for ImageEditorApp {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if self.advanced_graph
+                if modifiers.state().control_key()
+                    && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("z"))
+                {
+                    if modifiers.state().shift_key() {
+                        self.redo(state);
+                    } else {
+                        self.undo(state);
+                    }
+                    *handled = true;
+                } else if modifiers.state().control_key()
+                    && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("y"))
+                {
+                    self.redo(state);
+                    *handled = true;
+                } else if self.advanced_graph
                     && self.editor.is_connecting()
                     && self.graph_keyboard_target.is_some()
                     && matches!(event.logical_key, Key::Named(NamedKey::Tab))
@@ -1916,7 +2102,17 @@ impl Widget for ImageEditorApp {
                         Key::Named(NamedKey::ArrowDown) => (0.0, step),
                         _ => (0.0, 0.0),
                     };
-                    for id in &self.editor.selection {
+                    let movable = self
+                        .editor
+                        .selection
+                        .iter()
+                        .filter(|id| self.project.graph.nodes.contains_key(*id))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !movable.is_empty() {
+                        self.checkpoint();
+                    }
+                    for id in &movable {
                         if let Some(node) = self.project.graph.nodes.get_mut(id) {
                             node.position.x += dx;
                             node.position.y += dy;
@@ -1972,11 +2168,19 @@ impl Widget for ImageEditorApp {
                     }
                     *handled = true;
                 } else if matches!(event.logical_key, Key::Named(NamedKey::Delete)) {
-                    for id in self.editor.selection.clone() {
-                        if id != "source" && id != "output" {
-                            self.project.graph.remove(&id);
-                            self.project.operations.remove(&id);
-                        }
+                    let deletable = self
+                        .editor
+                        .selection
+                        .iter()
+                        .filter(|id| id.as_str() != "source" && id.as_str() != "output")
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !deletable.is_empty() {
+                        self.checkpoint();
+                    }
+                    for id in deletable {
+                        self.project.graph.remove(&id);
+                        self.project.operations.remove(&id);
                     }
                     ProjectDoc::write(state, &self.project);
                     *handled = true;
@@ -2374,7 +2578,7 @@ mod portal_tests {
                     (button.get_rect().area() > 0.0).then_some(button.get_rect())
                 })
                 .collect::<Vec<_>>();
-            assert_eq!(visible.len(), 4);
+            assert_eq!(visible.len(), 5);
             assert!(visible.iter().all(|rect| rect.height() >= 44.0));
             assert!(visible.windows(2).all(|pair| pair[0].x1 < pair[1].x0));
         }
@@ -2405,6 +2609,46 @@ mod portal_tests {
                 .iter()
                 .any(|edge| edge.from_node == "source" && edge.to_node == "output")
         );
+    }
+
+    #[test]
+    fn undo_and_redo_restore_the_complete_non_destructive_project() {
+        let mut app = ImageEditorApp::new();
+        let mut state = AutoCommit::new();
+        let original = app.project.clone();
+
+        app.add(&mut state, Operation::Exposure { stops: 0.5 }, "Exposure");
+        let edited = app.project.clone();
+        assert_ne!(edited, original);
+        assert_eq!(app.undo_stack.len(), 1);
+
+        app.undo(&mut state);
+        assert_eq!(app.project, original);
+        assert_eq!(ProjectDoc::read(&state), original);
+        assert_eq!(app.redo_stack.len(), 1);
+
+        app.redo(&mut state);
+        assert_eq!(app.project, edited);
+        assert_eq!(ProjectDoc::read(&state), edited);
+    }
+
+    #[test]
+    fn continuous_adjustment_is_one_undoable_gesture() {
+        let mut app = ImageEditorApp::new();
+        let mut state = AutoCommit::new();
+        app.add(&mut state, Operation::Exposure { stops: 0.5 }, "Exposure");
+        app.undo_stack.clear();
+        let before = app.project.clone();
+
+        app.begin_gesture();
+        assert!(app.set_selected_slider(&mut state, 0.2));
+        assert!(app.set_selected_slider(&mut state, 0.4));
+        assert!(app.set_selected_slider(&mut state, 0.8));
+        app.finish_gesture();
+        assert_eq!(app.undo_stack.len(), 1);
+
+        app.undo(&mut state);
+        assert_eq!(app.project, before);
     }
 
     #[test]
