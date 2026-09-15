@@ -5,6 +5,7 @@ repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 common="$repo/os/dev/_common.sh"
 vm="$repo/os/dev/vm.sh"
 generation="$repo/os/dev/next-generation.sh"
+installer_cycle="$repo/os/dev/test-installer-cycle.sh"
 
 fail=0
 ok() { printf 'ok    %s\n' "$*"; }
@@ -74,6 +75,28 @@ fi
   && ok 'the target keeps one stable serial through attach, install and reboot' \
   || bad 'the target disk serial changes across the install cycle'
 
+if grep -Fq "wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+qOS[[:space:]]+identity'" "$installer_cycle" \
+  && grep -Fq '"$vm" keys tab tab tab spc tab ret' "$installer_cycle" \
+  && grep -Fq "wait_screen 10-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready'" "$installer_cycle" \
+  && grep -Fq "wait_screen 14-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes'" "$installer_cycle" \
+  && grep -Fq '"$vm" keys tab tab ret' "$installer_cycle"; then
+  ok 'graphical cycle acknowledges backup loss and completes all four tutorial pages'
+else
+  bad 'graphical cycle can bypass required OOBE recovery or strand the tutorial'
+fi
+
+if grep -Fq -- '--software-tpm) software_tpm=1' "$installer_cycle" \
+  && grep -Fq 'QOS_SECBOOT_KEYS=/path/to/pre-enrolled-vars' "$installer_cycle" \
+  && grep -Fq 'Microsoft-only store do not trust the owner-signed UKI' "$installer_cycle" \
+  && grep -Fq 'QOS_INSTALLER_CYCLE_PIN:-804927' "$installer_cycle" \
+  && grep -Fq '"$vm" boot-installer --gl --tpm' "$installer_cycle" \
+  && grep -Fq '"$vm" boot-target --gl --tpm' "$installer_cycle" \
+  && grep -Fq 'did not pass verified-boot preflight' "$installer_cycle"; then
+  ok 'software-TPM graphical cycle is opt-in and fails closed without verified boot'
+else
+  bad 'software-TPM graphical cycle can claim a PIN path from an unverified boot'
+fi
+
 if ! grep -Eq 'list-tags .*--creds|--creds .*list-tags' "$generation" \
   && grep -Fq 'REGISTRY_AUTH_FILE="$auth" skopeo list-tags' "$generation" \
   && grep -Fq 'run --rm --interactive' "$generation" \
@@ -86,7 +109,7 @@ else
   bad 'generation lookup can expose registry credentials in process argv'
 fi
 
-bash -n "$common" "$vm" "$generation" "$repo/os/dev/assert-native-arch.sh" \
+bash -n "$common" "$vm" "$generation" "$installer_cycle" "$repo/os/dev/assert-native-arch.sh" \
   || bad 'release VM helper shell syntax is invalid'
 
 tmp="$(mktemp -d)"
