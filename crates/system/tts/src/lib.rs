@@ -8,7 +8,7 @@
 //!
 //! | Backend | Type | Role |
 //! |---|---|---|
-//! | [`SpeechDispatcherSpeaker`] | SSIP socket to `speech-dispatcher` | **primary** — brokers espeak-ng / Piper system-side, server-side queue + interrupt |
+//! | `SpeechDispatcherSpeaker` (Unix) | SSIP socket to `speech-dispatcher` | **primary** — brokers espeak-ng / Piper system-side, server-side queue + interrupt |
 //! | [`EspeakSpeaker`] | `espeak-ng` subprocess | low-latency fallback when no daemon is running |
 //! | [`NullSpeaker`] | no-op recorder | tests + headless; never panics |
 //!
@@ -84,6 +84,7 @@ mod factory;
 mod null;
 mod queue;
 mod speaker;
+#[cfg(unix)]
 mod speechd;
 
 pub use error::TtsError;
@@ -92,6 +93,7 @@ pub use factory::{default_speaker, select_speaker};
 pub use null::NullSpeaker;
 pub use queue::SpeechQueue;
 pub use speaker::{Priority, Speaker, Utterance};
+#[cfg(unix)]
 pub use speechd::SpeechDispatcherSpeaker;
 
 #[cfg(test)]
