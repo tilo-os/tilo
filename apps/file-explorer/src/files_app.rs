@@ -998,12 +998,14 @@ impl FileExplorerWidget {
         }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
+        let text_scale = theme.text_scale;
         let view_child: Box<dyn Widget> = match self.view_mode {
             ViewMode::List => crate::views::list_view::build_list(
                 &displayed,
                 &self.selection,
                 &self.cmds,
                 scale,
+                text_scale,
                 self.sort_by,
                 self.sort_order,
                 self.renaming,
@@ -1017,6 +1019,7 @@ impl FileExplorerWidget {
                 &self.selection,
                 &self.cmds,
                 scale,
+                text_scale,
                 self.renaming,
                 self.rename_rect.clone(),
                 self.last_cursor,
@@ -1359,6 +1362,33 @@ impl FileExplorerWidget {
         );
         ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
         scene.pop_layer();
+    }
+
+    /// An open Places drawer is modal. Replace the translucent right-hand
+    /// scrim with an opaque app-surface continuation so enlarged filenames
+    /// cannot protrude as clipped fragments at the drawer boundary. The
+    /// drawer itself remains fully visible and the same rect remains the
+    /// click-to-dismiss target owned by `NavShell`.
+    fn draw_places_modal_backdrop(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        theme: &ui::Theme,
+    ) {
+        if self.nav.mode() != ui::widget::ShellMode::Narrow || !self.nav.is_sidebar_open() {
+            return;
+        }
+        let drawer = self.nav.sidebar_rect();
+        let content = self.nav.overview_rect();
+        if drawer.x1 < content.x1 {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.bg_primary,
+                None,
+                &vello::kurbo::Rect::new(drawer.x1, content.y0, content.x1, content.y1),
+            );
+        }
     }
 
     /// A narrow places drawer is a modal flap: the file view and every one of
@@ -7870,6 +7900,14 @@ impl Widget for FileExplorerWidget {
         // path bar's in-progress edit), so a rebuild triggered by navigation /
         // sort doesn't snap the body or the path bar back mid-interaction.
         self.update_toolbar();
+        // At enlarged text sizes, a permanently docked 200 px Places column
+        // turns useful labels into a wall of truncation and steals the width
+        // needed by file metadata. Promote it to the same labelled hamburger
+        // drawer used on narrow screens. The threshold grows only above 1×,
+        // preserving the normal desktop/tablet breakpoint exactly.
+        self.nav.set_breakpoint(
+            BODY_BREAKPOINT_PX + f64::from((theme.text_scale - 1.0).max(0.0)) * 900.0,
+        );
         self.composed_once = true;
         self.nav.set_sidebar(Some(self.build_places_pane()));
         self.nav.set_content(self.build_content_pane(theme));
@@ -7974,6 +8012,7 @@ impl Widget for FileExplorerWidget {
         self.paint_background(scene, transform, theme);
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
+        self.draw_places_modal_backdrop(scene, transform, theme);
         self.draw_state_surface(scene, transform, text_renderer, theme, presence);
         // The toolbar is fixed app chrome. Paint it above the body so an
         // error/empty surface can never obscure its Back, Up, or location
@@ -8008,6 +8047,7 @@ impl Widget for FileExplorerWidget {
             presence,
             permissions,
         );
+        self.draw_places_modal_backdrop(scene, transform, theme);
         self.draw_state_surface(scene, transform, text_renderer, theme, presence);
         self.toolbar.draw_with_presence(
             scene,

@@ -29,6 +29,7 @@ pub fn build_list(
     selection: &SelectionModel,
     sink: &CommandSink,
     scale: f64,
+    text_scale: f32,
     sort_by: SortBy,
     sort_order: SortOrder,
     renaming: Option<usize>,
@@ -41,6 +42,7 @@ pub fn build_list(
         FileView::new(entries, selection, sink)
             .mode(ViewMode::List)
             .with_scale(scale)
+            .with_text_scale(text_scale)
             .with_sort(sort_by, sort_order)
             .with_rename(renaming, rename_rect)
             .with_cursor(cursor)
