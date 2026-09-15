@@ -4,6 +4,8 @@ Documentation=file:///usr/share/doc/tilo/model-gateway.md
 After=network-online.target
 Wants=network-online.target
 PartOf=tilo-graphical-session.target
+Requires=tilo-model-storage.service
+After=tilo-model-storage.service
 
 [Service]
 Type=simple
