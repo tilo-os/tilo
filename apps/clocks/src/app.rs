@@ -255,8 +255,10 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
             .with_gap(10.0);
         if s.alarms.is_empty() {
             col = col.push(Box::new(
-                Text::new("No alarms. Create one and it will ring even after Clocks is closed.")
-                    .dimmed(),
+                Text::new(
+                    "No alarms. Create one and it will ring while Clocks is running, even when its window is hidden.",
+                )
+                .dimmed(),
             ));
         }
         for alarm in &s.alarms {
@@ -769,6 +771,20 @@ impl ClocksApp {
             last_notification: None,
         }
     }
+
+    /// Retain the latest due notice in every subsequent transport snapshot.
+    ///
+    /// The shell polls a replace-in-place state file, so a one-frame zero
+    /// countdown can be overwritten by the inactive tombstone before the
+    /// shell observes it. A stable notification ID lets the producer keep the
+    /// notice attached to later tombstones while the shell deduplicates it.
+    fn remember_due(&mut self, event: DueEvent) {
+        let (title, body) = match event {
+            DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label),
+            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label),
+        };
+        self.last_notification = Some((uuid::Uuid::new_v4(), title, body));
+    }
 }
 impl Default for ClocksApp {
     fn default() -> Self {
@@ -847,11 +863,7 @@ impl Widget for ClocksApp {
         self.state
             .update(|s| due = s.tick(now, chrono::Local::now()));
         for event in due {
-            let (title, body) = match event {
-                DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label),
-                DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label),
-            };
-            self.last_notification = Some((uuid::Uuid::new_v4(), title, body));
+            self.remember_due(event);
         }
         self.generation = self.generation.saturating_add(1);
         self.state.with(|s| {
@@ -962,10 +974,12 @@ impl Widget for ClocksApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        WEEKDAYS, alarm_label, remaining_fraction, repeat_summary, timer_label, timezone_label,
-        timezone_results,
+        ClocksApp, DueEvent, Timer, WEEKDAYS, alarm_label, remaining_fraction, repeat_summary,
+        timer_label, timezone_label, timezone_results,
     };
+    use chrono::Utc;
     use std::collections::BTreeSet;
+    use std::time::Duration;
 
     #[test]
     fn countdown_progress_visualizes_time_remaining() {
@@ -974,6 +988,35 @@ mod tests {
         assert!(remaining_fraction(0, 300_000).abs() < f32::EPSILON);
         assert!(remaining_fraction(20, 0).abs() < f32::EPSILON);
         assert!((remaining_fraction(400_000, 300_000) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn completed_timer_notice_survives_the_inactive_tombstone() {
+        let now = Utc::now();
+        let mut timer = Timer::new("Tea", Duration::from_secs(1));
+        timer.start(now);
+        let mut state = crate::ClockState::default();
+        state.timers.push(timer);
+
+        let due = state.tick(now + chrono::Duration::seconds(2), chrono::Local::now());
+        assert!(
+            state
+                .shell_activity(now + chrono::Duration::seconds(2))
+                .is_none()
+        );
+        assert!(matches!(due.as_slice(), [DueEvent::Timer { label, .. }] if label == "Tea"));
+
+        let mut app = ClocksApp::scenario("empty");
+        for event in due {
+            app.remember_due(event);
+        }
+        let notice = app.last_notification.clone().expect("due notice retained");
+        assert_eq!(notice.1, "Timer finished");
+        assert_eq!(notice.2, "Tea");
+
+        // Later inactive frames reuse this identity, allowing a polling shell
+        // to observe it without announcing the same completion twice.
+        assert_eq!(app.last_notification.as_ref(), Some(&notice));
     }
 
     #[test]
