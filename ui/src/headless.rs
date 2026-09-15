@@ -632,9 +632,10 @@ impl FrameHarness {
     #[must_use]
     pub fn with_records(
         mut self,
-        records: crate::record::RecordSet,
+        mut records: crate::record::RecordSet,
         room_index: automerge::AutoCommit,
     ) -> Self {
+        records.discover_room(&room_index);
         self.records = Some(records);
         self.room_index = Some(room_index);
         self.relayout();
