@@ -113,9 +113,31 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot_to_png(
         Box::new(app),
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        &shot_theme(args),
         out,
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+/// Reproduce the live accessibility theme in Monitor's custom offscreen path.
+/// Unlike the generic launch harness, this app owns its shot renderer, so it
+/// must explicitly thread text scale and reduced-motion preferences through.
+fn shot_theme(args: &LaunchArgs) -> Theme {
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let reduce_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        });
+    theme
+        .with_text_scale(args.text_scale.unwrap_or(1.0))
+        .with_reduce_motion(reduce_motion)
 }
 
 /// Parse `--viewport WxH` (e.g. `--viewport 480x900`) for `--shots`.
@@ -140,26 +162,23 @@ fn parse_viewport_arg(args: &[String]) -> Option<(u32, u32)> {
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
+    theme: &Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
-    // so the same frame can be graded in both light and dark (default dark).
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    // `Theme::with_text_scale` has already expanded Monitor's token sizes.
+    // The live app keeps `TextRenderer` at its base multiplier, so doing the
+    // same here avoids multiplying custom immediate-mode text a second time.
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -196,7 +215,7 @@ fn render_shot_to_png(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
