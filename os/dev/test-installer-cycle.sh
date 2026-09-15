@@ -4,25 +4,38 @@
 # The only guest inputs are QEMU keyboard events sent through vm.sh. Screen
 # transitions are observed from the real framebuffer with OCR; no debug socket,
 # SSH service, shot mode, backend invocation, or target-disk modification is
-# used. The no-TPM path proves that the passphrase enrolled by the graphical
-# installer unlocks early userspace after a cold power cycle.
+# used. The default no-TPM path proves that the passphrase enrolled by the
+# graphical installer unlocks early userspace after a cold power cycle. The
+# opt-in software-TPM path additionally requires an enforcing variable store
+# that trusts the released UKI; it fails rather than calling setup-mode boot a
+# verified-boot test.
 set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
-medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside]}"
+medium="${1:?usage: test-installer-cycle.sh INSTALLER_QCOW2 [--out DIRECTORY] [--prepared-alongside|--guided-alongside] [--software-tpm]}"
 shift
 out=""
 install_mode=erase
+software_tpm=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:-}"; shift 2;;
     --prepared-alongside) install_mode=prepared-alongside; shift;;
     --guided-alongside) install_mode=guided-alongside; shift;;
+    --software-tpm) software_tpm=1; shift;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2;;
   esac
 done
 [ -f "$medium" ] || { printf 'installer medium not found: %s\n' "$medium" >&2; exit 1; }
+if [ "$software_tpm" -eq 1 ]; then
+  case "${QOS_SECBOOT_KEYS:-none}" in
+    none|persist|microsoft)
+      printf '%s\n' 'software-TPM cycle requires QOS_SECBOOT_KEYS=/path/to/pre-enrolled-vars with the qOS release certificate in db; setup mode and the Microsoft-only store do not trust the owner-signed UKI' >&2
+      exit 2
+      ;;
+  esac
+fi
 command -v tesseract >/dev/null 2>&1 \
   || { printf 'tesseract is required for framebuffer verification\n' >&2; exit 1; }
 
@@ -40,7 +53,13 @@ export QOS_INSTALLER_WORK_DISK="$cycle_dir/installer-work.qcow2"
 export QOS_TARGET_DISK="$cycle_dir/target.qcow2"
 export QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-40G}"
 export QOS_USER="${QOS_INSTALLER_CYCLE_USER:-cycleuser}"
-export QOS_PASS="${QOS_INSTALLER_CYCLE_PASSPHRASE:-cycle-passphrase-2026}"
+if [ "$software_tpm" -eq 1 ]; then
+  export QOS_PASS="${QOS_INSTALLER_CYCLE_PIN:-804927}"
+  unlock=software-tpm-pin
+else
+  export QOS_PASS="${QOS_INSTALLER_CYCLE_PASSPHRASE:-cycle-passphrase-2026}"
+  unlock=no-tpm-passphrase
+fi
 export QOS_BOOT_WAIT_ATTEMPTS="${QOS_BOOT_WAIT_ATTEMPTS:-600}"
 
 phase=installer
@@ -334,11 +353,15 @@ rm -f -- "$profiled_raw"
 [ "$(sha256sum "$medium" | awk '{print $1}')" = "$source_hash_before" ] \
   || die "customization modified the released installer medium"
 export QOS_INSTALLER_DISK="$profiled_medium"
-printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-qos\nunlock=no-tpm-passphrase\ninstall_mode=%s\nstorage=%s\n' \
-  "$medium" "$profiled_medium" "$QOS_VM_ARCH" "$QOS_USER" "$install_mode" "$storage" \
+printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycle-qos\nunlock=%s\ninstall_mode=%s\nstorage=%s\n' \
+  "$medium" "$profiled_medium" "$QOS_VM_ARCH" "$QOS_USER" "$unlock" "$install_mode" "$storage" \
   > "$out/scenario.txt"
 
-"$vm" boot-installer --gl --no-tpm
+if [ "$software_tpm" -eq 1 ]; then
+  "$vm" boot-installer --gl --tpm
+else
+  "$vm" boot-installer --gl --no-tpm
+fi
 wait_screen 01-disk 'Install[[:space:]]+qOS' 120 5 \
   || die "profiled live installer did not start at Disk"
 grep -Eqi 'setup choices are ready' "$out/01-disk.txt" \
@@ -355,6 +378,10 @@ wait_screen 02-account 'Create[[:space:]]+your[[:space:]]+account' 60 3 \
   || die "installer did not select the blank target"
 grep -Fqi -- "$QOS_USER" "$out/02-account.txt" \
   || die "embedded username did not reach the account screen"
+if [ "$software_tpm" -eq 1 ]; then
+  grep -Eqi 'TPM-protected[[:space:]]+startup[[:space:]]+PIN' "$out/02-account.txt" \
+    || die "software TPM was attached, but the live and target boot chain did not pass verified-boot preflight"
+fi
 
 "$vm" keys tab
 "$vm" type "$QOS_PASS"
@@ -362,7 +389,7 @@ grep -Fqi -- "$QOS_USER" "$out/02-account.txt" \
 "$vm" type "$QOS_PASS"
 "$vm" keys tab tab ret
 wait_screen 03-review 'Review[[:space:]]+your[[:space:]]+choices' 60 3 \
-  || die "installer rejected the no-TPM passphrase account"
+  || die "installer rejected the configured startup secret"
 grep -Eqi 'cycle.?qos' "$out/03-review.txt" \
   || die "Review did not show the configured hostname"
 
@@ -395,7 +422,11 @@ copy_evidence installer
 
 phase=target
 target_boot_started="$(date +%s)"
-"$vm" boot-target --gl --no-tpm
+if [ "$software_tpm" -eq 1 ]; then
+  "$vm" boot-target --gl --tpm
+else
+  "$vm" boot-target --gl --no-tpm
+fi
 
 # The sealed boot has no serial-console test instrumentation. Type only after
 # firmware/systemd-boot have had time to hand off, and stop as soon as OCR sees
@@ -428,29 +459,39 @@ wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 120 5 \
   || die "first graphical login did not enter qOS identity setup"
 
 # Use the real first-use flow: Create identity -> acknowledge no recovery ->
-# Create. OCR of the completion screen is the barrier for the async mint.
+# Create. OCR of the backup screen is the barrier for the async mint.
 "$vm" keys tab ret
 sleep 2
 "$vm" keys spc tab tab ret
-wait_screen 09-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready' 120 2 \
+wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+qOS[[:space:]]+identity' 120 2 \
   || die "OOBE did not create the local/device identity chain"
 
-# Done is a replacement surface and focuses Save backup. Two Tabs reach Start
-# tour without opening the file picker. Traverse all three compositor-owned
-# tutorial pages and OCR each replacement surface so a tagged release cannot
-# ship a dead or unreachable tutorial behind an otherwise healthy OOBE.
-"$vm" keys tab tab ret
-wait_screen 10-tour-move 'Everything[[:space:]]+is[[:space:]]+close[[:space:]]+at[[:space:]]+hand' 60 2 \
+# A fresh identity must either save and verify its encrypted recovery material
+# or explicitly acknowledge that losing this device loses the identity. This
+# disposable cycle exercises the latter: from the first passphrase field, three
+# Tabs reach the mandatory acknowledgement, then Continue becomes available.
+"$vm" keys tab tab tab spc tab ret
+wait_screen 10-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready' 60 2 \
+  || die "OOBE did not require and accept the backup-loss acknowledgement"
+
+# Ready is a replacement surface and focuses Take a quick tour. Traverse every
+# compositor-owned tutorial page and OCR each replacement surface so a tagged
+# release cannot ship a dead or unreachable tutorial behind healthy OOBE.
+"$vm" keys ret
+wait_screen 11-tour-move 'Everything[[:space:]]+is[[:space:]]+close[[:space:]]+at[[:space:]]+hand' 60 2 \
   || die "desktop tutorial did not open its navigation page"
 
 # Each tutorial page reseats focus on Skip tour. Back and then Continue are the
 # next two controls, so this drives the same keyboard route a user receives.
 "$vm" keys tab tab ret
-wait_screen 11-tour-arrange 'A[[:space:]]+place[[:space:]]+for[[:space:]]+each[[:space:]]+kind[[:space:]]+of[[:space:]]+work' 60 2 \
+wait_screen 12-tour-arrange 'A[[:space:]]+place[[:space:]]+for[[:space:]]+each[[:space:]]+kind[[:space:]]+of[[:space:]]+work' 60 2 \
   || die "desktop tutorial did not advance to its organisation page"
 "$vm" keys tab tab ret
-wait_screen 12-tour-share 'Sharing[[:space:]]+stays[[:space:]]+deliberate' 60 2 \
+wait_screen 13-tour-share 'Sharing[[:space:]]+stays[[:space:]]+deliberate' 60 2 \
   || die "desktop tutorial did not advance to its collaboration page"
+"$vm" keys tab tab ret
+wait_screen 14-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes' 60 2 \
+  || die "desktop tutorial did not advance to its first-steps page"
 "$vm" keys tab tab ret
 sleep 8
 
@@ -459,7 +500,7 @@ sleep 8
 # or privileged observer is introduced for the test.
 "$vm" type hostname
 "$vm" keys ret
-wait_screen 13-desktop-config 'cycle.?qos' 60 2 \
+wait_screen 15-desktop-config 'cycle.?qos' 60 2 \
   || die "desktop terminal did not report the installed hostname"
 
 copy_evidence target
