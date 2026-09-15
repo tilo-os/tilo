@@ -17613,3 +17613,7 @@ mod viewport_composition_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "app/card_composition_tests.rs"]
+mod card_composition_tests;
