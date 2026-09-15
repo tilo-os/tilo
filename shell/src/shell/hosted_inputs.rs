@@ -1,7 +1,40 @@
 //! Narrow startup inputs for the existing embedded app constructors.
 //! File paths are presentation data; they grant no filesystem authority.
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
+
+use super::state::{AppKind, TabId};
+
+/// An application the native shell can construct in-process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeAppRegistration {
+    pub package_id: &'static str,
+    pub display_name: &'static str,
+    pub kind: AppKind,
+    pub opens_extensions: &'static [&'static str],
+    pub opens_mime_types: &'static [&'static str],
+}
+
+/// Device-local launch data for one open hosted document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostedDocument {
+    pub provider_id: &'static str,
+    pub path: PathBuf,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostedDocumentState {
+    Ready(HostedDocument),
+    Unavailable {
+        provider_id: &'static str,
+        path: PathBuf,
+        reason: String,
+    },
+}
 
 #[derive(Clone, Default)]
 pub struct HostedTileInputs {
@@ -9,6 +42,8 @@ pub struct HostedTileInputs {
     pub picker_scope: Option<crate::portal::PickerScope>,
     fixture: Option<Arc<FixtureDirectory>>,
     file_services: Option<file_explorer::files_app::HostedFileServices>,
+    native_apps: Arc<[NativeAppRegistration]>,
+    documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
 }
 
 struct FixtureDirectory(PathBuf);
@@ -20,6 +55,37 @@ impl Drop for FixtureDirectory {
 }
 
 impl HostedTileInputs {
+    /// Native host startup data for the real Files widget. This chooses its
+    /// initial directory; it does not claim to sandbox filesystem access.
+    /// # Errors
+    /// Returns an error if the directory cannot be resolved or is not a directory.
+    pub fn for_host_directory(directory: &std::path::Path) -> std::io::Result<Self> {
+        let directory = directory.canonicalize()?;
+        if !directory.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                "Files needs a directory",
+            ));
+        }
+        Ok(Self {
+            files: Some(file_explorer::StartupInputs {
+                initial_dir: directory,
+                workspace_roots: Vec::new(),
+                record_roots: Vec::new(),
+                remote_accounts: Vec::new(),
+                trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+            }),
+            native_apps: Arc::from([NativeAppRegistration {
+                package_id: "org.nirios.Editor",
+                display_name: "Editor",
+                kind: AppKind::Other("Editor".into()),
+                opens_extensions: &["txt"],
+                opens_mime_types: &["text/plain"],
+            }]),
+            ..Self::default()
+        })
+    }
+
     /// Explicit deterministic inputs for scratch scenes, tests and captures.
     /// The real Files widget reads only this owned temporary directory; Terminal
     /// uses its existing null backend. This does not advertise a host provider.
@@ -72,6 +138,8 @@ impl HostedTileInputs {
             }),
             fixture: Some(fixture),
             file_services,
+            native_apps: Arc::default(),
+            documents: Rc::default(),
         })
     }
 
@@ -81,6 +149,68 @@ impl HostedTileInputs {
 
     pub(crate) fn is_fixture(&self) -> bool {
         self.fixture.is_some()
+    }
+
+    /// The real hosted application catalogue for this native session.
+    pub fn native_apps(&self) -> &[NativeAppRegistration] {
+        &self.native_apps
+    }
+
+    pub(crate) fn native_app_for_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Option<NativeAppRegistration> {
+        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+        let mime = mime_guess::from_path(path).first_raw();
+        self.native_apps
+            .iter()
+            .find(|app| {
+                app.opens_extensions.iter().any(|claim| *claim == extension)
+                    || mime.is_some_and(|mime| app.opens_mime_types.contains(&mime))
+            })
+            .cloned()
+    }
+
+    pub(crate) fn bind_document(&self, tab: TabId, document: HostedDocument) {
+        self.documents
+            .borrow_mut()
+            .insert(tab, HostedDocumentState::Ready(document));
+    }
+
+    pub(crate) fn restore_documents(
+        &self,
+        references: &HashMap<TabId, super::state::NativeDocumentReference>,
+    ) {
+        for (&tab, reference) in references {
+            let Some(app) = self
+                .native_apps
+                .iter()
+                .find(|app| app.package_id == reference.provider_id)
+            else {
+                continue;
+            };
+            let restored = reference
+                .path
+                .canonicalize()
+                .and_then(|path| std::fs::read_to_string(&path).map(|text| (path, text)));
+            let state = match restored {
+                Ok((path, text)) => HostedDocumentState::Ready(HostedDocument {
+                    provider_id: app.package_id,
+                    path,
+                    text,
+                }),
+                Err(error) => HostedDocumentState::Unavailable {
+                    provider_id: app.package_id,
+                    path: reference.path.clone(),
+                    reason: format!("{} is unavailable: {error}", reference.path.display()),
+                },
+            };
+            self.documents.borrow_mut().insert(tab, state);
+        }
+    }
+
+    pub(crate) fn document(&self, tab: TabId) -> Option<HostedDocumentState> {
+        self.documents.borrow().get(&tab).cloned()
     }
 }
 

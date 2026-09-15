@@ -700,6 +700,24 @@ declare_class!(
             });
         }
 
+        #[method(swipeWithEvent:)]
+        fn swipe_with_event(&self, event: &NSEvent) {
+            trace_scope!("swipeWithEvent:");
+
+            self.mouse_motion(event);
+            self.update_modifiers(event, false);
+
+            // AppKit swipes are discrete directions, not pixel deltas or phased
+            // scroll streams. Its positive axes mean left/up; winit uses right/down.
+            self.queue_event(WindowEvent::SwipeGesture {
+                device_id: DEVICE_ID,
+                delta: crate::dpi::PhysicalPosition::new(
+                    -unsafe { event.deltaX() },
+                    -unsafe { event.deltaY() },
+                ),
+            });
+        }
+
         #[method(magnifyWithEvent:)]
         fn magnify_with_event(&self, event: &NSEvent) {
             trace_scope!("magnifyWithEvent:");
