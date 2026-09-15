@@ -151,6 +151,11 @@ pub struct NavShell {
     animating: bool,
     dirty: bool,
     last_tick: Option<Instant>,
+    /// The outer layout theme. `apply_layout` is intentionally theme-free in
+    /// the shared Widget contract, but this shell owns a second child-layout
+    /// pass and therefore must retain the host text scale for correct
+    /// measurement and placement.
+    layout_theme: Theme,
 }
 
 impl NavShell {
@@ -185,6 +190,7 @@ impl NavShell {
             animating: false,
             dirty: false,
             last_tick: None,
+            layout_theme: Theme::dark(),
         }
     }
 
@@ -212,6 +218,14 @@ impl NavShell {
     pub fn with_breakpoint(mut self, px: f64) -> Self {
         self.breakpoint = px;
         self
+    }
+
+    /// Update the responsive threshold when an accessibility text scale makes
+    /// the same logical chrome require more horizontal room.  This is local
+    /// presentation policy, never collaborative navigation state.
+    pub fn set_breakpoint(&mut self, px: f64) {
+        self.breakpoint = px.max(1.0);
+        self.dirty = true;
     }
 
     #[must_use]
@@ -824,9 +838,10 @@ impl Widget for NavShell {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = theme.clone();
         // Children live in an isolated inner tree: their rects escape normal
         // flow in overlay/push mode.
         let node = taffy.leaf_node(Style {
@@ -866,8 +881,9 @@ impl Widget for NavShell {
 
         self.recompute_rects();
         let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        self.place_children(&theme, &mut tr);
+        tr.set_text_scale(self.layout_theme.text_scale);
+        let layout_theme = self.layout_theme.clone();
+        self.place_children(&layout_theme, &mut tr);
     }
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
