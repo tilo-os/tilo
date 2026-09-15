@@ -1,12 +1,14 @@
 //! Settings' exported **actions** and the **resource tree** it publishes to
 //! Ctrl+K.
 //!
-//! Every setting the OS stores is a value in the shared document, keyed by its
-//! stable dotted name (`notifications.do_not_disturb`, `appearance.theme`,
-//! `input.pointer_speed`, …). Changing one is a [`SettingsAction`]: a small
-//! serializable value that deterministically writes that key. The exact same
-//! [`EncodedAction`] is what an on-screen control dispatches and what the Ctrl+K
-//! palette dispatches — one source of truth, one replay path, one undo boundary.
+//! Every portable preference the OS stores is a value in the shared document,
+//! keyed by its stable dotted name (`notifications.do_not_disturb`,
+//! `appearance.theme`, `input.pointer_speed`, …). Changing one is a
+//! [`SettingsAction`]: a small serializable value that deterministically writes
+//! that key. Hardware/service controls use a separate typed local-operation
+//! protocol: the visible pane owns the privileged command and the palette uses
+//! the same bounded request/lifecycle, without making a device action replay on
+//! a peer.
 //!
 //! The resource tree mirrors the settings hub: the configuration root owns a
 //! child per section (Notifications, Appearance, Sound, …), and each section
@@ -65,6 +67,24 @@ pub const KEYBOARD_SOURCE_OPERATION_TYPE: &str = "settings.keyboard-source-opera
 /// Hardware capability command, intentionally separate from portable Power
 /// preferences because a charge cap only exists on some devices.
 pub const POWER_OPERATION_TYPE: &str = "settings.power-operation";
+/// Hardware-network commands. They intentionally address the current
+/// machine's radios and diagnostics, rather than a replicated preference.
+pub const NETWORK_OPERATION_TYPE: &str = "settings.network-operation";
+/// Adapter and device discovery commands owned by the local BlueZ service.
+pub const BLUETOOTH_OPERATION_TYPE: &str = "settings.bluetooth-operation";
+/// Storage maintenance and tool-handoff commands scoped to this device.
+pub const STORAGE_OPERATION_TYPE: &str = "settings.storage-operation";
+/// PipeWire device and stream-routing commands scoped to this device.
+pub const AUDIO_OPERATION_TYPE: &str = "settings.audio-operation";
+/// Compositor-backed output configuration commands. These stage or confirm a
+/// transaction for the current machine; they never become shared preferences.
+pub const DISPLAY_OPERATION_TYPE: &str = "settings.display-operation";
+pub const PRINTER_OPERATION_TYPE: &str = "settings.printer-operation";
+pub const USER_OPERATION_TYPE: &str = "settings.user-operation";
+/// Local-model lifecycle commands.  Model packages, accelerator support, and
+/// the supervised server belong to this machine, so these requests are never
+/// replicated as collaborative preferences.
+pub const AGENT_MODEL_OPERATION_TYPE: &str = "settings.agent-model-operation";
 
 /// Device-local account-management commands. Payloads contain only stable ids
 /// and provider kinds; credentials are collected by the Settings form and
@@ -91,6 +111,7 @@ pub enum UpdateOperation {
     Rollback,
     RefreshFirmware,
     InstallFirmware,
+    SetAutomatic { enabled: bool },
     SetSchedule { schedule: String },
     SetMetered { allowed: bool },
 }
@@ -106,6 +127,118 @@ pub enum KeyboardSourceOperation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PowerOperation {
     SetChargeLimit { percent: u32 },
+}
+
+/// Bounded commands owned by the Network pane. The Wi-Fi preference remains a
+/// collaborative setting; these commands change hardware or sample live
+/// network state and must never replay on another device.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NetworkOperation {
+    Refresh,
+    SetWiredEnabled { enabled: bool },
+    SetAirplaneMode { enabled: bool },
+    SetHotspot { enabled: bool },
+    SetMobileBroadband { enabled: bool },
+    RunDiagnostics,
+}
+
+/// Bounded Bluetooth commands which are meaningful only on the machine that
+/// owns the adapter. Pairing is intentionally not a shared preference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BluetoothOperation {
+    StartScan,
+    Refresh,
+    Pair { path: String },
+    Connect { path: String },
+    Disconnect { path: String },
+    Forget { path: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StorageOperation {
+    CleanupCaches,
+    FreeSyncedFiles,
+    OpenDisks,
+    OpenBackups,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AudioOperation {
+    SelectOutput { device_id: u32 },
+    SelectInput { device_id: u32 },
+    RoutePlayback { stream_id: u32, device_id: u32 },
+    RouteRecording { stream_id: u32, device_id: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DisplayOperation {
+    SetEnabled {
+        connector: String,
+        enabled: bool,
+    },
+    SetMode {
+        connector: String,
+        mode: settings_store::hardware::OutputMode,
+    },
+    SetTransform {
+        connector: String,
+        transform: settings_store::hardware::OutputTransform,
+    },
+    SetHdr {
+        connector: String,
+        enabled: bool,
+    },
+    SetVrr {
+        connector: String,
+        enabled: bool,
+    },
+    SetColorProfile {
+        connector: String,
+        profile: Option<String>,
+    },
+    Apply,
+    Confirm,
+    Revert,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PrinterOperation {
+    Refresh,
+    Discover,
+    SetDefault { name: String },
+    SetEnabled { name: String, enabled: bool },
+    Remove { name: String },
+    CancelJob { id: String },
+    RetryJob { id: String },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserOperation {
+    SetAdmin {
+        username: String,
+        admin: bool,
+    },
+    SetAutologin {
+        username: String,
+        enabled: bool,
+    },
+    Remove {
+        username: String,
+        remove_files: bool,
+    },
+}
+
+/// A bounded model-manager request.  Package identifiers are revalidated
+/// against a freshly-read manager snapshot immediately before the pane starts
+/// the command; no URL, path, credentials, or arbitrary manager arguments
+/// cross the resource boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentModelOperation {
+    StageAccelerator,
+    Install { id: String, revision: String },
+    Start { id: String },
+    Stop { id: String },
+    Retry { id: String, revision: String },
+    Remove { id: String },
 }
 
 /// Lifecycle reported by the pane that actually executes a device-local
@@ -150,6 +283,46 @@ pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, St
         }
         POWER_OPERATION_TYPE => {
             let operation: PowerOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        NETWORK_OPERATION_TYPE => {
+            let operation: NetworkOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        BLUETOOTH_OPERATION_TYPE => {
+            let operation: BluetoothOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        STORAGE_OPERATION_TYPE => {
+            let operation: StorageOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        AUDIO_OPERATION_TYPE => {
+            let operation: AudioOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        DISPLAY_OPERATION_TYPE => {
+            let operation: DisplayOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        PRINTER_OPERATION_TYPE => {
+            let operation: PrinterOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        USER_OPERATION_TYPE => {
+            let operation: UserOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        AGENT_MODEL_OPERATION_TYPE => {
+            let operation: AgentModelOperation =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             Ok(local_operation_token_for(type_id, &operation))
         }
@@ -382,9 +555,15 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "text.auto_correct"
         | "power.auto_suspend"
         | "updates.auto" => boolean(),
+        "display.scale" => matches!(
+            value,
+            SettingValue::Text(label)
+                if crate::panes::display::DISPLAY_SCALES
+                    .iter()
+                    .any(|(candidate, _)| *candidate == label)
+        ),
         "audio.volume"
         | "display.brightness"
-        | "display.scale"
         | "input.pointer_speed"
         | "input.touchpad_pointer_speed"
         | "input.mouse_pointer_speed"
@@ -686,9 +865,13 @@ pub fn provide_resources_with_accounts(
             Category::TimeDate => time_date_section(doc, &d),
             Category::KeyboardShortcuts => shortcuts_section(doc),
             Category::DeviceMesh => device_mesh_section(doc),
-            Category::Updates => updates_section(doc, &d),
+            Category::Updates => updates_section(),
             Category::ExternalAccounts => accounts_section(account_inventory),
+            Category::AgentModels => agent_models_section(),
             Category::DefaultApps => default_apps_section(doc),
+            Category::Storage => storage_section(),
+            Category::Printers => printers_section(),
+            Category::Users => users_section(),
             _ => Resource::new(
                 pane_resource_id(category),
                 "settings.section",
@@ -1127,6 +1310,10 @@ fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     sec
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "resource tree mirrors Sound hierarchy"
+)]
 fn sound_section(doc: &AutoCommit) -> Resource {
     use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
@@ -1145,9 +1332,100 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         0.0,
         1.0,
     ));
+    let graph = media::audio::enumerate();
+    for device in &graph.sinks {
+        let mut resource = Resource::new(
+            format!("settings.audio-output:{}", device.id),
+            "settings.audio-output",
+            device.description.clone(),
+        );
+        if let Some(action) = local_operation_spec(
+            "select",
+            "Use as output device",
+            OperationKind::Effect,
+            AUDIO_OPERATION_TYPE,
+            &AudioOperation::SelectOutput {
+                device_id: device.id,
+            },
+            &["device-local", "audio", "live-device"],
+        ) {
+            resource = resource.with_action(action);
+        }
+        sec = sec.with_child(resource);
+    }
+    for device in &graph.sources {
+        let mut resource = Resource::new(
+            format!("settings.audio-input:{}", device.id),
+            "settings.audio-input",
+            device.description.clone(),
+        );
+        if let Some(action) = local_operation_spec(
+            "select",
+            "Use as input device",
+            OperationKind::Effect,
+            AUDIO_OPERATION_TYPE,
+            &AudioOperation::SelectInput {
+                device_id: device.id,
+            },
+            &["device-local", "audio", "live-device"],
+        ) {
+            resource = resource.with_action(action);
+        }
+        sec = sec.with_child(resource);
+    }
+    for stream in &graph.playback_streams {
+        let mut resource = Resource::new(
+            format!("settings.audio-playback:{}", stream.id),
+            "settings.audio-playback",
+            stream.label(),
+        );
+        for device in &graph.sinks {
+            if let Some(action) = local_operation_spec(
+                format!("route-to-{}", device.id),
+                format!("Route to {}", device.description),
+                OperationKind::Effect,
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::RoutePlayback {
+                    stream_id: stream.id,
+                    device_id: device.id,
+                },
+                &["device-local", "audio", "live-device"],
+            ) {
+                resource = resource.with_action(action);
+            }
+        }
+        sec = sec.with_child(resource);
+    }
+    for stream in &graph.record_streams {
+        let mut resource = Resource::new(
+            format!("settings.audio-recording:{}", stream.id),
+            "settings.audio-recording",
+            stream.label(),
+        );
+        for device in &graph.sources {
+            if let Some(action) = local_operation_spec(
+                format!("route-to-{}", device.id),
+                format!("Route to {}", device.description),
+                OperationKind::Effect,
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::RouteRecording {
+                    stream_id: stream.id,
+                    device_id: device.id,
+                },
+                &["device-local", "audio", "live-device"],
+            ) {
+                resource = resource.with_action(action);
+            }
+        }
+        sec = sec.with_child(resource);
+    }
     sec
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "resource tree mirrors display capability hierarchy"
+)]
 fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     use crate::panes;
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
@@ -1179,14 +1457,183 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         0.0,
         1.0,
     ));
-    sec = sec.with_action(float_prompt_spec(
+    // The Display pane persists its scale as the same human-readable labels
+    // shown in its picker (for example `150%`), not as a raw factor.  Keeping
+    // the resource action on that wire format means Ctrl+K, agents and the
+    // visible dropdown all reach the pane through one typed value contract.
+    sec = sec.with_action(choice_prompt_spec(
         "scale",
         "Set display scale",
         panes::display::DISPLAY_SCALE_KEY,
-        "1.0, 1.25, 1.5, 2.0",
-        1.0,
-        3.0,
+        "100%, 125%, 150%, 175%, 200%",
+        &["100%", "125%", "150%", "175%", "200%"],
+        doc_str(doc, panes::display::DISPLAY_SCALE_KEY)
+            .unwrap_or_else(|| panes::display::scale_label(d.display.scale).to_string()),
     ));
+    // Output topology is supplied by the compositor's live, PID-validated
+    // snapshot.  Do not turn an absent/stale snapshot into invented monitors.
+    if let Some(snapshot) = settings_store::hardware::DisplayHardwareSnapshot::load() {
+        for output in snapshot.outputs {
+            let descriptor = output.descriptor;
+            let connector = descriptor.connector.clone();
+            let mut resource = Resource::new(
+                format!("settings.display-output:{connector}"),
+                "settings.display-output",
+                descriptor.label().to_string(),
+            );
+            for (id, label, operation) in [
+                (
+                    "enable",
+                    "Enable output",
+                    DisplayOperation::SetEnabled {
+                        connector: connector.clone(),
+                        enabled: true,
+                    },
+                ),
+                (
+                    "disable",
+                    "Disable output",
+                    DisplayOperation::SetEnabled {
+                        connector: connector.clone(),
+                        enabled: false,
+                    },
+                ),
+            ] {
+                if let Some(action) = local_operation_spec(
+                    id,
+                    label,
+                    OperationKind::Effect,
+                    DISPLAY_OPERATION_TYPE,
+                    &operation,
+                    &["device-local", "display", "live-output"],
+                ) {
+                    resource = resource.with_action(action);
+                }
+            }
+            for mode in descriptor.modes.iter().copied() {
+                if let Some(action) = local_operation_spec(
+                    format!("mode-{}-{}-{}", mode.width, mode.height, mode.refresh_mhz),
+                    format!("Use {}", mode.label()),
+                    OperationKind::Effect,
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetMode {
+                        connector: connector.clone(),
+                        mode,
+                    },
+                    &["device-local", "display", "live-output"],
+                ) {
+                    resource = resource.with_action(action);
+                }
+            }
+            for transform in [
+                settings_store::hardware::OutputTransform::Normal,
+                settings_store::hardware::OutputTransform::Rotate90,
+                settings_store::hardware::OutputTransform::Rotate180,
+                settings_store::hardware::OutputTransform::Rotate270,
+            ] {
+                if let Some(action) = local_operation_spec(
+                    format!("transform-{transform:?}").to_lowercase(),
+                    format!("Set orientation to {transform:?}"),
+                    OperationKind::Effect,
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetTransform {
+                        connector: connector.clone(),
+                        transform,
+                    },
+                    &["device-local", "display", "live-output"],
+                ) {
+                    resource = resource.with_action(action);
+                }
+            }
+            if descriptor.hdr {
+                for enabled in [true, false] {
+                    if let Some(action) = local_operation_spec(
+                        if enabled { "enable-hdr" } else { "disable-hdr" },
+                        if enabled { "Enable HDR" } else { "Disable HDR" },
+                        OperationKind::Effect,
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetHdr {
+                            connector: connector.clone(),
+                            enabled,
+                        },
+                        &["device-local", "display", "live-output"],
+                    ) {
+                        resource = resource.with_action(action);
+                    }
+                }
+            }
+            if descriptor.vrr {
+                for enabled in [true, false] {
+                    if let Some(action) = local_operation_spec(
+                        if enabled { "enable-vrr" } else { "disable-vrr" },
+                        if enabled {
+                            "Enable variable refresh rate"
+                        } else {
+                            "Disable variable refresh rate"
+                        },
+                        OperationKind::Effect,
+                        DISPLAY_OPERATION_TYPE,
+                        &DisplayOperation::SetVrr {
+                            connector: connector.clone(),
+                            enabled,
+                        },
+                        &["device-local", "display", "live-output"],
+                    ) {
+                        resource = resource.with_action(action);
+                    }
+                }
+            }
+            if let Some(action) = local_operation_spec(
+                "profile-system-default",
+                "Use system colour profile",
+                OperationKind::Effect,
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetColorProfile {
+                    connector: connector.clone(),
+                    profile: None,
+                },
+                &["device-local", "display", "live-output"],
+            ) {
+                resource = resource.with_action(action);
+            }
+            for profile in &descriptor.color_profiles {
+                if let Some(action) = local_operation_spec(
+                    format!("profile-{}", profile),
+                    format!("Use colour profile {profile}"),
+                    OperationKind::Effect,
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetColorProfile {
+                        connector: connector.clone(),
+                        profile: Some(profile.clone()),
+                    },
+                    &["device-local", "display", "live-output"],
+                ) {
+                    resource = resource.with_action(action);
+                }
+            }
+            sec = sec.with_child(resource);
+        }
+    }
+    for (id, label, operation) in [
+        (
+            "apply",
+            "Apply staged display changes",
+            DisplayOperation::Apply,
+        ),
+        ("confirm", "Keep display changes", DisplayOperation::Confirm),
+        ("revert", "Revert display changes", DisplayOperation::Revert),
+    ] {
+        if let Some(action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            DISPLAY_OPERATION_TYPE,
+            &operation,
+            &["device-local", "display", "transaction"],
+        ) {
+            sec = sec.with_action(action);
+        }
+    }
     sec
 }
 
@@ -1789,16 +2236,28 @@ pub fn accessibility_text_binding(action_id: &str) -> Option<qos_actions::Action
     clippy::too_many_lines,
     reason = "the ordered local-operation declarations mirror the Updates pane"
 )]
-fn updates_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
+fn updates_section() -> Resource {
     use crate::panes;
-    let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
     let mut sec = Resource::new("settings.section:updates", "settings.section", "Updates");
-    sec = sec.with_action(bool_flip_spec(
-        "auto",
-        panes::updates::AUTO_KEY,
-        b(panes::updates::AUTO_KEY, d.updates.auto),
-        "automatic updates",
-    ));
+    // The timer is an effective property of this machine, not a shared
+    // preference.  It gets a typed local request so its result can be read
+    // back from systemd and reported to the caller.
+    for (id, label, enabled) in [
+        ("enable-auto", "Enable automatic updates", true),
+        ("disable-auto", "Disable automatic updates", false),
+    ] {
+        if let Some(mut action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            UPDATE_OPERATION_TYPE,
+            &UpdateOperation::SetAutomatic { enabled },
+            &["device-local", "system-update"],
+        ) {
+            action.contract.retry = RetryPolicy::Idempotent;
+            sec = sec.with_action(action);
+        }
+    }
     for (id, label, operation) in [
         ("check", "Check for updates", UpdateOperation::Check),
         (
@@ -1910,6 +2369,67 @@ fn network_section(doc: &AutoCommit) -> Resource {
         b(panes::network::WIFI_ENABLED_KEY, true),
         "Wi-Fi",
     ));
+    // These controls address adapters and radios present on *this* machine.
+    // They are local effects with a status lifecycle, not shared settings.
+    for (id, label, operation) in [
+        ("refresh", "Refresh network list", NetworkOperation::Refresh),
+        (
+            "run-diagnostics",
+            "Run network diagnostics",
+            NetworkOperation::RunDiagnostics,
+        ),
+        (
+            "enable-wired",
+            "Enable wired networking",
+            NetworkOperation::SetWiredEnabled { enabled: true },
+        ),
+        (
+            "disable-wired",
+            "Disable wired networking",
+            NetworkOperation::SetWiredEnabled { enabled: false },
+        ),
+        (
+            "enable-airplane-mode",
+            "Enable airplane mode",
+            NetworkOperation::SetAirplaneMode { enabled: true },
+        ),
+        (
+            "disable-airplane-mode",
+            "Disable airplane mode",
+            NetworkOperation::SetAirplaneMode { enabled: false },
+        ),
+        (
+            "enable-hotspot",
+            "Enable hotspot",
+            NetworkOperation::SetHotspot { enabled: true },
+        ),
+        (
+            "disable-hotspot",
+            "Disable hotspot",
+            NetworkOperation::SetHotspot { enabled: false },
+        ),
+        (
+            "enable-mobile-broadband",
+            "Enable mobile broadband",
+            NetworkOperation::SetMobileBroadband { enabled: true },
+        ),
+        (
+            "disable-mobile-broadband",
+            "Disable mobile broadband",
+            NetworkOperation::SetMobileBroadband { enabled: false },
+        ),
+    ] {
+        if let Some(action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            NETWORK_OPERATION_TYPE,
+            &operation,
+            &["device-local", "network"],
+        ) {
+            sec = sec.with_action(action);
+        }
+    }
     sec
 }
 
@@ -1927,7 +2447,436 @@ fn bluetooth_section(doc: &AutoCommit) -> Resource {
         b(panes::bluetooth::BT_ENABLED_KEY, true),
         "Bluetooth",
     ));
+    for (id, label, operation) in [
+        (
+            "scan",
+            "Scan for Bluetooth devices",
+            BluetoothOperation::StartScan,
+        ),
+        (
+            "refresh",
+            "Refresh Bluetooth devices",
+            BluetoothOperation::Refresh,
+        ),
+    ] {
+        if let Some(action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            BLUETOOTH_OPERATION_TYPE,
+            &operation,
+            &["device-local", "bluetooth"],
+        ) {
+            bt = bt.with_action(action);
+        }
+    }
+    // Device resources are deliberately live: an object path is meaningful
+    // only while BlueZ advertises it. The host revalidates it again before
+    // latching the pane command, closing the stale-resource race.
+    for device in os_actions::bluez::devices().unwrap_or_default() {
+        let mut resource = Resource::new(
+            format!("settings.bluetooth-device:{}", device.path),
+            "settings.bluetooth-device",
+            device.name.clone(),
+        );
+        let operation = if !device.paired {
+            Some((
+                "pair",
+                "Pair",
+                BluetoothOperation::Pair {
+                    path: device.path.clone(),
+                },
+            ))
+        } else if device.connected {
+            Some((
+                "disconnect",
+                "Disconnect",
+                BluetoothOperation::Disconnect {
+                    path: device.path.clone(),
+                },
+            ))
+        } else {
+            Some((
+                "connect",
+                "Connect",
+                BluetoothOperation::Connect {
+                    path: device.path.clone(),
+                },
+            ))
+        };
+        if let Some((id, label, operation)) = operation
+            && let Some(action) = local_operation_spec(
+                id,
+                label,
+                OperationKind::Effect,
+                BLUETOOTH_OPERATION_TYPE,
+                &operation,
+                &["device-local", "bluetooth", "live-device"],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        if device.paired
+            && let Some(action) = local_operation_spec(
+                "forget",
+                "Forget device",
+                OperationKind::Effect,
+                BLUETOOTH_OPERATION_TYPE,
+                &BluetoothOperation::Forget { path: device.path },
+                &["device-local", "bluetooth", "destructive", "live-device"],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        bt = bt.with_child(resource);
+    }
     bt
+}
+
+fn storage_section() -> Resource {
+    let mut storage = Resource::new("settings.section:storage", "settings.section", "Storage");
+    for (id, label, operation) in [
+        (
+            "cleanup-caches",
+            "Clean application caches",
+            StorageOperation::CleanupCaches,
+        ),
+        (
+            "free-synced-files",
+            "Free downloaded synced files",
+            StorageOperation::FreeSyncedFiles,
+        ),
+        ("open-disks", "Open Disks", StorageOperation::OpenDisks),
+        (
+            "open-backups",
+            "Open Backups",
+            StorageOperation::OpenBackups,
+        ),
+    ] {
+        if let Some(action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            STORAGE_OPERATION_TYPE,
+            &operation,
+            &["device-local", "storage"],
+        ) {
+            storage = storage.with_action(action);
+        }
+    }
+    storage
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "resource tree mirrors printer hierarchy"
+)]
+fn printers_section() -> Resource {
+    let mut sec = Resource::new(
+        pane_resource_id(Category::Printers),
+        "settings.section",
+        "Printers",
+    );
+    for (id, label, operation) in [
+        ("refresh", "Refresh printers", PrinterOperation::Refresh),
+        (
+            "discover",
+            "Find network printers",
+            PrinterOperation::Discover,
+        ),
+    ] {
+        if let Some(action) = local_operation_spec(
+            id,
+            label,
+            OperationKind::Effect,
+            PRINTER_OPERATION_TYPE,
+            &operation,
+            &["device-local", "printers"],
+        ) {
+            sec = sec.with_action(action);
+        }
+    }
+    for queue in os_actions::printing::queues().unwrap_or_default() {
+        let mut resource = Resource::new(
+            format!("settings.printer:{}", queue.name),
+            "settings.printer",
+            queue.name.clone(),
+        );
+        for (id, label, operation) in [
+            (
+                "set-default",
+                "Set as default printer",
+                PrinterOperation::SetDefault {
+                    name: queue.name.clone(),
+                },
+            ),
+            (
+                if queue.state == os_actions::printing::QueueState::Paused {
+                    "enable"
+                } else {
+                    "pause"
+                },
+                if queue.state == os_actions::printing::QueueState::Paused {
+                    "Enable printer"
+                } else {
+                    "Pause printer"
+                },
+                PrinterOperation::SetEnabled {
+                    name: queue.name.clone(),
+                    enabled: queue.state == os_actions::printing::QueueState::Paused,
+                },
+            ),
+            (
+                "remove",
+                "Remove printer",
+                PrinterOperation::Remove {
+                    name: queue.name.clone(),
+                },
+            ),
+        ] {
+            if let Some(action) = local_operation_spec(
+                id,
+                label,
+                OperationKind::Effect,
+                PRINTER_OPERATION_TYPE,
+                &operation,
+                &["device-local", "printers", "live-queue"],
+            ) {
+                resource = resource.with_action(action);
+            }
+        }
+        sec = sec.with_child(resource);
+    }
+    for job in os_actions::printing::jobs().unwrap_or_default() {
+        let mut resource = Resource::new(
+            format!("settings.print-job:{}", job.id),
+            "settings.print-job",
+            job.id.clone(),
+        );
+        for (id, label, operation) in [
+            (
+                "cancel",
+                "Cancel print job",
+                PrinterOperation::CancelJob { id: job.id.clone() },
+            ),
+            (
+                "retry",
+                "Retry print job",
+                PrinterOperation::RetryJob { id: job.id.clone() },
+            ),
+        ] {
+            if let Some(action) = local_operation_spec(
+                id,
+                label,
+                OperationKind::Effect,
+                PRINTER_OPERATION_TYPE,
+                &operation,
+                &["device-local", "printers", "live-job"],
+            ) {
+                resource = resource.with_action(action);
+            }
+        }
+        sec = sec.with_child(resource);
+    }
+    sec
+}
+
+fn users_section() -> Resource {
+    let mut sec = Resource::new(
+        pane_resource_id(Category::Users),
+        "settings.section",
+        "Users",
+    );
+    for user in crate::panes::users::users_for_display() {
+        if user.current {
+            continue;
+        }
+        let mut resource = Resource::new(
+            format!("settings.user:{}", user.username),
+            "settings.user",
+            user.full_name.clone(),
+        );
+        for (id, label, operation) in [
+            (
+                "set-admin",
+                if user.admin {
+                    "Make standard user"
+                } else {
+                    "Make administrator"
+                },
+                UserOperation::SetAdmin {
+                    username: user.username.clone(),
+                    admin: !user.admin,
+                },
+            ),
+            (
+                "set-autologin",
+                if user.automatic_login {
+                    "Disable automatic login"
+                } else {
+                    "Enable automatic login"
+                },
+                UserOperation::SetAutologin {
+                    username: user.username.clone(),
+                    enabled: !user.automatic_login,
+                },
+            ),
+            (
+                "remove-keep-files",
+                "Remove account, keep files",
+                UserOperation::Remove {
+                    username: user.username.clone(),
+                    remove_files: false,
+                },
+            ),
+            (
+                "remove-files",
+                "Remove account and files",
+                UserOperation::Remove {
+                    username: user.username.clone(),
+                    remove_files: true,
+                },
+            ),
+        ] {
+            if let Some(action) = local_operation_spec(
+                id,
+                label,
+                OperationKind::Effect,
+                USER_OPERATION_TYPE,
+                &operation,
+                &["device-local", "users", "live-account"],
+            ) {
+                resource = resource.with_action(action);
+            }
+        }
+        sec = sec.with_child(resource);
+    }
+    sec
+}
+
+/// The model manager is the source of truth for the dynamic package tree.
+/// Building the palette snapshot is deliberately best-effort: stale entries
+/// are rejected again by the local executor before any manager command runs.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the resource tree keeps each live model phase beside its bounded action"
+)]
+fn agent_models_section() -> Resource {
+    use crate::panes::agent_models::{self, AcceleratorSetupState, LocalModelPhase};
+
+    let mut section = Resource::new(
+        pane_resource_id(Category::AgentModels),
+        "settings.agent-models",
+        Category::AgentModels.label(),
+    );
+    let Ok(snapshot) = agent_models::live_snapshot() else {
+        return section;
+    };
+    if snapshot.accelerator_setup.as_ref().is_some_and(|setup| {
+        matches!(
+            setup.status,
+            AcceleratorSetupState::Available | AcceleratorSetupState::Error { .. }
+        )
+    }) && let Some(action) = local_operation_spec(
+        "stage-accelerator",
+        "Set up accelerator support",
+        OperationKind::Effect,
+        AGENT_MODEL_OPERATION_TYPE,
+        &AgentModelOperation::StageAccelerator,
+        &["device-local", "agent-models", "live-accelerator"],
+    ) {
+        section = section.with_action(action);
+    }
+    let install_available = snapshot.hardware.fit != agent_models::HardwareFit::Unsupported
+        && snapshot
+            .accelerator_setup
+            .as_ref()
+            .is_none_or(|setup| !setup.status.blocks_model_setup());
+    if let Some(package) = snapshot.recommendation {
+        let resource = Resource::new(
+            format!("settings.agent-model-recommendation:{}", package.id),
+            "settings.agent-model-package",
+            package.name.clone(),
+        );
+        if install_available
+            && let Some(action) = local_operation_spec(
+                "install",
+                "Accept license and install on this device",
+                OperationKind::Effect,
+                AGENT_MODEL_OPERATION_TYPE,
+                &AgentModelOperation::Install {
+                    id: package.id,
+                    revision: package.revision,
+                },
+                &["device-local", "agent-models", "signed-package"],
+            )
+        {
+            section = section.with_child(resource.with_action(action));
+        } else {
+            section = section.with_child(resource);
+        }
+    }
+    for model in snapshot.models {
+        let mut resource = Resource::new(
+            format!("settings.agent-model:{}", model.package.id),
+            "settings.agent-model",
+            model.package.name.clone(),
+        );
+        let operation = match model.phase {
+            LocalModelPhase::Ready { running: true, .. } => Some((
+                "stop",
+                "Stop local model",
+                AgentModelOperation::Stop {
+                    id: model.package.id.clone(),
+                },
+            )),
+            LocalModelPhase::Ready { running: false, .. } => Some((
+                "start",
+                "Start local model",
+                AgentModelOperation::Start {
+                    id: model.package.id.clone(),
+                },
+            )),
+            LocalModelPhase::Error { .. } => Some((
+                "retry",
+                "Retry model installation",
+                AgentModelOperation::Retry {
+                    id: model.package.id.clone(),
+                    revision: model.package.revision.clone(),
+                },
+            )),
+            LocalModelPhase::Downloading { .. } | LocalModelPhase::Installing { .. } => None,
+        };
+        if let Some((id, label, operation)) = operation
+            && let Some(action) = local_operation_spec(
+                id,
+                label,
+                OperationKind::Effect,
+                AGENT_MODEL_OPERATION_TYPE,
+                &operation,
+                &["device-local", "agent-models", "live-model"],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        if matches!(
+            model.phase,
+            LocalModelPhase::Ready { .. } | LocalModelPhase::Error { .. }
+        ) && let Some(action) = local_operation_spec(
+            "remove",
+            "Remove local model",
+            OperationKind::Effect,
+            AGENT_MODEL_OPERATION_TYPE,
+            &AgentModelOperation::Remove {
+                id: model.package.id,
+            },
+            &["device-local", "agent-models", "live-model", "destructive"],
+        ) {
+            resource = resource.with_action(action.destructive());
+        }
+        section = section.with_child(resource);
+    }
+    section
 }
 
 /// Region and time are deliberately represented as individual named actions,
@@ -2439,6 +3388,8 @@ mod tests {
             "rollback",
             "refresh-firmware",
             "install-firmware",
+            "enable-auto",
+            "disable-auto",
         ] {
             let action = updates
                 .actions
@@ -2478,6 +3429,78 @@ mod tests {
     }
 
     #[test]
+    fn hardware_network_controls_are_bounded_local_effects() {
+        let resources = provide_resources(&AutoCommit::new());
+        let network = find(&resources, &pane_resource_id(Category::Network));
+        for id in [
+            "refresh",
+            "run-diagnostics",
+            "enable-wired",
+            "disable-wired",
+            "enable-airplane-mode",
+            "disable-airplane-mode",
+            "enable-hotspot",
+            "disable-hotspot",
+            "enable-mobile-broadband",
+            "disable-mobile-broadband",
+        ] {
+            let action = network
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("missing network operation: {id}"));
+            assert_eq!(action.kind, OperationKind::Effect);
+            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+            assert_eq!(
+                action.operation_type.as_deref(),
+                Some(NETWORK_OPERATION_TYPE)
+            );
+            assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
+        }
+    }
+
+    #[test]
+    fn bluetooth_discovery_controls_are_bounded_local_effects() {
+        let resources = provide_resources(&AutoCommit::new());
+        let bluetooth = find(&resources, &pane_resource_id(Category::Bluetooth));
+        for id in ["scan", "refresh"] {
+            let action = bluetooth
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("missing Bluetooth operation: {id}"));
+            assert_eq!(action.kind, OperationKind::Effect);
+            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+            assert_eq!(
+                action.operation_type.as_deref(),
+                Some(BLUETOOTH_OPERATION_TYPE)
+            );
+            assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
+        }
+    }
+
+    #[test]
+    fn display_operation_tokens_are_typed_and_stable() {
+        let operation = DisplayOperation::SetMode {
+            connector: "card0/HDMI-A-1".into(),
+            mode: settings_store::hardware::OutputMode {
+                width: 2560,
+                height: 1440,
+                refresh_mhz: 143_850,
+            },
+        };
+        let payload = serde_json::to_vec(&operation).expect("display operation serializes");
+        assert_eq!(
+            local_operation_token(DISPLAY_OPERATION_TYPE, &payload),
+            Ok(local_operation_token_for(
+                DISPLAY_OPERATION_TYPE,
+                &operation
+            ))
+        );
+        assert!(local_operation_token(DISPLAY_OPERATION_TYPE, br#"{\"set_mode\":{}}"#).is_err());
+    }
+
+    #[test]
     fn accepted_local_operations_advertise_background_string_results() {
         fn walk(resource: &Resource, out: &mut Vec<ActionSpec>) {
             out.extend(
@@ -2491,6 +3514,11 @@ mod tests {
                                 UPDATE_OPERATION_TYPE
                                     | KEYBOARD_SOURCE_OPERATION_TYPE
                                     | POWER_OPERATION_TYPE
+                                    | NETWORK_OPERATION_TYPE
+                                    | BLUETOOTH_OPERATION_TYPE
+                                    | STORAGE_OPERATION_TYPE
+                                    | AUDIO_OPERATION_TYPE
+                                    | DISPLAY_OPERATION_TYPE
                             )
                         ) && action.kind == OperationKind::Effect
                     })
@@ -2743,6 +3771,41 @@ mod tests {
             .build_json(&typo)
             .expect_err("unknown theme is invalid");
         assert!(error.to_string().contains("must be one of"), "{error}");
+    }
+
+    /// Display scale is stored as the picker label, rather than a bare numeric
+    /// factor.  This keeps a palette/agent invocation consumable by the same
+    /// durable preference reader as the visible Display dropdown.
+    #[test]
+    fn display_scale_resource_uses_the_dropdowns_durable_label() {
+        let resources = provide_resources(&AutoCommit::new());
+        let displays = find(&resources, &pane_resource_id(Category::Displays));
+        let scale = displays
+            .actions
+            .iter()
+            .find(|action| action.id == "scale")
+            .expect("Displays exports a canonical scale action");
+        let args = serde_json::Map::from_iter([(
+            "choice".to_owned(),
+            serde_json::Value::String("150%".to_owned()),
+        )]);
+        let encoded = scale
+            .build_json(&args)
+            .expect("the visible display scale is accepted");
+        let mut doc = AutoCommit::new();
+        registry()
+            .decode(&encoded)
+            .expect("settings action decodes")
+            .apply(&mut doc)
+            .expect("display scale target is accepted");
+        assert_eq!(
+            doc_str(&doc, panes::display::DISPLAY_SCALE_KEY).as_deref(),
+            Some("150%")
+        );
+        assert!(matches!(
+            set_text_action(panes::display::DISPLAY_SCALE_KEY, "300%").apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
     }
 
     #[test]

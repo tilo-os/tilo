@@ -1,3 +1,4 @@
+#![allow(clippy::doc_markdown, reason = "BlueZ is the upstream service name")]
 //! Bluetooth settings backed directly by `BlueZ` over D-Bus. Settings starts
 //! operations; the compositor-owned `BlueZ` Agent owns security prompts.
 
@@ -16,13 +17,16 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 pub const BT_ENABLED_KEY: &str = "bluetooth.enabled";
-const SCAN_KEY: &str = "bluetooth.scan";
-const REFRESH_KEY: &str = "bluetooth.refresh";
+pub const SCAN_KEY: &str = "bluetooth.scan";
+pub const REFRESH_KEY: &str = "bluetooth.refresh";
 fn token(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).replace('.', "_")
 }
-fn key(path: &str, action: &str) -> String {
+pub(crate) fn device_action_key(path: &str, action: &str) -> String {
     format!("bluetooth.device.{}.{}", token(path), action)
+}
+fn key(path: &str, action: &str) -> String {
+    device_action_key(path, action)
 }
 
 pub trait BluetoothControl: Send + Sync {
@@ -153,6 +157,7 @@ pub struct BluetoothPane {
     confirm_forget: Option<String>,
     pending_pair: Option<String>,
     pair_result: Option<Receiver<(String, Result<PairOutcome, String>)>>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     needs_seed: bool,
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
@@ -187,6 +192,7 @@ impl BluetoothPane {
             confirm_forget: None,
             pending_pair: None,
             pair_result: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             needs_seed: true,
             structure_dirty: false,
             composed: None,
@@ -195,6 +201,34 @@ impl BluetoothPane {
     }
     pub fn devices(&self) -> &[DeviceInfo] {
         &self.devices
+    }
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+    fn finish_local_operation(
+        &self,
+        operation: crate::actions::BluetoothOperation,
+        result: Result<String, String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::BLUETOOTH_OPERATION_TYPE,
+            &operation,
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: running } if running == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
     }
     fn refresh(&mut self) {
         match self.control.devices() {
@@ -375,12 +409,25 @@ impl BluetoothPane {
                 .map(|()| format!("Disconnected {}.", d.name)),
             _ => return,
         };
-        self.notice = Some(result.unwrap_or_else(|e| {
+        let result = result.map_err(|e| {
             format!(
                 "Could not {action} {}: {e} Check that it is awake and in range, then retry.",
                 d.name
             )
-        }));
+        });
+        self.notice = Some(result.clone().unwrap_or_else(|error| error));
+        self.finish_local_operation(
+            if action == "connect" {
+                crate::actions::BluetoothOperation::Connect {
+                    path: d.path.clone(),
+                }
+            } else {
+                crate::actions::BluetoothOperation::Disconnect {
+                    path: d.path.clone(),
+                }
+            },
+            result,
+        );
         self.refresh();
     }
     fn sync_pair_result(&mut self) {
@@ -392,15 +439,22 @@ impl BluetoothPane {
                 .iter()
                 .find(|d| d.path == path)
                 .map_or_else(|| "Device".into(), |d| d.name.clone());
-            self.notice = Some(match result {
-                Ok(PairOutcome::PairedAndConnected) => format!("{name} is paired and connected."),
-                Ok(PairOutcome::PairedNotConnected { reason }) => {
-                    format!("{name} paired, but did not connect: {reason} Use Connect to retry.")
+            let result = match result {
+                Ok(PairOutcome::PairedAndConnected) => {
+                    Ok(format!("{name} is paired and connected."))
                 }
-                Err(error) => format!(
+                Ok(PairOutcome::PairedNotConnected { reason }) => Ok(format!(
+                    "{name} paired, but did not connect: {reason} Use Connect to retry."
+                )),
+                Err(error) => Err(format!(
                     "Could not pair {name}: {error} Check that it is awake and in pairing mode, then retry."
-                ),
-            });
+                )),
+            };
+            self.notice = Some(result.clone().unwrap_or_else(|error| error));
+            self.finish_local_operation(
+                crate::actions::BluetoothOperation::Pair { path: path.clone() },
+                result,
+            );
             self.pending_pair = None;
             self.pair_result = None;
             self.refresh();
@@ -471,15 +525,47 @@ impl BluetoothPane {
                 } else {
                     "Discovery stopped.".into()
                 });
+                self.finish_local_operation(
+                    crate::actions::BluetoothOperation::StartScan,
+                    Ok(if self.scanning {
+                        "Bluetooth discovery started.".into()
+                    } else {
+                        "Bluetooth discovery stopped.".into()
+                    }),
+                );
             }
-            Err(e) => self.notice = Some(format!("Could not change discovery: {e}")),
+            Err(e) => {
+                self.notice = Some(format!("Could not change discovery: {e}"));
+                self.finish_local_operation(
+                    crate::actions::BluetoothOperation::StartScan,
+                    Err(format!("Could not change Bluetooth discovery: {e}")),
+                );
+            }
         }
         self.refresh();
     }
     fn sync_refresh(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if read_bool(state, root, REFRESH_KEY) {
             let _ = state.put(root, REFRESH_KEY, false);
-            self.refresh();
+            match self.control.devices() {
+                Ok(devices) => {
+                    self.devices = devices;
+                    self.scanning = self.control.scanning().unwrap_or(self.scanning);
+                    self.powered = self.control.powered().unwrap_or(self.powered);
+                    self.structure_dirty = true;
+                    self.finish_local_operation(
+                        crate::actions::BluetoothOperation::Refresh,
+                        Ok("Bluetooth devices refreshed.".into()),
+                    );
+                }
+                Err(error) => {
+                    self.notice = Some(format!("Could not refresh devices: {error}"));
+                    self.finish_local_operation(
+                        crate::actions::BluetoothOperation::Refresh,
+                        Err(format!("Could not refresh Bluetooth devices: {error}")),
+                    );
+                }
+            }
         }
     }
     fn sync_devices(&mut self, state: &mut AutoCommit, root: &ObjId) {
@@ -548,14 +634,36 @@ impl BluetoothPane {
             }
             if read_bool(state, root, &key(&d.path, "forget")) {
                 let _ = state.put(root, key(&d.path, "forget"), false);
-                if self.confirm_forget.as_deref() == Some(&d.path) {
+                let local_forget = matches!(
+                    self.operation_status.get(),
+                    crate::actions::LocalOperationStatus::Running { token }
+                        if token == crate::actions::local_operation_token_for(
+                            crate::actions::BLUETOOTH_OPERATION_TYPE,
+                            &crate::actions::BluetoothOperation::Forget { path: d.path.clone() },
+                        )
+                );
+                if self.confirm_forget.as_deref() == Some(&d.path) || local_forget {
                     match self.control.forget(&d.path) {
                         Ok(()) => {
                             self.notice =
                                 Some(format!("Forgot {}. Pair it again to reconnect.", d.name));
                             self.confirm_forget = None;
+                            self.finish_local_operation(
+                                crate::actions::BluetoothOperation::Forget {
+                                    path: d.path.clone(),
+                                },
+                                Ok(format!("Forgot {}.", d.name)),
+                            );
                         }
-                        Err(e) => self.notice = Some(format!("Could not forget {}: {e}", d.name)),
+                        Err(e) => {
+                            self.notice = Some(format!("Could not forget {}: {e}", d.name));
+                            self.finish_local_operation(
+                                crate::actions::BluetoothOperation::Forget {
+                                    path: d.path.clone(),
+                                },
+                                Err(format!("Could not forget {}: {e}", d.name)),
+                            );
+                        }
                     }
                     self.refresh();
                 } else {
