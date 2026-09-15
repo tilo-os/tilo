@@ -419,6 +419,7 @@ pub struct FrameHarness {
     touch_pointer: crate::interaction::TouchPointerEmulator,
     dispatching_touch_pointer: bool,
     viewport: (u32, u32),
+    last_layout_viewport: Option<(u32, u32)>,
     /// Records this driver has open, when the app under test uses them —
     /// without this a record-aware app would be driven against its room
     /// index instead of the record it checked out, testing something the
@@ -496,8 +497,7 @@ impl FrameHarness {
     }
 
     pub(crate) fn resize_component_capture(&mut self, viewport: (u32, u32)) {
-        self.viewport = viewport;
-        self.relayout();
+        let _ = self.resize(viewport);
     }
 
     /// Shared final-output boundary for prepared CLI capture and audit.
@@ -675,6 +675,7 @@ impl FrameHarness {
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
             viewport,
+            last_layout_viewport: None,
             focused: None,
             author: author(),
             action_registry: qos_actions::ActionRegistry::new(),
@@ -689,32 +690,23 @@ impl FrameHarness {
         // must exercise both halves of that contract.
         d.root.set_motion_reduced(d.theme.reduce_motion);
         d.relayout();
-        d.settle_initial_structure();
         d
     }
 
-    /// Resolve structure changes discovered only after the first real layout
-    /// (for example a responsive shell crossing its width breakpoint).
+    /// Resize in logical pixels and settle geometry-dependent composition
+    /// before exposing targets, accessibility, or a drawable frame. Uses the
+    /// same bounded prepaint lifecycle as the live App host. Equal sizes are a
+    /// no-op; paint and scroll-only frames do not trigger viewport refreshes.
     ///
-    /// The live host schedules another frame when `take_structure_dirty`
-    /// reports this condition. A newly constructed headless driver has no
-    /// event loop to schedule that frame, so it performs the same bounded
-    /// convergence here before exposing targets, focus order, or semantics.
-    fn settle_initial_structure(&mut self) {
-        const MAX_SETTLE_PASSES: usize = 8;
-
-        for _ in 0..MAX_SETTLE_PASSES {
-            if !self.root.take_structure_dirty() {
-                return;
-            }
-            self.relayout();
+    /// # Errors
+    /// Returns a layout error if measurement or bounded composition settlement
+    /// fails. The failed frame is not painted; callers may retry the resize.
+    pub fn resize(&mut self, viewport: (u32, u32)) -> Result<(), crate::widget::WidgetLayoutError> {
+        if self.last_layout_viewport == Some(viewport) {
+            return Ok(());
         }
-        if self.root.take_structure_dirty() {
-            tracing::warn!(
-                passes = MAX_SETTLE_PASSES,
-                "headless: initial widget structure did not converge"
-            );
-        }
+        self.viewport = viewport;
+        self.try_relayout()
     }
 
     /// Register replayable document action decoders for a driven app.
@@ -986,6 +978,26 @@ impl FrameHarness {
         reason = "one exclusive sync/build/admission/measure/apply sequence keeps layout ownership explicit"
     )]
     pub fn relayout(&mut self) {
+        if let Err(error) = self.try_relayout() {
+            tracing::error!(
+                ?error,
+                "headless: widget layout did not settle; skipping frame"
+            );
+        }
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::too_many_lines,
+        reason = "exclusive headless frame lifecycle with f32 logical pixel sizes"
+    )]
+    fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        use crate::widget::layout::{
+            CompositionFocus, composition_geometry, settle_widget_composition,
+        };
+        // SAFETY: the current admitted maps belong to this exclusive runner.
+        let focus =
+            unsafe { CompositionFocus::capture(self.focused, &self.node_map, &self.bindings) };
         self.drain_component_wakes();
         if let Some(wake) = &self.component_wake {
             wake.dirty.set(false);
@@ -1004,71 +1016,91 @@ impl FrameHarness {
             p.record_since(crate::profiling::Pass::Sync, t_sync);
         }
 
-        let t_build = self.profiler.as_ref().map(|_| std::time::Instant::now());
-        self.taffy = TaffyTree::new();
-        self.component_close_reports
-            .extend(self.root.take_component_close_reports());
-        self.bindings.clear();
-        self.node_map.clear();
-        let child = self
-            .root
-            .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
-        // SAFETY: exclusive Driver owns this exact fresh build and topology.
-        unsafe {
-            self.bindings
-                .rebuild(self.root.as_ref(), &self.taffy, child, &self.node_map);
-        }
-
-        let (w, h) = self.viewport;
-        // `TaffyTreeExt::parent_node` is panic-free by construction (see its
-        // doc comment): `child` was just built in this same fresh tree.
-        let root_node = self.taffy.parent_node(
-            Style {
-                size: Size {
-                    width: Dimension::length(w as f32),
-                    height: Dimension::length(h as f32),
-                },
-                ..Default::default()
-            },
-            &[child],
-        );
-        let measure_map = self.node_map.clone();
-        let text = &mut self.text;
-        let bindings = &self.bindings;
-        // SAFETY: Driver exclusively owns this exact live tree and its maps.
-        let layout_result = unsafe {
-            crate::widget::compute_widget_layout(
-                &mut self.taffy,
-                root_node,
-                taffy::Size {
-                    width: AvailableSpace::Definite(w as f32),
-                    height: AvailableSpace::Definite(h as f32),
-                },
-                &measure_map,
-                bindings,
-                text,
-            )
-        };
-        // Mirrors `App`'s own frame loop (`ui/src/app.rs`): a computed-layout
-        // failure skips this frame rather than crashing the driven process.
-        if let Err(err) = layout_result {
-            tracing::error!(
-                ?err,
-                "headless: compute_layout_with_measure failed; skipping frame"
-            );
-            return;
-        }
-        if let Some(p) = self.profiler.as_mut() {
-            p.record_since(crate::profiling::Pass::BuildLayout, t_build);
-        }
-
-        let t_apply = self.profiler.as_ref().map(|_| std::time::Instant::now());
-        self.root.apply_layout(&self.taffy, child, Point::ORIGIN);
-        if let Some(p) = self.profiler.as_mut() {
-            p.record_since(crate::profiling::Pass::ApplyLayout, t_apply);
-        }
-        self.root_node = root_node;
-        self.child_node = child;
+        let view = self.root.view_state();
+        let viewport_changed = self.last_layout_viewport != Some(self.viewport);
+        let mut first = true;
+        settle_widget_composition(viewport_changed, |rebuild| {
+            let t_build = self.profiler.as_ref().map(|_| std::time::Instant::now());
+            // Preserve the existing action-driven relayout contract; additional
+            // refreshes occur only for viewport or explicit structure changes.
+            if first || rebuild {
+                first = false;
+                self.taffy = TaffyTree::new();
+                self.component_close_reports
+                    .extend(self.root.take_component_close_reports());
+                self.bindings.clear();
+                self.node_map.clear();
+                self.child_node =
+                    self.root
+                        .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
+                // Newly composed controls need sync. If it replaces delegates,
+                // discard these raw maps without admitting or measuring them.
+                self.root.sync(&mut self.state.doc, &self.state.root);
+                if self.root.take_structure_dirty() {
+                    self.node_map.clear();
+                    return Ok((None, true));
+                }
+                // SAFETY: exclusive runner owns this exact fresh topology.
+                unsafe {
+                    self.bindings.rebuild(
+                        self.root.as_ref(),
+                        &self.taffy,
+                        self.child_node,
+                        &self.node_map,
+                    );
+                }
+                if let Some(view) = &view {
+                    self.root.restore_view_state(view);
+                }
+                if let Some(focus) = &focus {
+                    // SAFETY: freshly admitted stable tree, exclusively owned.
+                    self.focused = unsafe { focus.restore(&self.node_map, &self.bindings) };
+                }
+                let (w, h) = self.viewport;
+                self.root_node = self.taffy.parent_node(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(w as f32),
+                            height: Dimension::length(h as f32),
+                        },
+                        ..Default::default()
+                    },
+                    &[self.child_node],
+                );
+            }
+            let (w, h) = self.viewport;
+            // SAFETY: runner exclusively owns the exact stable admitted tree.
+            unsafe {
+                crate::widget::compute_widget_layout(
+                    &mut self.taffy,
+                    self.root_node,
+                    Size {
+                        width: AvailableSpace::Definite(w as f32),
+                        height: AvailableSpace::Definite(h as f32),
+                    },
+                    &self.node_map,
+                    &self.bindings,
+                    &mut self.text,
+                )?;
+            }
+            if let Some(profiler) = self.profiler.as_mut() {
+                profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
+            }
+            let t_apply = self.profiler.as_ref().map(|_| std::time::Instant::now());
+            self.root
+                .apply_layout(&self.taffy, self.child_node, Point::ORIGIN);
+            if let Some(profiler) = self.profiler.as_mut() {
+                profiler.record_since(crate::profiling::Pass::ApplyLayout, t_apply);
+            }
+            let dirty = self.root.take_structure_dirty();
+            let geometry = if viewport_changed {
+                composition_geometry(&self.taffy, self.root_node)?
+            } else {
+                vec![]
+            };
+            Ok((Some(geometry), dirty))
+        })?;
+        self.last_layout_viewport = Some(self.viewport);
 
         // After layout (so a control built this pass is in `node_map`) and
         // before draw and any accessibility read — a shot must show the
@@ -1113,6 +1145,7 @@ impl FrameHarness {
         if let Some(p) = self.profiler.as_mut() {
             p.commit_frame_summed();
         }
+        Ok(())
     }
 
     /// Drive production-equivalent frames until `condition` becomes true or
@@ -5424,9 +5457,15 @@ mod prepared_driver_tests {
         assert!(!writer.try_set("stale".into()));
         assert!(!driver.component_wake.as_ref().unwrap().dirty.get());
         let (_next, successor, next_observed, _) = prepared();
+        let successor_syncs = next_observed.syncs.get();
+        assert!(successor_syncs > 0, "initial composition was synchronized");
         assert!(!writer.try_set("late successor result".into()));
         assert_eq!(successor.root.get_state(), Some("initial callback".into()));
-        assert_eq!(next_observed.syncs.get(), 1);
+        assert_eq!(
+            next_observed.syncs.get(),
+            successor_syncs,
+            "stale wake must not synchronize the successor"
+        );
         outer_scope.close();
     }
 }
