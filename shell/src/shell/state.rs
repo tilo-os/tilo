@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -4701,36 +4701,42 @@ impl WorkspaceTree {
                     continue;
                 };
                 for (k, group) in strip.window_groups.iter().enumerate() {
-                    let Ok(group_entry) = self.doc.insert_object(&groups_id, k, ObjType::Map)
-                    else {
-                        continue;
-                    };
-                    let _ = self
-                        .doc
-                        .put(&group_entry, "id", ScalarValue::Uint(group.id));
-                    // `tile_json` is a JSON-blob shim for `TileContent`
-                    // rather than a full per-variant CRDT structure.
-                    let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List)
-                    else {
-                        continue;
-                    };
-                    for (l, tab) in group.tabs.iter().enumerate() {
-                        let Ok(tab_entry) = self.doc.insert_object(&tabs_id, l, ObjType::Map)
-                        else {
-                            continue;
-                        };
-                        let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab.id));
-                        let _ = self.doc.put(&tab_entry, "title", tab.title.clone());
-                        if let Ok(blob) = serde_json::to_vec(&tab.tile) {
-                            let _ = self
-                                .doc
-                                .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
-                        }
-                    }
+                    Self::doc_insert_group(&mut self.doc, &groups_id, k, group);
                 }
             }
         }
         self.commit_room_change();
+    }
+
+    /// Serialize one cached group into a doc-side group list. All topology
+    /// writers share this routine so seed, reorder, and drag-split paths cannot
+    /// drift in the fields they persist.
+    fn doc_insert_group(
+        doc: &mut AutoCommit,
+        groups_id: &automerge::ObjId,
+        index: usize,
+        group: &WindowGroup,
+    ) {
+        use automerge::{ObjType, ScalarValue, transaction::Transactable};
+        let Ok(group_entry) = doc.insert_object(groups_id, index, ObjType::Map) else {
+            return;
+        };
+        let _ = doc.put(&group_entry, "id", ScalarValue::Uint(group.id));
+        // `tile_json` is a JSON-blob shim for `TileContent`, rather than a
+        // full per-variant CRDT structure.
+        let Ok(tabs_id) = doc.put_object(&group_entry, "tabs", ObjType::List) else {
+            return;
+        };
+        for (tab_idx, tab) in group.tabs.iter().enumerate() {
+            let Ok(tab_entry) = doc.insert_object(&tabs_id, tab_idx, ObjType::Map) else {
+                continue;
+            };
+            let _ = doc.put(&tab_entry, "id", ScalarValue::Uint(tab.id));
+            let _ = doc.put(&tab_entry, "title", tab.title.clone());
+            if let Ok(blob) = serde_json::to_vec(&tab.tile) {
+                let _ = doc.put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
+            }
+        }
     }
 
     /// Walk the automerge doc and refresh the public cache fields.
@@ -6242,7 +6248,7 @@ impl WorkspaceTree {
         group: &WindowGroup,
         new_index: usize,
     ) {
-        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
         let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
             return;
         };
@@ -6290,25 +6296,7 @@ impl WorkspaceTree {
                 let Some(cur) = cur else { return };
                 let _ = self.doc.delete(&groups_id, cur);
                 let dest = new_index.min(self.doc.length(&groups_id));
-                let Ok(group_entry) = self.doc.insert_object(&groups_id, dest, ObjType::Map) else {
-                    return;
-                };
-                let _ = self
-                    .doc
-                    .put(&group_entry, "id", ScalarValue::Uint(group.id));
-                if let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List) {
-                    for (l, tab) in group.tabs.iter().enumerate() {
-                        if let Ok(tab_entry) = self.doc.insert_object(&tabs_id, l, ObjType::Map) {
-                            let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab.id));
-                            let _ = self.doc.put(&tab_entry, "title", tab.title.clone());
-                            if let Ok(blob) = serde_json::to_vec(&tab.tile) {
-                                let _ =
-                                    self.doc
-                                        .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
-                            }
-                        }
-                    }
-                }
+                Self::doc_insert_group(&mut self.doc, &groups_id, dest, group);
                 return;
             }
         }
@@ -7261,6 +7249,161 @@ impl WorkspaceTree {
         self.workspaces = before_workspaces;
         self.doc = before_doc;
         false
+    }
+
+    /// Replace one strip's group/tab arrangement with the identity-only shape
+    /// reported by its live `GroupRow`. App tiles remain sourced from this
+    /// tree, so widget code cannot overwrite persisted content while reporting
+    /// a same-strip drag result.
+    pub fn reconcile_strip_topology(
+        &mut self,
+        strip_id: StripId,
+        topology: &[ui::widget::GroupTopology],
+    ) -> bool {
+        let Some((ws_idx, strip_idx)) = self.workspaces.iter().enumerate().find_map(|(wi, ws)| {
+            ws.strips
+                .iter()
+                .position(|strip| strip.id == strip_id)
+                .map(|si| (wi, si))
+        }) else {
+            return false;
+        };
+        let Some(strip) = self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.strips.get(strip_idx))
+        else {
+            return false;
+        };
+
+        let old_tab_ids: HashSet<u64> = strip
+            .window_groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+            .collect();
+        let new_tab_ids: Vec<u64> = topology
+            .iter()
+            .flat_map(|group| group.tab_ids.iter().copied())
+            .collect();
+        let new_tab_set: HashSet<u64> = new_tab_ids.iter().copied().collect();
+        let group_ids: HashSet<u64> = topology.iter().map(|group| group.id).collect();
+        if topology
+            .iter()
+            .any(|group| group.tab_ids.is_empty() || !group.tab_ids.contains(&group.active_tab))
+            || new_tab_ids.len() != new_tab_set.len()
+            || topology.len() != group_ids.len()
+            || old_tab_ids != new_tab_set
+        {
+            return false;
+        }
+
+        let mut tabs: HashMap<u64, Tab> = strip
+            .window_groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().cloned())
+            .map(|tab| (tab.id, tab))
+            .collect();
+        let old_groups: HashMap<u64, &WindowGroup> = strip
+            .window_groups
+            .iter()
+            .map(|group| (group.id, group))
+            .collect();
+        let mut rebuilt = Vec::with_capacity(topology.len());
+        for live in topology {
+            let group_tabs: Vec<Tab> = live
+                .tab_ids
+                .iter()
+                .filter_map(|tab_id| tabs.remove(tab_id))
+                .collect();
+            if group_tabs.len() != live.tab_ids.len() {
+                return false;
+            }
+            rebuilt.push(WindowGroup {
+                id: live.id,
+                tabs: group_tabs,
+                active_tab: live.active_tab,
+                width: WindowWidth::from_ui(live.width),
+                maximized: old_groups
+                    .get(&live.id)
+                    .is_some_and(|group| group.maximized),
+            });
+        }
+        let unchanged = rebuilt.len() == strip.window_groups.len()
+            && rebuilt.iter().zip(&strip.window_groups).all(|(new, old)| {
+                new.id == old.id
+                    && new.active_tab == old.active_tab
+                    && new.width == old.width
+                    && new.maximized == old.maximized
+                    && new
+                        .tabs
+                        .iter()
+                        .map(|tab| tab.id)
+                        .eq(old.tabs.iter().map(|tab| tab.id))
+            });
+        if unchanged {
+            return false;
+        }
+        let Some(target) = self
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.strips.get_mut(strip_idx))
+        else {
+            return false;
+        };
+        target.window_groups = rebuilt;
+        let persisted = target.window_groups.clone();
+        if self
+            .active_group
+            .get(&strip_id)
+            .is_none_or(|active| !group_ids.contains(active))
+            && let Some(first) = persisted.first()
+        {
+            self.active_group.insert(strip_id, first.id);
+        }
+        self.doc_rewrite_strip_groups(strip_id, &persisted);
+        true
+    }
+
+    /// Rewrite only the affected strip's group list in the collaboration
+    /// document. Unlike `seed_doc_from_cache`, this preserves concurrent
+    /// changes elsewhere in the workspace tree.
+    fn doc_rewrite_strip_groups(&mut self, strip_id: StripId, groups: &[WindowGroup]) {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+        let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
+            return;
+        };
+        for ws_idx in 0..self.doc.length(&workspaces_id) {
+            let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
+                continue;
+            };
+            let Some(strip_entries) = Self::doc_obj(&self.doc, &ws_entry, "strips") else {
+                continue;
+            };
+            for strip_idx in 0..self.doc.length(&strip_entries) {
+                let Some((_, strip_entry)) = self.doc.get(&strip_entries, strip_idx).ok().flatten()
+                else {
+                    continue;
+                };
+                let matches = matches!(
+                    self.doc.get(&strip_entry, "id").ok().flatten(),
+                    Some((Value::Scalar(value), _))
+                        if matches!(value.as_ref(), ScalarValue::Uint(id) if *id == strip_id.raw())
+                );
+                if !matches {
+                    continue;
+                }
+                let Ok(groups_id) =
+                    self.doc
+                        .put_object(&strip_entry, "window_groups", ObjType::List)
+                else {
+                    return;
+                };
+                for (group_idx, group) in groups.iter().enumerate() {
+                    Self::doc_insert_group(&mut self.doc, &groups_id, group_idx, group);
+                }
+                return;
+            }
+        }
     }
 
     /// Reorder the window group `group_id` within `strip_id`; the whole
@@ -9958,6 +10101,101 @@ mod active_group_tests {
             .iter()
             .map(|g| g.id)
             .collect()
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reconcile_strip_topology_persists_a_split_without_copying_tile_state() {
+        use automerge::{ROOT, ReadDoc};
+
+        let (mut tree, strip_id, ids) = tree_with_n_groups(1);
+        let source_group = ids[0];
+        let make_tab = |id: u64, title: &str| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: title.into(),
+            },
+        };
+        tree.workspaces[0].strips[0].window_groups[0].tabs = vec![
+            make_tab(10, "Notes"),
+            make_tab(11, "Files"),
+            make_tab(12, "Terminal"),
+        ];
+        tree.workspaces[0].strips[0].window_groups[0].active_tab = 10;
+        tree.seed_doc_from_cache();
+
+        let topology = vec![
+            ui::widget::GroupTopology {
+                id: source_group,
+                tab_ids: vec![10, 12],
+                active_tab: 10,
+                width: ui::widget::WindowWidth::Fraction(700),
+            },
+            ui::widget::GroupTopology {
+                id: 99,
+                tab_ids: vec![11],
+                active_tab: 11,
+                width: ui::widget::WindowWidth::Normal,
+            },
+        ];
+        assert!(tree.reconcile_strip_topology(strip_id, &topology));
+
+        let groups = &tree.workspaces[0].strips[0].window_groups;
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0].tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![10, 12]
+        );
+        assert_eq!(groups[1].tabs[0].title, "Files");
+        assert!(matches!(
+            groups[1].tabs[0].tile,
+            TileContent::Stub {
+                kind: AppKind::Terminal,
+                ..
+            }
+        ));
+        assert_eq!(groups[0].width, WindowWidth::Fraction(700));
+        assert_eq!(groups[1].width, WindowWidth::Normal);
+
+        let (_, workspaces) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
+        let (_, workspace) = tree.doc.get(&workspaces, 0_usize).unwrap().unwrap();
+        let (_, strips) = tree.doc.get(&workspace, "strips").unwrap().unwrap();
+        let (_, strip) = tree.doc.get(&strips, 0_usize).unwrap().unwrap();
+        let (_, doc_groups) = tree.doc.get(&strip, "window_groups").unwrap().unwrap();
+        assert_eq!(tree.doc.length(&doc_groups), 2);
+        let (_, detached) = tree.doc.get(&doc_groups, 1_usize).unwrap().unwrap();
+        let (_, detached_tabs) = tree.doc.get(&detached, "tabs").unwrap().unwrap();
+        assert_eq!(tree.doc.length(&detached_tabs), 1);
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reconcile_strip_topology_rejects_a_snapshot_that_would_lose_tabs() {
+        let (mut tree, strip_id, ids) = tree_with_n_groups(1);
+        let before = 10;
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs.push(Tab {
+            id: before,
+            title: "Notes".into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: "Notes".into(),
+            },
+        });
+        group.active_tab = before;
+        let invalid = [ui::widget::GroupTopology {
+            id: ids[0],
+            tab_ids: vec![],
+            active_tab: before,
+            width: ui::widget::WindowWidth::Normal,
+        }];
+
+        assert!(!tree.reconcile_strip_topology(strip_id, &invalid));
+        let group = &tree.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(group.tabs.len(), 1);
+        assert_eq!(group.tabs[0].id, before);
     }
 
     /// Dragging a tab to a new slot must persist into the tree and
