@@ -384,6 +384,9 @@ pub struct ChromeState {
     /// that leaves [`Self::notifications`] lands here, as does
     /// anything [`Self::dnd`] suppressed.
     notification_history: Vec<Notification>,
+    /// History removed by the most recent Clear all action. Kept only long
+    /// enough to make that destructive-looking action safely reversible.
+    pending_notification_history_clear: Option<(Vec<Notification>, std::time::Instant)>,
     /// Exact unread counts accepted only from launcher-verified senders.
     /// The top-bar tray consumes the aggregate; a future dock can consume the
     /// same per-package map without inventing another badge protocol.
@@ -485,6 +488,7 @@ impl ChromeState {
             notifications: Vec::new(),
             notification_bridge: None,
             notification_history: Vec::new(),
+            pending_notification_history_clear: None,
             notification_badges: BTreeMap::new(),
             notification_sound: None,
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
@@ -1218,10 +1222,57 @@ impl ChromeState {
     /// Clear the history log (the "Clear all" affordance in the
     /// notification centre). Bumps the revision so the surface re-syncs.
     pub fn clear_notification_history(&mut self) {
+        self.clear_notification_history_at(std::time::Instant::now());
+    }
+
+    fn clear_notification_history_at(&mut self, now: std::time::Instant) {
         if !self.notification_history.is_empty() {
-            self.notification_history.clear();
+            let mut removed = std::mem::take(&mut self.notification_history);
+            if let Some((original, deadline)) = self.pending_notification_history_clear.as_mut() {
+                original.append(&mut removed);
+                if original.len() > MAX_HISTORY {
+                    original.drain(..original.len() - MAX_HISTORY);
+                }
+                *deadline = now + std::time::Duration::from_secs(8);
+            } else {
+                self.pending_notification_history_clear =
+                    Some((removed, now + std::time::Duration::from_secs(8)));
+            }
             self.bump();
         }
+    }
+
+    /// Whether Clear all can still be undone.
+    pub fn can_undo_notification_history_clear(&self) -> bool {
+        self.pending_notification_history_clear.is_some()
+    }
+
+    /// Restore the cleared oldest-first snapshot ahead of notifications that
+    /// arrived during the undo window, preserving exact chronological order.
+    pub fn undo_notification_history_clear(&mut self) -> bool {
+        let Some((mut restored, _)) = self.pending_notification_history_clear.take() else {
+            return false;
+        };
+        restored.append(&mut self.notification_history);
+        if restored.len() > MAX_HISTORY {
+            restored.drain(..restored.len() - MAX_HISTORY);
+        }
+        self.notification_history = restored;
+        self.bump();
+        true
+    }
+
+    /// Expire the undo snapshot. Returns true only on the clearing edge.
+    pub fn expire_notification_history_clear(&mut self, now: std::time::Instant) -> bool {
+        let expired = self
+            .pending_notification_history_clear
+            .as_ref()
+            .is_some_and(|(_, deadline)| now >= *deadline);
+        if expired {
+            self.pending_notification_history_clear = None;
+            self.bump();
+        }
+        expired
     }
 
     // ---------- Do-Not-Disturb ----------
@@ -1395,6 +1446,65 @@ mod visual_alert_tests {
                 .borrow()
                 .visual_alert_active(now + std::time::Duration::from_millis(451))
         );
+    }
+}
+
+#[cfg(test)]
+mod notification_history_clear_tests {
+    use super::*;
+    use crate::shell::notification::Notification;
+
+    #[test]
+    fn clear_undo_restores_exact_order_before_new_arrivals() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let now = std::time::Instant::now();
+        let mut state = chrome.borrow_mut();
+        state.record_history(Notification::new("first", "one"));
+        state.record_history(Notification::new("second", "two"));
+        state.clear_notification_history_at(now);
+        state.record_history(Notification::new("new", "three"));
+
+        assert!(state.undo_notification_history_clear());
+        let titles: Vec<_> = state
+            .notification_history()
+            .iter()
+            .map(|notification| notification.title.as_str())
+            .collect();
+        assert_eq!(titles, ["first", "second", "new"]);
+        assert!(!state.undo_notification_history_clear());
+    }
+
+    #[test]
+    fn clear_snapshot_expires_at_eight_seconds() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let now = std::time::Instant::now();
+        let mut state = chrome.borrow_mut();
+        state.record_history(Notification::new("one", "body"));
+        state.clear_notification_history_at(now);
+
+        assert!(!state.expire_notification_history_clear(now + std::time::Duration::from_secs(7)));
+        assert!(state.can_undo_notification_history_clear());
+        assert!(state.expire_notification_history_clear(now + std::time::Duration::from_secs(8)));
+        assert!(!state.can_undo_notification_history_clear());
+        assert!(!state.undo_notification_history_clear());
+    }
+
+    #[test]
+    fn second_clear_extends_one_recoverable_snapshot() {
+        let chrome = ChromeState::new(WorkspaceTree::default());
+        let now = std::time::Instant::now();
+        let mut state = chrome.borrow_mut();
+        state.record_history(Notification::new("before", "body"));
+        state.clear_notification_history_at(now);
+        state.record_history(Notification::new("during", "body"));
+        state.clear_notification_history_at(now + std::time::Duration::from_secs(4));
+        assert!(state.undo_notification_history_clear());
+        let titles: Vec<_> = state
+            .notification_history()
+            .iter()
+            .map(|notification| notification.title.as_str())
+            .collect();
+        assert_eq!(titles, ["before", "during"]);
     }
 }
 
