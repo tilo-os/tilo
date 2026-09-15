@@ -61,10 +61,10 @@ pub unsafe fn compute_widget_layout(
         let mut changed = false;
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
-            // permitted by adjust_layout_style.
+            // permitted by adjust_layout_with_measure.
             changed |= unsafe {
                 mutate_bound_node(bindings, nodes, node, |widget| {
-                    widget.adjust_layout_style(taffy, node)
+                    widget.adjust_layout_with_measure(taffy, node, text)
                 })
             }
             .unwrap_or(false);
