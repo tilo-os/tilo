@@ -23,7 +23,7 @@
 //! through the rotation before it is stored — [`unrotate_rect`] is that map,
 //! and it is exercised at every quarter turn by the tests below.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use crate::model::Rect01;
 
@@ -37,6 +37,15 @@ pub const MAX_DECODED_PIXELS: u64 = 32 * 1024 * 1024;
 
 /// Reject implausibly large compressed inputs before handing them to a codec.
 pub const MAX_ENCODED_BYTES: usize = 64 * 1024 * 1024;
+
+/// Read an encoded input without ever allocating past its declared budget.
+/// One sentinel byte distinguishes an exact-limit input from a truncated one.
+pub fn read_bounded(reader: impl Read, max_bytes: usize) -> Option<Vec<u8>> {
+    let limit = u64::try_from(max_bytes).ok()?.saturating_add(1);
+    let mut bytes = Vec::new();
+    reader.take(limit).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= max_bytes).then_some(bytes)
+}
 
 /// A preview cache entry must stay small even if a caller supplies huge
 /// requested bounds. This keeps the public helper safe outside Photos too.
@@ -299,6 +308,15 @@ pub fn unrotate_rect(rect: Rect01, quarters: u8) -> Rect01 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_reader_accepts_the_limit_and_rejects_one_byte_more() {
+        assert_eq!(
+            read_bounded(Cursor::new([1, 2, 3, 4]), 4),
+            Some(vec![1, 2, 3, 4])
+        );
+        assert_eq!(read_bounded(Cursor::new([1, 2, 3, 4, 5]), 4), None);
+    }
 
     /// A 4x2 image whose every pixel is distinguishable: red channel encodes
     /// the column, green the row. Any transform that loses or mirrors a pixel

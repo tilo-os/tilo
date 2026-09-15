@@ -126,6 +126,28 @@ fn staged(dir: &std::path::Path, w: u32, h: u32) -> (String, Rgba) {
     (path.to_string_lossy().into_owned(), img)
 }
 
+#[test]
+fn populated_large_text_library_passes_native_accessibility_certification() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 1200, 800);
+    let mut state = ui::State::new();
+    let mut app = PhotosApp::new();
+    app.open_path(&mut state.doc, &path);
+    app.show_library();
+    let theme = Theme::high_contrast()
+        .with_text_scale(2.0)
+        .with_reduce_motion(true);
+    let mut driver = ui::headless::Driver::new_with_theme(state, Box::new(app), (390, 844), theme);
+    register(driver.action_registry_mut());
+    let audit = driver.native_app_audit();
+    assert!(
+        audit.is_certified(),
+        "populated large-text library native audit: {:?}",
+        audit.issues
+    );
+    assert!(driver.accessibility_audit().is_clean());
+}
+
 // ---------------------------------------------------------------------------
 // 1. An image loads and lays out inside its viewport.
 // ---------------------------------------------------------------------------

@@ -6,7 +6,6 @@
 //!
 //! ```text
 //! root
-//! ├── "image"  (Str)   # serde_json of Option<OpenImage>  — name + content + intrinsic size
 //! ├── "image"  (Str)   # serde_json of Option<OpenImage> — atomic editor selection
 //! ├── "photos_edits" (Map) # independently mergeable crop + quarter turns
 //! └── "photos_library" (Map) # keyed photo/album records, order lists, delete tombstones
@@ -46,9 +45,13 @@ use crate::model::{Edits, LibraryPhoto, OpenImage, PhotoLibrary};
 /// machine.
 pub fn bytes_of(open: &OpenImage) -> Option<Vec<u8>> {
     if let Some(content) = &open.content {
-        return qdoc::blobstore::get(content);
+        return qdoc::blobstore::get(content)
+            .filter(|bytes| bytes.len() <= crate::pixels::MAX_ENCODED_BYTES);
     }
-    std::fs::read(&open.path).ok()
+    crate::pixels::read_bounded(
+        std::fs::File::open(&open.path).ok()?,
+        crate::pixels::MAX_ENCODED_BYTES,
+    )
 }
 
 pub struct PhotosDoc;
@@ -537,7 +540,15 @@ impl PhotosDoc {
         Some(crate::model::Album {
             id: id.to_owned(),
             name: Self::str_at(doc, &row, "name")?,
-            photo_ids: Self::string_list(doc, &row, "photo_ids"),
+            // Current documents store the complete absolute membership as a
+            // scalar. Concurrent replacements therefore resolve to one
+            // deterministic authored set instead of Automerge interleaving
+            // two independently rewritten lists. Read the former list shape
+            // as a migration fallback and replace it on the next edit.
+            photo_ids: Self::conflicting_at::<Vec<String>>(doc, &row, "photo_ids")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| Self::string_list(doc, &row, "photo_ids")),
         })
     }
 
@@ -826,7 +837,7 @@ impl PhotosDoc {
             let _ = doc.put(&row, "name", &album.name);
         }
         if old.map(|value| &value.photo_ids) != Some(&album.photo_ids) {
-            Self::replace_string_list(doc, &row, "photo_ids", &album.photo_ids);
+            Self::write_json_at(doc, &row, "photo_ids", &album.photo_ids);
         }
     }
 
@@ -1136,7 +1147,7 @@ mod tests {
     }
 
     fn photo(id: &str) -> LibraryPhoto {
-        let hash = format!("{id:0<64}");
+        let hash = qdoc::blobstore::hash_bytes(id.as_bytes());
         let mut image = OpenImage::from_path(&format!("/private/{id}.png"), 800, 600);
         image.name = format!("{id}.png");
         image.content = Some(hash);
@@ -1240,6 +1251,52 @@ mod tests {
         let album = merged.album(&album.id).expect("album");
         assert_eq!(album.name, "Summer trip");
         assert_eq!(album.photo_ids, [item_id]);
+    }
+
+    #[test]
+    fn concurrent_absolute_album_memberships_converge_without_interleaving() {
+        let first = photo("first-member");
+        let second = photo("second-member");
+        let third = photo("third-member");
+        let album_id = "photos.album:shared".to_owned();
+        let mut base = replica(1);
+        PhotosDoc::set_library(
+            &mut base,
+            &PhotoLibrary {
+                photos: vec![first.clone(), second.clone(), third.clone()],
+                albums: vec![crate::model::Album {
+                    id: album_id.clone(),
+                    name: "Shared".into(),
+                    photo_ids: vec![first.id],
+                }],
+            },
+        );
+        let mut left = copy(&mut base);
+        left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
+        let mut right = copy(&mut base);
+        right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+        let left_members = vec![second.id];
+        let right_members = vec![third.id];
+        let mut library = PhotosDoc::library(&left);
+        library.album_mut(&album_id).expect("album").photo_ids = left_members.clone();
+        PhotosDoc::set_library(&mut left, &library);
+        let mut library = PhotosDoc::library(&right);
+        library.album_mut(&album_id).expect("album").photo_ids = right_members.clone();
+        PhotosDoc::set_library(&mut right, &library);
+
+        let mut left_first = copy(&mut left);
+        let mut right_for_left = copy(&mut right);
+        let merged_left = merge(&mut left_first, &mut right_for_left);
+        let mut right_first = copy(&mut right);
+        let mut left_for_right = copy(&mut left);
+        let merged_right = merge(&mut right_first, &mut left_for_right);
+        let left_result = &merged_left.album(&album_id).expect("album").photo_ids;
+        let right_result = &merged_right.album(&album_id).expect("album").photo_ids;
+        assert_eq!(left_result, right_result, "merge order must not matter");
+        assert!(
+            left_result == &left_members || left_result == &right_members,
+            "absolute replacements must not interleave into {left_result:?}"
+        );
     }
 
     #[test]
