@@ -143,7 +143,10 @@ impl Avatar {
         }
         // Same 0.4× ratio the widget uses, but keyed off the rect rather
         // than a stored `size` field so callers don't have to thread one.
-        let text_size = px(rect.width().min(rect.height())) * 0.4;
+        // The renderer applies the user's text scale. This size is already
+        // derived from physical geometry, so express it in renderer-local
+        // units or 200% text would become a 400%-sized monogram and clip.
+        let text_size = px(rect.width().min(rect.height())) * 0.4 / text_renderer.text_scale();
         let (tw, th) =
             text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - f64::from(tw) / 2.0;
@@ -243,7 +246,7 @@ impl Avatar {
         // "+N" can be 2–3 glyphs, so key the size a touch below the 0.4×
         // initials ratio to keep "+12" inside the chip.
         let label = format!("+{count}");
-        let text_size = px(rect.width().min(rect.height())) * 0.36;
+        let text_size = px(rect.width().min(rect.height())) * 0.36 / text_renderer.text_scale();
         let (tw, th) =
             text_renderer.measure_weighted(&label, text_size, None, TextWeight::Semibold);
         let tx = centre.x - f64::from(tw) / 2.0;
@@ -328,7 +331,7 @@ impl Avatar {
 
         // Text size is proportional to the avatar size so a 24px chip
         // and a 64px header avatar both look balanced.
-        let text_size = self.size * 0.4;
+        let text_size = self.size * 0.4 / text_renderer.text_scale();
         let (tw, th) =
             text_renderer.measure_weighted(&self.initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - f64::from(tw) / 2.0;
@@ -629,6 +632,30 @@ mod tests {
             !enc.resources.glyph_runs.is_empty(),
             "draw_at must paint the initials glyph run",
         );
+    }
+
+    #[test]
+    fn draw_at_large_text_scales_once_inside_scaled_geometry() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        Avatar::draw_at(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 80.0, 80.0),
+            "QD",
+            Avatar::color_for_initials("QD", &theme),
+            &theme,
+            &mut tr,
+        );
+        let run = scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .first()
+            .expect("monogram glyph run");
+        assert_eq!(run.font_size, 32.0, "80px geometry keeps the 0.4 ratio");
     }
 
     #[test]
