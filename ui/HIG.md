@@ -680,3 +680,7 @@ app and a colour the user's theme cannot reach.
 *This document is versioned with the toolkit. When a guideline here becomes a
 `ui` primitive, link the primitive from the relevant section so the rule and its
 enforcement stay together.*
+
+## Form composition
+
+For content-first account/settings forms, use `FormPage`, `Form`, `Section` and `Field`; see [automatic and guided forms](FORM_COMPOSITION.md) for the API, independent override/reset rules and runnable primitive comparison. Manual composition remains supported with the same standard controls.
