@@ -98,6 +98,10 @@ pub enum Intent {
     ContextMenu(MessageId, Point),
     /// Open the account setup sheet for the given account index (`None` = add).
     Settings(Option<usize>),
+    /// Ask the app-owned portal boundary to save one hydrated attachment.
+    /// Panes intentionally carry only a stable message id + attachment index;
+    /// the root revalidates both before it opens the host chooser.
+    SaveAttachment(MessageId, usize),
     /// Ask the app to post a request to the engine worker.
     Engine(EngineRequest),
     /// Surface a transient status toast.

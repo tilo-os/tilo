@@ -500,10 +500,19 @@ impl Pane {
         let sb = self.rect;
         fill_rect(scene, t, sb, c.neutral[0]);
 
-        // No app-name header: the OS owns window chrome and shows "Mail" in the
-        // titlebar. The shell's collapse chip sits at the sidebar's top-left;
-        // the compose action and account list flow up beneath it. Account
-        // settings are reached per-account (the gear on each account row).
+        // The shell's collapse chip occupies the left edge of this compact
+        // header. Keeping a quiet in-app title beside it makes that band read
+        // as intentional on desktop instead of as a stranded chevron above a
+        // blank gap; account settings remain scoped to each account row.
+        tr.draw_text_weighted(
+            scene,
+            "Mail",
+            16.0,
+            c.text_primary,
+            t * Affine::translate((sb.x0 + CHIP_INSET + CHIP_SIZE + 12.0, sb.y0 + 19.0)),
+            None,
+            TextWeight::Semibold,
+        );
 
         // Compose button.
         if let Some((rect, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Compose)) {
@@ -2398,30 +2407,13 @@ impl Pane {
         }
     }
 
-    /// Save a reader attachment's real bytes to the downloads directory, or
-    /// report that it hasn't been downloaded (hydrated) yet.
+    /// Request saving a reader attachment through the root's host-portal
+    /// boundary. A pane never invents a Downloads path or writes the host
+    /// filesystem itself.
     fn save_attachment_click(&self, mid: MessageId, ai: usize) {
-        let mut st = self.shared.borrow_mut();
-        let Some(att) = st
-            .mailbox
-            .get(mid)
-            .and_then(|m| m.attachments.get(ai))
-            .cloned()
-        else {
-            return;
-        };
-        if !att.is_downloadable() {
-            st.status = Some(format!("{} isn't downloaded yet", att.filename));
-            st.dirty = true;
-            return;
-        }
-        st.status = Some(
-            match crate::util::save_download(&att.filename, &att.content) {
-                Ok(path) => format!("Saved {} to {}", att.filename, path.display()),
-                Err(e) => format!("Couldn't save {}: {e}", att.filename),
-            },
-        );
-        st.dirty = true;
+        self.shared
+            .borrow_mut()
+            .push_intent(Intent::SaveAttachment(mid, ai));
     }
 
     fn set_search_focus(&mut self, on: bool) {
@@ -3276,10 +3268,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
     }
 
     #[test]
-    fn reader_attachment_chip_click_saves_real_bytes() {
-        let dir = std::env::temp_dir().join(format!("mail-dl-{}", uuid::Uuid::new_v4()));
-        unsafe { std::env::set_var("QOS_MAIL_DOWNLOADS", &dir) };
-
+    fn reader_attachment_chip_click_requests_the_root_portal_save() {
         let sh = shared();
         // The Radia message is parsed from real MIME and carries a hydrated PDF.
         let id = {
@@ -3298,7 +3287,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
             !p.reader_attachment_hits.is_empty(),
             "attachment chip has a hit region"
         );
-        let (rect, mid, _ai) = p.reader_attachment_hits[0];
+        let (rect, mid, ai) = p.reader_attachment_hits[0];
         assert_eq!(mid, id);
 
         sh.borrow_mut().last_mouse = rect.center();
@@ -3307,18 +3296,13 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         p.on_left_press(&mut doc, rect.center(), &mut handled);
         assert!(handled, "chip click consumed");
 
-        let saved = dir.join("spanning-tree.pdf");
         assert!(
-            saved.exists(),
-            "the real attachment bytes were written to disk"
+            sh.borrow_mut()
+                .take_intents()
+                .iter()
+                .any(|intent| matches!(intent, Intent::SaveAttachment(found, found_index) if *found == id && *found_index == ai)),
+            "a pane hands the stable attachment address to MailApp; only the root opens the host portal and writes bytes"
         );
-        assert!(!std::fs::read(&saved).unwrap().is_empty());
-        assert!(
-            sh.borrow().status.as_ref().unwrap().contains("Saved"),
-            "toast confirms the save"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
