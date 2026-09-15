@@ -220,6 +220,7 @@ struct DocumentSettings {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DocumentChoice {
+    Scanner,
     Resolution,
     Color,
     Source,
@@ -229,10 +230,11 @@ enum DocumentChoice {
 impl DocumentChoice {
     const fn index(self) -> usize {
         match self {
-            Self::Resolution => 0,
-            Self::Color => 1,
-            Self::Source => 2,
-            Self::Language => 3,
+            Self::Scanner => 0,
+            Self::Resolution => 1,
+            Self::Color => 2,
+            Self::Source => 3,
+            Self::Language => 4,
         }
     }
 }
@@ -355,9 +357,10 @@ pub struct CameraApp {
     document_scan: crate::document_scan::ScanSession,
     document_settings: DocumentSettings,
     document_choice: Option<DocumentChoice>,
-    document_choice_anchors: [Rect; 4],
+    document_choice_anchors: [Rect; 5],
     document_popover: Popover,
     scanner_devices: Vec<os_actions::printing::Scanner>,
+    selected_scanner: Option<String>,
     document_save_picker: Option<ui::portal::PortalChannel>,
     document_crop_selection: ui::LocalState<CropSelection>,
     document_crop_editor: Option<ImageCropEditor>,
@@ -448,6 +451,9 @@ impl CameraApp {
             }],
             Storage::Disk(_) => os_actions::printing::scanners().unwrap_or_default(),
         };
+        let selected_scanner = scanner_devices
+            .first()
+            .map(|scanner| scanner.device.clone());
         Self {
             rect: Rect::ZERO,
             node: None,
@@ -477,9 +483,10 @@ impl CameraApp {
             document_scan: crate::document_scan::ScanSession::default(),
             document_settings: DocumentSettings::default(),
             document_choice: None,
-            document_choice_anchors: [Rect::ZERO; 4],
+            document_choice_anchors: [Rect::ZERO; 5],
             document_popover: Popover::new(),
             scanner_devices,
+            selected_scanner,
             document_save_picker: None,
             document_crop_selection: ui::LocalState::new(CropSelection::default()),
             document_crop_editor: None,
@@ -960,10 +967,24 @@ impl CameraApp {
                 "Scan document page".into(),
                 AccessState::new()
                     .focusable(true)
-                    .disabled(self.scanner_devices.is_empty() || self.document_job.is_some()),
+                    .disabled(self.selected_scanner.is_none() || self.document_job.is_some()),
             ),
             Action::OpenDocumentChoice(choice) => {
                 let (setting, value) = match choice {
+                    DocumentChoice::Scanner => (
+                        "scanner",
+                        self.selected_scanner
+                            .as_ref()
+                            .and_then(|selected| {
+                                self.scanner_devices
+                                    .iter()
+                                    .find(|scanner| scanner.device == *selected)
+                            })
+                            .map_or_else(
+                                || "none selected".to_owned(),
+                                |scanner| scanner.description.clone(),
+                            ),
+                    ),
                     DocumentChoice::Resolution => (
                         "scan resolution",
                         format!("{} DPI", self.document_settings.scan.resolution_dpi),
@@ -1293,12 +1314,17 @@ impl CameraApp {
             return;
         }
         self.cancel_document_crop();
-        let Some(scanner_device) = self
-            .scanner_devices
-            .first()
-            .map(|scanner| scanner.device.clone())
-        else {
-            self.toast = Some("Connect a document scanner to begin".into());
+        let Some(scanner_device) = self.selected_scanner.as_ref().and_then(|selected| {
+            self.scanner_devices
+                .iter()
+                .find(|scanner| scanner.device == *selected)
+                .map(|scanner| scanner.device.clone())
+        }) else {
+            self.toast = Some(if self.scanner_devices.is_empty() {
+                "Connect a document scanner to begin".into()
+            } else {
+                "Choose which scanner to use".into()
+            });
             return;
         };
         match self.storage {
@@ -1336,7 +1362,34 @@ impl CameraApp {
         if self.document_job.is_some() {
             return;
         }
+        if choice == DocumentChoice::Scanner {
+            let selected = self
+                .selected_scanner
+                .as_ref()
+                .and_then(|selected| {
+                    self.scanner_devices
+                        .iter()
+                        .position(|scanner| scanner.device == *selected)
+                })
+                .unwrap_or(0);
+            self.document_choice = Some(choice);
+            self.document_popover.set_label("Document scanner");
+            self.document_popover.set_items(
+                self.scanner_devices
+                    .iter()
+                    .map(|scanner| scanner.description.clone()),
+            );
+            self.document_popover.set_viewport(self.rect);
+            let anchor = self
+                .document_choice_anchors
+                .get(choice.index())
+                .copied()
+                .unwrap_or(Rect::ZERO);
+            self.document_popover.open_at(anchor, Some(selected));
+            return;
+        }
         let (label, items, selected): (&str, &[&str], usize) = match choice {
+            DocumentChoice::Scanner => return,
             DocumentChoice::Resolution => (
                 "Scan resolution",
                 &["150 DPI", "300 DPI", "600 DPI"],
@@ -1389,6 +1442,12 @@ impl CameraApp {
 
     fn apply_document_choice(&mut self, index: usize) {
         match self.document_choice {
+            Some(DocumentChoice::Scanner) => {
+                if let Some(scanner) = self.scanner_devices.get(index) {
+                    self.selected_scanner = Some(scanner.device.clone());
+                    self.toast = Some(format!("Using {}", scanner.description));
+                }
+            }
             Some(DocumentChoice::Resolution) => {
                 if let Some(value) = [150, 300, 600].get(index) {
                     self.document_settings.scan.resolution_dpi = *value;
@@ -4662,25 +4721,44 @@ impl CameraApp {
             workspace.y0,
             workspace.x0 + controls_w,
             if compact {
-                workspace.y0 + 248.0
+                workspace.y0 + 268.0
             } else {
                 workspace.y1
             },
         );
         p::fill_round(scene, t, controls, 16.0, c.surfaces.raised);
         let scanner_name = self
-            .scanner_devices
-            .first()
+            .selected_scanner
+            .as_ref()
+            .and_then(|selected| {
+                self.scanner_devices
+                    .iter()
+                    .find(|scanner| scanner.device == *selected)
+            })
             .map_or("No scanner found", |scanner| scanner.description.as_str());
-        p::text(
-            scene,
-            tr,
+        let scanner_rect = Rect::new(
             controls.x0 + 18.0,
-            controls.y0 + 18.0,
-            scanner_name,
-            15.0,
-            c.text_primary,
+            controls.y0 + 14.0,
+            controls.x1 - 18.0,
+            controls.y0 + 56.0,
         );
+        self.document_choice_anchors[DocumentChoice::Scanner.index()] = scanner_rect;
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(scanner_rect, scanner_name)
+                .icon(ui::icons::Icon::ChevronDown)
+                .hovered(scanner_rect.contains(self.last_mouse))
+                .disabled(self.scanner_devices.is_empty() || self.document_job.is_some()),
+        );
+        if !self.scanner_devices.is_empty() && self.document_job.is_none() {
+            self.push_region(
+                scanner_rect,
+                Action::OpenDocumentChoice(DocumentChoice::Scanner),
+            );
+        }
         let gap = 10.0;
         let setting_w = (controls.width() - 46.0) / 2.0;
         let left = controls.x0 + 18.0;
@@ -4691,9 +4769,9 @@ impl CameraApp {
                 format!("{} DPI", self.document_settings.scan.resolution_dpi),
                 Rect::new(
                     left,
-                    controls.y0 + 62.0,
+                    controls.y0 + 82.0,
                     left + setting_w,
-                    controls.y0 + 106.0,
+                    controls.y0 + 126.0,
                 ),
                 Action::OpenDocumentChoice(DocumentChoice::Resolution),
             ),
@@ -4702,9 +4780,9 @@ impl CameraApp {
                 scan_color_label(self.document_settings.scan.color).to_owned(),
                 Rect::new(
                     right,
-                    controls.y0 + 62.0,
+                    controls.y0 + 82.0,
                     right + setting_w,
-                    controls.y0 + 106.0,
+                    controls.y0 + 126.0,
                 ),
                 Action::OpenDocumentChoice(DocumentChoice::Color),
             ),
@@ -4713,9 +4791,9 @@ impl CameraApp {
                 scan_source_label(self.document_settings.scan.source).to_owned(),
                 Rect::new(
                     left,
-                    controls.y0 + 128.0,
+                    controls.y0 + 148.0,
                     left + setting_w,
-                    controls.y0 + 172.0,
+                    controls.y0 + 192.0,
                 ),
                 Action::OpenDocumentChoice(DocumentChoice::Source),
             ),
@@ -4724,9 +4802,9 @@ impl CameraApp {
                 self.document_settings.ocr_language.label().to_owned(),
                 Rect::new(
                     right,
-                    controls.y0 + 128.0,
+                    controls.y0 + 148.0,
                     right + setting_w,
-                    controls.y0 + 172.0,
+                    controls.y0 + 192.0,
                 ),
                 Action::OpenDocumentChoice(DocumentChoice::Language),
             ),
@@ -4754,9 +4832,9 @@ impl CameraApp {
         }
         let scan_button = Rect::new(
             controls.x0 + 18.0,
-            controls.y0 + 186.0,
+            controls.y0 + 206.0,
             controls.x1 - 18.0,
-            controls.y0 + 230.0,
+            controls.y0 + 250.0,
         );
         Button::paint(
             scene,
@@ -4774,9 +4852,9 @@ impl CameraApp {
             .icon(ui::icons::Icon::FileText)
             .primary()
             .hovered(scan_button.contains(self.last_mouse))
-            .disabled(self.scanner_devices.is_empty() || self.document_job.is_some()),
+            .disabled(self.selected_scanner.is_none() || self.document_job.is_some()),
         );
-        if !self.scanner_devices.is_empty() && self.document_job.is_none() {
+        if self.selected_scanner.is_some() && self.document_job.is_none() {
             self.push_region(scan_button, Action::CaptureDocument);
         }
 
@@ -7235,9 +7313,14 @@ mod tests {
     fn document_controls_update_the_typed_worker_settings() {
         let (mut app, mut doc, root) = sample_app();
         assert_eq!(app.document_settings, DocumentSettings::default());
-        app.document_choice_anchors = [Rect::new(10.0, 10.0, 140.0, 54.0); 4];
+        app.scanner_devices.push(os_actions::printing::Scanner {
+            device: "sample:office-scanner".into(),
+            description: "Office scanner".into(),
+        });
+        app.document_choice_anchors = [Rect::new(10.0, 10.0, 140.0, 54.0); 5];
 
         for (choice, selection) in [
+            (DocumentChoice::Scanner, 1),
             (DocumentChoice::Resolution, 2),
             (DocumentChoice::Color, 1),
             (DocumentChoice::Source, 1),
@@ -7260,11 +7343,34 @@ mod tests {
             os_actions::printing::ScanSource::Feeder
         );
         assert_eq!(app.document_settings.ocr_language.code(), "deu");
+        assert_eq!(
+            app.selected_scanner.as_deref(),
+            Some("sample:office-scanner")
+        );
 
         assert_eq!(
             app.document_popover.items(),
             &["English", "German", "French", "Spanish"]
         );
+    }
+
+    #[test]
+    fn document_capture_never_falls_back_to_a_different_scanner() {
+        let (mut app, _doc, _root) = sample_app();
+        app.scanner_devices.push(os_actions::printing::Scanner {
+            device: "sample:office-scanner".into(),
+            description: "Office scanner".into(),
+        });
+        app.selected_scanner = Some("scanner:disconnected".into());
+
+        app.capture_document_page();
+        assert!(app.document_scan.pages.is_empty());
+        assert_eq!(app.toast.as_deref(), Some("Choose which scanner to use"));
+
+        app.selected_scanner = Some("sample:office-scanner".into());
+        app.capture_document_page();
+        assert_eq!(app.document_scan.pages.len(), 1);
+        assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
     }
 
     #[test]
@@ -7337,7 +7443,7 @@ mod tests {
 
         let (mut app, mut doc, _root) = sample_app();
         let rect = Rect::new(20.0, 20.0, 180.0, 64.0);
-        app.document_choice_anchors[0] = rect;
+        app.document_choice_anchors[DocumentChoice::Resolution.index()] = rect;
         app.regions
             .push((rect, Action::OpenDocumentChoice(DocumentChoice::Resolution)));
         let mut tree = TaffyTree::<()>::new();
