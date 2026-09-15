@@ -563,6 +563,9 @@ pub struct ChatApp {
     pub(crate) right_flap: FlapState,
     pub(crate) left_mode: FlapMode,
     pub(crate) right_mode: FlapMode,
+    /// Local text preference also changes usable layout width; it is never
+    /// shared with collaborators.
+    pub(crate) layout_text_scale: f32,
 
     // The local peer's identity: how this peer authors messages, reactions,
     // voice membership, and its own read watermark in the shared document.
@@ -804,6 +807,7 @@ impl ChatApp {
             right_flap: FlapState::closed_by_default(),
             left_mode: FlapMode::Docked,
             right_mode: FlapMode::Docked,
+            layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
             room_colors: HashMap::new(),
@@ -932,16 +936,31 @@ impl ChatApp {
                 archived: c.archived,
             })
             .collect();
-        let messages = self
-            .messages
-            .iter()
-            .map(|m| actions::MessageResource {
-                id: m.id.clone(),
-                label: self.message_resource_label(m),
-                pinned: m.pinned,
-                parent: m.parent.clone(),
-            })
-            .collect();
+        let messages =
+            self.messages
+                .iter()
+                .map(|m| actions::MessageResource {
+                    id: m.id.clone(),
+                    label: self.message_resource_label(m),
+                    pinned: m.pinned,
+                    parent: m.parent.clone(),
+                    attachment: m.attachment.as_ref().map(|attachment| {
+                        actions::AttachmentResource {
+                            name: attachment.name().to_owned(),
+                            blob: attachment.blob().to_owned(),
+                        }
+                    }),
+                    reactions: m
+                        .reactions
+                        .iter()
+                        .map(|reaction| actions::ReactionResource {
+                            emoji: reaction.emoji.clone(),
+                            count: reaction.count(),
+                            reacted_by_me: reaction.reacted_by(&self.me.id),
+                        })
+                        .collect(),
+                })
+                .collect();
         actions::ChatResourceCtx {
             me: self.me.id.clone(),
             workspace_id: self.active_ws.clone(),
@@ -2319,13 +2338,15 @@ impl ChatApp {
             self.center_left(),
             self.rect.y0,
             self.center_right(),
-            self.rect.y0 + HEADER_H,
+            self.rect.y0 + HEADER_H * f64::from(self.layout_text_scale),
         )
     }
     pub(crate) fn composer_height(&self, tr: &mut TextRenderer) -> f64 {
         let w = (self.center_right() - self.center_left() - 48.0).max(40.0) as f32;
         let (_, h) = tr.measure(self.draft_main.as_str(), 15.0, Some(w));
-        (COMPOSER_MIN_H + (f64::from(h) - 19.0).max(0.0)).clamp(COMPOSER_MIN_H, COMPOSER_MAX_H)
+        let scale = f64::from(self.layout_text_scale);
+        (COMPOSER_MIN_H * scale + (f64::from(h) - 19.0 * scale).max(0.0))
+            .clamp(COMPOSER_MIN_H * scale, COMPOSER_MAX_H * scale)
     }
     pub(crate) fn composer_rect(&self, tr: &mut TextRenderer) -> Rect {
         let h = self.composer_height(tr);
@@ -2340,7 +2361,7 @@ impl ChatApp {
         let composer = self.composer_rect(tr);
         Rect::new(
             self.center_left(),
-            self.rect.y0 + HEADER_H,
+            self.rect.y0 + HEADER_H * f64::from(self.layout_text_scale),
             self.center_right(),
             composer.y0 - 6.0,
         )
@@ -2359,7 +2380,7 @@ impl ChatApp {
     /// reveals. Called once per frame at the top of `draw`. Returns true
     /// while either flap is still animating (so the host keeps redrawing).
     pub(crate) fn reconcile_flaps(&mut self) -> bool {
-        let w = self.rect.width();
+        let w = self.rect.width() / f64::from(self.layout_text_scale.max(1.0));
         // Ignore a degenerate pre-layout frame: resolving the flap mode from a
         // zero width would snap it to the overlay default before the real
         // window size is known. Wait for a genuine allocation so the first
@@ -2893,6 +2914,7 @@ impl Widget for ChatApp {
         presence: &PresenceCtx,
     ) {
         // Resolve flap modes + advance their eased reveals for this frame.
+        self.layout_text_scale = theme.text_scale;
         self.reconcile_flaps();
         self.reconcile_huddle_motion(theme);
         self.tooltips.tick(std::time::Instant::now());
@@ -2972,6 +2994,10 @@ impl Widget for ChatApp {
             self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
         } else if self.call.active
+            // At enlarged text, the labelled Call control remains reachable
+            // in the header; a fixed floating huddle would cover the thread
+            // and composer instead of forming a usable secondary surface.
+            && theme.text_scale <= 1.25
             && ((!self.call.placement.is_return_pending()
                 && matches!(
                     self.call.placement.attachment(),

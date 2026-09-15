@@ -78,6 +78,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot_to_png(
         app,
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+        args.text_scale,
         out,
         scenario,
     )
@@ -132,6 +133,7 @@ pub fn main() {
 fn render_shot_to_png(
     mut app: chat::ChatApp,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     out: &std::path::Path,
     scenario: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -147,9 +149,15 @@ fn render_shot_to_png(
         std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
     ));
+    let theme = if let Some(scale) = text_scale {
+        theme.with_text_scale(scale)
+    } else {
+        theme
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
