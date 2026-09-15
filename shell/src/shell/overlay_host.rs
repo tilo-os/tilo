@@ -2634,12 +2634,32 @@ impl ShellOverlayHost {
         self.onboarding_focus_reset = false;
     }
 
+    /// Activate recovery-only identity chrome. Existing identity metadata is
+    /// authoritative when its Secret Service item is unavailable, so this
+    /// surface offers unlock/retry and restore but never replacement minting.
+    pub fn enable_recovery_onboarding(&mut self, identity_dir: std::path::PathBuf) {
+        self.onboarding = Some(crate::onboarding_view::OnboardingView::new_for_recovery(
+            identity_dir,
+        ));
+        self.onboarding_released = false;
+        self.onboarding_focus_reset = false;
+    }
+
     /// Activate the identity-only OOBE for a Tilo session installed on an
     /// existing Linux host. It retains the trusted chrome boundary and the
     /// identity/backup gates of full-system onboarding.
     pub fn enable_host_desktop_onboarding(&mut self, identity_dir: std::path::PathBuf) {
         self.onboarding =
             Some(crate::onboarding_view::OnboardingView::new_for_host_desktop(identity_dir));
+        self.onboarding_released = false;
+        self.onboarding_focus_reset = false;
+    }
+
+    /// Activate host-session recovery-only identity chrome.
+    pub fn enable_host_desktop_recovery_onboarding(&mut self, identity_dir: std::path::PathBuf) {
+        self.onboarding = Some(
+            crate::onboarding_view::OnboardingView::new_for_host_desktop_recovery(identity_dir),
+        );
         self.onboarding_released = false;
         self.onboarding_focus_reset = false;
     }

@@ -231,6 +231,7 @@ pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
 pub const KEY_BACKUP_BROWSE: &str = "onboarding.backup.browse";
 pub const KEY_BACKUP_CONTINUE: &str = "onboarding.backup.continue";
+pub const KEY_CONNECT_RETRY: &str = "onboarding.connect.retry";
 pub const KEY_BACKUP_SKIP_ACKNOWLEDGED: &str = "onboarding.backup.skip-acknowledged";
 pub const KEY_TOUR_START: &str = "onboarding.tour.start";
 pub const KEY_TOUR_BACK: &str = "onboarding.tour.back";
@@ -390,6 +391,10 @@ impl Invalidation {
 pub struct OnboardingView {
     flow: Onboarding,
     context: OnboardingContext,
+    /// Existing metadata is authoritative when its Secret Service item is
+    /// unavailable. Recovery mode starts on restore and never exposes the
+    /// create-new branch, while still allowing a keyring unlock retry.
+    recovery_only: bool,
     minter: Minter,
     importer: Importer,
     exporter: Exporter,
@@ -437,13 +442,24 @@ pub struct OnboardingView {
 impl OnboardingView {
     /// Build a ceremony that mints into `identity_dir`.
     pub fn new(identity_dir: PathBuf) -> Self {
-        Self::new_in_context(identity_dir, OnboardingContext::FullSystem)
+        Self::new_in_context(identity_dir, OnboardingContext::FullSystem, false)
     }
 
     /// Build the reduced identity-only ceremony for Tilo installed as a
     /// desktop session on an existing Linux host.
     pub fn new_for_host_desktop(identity_dir: PathBuf) -> Self {
-        Self::new_in_context(identity_dir, OnboardingContext::HostDesktop)
+        Self::new_in_context(identity_dir, OnboardingContext::HostDesktop, false)
+    }
+
+    /// Build recovery-only trusted chrome for an existing identity whose
+    /// Secret Service private share is unavailable.
+    pub fn new_for_recovery(identity_dir: PathBuf) -> Self {
+        Self::new_in_context(identity_dir, OnboardingContext::FullSystem, true)
+    }
+
+    /// Build recovery-only trusted chrome for a host desktop session.
+    pub fn new_for_host_desktop_recovery(identity_dir: PathBuf) -> Self {
+        Self::new_in_context(identity_dir, OnboardingContext::HostDesktop, true)
     }
 
     /// Reopen the introduction after first login without repeating or
@@ -459,7 +475,11 @@ impl OnboardingView {
         view
     }
 
-    fn new_in_context(identity_dir: PathBuf, context: OnboardingContext) -> Self {
+    fn new_in_context(
+        identity_dir: PathBuf,
+        context: OnboardingContext,
+        recovery_only: bool,
+    ) -> Self {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir.clone();
         let minter: Minter = match context {
@@ -521,6 +541,10 @@ impl OnboardingView {
         );
         view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
         view.identity_dir = Some(identity_dir);
+        view.recovery_only = recovery_only;
+        if recovery_only && view.flow.screen() == Screen::Intro {
+            view.flow.begin_connect();
+        }
         view.restore_pending_progress_from_disk();
         view
     }
@@ -572,6 +596,7 @@ impl OnboardingView {
         Self {
             flow: Onboarding::new(),
             context,
+            recovery_only: false,
             minter,
             importer,
             exporter,
@@ -625,6 +650,13 @@ impl OnboardingView {
     }
 
     fn restore_pending_progress_from_disk(&mut self) {
+        // Recovery mode was selected because the private Secret Service key
+        // could not be loaded. A stale post-mint journal must not turn that
+        // state into a Done screen that assumes signing works; the user must
+        // unlock or restore first.
+        if self.recovery_only {
+            return;
+        }
         let Some(identity_dir) = self.identity_dir.as_ref() else {
             return;
         };
@@ -979,9 +1011,12 @@ impl OnboardingView {
                     .with_style(ui::widget::ButtonStyle::Primary),
                 ),
             ]),
-            Screen::Connect => footer_actions(vec![
-                back_button(),
-                Box::new(
+            Screen::Connect => {
+                let mut actions = Vec::new();
+                if !self.recovery_only {
+                    actions.push(back_button());
+                }
+                actions.push(Box::new(
                     Button::new(
                         "onboarding.import.button",
                         "Restore selected backup",
@@ -991,8 +1026,9 @@ impl OnboardingView {
                     .with_icon(ui::icons::Icon::ArrowRight)
                     .with_style(ui::widget::ButtonStyle::Primary)
                     .with_enabled(self.connect_source_selected),
-                ),
-            ]),
+                ));
+                footer_actions(actions)
+            }
             Screen::NoRecovery => footer_actions(vec![
                 back_button(),
                 Box::new(
@@ -1239,6 +1275,7 @@ impl OnboardingView {
         )
     }
 
+    #[allow(clippy::too_many_lines)]
     fn connect(&self, theme: &Theme) -> Box<dyn Widget> {
         let compact = self.rect.height() <= 540.0;
         let path = TextInput::new(Vec::new())
@@ -1260,6 +1297,16 @@ impl OnboardingView {
             .with_intrinsic_height()
             .with_gap(if compact { spacing.s3 } else { spacing.s4 })
             .push(heading("Connect an existing identity", theme));
+        if self.recovery_only {
+            body = body.push(spaced_banner(
+                Banner::warning("Your existing identity needs recovery")
+                    .with_message(
+                        "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry, or restore an encrypted backup. Tilo will not replace this identity automatically.",
+                    )
+                    .with_icon(ui::icons::Icon::Shield),
+                theme,
+            ));
+        }
         if let Some(error) = &self.error {
             body = body.push(spaced_banner(
                 Banner::error("That identity could not be connected").with_message(error.clone()),
@@ -1301,6 +1348,16 @@ impl OnboardingView {
             ));
         }
         nearby = nearby.push(Box::new(nearby_action));
+        if self.recovery_only {
+            nearby = nearby.push(Box::new(
+                Button::new(
+                    "onboarding.connect.retry.button",
+                    "Retry keyring",
+                    Some(KEY_CONNECT_RETRY),
+                )
+                .fit_content(40.0),
+            ));
+        }
         let file_row = Row::new().push(Box::new(path)).push(Box::new(
             Button::new(
                 "onboarding.connect.browse.button",
@@ -2227,7 +2284,9 @@ impl Widget for OnboardingView {
             clear_secret(&self.connect_passphrase);
             terminate_nearby_pairing(&mut self.nearby_child);
             self.nearby_status = None;
-            self.flow.back();
+            if !(self.recovery_only && self.flow.screen() == Screen::Connect) {
+                self.flow.back();
+            }
         }
 
         if read_bool(state, root, KEY_IMPORT) {
@@ -2258,6 +2317,33 @@ impl Widget for OnboardingView {
                     Err(error) => {
                         tracing::error!(target: "tilo::onboarding", %error, "identity import failed");
                         self.error = Some(error);
+                        self.invalidation.structure();
+                    }
+                }
+            }
+        }
+
+        // A locked keyring may become available after the compositor has
+        // presented trusted chrome (for example after the host keyring's
+        // unlock prompt completes). Retry the existing record in place; the
+        // minter is idempotent and cannot overwrite metadata.
+        if read_bool(state, root, KEY_CONNECT_RETRY) {
+            let _ = state.put(root, KEY_CONNECT_RETRY, ScalarValue::Boolean(false));
+            if self.recovery_only
+                && self.flow.screen() == Screen::Connect
+                && self.persist_progress(PersistedStage::AcquiringIdentity)
+            {
+                match (self.minter)() {
+                    Ok(identity) => {
+                        self.error = None;
+                        self.flow.complete_connected(identity);
+                        let _ = self.persist_progress(PersistedStage::IdentityReady);
+                        self.invalidation.both();
+                    }
+                    Err(error) => {
+                        self.error = Some(format!(
+                            "The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: {error}"
+                        ));
                         self.invalidation.structure();
                     }
                 }
@@ -3880,6 +3966,26 @@ mod tests {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let _ = connect.build_layout(&mut taffy, &theme, &mut node_map);
+    }
+
+    #[test]
+    fn recovery_mode_starts_on_restore_and_never_offers_creation() {
+        let mut recovery =
+            OnboardingView::new_for_recovery(std::env::temp_dir().join("qos-recovery-ui-test"));
+        assert!(recovery.recovery_only);
+        assert_eq!(recovery.flow.screen(), Screen::Connect);
+        let mut document = AutoCommit::new();
+        press(&mut document, KEY_BACK);
+        recovery.sync(&mut document, &automerge::ROOT);
+        assert_eq!(recovery.flow.screen(), Screen::Connect);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = recovery.build_layout(&mut taffy, &theme, &mut node_map);
+        assert!(
+            accessibility_for_id(&recovery, "onboarding.connect.retry.button").is_some(),
+            "recovery must expose a keyring retry action"
+        );
     }
 
     #[test]
