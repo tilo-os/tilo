@@ -12,7 +12,7 @@ use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Button, Card, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable, Spacer,
-    Text, TimePicker, TimeValue, ToggleGroup, Widget,
+    Text, TextInput, TextInputKind, TimePicker, TimeValue, ToggleGroup, Widget,
 };
 use ui::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
 use uuid::Uuid;
@@ -62,6 +62,15 @@ fn remaining_fraction(remaining_ms: u64, duration_ms: u64) -> f32 {
         return 0.0;
     }
     (remaining_ms as f32 / duration_ms as f32).clamp(0.0, 1.0)
+}
+
+fn timer_label(input: &str) -> String {
+    let label = input.trim();
+    if label.is_empty() {
+        "Timer".into()
+    } else {
+        label.chars().take(80).collect()
+    }
 }
 fn city_time(zone: &str) -> String {
     zone.parse::<chrono_tz::Tz>()
@@ -242,6 +251,7 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
 
 fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
     let custom = ui::LocalState::new(TimeValue::new(0, 10).with_seconds(0));
+    let custom_label = ui::LocalState::new(String::new());
     let mut presets = Row::new();
     for (label, button_label, secs) in [
         ("Tea", "Tea, 5 min", 300),
@@ -381,6 +391,7 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
     });
     let add_state = state.clone();
     let add_custom = custom.clone();
+    let add_label = custom_label.clone();
     Box::new(
         Column::new()
             .with_gap(18.0)
@@ -398,6 +409,12 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
                 Box::new(
                     Column::new()
                         .with_gap(12.0)
+                        .push(Box::new(
+                            TextInput::from_state(&custom_label)
+                                .with_id("clocks.timer.custom.label")
+                                .with_kind(TextInputKind::Name)
+                                .with_placeholder("What is this timer for?"),
+                        ))
                         .push(Box::new(Text::new("Hours, minutes, seconds").dimmed()))
                         .push(Box::new(TimePicker::from_state(&custom)))
                         .push(primary_button(
@@ -409,10 +426,13 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
                                     + u64::from(v.minutes) * 60
                                     + u64::from(v.seconds.unwrap_or(0));
                                 if secs > 0 {
-                                    let mut t =
-                                        Timer::new("Custom timer", Duration::from_secs(secs));
+                                    let mut t = Timer::new(
+                                        timer_label(&add_label.get()),
+                                        Duration::from_secs(secs),
+                                    );
                                     t.start(Utc::now());
                                     add_state.update(|s| s.timers.push(t));
+                                    add_label.set(String::new());
                                 }
                             },
                         )),
@@ -605,7 +625,10 @@ impl ClocksApp {
             "stopwatch" => 3,
             _ => 2,
         };
-        let mut value = if matches!(name, "empty" | "running" | "world" | "alarms" | "stopwatch") {
+        let mut value = if matches!(
+            name,
+            "empty" | "running" | "world" | "alarms" | "stopwatch" | "timers"
+        ) {
             ClockState::default()
         } else {
             ClockState::load()
@@ -817,7 +840,7 @@ impl Widget for ClocksApp {
 
 #[cfg(test)]
 mod tests {
-    use super::remaining_fraction;
+    use super::{remaining_fraction, timer_label};
 
     #[test]
     fn countdown_progress_visualizes_time_remaining() {
@@ -826,5 +849,12 @@ mod tests {
         assert!(remaining_fraction(0, 300_000).abs() < f32::EPSILON);
         assert!(remaining_fraction(20, 0).abs() < f32::EPSILON);
         assert!((remaining_fraction(400_000, 300_000) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn custom_timer_labels_are_useful_bounded_and_have_a_calm_default() {
+        assert_eq!(timer_label("  Pasta  "), "Pasta");
+        assert_eq!(timer_label("   "), "Timer");
+        assert_eq!(timer_label(&"x".repeat(120)).chars().count(), 80);
     }
 }
