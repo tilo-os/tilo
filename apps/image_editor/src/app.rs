@@ -810,18 +810,58 @@ impl ImageEditorApp {
     fn inspector_controls(&self) -> (Rect, Rect) {
         (
             Rect::new(
+                self.inspector_rect.x1 - 156.0,
+                self.inspector_rect.y0 + 8.0,
+                self.inspector_rect.x1 - 112.0,
+                self.inspector_rect.y1 - 8.0,
+            ),
+            Rect::new(
                 self.inspector_rect.x1 - 104.0,
                 self.inspector_rect.y0 + 8.0,
                 self.inspector_rect.x1 - 60.0,
                 self.inspector_rect.y1 - 8.0,
             ),
-            Rect::new(
-                self.inspector_rect.x1 - 52.0,
-                self.inspector_rect.y0 + 8.0,
-                self.inspector_rect.x1 - 8.0,
-                self.inspector_rect.y1 - 8.0,
-            ),
         )
+    }
+
+    fn inspector_remove_rect(&self) -> Rect {
+        Rect::new(
+            self.inspector_rect.x1 - 52.0,
+            self.inspector_rect.y0 + 8.0,
+            self.inspector_rect.x1 - 8.0,
+            self.inspector_rect.y1 - 8.0,
+        )
+    }
+
+    fn selected_is_removable(&self) -> bool {
+        self.editor.selection.iter().next().is_some_and(|id| {
+            id != "source" && id != &self.project.output && self.project.operations.contains_key(id)
+        })
+    }
+
+    fn remove_selected(&mut self, state: &mut AutoCommit) -> bool {
+        let Some(id) = self.editor.selection.iter().next().cloned() else {
+            return false;
+        };
+        if id == "source" || id == self.project.output {
+            return false;
+        }
+        let undo_len = self.undo_stack.len();
+        self.checkpoint();
+        if !self.project.remove_adjustment(&id) {
+            self.undo_stack.truncate(undo_len);
+            return false;
+        }
+        if let Some(latest) = self.steps().last().cloned() {
+            self.editor.select_only(latest);
+        } else {
+            self.editor.select_only(self.project.output.clone());
+        }
+        ProjectDoc::write(state, &self.project);
+        self.rendered_project = None;
+        self.rebuild_crop_editor();
+        self.notice = "Adjustment removed. Later steps remain connected.".into();
+        true
     }
 
     fn selected_slider(&self) -> Option<(f64, String)> {
@@ -847,7 +887,7 @@ impl ImageEditorApp {
         Rect::new(
             self.inspector_rect.x0 + 142.0,
             self.inspector_rect.y0 + 8.0,
-            self.inspector_rect.x1 - 76.0,
+            self.inspector_rect.x1 - 128.0,
             self.inspector_rect.y1 - 8.0,
         )
     }
@@ -1393,9 +1433,13 @@ impl Widget for ImageEditorApp {
                     12.0,
                     c.text_primary,
                     a.pre_translate(
-                        (self.inspector_rect.x1 - 66.0, self.inspector_rect.y0 + 22.0).into(),
+                        (
+                            self.inspector_rect.x1 - 118.0,
+                            self.inspector_rect.y0 + 22.0,
+                        )
+                            .into(),
                     ),
-                    Some(58.0),
+                    Some(54.0),
                     TextWeight::Medium,
                 );
             } else if self
@@ -1438,13 +1482,24 @@ impl Widget for ImageEditorApp {
                     c.text_dim,
                     a.pre_translate(
                         (
-                            self.inspector_rect.x1 - 210.0,
+                            self.inspector_rect.x1 - 250.0,
                             self.inspector_rect.y0 + 22.0,
                         )
                             .into(),
                     ),
-                    Some(198.0),
+                    Some(186.0),
                     TextWeight::Regular,
+                );
+            }
+            if self.selected_is_removable() {
+                ui::widget::Button::paint(
+                    s,
+                    a,
+                    tr,
+                    theme,
+                    &ui::widget::ButtonFace::new(self.inspector_remove_rect(), "")
+                        .icon(ui::icons::Icon::Trash2)
+                        .style(ui::widget::ButtonStyle::Danger),
                 );
             }
         } else {
@@ -1879,8 +1934,12 @@ impl Widget for ImageEditorApp {
                     *handled = true;
                 } else if !self.advanced_graph {
                     let (minus, plus) = self.inspector_controls();
+                    let remove = self.inspector_remove_rect();
                     let slider = self.inspector_slider_rect();
-                    if self.selected_slider().is_some() && slider.contains(self.cursor) {
+                    if self.selected_is_removable() && remove.contains(self.cursor) {
+                        self.inspector_focused = false;
+                        self.remove_selected(state);
+                    } else if self.selected_slider().is_some() && slider.contains(self.cursor) {
                         self.begin_gesture();
                         self.inspector_dragging = true;
                         self.inspector_focused = true;
@@ -2018,8 +2077,12 @@ impl Widget for ImageEditorApp {
                         }
                         {
                             let (minus, plus) = self.inspector_controls();
+                            let remove = self.inspector_remove_rect();
                             let slider = self.inspector_slider_rect();
-                            if self.selected_slider().is_some() && slider.contains(point) {
+                            if self.selected_is_removable() && remove.contains(point) {
+                                self.inspector_focused = false;
+                                self.remove_selected(state);
+                            } else if self.selected_slider().is_some() && slider.contains(point) {
                                 self.begin_gesture();
                                 self.inspector_touch = Some(touch.id);
                                 self.inspector_focused = true;
@@ -2579,6 +2642,16 @@ impl Widget for ImageEditorApp {
                         .with_state(AccessState::new().focusable(true)),
                 ]);
             }
+            if self.selected_is_removable() {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Remove selected adjustment")
+                        .with_description("Later steps remain connected; this can be undone")
+                        .with_action_target("image-editor.adjust.remove")
+                        .with_bounds(self.inspector_remove_rect())
+                        .with_state(AccessState::new().focusable(true)),
+                );
+            }
         }
         Some(
             AccessNode::new(Role::Canvas)
@@ -2663,6 +2736,7 @@ impl Widget for ImageEditorApp {
             "image-editor.empty.open" => self.request_open(),
             "image-editor.adjust.decrease" => self.adjust_selected(state, -1.0),
             "image-editor.adjust.increase" => self.adjust_selected(state, 1.0),
+            "image-editor.adjust.remove" => return self.remove_selected(state),
             _ => {
                 let Some(id) = target.strip_prefix("image-editor.step.") else {
                     return false;
@@ -2917,11 +2991,15 @@ mod portal_tests {
         let mut app = ImageEditorApp::new();
         app.inspector_rect = Rect::new(12.0, 680.0, 608.0, 740.0);
         let (minus, plus) = app.inspector_controls();
+        let remove = app.inspector_remove_rect();
         assert!(minus.width() >= 44.0 && minus.height() >= 44.0);
         assert!(plus.width() >= 44.0 && plus.height() >= 44.0);
+        assert!(remove.width() >= 44.0 && remove.height() >= 44.0);
         assert!(minus.x1 < plus.x0);
+        assert!(plus.x1 < remove.x0);
         assert!(app.inspector_rect.contains(minus.center()));
         assert!(app.inspector_rect.contains(plus.center()));
+        assert!(app.inspector_rect.contains(remove.center()));
     }
 
     #[test]
@@ -2972,11 +3050,54 @@ mod portal_tests {
         app.editor.select_only("mono");
         let access = app.accessibility().unwrap();
         assert!(access.children.iter().all(|node| {
-            !node
-                .action_target
-                .as_deref()
-                .is_some_and(|target| target.starts_with("image-editor.adjust."))
+            !node.action_target.as_deref().is_some_and(|target| {
+                matches!(
+                    target,
+                    "image-editor.adjust.slider"
+                        | "image-editor.adjust.decrease"
+                        | "image-editor.adjust.increase"
+                )
+            })
         }));
+        assert!(access.children.iter().any(|node| {
+            node.action_target.as_deref() == Some("image-editor.adjust.remove")
+                && node.bounds.unwrap().to_rect().height() >= 44.0
+        }));
+    }
+
+    #[test]
+    fn assistive_remove_preserves_later_steps_and_is_undoable() {
+        let mut app = ImageEditorApp::new();
+        let mut document = AutoCommit::new();
+        ProjectDoc::seed(&mut document);
+        assert!(app.project.insert_before_output(
+            "exposure",
+            "Exposure",
+            Operation::Exposure { stops: 1.0 },
+        ));
+        assert!(app.project.insert_before_output(
+            "contrast",
+            "Contrast",
+            Operation::Contrast { amount: 0.2 },
+        ));
+        app.editor.select_only("exposure");
+
+        assert!(app.perform_semantic_action(
+            "image-editor.adjust.remove",
+            &ui::a11y::Action::Activate,
+            &mut document,
+            &automerge::ROOT,
+        ));
+        assert_eq!(
+            app.project.graph.evaluation_order().unwrap(),
+            ["source", "contrast", "output"]
+        );
+        assert!(app.editor.selection.contains("contrast"));
+        app.undo(&mut document);
+        assert_eq!(
+            app.project.graph.evaluation_order().unwrap(),
+            ["source", "exposure", "contrast", "output"]
+        );
     }
 
     #[test]
