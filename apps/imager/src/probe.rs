@@ -488,7 +488,8 @@ fn collect_parts(children: &[Value], out: &mut Vec<TargetPartition>, is_system: 
 /// ISO, the ISO-9660 volume label read straight from the file. Returns `None`
 /// if the path does not exist or cannot be read.
 pub fn inspect_source(path: &Path) -> Option<Source> {
-    let meta = std::fs::metadata(path).ok()?;
+    let mut file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
     if !meta.is_file() {
         return None;
     }
@@ -505,7 +506,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         .to_ascii_lowercase();
 
     // A real volume label beats the file name when we can read one.
-    let label = read_iso_label(path)
+    let label = read_iso_label_from_file(&mut file)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
             path.file_stem()
@@ -541,7 +542,7 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
         size,
         label,
         installable: is_qos,
-        identity: SourceIdentity::from_metadata(&meta),
+        identity: SourceIdentity::from_file(&file),
         expected_sha256: None,
     })
 }
@@ -552,8 +553,12 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
 /// 40 (file offset 0x8028). Best-effort: any short/mismatched file yields
 /// `None` and the caller falls back to the file name.
 pub fn read_iso_label(path: &Path) -> Option<String> {
-    use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
+    read_iso_label_from_file(&mut f)
+}
+
+fn read_iso_label_from_file(f: &mut std::fs::File) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
     f.seek(SeekFrom::Start(0x8000)).ok()?;
     let mut hdr = [0u8; 72];
     f.read_exact(&mut hdr).ok()?;
