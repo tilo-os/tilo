@@ -158,6 +158,13 @@ pub enum BackendEvent {
     /// `FrameBuilder::dispatch_event` — the same dispatch path the
     /// headless `execute_planned_action` uses.
     Input(WindowEvent),
+    /// Raw relative mouse motion, emitted by the direct backend alongside the
+    /// clamped absolute cursor event. Spatial device control needs the delta
+    /// after the local cursor reaches a display edge.
+    RelativePointerMotion {
+        dx: f64,
+        dy: f64,
+    },
     /// Modifier-state changed. Tracked separately because
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
     /// the loop needs to retain across subsequent events.

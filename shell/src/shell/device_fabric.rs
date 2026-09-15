@@ -172,6 +172,24 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         session_id: String,
     },
+    /// Ask the receiving device to author this placement in its next
+    /// snapshot. The sender never forges another device's durable state.
+    SetDisplayPlacement {
+        rect: DisplayRect,
+    },
+    /// A target-issued, short-lived permission delivered to its controller.
+    InputLeaseGranted {
+        lease: InputLease,
+    },
+    InputLeaseRevoked {
+        nonce: [u8; 16],
+    },
+    /// One non-durable input event, accepted only while the target still
+    /// retains the matching lease it issued.
+    Input {
+        lease_nonce: [u8; 16],
+        event: FabricInputEvent,
+    },
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -230,6 +248,30 @@ impl PersonalFabricActionEnvelope {
                 session_id,
             } => {
                 if request_id == &[0; 16] || !valid_identifier(session_id, 256) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SetDisplayPlacement { rect } => {
+                if !valid_display_rect(rect) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::InputLeaseGranted { lease } => {
+                if &lease.target != transport_source
+                    || &lease.controller != local_target
+                    || lease.nonce == [0; 16]
+                    || lease.validate_at(now_unix_ms).is_err()
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::InputLeaseRevoked { nonce } => {
+                if nonce == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::Input { lease_nonce, event } => {
+                if lease_nonce == &[0; 16] || !event.validate() {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -511,7 +553,53 @@ pub struct InputLease {
     pub allow_pointer: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FabricInputEvent {
+    PointerMotion {
+        x: i32,
+        y: i32,
+    },
+    PointerButton {
+        button: u32,
+        pressed: bool,
+    },
+    Scroll {
+        horizontal: i16,
+        vertical: i16,
+    },
+    Key {
+        keycode: u32,
+        pressed: bool,
+        modifiers: u32,
+    },
+}
+
+impl FabricInputEvent {
+    fn validate(self) -> bool {
+        match self {
+            Self::PointerMotion { x, y } => {
+                x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000
+            }
+            Self::PointerButton { button, .. } => (1..=0x3ff).contains(&button),
+            Self::Scroll {
+                horizontal,
+                vertical,
+            } => horizontal != 0 || vertical != 0,
+            Self::Key {
+                keycode, modifiers, ..
+            } => keycode <= 0x2ff && modifiers <= 0xffff,
+        }
+    }
+}
+
 impl InputLease {
+    /// Whether this permission binds exactly this authenticated controller to
+    /// this target device.
+    pub fn binds(&self, controller: &DeviceId, target: &DeviceId) -> bool {
+        &self.controller == controller && &self.target == target
+    }
+
     /// Check the target-issued lease at the moment an input event is routed.
     ///
     /// # Errors
@@ -832,6 +920,15 @@ fn valid_mime(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
+}
+
+fn valid_display_rect(rect: &DisplayRect) -> bool {
+    rect.width > 0
+        && rect.height > 0
+        && rect.width <= 100_000
+        && rect.height <= 100_000
+        && rect.x.unsigned_abs() <= 1_000_000
+        && rect.y.unsigned_abs() <= 1_000_000
 }
 
 fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
@@ -1251,6 +1348,72 @@ mod tests {
             envelope.validate_at(&source, &target, 10_000 + MAX_FABRIC_ACTION_AGE_MS + 1),
             Err(FabricError::InvalidAction)
         );
+    }
+
+    #[test]
+    fn input_lease_must_be_issued_by_the_target_to_its_controller() {
+        let controller = id("controller");
+        let target = id("target");
+        let lease = InputLease {
+            controller: controller.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            expires_unix_ms: 20_000,
+            nonce: [8; 16],
+            allow_keyboard: true,
+            allow_pointer: true,
+        };
+        let envelope = PersonalFabricActionEnvelope {
+            request_id: [9; 16],
+            source: target.clone(),
+            target: controller.clone(),
+            issued_unix_ms: 10_000,
+            action: PersonalFabricAction::InputLeaseGranted { lease },
+        };
+        assert_eq!(envelope.validate_at(&target, &controller, 10_100), Ok(()));
+        assert_eq!(
+            envelope.validate_at(&id("forged-target"), &controller, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
+    fn input_actions_reject_unbound_or_malformed_events() {
+        let source = id("controller");
+        let target = id("target");
+        for (nonce, event) in [
+            ([0; 16], FabricInputEvent::PointerMotion { x: 10, y: 20 }),
+            (
+                [1; 16],
+                FabricInputEvent::PointerButton {
+                    button: 0,
+                    pressed: true,
+                },
+            ),
+            (
+                [1; 16],
+                FabricInputEvent::Key {
+                    keycode: 0x300,
+                    pressed: true,
+                    modifiers: 0,
+                },
+            ),
+        ] {
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [2; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::Input {
+                    lease_nonce: nonce,
+                    event,
+                },
+            };
+            assert_eq!(
+                envelope.validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+        }
     }
 
     #[test]
