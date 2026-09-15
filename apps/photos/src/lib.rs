@@ -72,6 +72,61 @@ pub mod strings;
 pub use app::PhotosApp;
 pub use model::{Edits, OpenImage, Rect01};
 
+/// Import a Camera portable-media reference into Photos without ever trusting
+/// a machine-local path.  The content hash is verified in qdoc first; missing
+/// bytes are an actionable refusal rather than a phantom library entry.
+pub fn camera_import_photo(media_id: &str, name: &str) -> Result<model::LibraryPhoto, String> {
+    let hash = media_id
+        .strip_prefix("media:blake3:")
+        .filter(|hash| {
+            hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+        .ok_or_else(|| "invalid Camera media identity".to_owned())?;
+    let bytes = qdoc::blobstore::get(hash).ok_or_else(|| {
+        "Camera media bytes are not available on this device; retry after they sync".to_owned()
+    })?;
+    if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 || !qdoc::blobstore::verify(hash, &bytes)
+    {
+        return Err("Camera media bytes failed integrity validation".to_owned());
+    }
+    let image = pixels::decode(&bytes).ok_or_else(|| {
+        "Camera media is not a supported, safely decodable still image".to_owned()
+    })?;
+    let open = OpenImage {
+        path: name.to_owned(),
+        name: name.to_owned(),
+        width: image.w,
+        height: image.h,
+        content: Some(hash.to_owned()),
+    }
+    .portable();
+    Ok(model::LibraryPhoto::from_image(open))
+}
+
+/// Validate and import a Camera portable-media reference. This convenience
+/// boundary is useful to callers that already own a mutable Photos document;
+/// brokered callers use the same validation then dispatch `ImportPhoto` so
+/// history and collaboration observe the canonical action.
+pub fn import_camera_media(
+    doc: &mut automerge::AutoCommit,
+    media_id: &str,
+    name: &str,
+) -> Result<String, String> {
+    let photo = camera_import_photo(media_id, name)?;
+    let id = photo.id.clone();
+    let mut library = doc::PhotosDoc::library(doc);
+    library.add_photo(photo);
+    doc::PhotosDoc::set_library(doc, &library);
+    let selected = library
+        .photo(&id)
+        .ok_or_else(|| "Camera import did not produce a library photograph".to_owned())?;
+    doc::PhotosDoc::set_image(doc, Some(&selected.image));
+    Ok(id)
+}
+
 use ui::widget::Widget;
 
 /// Build and return the app's root widget tree.
@@ -293,5 +348,42 @@ pub fn seed_scenario(
         }
         // "opened" and any unknown name: the photograph as it arrived.
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod camera_import_tests {
+    use automerge::AutoCommit;
+
+    use super::{camera_import_photo, import_camera_media, pixels};
+    use crate::doc::PhotosDoc;
+
+    #[test]
+    fn camera_import_verifies_bytes_and_selects_one_content_addressed_photo() {
+        let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
+        let bytes = pixels::encode_png(&rgba).expect("fixture png");
+        let hash = qdoc::blobstore::put(&bytes).expect("fixture blob");
+        let media_id = format!("media:blake3:{hash}");
+        let mut doc = AutoCommit::new();
+
+        let id =
+            import_camera_media(&mut doc, &media_id, "Camera photo.png").expect("verified import");
+        let again =
+            import_camera_media(&mut doc, &media_id, "renamed.png").expect("idempotent import");
+
+        assert_eq!(id, again);
+        let library = PhotosDoc::library(&doc);
+        assert_eq!(library.photos.len(), 1);
+        assert_eq!(
+            PhotosDoc::image(&doc).map(|image| image.content),
+            Some(Some(hash))
+        );
+    }
+
+    #[test]
+    fn camera_import_refuses_missing_or_invalid_portable_bytes() {
+        assert!(camera_import_photo("media:blake3:not-a-hash", "x.png").is_err());
+        let missing = format!("media:blake3:{}", "0".repeat(64));
+        assert!(camera_import_photo(&missing, "x.png").is_err());
     }
 }

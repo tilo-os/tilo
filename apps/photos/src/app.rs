@@ -1531,6 +1531,11 @@ impl PhotosApp {
                         .send(),
                 );
             }
+            crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } => {
+                return Err(format!(
+                    "Camera import requires document dispatch: {media_id} ({name})"
+                ));
+            }
             crate::actions::PhotosOperation::Copy => {
                 self.copy_to_clipboard();
             }
@@ -4690,6 +4695,50 @@ impl Widget for PhotosApp {
                 qos_actions::ActionOutput::default(),
             )))
         }
+    }
+
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == qos_actions::OperationKind::Document {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let crate::actions::PhotosOperation::ImportCameraMedia { media_id, name } = operation
+        else {
+            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
+        };
+
+        // This is deliberately a compound admission boundary: verify the
+        // portable Camera identity and bytes before committing the one
+        // idempotent Photos library/selection update.  A missing local blob
+        // remains a refusal instead of becoming a path-only phantom entry.
+        let photo = crate::camera_import_photo(&media_id, &name)?;
+        let id = photo.id.clone();
+        let action = crate::actions::PhotosAction::ImportPhoto { photo };
+        self.actions
+            .try_dispatch_with_context(
+                doc,
+                crate::actions::PHOTOS_ACTION_TYPE,
+                &action,
+                qos_actions::ActionContext::for_action("org.qos.Photos", "Photos", &action),
+            )
+            .map_err(|error| error.to_string())?;
+        self.notice = Some("Imported Camera photo".to_owned());
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            qos_actions::ActionOutput {
+                value: Some(serde_json::Value::String(id.clone())),
+                resources: vec![id],
+            },
+        )))
     }
 
     fn poll_resource_operation(
