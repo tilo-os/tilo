@@ -324,7 +324,7 @@ impl CardGrid {
     }
 
     pub fn columns_for_width(&self, width: f64) -> usize {
-        card_columns(width, self.min_card_w, self.gap)
+        card_columns(width, self.min_card_w, self.gap).min(self.cards.len().max(1))
     }
 
     fn content_height(&self, columns: usize) -> f64 {
@@ -731,6 +731,19 @@ mod tests {
             (g.cell_w - 300.0).abs() < 0.5,
             "single column spans full width"
         );
+    }
+
+    #[test]
+    fn a_single_card_uses_the_full_grid_width() {
+        let g = lay_out_grid(
+            CardGrid::new(dummy_cards(1))
+                .with_min_card_width(260.0)
+                .with_gap(16.0),
+            900.0,
+            500.0,
+        );
+        assert_eq!(g.columns, 1, "empty grid columns are never reserved");
+        assert!((g.cell_w - 900.0).abs() < 0.5);
     }
 
     // ---- Card surface ----

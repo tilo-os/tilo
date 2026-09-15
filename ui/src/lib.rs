@@ -70,6 +70,7 @@ pub mod gpu;
 /// output and converting YUV to RGB in a shader.
 #[cfg(feature = "gpu-video")]
 pub mod gpu_video;
+pub mod graph_editor;
 pub mod headless;
 pub mod history_source;
 pub mod i18n;

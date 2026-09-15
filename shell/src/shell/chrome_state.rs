@@ -105,6 +105,35 @@ pub struct OverlayFlags {
     /// Screenshot / recording / arbitrary-region `PiP` selector
     /// (`Super+Shift+S`, or direct `PiP` via `Super+Shift+P`).
     pub capture: bool,
+    /// Compact, non-activating timer/stopwatch controller requested by Clocks.
+    pub clock: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+pub struct ClockActivity {
+    #[serde(default)]
+    pub version: u8,
+    #[serde(default = "clock_activity_active_default")]
+    pub active: bool,
+    /// UUID of the exact timer represented by this snapshot. Older Clocks
+    /// builds omit it; the singleton stopwatch intentionally has no ID.
+    #[serde(default)]
+    pub activity_id: Option<String>,
+    pub label: String,
+    pub remaining_secs: u64,
+    pub stopwatch: bool,
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub overlay: bool,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
+    pub producer_pid: u32,
+}
+
+fn clock_activity_active_default() -> bool {
+    true
 }
 
 /// Device-local reduction of the active workspace's collaborative history.
@@ -313,6 +342,8 @@ pub struct ChromeState {
     /// [`crate::shell::status::StatusBridge`] with no lock held across
     /// a draw. `None` until a poller publishes.
     pub status: crate::shell::status::SystemStatus,
+    /// Session-local projection from Clocks; schedules never enter chrome.
+    pub clock_activity: Option<ClockActivity>,
     /// At most one — an OSD counts a value up, so eight volume presses
     /// show one slab, not eight banners. See [`crate::shell::osd`].
     pub osd: Option<crate::shell::osd::Osd>,
@@ -415,6 +446,8 @@ pub struct ChromeState {
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
     strip_viewport: Option<crate::shell::placement::StripViewport>,
+    /// Logical desktop bounds from the overlay host's latest layout pass.
+    viewport_size: Option<(f64, f64)>,
 }
 
 impl ChromeState {
@@ -438,6 +471,7 @@ impl ChromeState {
             search_scope: SearchScope::default(),
             open_target: OpenTarget::default(),
             status: crate::shell::status::SystemStatus::default(),
+            clock_activity: None,
             osd: None,
             ws_settings_tab: WsTab::default(),
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
@@ -469,6 +503,7 @@ impl ChromeState {
             record_requests: Vec::new(),
             close_surface_requests: Vec::new(),
             strip_viewport: None,
+            viewport_size: None,
             records: RecordStore::in_memory(),
         }))
     }
@@ -493,6 +528,14 @@ impl ChromeState {
 
     pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
         self.strip_viewport.as_ref()
+    }
+
+    pub fn set_viewport_size(&mut self, size: (f64, f64)) {
+        self.viewport_size = Some(size);
+    }
+
+    pub fn viewport_size(&self) -> Option<(f64, f64)> {
+        self.viewport_size
     }
 
     pub fn push_peer_sync_request(&mut self, request: crate::shell::overlay_host::PeerSyncAction) {

@@ -87,6 +87,11 @@ pub enum FileCommand {
     Cut,
     /// Paste the clipboard into the current directory.
     Paste,
+    ExtractHere,
+    /// Extract the archive currently being browsed. Unlike `ExtractHere`, this
+    /// does not depend on a synthetic in-archive row being selected.
+    ExtractCurrentArchive,
+    CompressSelection,
     /// Open the "New File" flyout populated from the Templates directory.
     /// Handled by the app's menu routing (opens a submenu), not applied.
     OpenTemplatesMenu,

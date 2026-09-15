@@ -33,7 +33,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
 /// Height of one option row.
-const ROW_H: f64 = 30.0;
+const ROW_H: f64 = 44.0;
 /// Vertical padding above the first / below the last row.
 const PAD_Y: f64 = 6.0;
 /// Horizontal padding inside a row (left of the check column, right of text).
@@ -740,6 +740,13 @@ mod tests {
         assert!(dispatch(&mut p, &left_press()), "outside click swallowed");
         assert!(!p.is_open(), "outside click dismisses");
         assert_eq!(p.take_selection(), None, "no selection on dismiss");
+    }
+
+    #[test]
+    fn option_rows_meet_the_shared_touch_target_floor() {
+        let p = opened();
+        assert!(p.row_rect(0).height() >= 44.0);
+        assert!(p.row_rect(4).height() >= 44.0);
     }
 
     #[test]

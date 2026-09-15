@@ -1,0 +1,4278 @@
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::icons::Icon;
+use ui::presence::PresenceCtx;
+use ui::text_render::{TextRenderer, TextWeight};
+use ui::theme::Theme;
+use ui::widget::{
+    Button, ButtonFace, SegmentedFace, SegmentedStyle, SidebarDrawer, SidebarNav, SidebarNavItem,
+    SidebarNavSection, TextInput, ToggleGroup, Widget,
+};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::Fill;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+use zeroize::Zeroizing;
+
+use crate::actions;
+use crate::transfer::ImportLogin;
+use accounts::{GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
+
+enum TransferDialog {
+    ImportPreview {
+        rows: Vec<ImportLogin>,
+        conflicts: usize,
+    },
+    ExportPlaintext {
+        acknowledged: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ActiveField {
+    Search,
+    Name,
+    Username,
+    Origin,
+    Password,
+    Notes,
+}
+
+struct EditorInputs {
+    name: TextInput,
+    username: TextInput,
+    origin: TextInput,
+    password: TextInput,
+    notes: TextInput,
+}
+
+impl EditorInputs {
+    fn new(name: &str, username: &str, origin: &str, password: &str, notes: &str) -> Self {
+        Self {
+            name: TextInput::local()
+                .with_id("passwords.field.name")
+                .with_accessible_name("Name")
+                .with_initial_value(name),
+            username: TextInput::local()
+                .with_id("passwords.field.username")
+                .with_accessible_name("Username or label")
+                .with_initial_value(username),
+            origin: TextInput::local()
+                .with_id("passwords.field.origin")
+                .with_accessible_name("Sign-in addresses")
+                .with_initial_value(origin),
+            password: TextInput::local()
+                .with_id("passwords.field.password")
+                .with_accessible_name("Password or secret")
+                .with_secret(true)
+                .with_initial_value(password),
+            notes: TextInput::local()
+                .with_id("passwords.field.notes")
+                .with_accessible_name("Notes")
+                .multiline(true)
+                .with_initial_value(notes),
+        }
+    }
+
+    fn get_mut(&mut self, field: ActiveField) -> Option<&mut TextInput> {
+        match field {
+            ActiveField::Name => Some(&mut self.name),
+            ActiveField::Username => Some(&mut self.username),
+            ActiveField::Origin => Some(&mut self.origin),
+            ActiveField::Password => Some(&mut self.password),
+            ActiveField::Notes => Some(&mut self.notes),
+            ActiveField::Search => None,
+        }
+    }
+
+    fn get(&self, field: ActiveField) -> Option<&TextInput> {
+        match field {
+            ActiveField::Name => Some(&self.name),
+            ActiveField::Username => Some(&self.username),
+            ActiveField::Origin => Some(&self.origin),
+            ActiveField::Password => Some(&self.password),
+            ActiveField::Notes => Some(&self.notes),
+            ActiveField::Search => None,
+        }
+    }
+
+    fn for_each_mut(&mut self, mut visit: impl FnMut(ActiveField, &mut TextInput)) {
+        visit(ActiveField::Name, &mut self.name);
+        visit(ActiveField::Username, &mut self.username);
+        visit(ActiveField::Origin, &mut self.origin);
+        visit(ActiveField::Password, &mut self.password);
+        visit(ActiveField::Notes, &mut self.notes);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShowcaseMode {
+    Vault,
+    Editor,
+    Health,
+    Import,
+    Export,
+}
+
+fn compact_content_rect(mode: ShowcaseMode, main: Rect) -> Rect {
+    if matches!(mode, ShowcaseMode::Editor | ShowcaseMode::Health) {
+        main
+    } else {
+        Rect::new(main.x0 + 60.0, main.y0, main.x1, main.y1)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum VaultFilter {
+    #[default]
+    All,
+    Favorites,
+    Kind(SecretItemKind),
+}
+
+pub struct PasswordsSurface {
+    rect: Rect,
+    model: Option<crate::PasswordsModel>,
+    items: Vec<SecretItem>,
+    selected: usize,
+    mode: ShowcaseMode,
+    vault_filter: VaultFilter,
+    last_pointer: Point,
+    drawer: SidebarDrawer,
+    /// Retained navigation position for short/landscape phone drawers.
+    sidebar_scroll: f64,
+    sidebar_touch: Option<(u64, Point, f64)>,
+    query: String,
+    editing: Option<SecretId>,
+    draft_title: String,
+    draft_kind: SecretItemKind,
+    draft_username: String,
+    draft_origin: String,
+    draft_password: Zeroizing<String>,
+    draft_notes: Zeroizing<String>,
+    editor_inputs: EditorInputs,
+    active_field: Option<ActiveField>,
+    revealed: Option<(SecretId, String, std::time::Instant)>,
+    status: String,
+    mobile_detail: bool,
+    health: crate::VaultHealth,
+    import_portal: Option<ui::portal::OpenFileChannel>,
+    import_parse: Option<std::sync::mpsc::Receiver<Result<Vec<ImportLogin>, String>>>,
+    export_portal: Option<ui::portal::PortalChannel>,
+    transfer_dialog: Option<TransferDialog>,
+}
+
+impl PasswordsSurface {
+    fn kind_label(kind: SecretItemKind) -> &'static str {
+        match kind {
+            SecretItemKind::Login => "Login",
+            SecretItemKind::ApiKey => "API key",
+            SecretItemKind::SecureNote => "Secure note",
+            SecretItemKind::Wifi => "Wi-Fi password",
+            SecretItemKind::Other => "Secret",
+        }
+    }
+
+    fn item_summary(item: &SecretItem) -> String {
+        match item.kind {
+            SecretItemKind::Login => item
+                .origins
+                .iter()
+                .next()
+                .cloned()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| item.username.clone()),
+            SecretItemKind::ApiKey => item
+                .username
+                .is_empty()
+                .then_some("API credential".to_string())
+                .unwrap_or_else(|| item.username.clone()),
+            SecretItemKind::SecureNote => "Note".into(),
+            SecretItemKind::Wifi => item
+                .fields
+                .get("network")
+                .cloned()
+                .unwrap_or_else(|| "Wi-Fi network".into()),
+            SecretItemKind::Other => item
+                .tags
+                .iter()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "Stored secret".into()),
+        }
+    }
+
+    fn is_favorite(item: &SecretItem) -> bool {
+        item.tags.contains("favorite")
+    }
+
+    fn filter_matches(&self, item: &SecretItem) -> bool {
+        match self.vault_filter {
+            VaultFilter::All => true,
+            VaultFilter::Favorites => Self::is_favorite(item),
+            VaultFilter::Kind(kind) => item.kind == kind,
+        }
+    }
+
+    fn visible_indices(&self) -> Vec<usize> {
+        self.items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| self.filter_matches(item).then_some(index))
+            .collect()
+    }
+
+    fn list_capacity(rect: Rect) -> usize {
+        let first_row = rect.y0 + 168.0;
+        ((rect.y1 - first_row) / 76.0).floor().max(0.0) as usize
+    }
+
+    fn select_filter(&mut self, filter: VaultFilter) {
+        self.vault_filter = filter;
+        self.mode = ShowcaseMode::Vault;
+        self.mobile_detail = false;
+        if let Some(first) = self.visible_indices().first().copied() {
+            self.selected = first;
+        }
+    }
+
+    fn toggle_favorite(&mut self, index: usize) {
+        let Some(item) = self.items.get(index) else {
+            return;
+        };
+        let id = item.id.clone();
+        let was_favorite = Self::is_favorite(item);
+        if let Some(model) = &mut self.model {
+            let Some(mut full_item) = model.items().into_iter().find(|item| item.id == id) else {
+                return;
+            };
+            if was_favorite {
+                full_item.tags.remove("favorite");
+            } else {
+                full_item.tags.insert("favorite".into());
+            }
+            if let Err(error) = model.update(&mut full_item) {
+                self.status = error;
+                return;
+            }
+            self.refresh();
+        } else if let Some(item) = self.items.get_mut(index) {
+            if was_favorite {
+                item.tags.remove("favorite");
+            } else {
+                item.tags.insert("favorite".into());
+            }
+        }
+        self.status = if was_favorite {
+            "Removed from favorites".into()
+        } else {
+            "Added to favorites".into()
+        };
+    }
+
+    pub fn live() -> Self {
+        Self {
+            rect: Rect::ZERO,
+            model: Some(crate::PasswordsModel::open()),
+            items: Vec::new(),
+            selected: 0,
+            mode: ShowcaseMode::Vault,
+            vault_filter: VaultFilter::All,
+            last_pointer: Point::ZERO,
+            drawer: SidebarDrawer::new()
+                .docked_width(214.0)
+                .overlay_width(292.0)
+                .breakpoint(960.0),
+            sidebar_scroll: 0.0,
+            sidebar_touch: None,
+            query: String::new(),
+            editing: None,
+            draft_title: String::new(),
+            draft_kind: SecretItemKind::Login,
+            draft_username: String::new(),
+            draft_origin: String::new(),
+            draft_password: Zeroizing::new(String::new()),
+            draft_notes: Zeroizing::new(String::new()),
+            editor_inputs: EditorInputs::new("", "", "", "", ""),
+            active_field: None,
+            revealed: None,
+            status: String::new(),
+            mobile_detail: false,
+            health: crate::VaultHealth::default(),
+            import_portal: None,
+            import_parse: None,
+            export_portal: None,
+            transfer_dialog: None,
+        }
+        .loaded()
+    }
+    pub fn demo(mode: ShowcaseMode) -> Self {
+        let editing = (mode == ShowcaseMode::Editor).then(|| SecretId("demo-0".into()));
+        let items = demo_items();
+        let health = crate::analyze_health(&items);
+        let transfer_dialog = match mode {
+            ShowcaseMode::Import => Some(TransferDialog::ImportPreview {
+                rows: vec![
+                    ImportLogin {
+                        title: Zeroizing::new("Work account".into()),
+                        username: Zeroizing::new("ada@work.example".into()),
+                        origin: Zeroizing::new("https://work.example".into()),
+                        password: Zeroizing::new("not-rendered".into()),
+                        notes: Zeroizing::new(String::new()),
+                    },
+                    ImportLogin {
+                        title: Zeroizing::new("Personal mail".into()),
+                        username: Zeroizing::new("ada@example.com".into()),
+                        origin: Zeroizing::new("https://mail.example".into()),
+                        password: Zeroizing::new("not-rendered".into()),
+                        notes: Zeroizing::new(String::new()),
+                    },
+                ],
+                conflicts: 1,
+            }),
+            ShowcaseMode::Export => Some(TransferDialog::ExportPlaintext {
+                acknowledged: false,
+            }),
+            _ => None,
+        };
+        Self {
+            rect: Rect::ZERO,
+            model: None,
+            items,
+            selected: 0,
+            mode,
+            vault_filter: VaultFilter::All,
+            last_pointer: Point::ZERO,
+            drawer: SidebarDrawer::new()
+                .docked_width(214.0)
+                .overlay_width(292.0)
+                .breakpoint(960.0),
+            sidebar_scroll: 0.0,
+            sidebar_touch: None,
+            query: String::new(),
+            editing,
+            draft_title: "Northstar Bank".into(),
+            draft_kind: SecretItemKind::Login,
+            draft_username: "ada@example.com".into(),
+            draft_origin: "https://bank.example, https://login.bank.example".into(),
+            draft_password: Zeroizing::new(String::new()),
+            draft_notes: Zeroizing::new(String::new()),
+            editor_inputs: EditorInputs::new(
+                "Northstar Bank",
+                "ada@example.com",
+                "https://bank.example, https://login.bank.example",
+                "",
+                "",
+            ),
+            active_field: None,
+            revealed: None,
+            status: String::new(),
+            mobile_detail: false,
+            health,
+            import_portal: None,
+            import_parse: None,
+            export_portal: None,
+            transfer_dialog,
+        }
+    }
+
+    fn loaded(mut self) -> Self {
+        self.refresh();
+        self
+    }
+
+    fn refresh(&mut self) {
+        if let Some(model) = &self.model {
+            self.health = model.health();
+            self.items = model
+                .search(&self.query)
+                .into_iter()
+                .map(|mut item| {
+                    item.password.clear();
+                    if item.kind == SecretItemKind::SecureNote {
+                        item.notes.clear();
+                    }
+                    item
+                })
+                .collect();
+            self.selected = self.selected.min(self.items.len().saturating_sub(1));
+        }
+    }
+
+    fn sync_editor_inputs(&mut self) {
+        self.editor_inputs.name.set_text(&self.draft_title);
+        self.editor_inputs.username.set_text(&self.draft_username);
+        self.editor_inputs.origin.set_text(&self.draft_origin);
+        self.editor_inputs.password.set_text(&self.draft_password);
+        self.editor_inputs.notes.set_text(&self.draft_notes);
+    }
+
+    fn update_draft_from_input(&mut self, field: ActiveField, value: String) {
+        match field {
+            ActiveField::Name => self.draft_title = value,
+            ActiveField::Username => self.draft_username = value,
+            ActiveField::Origin => self.draft_origin = value,
+            ActiveField::Password => self.draft_password = Zeroizing::new(value),
+            ActiveField::Notes => self.draft_notes = Zeroizing::new(value),
+            ActiveField::Search => {}
+        }
+    }
+
+    fn begin_add(&mut self) {
+        self.mobile_detail = false;
+        self.editing = None;
+        self.draft_title.clear();
+        self.draft_kind = SecretItemKind::Login;
+        self.draft_username.clear();
+        self.draft_origin.clear();
+        self.draft_password.clear();
+        self.draft_notes.clear();
+        self.active_field = Some(ActiveField::Name);
+        self.status.clear();
+        self.mode = ShowcaseMode::Editor;
+        self.sync_editor_inputs();
+    }
+
+    fn begin_edit(&mut self) {
+        let Some(cached) = self.items.get(self.selected) else {
+            return;
+        };
+        let item = self
+            .model
+            .as_ref()
+            .and_then(|model| model.items().into_iter().find(|item| item.id == cached.id))
+            .unwrap_or_else(|| cached.clone());
+        self.editing = Some(item.id.clone());
+        self.draft_kind = item.kind;
+        self.draft_title = item.title.clone();
+        self.draft_username = item.username.clone();
+        self.draft_origin = item.origins.iter().cloned().collect::<Vec<_>>().join(", ");
+        self.draft_password.clear();
+        self.draft_notes = Zeroizing::new(item.notes);
+        self.active_field = Some(ActiveField::Name);
+        self.status = "Leave password blank to keep it".into();
+        self.mode = ShowcaseMode::Editor;
+        self.sync_editor_inputs();
+    }
+
+    fn cancel_edit(&mut self) {
+        self.mode = ShowcaseMode::Vault;
+        self.mobile_detail = self.drawer.is_overlay() && self.editing.is_some();
+        self.active_field = None;
+        self.clear_sensitive_editor_text();
+        self.status.clear();
+    }
+
+    fn clear_sensitive_editor_text(&mut self) {
+        self.draft_password.clear();
+        self.draft_notes.clear();
+        // The shared inputs retain their own editing buffers. Clear those as
+        // well so a saved/cancelled secret cannot survive in an inactive
+        // widget and reappear when the editor is opened again.
+        self.editor_inputs.password.set_text("");
+        self.editor_inputs.notes.set_text("");
+    }
+
+    fn save_draft(&mut self) {
+        let Some(model) = self.model.as_mut() else {
+            self.mode = ShowcaseMode::Vault;
+            self.active_field = None;
+            self.clear_sensitive_editor_text();
+            return;
+        };
+        if self.draft_title.trim().is_empty() {
+            self.status = "Add a name so you can find this item".into();
+            self.active_field = Some(ActiveField::Name);
+            return;
+        }
+        if self.draft_kind == SecretItemKind::SecureNote && self.draft_notes.trim().is_empty() {
+            self.status = "Add something to the note".into();
+            self.active_field = Some(ActiveField::Notes);
+            return;
+        }
+        if self.editing.is_none()
+            && self.draft_kind != SecretItemKind::SecureNote
+            && self.draft_password.is_empty()
+            && self.draft_kind != SecretItemKind::Login
+        {
+            self.status = format!(
+                "Add the {}",
+                Self::secret_field_label(self.draft_kind).to_lowercase()
+            );
+            self.active_field = Some(ActiveField::Password);
+            return;
+        }
+        let existing = self
+            .editing
+            .as_ref()
+            .and_then(|id| model.items().into_iter().find(|item| &item.id == id));
+        if self.editing.is_some() && existing.is_none() {
+            self.status = "Item no longer exists".into();
+            return;
+        }
+        let password = if self.draft_password.is_empty() {
+            existing
+                .as_ref()
+                .map_or_else(String::new, |item| item.password.clone())
+        } else {
+            self.draft_password.to_string()
+        };
+        let password = if password.is_empty() && self.draft_kind == SecretItemKind::Login {
+            GeneratedPasswordPolicy::default()
+                .generate()
+                .map(|value| value.to_string())
+                .unwrap_or_default()
+        } else {
+            password
+        };
+        let mut item = existing.unwrap_or_else(|| SecretItem::login("", "", ""));
+        item.kind = self.draft_kind;
+        item.title = self.draft_title.trim().into();
+        item.username = self.draft_username.trim().into();
+        item.password = if self.draft_kind == SecretItemKind::SecureNote {
+            String::new()
+        } else {
+            password
+        };
+        item.notes = self.draft_notes.to_string();
+        item.origins.clear();
+        if self.draft_kind == SecretItemKind::Wifi {
+            item.fields
+                .insert("network".into(), self.draft_username.trim().into());
+        } else {
+            // `network` is a Passwords-owned projection of the Wi-Fi name;
+            // remove it when changing kinds, but retain every app-specific
+            // custom field we do not own or understand.
+            item.fields.remove("network");
+        }
+        let origins = self
+            .draft_origin
+            .split([',', '\n', ';'])
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .collect::<Vec<_>>();
+        let valid_origin = if matches!(
+            self.draft_kind,
+            SecretItemKind::Login | SecretItemKind::ApiKey
+        ) {
+            origins.into_iter().try_for_each(|origin| {
+                item.add_origin(origin)
+                    .map_err(|_| format!("{origin} is not a full sign-in address"))
+            })
+        } else {
+            Ok(())
+        };
+        let result = valid_origin.and_then(|()| model.save_item(&mut item).map(|_| ()));
+        match result {
+            Ok(()) => {
+                self.query.clear();
+                self.refresh();
+                self.mode = ShowcaseMode::Vault;
+                self.active_field = None;
+                self.clear_sensitive_editor_text();
+                self.status = "Saved".into();
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn generate_password(&mut self) {
+        match GeneratedPasswordPolicy::default().generate() {
+            Ok(value) => {
+                self.draft_password = Zeroizing::new(value.to_string());
+                self.editor_inputs.password.set_text(&self.draft_password);
+                self.status = format!(
+                    "Generated {}",
+                    Self::secret_field_label(self.draft_kind).to_lowercase()
+                );
+            }
+            Err(error) => self.status = format!("Password generation failed: {error:?}"),
+        }
+    }
+
+    fn secret_field_label(kind: SecretItemKind) -> &'static str {
+        match kind {
+            SecretItemKind::ApiKey => "API key",
+            SecretItemKind::Wifi => "Password",
+            SecretItemKind::Other => "Secret",
+            SecretItemKind::Login => "Password",
+            SecretItemKind::SecureNote => "Note",
+        }
+    }
+
+    fn editor_field_order(&self) -> Vec<ActiveField> {
+        let mut fields = vec![ActiveField::Name];
+        match self.draft_kind {
+            SecretItemKind::Login | SecretItemKind::ApiKey => fields.extend([
+                ActiveField::Username,
+                ActiveField::Origin,
+                ActiveField::Password,
+            ]),
+            SecretItemKind::Wifi | SecretItemKind::Other => {
+                fields.extend([ActiveField::Username, ActiveField::Password])
+            }
+            SecretItemKind::SecureNote => {}
+        }
+        fields.push(ActiveField::Notes);
+        fields
+    }
+
+    fn editor_note_y(&self, panel: Rect) -> f64 {
+        let ordinary = self.editor_field_order().len().saturating_sub(1);
+        self.editor_fields_top(panel)
+            + f64::from(u32::try_from(ordinary).unwrap_or(0)) * self.editor_field_step(panel)
+            + if self.draft_kind == SecretItemKind::SecureNote {
+                0.0
+            } else {
+                self.editor_generate_height(panel)
+            }
+    }
+
+    fn editor_is_compact(panel: Rect) -> bool {
+        panel.width() - 72.0 < 500.0
+    }
+    fn editor_fields_top(&self, panel: Rect) -> f64 {
+        panel.y0
+            + if Self::editor_is_compact(panel) {
+                if panel.width() - 72.0 >= 252.0 {
+                    132.0
+                } else {
+                    184.0
+                }
+            } else {
+                148.0
+            }
+    }
+    fn editor_field_step(&self, panel: Rect) -> f64 {
+        if Self::editor_is_compact(panel) {
+            72.0
+        } else {
+            68.0
+        }
+    }
+    fn editor_generate_height(&self, _panel: Rect) -> f64 {
+        52.0
+    }
+
+    fn kind_segments(&self, panel: Rect) -> Vec<Rect> {
+        let x = panel.x0 + 36.0;
+        let width = panel.width() - 72.0;
+        if !Self::editor_is_compact(panel) || width >= 252.0 {
+            let segment = (width - 32.0) / 5.0;
+            (0_u32..5)
+                .map(|index| {
+                    let left = x + f64::from(index) * (segment + 8.0);
+                    let top = if Self::editor_is_compact(panel) {
+                        panel.y0 + 70.0
+                    } else {
+                        panel.y0 + 82.0
+                    };
+                    Rect::new(left, top, left + segment, top + 44.0)
+                })
+                .collect()
+        } else {
+            let first = (width - 16.0) / 3.0;
+            let second = (width - 8.0) / 2.0;
+            (0_u32..5)
+                .map(|index| {
+                    if index < 3 {
+                        let left = x + f64::from(index) * (first + 8.0);
+                        Rect::new(left, panel.y0 + 70.0, left + first, panel.y0 + 114.0)
+                    } else {
+                        let left = x + f64::from(index - 3) * (second + 8.0);
+                        Rect::new(left, panel.y0 + 122.0, left + second, panel.y0 + 166.0)
+                    }
+                })
+                .collect()
+        }
+    }
+
+    fn editor_footer_rects(&self, panel: Rect) -> (Option<Rect>, Rect, Rect) {
+        let y = panel.y1 - 68.0;
+        if Self::editor_is_compact(panel) {
+            let save = Rect::new(panel.x1 - 98.0, y, panel.x1 - 24.0, y + 44.0);
+            let cancel = Rect::new(save.x0 - 61.0, y, save.x0 - 6.0, y + 44.0);
+            (
+                self.editing
+                    .is_some()
+                    .then(|| Rect::new(panel.x0 + 36.0, y, cancel.x0 - 6.0, y + 44.0)),
+                cancel,
+                save,
+            )
+        } else {
+            (
+                self.editing
+                    .is_some()
+                    .then(|| Rect::new(panel.x0 + 36.0, y, panel.x0 + 118.0, y + 44.0)),
+                Rect::new(panel.x1 - 238.0, y, panel.x1 - 148.0, y + 44.0),
+                Rect::new(panel.x1 - 136.0, y, panel.x1 - 24.0, y + 44.0),
+            )
+        }
+    }
+
+    fn select_kind(&mut self, kind: SecretItemKind) {
+        self.draft_kind = kind;
+        self.active_field = Some(if kind == SecretItemKind::SecureNote {
+            ActiveField::Notes
+        } else {
+            ActiveField::Name
+        });
+        self.status.clear();
+    }
+
+    fn copy_selected(&mut self) {
+        let Some(item) = self.items.get(self.selected) else {
+            return;
+        };
+        let Some(model) = &self.model else { return };
+        match model.reveal_value(&item.id) {
+            Ok(secret) => {
+                ui::text_selection::clipboard_copy(&secret);
+                let lease =
+                    accounts::ClipboardLease::new(secret, std::time::Duration::from_secs(30));
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(30));
+                    let current = ui::text_selection::clipboard_paste();
+                    if lease.should_clear(current.as_deref()) {
+                        ui::text_selection::clipboard_copy("");
+                    }
+                });
+                self.status = format!(
+                    "Copied {}; clipboard clears in 30 seconds",
+                    Self::secret_field_label(item.kind).to_lowercase()
+                );
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn reveal_selected(&mut self) {
+        let Some(item) = self.items.get(self.selected) else {
+            return;
+        };
+        let Some(model) = &self.model else { return };
+        match model.reveal_value(&item.id) {
+            Ok(secret) => {
+                self.revealed = Some((
+                    item.id.clone(),
+                    secret.to_string(),
+                    std::time::Instant::now() + std::time::Duration::from_secs(10),
+                ))
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn copy_identity_selected(&mut self) {
+        let Some(item) = self.items.get(self.selected) else {
+            return;
+        };
+        let value = match item.kind {
+            SecretItemKind::Wifi => item
+                .fields
+                .get("network")
+                .map_or(item.title.as_str(), String::as_str),
+            _ => item.username.as_str(),
+        };
+        if value.is_empty() {
+            return;
+        }
+        ui::text_selection::clipboard_copy(value);
+        self.status = match item.kind {
+            SecretItemKind::Wifi => "Copied network name".into(),
+            SecretItemKind::ApiKey => "Copied account".into(),
+            _ => "Copied username".into(),
+        };
+    }
+
+    fn copy_origin_selected(&mut self) {
+        let Some(item) = self.items.get(self.selected) else {
+            return;
+        };
+        if item.origins.is_empty() {
+            return;
+        }
+        let origins = item.origins.iter().cloned().collect::<Vec<_>>().join("\n");
+        ui::text_selection::clipboard_copy(&origins);
+        self.status = if item.origins.len() == 1 {
+            "Copied address".into()
+        } else {
+            format!("Copied {} addresses", item.origins.len())
+        };
+    }
+
+    fn activate_detail_row(&mut self, row: usize) {
+        let Some(item) = self.items.get(self.selected) else {
+            return;
+        };
+        match item.kind {
+            SecretItemKind::Login | SecretItemKind::ApiKey | SecretItemKind::Wifi if row == 0 => {
+                self.copy_identity_selected()
+            }
+            SecretItemKind::Login | SecretItemKind::ApiKey | SecretItemKind::Wifi if row == 1 => {
+                self.copy_selected()
+            }
+            SecretItemKind::Login | SecretItemKind::ApiKey if row == 2 => {
+                self.copy_origin_selected()
+            }
+            SecretItemKind::SecureNote | SecretItemKind::Other if row == 0 => self.copy_selected(),
+            _ => {}
+        }
+    }
+
+    fn detail_row_is_secret(&self, row: usize) -> bool {
+        self.items
+            .get(self.selected)
+            .is_some_and(|item| match item.kind {
+                SecretItemKind::Login | SecretItemKind::ApiKey | SecretItemKind::Wifi => row == 1,
+                SecretItemKind::SecureNote | SecretItemKind::Other => row == 0,
+            })
+    }
+
+    fn activate_detail_row_at(&mut self, row: usize, x: f64, panel_right: f64) {
+        if self.detail_row_is_secret(row) && x >= panel_right - 72.0 {
+            self.reveal_selected();
+        } else {
+            self.activate_detail_row(row);
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "embedded shared widgets receive the standard Widget event context"
+    )]
+    fn route_editor_inputs(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        if self.mode != ShowcaseMode::Editor {
+            return false;
+        }
+        if matches!(
+            event,
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && (matches!(event.logical_key, Key::Named(NamedKey::Tab | NamedKey::Escape))
+                        || (event.logical_key == Key::Named(NamedKey::Enter)
+                            && self.active_field != Some(ActiveField::Notes)))
+        ) {
+            return false;
+        }
+
+        let point = match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => Some(self.last_pointer),
+            WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => Some(Point::new(
+                touch.location.x / scale,
+                touch.location.y / scale,
+            )),
+            _ => None,
+        };
+        if let Some(point) = point {
+            let mut hit = None;
+            self.editor_inputs.for_each_mut(|field, input| {
+                if input.get_rect().contains(point) {
+                    hit = Some(field);
+                }
+            });
+            if hit.is_some() {
+                self.active_field = hit;
+            }
+        }
+
+        let active = self.active_field;
+        self.editor_inputs
+            .for_each_mut(|field, input| Widget::set_focus(input, active == Some(field)));
+        let mut input_handled = false;
+        if matches!(event, WindowEvent::CursorMoved { .. }) {
+            self.editor_inputs.for_each_mut(|_, input| {
+                input.handle_event(
+                    event,
+                    scale,
+                    modifiers,
+                    state,
+                    path,
+                    &mut input_handled,
+                    focus,
+                    node,
+                    taffy,
+                );
+            });
+        } else if let Some(field) = active
+            && let Some(input) = self.editor_inputs.get_mut(field)
+        {
+            input.handle_event(
+                event,
+                scale,
+                modifiers,
+                state,
+                path,
+                &mut input_handled,
+                focus,
+                node,
+                taffy,
+            );
+        }
+
+        let mut updates = Vec::new();
+        self.editor_inputs.for_each_mut(|field, input| {
+            if let Some(value) = input.take_dirty() {
+                updates.push((field, value));
+            }
+        });
+        for (field, value) in updates {
+            self.update_draft_from_input(field, value);
+        }
+        input_handled
+    }
+
+    fn request_import(&mut self) {
+        if self.model.is_none() || self.import_portal.is_some() {
+            return;
+        }
+        self.status = "Choose a browser password CSV".into();
+        self.import_portal = Some(crate::transfer::import_request().send_open_file());
+    }
+
+    fn request_export_confirmation(&mut self) {
+        if self.model.is_some() {
+            self.transfer_dialog = Some(TransferDialog::ExportPlaintext {
+                acknowledged: false,
+            });
+        }
+    }
+
+    fn begin_plaintext_export(&mut self) {
+        let acknowledged = matches!(
+            self.transfer_dialog,
+            Some(TransferDialog::ExportPlaintext { acknowledged: true })
+        );
+        if !acknowledged || self.export_portal.is_some() {
+            return;
+        }
+        self.transfer_dialog = None;
+        self.export_portal = Some(crate::transfer::export_request().send());
+    }
+
+    fn poll_transfers(&mut self) {
+        if let Some(rx) = self.import_portal.as_ref() {
+            match rx.try_recv() {
+                Ok(ui::portal::OpenFileOutcome::Opened(opened)) => {
+                    self.import_portal = None;
+                    let file = opened.into_file();
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.import_parse = Some(rx);
+                    let _ = std::thread::Builder::new()
+                        .name("passwords-csv-parser".into())
+                        .spawn(move || {
+                            let _ = tx.send(crate::transfer::parse_browser_csv(file));
+                        });
+                }
+                Ok(ui::portal::OpenFileOutcome::Cancelled) => {
+                    self.import_portal = None;
+                    self.status.clear();
+                }
+                Ok(ui::portal::OpenFileOutcome::Failed(error)) => {
+                    self.import_portal = None;
+                    self.status = format!("Could not open the file chooser: {error}");
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.import_portal = None;
+                    self.status = "The file chooser disconnected".into();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = self.import_parse.as_ref() {
+            match rx.try_recv() {
+                Ok(Ok(rows)) => {
+                    self.import_parse = None;
+                    let conflicts = self.import_conflicts(&rows);
+                    self.transfer_dialog = Some(TransferDialog::ImportPreview { rows, conflicts });
+                }
+                Ok(Err(error)) => {
+                    self.import_parse = None;
+                    self.status = error;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.import_parse = None;
+                    self.status = "The CSV parser stopped".into();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = self.export_portal.as_ref() {
+            match rx.try_recv() {
+                Ok(ui::portal::PortalOutcome::Opened(mut path)) => {
+                    self.export_portal = None;
+                    if path
+                        .extension()
+                        .and_then(|v| v.to_str())
+                        .is_none_or(|ext| !ext.eq_ignore_ascii_case("csv"))
+                    {
+                        path.set_extension("csv");
+                    }
+                    let result = self.write_plaintext_export(&path);
+                    self.status = result
+                        .map_or_else(|error| error, |count| format!("Exported {count} logins"));
+                }
+                Ok(ui::portal::PortalOutcome::Cancelled) => {
+                    self.export_portal = None;
+                    self.status.clear();
+                }
+                Ok(ui::portal::PortalOutcome::Failed(error)) => {
+                    self.export_portal = None;
+                    self.status = format!("Could not open the save dialog: {error}");
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.export_portal = None;
+                    self.status = "The save dialog disconnected".into();
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+    }
+
+    fn import_conflicts(&self, rows: &[ImportLogin]) -> usize {
+        let existing = self
+            .model
+            .as_ref()
+            .map_or_else(Vec::new, crate::PasswordsModel::items);
+        rows.iter()
+            .filter(|row| {
+                existing.iter().any(|item| {
+                    item.title.eq_ignore_ascii_case(&row.title)
+                        && item.username.eq_ignore_ascii_case(&row.username)
+                        && origins_match(item, &row.origin)
+                })
+            })
+            .count()
+    }
+
+    fn apply_import(&mut self) {
+        let Some(TransferDialog::ImportPreview { rows, .. }) = self.transfer_dialog.take() else {
+            return;
+        };
+        let existing = self
+            .model
+            .as_ref()
+            .map_or_else(Vec::new, crate::PasswordsModel::items);
+        let Some(model) = &mut self.model else { return };
+        let mut imported = 0usize;
+        let mut skipped = 0usize;
+        for row in rows {
+            if existing.iter().any(|item| {
+                item.title.eq_ignore_ascii_case(&row.title)
+                    && item.username.eq_ignore_ascii_case(&row.username)
+                    && origins_match(item, &row.origin)
+            }) {
+                skipped += 1;
+                continue;
+            }
+            let mut item = SecretItem::login(
+                row.title.to_string(),
+                row.username.to_string(),
+                row.password.to_string(),
+            );
+            item.notes = row.notes.to_string();
+            if !row.origin.is_empty() && item.add_origin(&row.origin).is_err() {
+                skipped += 1;
+                continue;
+            }
+            if model.update(&mut item).is_ok() {
+                imported += 1;
+            } else {
+                skipped += 1;
+            }
+        }
+        self.refresh();
+        self.status = format!("Imported {imported}; skipped {skipped}");
+    }
+
+    fn write_plaintext_export(&self, path: &std::path::Path) -> Result<usize, String> {
+        use std::io::Write;
+        let Some(model) = &self.model else {
+            return Err("Export is unavailable in this preview".into());
+        };
+        let items = model.items();
+        let csv = crate::transfer::export_browser_csv(&items);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options
+            .open(path)
+            .map_err(|_| "Could not create the selected file".to_string())?;
+        file.write_all(csv.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|_| "Could not finish writing the selected file".to_string())?;
+        Ok(items.len())
+    }
+
+    fn activate_sidebar(&mut self, point: Point) -> bool {
+        if !self.drawer.sidebar_contains(point) {
+            return false;
+        }
+        let rect = self.sidebar_viewport();
+        let Some(id) = self.sidebar_nav(rect).hit_test(point).map(str::to_owned) else {
+            return true;
+        };
+        match id.as_str() {
+            "all" => {
+                self.select_filter(VaultFilter::All);
+            }
+            "favorites" => self.select_filter(VaultFilter::Favorites),
+            "logins" => self.select_filter(VaultFilter::Kind(SecretItemKind::Login)),
+            "api-keys" => self.select_filter(VaultFilter::Kind(SecretItemKind::ApiKey)),
+            "notes" => self.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote)),
+            "wifi" => self.select_filter(VaultFilter::Kind(SecretItemKind::Wifi)),
+            "other" => self.select_filter(VaultFilter::Kind(SecretItemKind::Other)),
+            "review" => {
+                self.mode = ShowcaseMode::Health;
+                self.mobile_detail = false;
+            }
+            "import" => self.request_import(),
+            "export" => self.request_export_confirmation(),
+            _ => return true,
+        }
+        if self.drawer.is_overlay() {
+            self.drawer.close();
+        }
+        true
+    }
+
+    fn activate_transfer(&mut self, point: Point) -> bool {
+        let rect = self.transfer_rect();
+        let Some(dialog) = &mut self.transfer_dialog else {
+            return false;
+        };
+        if !rect.contains(point) {
+            return true;
+        }
+        match dialog {
+            TransferDialog::ImportPreview { .. } => {
+                if Rect::new(
+                    rect.x1 - 220.0,
+                    rect.y1 - 64.0,
+                    rect.x1 - 126.0,
+                    rect.y1 - 12.0,
+                )
+                .contains(point)
+                {
+                    self.transfer_dialog = None;
+                } else if Rect::new(
+                    rect.x1 - 124.0,
+                    rect.y1 - 64.0,
+                    rect.x1 - 12.0,
+                    rect.y1 - 12.0,
+                )
+                .contains(point)
+                {
+                    self.apply_import();
+                }
+            }
+            TransferDialog::ExportPlaintext { acknowledged } => {
+                if Rect::new(
+                    rect.x0 + 20.0,
+                    rect.y0 + 140.0,
+                    rect.x1 - 20.0,
+                    rect.y0 + 216.0,
+                )
+                .contains(point)
+                {
+                    *acknowledged = !*acknowledged;
+                } else if Rect::new(
+                    rect.x1 - 236.0,
+                    rect.y1 - 64.0,
+                    rect.x1 - 142.0,
+                    rect.y1 - 12.0,
+                )
+                .contains(point)
+                {
+                    self.transfer_dialog = None;
+                } else if *acknowledged
+                    && Rect::new(
+                        rect.x1 - 140.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 12.0,
+                        rect.y1 - 12.0,
+                    )
+                    .contains(point)
+                {
+                    self.begin_plaintext_export();
+                }
+            }
+        }
+        true
+    }
+
+    /// Touch does not synthesize a mouse click on every compositor. Route the
+    /// primary controls explicitly, using the same generous visual regions.
+    fn activate_touch(&mut self, point: Point) -> bool {
+        if self.transfer_dialog.is_some() {
+            return self.activate_transfer(point);
+        }
+        let content = Rect::new(
+            self.rect.x0 + 24.0,
+            self.rect.y0 + 24.0,
+            self.rect.x1 - 24.0,
+            self.rect.y1 - 24.0,
+        );
+        self.drawer.resolve(content);
+        if self.drawer.is_overlay()
+            && Rect::new(content.x0, content.y0, content.x0 + 48.0, content.y0 + 48.0)
+                .contains(point)
+        {
+            self.drawer.toggle();
+            return true;
+        }
+        if self.activate_sidebar(point) {
+            return true;
+        }
+        if self.drawer.press_dismisses(point) {
+            return true;
+        }
+        let main = self.drawer.content_rect();
+        let list = if self.drawer.is_docked() {
+            Rect::new(main.x0, content.y0 + 4.0, main.x0 + 330.0, content.y1)
+        } else if self.mode == ShowcaseMode::Editor {
+            main
+        } else {
+            Rect::new(main.x0 + 60.0, main.y0, main.x1, main.y1)
+        };
+        if self.drawer.is_overlay() && self.mode == ShowcaseMode::Vault && self.mobile_detail {
+            if Rect::new(list.x0, list.y0 + 18.0, list.x0 + 62.0, list.y0 + 76.0).contains(point) {
+                self.mobile_detail = false;
+                return true;
+            }
+            if Rect::new(
+                list.x1 - 110.0,
+                list.y0 + 20.0,
+                list.x1 - 10.0,
+                list.y0 + 84.0,
+            )
+            .contains(point)
+            {
+                self.begin_edit();
+                return true;
+            }
+            if point.x >= list.x1 - 150.0 {
+                for row in 0_u32..3 {
+                    let y0 = list.y0 + 116.0 + f64::from(row) * 78.0;
+                    if (y0..y0 + 78.0).contains(&point.y) {
+                        self.activate_detail_row_at(row as usize, point.x, list.x1);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        if self.mode == ShowcaseMode::Vault || self.drawer.is_docked() {
+            if Rect::new(
+                list.x1 - 122.0,
+                list.y0 - 10.0,
+                list.x1 + 4.0,
+                list.y0 + 46.0,
+            )
+            .contains(point)
+            {
+                self.begin_add();
+                return true;
+            }
+            if Rect::new(list.x0, list.y0 + 48.0, list.x1, list.y0 + 106.0).contains(point) {
+                self.active_field = Some(ActiveField::Search);
+                return true;
+            }
+            let first_y = list.y0 + 168.0;
+            let visible = self.visible_indices();
+            for (display_index, item_index) in visible
+                .into_iter()
+                .take(Self::list_capacity(list))
+                .enumerate()
+            {
+                let y = first_y + f64::from(u32::try_from(display_index).unwrap_or(0)) * 76.0;
+                if Rect::new(list.x0, y, list.x1, y + 68.0).contains(point) {
+                    if Rect::new(list.x1 - 52.0, y, list.x1, y + 68.0).contains(point) {
+                        self.toggle_favorite(item_index);
+                        return true;
+                    }
+                    self.selected = item_index;
+                    if self.drawer.is_overlay() {
+                        self.mobile_detail = true;
+                    }
+                    return true;
+                }
+            }
+        }
+        let panel = if self.drawer.is_docked() {
+            Rect::new(list.x1 + 24.0, content.y0, content.x1, content.y1)
+        } else {
+            list
+        };
+        if self.mode == ShowcaseMode::Vault && self.drawer.is_docked() {
+            if Rect::new(
+                panel.x1 - 110.0,
+                panel.y0 + 20.0,
+                panel.x1 - 10.0,
+                panel.y0 + 84.0,
+            )
+            .contains(point)
+            {
+                self.begin_edit();
+                return true;
+            }
+            if point.x >= panel.x1 - 150.0
+                && (panel.y0 + 116.0..panel.y0 + 202.0).contains(&point.y)
+            {
+                self.activate_detail_row_at(0, point.x, panel.x1);
+                return true;
+            }
+            if point.x >= panel.x1 - 150.0
+                && (panel.y0 + 194.0..panel.y0 + 280.0).contains(&point.y)
+            {
+                self.activate_detail_row_at(1, point.x, panel.x1);
+                return true;
+            }
+            if point.x >= panel.x1 - 150.0
+                && (panel.y0 + 272.0..panel.y0 + 358.0).contains(&point.y)
+            {
+                self.activate_detail_row_at(2, point.x, panel.x1);
+                return true;
+            }
+        }
+        if self.mode == ShowcaseMode::Editor {
+            let x = panel.x0 + 36.0;
+            for (segment, kind) in self.kind_segments(panel).into_iter().zip([
+                SecretItemKind::Login,
+                SecretItemKind::ApiKey,
+                SecretItemKind::SecureNote,
+                SecretItemKind::Wifi,
+                SecretItemKind::Other,
+            ]) {
+                if segment.contains(point) {
+                    self.select_kind(kind);
+                    return true;
+                }
+            }
+            let ordinary: Vec<_> = self
+                .editor_field_order()
+                .into_iter()
+                .filter(|field| *field != ActiveField::Notes)
+                .collect();
+            for (index, field) in ordinary.into_iter().enumerate() {
+                let y = self.editor_fields_top(panel)
+                    + 20.0
+                    + f64::from(u32::try_from(index).unwrap_or(0)) * self.editor_field_step(panel);
+                if Rect::new(x, y, panel.x1 - 36.0, y + 48.0).contains(point) {
+                    self.active_field = Some(field);
+                    return true;
+                }
+            }
+            let note_y = self.editor_note_y(panel);
+            if self.draft_kind != SecretItemKind::SecureNote
+                && Rect::new(x, note_y - 52.0, x + 206.0, note_y - 4.0).contains(point)
+            {
+                self.generate_password();
+                return true;
+            }
+            if Rect::new(x, note_y + 16.0, panel.x1 - 36.0, note_y + 90.0).contains(point) {
+                self.active_field = Some(ActiveField::Notes);
+                return true;
+            }
+            let (delete, cancel, save) = self.editor_footer_rects(panel);
+            if delete.is_some_and(|rect| rect.contains(point)) {
+                if let (Some(model), Some(id)) = (&mut self.model, self.editing.clone()) {
+                    let _ = model.remove(&id);
+                    self.refresh();
+                    self.cancel_edit();
+                    self.status = "Item deleted".into();
+                }
+                return true;
+            }
+            if cancel.contains(point) {
+                self.cancel_edit();
+                return true;
+            }
+            if save.contains(point) {
+                self.save_draft();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn text(
+        tr: &mut TextRenderer,
+        scene: &mut Scene,
+        text: &str,
+        size: f32,
+        color: vello::peniko::Color,
+        transform: Affine,
+        x: f64,
+        y: f64,
+        weight: TextWeight,
+    ) {
+        tr.draw_text_weighted(
+            scene,
+            text,
+            size,
+            color,
+            transform * Affine::translate((x, y)),
+            None,
+            weight,
+        );
+    }
+    fn card(
+        scene: &mut Scene,
+        transform: Affine,
+        color: vello::peniko::Color,
+        rect: Rect,
+        radius: f64,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            color,
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+    }
+    fn pill(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        label: &str,
+        active: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::card(
+            scene,
+            transform,
+            if active {
+                c.accent.stops.get(5).copied().unwrap_or(c.text_primary)
+            } else {
+                c.surfaces.raised
+            },
+            rect,
+            17.0,
+        );
+        Self::text(
+            tr,
+            scene,
+            label,
+            12.0,
+            if active {
+                c.surfaces.base
+            } else {
+                c.text_primary
+            },
+            transform,
+            rect.x0 + 14.0,
+            rect.y0 + 9.0,
+            TextWeight::Medium,
+        );
+    }
+
+    fn sidebar_nav(&self, rect: Rect) -> SidebarNav {
+        let count = |kind| self.items.iter().filter(|item| item.kind == kind).count();
+        let favorites = self
+            .items
+            .iter()
+            .filter(|item| Self::is_favorite(item))
+            .count();
+        SidebarNav::new(
+            rect,
+            vec![
+                SidebarNavSection::new(
+                    "VAULT",
+                    vec![
+                        SidebarNavItem::new("all", "All items")
+                            .badge(self.items.len().to_string())
+                            .selected(
+                                self.mode == ShowcaseMode::Vault
+                                    && self.vault_filter == VaultFilter::All,
+                            ),
+                        SidebarNavItem::new("favorites", "Favorites")
+                            .badge(favorites.to_string())
+                            .selected(
+                                self.mode == ShowcaseMode::Vault
+                                    && self.vault_filter == VaultFilter::Favorites,
+                            ),
+                        SidebarNavItem::new("logins", "Logins")
+                            .badge(count(SecretItemKind::Login).to_string())
+                            .selected(
+                                self.mode == ShowcaseMode::Vault
+                                    && self.vault_filter
+                                        == VaultFilter::Kind(SecretItemKind::Login),
+                            ),
+                        SidebarNavItem::new("api-keys", "API keys")
+                            .badge(count(SecretItemKind::ApiKey).to_string())
+                            .selected(
+                                self.mode == ShowcaseMode::Vault
+                                    && self.vault_filter
+                                        == VaultFilter::Kind(SecretItemKind::ApiKey),
+                            ),
+                        SidebarNavItem::new("notes", "Secure notes")
+                            .badge(count(SecretItemKind::SecureNote).to_string())
+                            .selected(
+                                self.mode == ShowcaseMode::Vault
+                                    && self.vault_filter
+                                        == VaultFilter::Kind(SecretItemKind::SecureNote),
+                            ),
+                        SidebarNavItem::new("wifi", "Wi-Fi")
+                            .badge(count(SecretItemKind::Wifi).to_string())
+                            .selected(
+                                self.mode == ShowcaseMode::Vault
+                                    && self.vault_filter == VaultFilter::Kind(SecretItemKind::Wifi),
+                            ),
+                        SidebarNavItem::new("other", "Other secrets")
+                            .badge(count(SecretItemKind::Other).to_string())
+                            .selected(
+                                self.mode == ShowcaseMode::Vault
+                                    && self.vault_filter
+                                        == VaultFilter::Kind(SecretItemKind::Other),
+                            ),
+                    ],
+                ),
+                SidebarNavSection::new(
+                    "TOOLS",
+                    vec![
+                        SidebarNavItem::new("review", "Password review")
+                            .selected(self.mode == ShowcaseMode::Health),
+                        SidebarNavItem::new("import", "Import passwords"),
+                        SidebarNavItem::new("export", "Export CSV…"),
+                    ],
+                ),
+            ],
+        )
+        .with_scroll_offset(self.sidebar_scroll)
+    }
+
+    fn sidebar_viewport(&self) -> Rect {
+        let side = self.drawer.sidebar_rect();
+        Rect::new(side.x0, side.y0, side.x1 - 18.0, side.y1)
+    }
+
+    fn scroll_sidebar_by(&mut self, delta: f64) -> bool {
+        let nav = self.sidebar_nav(self.sidebar_viewport());
+        let before = self.sidebar_scroll.min(nav.max_scroll_offset());
+        self.sidebar_scroll = (before + delta).clamp(0.0, nav.max_scroll_offset());
+        self.sidebar_scroll.to_bits() != before.to_bits()
+    }
+
+    fn draw_sidebar(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        self.sidebar_nav(rect).render(scene, transform, tr, theme);
+    }
+
+    fn transfer_rect(&self) -> Rect {
+        let width = (self.rect.width() - 40.0).min(560.0);
+        let height = 330.0_f64.min(self.rect.height() - 40.0);
+        Rect::new(
+            self.rect.center().x - width / 2.0,
+            self.rect.center().y - height / 2.0,
+            self.rect.center().x + width / 2.0,
+            self.rect.center().y + height / 2.0,
+        )
+    }
+
+    fn draw_transfer_dialog(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+    ) {
+        let Some(dialog) = &self.transfer_dialog else {
+            return;
+        };
+        let c = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, transform, c.surfaces.scrim, None, &self.rect);
+        let rect = self.transfer_rect();
+        Self::card(scene, transform, c.surfaces.overlay, rect, 18.0);
+        let x = rect.x0 + 28.0;
+        let compact = rect.width() < 420.0;
+        match dialog {
+            TransferDialog::ImportPreview { rows, conflicts } => {
+                Self::text(
+                    tr,
+                    scene,
+                    "Review import",
+                    24.0,
+                    c.text_primary,
+                    transform,
+                    x,
+                    rect.y0 + 28.0,
+                    TextWeight::Bold,
+                );
+                Self::text(
+                    tr,
+                    scene,
+                    &format!("{} logins found", rows.len()),
+                    14.0,
+                    c.text_primary,
+                    transform,
+                    x,
+                    rect.y0 + 72.0,
+                    TextWeight::Medium,
+                );
+                Self::text(
+                    tr,
+                    scene,
+                    &format!("{conflicts} matching logins will be skipped"),
+                    13.0,
+                    c.text_dim,
+                    transform,
+                    x,
+                    rect.y0 + 100.0,
+                    TextWeight::Regular,
+                );
+                for (index, row) in rows.iter().take(3).enumerate() {
+                    let step = if compact { 44.0 } else { 34.0 };
+                    let y = rect.y0 + 138.0 + f64::from(u32::try_from(index).unwrap_or(0)) * step;
+                    Self::text(
+                        tr,
+                        scene,
+                        &row.title,
+                        13.0,
+                        c.text_primary,
+                        transform,
+                        x,
+                        y,
+                        TextWeight::Medium,
+                    );
+                    Self::text(
+                        tr,
+                        scene,
+                        &row.username,
+                        12.0,
+                        c.text_dim,
+                        transform,
+                        if compact { x } else { x + 190.0 },
+                        if compact { y + 20.0 } else { y },
+                        TextWeight::Regular,
+                    );
+                }
+                let cancel = ui::widget::ButtonFace::new(
+                    Rect::new(
+                        rect.x1 - 220.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 126.0,
+                        rect.y1 - 20.0,
+                    ),
+                    "Cancel",
+                );
+                ui::widget::Button::paint(scene, transform, tr, theme, &cancel);
+                let import = ui::widget::ButtonFace::new(
+                    Rect::new(
+                        rect.x1 - 116.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 20.0,
+                        rect.y1 - 20.0,
+                    ),
+                    "Import",
+                )
+                .style(ui::widget::ButtonStyle::Primary);
+                ui::widget::Button::paint(scene, transform, tr, theme, &import);
+            }
+            TransferDialog::ExportPlaintext { acknowledged } => {
+                Self::text(
+                    tr,
+                    scene,
+                    "Export as plaintext CSV",
+                    24.0,
+                    c.text_primary,
+                    transform,
+                    x,
+                    rect.y0 + 28.0,
+                    TextWeight::Bold,
+                );
+                let body_lines: &[(&str, f64, vello::peniko::Color)] = if compact {
+                    &[
+                        ("The exported file is readable by", 76.0, c.text_primary),
+                        ("anyone who can open it.", 98.0, c.text_primary),
+                        ("Use it only to move passwords,", 128.0, c.text_dim),
+                        ("then delete it.", 150.0, c.text_dim),
+                    ]
+                } else {
+                    &[
+                        (
+                            "The exported file can be read by anyone who can open it.",
+                            78.0,
+                            c.text_primary,
+                        ),
+                        (
+                            "Use it only to move passwords, then delete it when finished.",
+                            108.0,
+                            c.text_dim,
+                        ),
+                    ]
+                };
+                for (line, y, color) in body_lines {
+                    Self::text(
+                        tr,
+                        scene,
+                        line,
+                        if *color == c.text_primary { 14.0 } else { 13.0 },
+                        *color,
+                        transform,
+                        x,
+                        rect.y0 + y,
+                        TextWeight::Regular,
+                    );
+                }
+                let check_y = if compact { 182.0 } else { 152.0 };
+                let check = Rect::new(
+                    x,
+                    rect.y0 + check_y,
+                    rect.x1 - 28.0,
+                    rect.y0 + check_y + 52.0,
+                );
+                Self::card(scene, transform, c.surfaces.base, check, 10.0);
+                let check_icon = if *acknowledged {
+                    Icon::Check
+                } else {
+                    Icon::Square
+                };
+                check_icon.draw(
+                    scene,
+                    transform,
+                    Rect::new(x + 13.0, check.y0 + 17.0, x + 31.0, check.y0 + 35.0),
+                    c.text_primary,
+                );
+                Self::text(
+                    tr,
+                    scene,
+                    "I understand this file is plaintext",
+                    13.0,
+                    c.text_primary,
+                    transform,
+                    x + 48.0,
+                    check.y0 + 17.0,
+                    TextWeight::Medium,
+                );
+                let cancel = ui::widget::ButtonFace::new(
+                    Rect::new(
+                        rect.x1 - 236.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 142.0,
+                        rect.y1 - 20.0,
+                    ),
+                    "Cancel",
+                );
+                ui::widget::Button::paint(scene, transform, tr, theme, &cancel);
+                let export = ui::widget::ButtonFace::new(
+                    Rect::new(
+                        rect.x1 - 132.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 20.0,
+                        rect.y1 - 20.0,
+                    ),
+                    "Choose file",
+                )
+                .style(ui::widget::ButtonStyle::Primary)
+                .disabled(!acknowledged);
+                ui::widget::Button::paint(scene, transform, tr, theme, &export);
+            }
+        }
+    }
+
+    fn draw_list(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        compact: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::text(
+            tr,
+            scene,
+            "Passwords",
+            if compact { 25.0 } else { 28.0 },
+            c.text_primary,
+            transform,
+            rect.x0,
+            rect.y0,
+            TextWeight::Bold,
+        );
+        Button::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &ButtonFace::new(
+                Rect::new(rect.x1 - 112.0, rect.y0 - 4.0, rect.x1, rect.y0 + 40.0),
+                "New item",
+            )
+            .icon(Icon::Plus),
+        );
+        let search = Rect::new(rect.x0, rect.y0 + 54.0, rect.x1, rect.y0 + 98.0);
+        Self::card(scene, transform, c.surfaces.raised, search, 12.0);
+        Icon::Search.draw(
+            scene,
+            transform,
+            Rect::new(
+                search.x0 + 13.0,
+                search.y0 + 13.0,
+                search.x0 + 29.0,
+                search.y0 + 29.0,
+            ),
+            c.text_dim,
+        );
+        Self::text(
+            tr,
+            scene,
+            if self.query.is_empty() {
+                "Search passwords"
+            } else {
+                &self.query
+            },
+            14.0,
+            c.text_dim,
+            transform,
+            search.x0 + 38.0,
+            search.y0 + 13.0,
+            TextWeight::Regular,
+        );
+        let tabs_y = rect.y0 + 116.0;
+        let visible = self.visible_indices();
+        Self::text(
+            tr,
+            scene,
+            &format!("{} items", visible.len()),
+            12.0,
+            c.text_dim,
+            transform,
+            rect.x0,
+            tabs_y + 9.0,
+            TextWeight::Medium,
+        );
+        let shown = Self::list_capacity(rect);
+        for (display_index, item_index) in visible.into_iter().take(shown).enumerate() {
+            let item = &self.items[item_index];
+            let y = tabs_y + 52.0 + display_index as f64 * 76.0;
+            let row = Rect::new(rect.x0, y, rect.x1, y + 66.0);
+            Self::card(
+                scene,
+                transform,
+                if item_index == self.selected && !compact {
+                    c.surfaces.raised
+                } else {
+                    c.surfaces.base
+                },
+                row,
+                12.0,
+            );
+            let accent = c
+                .accent
+                .stops
+                .get((display_index + 3).min(9))
+                .copied()
+                .unwrap_or(c.text_primary);
+            Self::card(
+                scene,
+                transform,
+                accent,
+                Rect::new(row.x0 + 10.0, row.y0 + 10.0, row.x0 + 54.0, row.y0 + 54.0),
+                12.0,
+            );
+            let initial = item.title.chars().next().unwrap_or('•').to_string();
+            Self::text(
+                tr,
+                scene,
+                &initial,
+                18.0,
+                c.surfaces.base,
+                transform,
+                row.x0 + 25.0,
+                row.y0 + 20.0,
+                TextWeight::Bold,
+            );
+            Self::text(
+                tr,
+                scene,
+                &item.title,
+                15.0,
+                c.text_primary,
+                transform,
+                row.x0 + 68.0,
+                row.y0 + 12.0,
+                TextWeight::Bold,
+            );
+            let sub = Self::item_summary(item);
+            Self::text(
+                tr,
+                scene,
+                &sub,
+                12.0,
+                c.text_dim,
+                transform,
+                row.x0 + 68.0,
+                row.y0 + 37.0,
+                TextWeight::Regular,
+            );
+            let star = Rect::new(row.x1 - 42.0, row.y0 + 11.0, row.x1 - 10.0, row.y0 + 43.0);
+            if Self::is_favorite(item) {
+                Icon::Star.draw_filled(
+                    scene,
+                    transform,
+                    star,
+                    c.accent.stops.get(5).copied().unwrap_or(c.text_primary),
+                );
+            } else {
+                Icon::Star.draw(scene, transform, star, c.text_dim);
+            }
+        }
+    }
+
+    fn draw_detail(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let Some(item) = self.items.get(self.selected) else {
+            return;
+        };
+        let field_rows = match item.kind {
+            SecretItemKind::Login | SecretItemKind::ApiKey => 3.0,
+            SecretItemKind::Wifi => 2.0,
+            SecretItemKind::SecureNote | SecretItemKind::Other => 1.0,
+        };
+        let content_height = 126.0
+            + field_rows * 78.0
+            + if item.kind == SecretItemKind::SecureNote {
+                58.0
+            } else {
+                132.0
+            };
+        let rect = Rect::new(
+            rect.x0,
+            rect.y0,
+            rect.x1,
+            rect.y1.min(rect.y0 + content_height),
+        );
+        Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
+        let x = rect.x0 + 28.0;
+        Self::card(
+            scene,
+            transform,
+            c.accent.stops.get(5).copied().unwrap_or(c.text_primary),
+            Rect::new(x, rect.y0 + 28.0, x + 58.0, rect.y0 + 86.0),
+            16.0,
+        );
+        Self::text(
+            tr,
+            scene,
+            &item.title.chars().next().unwrap_or('•').to_string(),
+            24.0,
+            c.surfaces.base,
+            transform,
+            x + 20.0,
+            rect.y0 + 43.0,
+            TextWeight::Bold,
+        );
+        Self::text(
+            tr,
+            scene,
+            &item.title,
+            23.0,
+            c.text_primary,
+            transform,
+            x + 76.0,
+            rect.y0 + 31.0,
+            TextWeight::Bold,
+        );
+        Self::text(
+            tr,
+            scene,
+            Self::kind_label(item.kind),
+            12.0,
+            c.text_dim,
+            transform,
+            x + 76.0,
+            rect.y0 + 64.0,
+            TextWeight::Medium,
+        );
+        self.pill(
+            scene,
+            tr,
+            transform,
+            theme,
+            Rect::new(
+                rect.x1 - 94.0,
+                rect.y0 + 34.0,
+                rect.x1 - 24.0,
+                rect.y0 + 68.0,
+            ),
+            "Edit",
+            false,
+        );
+        let mut y = rect.y0 + 126.0;
+        let password = self
+            .revealed
+            .as_ref()
+            .filter(|(id, _, until)| id == &item.id && *until > std::time::Instant::now())
+            .map_or("••••••••••••••••", |(_, value, _)| value.as_str());
+        let origin_summary = item.origins.iter().next().map(|first| {
+            let remaining = item.origins.len().saturating_sub(1);
+            if remaining == 0 {
+                first.clone()
+            } else if remaining == 1 {
+                format!("{first} and 1 more")
+            } else {
+                format!("{first} and {remaining} more")
+            }
+        });
+        let origin = origin_summary.as_deref();
+        let copy_origin_label = if item.origins.len() > 1 {
+            "Copy addresses"
+        } else {
+            "Copy address"
+        };
+        let fields: Vec<(&str, &str, &str)> = match item.kind {
+            SecretItemKind::Login => vec![
+                ("USERNAME", item.username.as_str(), "Copy username"),
+                ("PASSWORD", password, "Reveal 10s"),
+                (
+                    "SIGN-IN ADDRESS",
+                    origin.unwrap_or("No address saved"),
+                    copy_origin_label,
+                ),
+            ],
+            SecretItemKind::ApiKey => vec![
+                ("ACCOUNT", item.username.as_str(), "Copy account"),
+                ("API KEY", password, "Reveal 10s"),
+                (
+                    "SERVICE",
+                    origin.unwrap_or("No service address saved"),
+                    copy_origin_label,
+                ),
+            ],
+            SecretItemKind::Wifi => vec![
+                (
+                    "NETWORK",
+                    item.fields
+                        .get("network")
+                        .map_or(item.title.as_str(), String::as_str),
+                    "Copy network",
+                ),
+                ("PASSWORD", password, "Reveal 10s"),
+            ],
+            SecretItemKind::SecureNote => vec![("NOTE", password, "Reveal 10s")],
+            SecretItemKind::Other => vec![("SECRET", password, "Reveal 10s")],
+        };
+        let detail_x = x + 12.0;
+        let field_count = f64::from(u32::try_from(fields.len()).unwrap_or(0));
+        Self::card(
+            scene,
+            transform,
+            c.surfaces.base,
+            Rect::new(
+                rect.x0 + 20.0,
+                y - 18.0,
+                rect.x1 - 20.0,
+                y + field_count * 78.0 - 8.0,
+            ),
+            14.0,
+        );
+        for (row, (label, value, action)) in fields.into_iter().enumerate() {
+            Self::text(
+                tr,
+                scene,
+                label,
+                10.0,
+                c.text_dim,
+                transform,
+                detail_x,
+                y,
+                TextWeight::Bold,
+            );
+            Self::text(
+                tr,
+                scene,
+                value,
+                14.0,
+                c.text_primary,
+                transform,
+                detail_x,
+                y + 25.0,
+                TextWeight::Medium,
+            );
+            if self.detail_row_is_secret(row) {
+                Button::paint(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &ButtonFace::new(
+                        Rect::new(rect.x1 - 120.0, y + 10.0, rect.x1 - 76.0, y + 54.0),
+                        "",
+                    )
+                    .icon(Icon::Copy)
+                    .accessible_name("Copy secret"),
+                );
+                Button::paint(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    &ButtonFace::new(
+                        Rect::new(rect.x1 - 68.0, y + 10.0, rect.x1 - 24.0, y + 54.0),
+                        "",
+                    )
+                    .icon(Icon::Eye)
+                    .accessible_name("Reveal secret for ten seconds"),
+                );
+            } else {
+                let action_face = ButtonFace::new(
+                    Rect::new(rect.x1 - 150.0, y + 10.0, rect.x1 - 24.0, y + 54.0),
+                    action,
+                );
+                Button::paint(scene, transform, tr, theme, &action_face);
+            }
+            y += 78.0;
+        }
+        if !self.status.is_empty() {
+            Self::text(
+                tr,
+                scene,
+                &self.status,
+                11.0,
+                c.text_dim,
+                transform,
+                x,
+                rect.y1 - 16.0,
+                TextWeight::Medium,
+            );
+        }
+        if item.kind != SecretItemKind::SecureNote {
+            y += 20.0;
+            Self::text(
+                tr,
+                scene,
+                "NOTES",
+                10.0,
+                c.text_dim,
+                transform,
+                x,
+                y,
+                TextWeight::Bold,
+            );
+            Self::text(
+                tr,
+                scene,
+                if item.notes.trim().is_empty() {
+                    "No notes"
+                } else {
+                    item.notes.as_str()
+                },
+                13.0,
+                c.text_primary,
+                transform,
+                x,
+                y + 25.0,
+                TextWeight::Regular,
+            );
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+        let updated = ui::format::relative(
+            i64::try_from(now.saturating_sub(item.updated_unix)).unwrap_or(i64::MAX),
+        );
+        Self::text(
+            tr,
+            scene,
+            &format!("Updated {updated}"),
+            11.0,
+            c.text_dim,
+            transform,
+            x,
+            rect.y1 - 34.0,
+            TextWeight::Regular,
+        );
+    }
+
+    fn draw_editor(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
+        let x = rect.x0 + 36.0;
+        let title_x = if Self::editor_is_compact(rect) && rect.width() >= 330.0 {
+            rect.x0 + 60.0
+        } else {
+            x
+        };
+        let w = rect.width() - 72.0;
+        Self::text(
+            tr,
+            scene,
+            if self.editing.is_some() {
+                "Edit item"
+            } else {
+                "New item"
+            },
+            25.0,
+            c.text_primary,
+            transform,
+            title_x,
+            rect.y0 + 30.0,
+            TextWeight::Bold,
+        );
+        if !Self::editor_is_compact(rect) {
+            Self::text(
+                tr,
+                scene,
+                if self.draft_title.is_empty() {
+                    Self::kind_label(self.draft_kind)
+                } else {
+                    &self.draft_title
+                },
+                13.0,
+                c.text_dim,
+                transform,
+                x,
+                rect.y0 + 65.0,
+                TextWeight::Regular,
+            );
+        }
+        let kinds = [
+            SecretItemKind::Login,
+            SecretItemKind::ApiKey,
+            SecretItemKind::SecureNote,
+            SecretItemKind::Wifi,
+            SecretItemKind::Other,
+        ];
+        let segments = self.kind_segments(rect);
+        let labels = ["Login", "API key", "Note", "Wi-Fi", "Other"];
+        let selected = kinds
+            .iter()
+            .position(|kind| *kind == self.draft_kind)
+            .unwrap_or(0);
+        ToggleGroup::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &SegmentedFace::new(&segments, &labels, selected)
+                .style(SegmentedStyle::Pill)
+                .radius(9.0)
+                .text_size(if Self::editor_is_compact(rect) {
+                    11.0
+                } else {
+                    12.0
+                }),
+        );
+        let mut fields = vec![("NAME", ActiveField::Name)];
+        match self.draft_kind {
+            SecretItemKind::Login => fields.extend([
+                ("USERNAME", ActiveField::Username),
+                ("SIGN-IN ADDRESSES", ActiveField::Origin),
+                ("PASSWORD", ActiveField::Password),
+            ]),
+            SecretItemKind::ApiKey => fields.extend([
+                ("ACCOUNT OR LABEL", ActiveField::Username),
+                ("SERVICE ADDRESSES", ActiveField::Origin),
+                ("API KEY", ActiveField::Password),
+            ]),
+            SecretItemKind::Wifi => fields.extend([
+                ("NETWORK NAME", ActiveField::Username),
+                ("PASSWORD", ActiveField::Password),
+            ]),
+            SecretItemKind::Other => fields.extend([
+                ("LABEL", ActiveField::Username),
+                ("SECRET", ActiveField::Password),
+            ]),
+            SecretItemKind::SecureNote => {}
+        }
+        let mut y = self.editor_fields_top(rect);
+        let field_step = self.editor_field_step(rect);
+        let input_presence = PresenceCtx::empty();
+        for (label, field) in fields {
+            let placeholder = match field {
+                ActiveField::Name => "Name",
+                ActiveField::Username if self.draft_kind == SecretItemKind::Wifi => {
+                    "Network name (SSID)"
+                }
+                ActiveField::Username if self.draft_kind == SecretItemKind::ApiKey => {
+                    "Account, project, or environment"
+                }
+                ActiveField::Username => "Username or label",
+                ActiveField::Origin => "Addresses separated by commas",
+                ActiveField::Password => {
+                    if Self::editor_is_compact(rect) {
+                        "Keep current password"
+                    } else {
+                        "Leave blank to keep current password"
+                    }
+                }
+                ActiveField::Search | ActiveField::Notes => "",
+            };
+            Self::text(
+                tr,
+                scene,
+                label,
+                10.0,
+                c.text_dim,
+                transform,
+                x,
+                y,
+                TextWeight::Bold,
+            );
+            if let Some(input) = self.editor_inputs.get_mut(field) {
+                input.set_placeholder(placeholder);
+                input.apply_layout_external(Rect::new(x, y + 20.0, x + w, y + 64.0));
+                Widget::set_focus(input, self.active_field == Some(field));
+                input.draw(scene, transform, tr, theme, &input_presence);
+            }
+            y += field_step;
+        }
+        if self.draft_kind != SecretItemKind::SecureNote {
+            let generate_label = if Self::editor_is_compact(rect) {
+                "Generate"
+            } else {
+                match self.draft_kind {
+                    SecretItemKind::ApiKey => "Generate API key",
+                    SecretItemKind::Other => "Generate random secret",
+                    _ => "Generate strong password",
+                }
+            };
+            let generate_rect = Rect::new(
+                x,
+                y,
+                if Self::editor_is_compact(rect) {
+                    x + w
+                } else {
+                    (x + 200.0).min(rect.x1 - 36.0)
+                },
+                y + 44.0,
+            );
+            Button::paint(
+                scene,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(generate_rect, generate_label),
+            );
+            if !Self::editor_is_compact(rect) {
+                Self::text(
+                    tr,
+                    scene,
+                    "20 random characters",
+                    12.0,
+                    c.text_dim,
+                    transform,
+                    x + 208.0,
+                    y + 10.0,
+                    TextWeight::Medium,
+                );
+            }
+            y += self.editor_generate_height(rect);
+        }
+        Self::text(
+            tr,
+            scene,
+            if self.draft_kind == SecretItemKind::SecureNote {
+                "NOTE"
+            } else {
+                "NOTES"
+            },
+            10.0,
+            c.text_dim,
+            transform,
+            x,
+            y,
+            TextWeight::Bold,
+        );
+        let note_placeholder = if self.draft_notes.is_empty() {
+            if self.draft_kind == SecretItemKind::SecureNote {
+                "Write note"
+            } else {
+                "Optional notes"
+            }
+        } else {
+            ""
+        };
+        self.editor_inputs.notes.set_placeholder(note_placeholder);
+        self.editor_inputs.notes.apply_layout_external(Rect::new(
+            x,
+            y + 20.0,
+            x + w,
+            y + if Self::editor_is_compact(rect) {
+                70.0
+            } else {
+                84.0
+            },
+        ));
+        Widget::set_focus(
+            &mut self.editor_inputs.notes,
+            self.active_field == Some(ActiveField::Notes),
+        );
+        self.editor_inputs
+            .notes
+            .draw(scene, transform, tr, theme, &input_presence);
+        y += if Self::editor_is_compact(rect) {
+            82.0
+        } else {
+            104.0
+        };
+        if !self.status.is_empty() {
+            Self::text(
+                tr,
+                scene,
+                &self.status,
+                12.0,
+                c.text_dim,
+                transform,
+                x,
+                y - 14.0,
+                TextWeight::Medium,
+            );
+        }
+        let (delete, cancel, save) = self.editor_footer_rects(rect);
+        Button::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &ButtonFace::new(
+                save,
+                if Self::editor_is_compact(rect) {
+                    "Save"
+                } else {
+                    "Save changes"
+                },
+            )
+            .style(ui::widget::ButtonStyle::Primary),
+        );
+        Button::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &ButtonFace::new(cancel, "Cancel"),
+        );
+        if let Some(delete) = delete {
+            Button::paint(
+                scene,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(delete, "Delete").style(ui::widget::ButtonStyle::Danger),
+            );
+        }
+    }
+
+    fn draw_health(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
+        let compact = rect.width() < 420.0;
+        let inset = if compact { 18.0 } else { 34.0 };
+        let x = rect.x0 + inset;
+        // On phones the drawer toggle shares the title row, but the review
+        // cards should still use the full screen width below it.
+        let header_x = if compact && self.drawer.is_overlay() {
+            x + 60.0
+        } else {
+            x
+        };
+        let total = self.health.total.to_string();
+        let reused = self.health.reused.to_string();
+        let weak = self.health.weak.to_string();
+        let old = self.health.older_than_year.to_string();
+        Self::text(
+            tr,
+            scene,
+            "Password review",
+            25.0,
+            c.text_primary,
+            transform,
+            header_x,
+            rect.y0 + 30.0,
+            TextWeight::Bold,
+        );
+        Self::text(
+            tr,
+            scene,
+            if compact {
+                "Based on passwords saved here"
+            } else {
+                "Facts derived from the passwords stored here"
+            },
+            14.0,
+            c.text_dim,
+            transform,
+            header_x,
+            rect.y0 + 66.0,
+            TextWeight::Regular,
+        );
+        Self::card(
+            scene,
+            transform,
+            c.surfaces.base,
+            Rect::new(x, rect.y0 + 104.0, rect.x1 - inset, rect.y0 + 194.0),
+            14.0,
+        );
+        Self::text(
+            tr,
+            scene,
+            &total,
+            38.0,
+            c.text_primary,
+            transform,
+            x + 24.0,
+            rect.y0 + 128.0,
+            TextWeight::Bold,
+        );
+        Self::text(
+            tr,
+            scene,
+            "logins checked",
+            13.0,
+            c.text_dim,
+            transform,
+            x + 76.0,
+            rect.y0 + 145.0,
+            TextWeight::Bold,
+        );
+        let cards = if compact {
+            [
+                (
+                    "Reused passwords",
+                    reused.as_str(),
+                    "Used by more than one login",
+                ),
+                (
+                    "Weak passwords",
+                    weak.as_str(),
+                    "Too short or easy to guess",
+                ),
+                (
+                    "Older passwords",
+                    old.as_str(),
+                    "Unchanged for at least a year",
+                ),
+            ]
+        } else {
+            [
+                (
+                    "Repeated passwords",
+                    reused.as_str(),
+                    "Logins sharing the same password",
+                ),
+                (
+                    "Short or simple passwords",
+                    weak.as_str(),
+                    "Under 12 characters or missing basic variety",
+                ),
+                (
+                    "Not changed in a year",
+                    old.as_str(),
+                    "Based only on the saved update date",
+                ),
+            ]
+        };
+        for (i, (title, count, detail)) in cards.iter().enumerate() {
+            let y = rect.y0 + 218.0 + i as f64 * 96.0;
+            Self::card(
+                scene,
+                transform,
+                c.surfaces.base,
+                Rect::new(x, y, rect.x1 - inset, y + 78.0),
+                12.0,
+            );
+            Self::text(
+                tr,
+                scene,
+                count,
+                22.0,
+                c.text_primary,
+                transform,
+                x + 18.0,
+                y + 18.0,
+                TextWeight::Bold,
+            );
+            Self::text(
+                tr,
+                scene,
+                title,
+                14.0,
+                c.text_primary,
+                transform,
+                x + 64.0,
+                y + 13.0,
+                TextWeight::Bold,
+            );
+            Self::text(
+                tr,
+                scene,
+                detail,
+                12.0,
+                c.text_dim,
+                transform,
+                x + 64.0,
+                y + 39.0,
+                TextWeight::Regular,
+            );
+        }
+    }
+}
+
+impl Widget for PasswordsSurface {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        self.poll_transfers();
+        if self
+            .revealed
+            .as_ref()
+            .is_some_and(|(_, _, until)| *until <= std::time::Instant::now())
+        {
+            self.revealed = None;
+        }
+    }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &["qos.passwords.operation"]
+    }
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ui::qos_actions::Resource> {
+        let mut out = vec![actions::vault_resource(self.mode == ShowcaseMode::Editor)];
+        out.extend(self.items.iter().map(actions::item_resource));
+        out
+    }
+    fn invoke_resource_operation(
+        &mut self,
+        _kind: ui::qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if type_id != "qos.passwords.operation" {
+            return Ok(false);
+        }
+        let operation: crate::actions::PasswordOperation = serde_json::from_slice(payload)
+            .map_err(|error| format!("invalid Passwords operation: {error}"))?;
+        match operation {
+            crate::actions::PasswordOperation::Add => self.begin_add(),
+            crate::actions::PasswordOperation::SaveDraft => self.save_draft(),
+            crate::actions::PasswordOperation::GeneratePassword => self.generate_password(),
+            crate::actions::PasswordOperation::CancelDraft => self.cancel_edit(),
+            crate::actions::PasswordOperation::Edit { id } => {
+                if let Some(index) = self.items.iter().position(|item| item.id.0 == id) {
+                    self.selected = index;
+                }
+                self.begin_edit();
+            }
+            crate::actions::PasswordOperation::Copy { id } => {
+                if let Some(index) = self.items.iter().position(|item| item.id.0 == id) {
+                    self.selected = index;
+                }
+                self.copy_selected();
+            }
+            crate::actions::PasswordOperation::RequestDelete { id } => {
+                if let Some(model) = &mut self.model {
+                    model.remove(&SecretId(id))?;
+                    self.refresh();
+                    self.mode = ShowcaseMode::Vault;
+                    self.status = "Login deleted".into();
+                }
+            }
+            crate::actions::PasswordOperation::ImportCsv => self.request_import(),
+            crate::actions::PasswordOperation::ExportCsv => self.request_export_confirmation(),
+        }
+        Ok(true)
+    }
+    #[allow(clippy::expect_used, reason = "a fresh taffy leaf cannot fail")]
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                flex_grow: 1.0,
+                ..Style::default()
+            })
+            .expect("fresh leaf");
+        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if let Ok(l) = taffy.layout(node) {
+            self.rect = Rect::new(
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+                origin.x + f64::from(l.location.x + l.size.width),
+                origin.y + f64::from(l.location.y + l.size.height),
+            );
+        }
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let c = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
+        let pad = 24.0;
+        let content = Rect::new(
+            self.rect.x0 + pad,
+            self.rect.y0 + pad,
+            self.rect.x1 - pad,
+            self.rect.y1 - pad,
+        );
+        let _ = self.drawer.tick(false);
+        let main = self.drawer.resolve(content);
+        if self.drawer.is_overlay() {
+            let compact_content = compact_content_rect(self.mode, main);
+            match self.mode {
+                ShowcaseMode::Vault if self.mobile_detail => {
+                    self.draw_detail(scene, tr, transform, theme, compact_content);
+                    self.pill(
+                        scene,
+                        tr,
+                        transform,
+                        theme,
+                        Rect::new(
+                            compact_content.x0 + 8.0,
+                            compact_content.y0 + 30.0,
+                            compact_content.x0 + 50.0,
+                            compact_content.y0 + 64.0,
+                        ),
+                        "",
+                        false,
+                    );
+                    Icon::ChevronLeft.draw(
+                        scene,
+                        transform,
+                        Rect::new(
+                            compact_content.x0 + 21.0,
+                            compact_content.y0 + 39.0,
+                            compact_content.x0 + 37.0,
+                            compact_content.y0 + 55.0,
+                        ),
+                        c.text_primary,
+                    );
+                }
+                ShowcaseMode::Vault => {
+                    self.draw_list(scene, tr, transform, theme, compact_content, true)
+                }
+                ShowcaseMode::Editor => {
+                    self.draw_editor(scene, tr, transform, theme, compact_content)
+                }
+                ShowcaseMode::Health => {
+                    self.draw_health(scene, tr, transform, theme, compact_content)
+                }
+                ShowcaseMode::Import | ShowcaseMode::Export => {
+                    self.draw_list(scene, tr, transform, theme, compact_content, true)
+                }
+            }
+            if self.drawer.is_open() {
+                self.drawer.draw_scrim(scene, transform);
+                let side = self.drawer.sidebar_rect();
+                self.draw_sidebar(
+                    scene,
+                    tr,
+                    transform,
+                    theme,
+                    Rect::new(side.x0, side.y0, side.x1 - 18.0, side.y1),
+                );
+            }
+            self.drawer.draw_toggle(
+                scene,
+                transform,
+                theme,
+                Rect::new(content.x0, content.y0, content.x0 + 48.0, content.y0 + 48.0),
+                false,
+            );
+            self.draw_transfer_dialog(scene, tr, transform, theme);
+            return;
+        }
+        let side = self.drawer.sidebar_rect();
+        let sidebar = Rect::new(side.x0, side.y0, side.x1 - 24.0, side.y1);
+        self.draw_sidebar(scene, tr, transform, theme, sidebar);
+        let list = Rect::new(main.x0, content.y0 + 4.0, main.x0 + 330.0, content.y1);
+        self.draw_list(scene, tr, transform, theme, list, false);
+        let detail = Rect::new(list.x1 + 24.0, content.y0, content.x1, content.y1);
+        match self.mode {
+            ShowcaseMode::Vault => self.draw_detail(scene, tr, transform, theme, detail),
+            ShowcaseMode::Editor => self.draw_editor(scene, tr, transform, theme, detail),
+            ShowcaseMode::Health => self.draw_health(scene, tr, transform, theme, detail),
+            ShowcaseMode::Import | ShowcaseMode::Export => {
+                self.draw_detail(scene, tr, transform, theme, detail)
+            }
+        }
+        self.draw_transfer_dialog(scene, tr, transform, theme);
+    }
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_pointer = Point::new(position.x / scale, position.y / scale);
+        }
+        if self.route_editor_inputs(event, scale, modifiers, state, path, focus, node, taffy) {
+            *handled = true;
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_pointer = Point::new(position.x / scale, position.y / scale)
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.activate_transfer(self.last_pointer) {
+                    *handled = true;
+                    return;
+                }
+                let content = Rect::new(
+                    self.rect.x0 + 24.0,
+                    self.rect.y0 + 24.0,
+                    self.rect.x1 - 24.0,
+                    self.rect.y1 - 24.0,
+                );
+                let toggle =
+                    Rect::new(content.x0, content.y0, content.x0 + 48.0, content.y0 + 48.0);
+                self.drawer.resolve(content);
+                if self.drawer.is_overlay() && toggle.contains(self.last_pointer) {
+                    self.drawer.toggle();
+                    *handled = true;
+                    return;
+                }
+                if self.activate_sidebar(self.last_pointer) {
+                    *handled = true;
+                    return;
+                }
+                if self.drawer.press_dismisses(self.last_pointer) {
+                    *handled = true;
+                    return;
+                }
+                let main = self.drawer.content_rect();
+                if self.drawer.is_docked() {
+                    let sidebar = self.drawer.sidebar_rect();
+                    if Rect::new(
+                        sidebar.x0,
+                        content.y0 + 126.0,
+                        sidebar.x1,
+                        content.y0 + 176.0,
+                    )
+                    .contains(self.last_pointer)
+                    {
+                        self.mode = ShowcaseMode::Health;
+                        *handled = true;
+                        return;
+                    }
+                }
+                let list = if self.drawer.is_docked() {
+                    Rect::new(main.x0, content.y0 + 4.0, main.x0 + 330.0, content.y1)
+                } else if self.mode == ShowcaseMode::Editor {
+                    main
+                } else {
+                    Rect::new(main.x0 + 60.0, main.y0, main.x1, main.y1)
+                };
+                if self.mode == ShowcaseMode::Vault || self.drawer.is_docked() {
+                    if Rect::new(
+                        list.x1 - 118.0,
+                        list.y0 - 8.0,
+                        list.x1 + 4.0,
+                        list.y0 + 42.0,
+                    )
+                    .contains(self.last_pointer)
+                    {
+                        self.begin_add();
+                        *handled = true;
+                        return;
+                    }
+                    if Rect::new(list.x0, list.y0 + 50.0, list.x1, list.y0 + 104.0)
+                        .contains(self.last_pointer)
+                    {
+                        self.active_field = Some(ActiveField::Search);
+                        *handled = true;
+                        return;
+                    }
+                    let first_y = list.y0 + 168.0;
+                    if self.last_pointer.x >= list.x0
+                        && self.last_pointer.x <= list.x1
+                        && self.last_pointer.y >= first_y
+                    {
+                        let display_index = ((self.last_pointer.y - first_y) / 76.0) as usize;
+                        if display_index < Self::list_capacity(list)
+                            && let Some(item_index) =
+                                self.visible_indices().get(display_index).copied()
+                        {
+                            let row_y = first_y + display_index as f64 * 76.0;
+                            if Rect::new(list.x1 - 52.0, row_y, list.x1, row_y + 68.0)
+                                .contains(self.last_pointer)
+                            {
+                                self.toggle_favorite(item_index);
+                                *handled = true;
+                                return;
+                            }
+                            self.selected = item_index;
+                            if self.drawer.is_overlay() {
+                                self.mobile_detail = true;
+                            }
+                            *handled = true;
+                            return;
+                        }
+                    }
+                }
+                let panel = if self.drawer.is_docked() {
+                    Rect::new(list.x1 + 24.0, content.y0, content.x1, content.y1)
+                } else {
+                    list
+                };
+                match self.mode {
+                    ShowcaseMode::Vault if self.drawer.is_overlay() && self.mobile_detail => {
+                        if Rect::new(panel.x0, panel.y0 + 18.0, panel.x0 + 62.0, panel.y0 + 76.0)
+                            .contains(self.last_pointer)
+                        {
+                            self.mobile_detail = false;
+                            *handled = true;
+                            return;
+                        }
+                        if Rect::new(
+                            panel.x1 - 104.0,
+                            panel.y0 + 24.0,
+                            panel.x1 - 14.0,
+                            panel.y0 + 80.0,
+                        )
+                        .contains(self.last_pointer)
+                        {
+                            self.begin_edit();
+                            *handled = true;
+                            return;
+                        }
+                        if self.last_pointer.x >= panel.x1 - 150.0 {
+                            for row in 0_u32..3 {
+                                let y0 = panel.y0 + 116.0 + f64::from(row) * 78.0;
+                                if (y0..y0 + 78.0).contains(&self.last_pointer.y) {
+                                    self.activate_detail_row_at(
+                                        row as usize,
+                                        self.last_pointer.x,
+                                        panel.x1,
+                                    );
+                                    *handled = true;
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    ShowcaseMode::Vault if self.drawer.is_docked() => {
+                        if Rect::new(
+                            panel.x1 - 104.0,
+                            panel.y0 + 24.0,
+                            panel.x1 - 14.0,
+                            panel.y0 + 80.0,
+                        )
+                        .contains(self.last_pointer)
+                        {
+                            self.begin_edit();
+                            *handled = true;
+                            return;
+                        }
+                        let action_x = panel.x1 - 150.0;
+                        if self.last_pointer.x >= action_x
+                            && self.last_pointer.y >= panel.y0 + 120.0
+                            && self.last_pointer.y < panel.y0 + 198.0
+                        {
+                            self.activate_detail_row_at(0, self.last_pointer.x, panel.x1);
+                            *handled = true;
+                            return;
+                        }
+                        if self.last_pointer.x >= action_x
+                            && self.last_pointer.y >= panel.y0 + 276.0
+                            && self.last_pointer.y < panel.y0 + 354.0
+                        {
+                            self.activate_detail_row_at(2, self.last_pointer.x, panel.x1);
+                            *handled = true;
+                            return;
+                        }
+                        if self.last_pointer.x >= action_x
+                            && self.last_pointer.y >= panel.y0 + 198.0
+                            && self.last_pointer.y < panel.y0 + 276.0
+                        {
+                            self.activate_detail_row_at(1, self.last_pointer.x, panel.x1);
+                            *handled = true;
+                            return;
+                        }
+                    }
+                    ShowcaseMode::Editor => {
+                        let x = panel.x0 + 36.0;
+                        for (segment, kind) in self.kind_segments(panel).into_iter().zip([
+                            SecretItemKind::Login,
+                            SecretItemKind::ApiKey,
+                            SecretItemKind::SecureNote,
+                            SecretItemKind::Wifi,
+                            SecretItemKind::Other,
+                        ]) {
+                            if segment.contains(self.last_pointer) {
+                                self.select_kind(kind);
+                                *handled = true;
+                                return;
+                            }
+                        }
+                        let ordinary: Vec<_> = self
+                            .editor_field_order()
+                            .into_iter()
+                            .filter(|field| *field != ActiveField::Notes)
+                            .collect();
+                        for (index, field) in ordinary.into_iter().enumerate() {
+                            let y = self.editor_fields_top(panel)
+                                + 20.0
+                                + f64::from(u32::try_from(index).unwrap_or(0))
+                                    * self.editor_field_step(panel);
+                            if Rect::new(x, y, panel.x1 - 36.0, y + 44.0)
+                                .contains(self.last_pointer)
+                            {
+                                self.active_field = Some(field);
+                                *handled = true;
+                                return;
+                            }
+                        }
+                        let note_y = self.editor_note_y(panel);
+                        if self.draft_kind != SecretItemKind::SecureNote
+                            && Rect::new(x, note_y - 52.0, x + 206.0, note_y - 4.0)
+                                .contains(self.last_pointer)
+                        {
+                            self.generate_password();
+                            *handled = true;
+                            return;
+                        }
+                        if Rect::new(x, note_y + 16.0, panel.x1 - 36.0, note_y + 92.0)
+                            .contains(self.last_pointer)
+                        {
+                            self.active_field = Some(ActiveField::Notes);
+                            *handled = true;
+                            return;
+                        }
+                        let (delete, cancel, save) = self.editor_footer_rects(panel);
+                        if delete.is_some_and(|rect| rect.contains(self.last_pointer)) {
+                            if let (Some(model), Some(id)) = (&mut self.model, self.editing.clone())
+                            {
+                                let _ = model.remove(&id);
+                                self.refresh();
+                                self.cancel_edit();
+                                self.status = "Item deleted".into();
+                            }
+                            *handled = true;
+                            return;
+                        }
+                        if cancel.contains(self.last_pointer) {
+                            self.cancel_edit();
+                            *handled = true;
+                            return;
+                        }
+                        if save.contains(self.last_pointer) {
+                            self.save_draft();
+                            *handled = true;
+                            return;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.drawer.resolve(Rect::new(
+                    self.rect.x0 + 24.0,
+                    self.rect.y0 + 24.0,
+                    self.rect.x1 - 24.0,
+                    self.rect.y1 - 24.0,
+                ));
+                if self.drawer.sidebar_contains(self.last_pointer) {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 46.0,
+                        MouseScrollDelta::PixelDelta(position) => position.y,
+                    };
+                    if self.scroll_sidebar_by(-dy) {
+                        *handled = true;
+                    }
+                }
+            }
+            WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => {
+                let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                self.drawer.resolve(Rect::new(
+                    self.rect.x0 + 24.0,
+                    self.rect.y0 + 24.0,
+                    self.rect.x1 - 24.0,
+                    self.rect.y1 - 24.0,
+                ));
+                if self.drawer.sidebar_contains(point) {
+                    self.sidebar_touch = Some((touch.id, point, self.sidebar_scroll));
+                    *handled = true;
+                }
+            }
+            WindowEvent::Touch(touch) if touch.phase == TouchPhase::Moved => {
+                if let Some((id, start, initial_scroll)) = self.sidebar_touch
+                    && id == touch.id
+                {
+                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    self.sidebar_scroll = initial_scroll;
+                    let _ = self.scroll_sidebar_by(start.y - point.y);
+                    *handled = true;
+                }
+            }
+            WindowEvent::Touch(touch)
+                if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) =>
+            {
+                let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                let was_scroll = self.sidebar_touch.take().is_some_and(|(id, start, _)| {
+                    id == touch.id && (start.y - point.y).abs() > 8.0
+                });
+                if touch.phase == TouchPhase::Ended && !was_scroll {
+                    self.last_pointer = point;
+                    if self.activate_touch(point) {
+                        *handled = true;
+                    }
+                } else if was_scroll {
+                    *handled = true;
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if self.transfer_dialog.is_some() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => self.transfer_dialog = None,
+                        Key::Named(NamedKey::Space) => {
+                            if let Some(TransferDialog::ExportPlaintext { acknowledged }) =
+                                &mut self.transfer_dialog
+                            {
+                                *acknowledged = !*acknowledged;
+                            }
+                        }
+                        Key::Named(NamedKey::Enter) => match self.transfer_dialog {
+                            Some(TransferDialog::ImportPreview { .. }) => self.apply_import(),
+                            Some(TransferDialog::ExportPlaintext { acknowledged: true }) => {
+                                self.begin_plaintext_export()
+                            }
+                            _ => {}
+                        },
+                        _ => return,
+                    }
+                    *handled = true;
+                    return;
+                }
+                if event.logical_key == Key::Named(NamedKey::Escape) {
+                    if self.drawer.is_overlay() && self.drawer.is_open() {
+                        self.drawer.close();
+                    } else if self.mode == ShowcaseMode::Editor {
+                        self.cancel_edit();
+                    } else if self.mobile_detail {
+                        self.mobile_detail = false;
+                    } else {
+                        self.active_field = None;
+                    }
+                    *handled = true;
+                    return;
+                }
+                match &event.logical_key {
+                    Key::Named(NamedKey::Tab) if self.mode == ShowcaseMode::Editor => {
+                        let fields = self.editor_field_order();
+                        let next = self
+                            .active_field
+                            .and_then(|active| fields.iter().position(|field| *field == active))
+                            .map_or(0, |index| (index + 1) % fields.len());
+                        self.active_field = fields.get(next).copied();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Enter) if self.mode == ShowcaseMode::Editor => {
+                        self.save_draft();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowDown)
+                        if self.active_field.is_none() && !self.items.is_empty() =>
+                    {
+                        self.selected = (self.selected + 1).min(self.items.len() - 1);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowUp) if self.active_field.is_none() => {
+                        self.selected = self.selected.saturating_sub(1);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Backspace)
+                        if self.active_field == Some(ActiveField::Search) =>
+                    {
+                        self.query.pop();
+                        self.refresh();
+                        *handled = true;
+                    }
+                    Key::Character(text) if self.active_field == Some(ActiveField::Search) => {
+                        self.query.push_str(text);
+                        self.refresh();
+                        *handled = true;
+                    }
+                    Key::Character(text) if text == "/" => {
+                        self.active_field = Some(ActiveField::Search);
+                        *handled = true;
+                    }
+                    Key::Character(text) if text.eq_ignore_ascii_case("n") => {
+                        self.begin_add();
+                        *handled = true;
+                    }
+                    Key::Character(text) if text.eq_ignore_ascii_case("e") => {
+                        self.begin_edit();
+                        *handled = true;
+                    }
+                    Key::Character(text) if text.eq_ignore_ascii_case("c") => {
+                        self.copy_selected();
+                        *handled = true;
+                    }
+                    Key::Character(text) if text.eq_ignore_ascii_case("r") => {
+                        self.reveal_selected();
+                        *handled = true;
+                    }
+                    Key::Character(text) if text.eq_ignore_ascii_case("p") => {
+                        self.mode = ShowcaseMode::Health;
+                        self.mobile_detail = false;
+                        *handled = true;
+                    }
+                    Key::Character(text) if text.eq_ignore_ascii_case("i") => {
+                        self.request_import();
+                        *handled = true;
+                    }
+                    Key::Character(text) if text.eq_ignore_ascii_case("x") => {
+                        self.request_export_confirmation();
+                        *handled = true;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    fn name(&self) -> &'static str {
+        "PasswordsSurface"
+    }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let rows = self
+            .visible_indices()
+            .into_iter()
+            .filter_map(|index| self.items.get(index).map(|item| (index, item)))
+            .map(|(index, item)| {
+                AccessNode::new(Role::ListItem)
+                    .with_name(&item.title)
+                    .with_description(if item.username.is_empty() {
+                        "Saved login"
+                    } else {
+                        &item.username
+                    })
+                    .with_action_target(format!("passwords.select:{index}"))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(index == self.selected),
+                    )
+                    .with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name(if Self::is_favorite(item) {
+                                "Remove from favorites"
+                            } else {
+                                "Add to favorites"
+                            })
+                            .with_action_target(format!("passwords.favorite:{index}")),
+                    ])
+                    .with_hashed_key(&item.id.0)
+            })
+            .collect();
+        let search = AccessNode::new(Role::TextInput)
+            .with_name("Search passwords")
+            .with_value(&self.query)
+            .with_action_target("passwords.search")
+            .with_state(
+                AccessState::new()
+                    .focusable(true)
+                    .focused(self.active_field == Some(ActiveField::Search)),
+            );
+        let list = AccessNode::new(Role::List)
+            .with_name("Vault items")
+            .with_children(rows);
+        let navigation =
+            self.sidebar_nav(self.sidebar_viewport())
+                .accessibility("Vault navigation", |id| {
+                    match id {
+                        "all" => "passwords.filter.all",
+                        "favorites" => "passwords.filter.favorites",
+                        "logins" => "passwords.filter.logins",
+                        "api-keys" => "passwords.filter.api-keys",
+                        "notes" => "passwords.filter.notes",
+                        "wifi" => "passwords.filter.wifi",
+                        "other" => "passwords.filter.other",
+                        "review" => "passwords.review",
+                        "import" => "passwords.import",
+                        "export" => "passwords.export",
+                        _ => "passwords.navigation.toggle",
+                    }
+                    .to_owned()
+                });
+        let detail = self.items.get(self.selected).map(|item| {
+            let value_label = Self::secret_field_label(item.kind);
+            let copy_label = format!("Copy {}", value_label.to_lowercase());
+            let reveal_label = format!("Reveal {} for ten seconds", value_label.to_lowercase());
+            let mut detail_children = Vec::new();
+            if !item.username.is_empty() {
+                detail_children.push(
+                    AccessNode::new(Role::StaticText)
+                        .with_name(match item.kind {
+                            SecretItemKind::Wifi => "Network name",
+                            SecretItemKind::ApiKey => "Account or label",
+                            _ => "Username or label",
+                        })
+                        .with_value(&item.username),
+                );
+            }
+            detail_children.extend([
+                AccessNode::new(Role::StaticText)
+                    .with_name(value_label)
+                    .with_description("Hidden; use Reveal for ten seconds"),
+                AccessNode::new(Role::Button)
+                    .with_name(copy_label)
+                    .with_action_target(format!("passwords.copy:{}", item.id.0)),
+                AccessNode::new(Role::Button)
+                    .with_name(reveal_label)
+                    .with_action_target(format!("passwords.reveal:{}", item.id.0)),
+                AccessNode::new(Role::Button)
+                    .with_name("Edit item")
+                    .with_action_target(format!("passwords.edit:{}", item.id.0)),
+            ]);
+            if matches!(item.kind, SecretItemKind::Login | SecretItemKind::ApiKey)
+                && !item.origins.is_empty()
+            {
+                detail_children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Copy sign-in address")
+                        .with_action_target(format!("passwords.copy-origin:{}", item.id.0)),
+                );
+            }
+            AccessNode::new(Role::Group)
+                .with_name(format!("{} details", item.title))
+                .with_children(detail_children)
+        });
+        let mut children = vec![
+            AccessNode::new(Role::Button)
+                .with_name(if self.drawer.is_open() {
+                    "Hide navigation"
+                } else {
+                    "Show navigation"
+                })
+                .with_action_target("passwords.navigation.toggle")
+                .with_state(AccessState::new().focusable(true)),
+            navigation,
+            AccessNode::new(Role::Button)
+                .with_name("New item")
+                .with_action_target("passwords.add"),
+            search,
+            list,
+        ];
+        if self.mobile_detail {
+            children.insert(
+                0,
+                AccessNode::new(Role::Button)
+                    .with_name("Back to passwords")
+                    .with_action_target("passwords.back"),
+            );
+        }
+        if self.mode == ShowcaseMode::Editor {
+            for kind in [
+                SecretItemKind::Login,
+                SecretItemKind::ApiKey,
+                SecretItemKind::SecureNote,
+                SecretItemKind::Wifi,
+                SecretItemKind::Other,
+            ] {
+                children.push(
+                    AccessNode::new(Role::RadioButton)
+                        .with_name(Self::kind_label(kind))
+                        .with_action_target(format!(
+                            "passwords.kind:{}",
+                            match kind {
+                                SecretItemKind::Login => "login",
+                                SecretItemKind::ApiKey => "api-key",
+                                SecretItemKind::SecureNote => "note",
+                                SecretItemKind::Wifi => "wifi",
+                                SecretItemKind::Other => "other",
+                            }
+                        ))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(kind == self.draft_kind),
+                        ),
+                );
+            }
+            let mut fields: Vec<(&str, &str, ActiveField)> =
+                vec![("Name", "passwords.field.name", ActiveField::Name)];
+            match self.draft_kind {
+                SecretItemKind::Login => fields.extend([
+                    (
+                        "Username",
+                        "passwords.field.username",
+                        ActiveField::Username,
+                    ),
+                    (
+                        "Sign-in address",
+                        "passwords.field.origin",
+                        ActiveField::Origin,
+                    ),
+                    (
+                        "Password",
+                        "passwords.field.password",
+                        ActiveField::Password,
+                    ),
+                ]),
+                SecretItemKind::ApiKey => fields.extend([
+                    (
+                        "Account or label",
+                        "passwords.field.username",
+                        ActiveField::Username,
+                    ),
+                    (
+                        "Service address",
+                        "passwords.field.origin",
+                        ActiveField::Origin,
+                    ),
+                    ("API key", "passwords.field.password", ActiveField::Password),
+                ]),
+                SecretItemKind::Wifi => fields.extend([
+                    (
+                        "Network name",
+                        "passwords.field.username",
+                        ActiveField::Username,
+                    ),
+                    (
+                        "Password",
+                        "passwords.field.password",
+                        ActiveField::Password,
+                    ),
+                ]),
+                SecretItemKind::Other => fields.extend([
+                    ("Label", "passwords.field.username", ActiveField::Username),
+                    ("Secret", "passwords.field.password", ActiveField::Password),
+                ]),
+                SecretItemKind::SecureNote => {}
+            }
+            children.extend(fields.into_iter().filter_map(|(name, target, field)| {
+                self.editor_inputs
+                    .get(field)
+                    .and_then(Widget::accessibility)
+                    .map(|node| node.with_name(name).with_action_target(target))
+            }));
+            if let Some(notes) = Widget::accessibility(&self.editor_inputs.notes) {
+                children.push(
+                    notes
+                        .with_name(if self.draft_kind == SecretItemKind::SecureNote {
+                            "Note"
+                        } else {
+                            "Notes"
+                        })
+                        .with_action_target("passwords.field.notes"),
+                );
+            }
+            if self.draft_kind != SecretItemKind::SecureNote {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name(format!(
+                            "Generate {}",
+                            Self::secret_field_label(self.draft_kind).to_lowercase()
+                        ))
+                        .with_action_target("passwords.generate"),
+                );
+            }
+            children.extend([
+                AccessNode::new(Role::Button)
+                    .with_name("Cancel")
+                    .with_action_target("passwords.cancel"),
+                AccessNode::new(Role::Button)
+                    .with_name("Save")
+                    .with_action_target("passwords.save"),
+            ]);
+            if self.editing.is_some() {
+                children.push(
+                    AccessNode::new(Role::Button)
+                        .with_name("Delete item")
+                        .with_action_target("passwords.delete"),
+                );
+            }
+        } else if let Some(detail) = detail {
+            children.push(detail);
+        }
+        if let Some(dialog) = &self.transfer_dialog {
+            let controls = match dialog {
+                TransferDialog::ImportPreview { rows, conflicts } => vec![
+                    AccessNode::new(Role::StaticText).with_name(format!(
+                        "{} logins found; {conflicts} matching logins will be skipped",
+                        rows.len()
+                    )),
+                    AccessNode::new(Role::Button)
+                        .with_name("Cancel import")
+                        .with_action_target("passwords.transfer.cancel"),
+                    AccessNode::new(Role::Button)
+                        .with_name("Import logins")
+                        .with_action_target("passwords.transfer.import"),
+                ],
+                TransferDialog::ExportPlaintext { acknowledged } => vec![
+                    AccessNode::new(Role::Checkbox)
+                        .with_name("I understand this file is plaintext")
+                        .with_action_target("passwords.transfer.ack")
+                        .with_state(AccessState::new().focusable(true).checked(*acknowledged)),
+                    AccessNode::new(Role::Button)
+                        .with_name("Cancel export")
+                        .with_action_target("passwords.transfer.cancel"),
+                    AccessNode::new(Role::Button)
+                        .with_name("Choose export file")
+                        .with_action_target("passwords.transfer.choose")
+                        .with_state(AccessState::new().focusable(true).disabled(!acknowledged)),
+                ],
+            };
+            children = vec![
+                AccessNode::new(Role::Dialog)
+                    .with_name(match dialog {
+                        TransferDialog::ImportPreview { .. } => "Review import",
+                        TransferDialog::ExportPlaintext { .. } => "Export as plaintext CSV",
+                    })
+                    .with_state(AccessState::new().modal(true))
+                    .with_children(controls),
+            ];
+        }
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Passwords")
+                .with_children(children),
+        )
+    }
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+        match (target, action) {
+            ("passwords.navigation.toggle", Action::Activate) => self.drawer.toggle(),
+            ("passwords.add", Action::Activate) => self.begin_add(),
+            ("passwords.filter.all", Action::Activate) => self.select_filter(VaultFilter::All),
+            ("passwords.filter.favorites", Action::Activate) => {
+                self.select_filter(VaultFilter::Favorites)
+            }
+            ("passwords.filter.logins", Action::Activate) => {
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Login))
+            }
+            ("passwords.filter.api-keys", Action::Activate) => {
+                self.select_filter(VaultFilter::Kind(SecretItemKind::ApiKey))
+            }
+            ("passwords.filter.notes", Action::Activate) => {
+                self.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote))
+            }
+            ("passwords.filter.wifi", Action::Activate) => {
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Wifi))
+            }
+            ("passwords.filter.other", Action::Activate) => {
+                self.select_filter(VaultFilter::Kind(SecretItemKind::Other))
+            }
+            (target, Action::Activate) if target.starts_with("passwords.favorite:") => {
+                let Some(index) = target
+                    .strip_prefix("passwords.favorite:")
+                    .and_then(|value| value.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                self.toggle_favorite(index);
+            }
+            ("passwords.back", Action::Activate) => self.mobile_detail = false,
+            ("passwords.review", Action::Activate) => {
+                self.mode = ShowcaseMode::Health;
+                self.mobile_detail = false;
+            }
+            ("passwords.import", Action::Activate) => self.request_import(),
+            ("passwords.export", Action::Activate) => self.request_export_confirmation(),
+            ("passwords.transfer.cancel", Action::Activate) => self.transfer_dialog = None,
+            ("passwords.transfer.import", Action::Activate) => self.apply_import(),
+            ("passwords.transfer.ack", Action::Activate | Action::ToggleCheck) => {
+                if let Some(TransferDialog::ExportPlaintext { acknowledged }) =
+                    &mut self.transfer_dialog
+                {
+                    *acknowledged = !*acknowledged;
+                } else {
+                    return false;
+                }
+            }
+            ("passwords.transfer.choose", Action::Activate) => {
+                if !matches!(
+                    self.transfer_dialog,
+                    Some(TransferDialog::ExportPlaintext { acknowledged: true })
+                ) {
+                    return false;
+                }
+                self.begin_plaintext_export();
+            }
+            ("passwords.search", Action::Focus) => self.active_field = Some(ActiveField::Search),
+            ("passwords.search", Action::SetValue(value)) => {
+                self.query.clone_from(value);
+                self.refresh();
+            }
+            ("passwords.generate", Action::Activate) => self.generate_password(),
+            ("passwords.cancel", Action::Activate) => self.cancel_edit(),
+            ("passwords.save", Action::Activate) => self.save_draft(),
+            ("passwords.delete", Action::Activate) => {
+                let (Some(model), Some(id)) = (&mut self.model, self.editing.clone()) else {
+                    return false;
+                };
+                let _ = model.remove(&id);
+                self.refresh();
+                self.cancel_edit();
+                self.status = "Item deleted".into();
+            }
+            (_, Action::Activate) if target.starts_with("passwords.kind:") => {
+                let kind = match target.strip_prefix("passwords.kind:") {
+                    Some("login") => SecretItemKind::Login,
+                    Some("api-key") => SecretItemKind::ApiKey,
+                    Some("note") => SecretItemKind::SecureNote,
+                    Some("wifi") => SecretItemKind::Wifi,
+                    Some("other") => SecretItemKind::Other,
+                    _ => return false,
+                };
+                self.select_kind(kind);
+            }
+            (_, Action::Focus) if target.starts_with("passwords.field.") => {
+                self.active_field = match target.strip_prefix("passwords.field.") {
+                    Some("name") => Some(ActiveField::Name),
+                    Some("username") => Some(ActiveField::Username),
+                    Some("origin") => Some(ActiveField::Origin),
+                    Some("password") => Some(ActiveField::Password),
+                    Some("notes") => Some(ActiveField::Notes),
+                    _ => return false,
+                };
+            }
+            (_, Action::SetValue(value)) if target.starts_with("passwords.field.") => {
+                let field: &mut String = match target.strip_prefix("passwords.field.") {
+                    Some("name") => &mut self.draft_title,
+                    Some("username") => &mut self.draft_username,
+                    Some("origin") => &mut self.draft_origin,
+                    Some("password") => &mut self.draft_password,
+                    Some("notes") => &mut self.draft_notes,
+                    _ => return false,
+                };
+                field.clone_from(value);
+                self.sync_editor_inputs();
+            }
+            (_, Action::Activate) if target.starts_with("passwords.select:") => {
+                if let Some(index) = target
+                    .strip_prefix("passwords.select:")
+                    .and_then(|value| value.parse::<usize>().ok())
+                {
+                    self.selected = index.min(self.items.len().saturating_sub(1));
+                } else {
+                    return false;
+                }
+            }
+            (_, Action::Activate) if target.starts_with("passwords.edit:") => {
+                let Some(id) = target.strip_prefix("passwords.edit:") else {
+                    return false;
+                };
+                let Some(index) = self.items.iter().position(|item| item.id.0 == id) else {
+                    return false;
+                };
+                self.selected = index;
+                self.begin_edit();
+            }
+            (_, Action::Activate) if target.starts_with("passwords.copy:") => {
+                let Some(id) = target.strip_prefix("passwords.copy:") else {
+                    return false;
+                };
+                let Some(index) = self.items.iter().position(|item| item.id.0 == id) else {
+                    return false;
+                };
+                self.selected = index;
+                self.copy_selected();
+            }
+            (_, Action::Activate) if target.starts_with("passwords.copy-origin:") => {
+                let Some(id) = target.strip_prefix("passwords.copy-origin:") else {
+                    return false;
+                };
+                let Some(index) = self.items.iter().position(|item| item.id.0 == id) else {
+                    return false;
+                };
+                self.selected = index;
+                self.copy_origin_selected();
+            }
+            (_, Action::Activate) if target.starts_with("passwords.reveal:") => {
+                let Some(id) = target.strip_prefix("passwords.reveal:") else {
+                    return false;
+                };
+                let Some(index) = self.items.iter().position(|item| item.id.0 == id) else {
+                    return false;
+                };
+                self.selected = index;
+                self.reveal_selected();
+            }
+            _ => return false,
+        }
+        true
+    }
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        (self.import_portal.is_some()
+            || self.import_parse.is_some()
+            || self.export_portal.is_some())
+        .then(|| std::time::Instant::now() + std::time::Duration::from_millis(16))
+    }
+    fn modal_capture(&self) -> Option<Rect> {
+        self.transfer_dialog.as_ref().map(|_| self.transfer_rect())
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+fn origins_match(item: &SecretItem, candidate: &str) -> bool {
+    if candidate.trim().is_empty() {
+        return item.origins.is_empty();
+    }
+    let mut probe = SecretItem::login("", "", "");
+    probe.add_origin(candidate).is_ok()
+        && probe
+            .origins
+            .iter()
+            .next()
+            .is_some_and(|origin| item.origins.contains(origin))
+}
+
+fn demo_items() -> Vec<SecretItem> {
+    let data = [
+        ("Northstar Bank", "ada@example.com", "https://bank.example"),
+        ("Personal mail", "ada@example.com", "https://mail.example"),
+        ("Cloud Console", "ada.l", "https://console.example"),
+        ("Design Library", "ada", "https://design.example"),
+        ("Home Wi-Fi", "Ada Home", "https://router.local"),
+        ("Recovery codes", "Note", "https://accounts.example"),
+    ];
+    data.into_iter()
+        .enumerate()
+        .map(|(i, (title, user, origin))| {
+            let password = if i < 2 {
+                "never-rendered-Shared9!".to_string()
+            } else {
+                format!("never-rendered-Unique{i}A!")
+            };
+            let mut item = SecretItem::login(title, user, password);
+            item.id = accounts::SecretId(format!("demo-{i}"));
+            item.kind = match i {
+                2 => SecretItemKind::ApiKey,
+                3 => SecretItemKind::Other,
+                4 => SecretItemKind::Wifi,
+                5 => SecretItemKind::SecureNote,
+                _ => SecretItemKind::Login,
+            };
+            if i == 0 || i == 2 {
+                item.tags.insert("favorite".into());
+            }
+            if item.kind == SecretItemKind::Wifi {
+                item.fields.insert("network".into(), "Ada Home".into());
+            }
+            if item.kind == SecretItemKind::SecureNote {
+                item.password.clear();
+            }
+            let _ = item.add_origin(origin);
+            if i == 0 {
+                let _ = item.add_origin("https://login.bank.example");
+            }
+            item
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn desktop_columns_are_disjoint_and_inside_viewport() {
+        let content = Rect::new(24.0, 24.0, 1416.0, 876.0);
+        let sidebar = Rect::new(content.x0, content.y0, content.x0 + 190.0, content.y1);
+        let list = Rect::new(
+            sidebar.x1 + 24.0,
+            content.y0 + 4.0,
+            sidebar.x1 + 354.0,
+            content.y1,
+        );
+        let detail = Rect::new(list.x1 + 24.0, content.y0, content.x1, content.y1);
+        assert!(sidebar.x1 < list.x0 && list.x1 < detail.x0);
+        assert!(detail.x1 <= content.x1 && sidebar.y0 >= content.y0 && detail.y1 <= content.y1);
+        assert!(detail.width() >= 480.0);
+    }
+
+    #[test]
+    fn shared_drawer_uses_overlay_on_compact_viewports() {
+        let content = Rect::new(24.0, 24.0, 496.0, 796.0);
+        let mut drawer = SidebarDrawer::new()
+            .docked_width(214.0)
+            .overlay_width(292.0)
+            .breakpoint(960.0);
+        let main = drawer.resolve(content);
+        assert!(drawer.is_overlay());
+        assert!(!drawer.is_open());
+        assert_eq!(main, content);
+        assert_eq!(drawer.scrim_rect(), Rect::ZERO);
+    }
+
+    #[test]
+    fn phone_review_and_editor_keep_full_content_width() {
+        let main = Rect::new(24.0, 24.0, 366.0, 820.0);
+        assert_eq!(compact_content_rect(ShowcaseMode::Health, main), main);
+        assert_eq!(compact_content_rect(ShowcaseMode::Editor, main), main);
+        assert_eq!(
+            compact_content_rect(ShowcaseMode::Vault, main),
+            Rect::new(84.0, 24.0, 366.0, 820.0)
+        );
+    }
+
+    #[test]
+    fn short_phone_sidebar_retains_and_clamps_real_scroll_state() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let content = Rect::new(24.0, 24.0, 366.0, 244.0);
+        app.drawer.resolve(content);
+        app.drawer.open();
+        app.drawer.snap(true);
+        app.drawer.resolve(content);
+
+        assert!(app.scroll_sidebar_by(f64::MAX));
+        let nav = app.sidebar_nav(app.sidebar_viewport());
+        assert!(nav.max_scroll_offset() > 0.0);
+        assert_eq!(app.sidebar_scroll, nav.max_scroll_offset());
+        assert!(
+            !app.scroll_sidebar_by(1.0),
+            "scrolling beyond the end is inert"
+        );
+
+        assert!(app.scroll_sidebar_by(-f64::MAX));
+        assert_eq!(app.sidebar_scroll, 0.0);
+    }
+
+    #[test]
+    fn phone_list_capacity_uses_every_fully_visible_row() {
+        let list = Rect::new(76.0, 24.0, 366.0, 820.0);
+        assert_eq!(PasswordsSurface::list_capacity(list), 8);
+    }
+
+    #[test]
+    fn phone_editor_uses_full_width_and_keeps_controls_disjoint() {
+        let app = PasswordsSurface::demo(ShowcaseMode::Editor);
+        let panel = Rect::new(24.0, 24.0, 366.0, 820.0);
+        let segments = app.kind_segments(panel);
+        assert_eq!(segments.len(), 5);
+        assert!(segments.iter().all(|rect| rect.width() >= 44.0));
+        assert!(
+            segments
+                .iter()
+                .all(|rect| (rect.y0 - segments[0].y0).abs() < f64::EPSILON),
+            "390px-class phones keep secret types on one row"
+        );
+        assert!(segments.windows(2).all(|pair| pair[0].x1 < pair[1].x0));
+
+        let step = app.editor_field_step(panel);
+        assert!(step >= 64.0, "field labels must clear the previous input");
+        let first_input_bottom = app.editor_fields_top(panel) + 64.0;
+        let next_label_top = app.editor_fields_top(panel) + step;
+        assert!(first_input_bottom <= next_label_top);
+
+        let (delete, cancel, save) = app.editor_footer_rects(panel);
+        let delete = delete.expect("editing exposes delete");
+        assert!(delete.width() >= 44.0 && cancel.width() >= 44.0 && save.width() >= 44.0);
+        assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
+    }
+
+    #[test]
+    fn shared_sidebar_routes_to_real_review_and_back() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let content = Rect::new(24.0, 24.0, 1416.0, 876.0);
+        app.drawer.resolve(content);
+        let side = app.drawer.sidebar_rect();
+        assert!(app.activate_sidebar(Point::new(side.x0 + 20.0, side.y0 + 453.0)));
+        assert_eq!(app.mode, ShowcaseMode::Health);
+        assert!(app.activate_sidebar(Point::new(side.x0 + 20.0, side.y0 + 76.0)));
+        assert_eq!(app.mode, ShowcaseMode::Vault);
+    }
+
+    #[test]
+    fn demo_inventory_contains_no_renderable_secret() {
+        let items = demo_items();
+        assert!(
+            items.iter().all(
+                |item| item.password.is_empty() || item.password.starts_with("never-rendered-")
+            )
+        );
+        let visible = items
+            .iter()
+            .map(|item| format!("{} {} {:?}", item.title, item.username, item.origins))
+            .collect::<String>();
+        assert!(!visible.contains("never-rendered"));
+    }
+
+    #[test]
+    fn type_filters_and_favorites_are_real_vault_state() {
+        let root = std::env::temp_dir().join(format!(
+            "qos-passwords-favorites-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut model = crate::PasswordsModel::open_in(&root);
+        let mut login = SecretItem::login("Account", "ada", "secret-login");
+        model.save_item(&mut login).unwrap();
+        let mut note = SecretItem::login("Codes", "", "secret-note");
+        note.kind = SecretItemKind::SecureNote;
+        model.save_item(&mut note).unwrap();
+
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(model);
+        app.refresh();
+        app.select_filter(VaultFilter::Kind(SecretItemKind::SecureNote));
+        assert_eq!(app.visible_indices().len(), 1);
+        assert_eq!(app.items[app.visible_indices()[0]].title, "Codes");
+
+        let login_index = app
+            .items
+            .iter()
+            .position(|item| item.id == login.id)
+            .unwrap();
+        app.toggle_favorite(login_index);
+        app.select_filter(VaultFilter::Favorites);
+        assert_eq!(app.visible_indices(), vec![login_index]);
+        let reopened = crate::PasswordsModel::open_in(&root);
+        assert!(
+            reopened
+                .items()
+                .iter()
+                .find(|item| item.id == login.id)
+                .unwrap()
+                .tags
+                .contains("favorite")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accessibility_never_exposes_password_values() {
+        let app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let json = serde_json::to_string(&Widget::accessibility(&app)).unwrap();
+        assert!(!json.contains("never-rendered"));
+        assert!(json.contains("Reveal for ten seconds"));
+    }
+
+    #[test]
+    fn polished_surface_saves_searches_and_updates_real_store() {
+        let root = std::env::temp_dir().join(format!(
+            "qos-passwords-surface-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(crate::PasswordsModel::open_in(&root));
+        app.items.clear();
+        app.begin_add();
+        app.draft_title = "Example account".into();
+        app.draft_username = "ada@example.com".into();
+        app.draft_origin = "https://example.com, https://login.example.com".into();
+        app.draft_password = Zeroizing::new("correct horse battery staple".into());
+        app.draft_notes = Zeroizing::new("recovery details".into());
+        app.sync_editor_inputs();
+        app.save_draft();
+        assert_eq!(app.mode, ShowcaseMode::Vault);
+        assert!(app.draft_password.is_empty());
+        assert!(app.draft_notes.is_empty());
+        assert!(app.editor_inputs.password.value().is_empty());
+        assert!(app.editor_inputs.notes.value().is_empty());
+        assert_eq!(app.items.len(), 1);
+        assert_eq!(app.items[0].title, "Example account");
+        assert_eq!(app.items[0].origins.len(), 2);
+        assert!(app.items[0].password.is_empty());
+
+        app.query = "missing".into();
+        app.refresh();
+        assert!(app.items.is_empty());
+        app.query = "example".into();
+        app.refresh();
+        assert_eq!(app.items.len(), 1);
+
+        app.begin_edit();
+        assert!(app.draft_origin.contains("https://example.com"));
+        assert!(app.draft_origin.contains("https://login.example.com"));
+        app.draft_title = "Renamed account".into();
+        app.save_draft();
+        assert_eq!(app.items[0].title, "Renamed account");
+        assert_eq!(app.items[0].origins.len(), 2);
+        app.copy_origin_selected();
+        let copied = ui::clipboard_paste().unwrap();
+        assert!(copied.contains("https://example.com"));
+        assert!(copied.contains("https://login.example.com"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancelling_discards_sensitive_shared_input_buffers() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.begin_add();
+        app.draft_password = Zeroizing::new("unsaved password".into());
+        app.draft_notes = Zeroizing::new("unsaved private note".into());
+        app.sync_editor_inputs();
+
+        app.cancel_edit();
+
+        assert_eq!(app.mode, ShowcaseMode::Vault);
+        assert!(app.draft_password.is_empty());
+        assert!(app.draft_notes.is_empty());
+        assert!(app.editor_inputs.password.value().is_empty());
+        assert!(app.editor_inputs.notes.value().is_empty());
+    }
+
+    #[test]
+    fn secret_row_has_distinct_copy_and_reveal_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "qos-passwords-secret-actions-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut model = crate::PasswordsModel::open_in(&root);
+        let mut item = SecretItem::login("Account", "ada", "private-value");
+        model.save_item(&mut item).unwrap();
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(model);
+        app.refresh();
+
+        app.activate_detail_row_at(1, 880.0, 1_000.0);
+        assert!(app.status.starts_with("Copied password"));
+        assert!(
+            app.revealed.is_none(),
+            "copying must not disclose the value"
+        );
+
+        app.activate_detail_row_at(1, 960.0, 1_000.0);
+        assert!(
+            app.revealed.is_some(),
+            "the separate eye target reveals temporarily"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn editing_preserves_app_specific_secret_fields() {
+        let root = std::env::temp_dir().join(format!(
+            "qos-passwords-custom-fields-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut model = crate::PasswordsModel::open_in(&root);
+        let mut item = SecretItem::login("Deployment", "ada", "token");
+        item.kind = SecretItemKind::Other;
+        item.fields.insert("client-id".into(), "app-42".into());
+        item.fields.insert("tenant".into(), "northstar".into());
+        let id = model.save_item(&mut item).unwrap();
+
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(model);
+        app.refresh();
+        app.begin_edit();
+        app.draft_title = "Production deployment".into();
+        app.save_draft();
+
+        let stored = crate::PasswordsModel::open_in(&root)
+            .items()
+            .into_iter()
+            .find(|candidate| candidate.id == id)
+            .unwrap();
+        assert_eq!(
+            stored.fields.get("client-id").map(String::as_str),
+            Some("app-42")
+        );
+        assert_eq!(
+            stored.fields.get("tenant").map(String::as_str),
+            Some("northstar")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn assistive_actions_drive_the_same_editor() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let mut doc = AutoCommit::new();
+        assert!(app.perform_semantic_action(
+            "passwords.add",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.mode, ShowcaseMode::Editor);
+        assert!(app.perform_semantic_action(
+            "passwords.field.name",
+            &ui::a11y::Action::SetValue("New name".into()),
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.draft_title, "New name");
+
+        for (target, expected) in [
+            ("passwords.kind:api-key", SecretItemKind::ApiKey),
+            ("passwords.kind:note", SecretItemKind::SecureNote),
+            ("passwords.kind:wifi", SecretItemKind::Wifi),
+            ("passwords.kind:other", SecretItemKind::Other),
+            ("passwords.kind:login", SecretItemKind::Login),
+        ] {
+            assert!(app.perform_semantic_action(
+                target,
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ));
+            assert_eq!(app.draft_kind, expected);
+        }
+    }
+
+    #[test]
+    fn portal_descriptor_import_previews_conflicts_before_writing() {
+        use std::io::Write;
+        let root =
+            std::env::temp_dir().join(format!("qos-passwords-import-store-{}", std::process::id()));
+        let csv_path =
+            std::env::temp_dir().join(format!("qos-passwords-import-{}.csv", std::process::id()));
+        let mut selected = std::fs::File::create(&csv_path).unwrap();
+        selected
+            .write_all(
+                b"name,url,username,password\nExample,https://example.com,ada,first-secret\n",
+            )
+            .unwrap();
+        drop(selected);
+        let selected = std::fs::File::open(&csv_path).unwrap();
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(crate::PasswordsModel::open_in(&root));
+        app.import_portal = Some(ui::portal::inject_open_file_for_test(
+            selected,
+            "passwords.csv",
+        ));
+        for _ in 0..100 {
+            app.poll_transfers();
+            if app.transfer_dialog.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            matches!(app.transfer_dialog, Some(TransferDialog::ImportPreview { ref rows, conflicts: 0 }) if rows.len() == 1)
+        );
+        app.apply_import();
+        assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
+
+        let selected = std::fs::File::open(&csv_path).unwrap();
+        app.import_portal = Some(ui::portal::inject_open_file_for_test(
+            selected,
+            "passwords.csv",
+        ));
+        for _ in 0..100 {
+            app.poll_transfers();
+            if app.transfer_dialog.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(matches!(
+            app.transfer_dialog,
+            Some(TransferDialog::ImportPreview { conflicts: 1, .. })
+        ));
+        app.apply_import();
+        assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
+        let _ = std::fs::remove_file(csv_path);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn plaintext_export_requires_acknowledgement_and_round_trips() {
+        let root =
+            std::env::temp_dir().join(format!("qos-passwords-export-store-{}", std::process::id()));
+        let out = std::env::temp_dir().join(format!("qos-passwords-export-{}", std::process::id()));
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(crate::PasswordsModel::open_in(&root));
+        app.model
+            .as_mut()
+            .unwrap()
+            .save_login(
+                "Example",
+                "ada",
+                "export-secret",
+                Some("https://example.com"),
+            )
+            .unwrap();
+        app.request_export_confirmation();
+        app.begin_plaintext_export();
+        assert!(app.export_portal.is_none());
+        if let Some(TransferDialog::ExportPlaintext { acknowledged }) = &mut app.transfer_dialog {
+            *acknowledged = true;
+        }
+        app.export_portal = Some(ui::portal::inject_for_test(
+            ui::portal::PortalOutcome::Opened(out.clone()),
+        ));
+        app.poll_transfers();
+        let written = out.with_extension("csv");
+        let rows =
+            crate::transfer::parse_browser_csv(std::fs::File::open(&written).unwrap()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].password.as_str(), "export-secret");
+        let _ = std::fs::remove_file(written);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}

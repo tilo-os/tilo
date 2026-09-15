@@ -31,7 +31,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::BlendMode;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroize;
 
@@ -170,6 +170,10 @@ pub struct TextInput {
     selection_anchor: Option<usize>,
     /// Forces `wants_pointer_capture` so a drag past the rect edge keeps updating.
     is_dragging: bool,
+    /// Exclusive finger ownership for native touch selection. Mouse state is
+    /// deliberately separate so a secondary finger cannot steal or complete
+    /// an in-progress selection gesture.
+    active_touch: Option<u64>,
     drag_unit: DragUnit,
     /// Anchor span snapped to `drag_unit` boundaries; the drag extends from
     /// whichever end is "opposite" the current pointer.
@@ -355,6 +359,7 @@ impl TextInput {
             caret_affinity: TextAffinity::Before,
             selection_anchor: None,
             is_dragging: false,
+            active_touch: None,
             drag_unit: DragUnit::Char,
             drag_anchor_span: (0, 0),
             last_click_time: None,
@@ -3687,6 +3692,51 @@ impl Widget for TextInput {
             } if self.is_hovered && !self.effectively_disabled() => {
                 self.handle_middle_click(state, root, focus_target, node_id, handled);
             }
+            WindowEvent::Touch(touch) => {
+                let point = Point::new(
+                    touch.location.x / scale_factor,
+                    touch.location.y / scale_factor,
+                );
+                match touch.phase {
+                    TouchPhase::Started
+                        if self.active_touch.is_none() && self.rect.contains(point) =>
+                    {
+                        self.active_touch = Some(touch.id);
+                        self.last_mouse_pos = point;
+                        self.is_hovered = true;
+                        self.handle_left_press(
+                            Modifiers::default(),
+                            focus_target,
+                            node_id,
+                            handled,
+                        );
+                    }
+                    TouchPhase::Moved if self.active_touch == Some(touch.id) => {
+                        self.handle_cursor_moved(touch.location, scale_factor, handled);
+                        // Pointer movement that leaves the field can retain
+                        // the same resolved cursor, but the owned gesture is
+                        // still consumed until release.
+                        *handled = true;
+                    }
+                    TouchPhase::Ended if self.active_touch == Some(touch.id) => {
+                        self.active_touch = None;
+                        self.is_dragging = false;
+                        self.is_hovered = self.rect.contains(point);
+                        *handled = true;
+                    }
+                    TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
+                        self.active_touch = None;
+                        self.is_dragging = false;
+                        *handled = true;
+                    }
+                    _ if self.active_touch.is_some() => {
+                        // Explicitly reject a secondary finger while another
+                        // owns selection; never leak it to a control below.
+                        *handled = true;
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -6603,6 +6653,16 @@ mod tests {
         (taffy, node)
     }
 
+    fn touch(phase: TouchPhase, id: u64, point: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            force: None,
+            id,
+        })
+    }
+
     /// Uses a throwaway taffy node — the input embeds no children.
     fn drive(ti: &mut TextInput, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         let mut handled = false;
@@ -6620,6 +6680,75 @@ mod tests {
             &taffy,
         );
         handled
+    }
+
+    #[test]
+    fn touch_places_caret_drags_selection_and_releases_ownership() {
+        let mut input = TextInput::local().with_initial_value("abcdef");
+        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
+        draw_to_populate(&mut input);
+        let mut doc = AutoCommit::new();
+        let start = Point::new(x_for_byte(&input, 1), 22.0);
+        let end = Point::new(x_for_byte(&input, 5), 22.0);
+
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Started, 7, start),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, Some(7));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Moved, 7, end),
+            Modifiers::default()
+        ));
+        assert_eq!(input.selection_range(), Some((1, 5)));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Ended, 7, end),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, None);
+        assert!(!input.is_dragging);
+    }
+
+    #[test]
+    fn secondary_touch_cannot_steal_text_selection() {
+        let mut input = TextInput::local().with_initial_value("abcdef");
+        input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 44.0));
+        draw_to_populate(&mut input);
+        let mut doc = AutoCommit::new();
+        let point = Point::new(x_for_byte(&input, 2), 22.0);
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Started, 7, point),
+            Modifiers::default()
+        ));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Started, 8, point),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, Some(7));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Ended, 8, point),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, Some(7));
+        assert!(drive(
+            &mut input,
+            &mut doc,
+            &touch(TouchPhase::Cancelled, 7, point),
+            Modifiers::default()
+        ));
+        assert_eq!(input.active_touch, None);
     }
 
     #[test]

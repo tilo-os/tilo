@@ -18,6 +18,35 @@ fn empty_snapshot() -> DocSnapshot {
     }
 }
 
+#[test]
+fn scanned_pdf_preserves_pages_images_and_searchable_invisible_text() {
+    let pages = vec![
+        ScannedPdfPage {
+            width: 2,
+            height: 1,
+            rgb: vec![255, 0, 0, 0, 255, 0],
+            recognized_text: "First receipt".into(),
+        },
+        ScannedPdfPage {
+            width: 1,
+            height: 2,
+            rgb: vec![0, 0, 255, 255, 255, 255],
+            recognized_text: "Second receipt".into(),
+        },
+    ];
+    let pdf = render_scanned_pdf(&pages);
+    let text = String::from_utf8_lossy(&pdf);
+    assert!(text.starts_with("%PDF-1.7"));
+    assert!(text.contains("/Count 2"));
+    assert_eq!(text.matches("/Subtype /Image").count(), 2);
+    assert!(
+        text.contains("3 Tr"),
+        "OCR uses invisible text rendering mode"
+    );
+    assert!(text.contains("First receipt"));
+    assert!(text.contains("Second receipt"));
+}
+
 fn block(kind: &str, text: &str) -> BlockView {
     BlockView {
         id: format!("b-{kind}-{}", text.len()),

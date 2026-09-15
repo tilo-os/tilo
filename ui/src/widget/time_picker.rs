@@ -40,11 +40,11 @@ const MINSEC_MAX: u8 = 59;
 
 /// Fixed width of one spinner cell. Picked so the two-digit value reads
 /// comfortably at the `lg` type-scale (16 px) without crowding the arrows.
-const SPINNER_WIDTH: f32 = 36.0;
+const SPINNER_WIDTH: f32 = 44.0;
 /// Fixed height of the picker. Three vertical regions of equal height
 /// (arrow, value, arrow) of 24 px each — the value cell ends up matching the
 /// `lg` text height with some breathing room.
-const PICKER_HEIGHT: f32 = 72.0;
+const PICKER_HEIGHT: f32 = 132.0;
 /// Width of the colon separator between spinners.
 const COLON_WIDTH: f32 = 8.0;
 
