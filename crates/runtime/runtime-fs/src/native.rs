@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fmt;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 use std::sync::{
     Arc, Mutex, MutexGuard, Weak,
@@ -19,7 +20,7 @@ use crate::grants::{
     GrantedEntry, PageCursor,
 };
 use crate::{EntryKind, MAX_READ_CHUNK, Metadata};
-use cap_std::fs::{Dir, File, MetadataExt, OpenOptions, OpenOptionsExt};
+use cap_std::fs::{Dir, File, MetadataExt};
 use rustix::fs::OFlags;
 
 // Opaque cursors cannot alias a snapshot in a different authority.
@@ -615,7 +616,7 @@ impl FsSession {
             }
         } else if metadata.is_file() || metadata.is_dir() {
             self.validate(table, parent, Some(FsRight::Enumerate))?;
-            let opened = open_pinned(&descriptor, name.as_os_str(), &metadata, || {
+            let opened = open_pinned(&descriptor, name, &metadata, || {
                 self.validate(table, parent, Some(FsRight::Enumerate))
             })?;
             if metadata.is_dir() {
@@ -652,18 +653,29 @@ impl FsSession {
     }
 
     fn directory_stack(&self, parent: &GrantLease) -> Result<(Vec<Arc<Dir>>, GrantLease), FsError> {
-        let mut stack = Vec::new();
-        let mut current = parent;
-        loop {
-            stack.push(Self::directory(current)?);
+        // Allowed roots authorize their union. A redundant child must not narrow
+        // an already-allowed ancestor, while a child-only session stays bounded.
+        let mut scope = None;
+        let mut ancestor = Some(parent);
+        while let Some(lease) = ancestor {
             if self
                 .inner
                 .allowed
                 .iter()
-                .any(|allowed| Arc::ptr_eq(&allowed.record, &current.record))
+                .any(|allowed| Arc::ptr_eq(&allowed.record, &lease.record))
             {
+                scope = Some(lease);
+            }
+            ancestor = lease.record.parent.as_ref();
+        }
+        let scope = scope.ok_or(FsError::Denied)?;
+        let mut stack = Vec::new();
+        let mut current = parent;
+        loop {
+            stack.push(Self::directory(current)?);
+            if Arc::ptr_eq(&current.record, &scope.record) {
                 stack.reverse();
-                return Ok((stack, current.clone()));
+                return Ok((stack, scope.clone()));
             }
             current = current.record.parent.as_ref().ok_or(FsError::Denied)?;
         }
@@ -680,6 +692,10 @@ impl FsSession {
         let mut links = 0_u32;
         while let Some(component) = pending.pop_front() {
             self.validate(table, parent, Some(FsRight::Read))?;
+            if component == "." {
+                // A terminal dot preserves the target's directory requirement.
+                continue;
+            }
             if component == ".." {
                 if stack.len() <= 1 {
                     return Err(FsError::Denied);
@@ -711,7 +727,8 @@ impl FsSession {
                 return Err(FsError::Unsupported("special file bytes"));
             }
             self.validate(table, parent, Some(FsRight::Read))?;
-            let opened = open_pinned(dir, &component, &metadata, || {
+            let name = EntryName::new(component)?;
+            let opened = open_pinned(dir, &name, &metadata, || {
                 self.validate(table, parent, Some(FsRight::Read))
             })?;
             if metadata.is_dir() {
@@ -719,7 +736,7 @@ impl FsSession {
             } else if pending.is_empty() {
                 return Ok(Arc::new(opened));
             } else {
-                return Err(FsError::NotFound);
+                return Err(FsError::Io(rustix::io::Errno::NOTDIR.into()));
             }
         }
         Err(FsError::Unsupported("directory bytes"))
@@ -897,32 +914,40 @@ fn checked_metadata(
 }
 
 fn components(path: &Path) -> Result<VecDeque<OsString>, FsError> {
-    path.components()
-        .filter_map(|component| match component {
-            Component::Normal(name) => Some(Ok(name.to_os_string())),
-            Component::ParentDir => Some(Ok(OsString::from(".."))),
-            Component::CurDir => None,
-            Component::RootDir | Component::Prefix(_) => Some(Err(FsError::Denied)),
+    let mut result = path
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => Ok(name.to_os_string()),
+            Component::ParentDir => Ok(OsString::from("..")),
+            Component::CurDir => Ok(OsString::from(".")),
+            Component::RootDir | Component::Prefix(_) => Err(FsError::Denied),
         })
-        .collect()
+        .collect::<Result<VecDeque<_>, _>>()?;
+    // Path::components normalizes these suffixes away. Keep a directory step
+    // in the queue so nested expansion cannot turn `file/` into file bytes.
+    let bytes = path.as_os_str().as_bytes();
+    if bytes.ends_with(b"/") || bytes.ends_with(b"/.") {
+        result.push_back(OsString::from("."));
+    }
+    Ok(result)
 }
 
 fn open_pinned(
     dir: &Dir,
-    name: &std::ffi::OsStr,
+    name: &EntryName,
     metadata: &cap_std::fs::Metadata,
     validate: impl Fn() -> Result<(), FsError>,
 ) -> Result<File, FsError> {
-    let mut flags = OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let mut flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
     if metadata.is_dir() {
         flags |= OFlags::DIRECTORY;
     }
-    let mut options = OpenOptions::new();
-    options.read(true).custom_flags(
-        i32::try_from(flags.bits()).map_err(|_| FsError::Unsupported("native open flags"))?,
-    );
     validate()?;
-    let opened = dir.open_with(name, &options).map_err(io_error)?;
+    // EntryName proves this is one normal component. Use the kernel's actual
+    // no-follow operation; cap-std's manual resolver can follow raw O_NOFOLLOW.
+    let opened = rustix::fs::openat(dir, name.as_os_str(), flags, rustix::fs::Mode::empty())
+        .map_err(|error| io_error(error.into()))?;
+    let opened = File::from_std(std::fs::File::from(opened));
     validate()?;
     let observed = opened.metadata().map_err(io_error)?;
     if NativeIdentity::of(&observed) != NativeIdentity::of(metadata)
@@ -969,6 +994,22 @@ mod tests {
             )
             .unwrap();
         (temp, authority, session, root)
+    }
+
+    #[test]
+    fn open_pinned_rejects_substituted_symlink_to_original() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("entry"), b"original").unwrap();
+        let dir = Dir::from_std_file(std::fs::File::open(temp.path()).unwrap());
+        let name = EntryName::new("entry".into()).unwrap();
+        let metadata = dir.symlink_metadata(name.as_os_str()).unwrap();
+        std::fs::rename(temp.path().join("entry"), temp.path().join("held")).unwrap();
+        std::os::unix::fs::symlink("held", temp.path().join("entry")).unwrap();
+        assert!(open_pinned(&dir, &name, &metadata, || Ok(())).is_err());
+        assert_eq!(
+            std::fs::read(temp.path().join("held")).unwrap(),
+            b"original"
+        );
     }
 
     #[test]

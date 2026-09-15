@@ -618,9 +618,26 @@ fn nested_symlink_obeys_session_root_and_retains_target() {
         narrowed.read_at(&link, 0, 20),
         Err(FsError::Denied)
     ));
+    let overlapping = authority
+        .bind(
+            files_owner(),
+            uuid::Uuid::from_u128(0xc33),
+            &[root, child.clone()],
+            &[],
+        )
+        .unwrap();
+    let overlapping_link = file(overlapping.lookup(&child, &name("link")).unwrap());
+    assert_eq!(
+        overlapping.read_at(&overlapping_link, 0, 20).unwrap(),
+        b"original"
+    );
     std::fs::rename(temp.path().join("sibling"), temp.path().join("held")).unwrap();
     std::fs::write(temp.path().join("sibling"), b"replacement").unwrap();
     assert_eq!(session.read_at(&link, 0, 20).unwrap(), b"original");
+    assert_eq!(
+        overlapping.read_at(&overlapping_link, 0, 20).unwrap(),
+        b"original"
+    );
 }
 
 #[test]
@@ -649,4 +666,56 @@ fn revoked_subdirectory_invalidates_descendants_but_not_siblings() {
             .unwrap(),
         b"sibling"
     );
+}
+
+// Every target and adversarial link remains below this owned TempDir.
+fn assert_symlink_directory_requirement(file_target: &str, directory_target: &str) {
+    let (temp, _authority, session, root) = granted_root();
+    std::fs::write(temp.path().join("data"), b"data").unwrap();
+    std::fs::create_dir(temp.path().join("folder")).unwrap();
+    for (link, target) in [
+        ("file-alias", "data"),
+        ("directory-alias", "folder"),
+        ("file-slash", "data/"),
+        ("directory-slash", "folder/"),
+        ("file-dot", "data/."),
+        ("directory-dot", "folder/."),
+        ("file-link", file_target),
+        ("directory-link", directory_target),
+    ] {
+        symlink(target, temp.path().join(link)).unwrap();
+    }
+    let directory_link = file(session.lookup(&root, &name("directory-link")).unwrap());
+    assert!(matches!(
+        session.read_at(&directory_link, 0, 20),
+        Err(FsError::Unsupported(_))
+    ));
+    let native_error = std::fs::metadata(temp.path().join("file-link")).unwrap_err();
+    assert_eq!(native_error.kind(), std::io::ErrorKind::NotADirectory);
+    let file_link = file(session.lookup(&root, &name("file-link")).unwrap());
+    assert!(
+        matches!(session.read_at(&file_link, 0, 20), Err(FsError::Io(error)) if error.kind() == std::io::ErrorKind::NotADirectory)
+    );
+}
+
+#[test]
+fn symlink_file_trailing_slash_requires_directory() {
+    assert_symlink_directory_requirement("data/", "folder/");
+}
+
+#[test]
+fn symlink_file_trailing_dot_requires_directory() {
+    assert_symlink_directory_requirement("data/.", "folder/.");
+}
+
+#[test]
+fn nested_symlink_preserves_trailing_directory_requirement() {
+    for (file_target, directory_target) in [
+        ("file-alias/", "directory-alias/"),
+        ("file-alias/.", "directory-alias/."),
+        ("file-slash", "directory-slash"),
+        ("file-dot", "directory-dot"),
+    ] {
+        assert_symlink_directory_requirement(file_target, directory_target);
+    }
 }
