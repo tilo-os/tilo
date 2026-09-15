@@ -29,6 +29,10 @@ enum TransferDialog {
     ExportPlaintext {
         acknowledged: bool,
     },
+    DeleteConfirm {
+        id: SecretId,
+        title: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -115,10 +119,14 @@ pub enum ShowcaseMode {
     Health,
     Import,
     Export,
+    DeleteConfirm,
 }
 
 fn compact_content_rect(mode: ShowcaseMode, main: Rect) -> Rect {
-    if matches!(mode, ShowcaseMode::Editor | ShowcaseMode::Health) {
+    if matches!(
+        mode,
+        ShowcaseMode::Editor | ShowcaseMode::Health | ShowcaseMode::DeleteConfirm
+    ) {
         main
     } else {
         Rect::new(main.x0 + 60.0, main.y0, main.x1, main.y1)
@@ -166,6 +174,32 @@ pub struct PasswordsSurface {
 }
 
 impl PasswordsSurface {
+    fn request_delete(&mut self, id: SecretId) {
+        let title = self
+            .items
+            .iter()
+            .find(|item| item.id == id)
+            .map_or_else(|| "this item".to_owned(), |item| item.title.clone());
+        self.transfer_dialog = Some(TransferDialog::DeleteConfirm { id, title });
+    }
+
+    fn confirm_delete(&mut self) {
+        let Some(TransferDialog::DeleteConfirm { id, .. }) = self.transfer_dialog.take() else {
+            return;
+        };
+        if let Some(model) = &mut self.model {
+            match model.remove(&id) {
+                Ok(true) => {
+                    self.refresh();
+                    self.cancel_edit();
+                    self.status = "Item deleted".into();
+                }
+                Ok(false) => self.status = "That item is no longer in your vault".into(),
+                Err(error) => self.status = format!("Could not delete item: {error}"),
+            }
+        }
+    }
+
     fn kind_label(kind: SecretItemKind) -> &'static str {
         match kind {
             SecretItemKind::Login => "Login",
@@ -310,7 +344,8 @@ impl PasswordsSurface {
         .loaded()
     }
     pub fn demo(mode: ShowcaseMode) -> Self {
-        let editing = (mode == ShowcaseMode::Editor).then(|| SecretId("demo-0".into()));
+        let editing = matches!(mode, ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm)
+            .then(|| SecretId("demo-0".into()));
         let items = demo_items();
         let health = crate::analyze_health(&items);
         let transfer_dialog = match mode {
@@ -335,6 +370,10 @@ impl PasswordsSurface {
             }),
             ShowcaseMode::Export => Some(TransferDialog::ExportPlaintext {
                 acknowledged: false,
+            }),
+            ShowcaseMode::DeleteConfirm => Some(TransferDialog::DeleteConfirm {
+                id: SecretId("demo-0".into()),
+                title: "Northstar Bank".into(),
             }),
             _ => None,
         };
@@ -1215,6 +1254,27 @@ impl PasswordsSurface {
                     self.begin_plaintext_export();
                 }
             }
+            TransferDialog::DeleteConfirm { .. } => {
+                if Rect::new(
+                    rect.x1 - 236.0,
+                    rect.y1 - 64.0,
+                    rect.x1 - 142.0,
+                    rect.y1 - 12.0,
+                )
+                .contains(point)
+                {
+                    self.transfer_dialog = None;
+                } else if Rect::new(
+                    rect.x1 - 140.0,
+                    rect.y1 - 64.0,
+                    rect.x1 - 12.0,
+                    rect.y1 - 12.0,
+                )
+                .contains(point)
+                {
+                    self.confirm_delete();
+                }
+            }
         }
         true
     }
@@ -1394,11 +1454,8 @@ impl PasswordsSurface {
             }
             let (delete, cancel, save) = self.editor_footer_rects(panel);
             if delete.is_some_and(|rect| rect.contains(point)) {
-                if let (Some(model), Some(id)) = (&mut self.model, self.editing.clone()) {
-                    let _ = model.remove(&id);
-                    self.refresh();
-                    self.cancel_edit();
-                    self.status = "Item deleted".into();
+                if let Some(id) = self.editing.clone() {
+                    self.request_delete(id);
                 }
                 return true;
             }
@@ -1795,6 +1852,75 @@ impl PasswordsSurface {
                 .style(ui::widget::ButtonStyle::Primary)
                 .disabled(!acknowledged);
                 ui::widget::Button::paint(scene, transform, tr, theme, &export);
+            }
+            TransferDialog::DeleteConfirm { title, .. } => {
+                Self::text(
+                    tr,
+                    scene,
+                    "Delete item?",
+                    24.0,
+                    c.text_primary,
+                    transform,
+                    x,
+                    rect.y0 + 28.0,
+                    TextWeight::Bold,
+                );
+                Self::text(
+                    tr,
+                    scene,
+                    title,
+                    15.0,
+                    c.text_primary,
+                    transform,
+                    x,
+                    rect.y0 + 82.0,
+                    TextWeight::Medium,
+                );
+                let body: &[(&str, f64)] = if compact {
+                    &[
+                        ("This item will be permanently removed", 116.0),
+                        ("from your vault.", 138.0),
+                    ]
+                } else {
+                    &[(
+                        "This item will be permanently removed from your vault.",
+                        116.0,
+                    )]
+                };
+                for (line, y) in body {
+                    Self::text(
+                        tr,
+                        scene,
+                        line,
+                        13.0,
+                        c.text_dim,
+                        transform,
+                        x,
+                        rect.y0 + y,
+                        TextWeight::Regular,
+                    );
+                }
+                let cancel = ButtonFace::new(
+                    Rect::new(
+                        rect.x1 - 236.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 142.0,
+                        rect.y1 - 20.0,
+                    ),
+                    "Keep item",
+                );
+                Button::paint(scene, transform, tr, theme, &cancel);
+                let delete = ButtonFace::new(
+                    Rect::new(
+                        rect.x1 - 132.0,
+                        rect.y1 - 64.0,
+                        rect.x1 - 20.0,
+                        rect.y1 - 20.0,
+                    ),
+                    "Delete",
+                )
+                .style(ui::widget::ButtonStyle::Danger);
+                Button::paint(scene, transform, tr, theme, &delete);
             }
         }
     }
@@ -2710,12 +2836,7 @@ impl Widget for PasswordsSurface {
                 self.copy_selected();
             }
             crate::actions::PasswordOperation::RequestDelete { id } => {
-                if let Some(model) = &mut self.model {
-                    model.remove(&SecretId(id))?;
-                    self.refresh();
-                    self.mode = ShowcaseMode::Vault;
-                    self.status = "Login deleted".into();
-                }
+                self.request_delete(SecretId(id));
             }
             crate::actions::PasswordOperation::ImportCsv => self.request_import(),
             crate::actions::PasswordOperation::ExportCsv => self.request_export_confirmation(),
@@ -2805,7 +2926,7 @@ impl Widget for PasswordsSurface {
                 ShowcaseMode::Vault => {
                     self.draw_list(scene, tr, transform, theme, compact_content, true)
                 }
-                ShowcaseMode::Editor => {
+                ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm => {
                     self.draw_editor(scene, tr, transform, theme, compact_content)
                 }
                 ShowcaseMode::Health => {
@@ -2844,7 +2965,9 @@ impl Widget for PasswordsSurface {
         let detail = Rect::new(list.x1 + 24.0, content.y0, content.x1, content.y1);
         match self.mode {
             ShowcaseMode::Vault => self.draw_detail(scene, tr, transform, theme, detail),
-            ShowcaseMode::Editor => self.draw_editor(scene, tr, transform, theme, detail),
+            ShowcaseMode::Editor | ShowcaseMode::DeleteConfirm => {
+                self.draw_editor(scene, tr, transform, theme, detail)
+            }
             ShowcaseMode::Health => self.draw_health(scene, tr, transform, theme, detail),
             ShowcaseMode::Import | ShowcaseMode::Export => {
                 self.draw_detail(scene, tr, transform, theme, detail)
@@ -3107,12 +3230,8 @@ impl Widget for PasswordsSurface {
                         }
                         let (delete, cancel, save) = self.editor_footer_rects(panel);
                         if delete.is_some_and(|rect| rect.contains(self.last_pointer)) {
-                            if let (Some(model), Some(id)) = (&mut self.model, self.editing.clone())
-                            {
-                                let _ = model.remove(&id);
-                                self.refresh();
-                                self.cancel_edit();
-                                self.status = "Item deleted".into();
+                            if let Some(id) = self.editing.clone() {
+                                self.request_delete(id);
                             }
                             *handled = true;
                             return;
@@ -3203,6 +3322,7 @@ impl Widget for PasswordsSurface {
                             Some(TransferDialog::ExportPlaintext { acknowledged: true }) => {
                                 self.begin_plaintext_export()
                             }
+                            Some(TransferDialog::DeleteConfirm { .. }) => self.confirm_delete(),
                             _ => {}
                         },
                         _ => return,
@@ -3581,12 +3701,24 @@ impl Widget for PasswordsSurface {
                         .with_action_target("passwords.transfer.choose")
                         .with_state(AccessState::new().focusable(true).disabled(!acknowledged)),
                 ],
+                TransferDialog::DeleteConfirm { title, .. } => vec![
+                    AccessNode::new(Role::StaticText).with_name(format!(
+                        "{title} will be permanently removed from your vault"
+                    )),
+                    AccessNode::new(Role::Button)
+                        .with_name("Keep item")
+                        .with_action_target("passwords.transfer.cancel"),
+                    AccessNode::new(Role::Button)
+                        .with_name("Delete permanently")
+                        .with_action_target("passwords.delete.confirm"),
+                ],
             };
             children = vec![
                 AccessNode::new(Role::Dialog)
                     .with_name(match dialog {
                         TransferDialog::ImportPreview { .. } => "Review import",
                         TransferDialog::ExportPlaintext { .. } => "Export as plaintext CSV",
+                        TransferDialog::DeleteConfirm { .. } => "Delete item?",
                     })
                     .with_state(AccessState::new().modal(true))
                     .with_children(controls),
@@ -3673,14 +3805,12 @@ impl Widget for PasswordsSurface {
             ("passwords.cancel", Action::Activate) => self.cancel_edit(),
             ("passwords.save", Action::Activate) => self.save_draft(),
             ("passwords.delete", Action::Activate) => {
-                let (Some(model), Some(id)) = (&mut self.model, self.editing.clone()) else {
+                let Some(id) = self.editing.clone() else {
                     return false;
                 };
-                let _ = model.remove(&id);
-                self.refresh();
-                self.cancel_edit();
-                self.status = "Item deleted".into();
+                self.request_delete(id);
             }
+            ("passwords.delete.confirm", Action::Activate) => self.confirm_delete(),
             (_, Action::Activate) if target.starts_with("passwords.kind:") => {
                 let kind = match target.strip_prefix("passwords.kind:") {
                     Some("login") => SecretItemKind::Login,
@@ -4186,6 +4316,61 @@ mod tests {
             ));
             assert_eq!(app.draft_kind, expected);
         }
+    }
+
+    #[test]
+    fn every_delete_path_requires_confirmation_before_mutating_the_vault() {
+        let root = std::env::temp_dir().join(format!(
+            "qos-passwords-delete-confirm-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let mut model = crate::PasswordsModel::open_in(&root);
+        let mut item = SecretItem::login("Keep me", "ada", "private-value");
+        let id = model.save_item(&mut item).unwrap();
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        app.model = Some(model);
+        app.refresh();
+        app.begin_edit();
+        let mut doc = AutoCommit::new();
+
+        assert!(app.perform_semantic_action(
+            "passwords.delete",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(matches!(
+            app.transfer_dialog,
+            Some(TransferDialog::DeleteConfirm { .. })
+        ));
+        assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
+        app.transfer_dialog = None;
+
+        let payload = serde_json::to_vec(&crate::actions::PasswordOperation::RequestDelete {
+            id: id.0.clone(),
+        })
+        .unwrap();
+        assert!(
+            app.invoke_resource_operation(
+                ui::qos_actions::OperationKind::Effect,
+                "qos.passwords.operation",
+                &payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(app.model.as_ref().unwrap().items().len(), 1);
+
+        assert!(app.perform_semantic_action(
+            "passwords.delete.confirm",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(app.model.as_ref().unwrap().items().is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
