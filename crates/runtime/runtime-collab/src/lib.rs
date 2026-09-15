@@ -1088,9 +1088,13 @@ impl ChannelHandle {
     pub async fn launch_published_application(
         &self,
         app_id: &str,
+        content_hash: Option<&str>,
     ) -> Result<(u64, String), NotAvailable> {
         let mut request = self.inner.launch_published_application_request();
         request.get().set_app_id(app_id);
+        request
+            .get()
+            .set_content_hash(content_hash.unwrap_or_default());
         let reply = request.send().promise.await?;
         let result = reply.get()?;
         Ok((
