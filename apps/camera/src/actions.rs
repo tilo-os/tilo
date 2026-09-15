@@ -6,27 +6,27 @@
 //! (opening a lens, decoding a QR out of a frame, the live viewfinder) is
 //! external, not collaborative. What lives in the shared Automerge document
 //! (see [`crate::doc`]) is the *metadata*: portable capture registrations,
-//! mode and capture preferences, favorites, and scan history. Those durable
+//! mode and capture preferences, and scan history. Those durable
 //! choices are [`CameraAction`]s: small serializable values that
 //! deterministically mutate the CRDT and therefore replicate, replay and undo
-//! for free. The exact same [`EncodedAction`] the gallery's favorite affordance
-//! dispatches is what the Ctrl+K palette dispatches — one source of truth, one
-//! replay path.
+//! for free.
 //!
 //! ## What is *not* an action
 //!
-//! Capturing a photo/video (the frame write is device I/O), deleting the local
-//! file projection (device I/O — shared metadata removal is a canonical
-//! action), and the live preview are external effects. Which shot is selected, the gallery
-//! scroll, the active filter, zoom, and an open chooser are presentation-only.
+//! Capturing a photo/video (the frame write is device I/O), media-library
+//! management (owned by Photos or Video Player), and the live preview are
+//! external effects. The selected shot, recent-captures scroll, zoom, and an
+//! open chooser are presentation-only.
 //!
 //! ## Determinism contract
 //!
-//! Both variants carry everything [`Action::apply`] needs (the item id, the
-//! favorite direction, the scanned payload, and a timestamp minted at authoring
-//! time); `apply` never touches the RNG or the wall-clock. A malformed payload
-//! or an oversized legacy list is an explicit [`ActionError::Refused`], so the
-//! invoker never mistakes a rejected durable mutation for success.
+//! Variants carry everything [`Action::apply`] needs (the item id, the scanned
+//! payload, and a timestamp minted at authoring time); `apply` never touches
+//! the RNG or the wall-clock. Legacy favorite/removal variants remain decodable
+//! for replicated history, but Camera no longer publishes them as media-library
+//! affordances. A malformed payload or an oversized legacy list is an explicit
+//! [`ActionError::Refused`], so the invoker never mistakes a rejected durable
+//! mutation for success.
 
 use automerge::{AutoCommit, ROOT};
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,7 @@ use crate::model::{
 /// Registry `type_id` for every Camera action.
 pub const CAMERA_ACTION_TYPE: &str = "camera.action";
 pub const CAMERA_OPERATION_TYPE: &str = "camera.operation";
+pub const APPLICATION_LAUNCH_TYPE: &str = "qos.application.launch";
 /// The open-resource snapshot is contextual, not a dump of a 10,000-item
 /// camera roll. Exact/search results outside this page remain addressable via
 /// [`resolve_resource`].
@@ -55,10 +56,6 @@ pub enum CameraOperation {
     /// create collaboration history or move a peer away from their work.
     Reveal {
         screen: Screen,
-    },
-    /// Open one canonical capture in Gallery's detail presentation.
-    OpenCapture {
-        id: String,
     },
     Capture,
     ToggleRecording,
@@ -94,7 +91,7 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<CameraOp
         .map_err(|e| e.to_string())
 }
 
-/// Every collaborative operation Camera exports on its shared gallery/scan
+/// Every collaborative operation Camera exports on its shared capture/scan
 /// metadata. The pixels and the decode are external; these are the doc writes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CameraAction {
@@ -111,7 +108,7 @@ pub enum CameraAction {
         label: String,
         facing: Facing,
     },
-    /// Remove a published capture from the shared gallery index. Blob bytes
+    /// Remove a published capture from the shared capture index. Blob bytes
     /// are content-addressed and may remain referenced elsewhere; this action
     /// removes only this resource's canonical metadata row.
     RemoveCapture {
@@ -153,7 +150,7 @@ pub enum CameraAction {
     SetDefaultFacing {
         facing: Facing,
     },
-    /// Star / unstar a gallery shot by id (its file name). The pixels live on
+    /// Star / unstar a capture by id (its file name). The pixels live on
     /// disk (external); only the collaborative "favorited" bit is this action.
     /// Explicit (`on`) rather than a toggle so a delete can also clear the flag
     /// unconditionally, and so replay is a plain deterministic set.
@@ -279,23 +276,26 @@ pub fn record_scan_action(raw: &str, ts: i64) -> CameraAction {
 // Resource tree
 // ===========================================================================
 
-/// One gallery shot surfaced as a resource: its id (file name), a one-line
+/// One capture surfaced as a resource: its id (file name), a one-line
 /// label, its current favorite state, and whether it is a video. Everything
 /// here is derived from state the app already holds; nothing is fabricated.
 #[derive(Debug, Clone)]
-pub struct GalleryItem {
+pub struct CaptureItem {
     pub id: String,
     pub label: String,
     pub favorite: bool,
     pub is_video: bool,
+    /// A verified portable still-image identity, when the bytes have been
+    /// published. It is intentionally not a local path.
+    pub media_id: Option<String>,
 }
 
-/// The presentation context Camera hands [`provide_resources`]: the gallery
-/// shots currently in the library cache (itself re-projected from disk / the
+/// The presentation context Camera hands [`provide_resources`]: recent capture
+/// items currently in the library cache (itself re-projected from disk / the
 /// sample source, with favorite state from the document).
 #[derive(Debug, Clone)]
 pub struct CameraResourceCtx {
-    pub items: Vec<GalleryItem>,
+    pub items: Vec<CaptureItem>,
     pub mode: CaptureMode,
     pub facing: Facing,
     pub recording: bool,
@@ -336,7 +336,7 @@ fn immediate_spec(id: &str, label: &str, action: &CameraAction) -> Option<Action
         .map(ActionSpec::reversible)
 }
 
-fn item_label(it: &GalleryItem) -> String {
+fn item_label(it: &CaptureItem) -> String {
     let l = it.label.trim();
     let base = if l.is_empty() { it.id.as_str() } else { l };
     if it.is_video {
@@ -346,7 +346,7 @@ fn item_label(it: &GalleryItem) -> String {
     }
 }
 
-pub(crate) fn capture_resource_id(it: &GalleryItem) -> String {
+pub(crate) fn capture_resource_id(it: &CaptureItem) -> String {
     format!(
         "{}:{}",
         if it.is_video {
@@ -358,68 +358,67 @@ pub(crate) fn capture_resource_id(it: &GalleryItem) -> String {
     )
 }
 
-pub(crate) fn capture_resource(it: &GalleryItem) -> Resource {
+pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
     let kind = if it.is_video {
         "camera.video"
     } else {
         "camera.photo"
     };
-    let (label, on) = if it.favorite {
-        ("Unfavorite", false)
-    } else {
-        ("Favorite", true)
-    };
     let mut child = Resource::new(capture_resource_id(it), kind, item_label(it));
-    if let Ok(spec) = ActionSpec::operation(
-        "open",
-        "Open capture",
-        OperationKind::View,
-        CAMERA_OPERATION_TYPE,
-        &CameraOperation::OpenCapture { id: it.id.clone() },
-    ) {
+    if let Some(content_hash) = it
+        .media_id
+        .as_deref()
+        .filter(|id| crate::media::is_media_id(id))
+        .and_then(|id| id.strip_prefix(crate::media::MEDIA_PREFIX))
+    {
+        let app_id = if it.is_video {
+            "dev.qos.video-player"
+        } else {
+            "dev.qos.photos"
+        };
+        let label = if it.is_video {
+            "Open in Video Player"
+        } else {
+            "Open in Photos"
+        };
+        let app_id = app_id.to_owned();
+        let content_hash = content_hash.to_owned();
+        let spec = ActionSpec::typed_operation(
+            "open",
+            label,
+            "Open the verified portable capture in its owning app",
+            OperationKind::Effect,
+            APPLICATION_LAUNCH_TYPE,
+            Vec::new(),
+            move |_| {
+                EncodedAction::encode_operation(
+                    APPLICATION_LAUNCH_TYPE,
+                    &serde_json::json!({
+                        "app_id": app_id,
+                        "content_hash": content_hash,
+                    }),
+                )
+                .unwrap_or_else(|_| EncodedAction {
+                    type_id: APPLICATION_LAUNCH_TYPE.into(),
+                    payload: Vec::new(),
+                })
+            },
+        );
         child = child.with_action(spec);
-    }
-    if let Some(spec) = immediate_spec("favorite", label, &set_favorite_action(&it.id, on)) {
-        child = child.with_action(spec);
-    }
-    if let Ok(spec) = ActionSpec::operation(
-        "share",
-        "Share capture",
-        OperationKind::Effect,
-        CAMERA_OPERATION_TYPE,
-        &CameraOperation::Share { id: it.id.clone() },
-    ) {
-        child = child.with_action(spec);
-    }
-    if let Ok(spec) = ActionSpec::operation(
-        "delete-file",
-        "Delete capture from disk",
-        OperationKind::Effect,
-        CAMERA_OPERATION_TYPE,
-        &CameraOperation::Delete { id: it.id.clone() },
-    ) {
-        child = child.with_action(spec.destructive());
     }
     child
 }
 
-/// Build the resource tree Camera currently has open: the gallery, with one
-/// resource per shot exporting the favorite / unfavorite action. The direction
-/// is chosen from the shot's *current* favorite state (recomputed each frame —
-/// a steady, level-triggered value), so the on-screen heart and the palette row
-/// dispatch the identical [`EncodedAction`].
+/// Build Camera's contextual resource tree: recent captures with one typed
+/// handoff action per verified portable capture. Photos owns still-media
+/// library operations; Video Player owns recorded-video operations.
 #[allow(
     clippy::too_many_lines,
-    reason = "the gallery and settings are Camera's two resource roots; keeping their complete, typed action inventory together makes the palette contract auditable"
+    reason = "recent captures and settings are Camera's two resource roots; keeping their complete, typed action inventory together makes the palette contract auditable"
 )]
 pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut navigation = Resource::new("camera", "camera", "Camera");
-    for screen in [
-        Screen::Camera,
-        Screen::Scanner,
-        Screen::Gallery,
-        Screen::Settings,
-    ] {
+    for screen in [Screen::Camera, Screen::Scanner, Screen::Settings] {
         if let Ok(spec) = ActionSpec::operation(
             format!("open-{}", screen.as_str()),
             format!("Open {}", screen.label()),
@@ -430,7 +429,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             navigation = navigation.with_action(spec);
         }
     }
-    let mut root = Resource::new("camera.gallery", "camera.gallery", "Gallery");
+    let mut root = Resource::new("camera.captures", "camera.captures", "Captures");
     if let Ok(spec) = ActionSpec::operation(
         "capture",
         "Capture photo",
@@ -670,7 +669,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             });
         }
     }
-    // Keep the gallery first for callers that scope Ctrl+K to the current
+    // Keep the first capture for callers that scope Ctrl+K to the current
     // media collection, then expose navigation as its own searchable root.
     vec![root, settings, navigation]
 }
@@ -679,7 +678,7 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
 /// snapshot. Search and agents use this to reach an exact older capture
 /// without forcing every camera-roll row into Ctrl+K on every frame.
 pub fn resolve_resource(ctx: &CameraResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    if matches!(id, "camera.gallery" | "camera.settings" | "camera") {
+    if matches!(id, "camera.captures" | "camera.settings" | "camera") {
         return provide_resources(ctx, doc)
             .into_iter()
             .find(|resource| resource.id.as_str() == id);
@@ -713,14 +712,7 @@ mod tests {
         r
     }
 
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
-    /// A hermetic Camera app with its sample gallery synced into a fresh
+    /// A hermetic Camera app with its sample captures synced into a fresh
     /// document. The sample set carries both photos and videos, some favorited.
     fn seeded() -> (CameraApp, AutoCommit) {
         let mut app = CameraApp::sample();
@@ -729,55 +721,62 @@ mod tests {
         (app, doc)
     }
 
-    /// Ctrl+K on Camera yields the gallery tree: a `camera.gallery` root with a
-    /// `camera.photo` / `camera.video` child per shot, each exporting the
-    /// favorite action. Drives the real resource hook.
+    /// Ctrl+K on Camera yields the capture tree: a `camera.captures` root with a
+    /// `camera.photo` / `camera.video` child per shot, each exporting only
+    /// the typed handoff to its owning app. Drives the real resource hook.
     #[test]
-    fn ctrl_k_publishes_the_gallery_tree() {
+    fn ctrl_k_publishes_the_capture_tree() {
         let (app, doc) = seeded();
         let resources = Widget::resources(&app, &doc);
-        assert_eq!(
-            resources.len(),
-            3,
-            "gallery, settings, and navigation roots"
+        assert!(
+            resources.len() >= 3,
+            "captures, settings, navigation, and any declared handoff controls"
         );
-        let gallery = resources
+        let captures = resources
             .iter()
-            .find(|resource| resource.id.as_str() == "camera.gallery")
-            .expect("gallery root");
-        assert_eq!(gallery.kind, "camera.gallery");
-        assert!(!gallery.children.is_empty(), "the sample gallery has shots");
+            .find(|resource| resource.id.as_str() == "camera.captures")
+            .expect("captures root");
+        assert_eq!(captures.kind, "camera.captures");
+        assert!(!captures.children.is_empty(), "the sample has captures");
 
-        let photo = gallery
+        let photo = captures
             .children
             .iter()
             .find(|r| r.kind == "camera.photo")
             .expect("a photo resource");
-        let ids: Vec<&str> = photo.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(ids.contains(&"favorite"), "{ids:?}");
-        assert!(
-            photo
+        let video = captures
+            .children
+            .iter()
+            .find(|r| r.kind == "camera.video")
+            .expect("a video resource");
+        for (resource, app_id) in [(photo, "dev.qos.photos"), (video, "dev.qos.video-player")] {
+            let action = resource
                 .actions
                 .iter()
-                .find(|action| action.id == "favorite")
-                .is_some_and(|action| action.contract.reversible)
-        );
-        assert!(
-            gallery.children.iter().any(|r| r.kind == "camera.video"),
-            "a video resource"
-        );
-
-        // The one palette surfaces the favorite rows.
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels
-                .iter()
-                .any(|l| l.contains("Favorite") || l.contains("Unfavorite")),
-            "{labels:?}"
-        );
+                .find(|action| action.id == "open")
+                .expect("capture has its typed open handoff");
+            assert_eq!(
+                action.operation_type.as_deref(),
+                Some(APPLICATION_LAUNCH_TYPE)
+            );
+            assert!(
+                !resource.actions.iter().any(|action| {
+                    matches!(action.id.as_str(), "favorite" | "share" | "delete-file")
+                }),
+                "Camera does not publish media-library management"
+            );
+            let ActionInput::Immediate(encoded) = &action.input else {
+                panic!("zero-argument handoff must be immediate");
+            };
+            let payload: serde_json::Value =
+                serde_json::from_slice(&encoded.payload).expect("handoff payload JSON");
+            assert_eq!(payload["app_id"], app_id);
+            assert!(
+                payload["content_hash"]
+                    .as_str()
+                    .is_some_and(|hash| hash.len() == 64)
+            );
+        }
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -1026,48 +1025,16 @@ mod tests {
         }
     }
 
-    /// Single source of truth: the on-screen favorite affordance dispatches the
-    /// byte-identical [`EncodedAction`] its palette [`ActionSpec`] exports.
-    /// Driven through the real app handler, not a helper that fabricates the
-    /// action — the button's actual dispatch is captured and compared.
     #[test]
-    fn favorite_button_and_spec_encode_identically() {
-        let (mut app, mut doc) = seeded();
-        // The gallery's first shot and the palette spec built for its *current*
-        // favorite state.
-        let resources = Widget::resources(&app, &doc);
-        let item = resources[0]
-            .children
-            .first()
-            .expect("a gallery item")
-            .clone();
-        let id = item.id.as_str().rsplit(':').next().unwrap().to_string();
-        let spec = item.actions.iter().find(|a| a.id == "favorite").unwrap();
-        let from_spec = immediate_encode(spec);
-
-        // Drive the real favorite affordance and capture what it dispatched.
-        app.test_select(&id);
-        app.test_toggle_favorite(&mut doc);
-        let from_button = app
-            .test_last_dispatched()
-            .expect("the button dispatched an action");
-
-        assert_eq!(from_spec.type_id, from_button.type_id);
-        assert_eq!(
-            from_spec.payload, from_button.payload,
-            "one source of truth"
-        );
-    }
-
-    #[test]
-    fn device_effects_are_canonical_and_delete_is_destructive() {
+    fn device_effects_are_honest_and_unverified_captures_publish_no_action() {
         let resources = provide_resources(
             &CameraResourceCtx {
-                items: vec![GalleryItem {
+                items: vec![CaptureItem {
                     id: "IMG_1.jpg".into(),
                     label: "Capture".into(),
                     favorite: false,
                     is_video: false,
+                    media_id: None,
                 }],
                 ..CameraResourceCtx::default()
             },
@@ -1083,13 +1050,7 @@ mod tests {
             !capture.contract.availability.is_available(),
             "a palette must not claim capture works without a feed"
         );
-        let delete = resources[0].children[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "delete-file")
-            .unwrap();
-        assert!(delete.contract.availability.is_available());
-        assert_eq!(delete.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert!(resources[0].children[0].actions.is_empty());
 
         let available = provide_resources(
             &CameraResourceCtx {
@@ -1144,12 +1105,13 @@ mod tests {
 
     #[test]
     fn contextual_capture_page_is_bounded_and_late_items_resolve_exactly() {
-        let items: Vec<GalleryItem> = (0..MAX_CONTEXT_CAPTURE_RESOURCES + 2)
-            .map(|index| GalleryItem {
+        let items: Vec<CaptureItem> = (0..MAX_CONTEXT_CAPTURE_RESOURCES + 2)
+            .map(|index| CaptureItem {
                 id: format!("IMG_{index:04}.jpg"),
                 label: format!("Capture {index}"),
                 favorite: index % 2 == 0,
                 is_video: false,
+                media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, index)),
             })
             .collect();
         let ctx = CameraResourceCtx {
@@ -1171,6 +1133,6 @@ mod tests {
             .iter()
             .find(|action| action.id == "open")
             .expect("capture has a canonical open action");
-        assert_eq!(open.kind, OperationKind::View);
+        assert_eq!(open.kind, OperationKind::Effect);
     }
 }
