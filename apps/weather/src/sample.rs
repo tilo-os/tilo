@@ -190,7 +190,8 @@ pub fn sample_model() -> WeatherModel {
         cairo_spec(),
     ];
 
-    for (loc, spec) in specs {
+    for (index, (mut loc, spec)) in specs.into_iter().enumerate() {
+        loc.order_rank = (index + 1) as f64 * 1024.0;
         let snap = synth_snapshot(&loc, &spec);
         let aq = synth_air_quality(&loc, &spec);
         model.snapshots.insert(loc.id, snap);

@@ -134,6 +134,10 @@ pub struct Core {
     reorder: DragController<LocationId>,
     over_rect: Rect,
     over_list_top: f64,
+    /// Intrinsic row geometry from the last paint pass. Pointer routing and
+    /// drag reflow consume the same values, including at large text sizes.
+    over_item_h: f64,
+    over_item_gap: f64,
     over_scroll: f64,
     over_max_scroll: f64,
     over_hotspots: Vec<Hotspot>,
@@ -207,6 +211,8 @@ impl Core {
             reorder: DragController::vertical(),
             over_rect: Rect::ZERO,
             over_list_top: 0.0,
+            over_item_h: CHIP_H,
+            over_item_gap: CHIP_GAP,
             over_scroll: 0.0,
             over_max_scroll: 0.0,
             over_hotspots: Vec::new(),
@@ -386,11 +392,6 @@ impl Core {
         if moved {
             self.scroll = 0.0;
             self.refresh_selected();
-            if let Some(location) = self.model.selected_location() {
-                self.queue_durable_action(WeatherAction::SelectLocation {
-                    id: location.id.to_string(),
-                });
-            }
         }
         moved
     }
@@ -624,14 +625,10 @@ impl Core {
             }
             EntryAction::MoveToTop => {
                 let changed = self.model.move_location(index, 0);
-                if changed {
-                    self.queue_durable_action(WeatherAction::SetLocationOrder {
-                        ids: self
-                            .model
-                            .locations
-                            .iter()
-                            .map(|location| location.id.to_string())
-                            .collect(),
+                if changed && let Some(location) = self.model.locations.first() {
+                    self.queue_durable_action(WeatherAction::SetLocationRank {
+                        id: location.id.to_string(),
+                        rank: location.order_rank,
                     });
                 }
                 changed
@@ -707,7 +704,11 @@ impl Core {
                     .with_position(index + 1, total)
                     .with_hashed_key(location.id)
                     .with_bounds(bounds)
-                    .with_state(AccessState::new().selected(index == self.model.selected))
+                    .with_state(
+                        AccessState::new()
+                            .selected(index == self.model.selected)
+                            .focusable(true),
+                    )
             })
             .collect();
         AccessNode::new(Role::List)
@@ -715,6 +716,7 @@ impl Core {
             .with_description("Use Up and Down Arrow to change city, Enter to open its forecast, or slash to search for another city.")
             .with_bounds(rect)
             .with_children(items)
+            .with_keyed_action_routes("weather-overview")
     }
 
     /// Semantic summary of the currently painted forecast. This mirrors the
@@ -814,15 +816,16 @@ impl Core {
         hot: &mut Vec<Hotspot>,
     ) -> f64 {
         let c = &theme.tokens.colors;
+        let large_text = theme.text_scale >= 1.5;
         let sy = self.over_rect.y0 + 16.0;
-        let sh = 38.0;
+        let sh = if large_text { 58.0 } else { 38.0 };
         let mut field_w = width;
 
         // Collapse chip (side-by-side only) — tucks the list into a rail so
         // the forecast can use the full width. It sits at the search field's
         // right edge, which the field leaves room for.
         if self.overview_collapsible {
-            let cb = 30.0;
+            let cb = if large_text { 44.0 } else { 30.0 };
             let cy = sy + (sh - cb) / 2.0;
             let chip = Rect::new(left + width - cb, cy, left + width, cy + cb);
             let hovered = chip.contains(self.last_mouse);
@@ -870,7 +873,7 @@ impl Core {
             TextWeight::Semibold,
             c.text_dim,
         );
-        y += 22.0;
+        y += if large_text { 34.0 } else { 22.0 };
         y
     }
 
@@ -905,8 +908,11 @@ impl Core {
             rect.y1 - RP
         };
         let view_h = (list_bottom - list_top).max(0.0);
+        let large_text = theme.text_scale >= 1.5;
+        self.over_item_h = if large_text { 104.0 } else { CHIP_H };
+        self.over_item_gap = if large_text { 12.0 } else { CHIP_GAP };
         let count = self.model.locations.len();
-        let content_h = count as f64 * (CHIP_H + CHIP_GAP);
+        let content_h = count as f64 * (self.over_item_h + self.over_item_gap);
         self.over_max_scroll = (content_h - view_h).max(0.0);
         self.over_scroll = self.over_scroll.clamp(0.0, self.over_max_scroll);
         self.over_list_top = list_top - self.over_scroll;
@@ -1210,7 +1216,8 @@ impl Core {
         let units = self.units;
         let metrics = self.list_metrics();
         let dragging = self.reorder.from_index();
-        let slot_y = |i: usize| self.over_list_top + i as f64 * (CHIP_H + CHIP_GAP);
+        let slot_y =
+            |i: usize| self.over_list_top + i as f64 * (self.over_item_h + self.over_item_gap);
 
         // While a reorder is live the toolkit's `DragController` reflows the
         // list: every non-dragged chip slides by `item_shift` to close the
@@ -1219,7 +1226,7 @@ impl Core {
         // than only on release. A faint accent caret sits at the top of the
         // reflowed gap (the live target slot) to mark where the chip will drop.
         if let Some(gap) = self.reorder.insertion() {
-            let gy = slot_y(gap) - CHIP_GAP / 2.0;
+            let gy = slot_y(gap) - self.over_item_gap / 2.0;
             scene.fill(
                 Fill::NonZero,
                 t,
@@ -1234,7 +1241,7 @@ impl Core {
                 continue;
             }
             let y = slot_y(i) + self.reorder.item_shift(i, &metrics);
-            let chip = Rect::new(x, y, x + w, y + CHIP_H);
+            let chip = Rect::new(x, y, x + w, y + self.over_item_h);
             let swipe_dx = self.swipe_dx_for(i);
             if swipe_dx > 0.0 {
                 Self::draw_swipe_backing(scene, t, theme, chip);
@@ -1268,8 +1275,8 @@ impl Core {
     fn list_metrics(&self) -> ListMetrics {
         ListMetrics::uniform(
             self.over_list_top,
-            CHIP_H,
-            CHIP_GAP,
+            self.over_item_h,
+            self.over_item_gap,
             self.model.locations.len(),
         )
     }
@@ -1309,6 +1316,7 @@ impl Core {
                 &shape,
             );
         }
+        let large_text = theme.text_scale >= 1.5;
         if let Some(snap) = self.model.snapshot_for(loc.id) {
             let sky = Sky::from_code(snap.current.weather_code);
             icon::draw_icon(
@@ -1318,9 +1326,9 @@ impl Core {
                 snap.current.is_day,
                 Rect::new(
                     chip.x0 + 10.0,
-                    chip.y0 + 11.0,
+                    chip.y0 + if large_text { 25.0 } else { 11.0 },
                     chip.x0 + 50.0,
-                    chip.y0 + 51.0,
+                    chip.y0 + if large_text { 65.0 } else { 51.0 },
                 ),
                 theme,
             );
@@ -1330,13 +1338,15 @@ impl Core {
             tr,
             &loc.name,
             chip.x0 + 58.0,
-            chip.y0 + 12.0,
-            15.0,
+            chip.y0 + if large_text { 13.0 } else { 12.0 },
+            if large_text { 14.0 } else { 15.0 },
             TextWeight::Semibold,
             c.text_primary,
         );
         // Second line: country + condition word (the "quick per-city info").
-        let sub = if let Some(snap) = self.model.snapshot_for(loc.id) {
+        let sub = if large_text {
+            loc.country.clone()
+        } else if let Some(snap) = self.model.snapshot_for(loc.id) {
             format!(
                 "{} · {}",
                 loc.country,
@@ -1350,8 +1360,8 @@ impl Core {
             tr,
             &sub,
             chip.x0 + 58.0,
-            chip.y0 + 35.0,
-            12.0,
+            chip.y0 + if large_text { 58.0 } else { 35.0 },
+            if large_text { 11.0 } else { 12.0 },
             TextWeight::Regular,
             c.text_dim,
         );
@@ -1362,8 +1372,8 @@ impl Core {
                 tr,
                 &format!("{temp}°"),
                 chip.x1 - 14.0,
-                chip.y0 + 16.0,
-                24.0,
+                chip.y0 + if large_text { 27.0 } else { 16.0 },
+                if large_text { 20.0 } else { 24.0 },
                 TextWeight::Bold,
                 c.text_primary,
             );
@@ -1456,9 +1466,10 @@ impl Core {
             return;
         };
         let c = &theme.tokens.colors;
-        let mw = 184.0;
-        let row_h = 34.0;
-        let pad = 6.0;
+        let large_text = theme.text_scale >= 1.5;
+        let mw = if large_text { 252.0 } else { 184.0 };
+        let row_h = if large_text { 56.0 } else { 34.0 };
+        let pad = if large_text { 8.0 } else { 6.0 };
         let mh = pad * 2.0 + menu.items.len() as f64 * row_h;
         let area = self.over_rect;
         let mx = menu.anchor.x.min(area.x1 - mw - 4.0).max(area.x0 + 4.0);
@@ -1502,7 +1513,14 @@ impl Core {
             } else {
                 c.text_primary
             };
-            let icon_r = Rect::new(row.x0 + 6.0, row.y0 + 8.0, row.x0 + 24.0, row.y0 + 26.0);
+            let icon_size = if large_text { 26.0 } else { 18.0 };
+            let icon_top = row.y0 + (row_h - icon_size) / 2.0;
+            let icon_r = Rect::new(
+                row.x0 + 6.0,
+                icon_top,
+                row.x0 + 6.0 + icon_size,
+                icon_top + icon_size,
+            );
             match action {
                 EntryAction::Delete => Icon::Trash.draw(scene, t, icon_r, text_color),
                 EntryAction::MoveToTop => Icon::ChevronUp.draw(scene, t, icon_r, text_color),
@@ -1512,9 +1530,9 @@ impl Core {
                 scene,
                 tr,
                 action.label(),
-                row.x0 + 32.0,
-                row.y0 + row_h / 2.0 - 8.0,
-                13.0,
+                row.x0 + if large_text { 44.0 } else { 32.0 },
+                row.y0 + row_h / 2.0 - if large_text { 14.0 } else { 8.0 },
+                if large_text { 14.0 } else { 13.0 },
                 TextWeight::Medium,
                 text_color,
             );
@@ -1551,8 +1569,8 @@ impl Core {
         let x = rect.x0 + RP;
         let w = (rect.width() - 2.0 * RP).max(80.0);
         for i in 0..self.model.locations.len() {
-            let y = self.over_list_top + i as f64 * (CHIP_H + CHIP_GAP);
-            if Rect::new(x, y, x + w, y + CHIP_H).contains(p) {
+            let y = self.over_list_top + i as f64 * (self.over_item_h + self.over_item_gap);
+            if Rect::new(x, y, x + w, y + self.over_item_h).contains(p) {
                 return Some(i);
             }
         }
@@ -1563,11 +1581,6 @@ impl Core {
         match action {
             OverAction::SelectLocation(i) => {
                 self.model.select(i);
-                if let Some(location) = self.model.selected_location() {
-                    self.queue_durable_action(WeatherAction::SelectLocation {
-                        id: location.id.to_string(),
-                    });
-                }
                 self.scroll = 0.0;
                 self.refresh_selected();
                 self.nav_request = Some(NavIntent::ShowDetail);
@@ -1865,14 +1878,10 @@ impl Core {
             } else if let Some((from, to)) = self.reorder.commit() {
                 // Commit the live insertion the controller tracked.
                 changed = self.model.move_location(from, to);
-                if changed {
-                    self.queue_durable_action(WeatherAction::SetLocationOrder {
-                        ids: self
-                            .model
-                            .locations
-                            .iter()
-                            .map(|location| location.id.to_string())
-                            .collect(),
+                if changed && let Some(location) = self.model.locations.get(to) {
+                    self.queue_durable_action(WeatherAction::SetLocationRank {
+                        id: location.id.to_string(),
+                        rank: location.order_rank,
                     });
                 }
             } else {
@@ -1967,7 +1976,8 @@ impl Core {
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let right = rect.x1 - PAD;
-        let body_top = hy + 74.0;
+        let large_text = theme.text_scale >= 1.5;
+        let body_top = hy + if large_text { 142.0 } else { 74.0 };
         scene.fill(
             Fill::NonZero,
             t,
@@ -1992,7 +2002,7 @@ impl Core {
         };
 
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
-        let layout = DetailBodyLayout::measure(mw, &snap);
+        let layout = DetailBodyLayout::measure(mw, &snap, theme.text_scale);
         let view_h = (rect.y1 - PAD) - body_top;
         self.max_scroll = (layout.body_h - view_h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
@@ -2107,13 +2117,14 @@ impl Core {
         let right = rect.x1 - PAD;
         let hy = rect.y0 + top_pad;
 
+        let large_text = theme.text_scale >= 1.5;
         text_left(
             scene,
             tr,
             &loc.name,
             mx,
             hy,
-            26.0,
+            if large_text { 20.0 } else { 26.0 },
             TextWeight::Bold,
             c.text_primary,
         );
@@ -2122,14 +2133,14 @@ impl Core {
             tr,
             &loc.subtitle(),
             mx,
-            hy + 32.0,
-            13.0,
+            hy + if large_text { 48.0 } else { 32.0 },
+            if large_text { 12.0 } else { 13.0 },
             TextWeight::Regular,
             c.text_dim,
         );
 
         // Refresh button (top-right) — re-fetches this city's forecast.
-        let rb = 34.0;
+        let rb = if large_text { 44.0 } else { 34.0 };
         let refresh = Rect::new(right - rb, hy - 2.0, right, hy - 2.0 + rb);
         let rshape = RoundedRect::from_rect(refresh, f64::from(theme.tokens.radii.md));
         let rhover = refresh.contains(self.last_mouse);
@@ -2151,27 +2162,40 @@ impl Core {
         if let Some(snap) = snap {
             let cur = &snap.current;
             let date_str = fmt_date(&cur.time);
-            text_right(
-                scene,
-                tr,
-                &date_str,
-                right - rb - 12.0,
-                hy + 2.0,
-                14.0,
-                TextWeight::Medium,
-                c.text_primary,
-            );
             let time_str = hhmm(&cur.time);
-            text_right(
-                scene,
-                tr,
-                &format!("Local time {time_str}"),
-                right - rb - 12.0,
-                hy + 24.0,
-                12.0,
-                TextWeight::Regular,
-                c.text_dim,
-            );
+            if large_text {
+                text_left(
+                    scene,
+                    tr,
+                    &format!("{date_str} · Local time {time_str}"),
+                    mx,
+                    hy + 82.0,
+                    11.0,
+                    TextWeight::Medium,
+                    c.text_dim,
+                );
+            } else {
+                text_right(
+                    scene,
+                    tr,
+                    &date_str,
+                    right - rb - 12.0,
+                    hy + 2.0,
+                    14.0,
+                    TextWeight::Medium,
+                    c.text_primary,
+                );
+                text_right(
+                    scene,
+                    tr,
+                    &format!("Local time {time_str}"),
+                    right - rb - 12.0,
+                    hy + 24.0,
+                    12.0,
+                    TextWeight::Regular,
+                    c.text_dim,
+                );
+            }
         }
         if self.status.starts_with("Couldn't") || self.status.starts_with("Offline") {
             text_left(
@@ -2179,8 +2203,8 @@ impl Core {
                 tr,
                 &self.status,
                 mx,
-                hy + 51.0,
-                11.0,
+                hy + if large_text { 112.0 } else { 51.0 },
+                if large_text { 10.0 } else { 11.0 },
                 TextWeight::Medium,
                 c.semantic.warning,
             );
@@ -2208,7 +2232,9 @@ impl Core {
         let units = self.units;
         let cur = &snap.current;
 
-        let hero = Rect::new(mx, y, mx + mw, y + HERO_H);
+        let large_text = theme.text_scale >= 1.5;
+        let hero_h = if large_text { 292.0 } else { HERO_H };
+        let hero = Rect::new(mx, y, mx + mw, y + hero_h);
         card(scene, t, hero, theme);
         let sky = Sky::from_code(cur.weather_code);
         icon::draw_icon(
@@ -2218,32 +2244,33 @@ impl Core {
             cur.is_day,
             Rect::new(
                 hero.x0 + 24.0,
-                hero.y0 + 36.0,
+                hero.y0 + if large_text { 30.0 } else { 36.0 },
                 hero.x0 + 116.0,
-                hero.y0 + 128.0,
+                hero.y0 + if large_text { 122.0 } else { 128.0 },
             ),
             theme,
         );
         let temp = snap.temp_in(cur.temperature, units).round() as i64;
         let temp_str = format!("{temp}");
         let temp_x = hero.x0 + 132.0;
+        let temp_size = if large_text { 52.0 } else { 72.0 };
         tr.draw_text_weighted(
             scene,
             &temp_str,
-            72.0,
+            temp_size,
             c.text_primary,
-            t * Affine::translate((temp_x, hero.y0 + 30.0)),
+            t * Affine::translate((temp_x, hero.y0 + if large_text { 26.0 } else { 30.0 })),
             None,
             TextWeight::Bold,
         );
-        let (tnw, _) = tr.measure_weighted(&temp_str, 72.0, None, TextWeight::Bold);
+        let (tnw, _) = tr.measure_weighted(&temp_str, temp_size, None, TextWeight::Bold);
         text_left(
             scene,
             tr,
             units.degree_glyph(),
             temp_x + f64::from(tnw) + 4.0,
-            hero.y0 + 40.0,
-            32.0,
+            hero.y0 + if large_text { 32.0 } else { 40.0 },
+            if large_text { 24.0 } else { 32.0 },
             TextWeight::Regular,
             c.text_dim,
         );
@@ -2253,8 +2280,8 @@ impl Core {
             tr,
             cond,
             temp_x + 2.0,
-            hero.y0 + 114.0,
-            19.0,
+            hero.y0 + if large_text { 140.0 } else { 114.0 },
+            if large_text { 17.0 } else { 19.0 },
             TextWeight::Semibold,
             c.text_primary,
         );
@@ -2264,8 +2291,8 @@ impl Core {
             tr,
             &format!("Feels like {feels}{}", units.temp_suffix()),
             temp_x + 2.0,
-            hero.y0 + 140.0,
-            13.0,
+            hero.y0 + if large_text { 184.0 } else { 140.0 },
+            if large_text { 12.0 } else { 13.0 },
             TextWeight::Regular,
             c.text_dim,
         );
@@ -2274,7 +2301,7 @@ impl Core {
             Self::draw_hero_sun(scene, t, tr, theme, hero, mw, cur, today);
         }
 
-        y + HERO_H + SECTION_GAP
+        y + hero_h + if large_text { 18.0 } else { SECTION_GAP }
     }
 
     /// The sunrise/sunset arc on a wide pane, or the compact Sunrise/Sunset
@@ -2296,7 +2323,8 @@ impl Core {
         let c = &theme.tokens.colors;
         let sr = hhmm(&today.sunrise);
         let ss = hhmm(&today.sunset);
-        if mw >= 560.0 {
+        let large_text = theme.text_scale >= 1.5;
+        if mw >= 560.0 && !large_text {
             Self::draw_sun_arc(
                 scene,
                 t,
@@ -2306,7 +2334,7 @@ impl Core {
                     hero.x1 - 226.0,
                     hero.y0 + 22.0,
                     hero.x1 - 22.0,
-                    hero.y0 + HERO_H - 22.0,
+                    hero.y0 + hero.height() - 22.0,
                 ),
                 &cur.time,
                 &sr,
@@ -2314,43 +2342,53 @@ impl Core {
                 cur.is_day,
             );
         } else {
-            let sx = hero.x1 - 18.0;
-            text_right(
+            let sx = if large_text {
+                hero.x0 + 18.0
+            } else {
+                hero.x1 - 18.0
+            };
+            let draw = if large_text { text_left } else { text_right };
+            draw(
                 scene,
                 tr,
                 "Sunrise",
                 sx,
-                hero.y0 + HERO_H - 60.0,
+                hero.y1 - if large_text { 70.0 } else { 60.0 },
                 10.0,
                 TextWeight::Semibold,
                 c.text_dim,
             );
-            text_right(
+            draw(
                 scene,
                 tr,
                 &sr,
                 sx,
-                hero.y0 + HERO_H - 46.0,
+                hero.y1 - if large_text { 42.0 } else { 46.0 },
                 14.0,
                 TextWeight::Medium,
                 c.text_primary,
             );
-            text_right(
+            let sunset_x = if large_text {
+                hero.center().x + 14.0
+            } else {
+                sx
+            };
+            draw(
                 scene,
                 tr,
                 "Sunset",
-                sx,
-                hero.y0 + HERO_H - 26.0,
+                sunset_x,
+                hero.y1 - if large_text { 70.0 } else { 26.0 },
                 10.0,
                 TextWeight::Semibold,
                 c.text_dim,
             );
-            text_right(
+            draw(
                 scene,
                 tr,
                 &ss,
-                sx,
-                hero.y0 + HERO_H - 12.0,
+                sunset_x,
+                hero.y1 - if large_text { 42.0 } else { 12.0 },
                 14.0,
                 TextWeight::Medium,
                 c.text_primary,
@@ -2425,16 +2463,17 @@ impl Core {
             let row_count = if row < full_rows { cols } else { rem };
             let tw = (mw - (row_count as f64 - 1.0) * gap) / row_count as f64;
             let tx = mx + col as f64 * (tw + gap);
-            let ty = y + row as f64 * (TILE_H + gap);
-            let tile = Rect::new(tx, ty, tx + tw, ty + TILE_H);
+            let ty = y + row as f64 * (layout.tile_h + gap);
+            let tile = Rect::new(tx, ty, tx + tw, ty + layout.tile_h);
+            let large_text = theme.text_scale >= 1.5;
             card(scene, t, tile, theme);
             text_left(
                 scene,
                 tr,
                 label,
                 tile.x0 + 12.0,
-                tile.y0 + 12.0,
-                10.0,
+                tile.y0 + if large_text { 14.0 } else { 12.0 },
+                if large_text { 9.0 } else { 10.0 },
                 TextWeight::Semibold,
                 c.text_dim,
             );
@@ -2443,8 +2482,8 @@ impl Core {
                 tr,
                 value,
                 tile.x0 + 12.0,
-                tile.y0 + 30.0,
-                25.0,
+                tile.y0 + if large_text { 44.0 } else { 30.0 },
+                if large_text { 22.0 } else { 25.0 },
                 TextWeight::Bold,
                 c.text_primary,
             );
@@ -2453,8 +2492,8 @@ impl Core {
                 tr,
                 sub,
                 tile.x0 + 12.0,
-                tile.y0 + TILE_H - 22.0,
-                11.0,
+                tile.y1 - if large_text { 32.0 } else { 22.0 },
+                if large_text { 10.0 } else { 11.0 },
                 TextWeight::Regular,
                 c.text_dim,
             );
@@ -2482,7 +2521,9 @@ impl Core {
         let units = self.units;
         let accent = self.accent(theme);
 
-        let hcard = Rect::new(mx, y, mx + mw, y + HOURLY_CARD_H);
+        let large_text = theme.text_scale >= 1.5;
+        let hourly_h = if large_text { 286.0 } else { HOURLY_CARD_H };
+        let hcard = Rect::new(mx, y, mx + mw, y + hourly_h);
         card(scene, t, hcard, theme);
         text_left(
             scene,
@@ -2490,7 +2531,7 @@ impl Core {
             "Next 24 hours",
             hcard.x0 + 16.0,
             hcard.y0 + 12.0,
-            14.0,
+            if large_text { 13.0 } else { 14.0 },
             TextWeight::Semibold,
             c.text_primary,
         );
@@ -2500,8 +2541,8 @@ impl Core {
                 tr,
                 "scroll →",
                 hcard.x1 - 16.0,
-                hcard.y0 + 14.0,
-                11.0,
+                hcard.y0 + 16.0,
+                if large_text { 9.0 } else { 11.0 },
                 TextWeight::Regular,
                 c.text_dim,
             );
@@ -2525,12 +2566,12 @@ impl Core {
         // columns are wider than the band rather than squeezing them.
         let band = Rect::new(
             hcard.x0 + 14.0,
-            hcard.y0 + 32.0,
+            hcard.y0 + if large_text { 50.0 } else { 32.0 },
             hcard.x1 - 14.0,
             hcard.y1 - 20.0,
         );
         let n = cols.len().max(1);
-        let col_w = (band.width() / n as f64).max(HOUR_COL_MIN_W);
+        let col_w = (band.width() / n as f64).max(if large_text { 92.0 } else { HOUR_COL_MIN_W });
         let content_w = col_w * n as f64;
         self.hourly_viewport = band;
         self.hourly_content_w = content_w;
@@ -2552,7 +2593,7 @@ impl Core {
 
         self.draw_hourly_scrollbar(scene, t, theme, hcard, band, content_w);
 
-        y + HOURLY_CARD_H + SECTION_GAP
+        y + hourly_h + if large_text { 18.0 } else { SECTION_GAP }
     }
 
     /// The shared horizontal scrollbar for the hourly strip, shown only
@@ -2640,11 +2681,25 @@ impl Core {
             wmin -= 1.0;
         }
 
-        let geo = DayRowGeometry::new(dcard);
-        let rows_top = dcard.y0 + 40.0;
+        let geo = DayRowGeometry::new(dcard, theme.text_scale);
+        let rows_top = dcard.y0 + layout.days_header_h;
         for (i, d) in snap.daily.iter().enumerate() {
-            let ry = rows_top + i as f64 * DAY_ROW_H;
-            Self::draw_day_row(scene, t, tr, theme, &geo, i, d, ry, snap, units, wmin, wmax);
+            let ry = rows_top + i as f64 * layout.day_row_h;
+            Self::draw_day_row(
+                scene,
+                t,
+                tr,
+                theme,
+                &geo,
+                i,
+                d,
+                ry,
+                layout.day_row_h,
+                snap,
+                units,
+                wmin,
+                wmax,
+            );
         }
 
         y + layout.days_block_h + SECTION_GAP
@@ -2666,12 +2721,13 @@ impl Core {
         i: usize,
         d: &DayForecast,
         ry: f64,
+        row_h: f64,
         snap: &WeatherSnapshot,
         units: Units,
         wmin: f64,
         wmax: f64,
     ) {
-        let cy = ry + DAY_ROW_H / 2.0;
+        let cy = ry + row_h / 2.0;
         Self::draw_day_row_label(scene, t, tr, theme, geo, i, d, ry, cy);
         if geo.show_extras {
             Self::draw_day_row_extras(scene, t, tr, theme, geo, d, snap, units, cy);
@@ -2917,6 +2973,7 @@ impl Core {
             aq.as_ref(),
             layout.aq_cols,
             layout.gap,
+            layout.aq_tile_h,
         );
     }
 
@@ -3119,11 +3176,13 @@ impl Core {
         aq: Option<&AirQuality>,
         cols: usize,
         gap: f64,
+        tile_h: f64,
     ) {
         let c = &theme.tokens.colors;
         let ix = area.x0 + 16.0;
         let iw = area.width() - 32.0;
-        let hero_top = area.y0 + 40.0;
+        let large_text = theme.text_scale >= 1.5;
+        let hero_top = area.y0 + if large_text { 58.0 } else { 40.0 };
 
         let Some(aq) = aq.filter(|a| a.has_any()) else {
             let msg = if self.is_fetching() {
@@ -3146,9 +3205,14 @@ impl Core {
 
         // AQI hero: a severity-tinted chip with the big index number, the band
         // word, and a caption naming the scale.
-        let hero = Rect::new(ix, hero_top, area.x1 - 16.0, hero_top + 64.0);
+        let hero = Rect::new(
+            ix,
+            hero_top,
+            area.x1 - 16.0,
+            hero_top + if large_text { 104.0 } else { 64.0 },
+        );
         Self::draw_aqi_hero(scene, t, tr, theme, hero, aq);
-        Self::draw_aq_tiles(scene, t, tr, theme, ix, iw, hero, aq, cols, gap);
+        Self::draw_aq_tiles(scene, t, tr, theme, ix, iw, hero, aq, cols, gap, tile_h);
     }
 
     /// The AQI hero: a severity-tinted chip with the big index number, the
@@ -3165,8 +3229,10 @@ impl Core {
         let c = &theme.tokens.colors;
         if let Some(aqi) = aq.european_aqi {
             let sev = aqi_band_color(aqi, theme);
+            let large_text = theme.text_scale >= 1.5;
+            let chip_w = if large_text { 146.0 } else { 116.0 };
             let chip = RoundedRect::from_rect(
-                Rect::new(hero.x0, hero.y0, hero.x0 + 116.0, hero.y1),
+                Rect::new(hero.x0, hero.y0, hero.x0 + chip_w, hero.y1),
                 f64::from(theme.tokens.radii.lg),
             );
             scene.fill(Fill::NonZero, t, sev.with_alpha_factor(0.16), None, &chip);
@@ -3181,20 +3247,21 @@ impl Core {
             tr.draw_text_weighted(
                 scene,
                 &num,
-                34.0,
+                if large_text { 28.0 } else { 34.0 },
                 c.text_primary,
                 t * Affine::translate((hero.x0 + 16.0, hero.y0 + 12.0)),
                 None,
                 TextWeight::Bold,
             );
-            let (nw, _) = tr.measure_weighted(&num, 34.0, None, TextWeight::Bold);
+            let number_size = if large_text { 28.0 } else { 34.0 };
+            let (nw, _) = tr.measure_weighted(&num, number_size, None, TextWeight::Bold);
             text_left(
                 scene,
                 tr,
                 "AQI",
                 hero.x0 + 24.0 + f64::from(nw),
-                hero.y0 + 30.0,
-                12.0,
+                hero.y0 + if large_text { 58.0 } else { 30.0 },
+                if large_text { 10.0 } else { 12.0 },
                 TextWeight::Semibold,
                 c.text_dim,
             );
@@ -3202,9 +3269,9 @@ impl Core {
                 scene,
                 tr,
                 api::european_aqi_band(aqi),
-                hero.x0 + 132.0,
+                hero.x0 + if large_text { 166.0 } else { 132.0 },
                 hero.y0 + 12.0,
-                19.0,
+                if large_text { 16.0 } else { 19.0 },
                 TextWeight::Semibold,
                 sev,
             );
@@ -3212,9 +3279,9 @@ impl Core {
                 scene,
                 tr,
                 "European AQI · now",
-                hero.x0 + 132.0,
-                hero.y0 + 40.0,
-                12.0,
+                hero.x0 + if large_text { 166.0 } else { 132.0 },
+                hero.y0 + if large_text { 58.0 } else { 40.0 },
+                if large_text { 10.0 } else { 12.0 },
                 TextWeight::Regular,
                 c.text_dim,
             );
@@ -3249,6 +3316,7 @@ impl Core {
         aq: &AirQuality,
         cols: usize,
         gap: f64,
+        tile_h: f64,
     ) {
         let c = &theme.tokens.colors;
         let tiles: [(&str, Option<f64>); 4] = [
@@ -3264,16 +3332,17 @@ impl Core {
             let col = i % cols;
             let row = i / cols;
             let tx = ix + col as f64 * (tw + gap);
-            let ty = tiles_top + row as f64 * (AQ_TILE_H + gap);
-            let tile = Rect::new(tx, ty, tx + tw, ty + AQ_TILE_H);
+            let ty = tiles_top + row as f64 * (tile_h + gap);
+            let tile = Rect::new(tx, ty, tx + tw, ty + tile_h);
+            let large_text = theme.text_scale >= 1.5;
             card(scene, t, tile, theme);
             text_left(
                 scene,
                 tr,
                 label,
                 tile.x0 + 12.0,
-                tile.y0 + 10.0,
-                10.0,
+                tile.y0 + 12.0,
+                if large_text { 9.0 } else { 10.0 },
                 TextWeight::Semibold,
                 c.text_dim,
             );
@@ -3284,8 +3353,8 @@ impl Core {
                         tr,
                         &format!("{}", v.round() as i64),
                         tile.x0 + 12.0,
-                        tile.y0 + 26.0,
-                        22.0,
+                        tile.y0 + if large_text { 42.0 } else { 26.0 },
+                        if large_text { 20.0 } else { 22.0 },
                         TextWeight::Bold,
                         c.text_primary,
                     );
@@ -3294,8 +3363,8 @@ impl Core {
                         tr,
                         "µg/m³",
                         tile.x0 + 12.0,
-                        tile.y1 - 18.0,
-                        10.0,
+                        tile.y1 - if large_text { 30.0 } else { 18.0 },
+                        if large_text { 9.0 } else { 10.0 },
                         TextWeight::Regular,
                         c.text_dim,
                     );
@@ -3592,44 +3661,72 @@ impl Core {
 struct DetailBodyLayout {
     gap: f64,
     tile_cols: usize,
+    tile_h: f64,
     tiles_block_h: f64,
+    days_header_h: f64,
+    day_row_h: f64,
     days_block_h: f64,
     aq_cols: usize,
+    aq_tile_h: f64,
     aq_block_h: f64,
     body_h: f64,
 }
 
 impl DetailBodyLayout {
-    fn measure(mw: f64, snap: &WeatherSnapshot) -> Self {
-        let gap = 12.0;
+    fn measure(mw: f64, snap: &WeatherSnapshot, text_scale: f32) -> Self {
+        let large_text = text_scale >= 1.5;
+        let gap = if large_text { 16.0 } else { 12.0 };
         let n_tiles = 5usize;
-        let tile_cols = balanced_tile_columns(mw, n_tiles);
+        let tile_cols = if large_text {
+            if mw >= 760.0 { 3 } else { 2 }
+        } else {
+            balanced_tile_columns(mw, n_tiles)
+        };
+        let tile_h = if large_text { 132.0 } else { TILE_H };
         let tile_rows = n_tiles.div_ceil(tile_cols);
-        let tiles_block_h = tile_rows as f64 * TILE_H + (tile_rows as f64 - 1.0) * gap;
+        let tiles_block_h = tile_rows as f64 * tile_h + (tile_rows as f64 - 1.0) * gap;
         let n_days = snap.daily.len().max(1);
-        let days_block_h = 40.0 + n_days as f64 * DAY_ROW_H + 12.0;
+        let days_header_h = if large_text { 58.0 } else { 40.0 };
+        let day_row_h = if large_text { 72.0 } else { DAY_ROW_H };
+        let days_block_h = days_header_h + n_days as f64 * day_row_h + 12.0;
         // Air-quality block: header + AQI hero + a row (or two) of pollutant
         // tiles. Reserved whether or not a reading is available yet, so the
         // scroll geometry stays stable while it loads.
-        let aq_cols = if mw >= 560.0 { 4 } else { 2 };
+        let aq_cols = if large_text {
+            2
+        } else if mw >= 560.0 {
+            4
+        } else {
+            2
+        };
+        let aq_tile_h = if large_text { 112.0 } else { AQ_TILE_H };
         let aq_rows = 4usize.div_ceil(aq_cols);
-        let aq_tiles_h = aq_rows as f64 * AQ_TILE_H + (aq_rows as f64 - 1.0) * gap;
-        let aq_block_h = 40.0 + 64.0 + 12.0 + aq_tiles_h + 14.0;
-        let body_h = HERO_H
-            + SECTION_GAP
+        let aq_grid_h = aq_rows as f64 * aq_tile_h + (aq_rows as f64 - 1.0) * gap;
+        let aq_header_h = if large_text { 58.0 } else { 40.0 };
+        let aq_hero_h = if large_text { 104.0 } else { 64.0 };
+        let aq_block_h = aq_header_h + aq_hero_h + gap + aq_grid_h + 14.0;
+        let hero_h = if large_text { 292.0 } else { HERO_H };
+        let hourly_h = if large_text { 286.0 } else { HOURLY_CARD_H };
+        let section_gap = if large_text { 18.0 } else { SECTION_GAP };
+        let body_h = hero_h
+            + section_gap
             + tiles_block_h
-            + SECTION_GAP
-            + HOURLY_CARD_H
-            + SECTION_GAP
+            + section_gap
+            + hourly_h
+            + section_gap
             + days_block_h
-            + SECTION_GAP
+            + section_gap
             + aq_block_h;
         Self {
             gap,
             tile_cols,
+            tile_h,
             tiles_block_h,
+            days_header_h,
+            day_row_h,
             days_block_h,
             aq_cols,
+            aq_tile_h,
             aq_block_h,
             body_h,
         }
@@ -3657,7 +3754,7 @@ struct DayRowGeometry {
 }
 
 impl DayRowGeometry {
-    fn new(dcard: Rect) -> Self {
+    fn new(dcard: Rect, text_scale: f32) -> Self {
         let inner_l = dcard.x0 + 18.0;
         let inner_r = dcard.x1 - 16.0;
         let dw = inner_r - inner_l;
@@ -3668,7 +3765,8 @@ impl DayRowGeometry {
         let lo_x = bar_x0 - 10.0;
         let precip_right = lo_x - 44.0;
         let precip_left = precip_right - 46.0;
-        let show_precip = dw >= 300.0;
+        let large_text = text_scale >= 1.5;
+        let show_precip = !large_text && dw >= 300.0;
         let icon_x0 = inner_l + 92.0;
         let icon_x1 = icon_x0 + 28.0;
         let cond_x = icon_x1 + 10.0;
@@ -3682,7 +3780,7 @@ impl DayRowGeometry {
             lo_x - 52.0
         };
         let extras_x = extras_right - extras_w;
-        let show_extras = (extras_x - cond_x) >= 118.0;
+        let show_extras = !large_text && (extras_x - cond_x) >= 118.0;
         let cond_limit = if show_extras {
             extras_x - 12.0
         } else if show_precip {
@@ -3690,7 +3788,7 @@ impl DayRowGeometry {
         } else {
             lo_x - 44.0
         };
-        let show_cond = (cond_limit - cond_x) >= 96.0;
+        let show_cond = !large_text && (cond_limit - cond_x) >= 96.0;
         Self {
             inner_l,
             inner_r,
@@ -3906,12 +4004,21 @@ fn result_value(loc: &SavedLocation) -> String {
 /// same text run prevents a long city name from colliding with a separate
 /// right-aligned detail column in a narrow search overlay.
 fn result_label(loc: &SavedLocation) -> String {
-    format!("{} — {}", loc.name, loc.subtitle())
+    let place = if loc.region.is_empty() || loc.region == loc.name {
+        loc.name.clone()
+    } else {
+        format!("{}, {}", loc.name, loc.region)
+    };
+    if loc.country_code.is_empty() {
+        format!("{} · {place}", loc.country)
+    } else {
+        format!("{} · {place}", loc.country_code)
+    }
 }
 
 #[cfg(test)]
 mod layout_tests {
-    use super::balanced_tile_columns;
+    use super::{DetailBodyLayout, balanced_tile_columns};
 
     #[test]
     fn five_tiles_never_orphan_a_single_on_the_last_row() {
@@ -3925,6 +4032,19 @@ mod layout_tests {
         }
         // The specific awkward case: a raw 4-wide fit becomes a balanced 3 + 2.
         assert_eq!(balanced_tile_columns(604.0, 5), 3);
+    }
+
+    #[test]
+    fn large_text_allocates_intrinsic_vertical_space_and_fewer_columns() {
+        let model = crate::sample::sample_model();
+        let snapshot = model.selected_snapshot().unwrap();
+        let normal = DetailBodyLayout::measure(334.0, snapshot, 1.0);
+        let large = DetailBodyLayout::measure(334.0, snapshot, 2.0);
+        assert!(large.body_h > normal.body_h * 1.5);
+        assert!(large.tile_h > normal.tile_h);
+        assert!(large.day_row_h > normal.day_row_h);
+        assert_eq!(large.tile_cols, 2);
+        assert_eq!(large.aq_cols, 2);
     }
 }
 
@@ -4013,6 +4133,7 @@ mod helper_tests {
         assert_eq!(overview.role, ui::a11y::Role::List);
         assert_eq!(overview.children.len(), 4);
         assert!(overview.children[0].state.selected);
+        assert!(overview.children.iter().all(|item| item.state.focusable));
         let detail = core.detail_accessibility(vello::kurbo::Rect::new(300.0, 0.0, 1200.0, 700.0));
         assert_eq!(detail.name.as_deref(), Some("San Francisco forecast"));
         assert!(detail.description.unwrap().contains("hourly readings"));

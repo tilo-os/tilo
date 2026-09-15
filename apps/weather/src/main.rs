@@ -66,6 +66,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "detail",
                 "drag",
                 "scrolled",
+                "detail_scrolled",
                 "collapsed",
                 "search",
                 "search_loading",
