@@ -46,6 +46,9 @@ struct SurfaceWireFrame {
 pub enum PersonalFabricPayload {
     Request,
     Snapshot(Vec<u8>),
+    /// Ephemeral, exact-target command encoded independently of snapshot
+    /// schema so it is never persisted or relayed through room history.
+    Action(Vec<u8>),
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -171,6 +174,13 @@ pub enum NetCmd {
     PublishPersonalFabric {
         ws: WorkspaceId,
         user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    },
+    /// Send an ephemeral personal-fabric action to one authenticated device.
+    PublishPersonalFabricTarget {
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
         payload: PersonalFabricPayload,
     },
     Connect {
@@ -541,6 +551,15 @@ impl ActorState {
                 self.publish_personal_fabric(ws, user_public_key, payload)
                     .await;
             }
+            Some(NetCmd::PublishPersonalFabricTarget {
+                ws,
+                user_public_key,
+                target,
+                payload,
+            }) => {
+                self.publish_personal_fabric_to(ws, user_public_key, payload, Some(target))
+                    .await;
+            }
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
                 self.lookup.add_endpoint_info(addr.clone());
@@ -701,6 +720,22 @@ impl ActorState {
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     ) {
+        self.publish_personal_fabric_to(ws, user_public_key, payload, None)
+            .await;
+    }
+
+    async fn publish_personal_fabric_to(
+        &mut self,
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+        exact_target: Option<EndpointId>,
+    ) {
+        if matches!(payload, PersonalFabricPayload::Action(ref bytes) if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES)
+        {
+            tracing::warn!(ws, "personal fabric action exceeds wire limit");
+            return;
+        }
         let wire = PersonalFabricWireFrame {
             workspace: ws,
             user_public_key,
@@ -721,6 +756,7 @@ impl ActorState {
             .peers
             .values()
             .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
+            .filter(|addr| exact_target.is_none_or(|target| addr.id == target))
             .cloned()
             .collect();
         for addr in targets {
@@ -2045,6 +2081,96 @@ mod tests {
             ) {
                 break;
             }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn personal_fabric_action_reaches_only_the_exact_target() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let (c, lookup_c) = endpoint().await;
+        let a_id = a.id();
+        let b_id = b.id();
+        let c_id = c.id();
+        let b_addr = b.addr();
+        let c_addr = c.addr();
+        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+        let (cmd_c, _c_task) = Actor::spawn(c, lookup_c);
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
+        let (event_c, mut rx_c) = mpsc::channel(16);
+        for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
+            cmd.send(NetCmd::JoinWorkspace {
+                ws: 44,
+                on_event: events,
+            })
+            .await
+            .unwrap();
+        }
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        cmd_a.send(NetCmd::Connect { addr: c_addr }).await.unwrap();
+
+        let mut a_saw_b = false;
+        let mut a_saw_c = false;
+        while !(a_saw_b && a_saw_c) {
+            match timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                NetEvent::PeerJoined { peer, .. } if peer == b_id => a_saw_b = true,
+                NetEvent::PeerJoined { peer, .. } if peer == c_id => a_saw_c = true,
+                _ => {}
+            }
+        }
+        for receiver in [&mut rx_b, &mut rx_c] {
+            loop {
+                let event = timeout(Duration::from_secs(10), receiver.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(event, NetEvent::PeerJoined { peer, .. } if peer == a_id) {
+                    break;
+                }
+            }
+        }
+
+        cmd_a
+            .send(NetCmd::PublishPersonalFabricTarget {
+                ws: 44,
+                user_public_key: [0xB4; 32],
+                target: b_id,
+                payload: PersonalFabricPayload::Action(vec![4, 4]),
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::PersonalFabric {
+                    payload: PersonalFabricPayload::Action(bytes),
+                    ..
+                } if bytes == vec![4, 4]
+            ) {
+                break;
+            }
+        }
+        while let Ok(Some(event)) = timeout(Duration::from_millis(500), rx_c.recv()).await {
+            assert!(
+                !matches!(
+                    event,
+                    NetEvent::PersonalFabric {
+                        payload: PersonalFabricPayload::Action(_),
+                        ..
+                    }
+                ),
+                "personal action leaked to a non-target device"
+            );
         }
     }
 
