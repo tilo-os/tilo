@@ -203,6 +203,10 @@ pub struct NotesApp {
     /// it for width/height reservations so 200% text switches to the drawer
     /// before page labels or the title stack can collide.
     text_scale: f64,
+    /// Effective reduced-motion setting provided by the host. Notes owns one
+    /// small app-local animation (the transient save-status bubble), so it
+    /// retains the value instead of relying on the default child forwarding.
+    motion_reduced: bool,
 }
 
 impl NotesApp {
@@ -325,6 +329,7 @@ impl NotesApp {
             search_heads: None,
             search_provider,
             text_scale: 1.0,
+            motion_reduced: false,
         };
         app.refresh_link_pages();
         let visible_tags = app
@@ -445,7 +450,19 @@ impl NotesApp {
         let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
         let over = self.shots_status || zone.contains(self.last_mouse);
         self.status_bubble.set_hover(over, now);
-        let alpha = self.status_bubble.alpha(now);
+        // The bubble is useful status, but its fade is decorative.  Keep its
+        // visibility transition discrete under reduced motion so people never
+        // have to track changing opacity; the normal preference preserves the
+        // short, unobtrusive fade.
+        let alpha = if self.motion_reduced {
+            if self.status_bubble.is_visible(now) {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            self.status_bubble.alpha(now)
+        };
         if alpha <= 0.0 {
             return;
         }
@@ -718,6 +735,8 @@ impl NotesApp {
                 for p in self.workspace.pages().to_vec() {
                     if !doc_ids.contains(&p.id) {
                         self.perform_action(state, &actions::upsert_page_action(&p));
+                        let body = storage::read_page_body(&self.root, p.id).unwrap_or_default();
+                        self.seed_page_body(state, p.id, &body);
                         self.known_in_doc.insert(p.id);
                     }
                 }
@@ -756,6 +775,8 @@ impl NotesApp {
             }
             for p in self.workspace.pages().to_vec() {
                 self.perform_action(state, &actions::upsert_page_action(&p));
+                let body = storage::read_page_body(&self.root, p.id).unwrap_or_default();
+                self.seed_page_body(state, p.id, &body);
                 self.known_in_doc.insert(p.id);
             }
             self.seeded = true;
@@ -874,19 +895,58 @@ impl NotesApp {
         // the same action host that owns every subsequent editor delta; the
         // panel only ever binds/adopts an already-action-owned list.
         if state.length(&list) == 0 {
-            let action = actions::apply_block_ops_action(sel, MainPanel::seed_block_ops(&body));
+            self.seed_page_body(state, sel, &body);
+        }
+        self.main.bind_page(state, sel, &title, list, &body);
+        self.bound_page = Some(sel);
+    }
+
+    /// Seed an otherwise-empty durable page through the canonical action
+    /// executor. This is intentionally called for every new page rather than
+    /// only the page currently visible in the editor, so a collaborator gets
+    /// complete duplicate/imported content without the originating client
+    /// having to open every descendant first.
+    fn seed_page_body(&mut self, doc: &mut AutoCommit, page: PageId, body: &str) {
+        let Some(blocks) = NotesDoc::page_blocks_list(doc, page) else {
+            tracing::warn!(%page, "notes: refused to seed blocks for a missing page");
+            return;
+        };
+        if doc.length(&blocks) != 0 {
+            return;
+        }
+        let titles = self
+            .workspace
+            .pages()
+            .iter()
+            .map(|meta| (meta.title.clone(), meta.id))
+            .collect::<HashMap<_, _>>();
+        let (ops, marks) =
+            MainPanel::seed_block_ops_with_marks(body, |title| titles.get(title).copied());
+        let action = actions::apply_block_ops_action(page, ops);
+        if let Err(error) = self.actions.try_dispatch_with_context(
+            doc,
+            actions::NOTES_ACTION_TYPE,
+            &action,
+            actions::history_context(&action),
+        ) {
+            tracing::error!(%error, %page, "notes: could not seed page blocks");
+            return;
+        }
+        for (block_id, marks) in marks {
+            let action = actions::set_block_marks_action(page, block_id, marks);
             if let Err(error) = self.actions.try_dispatch_with_context(
-                state,
+                doc,
                 actions::NOTES_ACTION_TYPE,
                 &action,
                 actions::history_context(&action),
             ) {
-                tracing::error!(%error, page = %sel, "notes: could not seed page blocks");
-                return;
+                // The preceding insert action created this block. If a corrupt
+                // document still refuses it, retain the text and recover on a
+                // later bind rather than failing the whole workspace sync.
+                tracing::warn!(%error, %page, "notes: could not seed inline marks");
+                break;
             }
         }
-        self.main.bind_page(state, sel, &title, list, &body);
-        self.bound_page = Some(sel);
     }
 
     /// Set the local user's id for authorship attribution. The same id
@@ -1036,6 +1096,14 @@ impl NotesApp {
                 Some(old) if old == meta => {}
                 _ => self.perform_action(doc, &actions::upsert_page_action(meta)),
             }
+        }
+        // Page metadata alone is not a usable collaborative note. Seed every
+        // newly-created page's persisted body now (including every descendant
+        // of a sidebar Duplicate), rather than waiting until each one is
+        // selected and accidentally making peer content view-dependent.
+        for id in after.keys().filter(|id| !before.contains_key(*id)) {
+            let body = storage::read_page_body(&self.root, *id).unwrap_or_default();
+            self.seed_page_body(doc, *id, &body);
         }
     }
 
@@ -2088,7 +2156,20 @@ impl Widget for NotesApp {
         // Keep frames coming only while the floating status bubble is lingering
         // / fading, so it hides itself without needing a stray pointer event.
         // Idle otherwise (no idle redraw spin).
-        self.status_bubble.needs_frame(std::time::Instant::now())
+        !self.motion_reduced && self.status_bubble.needs_frame(std::time::Instant::now())
+    }
+
+    fn set_motion_reduced(&mut self, reduced: bool) {
+        if self.motion_reduced != reduced {
+            self.motion_reduced = reduced;
+            self.self_dirty = true;
+        }
+        // Retained children may own their own animation state (editor,
+        // drawer primitives, and modal controls), so continue the framework
+        // propagation after settling the Notes-owned status presentation.
+        for child in self.children_mut() {
+            child.set_motion_reduced(reduced);
+        }
     }
 
     fn handle_event(
@@ -2862,6 +2943,21 @@ mod tests {
     }
 
     #[test]
+    fn reduced_motion_stops_notes_owned_status_bubble_frames() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
+        app.status_bubble.poke(std::time::Instant::now());
+        assert!(app.needs_animation_frame(), "normal fade requests frames");
+
+        Widget::set_motion_reduced(&mut app, true);
+        assert!(app.motion_reduced);
+        assert!(
+            !app.needs_animation_frame(),
+            "reduced motion must not keep the compositor awake for a decorative fade"
+        );
+    }
+
+    #[test]
     fn rename_updates_main_panel_title() {
         let tmp = TempDir::new().unwrap();
         let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
@@ -2938,9 +3034,9 @@ mod tests {
         );
     }
 
-    /// Creating a page through the sidebar path dispatches an `UpsertPage` that
-    /// lands in the shared document — the create crosses the action executor,
-    /// not a private mutation.
+    /// Creating a page through the sidebar path dispatches the metadata and
+    /// initial body through the action executor — a peer never receives a
+    /// metadata-only note that becomes usable only after its creator opens it.
     #[test]
     fn creating_a_page_dispatches_an_upsert_into_the_doc() {
         let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
@@ -2953,15 +3049,14 @@ mod tests {
             before + 1,
             "the create wrote a new page into the shared document"
         );
-        let enc = app
-            .last_dispatched_for_test()
-            .expect("an action was dispatched");
-        assert_eq!(enc.type_id, crate::actions::NOTES_ACTION_TYPE);
-        let action: crate::actions::NotesAction =
-            serde_json::from_slice(&enc.payload).expect("payload decodes");
+        let new_page = app
+            .workspace
+            .selected()
+            .expect("new page becomes the active page");
         assert!(
-            matches!(action, crate::actions::NotesAction::UpsertPage(_)),
-            "a create dispatches an UpsertPage"
+            NotesDoc::page_blocks_list(&state.doc, new_page)
+                .is_some_and(|blocks| state.doc.length(&blocks) > 0),
+            "the new page body also crossed the typed action executor"
         );
     }
 
