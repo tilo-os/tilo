@@ -78,6 +78,79 @@ enum HistoryTargetAddress {
     App,
 }
 
+#[cfg(test)]
+mod clipboard_manager_tests {
+    use super::*;
+    use crate::compositor::selection::{
+        SelectionStore, SharedSelection, Target, activate_history_item, clear_clipboard_history,
+        clipboard_history, pin_history_item, remove_history_item, set_mirror_text,
+    };
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+    use std::sync::{Arc, Mutex};
+    use ui::widget::Container;
+
+    fn bridge(store: SharedSelection) -> ClipboardManagerBridge {
+        std::rc::Rc::new(move |action| {
+            match action {
+                ClipboardManagerAction::Snapshot => {}
+                ClipboardManagerAction::Activate(id) => {
+                    let _ = activate_history_item(&store, id);
+                }
+                ClipboardManagerAction::SetPinned { id, pinned } => {
+                    let _ = pin_history_item(&store, id, pinned);
+                }
+                ClipboardManagerAction::Remove(id) => {
+                    let _ = remove_history_item(&store, id);
+                }
+                ClipboardManagerAction::ClearUnpinned => clear_clipboard_history(&store),
+            }
+            clipboard_history(&store)
+        })
+    }
+
+    #[test]
+    fn quick_settings_clipboard_bridge_uses_the_compositor_history() {
+        let store = Arc::new(Mutex::new(SelectionStore::default()));
+        assert!(set_mirror_text(&store, Target::Clipboard, "keep"));
+        assert!(set_mirror_text(&store, Target::Clipboard, "discard"));
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.set_clipboard_manager_bridge(bridge(store.clone()));
+
+        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+        assert_eq!(
+            chrome.borrow().quick_settings.current_level(),
+            &crate::shell::quick_settings::QsLevel::Clipboard
+        );
+        let history = host.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        assert_eq!(history.len(), 2);
+        let keep = history[1].id;
+        let discard = history[0].id;
+        let _ = host.clipboard_manager_call(ClipboardManagerAction::SetPinned {
+            id: keep,
+            pinned: true,
+        });
+        let remaining = host.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, keep);
+        assert!(remaining[0].pinned);
+        assert!(!remaining.iter().any(|item| item.id == discard));
+
+        let _ = host.clipboard_manager_call(ClipboardManagerAction::Activate(keep));
+        assert_eq!(
+            crate::compositor::selection::mirror_text(&store, Target::Clipboard).as_deref(),
+            Some("keep")
+        );
+        assert!(
+            host.clipboard_manager_call(ClipboardManagerAction::Remove(keep))
+                .is_empty()
+        );
+    }
+}
+
 fn notification_history_relative_time(notification: &Notification, now: Instant) -> String {
     let seconds = now
         .saturating_duration_since(notification.created_at)
@@ -207,6 +280,22 @@ type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<Strin
 /// relationship. Kept separate from [`FollowBridge`]: the latter is private
 /// local app control, while this one only paints a room-scoped cue remotely.
 type FollowPresenceBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
+
+/// Privileged clipboard-manager operation. Payload bytes never cross this UI
+/// bridge; only the compositor can activate a retained item as the live
+/// selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardManagerAction {
+    Snapshot,
+    Activate([u8; 32]),
+    SetPinned { id: [u8; 32], pinned: bool },
+    Remove([u8; 32]),
+    ClearUnpinned,
+}
+
+pub type ClipboardManagerBridge = std::rc::Rc<
+    dyn Fn(ClipboardManagerAction) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot>,
+>;
 
 pub(crate) struct CaptureMirrorHandoffLayer {
     pub rgba: std::sync::Arc<[u8]>,
@@ -767,6 +856,11 @@ pub struct ShellOverlayHost {
     /// row. Keeping it here makes pixel scrolling work without a tiny motion
     /// either leaking into the desktop or jumping a full card at a time.
     qs_notification_wheel_remainder: f64,
+    /// Offset into the separate clipboard history. Clipboard and notification
+    /// panes retain independent positions when the person switches between
+    /// them.
+    qs_clipboard_history_start: usize,
+    qs_clipboard_wheel_remainder: f64,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -849,6 +943,9 @@ pub struct ShellOverlayHost {
     /// `None` in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
     peer_sync_bridge: Option<PeerSyncBridge>,
+    /// Privileged in-process access to the compositor's bounded clipboard
+    /// history. Absent in screenshots and embedders.
+    clipboard_manager_bridge: Option<ClipboardManagerBridge>,
     /// Session-local control path into the typed app broker. Follow never
     /// enters the replicated workspace document or crosses the network.
     follow_bridge: Option<FollowBridge>,
@@ -1632,6 +1729,7 @@ impl ShellOverlayHost {
                     chrome.borrow().quick_settings.current_level(),
                     crate::shell::quick_settings::QsLevel::Root
                         | crate::shell::quick_settings::QsLevel::Notifications
+                        | crate::shell::quick_settings::QsLevel::Clipboard
                 )
             })
         {
@@ -1756,6 +1854,8 @@ impl ShellOverlayHost {
             qs_was_open: false,
             qs_notification_history_start: 0,
             qs_notification_wheel_remainder: 0.0,
+            qs_clipboard_history_start: 0,
+            qs_clipboard_wheel_remainder: 0.0,
             power_menu: PowerMenu::default(),
             session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -1778,6 +1878,7 @@ impl ShellOverlayHost {
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
+            clipboard_manager_bridge: None,
             follow_bridge: None,
             follow_presence_bridge: None,
             peer_sync_overlay: PeerSyncOverlay::default(),
@@ -2659,6 +2760,20 @@ impl ShellOverlayHost {
     /// `FrameBuilder` before it has a network handle to bridge to.
     pub fn set_peer_sync_bridge(&mut self, bridge: PeerSyncBridge) {
         self.peer_sync_bridge = Some(bridge);
+    }
+
+    /// Attach the compositor-owned clipboard history to trusted shell chrome.
+    pub fn set_clipboard_manager_bridge(&mut self, bridge: ClipboardManagerBridge) {
+        self.clipboard_manager_bridge = Some(bridge);
+    }
+
+    fn clipboard_manager_call(
+        &self,
+        action: ClipboardManagerAction,
+    ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
+        self.clipboard_manager_bridge
+            .as_ref()
+            .map_or_else(Vec::new, |bridge| bridge(action))
     }
 
     /// Supply identities the host has already verified (for example, through
@@ -6421,6 +6536,14 @@ impl ShellOverlayHost {
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
                     .clamp(160.0, 552.0)
             }
+            QsLevel::Clipboard => {
+                let rows = self
+                    .clipboard_manager_call(ClipboardManagerAction::Snapshot)
+                    .len()
+                    .min(7);
+                (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                    .clamp(160.0, 552.0)
+            }
         }
     }
 
@@ -6556,6 +6679,107 @@ impl ShellOverlayHost {
         // Consume at either edge too: arrows should not start moving a hidden
         // workspace after the visible history has reached its beginning/end.
         let _ = self.clamp_qs_notification_history_start(history_len);
+        true
+    }
+
+    fn qs_clipboard_visible_rows(&self) -> usize {
+        self.qs_notification_visible_rows()
+    }
+
+    fn clamp_qs_clipboard_history_start(&mut self, history_len: usize) -> bool {
+        let max_start = history_len.saturating_sub(self.qs_clipboard_visible_rows());
+        let next = self.qs_clipboard_history_start.min(max_start);
+        let changed = next != self.qs_clipboard_history_start;
+        self.qs_clipboard_history_start = next;
+        changed
+    }
+
+    fn scroll_qs_clipboard_history(&mut self, movement: isize) -> bool {
+        let history_len = self
+            .clipboard_manager_call(ClipboardManagerAction::Snapshot)
+            .len();
+        let max_start = history_len.saturating_sub(self.qs_clipboard_visible_rows());
+        let current = self.qs_clipboard_history_start.min(max_start);
+        let next = if movement.is_negative() {
+            current.saturating_sub(movement.unsigned_abs())
+        } else {
+            current.saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
+        }
+        .min(max_start);
+        if next == self.qs_clipboard_history_start {
+            return false;
+        }
+        self.qs_clipboard_history_start = next;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        true
+    }
+
+    fn handle_qs_clipboard_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64) -> bool {
+        let clipboard_open = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Clipboard
+                )
+        });
+        if !clipboard_open
+            || !self
+                .last_cursor
+                .is_some_and(|point| self.quick_settings_rect().contains(point))
+        {
+            return false;
+        }
+        let rows = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
+            MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
+        };
+        if rows.abs() <= f64::EPSILON {
+            return true;
+        }
+        self.qs_clipboard_wheel_remainder += rows;
+        let whole = self.qs_clipboard_wheel_remainder.trunc();
+        if whole.abs() >= 1.0 {
+            self.qs_clipboard_wheel_remainder -= whole;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a wheel delta is bounded by input hardware; this only converts complete row movement"
+            )]
+            let movement = whole as isize;
+            let _ = self.scroll_qs_clipboard_history(movement);
+        }
+        true
+    }
+
+    fn handle_qs_clipboard_keyboard(&mut self, logical_key: &Key) -> bool {
+        let history_len = self
+            .clipboard_manager_call(ClipboardManagerAction::Snapshot)
+            .len();
+        let page = isize::try_from(self.qs_clipboard_visible_rows()).unwrap_or(isize::MAX);
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let _ = self.scroll_qs_clipboard_history(1);
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let _ = self.scroll_qs_clipboard_history(-1);
+            }
+            Key::Named(NamedKey::PageDown) => {
+                let _ = self.scroll_qs_clipboard_history(page);
+            }
+            Key::Named(NamedKey::PageUp) => {
+                let _ = self.scroll_qs_clipboard_history(page.saturating_neg());
+            }
+            Key::Named(NamedKey::Home) => {
+                let _ = self.scroll_qs_clipboard_history(-isize::MAX);
+            }
+            Key::Named(NamedKey::End) => {
+                let _ = self.scroll_qs_clipboard_history(isize::MAX);
+            }
+            _ => return false,
+        }
+        let _ = self.clamp_qs_clipboard_history_start(history_len);
         true
     }
 
@@ -9374,6 +9598,10 @@ impl ShellOverlayHost {
     /// row. Split out of `handle_shell_quick_settings_click`, which
     /// always treats the click as absorbed regardless of what this
     /// does.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the drill-in router keeps each mutually exclusive page next to the shared back/password precedence; splitting it would duplicate modal ordering"
+    )]
     fn handle_shell_quick_settings_drill_in_click(
         &mut self,
         p: Point,
@@ -9474,6 +9702,11 @@ impl ShellOverlayHost {
             }
         } else if matches!(
             current_level,
+            crate::shell::quick_settings::QsLevel::Clipboard
+        ) {
+            self.handle_qs_clipboard_click(p);
+        } else if matches!(
+            current_level,
             crate::shell::quick_settings::QsLevel::Notifications
         ) && self.qs_notification_clear_rect().contains(p)
             && let Some(chrome) = self.chrome.clone()
@@ -9481,6 +9714,51 @@ impl ShellOverlayHost {
             chrome.borrow_mut().clear_notification_history();
             self.qs_notification_history_start = 0;
             self.qs_notification_wheel_remainder = 0.0;
+        }
+    }
+
+    fn handle_qs_clipboard_click(&mut self, point: Point) {
+        if self.qs_clipboard_clear_rect().contains(point) {
+            let history = self.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
+            let _ = self.clamp_qs_clipboard_history_start(history.len());
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            return;
+        }
+        let history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        let visible_rows = self.qs_clipboard_visible_rows();
+        let start = self.qs_clipboard_history_start;
+        for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
+            let row = self.qs_clipboard_row_rect(visible_index);
+            if !row.contains(point) {
+                continue;
+            }
+            let (pin, remove) = Self::qs_clipboard_row_actions(row);
+            if pin.contains(point) {
+                let _ = self.clipboard_manager_call(ClipboardManagerAction::SetPinned {
+                    id: item.id,
+                    pinned: !item.pinned,
+                });
+            } else if remove.contains(point) {
+                let remaining =
+                    self.clipboard_manager_call(ClipboardManagerAction::Remove(item.id));
+                let _ = self.clamp_qs_clipboard_history_start(remaining.len());
+            } else {
+                let _ = self.clipboard_manager_call(ClipboardManagerAction::Activate(item.id));
+                if let Some(chrome) = self.chrome.as_ref() {
+                    let mut state = chrome.borrow_mut();
+                    state.overlays.quick_settings = false;
+                    state.quick_settings.nav_stack =
+                        vec![crate::shell::quick_settings::QsLevel::Root];
+                    state.bump();
+                }
+                return;
+            }
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            return;
         }
     }
     /// Routes a click through the root-page component, then applies the
@@ -9514,16 +9792,26 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let notifications_open = {
+        let history_level = {
             let state = chrome.borrow();
-            state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Notifications
-                )
+            state
+                .overlays
+                .quick_settings
+                .then(|| state.quick_settings.current_level().clone())
         };
-        if notifications_open {
+        if matches!(
+            history_level,
+            Some(crate::shell::quick_settings::QsLevel::Notifications)
+        ) {
             let consumed = self.handle_qs_notification_keyboard(logical_key);
+            *handled = consumed;
+            return consumed;
+        }
+        if matches!(
+            history_level,
+            Some(crate::shell::quick_settings::QsLevel::Clipboard)
+        ) {
+            let consumed = self.handle_qs_clipboard_keyboard(logical_key);
             *handled = consumed;
             return consumed;
         }
@@ -9652,6 +9940,15 @@ impl ShellOverlayHost {
                 drop(st);
                 self.qs_notification_history_start = 0;
                 self.qs_notification_wheel_remainder = 0.0;
+            }
+            RootAction::OpenClipboard => {
+                let mut st = chrome.borrow_mut();
+                st.quick_settings
+                    .push_level(crate::shell::quick_settings::QsLevel::Clipboard);
+                st.bump();
+                drop(st);
+                self.qs_clipboard_history_start = 0;
+                self.qs_clipboard_wheel_remainder = 0.0;
             }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
@@ -11378,7 +11675,8 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
-            && self.handle_qs_notification_wheel(*delta, scale_factor)
+            && (self.handle_qs_notification_wheel(*delta, scale_factor)
+                || self.handle_qs_clipboard_wheel(*delta, scale_factor))
         {
             *handled = true;
             return;
@@ -11587,6 +11885,59 @@ impl Widget for ShellOverlayHost {
                                     .with_description(description)
                                     .with_state(AccessState::new().modal(true))
                                     .with_children(vec![history]),
+                            );
+                        } else if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Clipboard
+                        ) {
+                            let history = self
+                                .clipboard_manager_call(ClipboardManagerAction::Snapshot);
+                            let visible = self.qs_clipboard_visible_rows();
+                            let start = self
+                                .qs_clipboard_history_start
+                                .min(history.len().saturating_sub(visible));
+                            let shown = visible.min(history.len().saturating_sub(start));
+                            let items = history
+                                .iter()
+                                .skip(start)
+                                .take(shown)
+                                .enumerate()
+                                .map(|(index, item)| {
+                                    let name = item.text_preview.as_deref().map_or_else(
+                                        || "Clipboard data".to_string(),
+                                        |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
+                                    );
+                                    AccessNode::new(Role::ListItem)
+                                        .with_name(name)
+                                        .with_description(format!(
+                                            "{} bytes; {}",
+                                            item.byte_len,
+                                            if item.pinned { "pinned" } else { "not pinned" }
+                                        ))
+                                        .with_position(index.saturating_add(1), shown)
+                                        .with_children(vec![
+                                            AccessNode::new(Role::Button).with_name("Use item"),
+                                            AccessNode::new(Role::Button).with_name(if item.pinned {
+                                                "Unpin item"
+                                            } else {
+                                                "Pin item"
+                                            }),
+                                            AccessNode::new(Role::Button).with_name("Remove item"),
+                                        ])
+                                })
+                                .collect();
+                            root.children.push(
+                                AccessNode::new(Role::Dialog)
+                                    .with_name("Clipboard")
+                                    .with_description(
+                                        "Private clipboard history shared only with your authenticated devices. Use Up and Down, Page Up and Page Down, Home, or End to move through retained items.",
+                                    )
+                                    .with_state(AccessState::new().modal(true))
+                                    .with_children(vec![
+                                        AccessNode::new(Role::List)
+                                            .with_name("Retained clipboard items")
+                                            .with_children(items),
+                                    ]),
                             );
                         } else {
                             root.children.push(
@@ -15350,6 +15701,10 @@ impl ShellOverlayHost {
                 self.draw_qs_notification_history(scene, transform, text_renderer, theme);
                 true
             }
+            crate::shell::quick_settings::QsLevel::Clipboard => {
+                self.draw_qs_clipboard_history(scene, transform, text_renderer, theme);
+                true
+            }
             crate::shell::quick_settings::QsLevel::Root => false,
         }
     }
@@ -15651,6 +16006,162 @@ impl ShellOverlayHost {
                         .into(),
                 ),
                 Some(f64_to_f32_lossy(footer.width() - 16.0)),
+            );
+        }
+    }
+
+    fn qs_clipboard_clear_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
+    }
+
+    fn qs_clipboard_row_rect(&self, visible_index: usize) -> Rect {
+        const ROW_HEIGHT: f64 = 70.0;
+        let panel = self.quick_settings_rect();
+        let y0 = panel.y0 + 76.0 + usize_to_f64_lossy(visible_index) * ROW_HEIGHT;
+        Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + ROW_HEIGHT - 6.0)
+    }
+
+    fn qs_clipboard_row_actions(row: Rect) -> (Rect, Rect) {
+        (
+            Rect::new(row.x1 - 70.0, row.y0 + 14.0, row.x1 - 38.0, row.y1 - 14.0),
+            Rect::new(row.x1 - 34.0, row.y0 + 14.0, row.x1 - 2.0, row.y1 - 14.0),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "clipboard rows intentionally share one geometry calculation for paint, privacy metadata, and their pin/remove controls"
+    )]
+    fn draw_qs_clipboard_history(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Clipboard");
+        let panel = self.quick_settings_rect();
+        let colors = &theme.tokens.colors;
+        let history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        if history.is_empty() {
+            self.qs_clipboard_history_start = 0;
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Copied items appear here",
+            );
+            return;
+        }
+        let visible_rows = self.qs_clipboard_visible_rows();
+        let _ = self.clamp_qs_clipboard_history_start(history.len());
+        let start = self.qs_clipboard_history_start;
+        let shown = visible_rows.min(history.len().saturating_sub(start));
+
+        let clear = self.qs_clipboard_clear_rect();
+        Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(clear, "Clear")
+                .hovered(self.last_cursor.is_some_and(|point| clear.contains(point)))
+                .accessible_name("Clear unpinned clipboard history")
+                .text_size(theme.tokens.typography.scale.xs),
+        );
+        let position = if history.len() > visible_rows {
+            format!(
+                "Newest {}–{} of {} · private to your devices",
+                start.saturating_add(1),
+                start.saturating_add(shown),
+                history.len()
+            )
+        } else {
+            format!(
+                "{} item{} · private to your devices",
+                history.len(),
+                if history.len() == 1 { "" } else { "s" }
+            )
+        };
+        text_renderer.draw_text(
+            scene,
+            &position,
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 52.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 24.0)),
+        );
+
+        for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
+            let row = self.qs_clipboard_row_rect(visible_index);
+            let (pin, remove) = Self::qs_clipboard_row_actions(row);
+            let body = Rect::new(row.x0, row.y0, pin.x0 - 4.0, row.y1);
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(body, "")
+                    .hovered(self.last_cursor.is_some_and(|point| body.contains(point)))
+                    .accessible_name("Use clipboard item"),
+            );
+            let preview = item.text_preview.as_deref().map_or_else(
+                || {
+                    item.mime_types.first().map_or_else(
+                        || "Clipboard data".to_string(),
+                        |mime| format!("{mime} · {} bytes", item.byte_len),
+                    )
+                },
+                |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &preview,
+                theme.tokens.typography.scale.sm,
+                colors.text_primary,
+                transform.pre_translate((body.x0 + 12.0, body.y0 + 14.0).into()),
+                Some(f64_to_f32_lossy(body.width() - 24.0)),
+                TextWeight::Medium,
+            );
+            let detail = format!(
+                "{} · {} byte{}",
+                item.mime_types.first().map_or("data", String::as_str),
+                item.byte_len,
+                if item.byte_len == 1 { "" } else { "s" }
+            );
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((body.x0 + 12.0, body.y0 + 40.0).into()),
+                Some(f64_to_f32_lossy(body.width() - 24.0)),
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(pin, "")
+                    .hovered(self.last_cursor.is_some_and(|point| pin.contains(point)))
+                    .accessible_name(if item.pinned {
+                        "Unpin item"
+                    } else {
+                        "Pin item"
+                    })
+                    .icon(ui::icons::Icon::Star),
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(remove, "")
+                    .hovered(self.last_cursor.is_some_and(|point| remove.contains(point)))
+                    .accessible_name("Remove clipboard item")
+                    .icon(ui::icons::Icon::X),
             );
         }
     }
