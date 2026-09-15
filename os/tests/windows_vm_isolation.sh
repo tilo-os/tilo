@@ -178,7 +178,23 @@ has "$BRIDGE" 'generation = $source.generation' 'guest catalogue preserves its p
 has "$CONTAINERFILE" 'qos-windows-vm-network.service' 'image wires network service'
 has "$CONTAINERFILE" 'qos-windows-vm-egress-reaper.timer' 'image enables crash-safe egress lease reaper'
 has "$CONTAINERFILE" 'qos-windows-provision' 'image wires provision tool'
-has "$CONTAINERFILE" '/out/qos-windows-vm-control /usr/libexec/qos-windows-vm-control' 'image ships the singleton VM controller'
+if python3 - "$CONTAINERFILE" <<'PY'
+import pathlib, shlex, sys
+source = pathlib.Path(sys.argv[1]).read_text().replace("\\\n", " ")
+for line in source.splitlines():
+    if not line.startswith("COPY "):
+        continue
+    words = shlex.split(line, comments=True)
+    if words[:2] == ["COPY", "--from=builder"] and "/out/qos-windows-vm-control" in words[2:-1]:
+        if words[-1] in ("/usr/libexec/", "/usr/libexec/qos-windows-vm-control"):
+            sys.exit(0)
+sys.exit(1)
+PY
+then
+    ok 'image ships the singleton VM controller'
+else
+    fail 'image ships the singleton VM controller'
+fi
 has "$CONTAINERFILE" 'virt-viewer' 'image wires explicit recovery viewer'
 has "$PROVISION" 'Start-qOSFocusedApp.ps1' 'guest tools carry the focused-app helper'
 has "$PROVISION" 'Start-qOSInstaller.ps1' 'guest tools carry the managed installer helper'
