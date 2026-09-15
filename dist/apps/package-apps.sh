@@ -112,10 +112,10 @@ for app in plan["catalog"]:
 json.dump({"format": 1, "architecture": sys.argv[4], "source": sys.argv[5], "apps": entries},
           open(sys.argv[3], "w", encoding="utf-8"), indent=2, sort_keys=True)
 PY
-(cd "$out" && find qpkg runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
+(cd "$out" && find qpkg tilo-runtime -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS \
     && sha256sum index.json >> SHA256SUMS)
 tar --sort=name --mtime="@$source_epoch" --owner=0 --group=0 --numeric-owner \
-    -C "$out" -czf "$out/tilo-apps-$(uname -m).tar.gz" qpkg runtime index.json SHA256SUMS
+    -C "$out" -czf "$out/tilo-apps-$(uname -m).tar.gz" qpkg tilo-runtime index.json SHA256SUMS
 (
   cd "$out"
   sha256sum "tilo-apps-$(uname -m).tar.gz" > "tilo-apps-$(uname -m).tar.gz.sha256"
