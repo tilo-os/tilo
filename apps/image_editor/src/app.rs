@@ -2304,9 +2304,19 @@ impl Widget for ImageEditorApp {
                     if !deletable.is_empty() {
                         self.checkpoint();
                     }
+                    let mut removed = 0usize;
                     for id in deletable {
-                        self.project.graph.remove(&id);
-                        self.project.operations.remove(&id);
+                        removed += usize::from(self.project.remove_adjustment(&id));
+                    }
+                    if removed > 0 {
+                        self.editor.select_only(self.project.output.clone());
+                        self.rendered_project = None;
+                        self.rebuild_crop_editor();
+                        self.notice = if removed == 1 {
+                            "Adjustment removed. Later steps remain connected.".into()
+                        } else {
+                            format!("Removed {removed} adjustments. Later steps remain connected.")
+                        };
                     }
                     ProjectDoc::write(state, &self.project);
                     *handled = true;
