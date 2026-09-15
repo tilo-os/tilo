@@ -11,7 +11,7 @@ trusted_path() {
   local path="$1" kind="$2" description="$3" current mode owner
   [[ "$path" = /* && ! -L "$path" ]] \
     || { printf '%s must be an absolute, non-symlink path\n' "$description" >&2; return 1; }
-  [ "$(realpath -e "$path")" = "$path" ] \
+  [ "$(realpath "$path")" = "$path" ] \
     || { printf '%s must be canonical\n' "$description" >&2; return 1; }
   case "$path" in
     "$GITHUB_WORKSPACE"/*|"$RUNNER_TEMP"/*)

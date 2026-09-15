@@ -22,6 +22,23 @@ gpg --batch --passphrase '' --quick-generate-key \
 fingerprint="$(gpg --batch --with-colons --fingerprint \
   | awk -F: '$1 == "pub" { want = 1; next }
                want && $1 == "fpr" { print toupper($10); exit }')"
+verify_key="$work/broker-release-key.asc"
+gpg --batch --armor --export "$fingerprint" >"$verify_key"
+signer="$work/external-signer"
+cat >"$signer" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+gpg --batch --yes --armor --detach-sign --output "$2" "$1"
+EOF
+chmod 0700 "$signer"
+external_payload="$work/external-signer-payload"
+printf 'OIDC broker signing path\n' >"$external_payload"
+QOS_LINUX_SIGNER="$signer" \
+QOS_LINUX_VERIFY_KEY="$verify_key" \
+QOS_LINUX_EXPECTED_FINGERPRINT="$fingerprint" \
+  "$sign" "$external_payload"
+gpg --batch --verify "$external_payload.asc" "$external_payload" >/dev/null 2>&1
+
 assets="$work/assets"
 mkdir -p "$assets/linux-x86_64" "$assets/linux-aarch64" \
   "$assets/installer-x86_64" "$assets/installer-aarch64" \
@@ -84,3 +101,9 @@ fi
 grep -Eq 'FAILED|computed checksum did NOT match' "$work/tamper.err"
 
 printf 'ok    Linux release trust bundle fails closed on policy mismatch and tampering\n'
+
+grep -Fq -- '--show-keys --fingerprint' \
+  "$repo/apps/imager/packaging/package-host.sh"
+grep -Fq -- '--homedir "$verify_home" --import-options import-minimal' \
+  "$repo/apps/imager/packaging/package-host.sh"
+printf 'ok    OIDC public-key files are imported into isolated verification keyrings\n'
