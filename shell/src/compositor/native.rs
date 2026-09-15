@@ -4039,6 +4039,33 @@ pub fn run() -> ! {
         initial_size,
         crate::shell::session_record_store(),
     );
+    let clipboard_store = state.selection_store();
+    frame_builder
+        .host_mut()
+        .set_clipboard_manager_bridge(std::rc::Rc::new(move |action| {
+            use crate::shell::overlay_host::ClipboardManagerAction;
+            match action {
+                ClipboardManagerAction::Snapshot => {}
+                ClipboardManagerAction::Activate(id) => {
+                    let _ =
+                        crate::compositor::selection::activate_history_item(&clipboard_store, id);
+                }
+                ClipboardManagerAction::SetPinned { id, pinned } => {
+                    let _ = crate::compositor::selection::pin_history_item(
+                        &clipboard_store,
+                        id,
+                        pinned,
+                    );
+                }
+                ClipboardManagerAction::Remove(id) => {
+                    let _ = crate::compositor::selection::remove_history_item(&clipboard_store, id);
+                }
+                ClipboardManagerAction::ClearUnpinned => {
+                    crate::compositor::selection::clear_clipboard_history(&clipboard_store);
+                }
+            }
+            crate::compositor::selection::clipboard_history(&clipboard_store)
+        }));
     // A fresh machine has no display server before `shell`, so first-login
     // cannot be a standalone winit app or a pre-graphical user unit. Host the
     // ceremony in trusted compositor chrome and withhold every desktop
