@@ -603,6 +603,108 @@ impl ToggleGroup {
             );
         }
     }
+
+    fn handle_key_event(&mut self, key: &KeyEvent, handled: &mut bool) {
+        if !self.is_focused
+            || !self.is_enabled()
+            || key.state != ElementState::Pressed
+            || key.repeat
+        {
+            return;
+        }
+        let len = self.segments.len();
+        let selection = match key.logical_key {
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => Some(
+                self.selected
+                    .checked_sub(1)
+                    .unwrap_or_else(|| len.saturating_sub(1)),
+            ),
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => {
+                Some(if self.selected == len.saturating_sub(1) {
+                    0
+                } else {
+                    self.selected.saturating_add(1)
+                })
+            }
+            Key::Named(NamedKey::Home) if len > 0 => Some(0),
+            Key::Named(NamedKey::End) if len > 0 => Some(len.saturating_sub(1)),
+            // A segmented control is single-select: activation confirms its
+            // current choice rather than toggling it off.
+            Key::Named(NamedKey::Enter | NamedKey::Space) => Some(self.selected),
+            _ => None,
+        };
+        if let Some(selection) = selection {
+            *handled = true;
+            self.request_selection(selection);
+        }
+    }
+
+    fn handle_pointer_press(
+        &mut self,
+        state: ElementState,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        if state != ElementState::Pressed || !self.is_enabled() {
+            return;
+        }
+        let pos = self.last_cursor.get();
+        if let Some(index) = self
+            .segment_rects
+            .iter()
+            .position(|segment| segment.contains(pos))
+        {
+            *handled = true;
+            *focus_target = Some(node_id);
+            self.request_selection(index);
+        }
+    }
+
+    fn handle_touch_event(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale_factor: f64,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+    ) {
+        if !self.is_enabled() {
+            return;
+        }
+        let pos = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            winit::event::TouchPhase::Started
+                if self.active_touch.is_none() && self.rect.contains(pos) =>
+            {
+                self.active_touch = Some(touch.id);
+                *focus_target = Some(node_id);
+                *handled = true;
+            }
+            winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
+                *handled = true;
+            }
+            winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
+                self.active_touch = None;
+                if let Some(index) = self
+                    .segment_rects
+                    .iter()
+                    .position(|segment| segment.contains(pos))
+                {
+                    self.request_selection(index);
+                }
+                *handled = true;
+            }
+            winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
+                self.active_touch = None;
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Widget for ToggleGroup {
@@ -737,43 +839,7 @@ impl Widget for ToggleGroup {
         _taffy: &TaffyTree<()>,
     ) {
         match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        state: ElementState::Pressed,
-                        logical_key,
-                        repeat: false,
-                        ..
-                    },
-                ..
-            } if self.is_focused && self.is_enabled() => {
-                let len = self.segments.len();
-                let selection = match logical_key {
-                    Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => Some(
-                        self.selected
-                            .checked_sub(1)
-                            .unwrap_or_else(|| len.saturating_sub(1)),
-                    ),
-                    Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => {
-                        Some(if self.selected == len.saturating_sub(1) {
-                            0
-                        } else {
-                            self.selected.saturating_add(1)
-                        })
-                    }
-                    Key::Named(NamedKey::Home) if len > 0 => Some(0),
-                    Key::Named(NamedKey::End) if len > 0 => Some(len.saturating_sub(1)),
-                    // A segmented control is single-select: activating the
-                    // focused group confirms its current choice rather than
-                    // toggling it off.
-                    Key::Named(NamedKey::Enter | NamedKey::Space) => Some(self.selected),
-                    _ => None,
-                };
-                if let Some(selection) = selection {
-                    *handled = true;
-                    self.request_selection(selection);
-                }
-            }
+            WindowEvent::KeyboardInput { event, .. } => self.handle_key_event(event, handled),
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor.set(logical_pos);
@@ -782,75 +848,9 @@ impl Widget for ToggleGroup {
                 state: element_state,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if *element_state != ElementState::Pressed {
-                    return;
-                }
-                let pos = self.last_cursor.get();
-                for (i, seg_rect) in self.segment_rects.iter().enumerate() {
-                    if seg_rect.contains(pos) {
-                        *handled = true;
-                        *focus_target = Some(node_id);
-                        self.request_selection(i);
-                        break;
-                    }
-                }
-            }
+            } => self.handle_pointer_press(*element_state, handled, focus_target, node_id),
             WindowEvent::Touch(touch) => {
-                let pos = Point::new(
-                    touch.location.x / scale_factor,
-                    touch.location.y / scale_factor,
-                );
-                match touch.phase {
-                    winit::event::TouchPhase::Started
-                        if self.active_touch.is_none() && self.rect.contains(pos) =>
-                    {
-                        self.active_touch = Some(touch.id);
-                        *focus_target = Some(node_id);
-                        *handled = true;
-                    }
-                    winit::event::TouchPhase::Moved if self.active_touch == Some(touch.id) => {
-                        *handled = true;
-                    }
-                    winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
-                        self.active_touch = None;
-                        if let Some(index) = self
-                            .segment_rects
-                            .iter()
-                            .position(|segment| segment.contains(pos))
-                        {
-                            self.request_selection(index);
-                        }
-                        *handled = true;
-                    }
-                    winit::event::TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
-                        self.active_touch = None;
-                        *handled = true;
-                    }
-                    _ => {}
-                }
-            }
-            WindowEvent::KeyboardInput { event: key, .. }
-                if self.is_focused && key.state == ElementState::Pressed =>
-            {
-                let next = match &key.logical_key {
-                    Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => self
-                        .selected
-                        .checked_sub(1)
-                        .unwrap_or_else(|| self.segments.len().saturating_sub(1)),
-                    Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => self
-                        .selected
-                        .saturating_add(1)
-                        .checked_rem(self.segments.len().max(1))
-                        .unwrap_or(0),
-                    Key::Named(NamedKey::Home) => 0,
-                    Key::Named(NamedKey::End) => self.segments.len().saturating_sub(1),
-                    _ => return,
-                };
-                if !self.segments.is_empty() {
-                    self.request_selection(next);
-                }
-                *handled = true;
+                self.handle_touch_event(touch, scale_factor, handled, focus_target, node_id);
             }
             _ => {}
         }
@@ -1176,6 +1176,31 @@ mod tests {
             0,
             "unfocused controls do not consume keys"
         );
+    }
+
+    #[test]
+    fn unavailable_toggle_group_rejects_pointer_touch_and_keyboard_input() {
+        let mut group = group_at(
+            vec![Segment::new("Light"), Segment::new("Dark")],
+            0,
+            Rect::new(0.0, 0.0, 200.0, 44.0),
+        )
+        .on_view("appearance", |_| {});
+        Widget::refresh_control_action_availability(&mut group, &std::collections::HashSet::new());
+        group.set_focus(true);
+        assert!(!Widget::is_enabled(&group));
+
+        dispatch(&mut group, &cursor_moved(150.0, 22.0));
+        assert!(!dispatch_handled(&mut group, &mouse_press()));
+        assert!(!dispatch_handled(
+            &mut group,
+            &touch(winit::event::TouchPhase::Started, Point::new(150.0, 22.0)),
+        ));
+        assert!(!dispatch_handled(
+            &mut group,
+            &key_press(NamedKey::ArrowRight),
+        ));
+        assert_eq!(group.selected(), 0);
     }
 
     #[test]
