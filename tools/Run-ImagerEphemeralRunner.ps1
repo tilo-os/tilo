@@ -20,6 +20,17 @@ $Runner = if ($env:QOS_FORGEJO_RUNNER) {
 $Server = if ($env:QOS_FORGEJO_URL) { $env:QOS_FORGEJO_URL } else { "https://code.sandbox.example" }
 $MaxWaitText = if ($env:QOS_RUNNER_MAX_WAIT_SECONDS) { $env:QOS_RUNNER_MAX_WAIT_SECONDS } else { "21600" }
 
+function Resolve-qOSWindowsRunnerLabel([int[]]$ProcessorArchitectures) {
+    if ($ProcessorArchitectures.Count -eq 0) { throw "Cannot determine native Windows architecture" }
+    $Unique = @($ProcessorArchitectures | Select-Object -Unique)
+    if ($Unique.Count -ne 1) { throw "Inconsistent native Windows processor architectures" }
+    switch ($Unique[0]) {
+        9 { return "imager-windows-x86_64" }
+        12 { return "imager-windows-aarch64" }
+        default { throw "Unsupported native Windows architecture" }
+    }
+}
+
 function Assert-qOSPrivateMetadataFile([string]$Path, [string]$Description) {
     if (-not [IO.Path]::IsPathFullyQualified($Path)) { throw "$Description must be absolute" }
     $Item = Get-Item -LiteralPath $Path -Force
@@ -117,10 +128,9 @@ try {
     if ($MaxWait -lt 1 -or $MaxWait -gt 86400) {
         throw "runner wait timeout must be between 1 and 86400 seconds"
     }
-    if (-not [Environment]::Is64BitOperatingSystem -or
-        [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64 -or
-        $Label -cne "imager-windows-x86_64") {
-        throw "runner label imager-windows-x86_64 requires native Windows x86-64"
+    $NativeLabel = Resolve-qOSWindowsRunnerLabel @((Get-CimInstance Win32_Processor).Architecture)
+    if (-not [Environment]::Is64BitOperatingSystem -or $Label -cne $NativeLabel) {
+        throw "runner label must match native Windows architecture: $NativeLabel"
     }
 
     $UuidBytes = [IO.File]::ReadAllBytes($UuidItem.FullName)
@@ -150,7 +160,7 @@ try {
     $TokenUrl = [Uri]::new($TokenItem.FullName).AbsoluteUri
     $Arguments = @(
         "one-job", "--url", $Server.TrimEnd('/'), "--uuid", $Uuid,
-        "--token-url", $TokenUrl, "--label", "imager-windows-x86_64:host", "--wait"
+        "--token-url", $TokenUrl, "--label", "${NativeLabel}:host", "--wait"
     )
     $Process = Start-Process -FilePath $TrustedRunner -ArgumentList $Arguments -NoNewWindow -PassThru
     if (-not $Process.WaitForExit($MaxWait * 1000)) {
