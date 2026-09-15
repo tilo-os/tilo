@@ -48,6 +48,8 @@ enum ActiveField {
     Origin,
     Password,
     Notes,
+    Tags,
+    CustomFields,
 }
 
 struct EditorInputs {
@@ -56,6 +58,8 @@ struct EditorInputs {
     origin: TextInput,
     password: TextInput,
     notes: TextInput,
+    tags: TextInput,
+    custom_fields: TextInput,
 }
 
 fn backup_input(label: &str) -> TextInput {
@@ -91,6 +95,15 @@ impl EditorInputs {
                 .with_accessible_name("Notes")
                 .multiline(true)
                 .with_initial_value(notes),
+            tags: TextInput::local()
+                .with_id("passwords.field.tags")
+                .with_accessible_name("Tags")
+                .with_placeholder("Tags separated by commas"),
+            custom_fields: TextInput::local()
+                .with_id("passwords.field.custom-fields")
+                .with_accessible_name("Custom fields")
+                .with_placeholder("One field per line: label = value")
+                .multiline(true),
         }
     }
 
@@ -101,6 +114,8 @@ impl EditorInputs {
             ActiveField::Origin => Some(&mut self.origin),
             ActiveField::Password => Some(&mut self.password),
             ActiveField::Notes => Some(&mut self.notes),
+            ActiveField::Tags => Some(&mut self.tags),
+            ActiveField::CustomFields => Some(&mut self.custom_fields),
             ActiveField::Search => None,
         }
     }
@@ -112,6 +127,8 @@ impl EditorInputs {
             ActiveField::Origin => Some(&self.origin),
             ActiveField::Password => Some(&self.password),
             ActiveField::Notes => Some(&self.notes),
+            ActiveField::Tags => Some(&self.tags),
+            ActiveField::CustomFields => Some(&self.custom_fields),
             ActiveField::Search => None,
         }
     }
@@ -122,6 +139,8 @@ impl EditorInputs {
         visit(ActiveField::Origin, &mut self.origin);
         visit(ActiveField::Password, &mut self.password);
         visit(ActiveField::Notes, &mut self.notes);
+        visit(ActiveField::Tags, &mut self.tags);
+        visit(ActiveField::CustomFields, &mut self.custom_fields);
     }
 }
 
@@ -179,6 +198,8 @@ pub struct PasswordsSurface {
     draft_origin: String,
     draft_password: Zeroizing<String>,
     draft_notes: Zeroizing<String>,
+    draft_tags: String,
+    draft_custom_fields: Zeroizing<String>,
     editor_inputs: EditorInputs,
     active_field: Option<ActiveField>,
     revealed: Option<(SecretId, String, std::time::Instant)>,
@@ -437,6 +458,8 @@ impl PasswordsSurface {
             draft_origin: String::new(),
             draft_password: Zeroizing::new(String::new()),
             draft_notes: Zeroizing::new(String::new()),
+            draft_tags: String::new(),
+            draft_custom_fields: Zeroizing::new(String::new()),
             editor_inputs: EditorInputs::new("", "", "", "", ""),
             active_field: None,
             revealed: None,
@@ -515,6 +538,8 @@ impl PasswordsSurface {
             draft_origin: "https://bank.example, https://login.bank.example".into(),
             draft_password: Zeroizing::new(String::new()),
             draft_notes: Zeroizing::new(String::new()),
+            draft_tags: String::new(),
+            draft_custom_fields: Zeroizing::new(String::new()),
             editor_inputs: EditorInputs::new(
                 "Northstar Bank",
                 "ada@example.com",
@@ -585,6 +610,10 @@ impl PasswordsSurface {
         self.editor_inputs.origin.set_text(&self.draft_origin);
         self.editor_inputs.password.set_text(&self.draft_password);
         self.editor_inputs.notes.set_text(&self.draft_notes);
+        self.editor_inputs.tags.set_text(&self.draft_tags);
+        self.editor_inputs
+            .custom_fields
+            .set_text(&self.draft_custom_fields);
     }
 
     fn update_draft_from_input(&mut self, field: ActiveField, value: String) {
@@ -594,6 +623,8 @@ impl PasswordsSurface {
             ActiveField::Origin => self.draft_origin = value,
             ActiveField::Password => self.draft_password = Zeroizing::new(value),
             ActiveField::Notes => self.draft_notes = Zeroizing::new(value),
+            ActiveField::Tags => self.draft_tags = value,
+            ActiveField::CustomFields => self.draft_custom_fields = Zeroizing::new(value),
             ActiveField::Search => {}
         }
     }
@@ -607,6 +638,8 @@ impl PasswordsSurface {
         self.draft_origin.clear();
         self.draft_password.clear();
         self.draft_notes.clear();
+        self.draft_tags.clear();
+        self.draft_custom_fields.clear();
         self.active_field = Some(ActiveField::Name);
         self.status.clear();
         self.editor_scroll = 0.0;
@@ -630,6 +663,26 @@ impl PasswordsSurface {
         self.draft_origin = item.origins.iter().cloned().collect::<Vec<_>>().join(", ");
         self.draft_password.clear();
         self.draft_notes = Zeroizing::new(item.notes);
+        self.draft_tags = item
+            .tags
+            .iter()
+            .filter(|tag| tag.as_str() != "favorite")
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut custom_fields = item
+            .fields
+            .iter()
+            .filter(|(label, _)| label.as_str() != "network")
+            .collect::<Vec<_>>();
+        custom_fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+        self.draft_custom_fields = Zeroizing::new(
+            custom_fields
+                .into_iter()
+                .map(|(label, value)| format!("{label} = {}", Self::escape_custom_value(value)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
         self.active_field = Some(ActiveField::Name);
         self.status = "Leave password blank to keep it".into();
         self.editor_scroll = 0.0;
@@ -648,11 +701,15 @@ impl PasswordsSurface {
     fn clear_sensitive_editor_text(&mut self) {
         self.draft_password.clear();
         self.draft_notes.clear();
+        self.draft_tags.clear();
+        self.draft_custom_fields.clear();
         // The shared inputs retain their own editing buffers. Clear those as
         // well so a saved/cancelled secret cannot survive in an inactive
         // widget and reappear when the editor is opened again.
         self.editor_inputs.password.set_text("");
         self.editor_inputs.notes.set_text("");
+        self.editor_inputs.tags.set_text("");
+        self.editor_inputs.custom_fields.set_text("");
     }
 
     fn save_draft(&mut self) {
@@ -717,6 +774,29 @@ impl PasswordsSurface {
             password
         };
         item.notes = self.draft_notes.to_string();
+        let custom_fields = match Self::parse_custom_fields(&self.draft_custom_fields) {
+            Ok(fields) => fields,
+            Err(error) => {
+                self.status = error;
+                self.active_field = Some(ActiveField::CustomFields);
+                return;
+            }
+        };
+        let favorite = item.tags.contains("favorite");
+        item.tags.clear();
+        if favorite {
+            item.tags.insert("favorite".into());
+        }
+        for tag in self
+            .draft_tags
+            .split([',', '\n'])
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty() && *tag != "favorite")
+        {
+            item.tags.insert(tag.to_string());
+        }
+        item.fields.retain(|label, _| label == "network");
+        item.fields.extend(custom_fields);
         item.origins.clear();
         if self.draft_kind == SecretItemKind::Wifi {
             item.fields
@@ -782,6 +862,69 @@ impl PasswordsSurface {
         }
     }
 
+    fn parse_custom_fields(source: &str) -> Result<Vec<(String, String)>, String> {
+        let mut fields = Vec::new();
+        for (index, line) in source.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((label, value)) = line.split_once('=').or_else(|| line.split_once(':')) else {
+                return Err(format!(
+                    "Custom field {} needs a label and value separated by =",
+                    index + 1
+                ));
+            };
+            let label = label.trim();
+            if label.is_empty() || label.eq_ignore_ascii_case("network") {
+                return Err(format!(
+                    "Choose another label for custom field {}",
+                    index + 1
+                ));
+            }
+            if fields
+                .iter()
+                .any(|(existing, _): &(String, String)| existing.eq_ignore_ascii_case(label))
+            {
+                return Err(format!("Custom field “{label}” appears more than once"));
+            }
+            fields.push((
+                label.to_string(),
+                Self::unescape_custom_value(value.trim())?,
+            ));
+        }
+        Ok(fields)
+    }
+
+    fn escape_custom_value(value: &str) -> String {
+        value
+            .replace('\\', "\\\\")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+    }
+
+    fn unescape_custom_value(value: &str) -> Result<String, String> {
+        let mut output = String::new();
+        let mut chars = value.chars();
+        while let Some(character) = chars.next() {
+            if character != '\\' {
+                output.push(character);
+                continue;
+            }
+            match chars.next() {
+                Some('n') => output.push('\n'),
+                Some('r') => output.push('\r'),
+                Some('\\') => output.push('\\'),
+                Some(other) => {
+                    output.push('\\');
+                    output.push(other);
+                }
+                None => return Err("A custom field value ends with an unfinished escape".into()),
+            }
+        }
+        Ok(output)
+    }
+
     fn editor_field_order(&self) -> Vec<ActiveField> {
         let mut fields = vec![ActiveField::Name];
         match self.draft_kind {
@@ -796,11 +939,22 @@ impl PasswordsSurface {
             SecretItemKind::SecureNote => {}
         }
         fields.push(ActiveField::Notes);
+        fields.push(ActiveField::Tags);
+        fields.push(ActiveField::CustomFields);
         fields
     }
 
     fn editor_note_y(&self, panel: Rect) -> f64 {
-        let ordinary = self.editor_field_order().len().saturating_sub(1);
+        let ordinary = self
+            .editor_field_order()
+            .into_iter()
+            .filter(|field| {
+                !matches!(
+                    field,
+                    ActiveField::Notes | ActiveField::Tags | ActiveField::CustomFields
+                )
+            })
+            .count();
         self.editor_fields_top(panel)
             + f64::from(u32::try_from(ordinary).unwrap_or(0)) * self.editor_field_step(panel)
             + if self.draft_kind == SecretItemKind::SecureNote {
@@ -808,6 +962,19 @@ impl PasswordsSurface {
             } else {
                 self.editor_generate_height(panel)
             }
+    }
+
+    fn editor_tags_y(&self, panel: Rect) -> f64 {
+        self.editor_note_y(panel)
+            + if Self::editor_is_compact(panel) {
+                82.0
+            } else {
+                104.0
+            }
+    }
+
+    fn editor_custom_fields_y(&self, panel: Rect) -> f64 {
+        self.editor_tags_y(panel) + 72.0
     }
 
     fn editor_is_compact(panel: Rect) -> bool {
@@ -843,13 +1010,7 @@ impl PasswordsSurface {
     }
 
     fn max_editor_scroll(&self, panel: Rect) -> f64 {
-        let note_bottom = self.editor_note_y(panel)
-            + self.editor_scroll
-            + if Self::editor_is_compact(panel) {
-                90.0
-            } else {
-                108.0
-            };
+        let note_bottom = self.editor_custom_fields_y(panel) + self.editor_scroll + 112.0;
         (note_bottom - self.editor_body_viewport(panel).y1).max(0.0)
     }
 
@@ -1784,7 +1945,12 @@ impl PasswordsSurface {
             let ordinary: Vec<_> = self
                 .editor_field_order()
                 .into_iter()
-                .filter(|field| *field != ActiveField::Notes)
+                .filter(|field| {
+                    !matches!(
+                        field,
+                        ActiveField::Notes | ActiveField::Tags | ActiveField::CustomFields
+                    )
+                })
                 .collect();
             for (index, field) in ordinary.into_iter().enumerate() {
                 let y = self.editor_fields_top(panel)
@@ -1804,6 +1970,16 @@ impl PasswordsSurface {
             }
             if Rect::new(x, note_y + 16.0, panel.x1 - 36.0, note_y + 90.0).contains(point) {
                 self.active_field = Some(ActiveField::Notes);
+                return true;
+            }
+            let tags_y = self.editor_tags_y(panel);
+            if Rect::new(x, tags_y + 16.0, panel.x1 - 36.0, tags_y + 68.0).contains(point) {
+                self.active_field = Some(ActiveField::Tags);
+                return true;
+            }
+            let custom_y = self.editor_custom_fields_y(panel);
+            if Rect::new(x, custom_y + 16.0, panel.x1 - 36.0, custom_y + 104.0).contains(point) {
+                self.active_field = Some(ActiveField::CustomFields);
                 return true;
             }
             let (delete, cancel, save) = self.editor_footer_rects(panel);
@@ -2957,7 +3133,10 @@ impl PasswordsSurface {
                         "Leave blank to keep current password"
                     }
                 }
-                ActiveField::Search | ActiveField::Notes => "",
+                ActiveField::Search
+                | ActiveField::Notes
+                | ActiveField::Tags
+                | ActiveField::CustomFields => "",
             };
             Self::text(
                 tr,
@@ -3067,6 +3246,50 @@ impl PasswordsSurface {
         } else {
             104.0
         };
+        Self::text(
+            tr,
+            scene,
+            "TAGS",
+            10.0,
+            c.text_dim,
+            transform,
+            x,
+            y,
+            TextWeight::Bold,
+        );
+        self.editor_inputs
+            .tags
+            .apply_layout_external(Rect::new(x, y + 20.0, x + w, y + 64.0));
+        Widget::set_focus(
+            &mut self.editor_inputs.tags,
+            self.active_field == Some(ActiveField::Tags),
+        );
+        self.editor_inputs
+            .tags
+            .draw(scene, transform, tr, theme, &input_presence);
+        y += 72.0;
+        Self::text(
+            tr,
+            scene,
+            "CUSTOM FIELDS",
+            10.0,
+            c.text_dim,
+            transform,
+            x,
+            y,
+            TextWeight::Bold,
+        );
+        self.editor_inputs
+            .custom_fields
+            .apply_layout_external(Rect::new(x, y + 20.0, x + w, y + 100.0));
+        Widget::set_focus(
+            &mut self.editor_inputs.custom_fields,
+            self.active_field == Some(ActiveField::CustomFields),
+        );
+        self.editor_inputs
+            .custom_fields
+            .draw(scene, transform, tr, theme, &input_presence);
+        y += 116.0;
         if !self.status.is_empty() {
             Self::text(
                 tr,
@@ -3821,7 +4044,14 @@ impl Widget for PasswordsSurface {
                         let ordinary: Vec<_> = self
                             .editor_field_order()
                             .into_iter()
-                            .filter(|field| *field != ActiveField::Notes)
+                            .filter(|field| {
+                                !matches!(
+                                    field,
+                                    ActiveField::Notes
+                                        | ActiveField::Tags
+                                        | ActiveField::CustomFields
+                                )
+                            })
                             .collect();
                         for (index, field) in ordinary.into_iter().enumerate() {
                             let y = self.editor_fields_top(panel)
@@ -3849,6 +4079,22 @@ impl Widget for PasswordsSurface {
                             .contains(self.last_pointer)
                         {
                             self.active_field = Some(ActiveField::Notes);
+                            *handled = true;
+                            return;
+                        }
+                        let tags_y = self.editor_tags_y(panel);
+                        if Rect::new(x, tags_y + 16.0, panel.x1 - 36.0, tags_y + 68.0)
+                            .contains(self.last_pointer)
+                        {
+                            self.active_field = Some(ActiveField::Tags);
+                            *handled = true;
+                            return;
+                        }
+                        let custom_y = self.editor_custom_fields_y(panel);
+                        if Rect::new(x, custom_y + 16.0, panel.x1 - 36.0, custom_y + 104.0)
+                            .contains(self.last_pointer)
+                        {
+                            self.active_field = Some(ActiveField::CustomFields);
                             *handled = true;
                             return;
                         }
@@ -4356,6 +4602,19 @@ impl Widget for PasswordsSurface {
                         .with_action_target("passwords.field.notes"),
                 );
             }
+            if let Some(tags) = Widget::accessibility(&self.editor_inputs.tags) {
+                children.push(
+                    tags.with_name("Tags")
+                        .with_action_target("passwords.field.tags"),
+                );
+            }
+            if let Some(custom_fields) = Widget::accessibility(&self.editor_inputs.custom_fields) {
+                children.push(
+                    custom_fields
+                        .with_name("Custom fields, one label and value per line")
+                        .with_action_target("passwords.field.custom-fields"),
+                );
+            }
             if self.draft_kind != SecretItemKind::SecureNote {
                 children.push(
                     AccessNode::new(Role::Button)
@@ -4570,6 +4829,8 @@ impl Widget for PasswordsSurface {
                     Some("origin") => Some(ActiveField::Origin),
                     Some("password") => Some(ActiveField::Password),
                     Some("notes") => Some(ActiveField::Notes),
+                    Some("tags") => Some(ActiveField::Tags),
+                    Some("custom-fields") => Some(ActiveField::CustomFields),
                     _ => return false,
                 };
             }
@@ -4580,6 +4841,8 @@ impl Widget for PasswordsSurface {
                     Some("origin") => &mut self.draft_origin,
                     Some("password") => &mut self.draft_password,
                     Some("notes") => &mut self.draft_notes,
+                    Some("tags") => &mut self.draft_tags,
+                    Some("custom-fields") => &mut self.draft_custom_fields,
                     _ => return false,
                 };
                 field.clone_from(value);
@@ -4859,6 +5122,11 @@ mod tests {
         assert_eq!(cancel_before, cancel_after);
         assert_eq!(save_before, save_after);
         assert!(app.editor_note_y(panel) < app.editor_body_viewport(panel).y1);
+        assert!(
+            app.editor_custom_fields_y(panel) + 108.0
+                <= app.editor_body_viewport(panel).y1 + f64::EPSILON,
+            "the last custom-field row must scroll fully above the fixed actions"
+        );
 
         assert!(app.scroll_editor_by(panel, -f64::MAX));
         assert_eq!(app.editor_scroll, 0.0);
@@ -5049,13 +5317,19 @@ mod tests {
         item.kind = SecretItemKind::Other;
         item.fields.insert("client-id".into(), "app-42".into());
         item.fields.insert("tenant".into(), "northstar".into());
+        item.tags.extend(["favorite".into(), "work".into()]);
         let id = model.save_item(&mut item).unwrap();
 
         let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
         app.model = Some(model);
         app.refresh();
         app.begin_edit();
+        assert!(app.draft_custom_fields.contains("client-id = app-42"));
+        assert_eq!(app.draft_tags, "work");
         app.draft_title = "Production deployment".into();
+        app.draft_custom_fields =
+            Zeroizing::new("client-id = app-43\nenvironment = production".into());
+        app.draft_tags = "work, infrastructure".into();
         app.save_draft();
 
         let stored = crate::PasswordsModel::open_in(&root)
@@ -5065,13 +5339,36 @@ mod tests {
             .unwrap();
         assert_eq!(
             stored.fields.get("client-id").map(String::as_str),
-            Some("app-42")
+            Some("app-43")
         );
         assert_eq!(
-            stored.fields.get("tenant").map(String::as_str),
-            Some("northstar")
+            stored.fields.get("environment").map(String::as_str),
+            Some("production")
         );
+        assert!(!stored.fields.contains_key("tenant"));
+        assert!(stored.tags.contains("favorite"));
+        assert!(stored.tags.contains("work"));
+        assert!(stored.tags.contains("infrastructure"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn custom_field_parser_is_helpful_and_rejects_ambiguous_rows() {
+        assert_eq!(
+            PasswordsSurface::parse_custom_fields("Account = Ada\nRegion: eu-west")
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(PasswordsSurface::parse_custom_fields("missing separator").is_err());
+        assert!(PasswordsSurface::parse_custom_fields("Token = one\ntoken = two").is_err());
+        assert!(PasswordsSurface::parse_custom_fields("network = reserved").is_err());
+        let escaped = PasswordsSurface::escape_custom_value("first\nsecond\\third");
+        assert_eq!(escaped, "first\\nsecond\\\\third");
+        assert_eq!(
+            PasswordsSurface::unescape_custom_value(&escaped).unwrap(),
+            "first\nsecond\\third"
+        );
     }
 
     #[test]
