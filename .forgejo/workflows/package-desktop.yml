@@ -57,9 +57,9 @@ concurrency:
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: never
-  # Retain the complete ARM64 lane and artifact contract, but do not schedule
-  # it until a native `runner-arm64` host is available. Re-enable in one place.
-  QOS_DESKTOP_ARM64_RELEASES: "0"
+  # Tags and explicit full-native dispatches use the isolated native-ARM pool.
+  # Ordinary changes retain one amd64 lane to keep feedback focused and cheap.
+  QOS_DESKTOP_ARM64_RELEASES: "1"
 
 jobs:
   validate:
