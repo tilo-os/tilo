@@ -51,8 +51,9 @@ pub const DEFAULT_FILTER_ARGS: &[&str] = &[
 /// somewhere non-standard.
 pub const PROXY_BIN_ENV: &str = "QOS_LAUNCHER_DBUS_PROXY_BIN";
 
-/// Locate the `xdg-dbus-proxy` binary, `None` if nothing matches
-/// (callers fall back to the raw-bind path).
+/// Locate the `xdg-dbus-proxy` binary, `None` if nothing matches. Production
+/// then leaves D-Bus unavailable; it never falls back to binding the raw
+/// session bus into an untrusted sandbox.
 ///
 /// Lookup order: `$QOS_LAUNCHER_DBUS_PROXY_BIN` (test/override),
 /// `xdg-dbus-proxy` on `$PATH`,

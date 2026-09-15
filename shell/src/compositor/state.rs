@@ -2363,6 +2363,15 @@ pub struct ClientState {
     /// only credential accepted by the input-method and virtual-keyboard
     /// global filters; an app-id string is never authority.
     pub osk: bool,
+    /// Package identity proven from `SO_PEERCRED` and the compositor's live
+    /// launcher registry. `None` denotes an explicitly unconfined host client.
+    pub package_id: Option<String>,
+    /// Durable workspace room from the same host-owned launch record. A client
+    /// cannot select or change this through Wayland protocol state.
+    pub workspace_id: Option<String>,
+    /// Whether package/app-id equality is part of this connection's sandbox
+    /// boundary. Unconfined host launches keep their desktop compatibility ids.
+    pub enforce_package_id: bool,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -2375,6 +2384,9 @@ impl Default for ClientState {
             index: NEXT.fetch_add(1, Ordering::Relaxed),
             privileged: false,
             osk: false,
+            package_id: None,
+            workspace_id: None,
+            enforce_package_id: false,
         }
     }
 }
@@ -2388,6 +2400,19 @@ impl ClientState {
     /// Convenience constructor returning an `Arc` so callers can pass it to `DisplayHandle::insert_client` directly.
     pub fn new_arc() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Per-client state for an ordinary app whose process ancestry was
+    /// authenticated at the public socket boundary.
+    pub(crate) fn attributed_arc(
+        identity: crate::shell::launcher::VerifiedLaunchIdentity,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            package_id: Some(identity.package_id),
+            workspace_id: identity.workspace_id,
+            enforce_package_id: identity.confined,
+            ..Self::default()
+        })
     }
 
     /// Per-client data for a connection accepted on the privileged socket.
@@ -2437,6 +2462,33 @@ pub fn surface_id(surface: &WlSurface) -> u64 {
         // A surface whose client is gone can't collide with a live one; reserving 0 keeps it out of every live client's range.
         .unwrap_or(0);
     (u64::from(index) << 32) | u64::from(surface.id().protocol_id())
+}
+
+fn authenticated_toplevel_identity(
+    client: Option<&ClientState>,
+    announced_app_id: Option<String>,
+) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+    let Some(client) = client else {
+        return Ok((announced_app_id, None));
+    };
+    let Some(package_id) = client.package_id.as_deref() else {
+        return Ok((announced_app_id, None));
+    };
+    let room = client
+        .workspace_id
+        .as_deref()
+        .and_then(crate::shell::state::RoomId::parse)
+        .ok_or("authenticated app launch has no valid workspace room")?;
+    if !client.enforce_package_id {
+        return Ok((announced_app_id, Some(room)));
+    }
+    if announced_app_id
+        .as_deref()
+        .is_some_and(|app_id| !crate::shell::launcher::app_id_matches_package(app_id, package_id))
+    {
+        return Err("Wayland app id does not match the authenticated package");
+    }
+    Ok((Some(package_id.to_string()), Some(room)))
 }
 
 // Handler trait impls.
@@ -3170,12 +3222,25 @@ impl XdgShellHandler for State {
     /// `app_id` may be unset here; falls back to `anon-<id>`, rewritten by [`Self::app_id_changed`].
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        let app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
+        let announced_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
                 .get::<XdgToplevelSurfaceData>()
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
+        let identity = if let Some(client) = surface.wl_surface().client() {
+            authenticated_toplevel_identity(client.get_data::<ClientState>(), announced_app_id)
+        } else {
+            authenticated_toplevel_identity(None, announced_app_id)
+        };
+        let Ok((app_id, attributed_room)) = identity else {
+            tracing::warn!(
+                surface_id,
+                "rejected unauthenticated Wayland toplevel identity"
+            );
+            surface.send_close();
+            return;
+        };
         // Register the toplevel with the input router for local key/pointer delivery once focused; the chrome-side tab splices in next tick.
         self.client_input.register_toplevel(
             surface_id,
@@ -3195,7 +3260,23 @@ impl XdgShellHandler for State {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
         } else if !floating && !presentation {
-            tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id);
+            if let Some(room) = attributed_room {
+                if tab_binding::adopt_toplevel_in_room(
+                    &mut self.workspace_tree,
+                    surface_id,
+                    app_id,
+                    room,
+                )
+                .is_none()
+                {
+                    tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
+                    self.client_input.unregister_toplevel(surface_id);
+                    surface.send_close();
+                    return;
+                }
+            } else {
+                tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id);
+            }
         }
 
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
@@ -3262,7 +3343,16 @@ impl XdgShellHandler for State {
                 .get::<XdgToplevelSurfaceData>()
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
-        if let Some(app_id) = new_app_id {
+        let identity = if let Some(client) = surface.wl_surface().client() {
+            authenticated_toplevel_identity(client.get_data::<ClientState>(), new_app_id)
+        } else {
+            authenticated_toplevel_identity(None, new_app_id)
+        };
+        let Ok((Some(app_id), _)) = identity else {
+            tracing::warn!(surface_id, "ignored unauthenticated Wayland app-id change");
+            return;
+        };
+        {
             if trusted_osk_identity(surface.wl_surface(), Some(&app_id)) {
                 // `set_app_id` normally arrives after `new_toplevel`; undo the
                 // temporary anonymous adoption before either tree can expose a
@@ -3983,6 +4073,52 @@ mod osk_identity_tests {
     fn public_clients_never_receive_the_osk_global_credential() {
         assert!(!ClientState::default().osk);
         assert!(ClientState::osk_arc().osk);
+    }
+
+    #[test]
+    fn launcher_attribution_overrides_missing_app_id_and_rejects_spoofing() {
+        let room = crate::shell::state::RoomId::new();
+        let client = ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+            package_id: "dev.qos.notes".into(),
+            workspace_id: Some(room.to_string()),
+            confined: true,
+        });
+        assert_eq!(
+            authenticated_toplevel_identity(Some(&client), None),
+            Ok((Some("dev.qos.notes".into()), Some(room)))
+        );
+        assert!(
+            authenticated_toplevel_identity(Some(&client), Some("dev.qos.file-explorer".into()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn stale_workspace_attribution_fails_closed_but_host_clients_remain_compatible() {
+        let attributed =
+            ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+                package_id: "dev.qos.notes".into(),
+                workspace_id: Some("not-a-room".into()),
+                confined: true,
+            });
+        assert!(authenticated_toplevel_identity(Some(&attributed), None).is_err());
+        assert_eq!(
+            authenticated_toplevel_identity(
+                Some(&ClientState::default()),
+                Some("org.example.HostApp".into())
+            ),
+            Ok((Some("org.example.HostApp".into()), None))
+        );
+        let room = crate::shell::state::RoomId::new();
+        let host = ClientState::attributed_arc(crate::shell::launcher::VerifiedLaunchIdentity {
+            package_id: "host.desktop-entry".into(),
+            workspace_id: Some(room.to_string()),
+            confined: false,
+        });
+        assert_eq!(
+            authenticated_toplevel_identity(Some(&host), Some("LegacyStartupWMClass".into())),
+            Ok((Some("LegacyStartupWMClass".into()), Some(room)))
+        );
     }
 
     #[test]

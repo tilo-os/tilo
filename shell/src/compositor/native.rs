@@ -5,6 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -142,6 +144,57 @@ use crate::compositor::test_control::{
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
+
+fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    // SAFETY: both pointers name initialized storage of `length` bytes and the
+    // socket remains open for the duration of `getsockopt`.
+    let result = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut credentials).cast(),
+            std::ptr::from_mut(&mut length),
+        )
+    };
+    if result != 0 || usize::try_from(length).ok()? < std::mem::size_of::<libc::ucred>() {
+        return None;
+    }
+    (credentials.pid > 0).then_some(credentials)
+}
+
+fn peer_shares_host_security_namespaces(pid: u32) -> bool {
+    ["user", "mnt"].into_iter().all(|namespace| {
+        let host = std::fs::metadata(format!("/proc/self/ns/{namespace}"));
+        let peer = std::fs::metadata(format!("/proc/{pid}/ns/{namespace}"));
+        matches!((host, peer), (Ok(host), Ok(peer)) if host.dev() == peer.dev() && host.ino() == peer.ino())
+    })
+}
+
+fn unattributed_host_client_allowed(peer_uid: libc::uid_t, shares_namespaces: bool) -> bool {
+    // SAFETY: `geteuid` has no failure mode.
+    peer_uid == unsafe { libc::geteuid() } && shares_namespaces
+}
+
+fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
+    let credentials = wayland_peer_credentials(stream)?;
+    let pid = u32::try_from(credentials.pid).ok()?;
+    // SAFETY: `geteuid` has no failure mode.
+    if credentials.uid != unsafe { libc::geteuid() } {
+        return None;
+    }
+    if let Some(identity) = crate::shell::launcher::verified_launch_for_descendant(pid) {
+        return Some(ClientState::attributed_arc(identity));
+    }
+    unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
+        .then(ClientState::new_arc)
+}
 
 fn external_floating_id(connection: u64, id: &str) -> String {
     format!("external:{connection}:{id}")
@@ -4112,11 +4165,16 @@ pub fn run() -> ! {
         event_loop
             .handle()
             .insert_source(listening_socket, move |client_stream, (), state| {
-                // Each accepted connection becomes a wayland-server `Client`; attach a
-                // `ClientState` so `client_compositor_state` can fish out the per-client state later.
+                // Kernel credentials bind a sandboxed connection to the exact
+                // compositor-supervised package/workspace launch. A direct host
+                // client has no record and remains explicitly unconfined.
+                let Some(client_state) = public_client_state(&client_stream) else {
+                    tracing::warn!("rejected unattributed Wayland client outside host namespaces");
+                    return;
+                };
                 if let Err(err) = state
                     .display_handle
-                    .insert_client(client_stream, Arc::new(ClientState::default()))
+                    .insert_client(client_stream, client_state)
                 {
                     eprintln!("nirios compositor: failed to insert client: {err}");
                 }
@@ -6600,6 +6658,38 @@ mod tests {
     }
 
     // publishing the socket name for the nested dev loop
+
+    #[test]
+    fn public_socket_attribution_reads_kernel_peer_pid() {
+        let runtime = tempfile::tempdir().unwrap();
+        let path = runtime.path().join("peer.sock");
+        let listener = UnixListener::bind(path.clone()).unwrap();
+        let client = UnixStream::connect(path).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        assert_eq!(
+            wayland_peer_credentials(&server).map(|credentials| credentials.pid),
+            i32::try_from(std::process::id()).ok()
+        );
+        assert!(
+            public_client_state(&server)
+                .expect("same-namespace host clients remain compatible")
+                .package_id
+                .is_none()
+        );
+        drop(client);
+    }
+
+    #[test]
+    fn unattributed_public_clients_fail_closed_outside_host_namespaces() {
+        // SAFETY: `geteuid` has no failure mode.
+        let uid = unsafe { libc::geteuid() };
+        assert!(unattributed_host_client_allowed(uid, true));
+        assert!(!unattributed_host_client_allowed(uid, false));
+        assert!(!unattributed_host_client_allowed(
+            uid.saturating_add(1),
+            true
+        ));
+    }
 
     #[test]
     fn display_path_lands_under_the_runtime_dir() {
