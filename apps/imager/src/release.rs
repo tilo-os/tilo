@@ -368,10 +368,9 @@ fn verified_image(release: &QosRelease) -> Result<Source, String> {
 fn source_for(release: &QosRelease, image: &Path) -> Source {
     let mut source = release.to_source();
     source.path = image.to_string_lossy().into_owned();
-    source.identity = image
-        .metadata()
+    source.identity = fs::File::open(image)
         .ok()
-        .and_then(|metadata| crate::model::SourceIdentity::from_metadata(&metadata));
+        .and_then(|file| crate::model::SourceIdentity::from_file(&file));
     source
 }
 

@@ -541,7 +541,7 @@ fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_identity
-        && SourceIdentity::from_metadata(&metadata) != Some(expected)
+        && SourceIdentity::from_file(&reader) != Some(expected)
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -862,7 +862,7 @@ fn run_job_file_bound(
         || req
             .source
             .identity
-            .is_some_and(|expected| SourceIdentity::from_metadata(&metadata) != Some(expected))
+            .is_some_and(|expected| SourceIdentity::from_file(&source) != Some(expected))
     {
         return JobResult::WriteFailed("source image changed after review".into());
     }
@@ -2374,11 +2374,10 @@ mod tests {
         let mut target = tempfile::tempfile().unwrap();
         let target_size = data.len() as u64 + PROFILE_BLOCK_SIZE as u64 + 4096;
         target.set_len(target_size).unwrap();
-        let metadata = source.as_file().metadata().unwrap();
         let mut request = req();
         request.source.path = source.path().to_string_lossy().into_owned();
         request.source.size = data.len() as u64;
-        request.source.identity = SourceIdentity::from_metadata(&metadata);
+        request.source.identity = SourceIdentity::from_file(source.as_file());
         request.source.installable = true;
         request.target.size = target_size;
 
@@ -2517,8 +2516,8 @@ mod tests {
     fn replaced_source_is_rejected_before_destination_is_opened() {
         let data = sample_bytes(4096);
         let src = tmp_with(&data);
-        let mut wrong_identity = SourceIdentity::from_metadata(&src.as_file().metadata().unwrap())
-            .expect("test platform exposes file identity");
+        let mut wrong_identity =
+            SourceIdentity::from_file(src.as_file()).expect("test platform exposes file identity");
         wrong_identity.file = wrong_identity.file.wrapping_add(1);
         let dst = tmp_with(b"leave destination untouched");
 
@@ -2551,7 +2550,7 @@ mod tests {
             src.path(),
             dst.path(),
             data.len() as u64,
-            SourceIdentity::from_metadata(&src.as_file().metadata().unwrap()),
+            SourceIdentity::from_file(src.as_file()),
             Some(&wrong_digest),
             &|| false,
             |_| {},
