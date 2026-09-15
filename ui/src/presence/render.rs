@@ -968,28 +968,47 @@ fn draw_edge_mist(
 
     // Intensity tapers with how far off-screen the peer is.
     let far = (mist.distance / 600.0).clamp(0.0, 1.0) as f32;
-    let base = 0.34 * (1.0 - 0.6 * far);
+    let alpha = 0.82 * (1.0 - 0.35 * far);
 
-    // Three bands from the edge inward, each dimmer and shorter, so the
-    // mist reads as a soft glow rather than a flat block.
-    let layers = 3;
-    for i in 0..layers {
-        let f = f64::from(i) / f64::from(layers);
-        let a = base * (1.0 - f as f32);
-        let inset = match mist.edge {
-            MistEdge::Left => Rect::new(band.x0, band.y0, band.x1 - (band.width() * f), band.y1),
-            MistEdge::Right => Rect::new(band.x0 + (band.width() * f), band.y0, band.x1, band.y1),
-            MistEdge::Top => Rect::new(band.x0, band.y0, band.x1, band.y1 - (band.height() * f)),
-            MistEdge::Bottom => Rect::new(band.x0, band.y0 + (band.height() * f), band.x1, band.y1),
-        };
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            peer.with_alpha_factor(a),
-            None,
-            &inset,
-        );
-    }
+    // `band` remains the comfortably large pointer target used by
+    // hit_test_offscreen_mist. Paint a much smaller edge rail inside it so the
+    // cue reads as an intentional direction marker, not a clipped panel.
+    let rail_depth = 7.0_f64.min(band.width()).min(band.height());
+    let rail_extent = 46.0_f64;
+    let rail = match mist.edge {
+        MistEdge::Left => Rect::new(
+            band.x0,
+            band.center().y - rail_extent / 2.0,
+            band.x0 + rail_depth,
+            band.center().y + rail_extent / 2.0,
+        ),
+        MistEdge::Right => Rect::new(
+            band.x1 - rail_depth,
+            band.center().y - rail_extent / 2.0,
+            band.x1,
+            band.center().y + rail_extent / 2.0,
+        ),
+        MistEdge::Top => Rect::new(
+            band.center().x - rail_extent / 2.0,
+            band.y0,
+            band.center().x + rail_extent / 2.0,
+            band.y0 + rail_depth,
+        ),
+        MistEdge::Bottom => Rect::new(
+            band.center().x - rail_extent / 2.0,
+            band.y1 - rail_depth,
+            band.center().x + rail_extent / 2.0,
+            band.y1,
+        ),
+    };
+    let rail_shape = RoundedRect::from_rect(rail, rail_depth / 2.0);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        peer.with_alpha_factor(alpha),
+        None,
+        &rail_shape,
+    );
 
     let tokens = &theme.tokens;
     let label_size = tokens.typography.scale.xs;
@@ -997,12 +1016,12 @@ fn draw_edge_mist(
     let pad = 4.0_f64;
     let tag_w = f64::from(tw) + pad * 2.0;
     let tag_h = f64::from(label_size) + pad;
-    // Anchor the tag near the band centre, nudged inward from the edge.
+    // Anchor the tag beside the rail, wholly inside the viewport.
     let (tx, ty) = match mist.edge {
-        MistEdge::Left => (band.x0 + 4.0, band.center().y - tag_h / 2.0),
-        MistEdge::Right => (band.x1 - tag_w - 4.0, band.center().y - tag_h / 2.0),
-        MistEdge::Top => (band.center().x - tag_w / 2.0, band.y0 + 4.0),
-        MistEdge::Bottom => (band.center().x - tag_w / 2.0, band.y1 - tag_h - 4.0),
+        MistEdge::Left => (rail.x1 + 5.0, rail.center().y - tag_h / 2.0),
+        MistEdge::Right => (rail.x0 - tag_w - 5.0, rail.center().y - tag_h / 2.0),
+        MistEdge::Top => (rail.center().x - tag_w / 2.0, rail.y1 + 5.0),
+        MistEdge::Bottom => (rail.center().x - tag_w / 2.0, rail.y0 - tag_h - 5.0),
     };
     let tag_rect = Rect::new(tx, ty, tx + tag_w, ty + tag_h);
     let tag = RoundedRect::from_rect(tag_rect, f64::from(tokens.radii.sm));

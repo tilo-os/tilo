@@ -682,6 +682,16 @@ fn view_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> Opt
 /// [`ResourceProvider::resource`] when they need a deeper or later sibling.
 const RESOURCE_PAGE_SNAPSHOT_LIMIT: usize = 128;
 const RESOURCE_PAGE_SNAPSHOT_DEPTH: usize = 6;
+/// Keep resource materialization finite even when a shared workspace has a
+/// machine-generated tag vocabulary. Every omitted tag remains addressable by
+/// stable id through `ResourceProvider::resource`.
+const RESOURCE_TAG_SNAPSHOT_LIMIT: usize = 128;
+/// A tag can be attached to an unbounded number of notes. Its contextual
+/// children are only a preview; exact pages resolve independently by id.
+const RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT: usize = 64;
+/// Page resources expose a useful nearby set of one-click membership actions,
+/// while the tag resource remains the scalable path for larger vocabularies.
+const RESOURCE_PAGE_TAG_ACTION_LIMIT: usize = 64;
 
 /// Index a durable page list once before building its contextual resource
 /// snapshot. This avoids the old recursive `pages.iter().filter(...)` scan at
@@ -846,6 +856,10 @@ pub(crate) fn block_resource(page: PageId, block: &NoteBlockResource) -> Option<
 /// tree, each exporting rename / delete / new-child. Every document-mutating
 /// operation is exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    vec![notebook_resource(ctx), tags_resource(ctx)]
+}
+
+fn notebook_resource(ctx: &NotesResourceCtx) -> Resource {
     let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notes");
 
     // Notebook-level: create a new root page. The uuid is minted once when the
@@ -874,7 +888,10 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
         notebook = notebook.with_child(page_resource_from_index(root, &index, 0, &mut remaining));
     }
     decorate_tag_actions(&mut notebook, ctx);
+    notebook
+}
 
+fn tags_resource(ctx: &NotesResourceCtx) -> Resource {
     // Tags are sibling resources, not a page-tree hack. Assignment edges are
     // exposed as absolute assign/unassign actions on each page, while tag
     // records publish their own stable open/rename/delete identities.
@@ -894,63 +911,10 @@ pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resou
             encode(&new_tag_action(Uuid::new_v4(), name))
         },
     ));
-    for tag in &ctx.tags {
-        let tag_id = tag.id;
-        let tag_name = if tag.name.trim().is_empty() {
-            "Untitled tag"
-        } else {
-            tag.name.trim()
-        };
-        let mut tag_res = Resource::new(tag_resource_id(tag_id), "notes.tag", tag_name);
-        if let Some(open) = view_operation_spec(
-            "open",
-            "Browse tagged notes",
-            &NotesOperation::OpenTag { tag: tag_id },
-        ) {
-            tag_res = tag_res.with_action(open);
-        }
-        let original = tag.clone();
-        tag_res = tag_res.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename tag",
-            "Name",
-            "tag name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&rename_tag_action(&original, name)),
-        ));
-        tag_res = tag_res.with_action(immediate_spec(
-            "delete",
-            "Delete tag",
-            &delete_tag_action(tag_id),
-        ));
-        // Give agents/context menus a browseable, stable view of the linked
-        // notes without duplicating their whole descendants here.
-        let mut tagged_pages = ctx
-            .tag_assignments
-            .iter()
-            .filter(|(_, assigned)| *assigned == tag_id)
-            .filter_map(|(page, _)| ctx.pages.iter().find(|candidate| candidate.id == *page))
-            .collect::<Vec<_>>();
-        tagged_pages.sort_by_key(|page| page.id);
-        for page in tagged_pages {
-            let mut page_ref =
-                Resource::new(page_resource_id(page.id), "notes.page", page_label(page));
-            if let Some(open) = view_operation_spec(
-                "open",
-                "Open page",
-                &NotesOperation::OpenPage {
-                    page: page.id,
-                    block_id: None,
-                },
-            ) {
-                page_ref = page_ref.with_action(open);
-            }
-            tag_res = tag_res.with_child(page_ref);
-        }
-        tags_root = tags_root.with_child(tag_res);
+    for tag in ctx.tags.iter().take(RESOURCE_TAG_SNAPSHOT_LIMIT) {
+        tags_root = tags_root.with_child(tag_resource(tag, ctx));
     }
-
-    vec![notebook, tags_root]
+    tags_root
 }
 
 /// Add membership controls to each published page resource. The action id
@@ -966,7 +930,7 @@ fn decorate_tag_actions(resource: &mut Resource, ctx: &NotesResourceCtx) {
             .filter(|(candidate, _)| *candidate == page)
             .map(|(_, tag)| *tag)
             .collect::<HashSet<_>>();
-        for tag in &ctx.tags {
+        for tag in ctx.tags.iter().take(RESOURCE_PAGE_TAG_ACTION_LIMIT) {
             let is_assigned = assigned.contains(&tag.id);
             let action_id = if is_assigned {
                 format!("unassign-tag:{}", tag.id)
@@ -1005,6 +969,94 @@ fn decorate_tag_actions(resource: &mut Resource, ctx: &NotesResourceCtx) {
     }
 }
 
+fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
+    let tag_id = tag.id;
+    let tag_name = if tag.name.trim().is_empty() {
+        "Untitled tag"
+    } else {
+        tag.name.trim()
+    };
+    let mut resource = Resource::new(tag_resource_id(tag_id), "notes.tag", tag_name);
+    if let Some(open) = view_operation_spec(
+        "open",
+        "Browse tagged notes",
+        &NotesOperation::OpenTag { tag: tag_id },
+    ) {
+        resource = resource.with_action(open);
+    }
+    let original = tag.clone();
+    resource = resource.with_action(ActionSpec::prompted(
+        "rename",
+        "Rename tag",
+        "Name",
+        "tag name…",
+        ExecutionLocus::ClientLocal,
+        move |name: &str| encode(&rename_tag_action(&original, name)),
+    ));
+    resource = resource.with_action(immediate_spec(
+        "delete",
+        "Delete tag",
+        &delete_tag_action(tag_id),
+    ));
+    // Large vocabularies remain fully operable without attaching every tag as
+    // an action to every page resource. The endpoint check in Action::apply
+    // makes malformed, deleted, or stale page ids harmless no-ops.
+    resource = resource.with_action(ActionSpec::prompted(
+        "assign-page",
+        "Add tag to page",
+        "Page ID",
+        "page UUID…",
+        ExecutionLocus::ClientLocal,
+        move |page: &str| {
+            let page = page
+                .trim()
+                .parse::<PageId>()
+                .unwrap_or_else(|_| Uuid::nil());
+            encode(&set_tag_assignment_action(page, tag_id, true))
+        },
+    ));
+    resource = resource.with_action(ActionSpec::prompted(
+        "unassign-page",
+        "Remove tag from page",
+        "Page ID",
+        "page UUID…",
+        ExecutionLocus::ClientLocal,
+        move |page: &str| {
+            let page = page
+                .trim()
+                .parse::<PageId>()
+                .unwrap_or_else(|_| Uuid::nil());
+            encode(&set_tag_assignment_action(page, tag_id, false))
+        },
+    ));
+
+    let mut tagged_pages = ctx
+        .tag_assignments
+        .iter()
+        .filter(|(_, assigned)| *assigned == tag_id)
+        .filter_map(|(page, _)| ctx.pages.iter().find(|candidate| candidate.id == *page))
+        .collect::<Vec<_>>();
+    tagged_pages.sort_by_key(|page| page.id);
+    for page in tagged_pages
+        .into_iter()
+        .take(RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT)
+    {
+        let mut page_ref = Resource::new(page_resource_id(page.id), "notes.page", page_label(page));
+        if let Some(open) = view_operation_spec(
+            "open",
+            "Open page",
+            &NotesOperation::OpenPage {
+                page: page.id,
+                block_id: None,
+            },
+        ) {
+            page_ref = page_ref.with_action(open);
+        }
+        resource = resource.with_child(page_ref);
+    }
+    resource
+}
+
 impl ResourceProvider for crate::app::NotesApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         provide_resources(&self.notes_resource_ctx(), doc)
@@ -1013,23 +1065,16 @@ impl ResourceProvider for crate::app::NotesApp {
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         let ctx = self.notes_resource_ctx();
         if id == "notes.notebook" {
-            return provide_resources(&ctx, doc).into_iter().next();
+            return Some(notebook_resource(&ctx));
         }
         if id == "notes.tags" {
-            return provide_resources(&ctx, doc).into_iter().nth(1);
+            return Some(tags_resource(&ctx));
         }
         if let Some(tag_id) = id.strip_prefix("notes.tag:")
             && let Ok(tag_id) = tag_id.parse::<TagId>()
-            && ctx.tags.iter().any(|tag| tag.id == tag_id)
+            && let Some(tag) = ctx.tags.iter().find(|tag| tag.id == tag_id)
         {
-            return provide_resources(&ctx, doc)
-                .into_iter()
-                .nth(1)
-                .and_then(|root| {
-                    root.children
-                        .into_iter()
-                        .find(|tag| tag.id.as_str() == tag_resource_id(tag_id))
-                });
+            return Some(tag_resource(tag, &ctx));
         }
         if let Some(page_id) = id.strip_prefix("notes.page:")
             && let Ok(page_id) = page_id.parse::<PageId>()
@@ -1304,6 +1349,60 @@ mod tests {
         assert!(
             lazy.actions.iter().any(|action| action.id == "open"),
             "an omitted page remains addressable by its stable id"
+        );
+    }
+
+    #[test]
+    fn large_tag_vocabularies_and_memberships_have_bounded_snapshots() {
+        let page = Uuid::new_v4();
+        let pages = vec![PageMeta {
+            id: page,
+            title: "Reference".into(),
+            parent: None,
+            order: 0,
+        }];
+        let tags = (0..(RESOURCE_TAG_SNAPSHOT_LIMIT + 40))
+            .map(|index| TagMeta {
+                id: Uuid::new_v4(),
+                name: format!("tag-{index}"),
+            })
+            .collect::<Vec<_>>();
+        let late = tags.last().expect("late tag").clone();
+        let ctx = NotesResourceCtx {
+            pages,
+            blocks: HashMap::new(),
+            tags,
+            tag_assignments: vec![(page, late.id); RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT + 40],
+        };
+
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        assert_eq!(
+            resources[1].children.len(),
+            RESOURCE_TAG_SNAPSHOT_LIMIT,
+            "the open Tags resource must have a fixed materialization ceiling"
+        );
+        let page_resource = &resources[0].children[0];
+        assert!(
+            page_resource.actions.len() <= RESOURCE_PAGE_TAG_ACTION_LIMIT + 5,
+            "per-page tag actions must not grow with the whole vocabulary"
+        );
+
+        let late_resource = tag_resource(&late, &ctx);
+        assert_eq!(late_resource.id.as_str(), tag_resource_id(late.id));
+        assert!(late_resource.children.len() <= RESOURCE_TAG_PAGE_SNAPSHOT_LIMIT);
+        assert!(
+            late_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "assign-page"),
+            "an omitted tag remains operable by stable id"
+        );
+        assert!(
+            late_resource
+                .actions
+                .iter()
+                .any(|action| action.id == "unassign-page"),
+            "absolute membership removal remains available too"
         );
     }
 
