@@ -107,22 +107,39 @@ impl KeyboardFamily {
 /// separate from [`InputModality`]: moving a mouse must not make a connected
 /// touchscreen or controller disappear from shortcut help.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct InputAvailability {
-    pub keyboard: bool,
-    pub pointer: bool,
-    pub touch: bool,
-    pub controller: bool,
+#[repr(u8)]
+pub enum InputDevice {
+    Keyboard = 1 << 0,
+    Pointer = 1 << 1,
+    Touch = 1 << 2,
+    Controller = 1 << 3,
+}
+
+/// A compact set of the input devices discovered for this session.
+///
+/// Keeping capability mutation behind [`Self::with`] prevents modality updates
+/// from accidentally rebuilding the set and forgetting an unrelated device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputAvailability(u8);
+
+impl InputAvailability {
+    pub const NONE: Self = Self(0);
+
+    #[must_use]
+    pub const fn with(self, device: InputDevice) -> Self {
+        Self(self.0 | device as u8)
+    }
+
+    pub const fn contains(self, device: InputDevice) -> bool {
+        self.0 & device as u8 != 0
+    }
 }
 
 impl Default for InputAvailability {
     fn default() -> Self {
-        Self {
-            keyboard: true,
-            pointer: true,
-            touch: false,
-            controller: false,
-        }
+        Self::NONE
+            .with(InputDevice::Keyboard)
+            .with(InputDevice::Pointer)
     }
 }
 
@@ -162,12 +179,9 @@ impl InteractionEnvironment {
     pub const POINTER: Self = Self {
         modality: InputModality::Pointer,
         pointer_precision: PointerPrecision::Fine,
-        available: InputAvailability {
-            keyboard: true,
-            pointer: true,
-            touch: false,
-            controller: false,
-        },
+        available: InputAvailability::NONE
+            .with(InputDevice::Keyboard)
+            .with(InputDevice::Pointer),
         controller: None,
         keyboard_family: KeyboardFamily::Pc,
     };
@@ -175,12 +189,9 @@ impl InteractionEnvironment {
     pub const TOUCH: Self = Self {
         modality: InputModality::Touch,
         pointer_precision: PointerPrecision::Coarse,
-        available: InputAvailability {
-            keyboard: true,
-            pointer: false,
-            touch: true,
-            controller: false,
-        },
+        available: InputAvailability::NONE
+            .with(InputDevice::Keyboard)
+            .with(InputDevice::Touch),
         controller: None,
         keyboard_family: KeyboardFamily::Pc,
     };
@@ -204,11 +215,13 @@ impl InteractionEnvironment {
     /// Pointer instructions accompany keyboard hints rather than becoming a
     /// separate primary language.
     pub const fn preferred_hint_modality(self) -> InputModality {
-        if matches!(self.modality, InputModality::Controller) && self.available.controller {
+        if matches!(self.modality, InputModality::Controller)
+            && self.available.contains(InputDevice::Controller)
+        {
             InputModality::Controller
-        } else if self.available.keyboard {
+        } else if self.available.contains(InputDevice::Keyboard) {
             InputModality::Keyboard
-        } else if self.available.touch {
+        } else if self.available.contains(InputDevice::Touch) {
             InputModality::Touch
         } else {
             InputModality::Pointer
@@ -229,10 +242,7 @@ impl InteractionEnvironment {
     pub const fn with_keyboard_modality(self) -> Self {
         Self {
             modality: InputModality::Keyboard,
-            available: InputAvailability {
-                keyboard: true,
-                ..self.available
-            },
+            available: self.available.with(InputDevice::Keyboard),
             ..self
         }
     }
@@ -243,10 +253,7 @@ impl InteractionEnvironment {
         Self {
             modality: InputModality::Pointer,
             pointer_precision: PointerPrecision::Fine,
-            available: InputAvailability {
-                pointer: true,
-                ..self.available
-            },
+            available: self.available.with(InputDevice::Pointer),
             ..self
         }
     }
@@ -258,10 +265,7 @@ impl InteractionEnvironment {
         Self {
             modality: InputModality::Touch,
             pointer_precision: PointerPrecision::Coarse,
-            available: InputAvailability {
-                touch: true,
-                ..self.available
-            },
+            available: self.available.with(InputDevice::Touch),
             ..self
         }
     }
@@ -271,10 +275,7 @@ impl InteractionEnvironment {
     pub const fn with_controller(self, family: ControllerFamily) -> Self {
         Self {
             modality: InputModality::Controller,
-            available: InputAvailability {
-                controller: true,
-                ..self.available
-            },
+            available: self.available.with(InputDevice::Controller),
             controller: Some(family),
             ..self
         }
@@ -425,8 +426,8 @@ mod tests {
         assert_eq!(env.pointer_precision, PointerPrecision::Coarse);
         assert_eq!(env.minimum_target(), 48.0);
         assert!(!env.supports_hover());
-        assert!(env.available.touch);
-        assert!(env.available.keyboard);
+        assert!(env.available.contains(InputDevice::Touch));
+        assert!(env.available.contains(InputDevice::Keyboard));
     }
 
     #[test]
@@ -436,9 +437,9 @@ mod tests {
             .with_controller(ControllerFamily::JoyConPair)
             .with_pointer_modality();
         assert_eq!(env.modality, InputModality::Pointer);
-        assert!(env.available.pointer);
-        assert!(env.available.touch);
-        assert!(env.available.controller);
+        assert!(env.available.contains(InputDevice::Pointer));
+        assert!(env.available.contains(InputDevice::Touch));
+        assert!(env.available.contains(InputDevice::Controller));
         assert_eq!(env.controller, Some(ControllerFamily::JoyConPair));
     }
 
@@ -455,15 +456,22 @@ mod tests {
         );
         let touch_only = InteractionEnvironment {
             modality: InputModality::Touch,
-            available: InputAvailability {
-                keyboard: false,
-                pointer: false,
-                touch: true,
-                controller: false,
-            },
+            available: InputAvailability::NONE.with(InputDevice::Touch),
             ..InteractionEnvironment::TOUCH
         };
         assert_eq!(touch_only.preferred_hint_modality(), InputModality::Touch);
+    }
+
+    #[test]
+    fn availability_is_an_idempotent_set_of_independent_devices() {
+        let available = InputAvailability::NONE
+            .with(InputDevice::Touch)
+            .with(InputDevice::Controller)
+            .with(InputDevice::Touch);
+        assert!(!available.contains(InputDevice::Keyboard));
+        assert!(!available.contains(InputDevice::Pointer));
+        assert!(available.contains(InputDevice::Touch));
+        assert!(available.contains(InputDevice::Controller));
     }
 
     #[test]

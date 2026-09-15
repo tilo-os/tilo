@@ -152,8 +152,8 @@ pub use input::{
     KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,
 };
 pub use interaction::{
-    ControllerFamily, InputAvailability, InputModality, InteractionEnvironment, KeyboardFamily,
-    PointerPrecision,
+    ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
+    KeyboardFamily, PointerPrecision,
 };
 pub use local_state::{
     LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion, TaskCompletion,
