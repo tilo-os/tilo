@@ -51,7 +51,7 @@ grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
 
 grep -Fq 'branches: ["main", "codex/package-desktop-release"]' "$desktop" \
   && [ "$(grep -c '      - "shell/\*\*"' "$desktop")" -eq 2 ] \
-  && grep -Fq 'QOS_DESKTOP_ARM64_RELEASES: "0"' "$desktop" \
+  && grep -Fq 'QOS_DESKTOP_ARM64_RELEASES: "1"' "$desktop" \
   && grep -Fq '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' "$desktop" \
   && grep -Fq 'runner:"runner-arm64"' "$desktop" \
   && grep -Fq 'release_arches=amd64,arm64' "$desktop" \
