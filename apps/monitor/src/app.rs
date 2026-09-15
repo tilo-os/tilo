@@ -469,9 +469,11 @@ pub struct MonitorApp {
     /// A `--shots` request to open the interval popover on the next frame, once
     /// the pill's hit rect is known from `draw_header`.
     interval_popover_seed: bool,
-    /// Rolling per-process CPU history, keyed by pid, feeding the detail pane's
-    /// sparkline. Pushed each live refresh and pruned to the live process set.
-    proc_cpu_hist: HashMap<u32, Ring>,
+    /// Rolling per-process CPU history, keyed by the kernel process generation,
+    /// feeding the detail-pane sparkline. A PID alone is not an identity: using
+    /// the same `(pid, started_at)` tuple as resource actions prevents a new
+    /// process inheriting a recycled PID's history after a refresh.
+    proc_cpu_hist: HashMap<(u32, u64), Ring>,
 
     // responsive layout
     /// The Processes master-detail push flow used only when narrow.
@@ -506,6 +508,10 @@ pub struct MonitorApp {
     /// un-padded `table_viewport.width()` here left the last `2·TABLE_PAD`
     /// unreachable (the h-scroll bug).
     table_cols_w: f64,
+    /// Text scale sampled from the current theme during draw. The Resources
+    /// page uses it for immediate-mode grid geometry as well as text, so
+    /// 200% text reflows into additional rows instead of overlapping gauges.
+    layout_text_scale: f64,
     hit: Hit,
 }
 
@@ -599,6 +605,7 @@ impl MonitorApp {
             table_viewport: Rect::ZERO,
             table_content_w: 0.0,
             table_cols_w: 0.0,
+            layout_text_scale: 1.0,
             hit: Hit::new(),
         }
     }
@@ -613,11 +620,37 @@ impl MonitorApp {
         if self.prefs.auto_refresh
             && self.last_refresh.elapsed() >= Duration::from_millis(self.prefs.interval_ms)
         {
-            self.sampler.refresh(&mut self.model);
-            self.last_refresh = Instant::now();
-            self.record_proc_cpu();
-            self.clear_selection_if_filtered_out();
-            self.clamp_scroll();
+            self.refresh_live_snapshot();
+        }
+    }
+
+    /// Refresh system data while preserving the identity boundary of the
+    /// selected detail. If an OS has recycled a selected PID between samples,
+    /// leave no action surface silently pointed at the replacement process.
+    fn refresh_live_snapshot(&mut self) {
+        let selected_before = self.selected_identity();
+        self.sampler.refresh(&mut self.model);
+        self.last_refresh = Instant::now();
+        self.clear_recycled_selection(selected_before);
+        self.record_proc_cpu();
+        self.clear_selection_if_filtered_out();
+        self.clamp_scroll();
+    }
+
+    /// Clear a selection when the process snapshot no longer contains the
+    /// exact lifetime that was selected before it was refreshed.
+    fn clear_recycled_selection(&mut self, selected_before: Option<(u32, u64)>) {
+        if selected_before.is_some_and(|(pid, started_at)| {
+            !self
+                .model
+                .processes
+                .iter()
+                .any(|p| p.pid == pid && p.started_at == started_at)
+        }) {
+            self.selected_pid = None;
+            if self.is_narrow() {
+                self.proc_push.show_table();
+            }
         }
     }
 
@@ -627,12 +660,18 @@ impl MonitorApp {
     fn record_proc_cpu(&mut self) {
         for p in &self.model.processes {
             self.proc_cpu_hist
-                .entry(p.pid)
+                .entry((p.pid, p.started_at))
                 .or_insert_with(|| Ring::new(PROC_SPARK_CAP))
                 .push(p.cpu);
         }
-        let live: HashSet<u32> = self.model.processes.iter().map(|p| p.pid).collect();
-        self.proc_cpu_hist.retain(|pid, _| live.contains(pid));
+        let live: HashSet<(u32, u64)> = self
+            .model
+            .processes
+            .iter()
+            .map(|p| (p.pid, p.started_at))
+            .collect();
+        self.proc_cpu_hist
+            .retain(|identity, _| live.contains(identity));
     }
 
     /// Seed the currently-selected process's CPU ring with a synthetic wave
@@ -652,7 +691,7 @@ impl MonitorApp {
                     .clamp(0.0, base.max(4.0) * 1.6)
             }),
         );
-        self.proc_cpu_hist.insert(pid, ring);
+        self.proc_cpu_hist.insert((pid, p.started_at), ring);
     }
 
     /// The filtered + sorted process list currently displayed.
@@ -688,6 +727,13 @@ impl MonitorApp {
     fn selected_process(&self) -> Option<ProcessInfo> {
         let pid = self.selected_pid?;
         self.model.processes.iter().find(|p| p.pid == pid).cloned()
+    }
+
+    /// Identity of the current selection at this instant. This exists beside
+    /// the PID-only presentation selection so refresh can prove a process is
+    /// still the same kernel lifetime before retaining its detail pane.
+    fn selected_identity(&self) -> Option<(u32, u64)> {
+        self.selected_process().map(|p| (p.pid, p.started_at))
     }
 
     /// A text filter is a view boundary: do not leave an actionable detail
@@ -818,11 +864,7 @@ impl MonitorApp {
     ) -> Result<(), String> {
         match operation {
             MonitorOperation::Refresh => {
-                self.sampler.refresh(&mut self.model);
-                self.last_refresh = Instant::now();
-                self.record_proc_cpu();
-                self.clear_selection_if_filtered_out();
-                self.clamp_scroll();
+                self.refresh_live_snapshot();
                 Ok(())
             }
             MonitorOperation::CopyPid { pid, started_at } => {
@@ -1190,12 +1232,28 @@ impl MonitorApp {
     /// a legible minimum chart height.
     fn resources_natural_h(&self, w: f64) -> f64 {
         let n = self.model.metrics.cores.len().max(1);
-        let grid = layout::per_core_grid(n, w - 2.0 * layout::RAIL_CARD_PAD);
-        let core_h = layout::per_core_card_h(grid);
+        let scale = self.layout_text_scale;
+        let grid = layout::per_core_grid(n, (w - 2.0 * layout::RAIL_CARD_PAD) / scale);
+        let core_h = layout::per_core_card_h(grid) * scale;
         let rows = layout::charts_rows(w);
         let min_chart_h = 150.0;
         let charts_h = rows as f64 * min_chart_h + (rows as f64 - 1.0) * GAP;
-        layout::overview_h(w) + GAP + core_h + GAP + charts_h
+        self.resources_overview_h(w) + GAP + core_h + GAP + charts_h
+    }
+
+    /// Immediate-mode dashboard cards have fixed baseline geometry, so large
+    /// text adopts the same one-column progression as a narrow display and
+    /// scales its card heights. That makes additional height real page content
+    /// (and therefore scrollable) rather than letting glyphs collide inside a
+    /// desktop-density card.
+    fn resources_overview_h(&self, w: f64) -> f64 {
+        if self.layout_text_scale >= 1.5 {
+            let scale = self.layout_text_scale;
+            (layout::OVERVIEW_RING_H + GAP + layout::OVERVIEW_MEM_H + GAP + layout::OVERVIEW_SYS_H)
+                * scale
+        } else {
+            layout::overview_h(w)
+        }
     }
 
     /// The active tab's intrinsic content height, against which
@@ -1218,9 +1276,10 @@ impl MonitorApp {
     /// lays out against, so the target lands on the real chart.
     fn resources_scroll_for_stat(&self, i: usize, body_w: f64, viewport_h: f64) -> f32 {
         let n = self.model.metrics.cores.len().max(1);
-        let grid = layout::per_core_grid(n, body_w - 2.0 * layout::RAIL_CARD_PAD);
-        let core_h = layout::per_core_card_h(grid);
-        let charts_top = layout::overview_h(body_w) + GAP + core_h + GAP;
+        let scale = self.layout_text_scale;
+        let grid = layout::per_core_grid(n, (body_w - 2.0 * layout::RAIL_CARD_PAD) / scale);
+        let core_h = layout::per_core_card_h(grid) * scale;
+        let charts_top = self.resources_overview_h(body_w) + GAP + core_h + GAP;
         let cols = layout::charts_cols(body_w);
         let row = (i / cols) as f64;
         let min_chart_h = 150.0;
@@ -1385,7 +1444,13 @@ impl MonitorApp {
         // measure each, then shrink the least essential parts (the uptime
         // caption, finally the tab labels → icon-only pills) until they fit. The
         // tab control and the clock+interval are always present.
-        let header_narrow = inner.width() < 560.0;
+        // At 200% text the header has the same information hierarchy as a
+        // narrow window: tabs and the three direct controls remain, while
+        // their visible labels/clock yield to the OS chrome and a11y names.
+        // Keeping every full-size label here would overlap the clock, controls
+        // and tabs before normal responsive width breakpoints apply.
+        let large_text = theme.text_scale >= 1.5;
+        let header_narrow = inner.width() < 560.0 || large_text;
 
         // ---- right block: clock (top) + uptime caption (bottom) + pill ----
         let clock = Self::clock();
@@ -1394,10 +1459,18 @@ impl MonitorApp {
         let up = fmt_uptime(self.model.metrics.uptime_secs);
         let up_caption = format!("uptime {up}");
         let (upw, _) = tr.measure(&up_caption, xs, None);
-        let right_block_w = f64::from(clw).max(f64::from(upw));
+        let right_block_w = if large_text {
+            0.0
+        } else {
+            f64::from(clw).max(f64::from(upw))
+        };
         let right_block_x0 = inner.x1 - right_block_w;
 
-        let il = format!("⟳ {}", self.prefs.interval_label());
+        let il = if large_text {
+            "⟳".to_string()
+        } else {
+            format!("⟳ {}", self.prefs.interval_label())
+        };
         let iw = f64::from(tr.measure_weighted(&il, xs, None, TextWeight::Medium).0) + 22.0;
         let pill_x1 = right_block_x0 - 16.0;
         let pill_x0 = pill_x1 - iw;
@@ -1405,7 +1478,7 @@ impl MonitorApp {
         // they are small, icon-only controls with full accessible names. This
         // gives a paused monitor an obvious recovery path without turning the
         // title bar into a toolbar.
-        let show_tool_labels = inner.width() >= 900.0;
+        let show_tool_labels = inner.width() >= 900.0 && !large_text;
         let refresh_label = "Refresh";
         let auto_refresh_label = if self.prefs.auto_refresh {
             "Pause"
@@ -1456,7 +1529,7 @@ impl MonitorApp {
         let gap_r = auto_refresh_r.x0 - 12.0;
         let avail_tabs = (gap_r - gap_l).max(0.0);
         let want_seg_w = 124.0_f64;
-        let compact = avail_tabs < 2.0 * 96.0 + 6.0;
+        let compact = large_text || avail_tabs < 2.0 * 96.0 + 6.0;
         let seg_w = if compact {
             ((avail_tabs - 6.0) / 2.0).clamp(40.0, 64.0)
         } else {
@@ -1497,15 +1570,17 @@ impl MonitorApp {
         let show_uptime = !header_narrow && right_block_x0 > res_r.x1 + 16.0;
 
         // Clock (always shown, top line, right-aligned in the block).
-        tr.draw_text_weighted(
-            scene,
-            &clock,
-            cs,
-            c.text_primary,
-            t * Affine::translate((inner.x1 - f64::from(clw), inner.y0 + 1.0)),
-            None,
-            TextWeight::Bold,
-        );
+        if !large_text {
+            tr.draw_text_weighted(
+                scene,
+                &clock,
+                cs,
+                c.text_primary,
+                t * Affine::translate((inner.x1 - f64::from(clw), inner.y0 + 1.0)),
+                None,
+                TextWeight::Bold,
+            );
+        }
         // Uptime caption (second line) — dropped when space is tight.
         if show_uptime {
             tr.draw_text(
@@ -1671,6 +1746,13 @@ impl MonitorApp {
     /// instead of a fake sidebar. It stays a single row at every width
     /// (`layout::summary_grid`) so the table below keeps its height; the cells
     /// share the width and stack their value under the label when narrow.
+    ///
+    /// These intentionally are not [`ui::widget::StatTile`]s: `StatTile` is
+    /// an informational, fixed-content metric card, while each of these is a
+    /// compact navigation control with a live sparkline footer and a distinct
+    /// destination in the Resources dashboard. Replacing it would remove the
+    /// trend visual or its useful direct-manipulation behaviour; the semantic
+    /// navigation contract is covered by `summary_cell_click_switches_and_scrolls_to_that_stat`.
     /// Clicking a cell jumps to the
     /// Resources dashboard where that stat's full gauge/chart lives; the cell
     /// hit rects are recorded for `on_click`.
@@ -1931,6 +2013,9 @@ impl MonitorApp {
             None,
             TextWeight::Semibold,
         );
+        let scale = f64::from(theme.text_scale);
+        let gauge_h = 22.0 * scale;
+        let ram_y = mi.y0 + 24.0 * scale;
         let ram_label = format!(
             "{} / {}",
             format_bytes(m.mem_used),
@@ -1940,7 +2025,7 @@ impl MonitorApp {
             scene,
             t,
             tr,
-            Rect::new(mi.x0, mi.y0 + 24.0, mi.x1, mi.y0 + 46.0),
+            Rect::new(mi.x0, ram_y, mi.x1, ram_y + gauge_h),
             theme,
             m.mem_frac(),
             charts::load_color(theme, m.mem_frac()),
@@ -1956,7 +2041,12 @@ impl MonitorApp {
             scene,
             t,
             tr,
-            Rect::new(mi.x0, mi.y0 + 56.0, mi.x1, mi.y0 + 78.0),
+            Rect::new(
+                mi.x0,
+                ram_y + gauge_h + 10.0 * scale,
+                mi.x1,
+                ram_y + 2.0 * gauge_h + 10.0 * scale,
+            ),
             theme,
             m.swap_frac(),
             c.accent[5],
@@ -1965,8 +2055,8 @@ impl MonitorApp {
         );
         // A memory sparkline fills the remaining height on the taller (abreast
         // or fixed-height) card.
-        if mi.height() >= 108.0 {
-            let sr = Rect::new(mi.x0, mi.y0 + 92.0, mi.x1, mi.y1);
+        if mi.height() >= 108.0 * scale {
+            let sr = Rect::new(mi.x0, ram_y + 2.0 * gauge_h + 24.0 * scale, mi.x1, mi.y1);
             charts::sparkline(scene, t, sr, m.mem_hist.as_slice(), 1.0, c.semantic.success);
         }
     }
@@ -1994,7 +2084,8 @@ impl MonitorApp {
             TextWeight::Semibold,
         );
         let fs = theme.tokens.typography.scale.xs;
-        let mut y = ii.y0 + 24.0;
+        let scale = f64::from(theme.text_scale);
+        let mut y = ii.y0 + 24.0 * scale;
         let line = |scene: &mut Scene, tr: &mut TextRenderer, k: &str, v: String, y: &mut f64| {
             tr.draw_text(
                 scene,
@@ -2014,13 +2105,13 @@ impl MonitorApp {
                 t * Affine::translate((ii.x1 - f64::from(vw), *y)),
                 None,
             );
-            *y += 18.0;
+            *y += 18.0 * scale;
         };
         line(scene, tr, "host", m.host.clone(), &mut y);
         line(scene, tr, "kernel", m.kernel.clone(), &mut y);
         line(scene, tr, "cores", format!("{}", m.cores.len()), &mut y);
         line(scene, tr, "uptime", fmt_uptime(m.uptime_secs), &mut y);
-        if y + 14.0 <= ii.y1 {
+        if y + 14.0 * scale <= ii.y1 {
             let cpu = Self::truncate(tr, &m.cpu_brand, fs, ii.width());
             tr.draw_text(
                 scene,
@@ -2057,19 +2148,20 @@ impl MonitorApp {
             None,
             TextWeight::Semibold,
         );
-        let grid_top = ci.y0 + layout::CORE_TITLE_H;
+        let scale = f64::from(theme.text_scale);
+        let grid_top = ci.y0 + layout::CORE_TITLE_H * scale;
         let cols = grid.cols;
         let cell_w = (ci.width() - (cols as f64 - 1.0) * layout::CORE_GAP) / cols as f64;
         for (i, &usage) in self.model.metrics.cores.iter().enumerate() {
             let col = i % cols;
             let rowi = i / cols;
             let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
-            let y0 = grid_top + rowi as f64 * layout::CORE_ROW_STRIDE;
+            let y0 = grid_top + rowi as f64 * layout::CORE_ROW_STRIDE * scale;
             charts::bar_gauge(
                 scene,
                 t,
                 tr,
-                Rect::new(x0, y0, x0 + cell_w, y0 + 22.0),
+                Rect::new(x0, y0, x0 + cell_w, y0 + 22.0 * scale),
                 theme,
                 usage / 100.0,
                 charts::load_color(theme, usage / 100.0),
@@ -3381,7 +3473,9 @@ impl MonitorApp {
 
         tr.draw_text_weighted(
             scene,
-            "CPU",
+            // Tree rows can display subtree sums; the detail is deliberately
+            // the selected process's own sample, not the aggregate.
+            "CPU (PROCESS)",
             xs,
             c.text_dim,
             t * Affine::translate((content.x0, y)),
@@ -3407,7 +3501,7 @@ impl MonitorApp {
         let spark_h = (content.y1 - y - grid_h - 28.0).max(46.0);
         let spark = Rect::new(content.x0, y, content.x1, y + spark_h);
         charts::fill_rrect(scene, t, spark, 6.0, with_alpha(c.border_standard, 40));
-        if let Some(ring) = self.proc_cpu_hist.get(&p.pid) {
+        if let Some(ring) = self.proc_cpu_hist.get(&(p.pid, p.started_at)) {
             let smax = ring.max().max(100.0);
             charts::sparkline(
                 scene,
@@ -3567,7 +3661,9 @@ impl MonitorApp {
             x + w1.max(w2) + 24.0
         };
         let chips = [
-            ("CPU", format!("{:.1}%", p.cpu), cpu_col),
+            // Keep the compact detail honest when Tree / Sum subtree makes
+            // the selected table row's CPU larger than this process's sample.
+            ("CPU (PROCESS)", format!("{:.1}%", p.cpu), cpu_col),
             ("RSS", format_bytes(p.mem_bytes), c.text_primary),
             ("VIRT", format_bytes(p.virt_bytes), c.text_primary),
             ("THREADS", p.threads.to_string(), c.text_primary),
@@ -3678,8 +3774,9 @@ impl MonitorApp {
 
         // ---- per-core utilisation grid (full width) -----------------------
         let n = self.model.metrics.cores.len().max(1);
-        let grid = layout::per_core_grid(n, r.width() - 2.0 * layout::RAIL_CARD_PAD);
-        let core_h = layout::per_core_card_h(grid);
+        let scale = f64::from(theme.text_scale);
+        let grid = layout::per_core_grid(n, (r.width() - 2.0 * layout::RAIL_CARD_PAD) / scale);
+        let core_h = layout::per_core_card_h(grid) * scale;
         self.draw_per_core(
             scene,
             t,
@@ -3703,7 +3800,8 @@ impl MonitorApp {
         r: Rect,
     ) -> f64 {
         let mut y = r.y0;
-        if layout::overview_cols(r.width()) == 3 {
+        let large_text = theme.text_scale >= 1.5;
+        if layout::overview_cols(r.width()) == 3 && !large_text {
             let card_w = (r.width() - 2.0 * GAP) / 3.0;
             let h = layout::OVERVIEW_H;
             let x0 = r.x0;
@@ -3714,30 +3812,31 @@ impl MonitorApp {
             self.draw_system_card(scene, t, tr, theme, Rect::new(x2, y, r.x1, y + h));
             y += h + GAP;
         } else {
+            let scale = f64::from(theme.text_scale);
             self.draw_processor_card(
                 scene,
                 t,
                 tr,
                 theme,
-                Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_RING_H),
+                Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_RING_H * scale),
             );
-            y += layout::OVERVIEW_RING_H + GAP;
+            y += layout::OVERVIEW_RING_H * scale + GAP;
             self.draw_memory_card(
                 scene,
                 t,
                 tr,
                 theme,
-                Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_MEM_H),
+                Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_MEM_H * scale),
             );
-            y += layout::OVERVIEW_MEM_H + GAP;
+            y += layout::OVERVIEW_MEM_H * scale + GAP;
             self.draw_system_card(
                 scene,
                 t,
                 tr,
                 theme,
-                Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_SYS_H),
+                Rect::new(r.x0, y, r.x1, y + layout::OVERVIEW_SYS_H * scale),
             );
-            y += layout::OVERVIEW_SYS_H + GAP;
+            y += layout::OVERVIEW_SYS_H * scale + GAP;
         }
         y
     }
@@ -5032,6 +5131,7 @@ impl Widget for MonitorApp {
         presence: &PresenceCtx,
     ) {
         self.maybe_refresh();
+        self.layout_text_scale = f64::from(theme.text_scale);
         let r = self.rect;
         if r.width() <= 4.0 || r.height() <= 4.0 {
             return;
@@ -5918,6 +6018,42 @@ mod tests {
     }
 
     #[test]
+    fn recycled_pid_clears_selection_and_does_not_inherit_cpu_history() {
+        let mut a = app();
+        let selected = a.selected_process().expect("sample has a selection");
+        let old_identity = (selected.pid, selected.started_at);
+        a.record_proc_cpu();
+        assert!(a.proc_cpu_hist.contains_key(&old_identity));
+
+        // Model the next OS sample containing a different process that reused
+        // the same numeric PID. Neither the detail selection nor a sparkline
+        // is allowed to cross that generation boundary.
+        let replacement = a
+            .model
+            .processes
+            .iter_mut()
+            .find(|p| p.pid == selected.pid)
+            .expect("selected process is in the sample");
+        replacement.started_at = replacement.started_at.saturating_add(1);
+        let new_identity = (replacement.pid, replacement.started_at);
+        a.clear_recycled_selection(Some(old_identity));
+        a.record_proc_cpu();
+
+        assert_eq!(
+            a.selected_pid, None,
+            "selection does not jump to a PID reuse"
+        );
+        assert!(
+            !a.proc_cpu_hist.contains_key(&old_identity),
+            "old process history is pruned"
+        );
+        assert!(
+            a.proc_cpu_hist.contains_key(&new_identity),
+            "replacement process begins its own history"
+        );
+    }
+
+    #[test]
     fn kernel_threads_hidden_by_default() {
         let mut a = app();
         assert!(a.visible_processes().iter().all(|p| !p.kernel));
@@ -6029,6 +6165,28 @@ mod tests {
                 "n={n}: last core row {last_row_bottom} spills past card {card_h}"
             );
         }
+    }
+
+    #[test]
+    fn large_text_reflows_per_core_gauges_and_expands_page_height() {
+        let mut a = app();
+        a.model.metrics.cores = vec![10.0; 8];
+        let width = 1_252.0;
+        let normal_h = a.resources_natural_h(width);
+        a.layout_text_scale = 2.0;
+        let large_grid = layout::per_core_grid(
+            a.model.metrics.cores.len(),
+            (width - 2.0 * layout::RAIL_CARD_PAD) / a.layout_text_scale,
+        );
+
+        assert!(
+            large_grid.rows > 1,
+            "200% text must reflow gauges instead of overlapping one wide row"
+        );
+        assert!(
+            a.resources_natural_h(width) > normal_h,
+            "the page must grow and scroll to contain enlarged gauge rows"
+        );
     }
 
     /// Issue 4 + 5: more cores ⇒ a taller Resources body. The natural height
