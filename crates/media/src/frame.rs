@@ -25,7 +25,9 @@
 
 use std::sync::Arc;
 
-use crate::dmabuf::{ColorRange, Colorimetry, DmabufImage, YuvMatrix};
+#[cfg(unix)]
+use crate::dmabuf::DmabufImage;
+use crate::dmabuf::{ColorRange, Colorimetry, YuvMatrix};
 use crate::event::VideoFrame;
 
 /// A system-memory plane: its bytes plus the geometry needed to read them.
@@ -77,6 +79,7 @@ pub enum FramePayload {
     Planar(Arc<PlanarImage>),
     /// Still in GPU memory. `Arc` because several consumers may hold the same
     /// picture, and the fds must close exactly once — when the last one drops.
+    #[cfg(unix)]
     Dmabuf(Arc<DmabufImage>),
 }
 
@@ -87,6 +90,7 @@ impl std::fmt::Debug for FramePayload {
             FramePayload::Planar(p) => {
                 write!(f, "Planar({:?}, {} planes)", p.format, p.planes.len())
             }
+            #[cfg(unix)]
             FramePayload::Dmabuf(d) => write!(f, "Dmabuf({})", d.describe()),
         }
     }
@@ -107,10 +111,18 @@ impl Frame {
     /// Whether this picture is still in GPU memory (nothing has been copied
     /// to the CPU yet).
     pub fn is_gpu_resident(&self) -> bool {
-        matches!(self.payload, FramePayload::Dmabuf(_))
+        #[cfg(unix)]
+        {
+            matches!(self.payload, FramePayload::Dmabuf(_))
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
     }
 
     /// The dmabuf behind a GPU-resident picture, for the importer.
+    #[cfg(unix)]
     pub fn dmabuf(&self) -> Option<&Arc<DmabufImage>> {
         match &self.payload {
             FramePayload::Dmabuf(d) => Some(d),
@@ -139,6 +151,7 @@ impl Frame {
         match &self.payload {
             FramePayload::Rgba(b) => Some(b.clone()),
             FramePayload::Planar(p) => Some(Arc::new(planar_to_rgba(p, self.width, self.height))),
+            #[cfg(unix)]
             FramePayload::Dmabuf(_) => None,
         }
     }
@@ -513,6 +526,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_gpu_resident_frame_refuses_to_silently_copy_itself_to_the_cpu() {
         let frame = Frame {
             width: 64,
