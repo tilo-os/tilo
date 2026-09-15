@@ -7,6 +7,7 @@ fn shot(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
         "health" => passwords::ShowcaseMode::Health,
         "import" => passwords::ShowcaseMode::Import,
         "export" => passwords::ShowcaseMode::Export,
+        "delete-confirm" => passwords::ShowcaseMode::DeleteConfirm,
         value => {
             return Err(LaunchError::Scenario(format!(
                 "unknown Passwords screen {value:?}"
