@@ -701,3 +701,72 @@ fn descendant_bounds_accumulate_anonymous_offsets_and_clip_each_axis_independent
         Rect::new(0.0, -32.0, 132.75, 98.0)
     );
 }
+
+#[test]
+fn policy_invalidation_waits_for_actual_apply_and_survives_failure_and_reentrant_change() {
+    let fail = Rc::new(Cell::new(false));
+    let invalidator = Rc::new(std::cell::RefCell::new(None::<ManualInvalidation>));
+    let invalidate_during_policy = Rc::new(Cell::new(false));
+    let (failed, handle, bump) = (
+        fail.clone(),
+        invalidator.clone(),
+        invalidate_during_policy.clone(),
+    );
+    let mut manual = Manual::new(move |ctx| {
+        if failed.get() {
+            return Err(WidgetLayoutError::InvalidManualGeometry);
+        }
+        if bump.replace(false) {
+            handle.borrow().as_ref().unwrap().invalidate();
+        }
+        Ok(Size {
+            width: ctx.available().width,
+            height: 100.0,
+        })
+    });
+    let invalidation = manual.invalidation();
+    *invalidator.borrow_mut() = Some(invalidation.clone());
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let root = manual.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+    let mut bindings = BoundNodeMap::new();
+    unsafe {
+        bindings.rebuild(&manual, &tree, root, &nodes);
+    }
+    let mut text = crate::font_catalog::fixture_renderer();
+    let solve = |tree: &mut TaffyTree<()>, text: &mut TextRenderer| unsafe {
+        super::super::compute_widget_layout(
+            tree,
+            root,
+            Size {
+                width: AvailableSpace::Definite(400.0),
+                height: AvailableSpace::Definite(300.0),
+            },
+            &nodes,
+            &bindings,
+            text,
+        )
+    };
+    solve(&mut tree, &mut text).unwrap();
+    manual.apply_layout(&tree, root, Point::ZERO);
+    assert!(!manual.layout_needs_measure());
+    invalidation.invalidate();
+    // A hypothetical subtree probe may solve the policy but cannot acknowledge
+    // the real region's input revision or change its applied placement.
+    solve(&mut tree.clone(), &mut text).unwrap();
+    assert!(manual.layout_needs_measure());
+    fail.set(true);
+    assert!(solve(&mut tree, &mut text).is_err());
+    assert!(manual.layout_needs_measure());
+    fail.set(false);
+    invalidate_during_policy.set(true);
+    solve(&mut tree, &mut text).unwrap();
+    manual.apply_layout(&tree, root, Point::ZERO);
+    assert!(
+        manual.layout_needs_measure(),
+        "invalidation during policy evaluation must remain pending"
+    );
+    solve(&mut tree, &mut text).unwrap();
+    manual.apply_layout(&tree, root, Point::ZERO);
+    assert!(!manual.layout_needs_measure());
+}

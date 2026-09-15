@@ -4,7 +4,7 @@ use crate::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
 use std::collections::HashMap;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::{Affine, Point, Rect};
 
 #[derive(Default)]
 pub(super) struct Parts {
@@ -37,6 +37,21 @@ impl Parts {
         taffy.parent_node(style, &self.nodes)
     }
 
+    pub(super) fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        let start = Point::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+        );
+        self.rect = Rect::from_origin_size(
+            start,
+            (f64::from(layout.size.width), f64::from(layout.size.height)),
+        );
+        for (child, &node) in self.children.iter_mut().zip(&self.nodes) {
+            child.apply_layout(taffy, node, start);
+        }
+    }
+
     pub(super) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -53,6 +68,12 @@ impl Parts {
 
 macro_rules! retained_parts {
     ($name:literal) => {
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.parts.apply_layout(taffy, node, origin);
+        }
+        retained_parts!($name, custom_apply_layout);
+    };
+    ($name:literal, custom_apply_layout) => {
         fn start_resource_operation_with_document(
             &mut self,
             invocation: qos_actions::InvocationId,
@@ -82,20 +103,6 @@ macro_rules! retained_parts {
         fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
             for child in &mut self.parts.children {
                 child.sync(state, path);
-            }
-        }
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            let layout = taffy.layout(node).copied().unwrap_or_default();
-            let start = Point::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            );
-            self.parts.rect = Rect::from_origin_size(
-                start,
-                (f64::from(layout.size.width), f64::from(layout.size.height)),
-            );
-            for (child, &node) in self.parts.children.iter_mut().zip(&self.parts.nodes) {
-                child.apply_layout(taffy, node, start);
             }
         }
         fn handle_event(
