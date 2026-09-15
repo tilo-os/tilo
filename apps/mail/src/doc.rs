@@ -155,6 +155,11 @@ impl MailDoc {
         if let Some(html) = &draft.html_body {
             ui::doc::put_if_changed(doc, &d, "html_body", html.as_str());
         }
+        if let Some(calendar_ics) = &draft.calendar_ics {
+            ui::doc::put_if_changed(doc, &d, "calendar_ics", calendar_ics.as_str());
+        } else if doc.get(&d, "calendar_ics").ok().flatten().is_some() {
+            let _ = doc.delete(&d, "calendar_ics");
+        }
     }
 
     pub fn load_draft(doc: &AutoCommit) -> Draft {
@@ -168,6 +173,8 @@ impl MailDoc {
             subject: Self::read_str(doc, &d, "subject").unwrap_or_default(),
             body: Self::read_str(doc, &d, "body").unwrap_or_default(),
             html_body: Self::read_str(doc, &d, "html_body"),
+            calendar_ics: Self::read_str(doc, &d, "calendar_ics")
+                .filter(|value| crate::actions::valid_calendar_invitation(value)),
             attachments: Vec::new(),
             in_reply_to: None,
         }
@@ -177,7 +184,15 @@ impl MailDoc {
     /// Backs [`crate::actions::MailAction::DiscardDraft`].
     pub fn clear_draft(doc: &mut AutoCommit) {
         let d = Self::map(doc, &ROOT, "draft");
-        for key in ["to", "cc", "bcc", "subject", "body", "html_body"] {
+        for key in [
+            "to",
+            "cc",
+            "bcc",
+            "subject",
+            "body",
+            "html_body",
+            "calendar_ics",
+        ] {
             if doc.get(&d, key).ok().flatten().is_some() {
                 let _ = doc.delete(&d, key);
             }

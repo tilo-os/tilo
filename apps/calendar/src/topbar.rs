@@ -9,6 +9,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
+use ui::icons::{Icon, draw_icon};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
@@ -206,10 +207,18 @@ impl Topbar {
         );
         draw_icon_button(scene, transform, theme, today, today.contains(pointer));
         if self.compact() {
-            // The named, keyboard-focusable semantic control remains the
-            // tooltip/accessibility affordance; the visual becomes a compact
-            // target so 2x text never collides with the period title.
-            center_text(scene, text, "•", 18.0, colors.neutral[8], today, transform);
+            // A real calendar glyph keeps the high-text-scale variant
+            // recognisable without spending the horizontal space required by
+            // the word "Today". The semantic tree names the same target "Go
+            // to today", so the visual and assistive affordances agree.
+            draw_icon(
+                scene,
+                transform,
+                today.inflate(-10.0, -10.0),
+                Icon::Calendar,
+                colors.neutral[8],
+                1.5,
+            );
         } else {
             center_text(
                 scene,

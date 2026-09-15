@@ -43,8 +43,9 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use qos_actions::{
-    Action, ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResourceProvider, RetryPolicy,
+    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
+    Resource, ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::MailDoc;
@@ -64,6 +65,7 @@ const MAX_FOLDER_NAME_CHARS: usize = 96;
 const MAX_DRAFT_ADDRESS_CHARS: usize = 8 * 1024;
 const MAX_DRAFT_SUBJECT_CHARS: usize = 998;
 const MAX_DRAFT_BODY_CHARS: usize = 256 * 1024;
+const MAX_CALENDAR_ICS_BYTES: usize = 256 * 1024;
 
 /// Take at most `max` Unicode scalar values without slicing a UTF-8 byte
 /// offset.  Control characters are removed from one-line fields; bodies keep
@@ -130,6 +132,15 @@ pub enum MailOperation {
         message_id: String,
         index: usize,
     },
+    /// Validate bounded RFC 5545 invitation content, save it inline in a
+    /// durable draft through `MailAction`, and reveal it. No host path is
+    /// accepted or inferred.
+    PrepareCalendarInvitation {
+        to: String,
+        subject: String,
+        body: String,
+        calendar_ics: String,
+    },
 }
 
 /// Decode a Mail effect operation when `type_id` addresses this application.
@@ -157,6 +168,8 @@ pub struct DraftData {
     pub subject: String,
     pub body: String,
     pub html_body: Option<String>,
+    #[serde(default)]
+    pub calendar_ics: Option<String>,
 }
 
 impl DraftData {
@@ -171,6 +184,11 @@ impl DraftData {
                 .html_body
                 .as_deref()
                 .map(|body| bounded_text(body, MAX_DRAFT_BODY_CHARS, true)),
+            calendar_ics: d
+                .calendar_ics
+                .as_deref()
+                .filter(|value| valid_calendar_invitation(value))
+                .map(ToOwned::to_owned),
         }
     }
 
@@ -185,10 +203,24 @@ impl DraftData {
                 .html_body
                 .as_deref()
                 .map(|body| bounded_text(body, MAX_DRAFT_BODY_CHARS, true)),
+            calendar_ics: self
+                .calendar_ics
+                .as_deref()
+                .filter(|value| valid_calendar_invitation(value))
+                .map(ToOwned::to_owned),
             attachments: Vec::new(),
             in_reply_to: None,
         }
     }
+}
+
+pub fn valid_calendar_invitation(value: &str) -> bool {
+    value.len() <= MAX_CALENDAR_ICS_BYTES
+        && !value.contains('\0')
+        && value.starts_with("BEGIN:VCALENDAR\r\n")
+        && value.contains("\r\nMETHOD:REQUEST\r\n")
+        && value.matches("BEGIN:VEVENT").count() == 1
+        && value.ends_with("END:VCALENDAR\r\n")
 }
 
 /// Every collaborative operation Mail exports on its shared mailbox state.
@@ -409,6 +441,27 @@ pub fn save_draft_action(draft: &Draft) -> MailAction {
 /// Discard the in-progress draft.
 pub fn discard_draft_action() -> MailAction {
     MailAction::DiscardDraft
+}
+
+pub fn prepare_calendar_invitation_operation(
+    to: &str,
+    subject: &str,
+    body: &str,
+    calendar_ics: &str,
+) -> EncodedAction {
+    EncodedAction::encode_operation(
+        MAIL_OPERATION_TYPE,
+        &MailOperation::PrepareCalendarInvitation {
+            to: to.to_string(),
+            subject: subject.to_string(),
+            body: body.to_string(),
+            calendar_ics: calendar_ics.to_string(),
+        },
+    )
+    .unwrap_or_else(|_| EncodedAction {
+        type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+        payload: b"Mail invitation handoff could not be encoded".to_vec(),
+    })
 }
 
 // ===========================================================================
@@ -698,6 +751,54 @@ pub fn mailbox_root(ctx: &MailResourceCtx) -> Resource {
         )
         .reversible(),
     );
+
+    let invitation = ActionSpec::typed_operation(
+        "prepare-calendar-invitation",
+        "Prepare calendar invitation",
+        "recipient, subject and calendar payload",
+        OperationKind::Effect,
+        MAIL_OPERATION_TYPE,
+        vec![
+            ActionParam::required("to", ParamType::Text, "Invitation recipient"),
+            ActionParam::required("subject", ParamType::Text, "Invitation subject"),
+            ActionParam::required("body", ParamType::Text, "Plain-text invitation message"),
+            ActionParam::required(
+                "calendar_ics",
+                ParamType::Text,
+                "Bounded text/calendar METHOD:REQUEST payload",
+            ),
+        ],
+        |args| {
+            prepare_calendar_invitation_operation(
+                args.text("to").unwrap_or_default(),
+                args.text("subject").unwrap_or_default(),
+                args.text("body").unwrap_or_default(),
+                args.text("calendar_ics").unwrap_or_default(),
+            )
+        },
+    )
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Invite,
+        retry: RetryPolicy::Idempotent,
+        result: ResultSpec::Resource {
+            resource_kind: "mail.draft".into(),
+        },
+        tags: vec![
+            "mail".into(),
+            "calendar".into(),
+            "invitation".into(),
+            "device-local-sensitive".into(),
+        ],
+        ..ActionContract::default()
+    });
+    root = root.with_action(if ctx.can_sync {
+        invitation
+    } else {
+        invitation.unavailable(
+            "account_offline",
+            "Connect a Mail account before preparing an invitation",
+        )
+    });
 
     root
 }
