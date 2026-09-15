@@ -9041,8 +9041,10 @@ dependencies = [
 name = "notes"
 version = "0.1.0"
 dependencies = [
+ "app-state",
  "atomic-file",
  "automerge",
+ "blake3",
  "dirs 6.0.0",
  "qos-actions",
  "qos-app",

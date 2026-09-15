@@ -3127,7 +3127,7 @@ mod tests {
         // boundary. Going through it rather than pushing an entry by hand is
         // the point: attribution happens in there, and undo is author-scoped.
         // The node map is empty because the app widget is the root here.
-        let local_author = ui::collaboration::local_user_id();
+        let local_author = ui::permissions::UserId("notes-app-test-author".into());
         let root: *mut dyn Widget = &mut app;
         assert!(
             ui::undo::record_dispatched_action(

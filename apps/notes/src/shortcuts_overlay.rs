@@ -569,7 +569,11 @@ mod tests {
 
     fn paint(o: &mut ShortcutsOverlay) {
         let mut scene = Scene::new();
-        let mut text_renderer = TextRenderer::new();
+        let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/assets/fonts"),
+            "en-US",
+        );
+        let mut text_renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
         o.draw_overlay(
             &mut scene,
             Affine::IDENTITY,

@@ -638,53 +638,77 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
 /// [`ui::widget::BlockEditor::set_blocks`]. Mark spans on each block
 /// land on the inner `RichTextLine`'s mark list.
 pub fn specs_to_blocks(specs: &[BlockSpec]) -> Vec<ui::widget::Block> {
-    use ui::widget::Block;
-    let mut out = Vec::with_capacity(specs.len());
-    for s in specs {
-        match s {
-            BlockSpec::Paragraph(t) => {
-                let mut b = Block::paragraph(&t.text);
-                b.line.set_marks(t.marks.clone());
-                out.push(b);
-            }
-            BlockSpec::Heading { level, text } => {
-                let mut b = Block::heading(*level, &text.text);
-                b.line.set_marks(text.marks.clone());
-                out.push(b);
-            }
-            BlockSpec::Bullet { indent, text } => {
-                let mut b = Block::bullet(*indent, &text.text);
-                b.line.set_marks(text.marks.clone());
-                out.push(b);
-            }
-            BlockSpec::Numbered { indent, text } => {
-                let mut b = Block::numbered(*indent, &text.text);
-                b.line.set_marks(text.marks.clone());
-                out.push(b);
-            }
-            BlockSpec::Checklist { indent, done, text } => {
-                let mut b = Block::checklist(*indent, *done, &text.text);
-                b.line.set_marks(text.marks.clone());
-                out.push(b);
-            }
-            BlockSpec::CodeBlock { lang, text } => {
-                // A multi-line fenced block maps to ONE code-block cell per
-                // line — the editor's `RichTextLine` substrate is single-line,
-                // and consecutive code cells render as one contiguous block.
-                // An empty fence still yields a single empty cell so the user
-                // has a place to type.
-                if text.is_empty() {
-                    out.push(Block::code_block(lang.clone(), ""));
-                } else {
-                    for line in text.split('\n') {
-                        out.push(Block::code_block(lang.clone(), line));
-                    }
+    use ui::widget::{Block, BlockKind};
+    expanded_rows(specs)
+        .into_iter()
+        .map(|(kind, inline)| {
+            let mut block = match kind {
+                BlockKind::Paragraph => Block::paragraph(&inline.text),
+                BlockKind::Heading(level) => Block::heading(level, &inline.text),
+                BlockKind::Bullet { indent } => Block::bullet(indent, &inline.text),
+                BlockKind::Numbered { indent } => Block::numbered(indent, &inline.text),
+                BlockKind::Checklist { indent, done } => {
+                    Block::checklist(indent, done, &inline.text)
                 }
+                BlockKind::CodeBlock { lang } => Block::code_block(lang, &inline.text),
+                BlockKind::Divider => Block::divider(),
+            };
+            block.line.set_marks(inline.marks);
+            block
+        })
+        .collect()
+}
+
+/// Data-only expansion shared by the legacy editor and canonical importer.
+/// Fenced code has one durable row per line, including one row for an empty fence.
+pub(crate) fn expanded_rows(specs: &[BlockSpec]) -> Vec<(ui::widget::BlockKind, InlineText)> {
+    use ui::widget::BlockKind;
+    let mut rows = Vec::new();
+    for spec in specs {
+        let (kind, text) = match spec {
+            BlockSpec::Paragraph(text) => (BlockKind::Paragraph, text),
+            BlockSpec::Heading { level, text } => (BlockKind::Heading(*level), text),
+            BlockSpec::Bullet { indent, text } => (BlockKind::Bullet { indent: *indent }, text),
+            BlockSpec::Numbered { indent, text } => (BlockKind::Numbered { indent: *indent }, text),
+            BlockSpec::Checklist { indent, done, text } => (
+                BlockKind::Checklist {
+                    indent: *indent,
+                    done: *done,
+                },
+                text,
+            ),
+            BlockSpec::CodeBlock { lang, text } => {
+                for line in text.split('\n') {
+                    rows.push((
+                        BlockKind::CodeBlock { lang: lang.clone() },
+                        InlineText::plain(line),
+                    ));
+                }
+                continue;
             }
-            BlockSpec::Divider => out.push(Block::divider()),
-        }
+            BlockSpec::Divider => {
+                rows.push((BlockKind::Divider, InlineText::plain("")));
+                continue;
+            }
+        };
+        rows.push((kind, text.clone()));
     }
-    out
+    rows
+}
+
+pub(crate) fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
+    use ui::widget::BlockKind;
+    match kind {
+        BlockKind::Paragraph => "paragraph".into(),
+        BlockKind::Heading(level) => format!("heading{}", level.clamp(&1, &3)),
+        BlockKind::Bullet { indent } => format!("bullet:{}", (*indent).min(5)),
+        BlockKind::Numbered { indent } => format!("numbered:{}", (*indent).min(5)),
+        BlockKind::Checklist { indent, done } => {
+            format!("checklist:{}:{}", (*indent).min(5), i32::from(*done))
+        }
+        BlockKind::CodeBlock { lang } => format!("code:{}", lang.as_deref().unwrap_or_default()),
+        BlockKind::Divider => "divider".into(),
+    }
 }
 
 /// Inverse of [`specs_to_blocks`] — convert the editor's block list
