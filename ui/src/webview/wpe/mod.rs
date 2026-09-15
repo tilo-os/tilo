@@ -177,6 +177,10 @@ struct EngineState {
     /// window that never resizes still loads.
     pending_nav: Option<String>,
     nav_deadline: Option<std::time::Instant>,
+    downloads: std::collections::HashMap<String, *mut ffi::WebKitDownload>,
+    download_ids: std::collections::HashMap<usize, String>,
+    cancelled_downloads: std::collections::HashSet<String>,
+    download_progress_emitted_at: std::collections::HashMap<String, std::time::Instant>,
     /// `Some` only on the zero-copy path (`QOS_WEBVIEW_DMABUF=1`); `None`
     /// uses the SHM copy path.
     egl: Option<egl::EglExport>,
@@ -316,6 +320,10 @@ fn engine_thread(
             first_resize_seen: false,
             pending_nav: None,
             nav_deadline: None,
+            downloads: std::collections::HashMap::new(),
+            download_ids: std::collections::HashMap::new(),
+            cancelled_downloads: std::collections::HashSet::new(),
+            download_progress_emitted_at: std::collections::HashMap::new(),
             egl,
         }));
         let state_ptr = state as *mut EngineState as *mut c_void;
@@ -384,6 +392,15 @@ fn engine_thread(
             on_notify_uri as *const c_void,
             state_ptr,
         );
+        let network_session = ffi::webkit_web_view_get_network_session(state.view);
+        if !network_session.is_null() {
+            connect(
+                network_session.cast(),
+                "download-started",
+                on_download_started as *const c_void,
+                state_ptr,
+            );
+        }
         connect(
             state.view,
             "notify::title",
@@ -663,6 +680,157 @@ extern "C" fn on_load_failed(
         error: message,
     });
     ffi::GFALSE // let WebKit show its error page
+}
+
+extern "C" fn on_download_started(
+    _session: *mut c_void,
+    download: *mut ffi::WebKitDownload,
+    data: *mut c_void,
+) {
+    if download.is_null() {
+        return;
+    }
+    let state = unsafe { state_from(data) };
+    let mut id = uuid::Uuid::new_v4().to_string();
+    while state.downloads.contains_key(&id) {
+        id = uuid::Uuid::new_v4().to_string();
+    }
+    state.downloads.insert(id.clone(), download);
+    state.download_ids.insert(download as usize, id);
+    unsafe {
+        connect(
+            download.cast(),
+            "decide-destination",
+            on_download_decide_destination as *const c_void,
+            data,
+        );
+        connect(
+            download.cast(),
+            "received-data",
+            on_download_received_data as *const c_void,
+            data,
+        );
+        connect(
+            download.cast(),
+            "finished",
+            on_download_finished as *const c_void,
+            data,
+        );
+        connect(
+            download.cast(),
+            "failed",
+            on_download_failed as *const c_void,
+            data,
+        );
+    }
+}
+
+extern "C" fn on_download_decide_destination(
+    download: *mut ffi::WebKitDownload,
+    suggested_filename: *const c_char,
+    data: *mut c_void,
+) -> ffi::gboolean {
+    let state = unsafe { state_from(data) };
+    let Some(id) = state.download_ids.get(&(download as usize)).cloned() else {
+        return ffi::GFALSE;
+    };
+    let request = unsafe { ffi::webkit_download_get_request(download) };
+    let uri = if request.is_null() {
+        String::new()
+    } else {
+        cstr_to_string(unsafe { ffi::webkit_uri_request_get_uri(request) }).unwrap_or_default()
+    };
+    let suggested_filename = cstr_to_string(suggested_filename)
+        .unwrap_or_else(|| "download".into())
+        .chars()
+        .take(255)
+        .collect();
+    state.shared.push(WebViewEvent::DownloadRequested {
+        id,
+        uri,
+        suggested_filename,
+    });
+    1 // WebKit 2.40+: wait asynchronously for destination or cancellation.
+}
+
+extern "C" fn on_download_received_data(
+    download: *mut ffi::WebKitDownload,
+    _chunk_bytes: u64,
+    data: *mut c_void,
+) {
+    let state = unsafe { state_from(data) };
+    let Some(id) = state.download_ids.get(&(download as usize)).cloned() else {
+        return;
+    };
+    let now = std::time::Instant::now();
+    if state
+        .download_progress_emitted_at
+        .get(&id)
+        .is_some_and(|last| now.duration_since(*last) < std::time::Duration::from_millis(150))
+    {
+        return;
+    }
+    state.download_progress_emitted_at.insert(id.clone(), now);
+    let response = unsafe { ffi::webkit_download_get_response(download) };
+    let total = if response.is_null() {
+        None
+    } else {
+        let bytes = unsafe { ffi::webkit_uri_response_get_content_length(response) };
+        (bytes > 0).then_some(bytes)
+    };
+    state.shared.push(WebViewEvent::DownloadProgress {
+        id,
+        received_bytes: unsafe { ffi::webkit_download_get_received_data_length(download) },
+        total_bytes: total,
+        progress: unsafe { ffi::webkit_download_get_estimated_progress(download) }.clamp(0.0, 1.0),
+    });
+}
+
+fn finish_download(state: &mut EngineState, download: *mut ffi::WebKitDownload) -> Option<String> {
+    let id = state.download_ids.remove(&(download as usize))?;
+    state.downloads.remove(&id);
+    state.download_progress_emitted_at.remove(&id);
+    Some(id)
+}
+
+extern "C" fn on_download_finished(download: *mut ffi::WebKitDownload, data: *mut c_void) {
+    let state = unsafe { state_from(data) };
+    let destination_uri = cstr_to_string(unsafe { ffi::webkit_download_get_destination(download) })
+        .unwrap_or_default();
+    let destination = url::Url::parse(&destination_uri)
+        .ok()
+        .and_then(|uri| uri.to_file_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or(destination_uri);
+    if let Some(id) = finish_download(state, download) {
+        state.cancelled_downloads.remove(&id);
+        state.shared.push(WebViewEvent::DownloadFinished {
+            id,
+            path: destination,
+        });
+    }
+}
+
+extern "C" fn on_download_failed(
+    download: *mut ffi::WebKitDownload,
+    error: *mut ffi::GError,
+    data: *mut c_void,
+) {
+    let state = unsafe { state_from(data) };
+    let message = if error.is_null() {
+        "Download failed".into()
+    } else {
+        cstr_to_string(unsafe { (*(error as *mut ffi::GErrorRepr)).message })
+            .unwrap_or_else(|| "Download failed".into())
+    };
+    if let Some(id) = finish_download(state, download) {
+        let cancelled = state.cancelled_downloads.remove(&id);
+        state.shared.push(WebViewEvent::DownloadFailed {
+            id,
+            error: message,
+            cancelled,
+        });
+    }
 }
 
 extern "C" fn on_filter_saved(
@@ -1102,6 +1270,28 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                             std::ptr::null_mut(),
                         );
                     }
+                }
+            }
+            WebViewCommand::StartDownload { uri } => {
+                if (uri.starts_with("https://") || uri.starts_with("http://"))
+                    && let Ok(uri) = CString::new(uri)
+                {
+                    ffi::webkit_web_view_download_uri(state.view, uri.as_ptr());
+                }
+            }
+            WebViewCommand::SetDownloadDestination { id, path } => {
+                if std::path::Path::new(&path).is_absolute()
+                    && let Some(download) = state.downloads.get(&id).copied()
+                    && let Ok(destination) = url::Url::from_file_path(&path)
+                    && let Ok(destination) = CString::new(destination.as_str())
+                {
+                    ffi::webkit_download_set_destination(download, destination.as_ptr());
+                }
+            }
+            WebViewCommand::CancelDownload { id } => {
+                if let Some(download) = state.downloads.get(&id).copied() {
+                    state.cancelled_downloads.insert(id);
+                    ffi::webkit_download_cancel(download);
                 }
             }
         }

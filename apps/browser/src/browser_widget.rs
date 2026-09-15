@@ -44,6 +44,7 @@ use crate::actions::{
     BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, history_resource_id,
 };
 use crate::address_overlay::AddressSuggestions;
+use crate::downloads::{DownloadStatus, Downloads};
 use crate::history::History;
 use crate::library::Bookmarks;
 use crate::settings::{Settings, SettingsActionBindings, SettingsPane, SettingsPresentation};
@@ -123,6 +124,11 @@ enum BrowserOperation {
     RequestWebsiteDataClear,
     TogglePictureInPicture,
     ToggleHistoryPause,
+    StartDownload { url: String },
+    CancelDownload { id: String },
+    RetryDownload { id: String },
+    OpenDownload { id: String },
+    RevealDownload { id: String },
 }
 
 fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value {
@@ -153,6 +159,21 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
         }
         BrowserOperation::ToggleHistoryPause => {
             serde_json::json!({ "operation": "toggle-history-pause" })
+        }
+        BrowserOperation::StartDownload { url } => {
+            serde_json::json!({ "operation": "start-download", "url": url })
+        }
+        BrowserOperation::CancelDownload { id } => {
+            serde_json::json!({ "operation": "cancel-download", "id": id })
+        }
+        BrowserOperation::RetryDownload { id } => {
+            serde_json::json!({ "operation": "retry-download", "id": id })
+        }
+        BrowserOperation::OpenDownload { id } => {
+            serde_json::json!({ "operation": "open-download", "id": id })
+        }
+        BrowserOperation::RevealDownload { id } => {
+            serde_json::json!({ "operation": "reveal-download", "id": id })
         }
     }
 }
@@ -196,8 +217,32 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
         Some("request-website-data-clear") => Ok(BrowserOperation::RequestWebsiteDataClear),
         Some("toggle-picture-in-picture") => Ok(BrowserOperation::TogglePictureInPicture),
         Some("toggle-history-pause") => Ok(BrowserOperation::ToggleHistoryPause),
+        Some("start-download") => {
+            required_string(&value, "url").map(|url| BrowserOperation::StartDownload { url })
+        }
+        Some("cancel-download") => {
+            required_string(&value, "id").map(|id| BrowserOperation::CancelDownload { id })
+        }
+        Some("retry-download") => {
+            required_string(&value, "id").map(|id| BrowserOperation::RetryDownload { id })
+        }
+        Some("open-download") => {
+            required_string(&value, "id").map(|id| BrowserOperation::OpenDownload { id })
+        }
+        Some("reveal-download") => {
+            required_string(&value, "id").map(|id| BrowserOperation::RevealDownload { id })
+        }
         _ => Err("unknown browser operation".to_string()),
     }
+}
+
+fn required_string(value: &serde_json::Value, key: &str) -> Result<String, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("browser operation is missing `{key}`"))
 }
 
 fn navigation_contract() -> ActionContract {
@@ -239,6 +284,47 @@ fn local_output(message: impl Into<String>) -> ui::qos_actions::ActionOutput {
     ui::qos_actions::ActionOutput {
         value: Some(serde_json::Value::String(message.into())),
         resources: Vec::new(),
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let bytes = bytes as f64;
+    if bytes >= GIB {
+        format!("{:.1} GB", bytes / GIB)
+    } else if bytes >= MIB {
+        format!("{:.1} MB", bytes / MIB)
+    } else if bytes >= KIB {
+        format!("{:.1} KB", bytes / KIB)
+    } else {
+        format!("{bytes:.0} B")
+    }
+}
+
+fn download_status_text(entry: &crate::downloads::DownloadEntry) -> String {
+    match entry.status {
+        DownloadStatus::AwaitingDestination => "Waiting for a save destination…".into(),
+        DownloadStatus::Downloading => match entry.total_bytes {
+            Some(total) => format!(
+                "{} of {} · {:.0}%",
+                format_bytes(entry.received_bytes),
+                format_bytes(total),
+                entry.progress * 100.0
+            ),
+            None => format!("{} downloaded", format_bytes(entry.received_bytes)),
+        },
+        DownloadStatus::Completed => entry.destination.as_deref().map_or_else(
+            || "Download complete".into(),
+            |path| format!("Saved to {}", path.display()),
+        ),
+        DownloadStatus::Failed => entry
+            .error
+            .as_deref()
+            .unwrap_or("The download failed")
+            .to_string(),
+        DownloadStatus::Cancelled => "Cancelled".into(),
     }
 }
 
@@ -302,6 +388,10 @@ pub struct BrowserWidget {
     history_save: fn(&History) -> std::io::Result<()>,
     history: History,
     bookmarks: Bookmarks,
+    downloads: Downloads,
+    download_picker: Option<(String, ui::portal::PortalChannel)>,
+    download_picker_queue: std::collections::VecDeque<(String, String)>,
+    download_save_due: Option<std::time::Instant>,
     /// Retained full-corpus index. Provider handles are cheap and unchanged
     /// frames compare only the durable corpus revision tokens.
     search_index: crate::search_provider::BrowserSearchIndex,
@@ -404,6 +494,11 @@ impl BrowserWidget {
         } else {
             Bookmarks::load()
         };
+        let downloads = if headless {
+            Downloads::default()
+        } else {
+            Downloads::load()
+        };
         let initial_url = if is_supported_web_url(&settings.homepage) {
             settings.homepage.clone()
         } else {
@@ -411,7 +506,7 @@ impl BrowserWidget {
         };
         let settings_presentation = SettingsPresentation::from_settings(&settings);
         let search_index = crate::search_provider::BrowserSearchIndex::default();
-        search_index.sync(&history, &bookmarks);
+        search_index.sync_all(&history, &bookmarks, &downloads);
         Self {
             rect: Rect::ZERO,
             engine,
@@ -436,6 +531,10 @@ impl BrowserWidget {
             history_save: History::save,
             history,
             bookmarks,
+            downloads,
+            download_picker: None,
+            download_picker_queue: std::collections::VecDeque::new(),
+            download_save_due: None,
             search_index,
             suggestions: AddressSuggestions::new(),
             show_settings: false,
@@ -563,6 +662,60 @@ impl BrowserWidget {
         self.show_settings = false;
     }
 
+    /// Deterministic download-model fixtures for visual review. These use the
+    /// same lifecycle methods as live engine events rather than a parallel UI
+    /// representation, so every captured row has a real resource/action shape.
+    pub fn debug_show_downloads(&mut self, state: &str) {
+        self.downloads = Downloads::default();
+        match state {
+            "empty" => {}
+            "error" => {
+                self.downloads.requested(
+                    "review-failed".into(),
+                    "https://example.org/archive.zip".into(),
+                    "project-assets.zip",
+                );
+                self.downloads.failed(
+                    "review-failed",
+                    "The connection was interrupted. Your partial file was removed.".into(),
+                    false,
+                );
+            }
+            "completed" => {
+                self.downloads.requested(
+                    "review-complete".into(),
+                    "https://example.org/guide.pdf".into(),
+                    "Design-guide.pdf",
+                );
+                self.downloads.finished(
+                    "review-complete",
+                    "/home/alex/Downloads/Design-guide.pdf".into(),
+                );
+            }
+            _ => {
+                self.downloads.requested(
+                    "review-progress".into(),
+                    "https://example.org/qos-sdk.tar.zst".into(),
+                    "qOS-SDK.tar.zst",
+                );
+                self.downloads.destination(
+                    "review-progress",
+                    "/home/alex/Downloads/qOS-SDK.tar.zst".into(),
+                );
+                self.downloads.progress(
+                    "review-progress",
+                    503_316_480,
+                    Some(1_073_741_824),
+                    0.46875,
+                );
+            }
+        }
+        self.library_section = LibrarySection::Downloads;
+        self.show_library = true;
+        self.show_settings = false;
+        self.structure_dirty = true;
+    }
+
     pub fn debug_show_settings(&mut self) {
         self.show_settings = true;
         self.show_library = false;
@@ -651,8 +804,72 @@ impl BrowserWidget {
                 self.history_paused = !self.history_paused;
                 self.structure_dirty = true;
             }
+            BrowserOperation::StartDownload { url } => {
+                let url = url.trim();
+                if !is_supported_web_url(url) {
+                    return Err("downloads require an absolute http:// or https:// URL".into());
+                }
+                self.engine.send(WebViewCommand::StartDownload {
+                    uri: url.to_string(),
+                });
+            }
+            BrowserOperation::CancelDownload { id } => {
+                let entry = self
+                    .downloads
+                    .get(&id)
+                    .ok_or_else(|| "download no longer exists".to_string())?;
+                if !matches!(
+                    entry.status,
+                    DownloadStatus::AwaitingDestination | DownloadStatus::Downloading
+                ) {
+                    return Err("download is not active".into());
+                }
+                self.engine.send(WebViewCommand::CancelDownload { id });
+            }
+            BrowserOperation::RetryDownload { id } => {
+                let entry = self
+                    .downloads
+                    .get(&id)
+                    .ok_or_else(|| "download no longer exists".to_string())?;
+                if !matches!(
+                    entry.status,
+                    DownloadStatus::Failed | DownloadStatus::Cancelled
+                ) {
+                    return Err("only a failed or cancelled download can be retried".into());
+                }
+                self.engine.send(WebViewCommand::StartDownload {
+                    uri: entry.source_url.clone(),
+                });
+            }
+            BrowserOperation::OpenDownload { id } => {
+                let path = self.completed_download_path(&id)?;
+                let _ = ui::portal::LaunchRequest::open(path)
+                    .thread_name("browser-open-download")
+                    .send();
+            }
+            BrowserOperation::RevealDownload { id } => {
+                let path = self.completed_download_path(&id)?;
+                let _ = ui::portal::LaunchRequest::reveal(path)
+                    .thread_name("browser-reveal-download")
+                    .send();
+            }
         }
         Ok(())
+    }
+
+    fn completed_download_path(&self, id: &str) -> Result<std::path::PathBuf, String> {
+        let entry = self
+            .downloads
+            .get(id)
+            .ok_or_else(|| "download no longer exists".to_string())?;
+        if entry.status != DownloadStatus::Completed {
+            return Err("download has not completed".into());
+        }
+        entry
+            .destination
+            .clone()
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| "download destination is unavailable".into())
     }
 
     /// Clear the in-memory corpus only when its new empty state is durable.
@@ -1151,18 +1368,19 @@ impl BrowserWidget {
         clippy::too_many_lines,
         reason = "The browser chrome is intentionally composed in one ordered layout function."
     )]
-    fn build_composition(&self) -> Box<dyn Widget> {
+    fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         // Compact, square-ish icon buttons (44×40 — a comfortable touch
         // target) instead of the toolkit's 120×40 label-button default,
         // so three of them leave the address bar the rest of the width
         // even on a narrow / mobile-width window.
-        const NAV_BTN: (f32, f32) = (44.0, 40.0);
+        let nav_button_height = (40.0 + 16.0 * (theme.text_scale - 1.0)).clamp(40.0, 64.0);
+        let nav_button_size = (44.0, nav_button_height);
         let back = self.bind_button(
             Button::new("browser.back", "", None)
                 .with_icon(Icon::ArrowLeft)
                 .with_accessible_name("Back")
                 .tooltip("Back (Alt+Left)")
-                .with_size(NAV_BTN.0, NAV_BTN.1)
+                .with_size(nav_button_size.0, nav_button_size.1)
                 .with_enabled(self.can_go_back),
             "browser.page",
             "back",
@@ -1172,7 +1390,7 @@ impl BrowserWidget {
                 .with_icon(Icon::ArrowRight)
                 .with_accessible_name("Forward")
                 .tooltip("Forward (Alt+Right)")
-                .with_size(NAV_BTN.0, NAV_BTN.1)
+                .with_size(nav_button_size.0, nav_button_size.1)
                 .with_enabled(self.can_go_forward),
             "browser.page",
             "forward",
@@ -1182,7 +1400,7 @@ impl BrowserWidget {
                 .with_icon(Icon::Refresh)
                 .with_accessible_name("Reload")
                 .tooltip("Reload (Ctrl+R)")
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_button_size.0, nav_button_size.1),
             "browser.page",
             "reload",
         );
@@ -1213,7 +1431,7 @@ impl BrowserWidget {
                 } else {
                     "Browser settings"
                 })
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_button_size.0, nav_button_size.1),
             settings_resource,
             settings_action,
         );
@@ -1227,7 +1445,7 @@ impl BrowserWidget {
                 .with_icon(Icon::PictureInPicture2)
                 .with_accessible_name(pip_label)
                 .tooltip(pip_label)
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_button_size.0, nav_button_size.1),
             "browser.page",
             "picture-in-picture",
         );
@@ -1246,7 +1464,7 @@ impl BrowserWidget {
                 .with_icon(Icon::Shield)
                 .with_accessible_name(history_pause_label)
                 .tooltip(history_pause_label)
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_button_size.0, nav_button_size.1),
             // The pause state is a local session resource.  Its *kind* is
             // `browser.history-pause`, but its stable resource identity is
             // `browser.session`; binding to the kind silently left this
@@ -1282,7 +1500,7 @@ impl BrowserWidget {
                 .with_accessible_name(bookmark_label)
                 .tooltip(bookmark_label)
                 .with_enabled(!self.current_uri.trim().is_empty())
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_button_size.0, nav_button_size.1),
             "browser.page",
             "bookmark",
         );
@@ -1300,7 +1518,7 @@ impl BrowserWidget {
                     "Open browser library"
                 })
                 .tooltip("History, bookmarks and downloads")
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_button_size.0, nav_button_size.1),
             library_resource,
             library_action,
         );
@@ -1352,7 +1570,7 @@ impl BrowserWidget {
                     .with_history_clear_error(self.history_clear_error.clone()),
             )
         } else if self.show_library {
-            self.build_library_composition()
+            self.build_library_composition(theme)
         } else if let Some(error) = &self.load_error {
             let recovery = EmptyState::new("Couldn’t open this page")
                 .with_icon(Icon::Wifi)
@@ -1399,7 +1617,17 @@ impl BrowserWidget {
         clippy::indexing_slicing,
         reason = "Each row list is explicitly capped to its matching fixed flag array."
     )]
-    fn build_library_composition(&self) -> Box<dyn Widget> {
+    fn build_library_composition(&self, theme: &Theme) -> Box<dyn Widget> {
+        let large_text = theme.text_scale >= 1.5;
+        let compact_layout = self.compact_chrome || large_text;
+        let action_height = if large_text { 56.0 } else { 36.0 };
+        let section_width = if self.compact_chrome && large_text {
+            ((self.rect.width() as f32 - 36.0) / 2.0).max(150.0)
+        } else if large_text {
+            220.0
+        } else {
+            132.0
+        };
         // At intermediate desktop widths, retain one coherent panel but never
         // force a fixed 920px card past the viewport. Compact chrome remains
         // fully fluid below its own breakpoint.
@@ -1409,9 +1637,11 @@ impl BrowserWidget {
             LIBRARY_DESKTOP_CONTENT_WIDTH
         };
         let mut heading = Row::new()
-            .push(Box::new(Text::new("Library").with_size(24.0)))
+            .push(Box::new(
+                Text::new("Library").with_size(24.0).with_heading_level(1),
+            ))
             .push(Box::new(Spacer::new()));
-        if self.compact_chrome && self.library_section == LibrarySection::History {
+        if self.compact_chrome && !large_text && self.library_section == LibrarySection::History {
             let label = if self.history_paused {
                 "Resume history"
             } else {
@@ -1421,17 +1651,20 @@ impl BrowserWidget {
                 self.bind_button(
                     Button::new("browser.library.history-pause", label, None)
                         .with_accessible_name(label)
-                        .with_size(116.0, 36.0),
+                        .with_size(116.0, action_height),
                     "browser.session",
                     "toggle-history-pause",
                 ),
             ));
         }
-        heading = heading.push(Box::new(self.bind_button(
-            Button::new("browser.library.close", "Done", None).with_size(96.0, 36.0),
-            "browser",
-            "show-page",
-        )));
+        heading = heading.push(Box::new(
+            self.bind_button(
+                Button::new("browser.library.close", "Done", None)
+                    .with_size(if large_text { 112.0 } else { 96.0 }, action_height),
+                "browser",
+                "show-page",
+            ),
+        ));
         let section_definitions = [
             (
                 "browser.library.history",
@@ -1463,7 +1696,7 @@ impl BrowserWidget {
             let button = self.bind_button(
                 Button::new(id, label, None)
                     .with_accessible_name(&format!("Show {label}"))
-                    .with_size(132.0, 40.0),
+                    .with_size(section_width, if large_text { 56.0 } else { 40.0 }),
                 resource,
                 "show",
             );
@@ -1474,7 +1707,7 @@ impl BrowserWidget {
         // two-by-two grid in compact chrome: every destination remains
         // visible, touch-sized, and in the same tab order without requiring
         // horizontal scrolling or clipped labels.
-        let sections: Box<dyn Widget> = if self.compact_chrome {
+        let sections: Box<dyn Widget> = if compact_layout {
             let mut buttons = section_buttons.into_iter();
             let first = buttons.next();
             let second = buttons.next();
@@ -1550,6 +1783,45 @@ impl BrowserWidget {
                     } else {
                         entry.title.as_str()
                     };
+                    let text_block: Box<dyn Widget> = Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .push(Box::new(Text::new(title).with_size(15.0)))
+                            .push(Box::new(Text::new(&entry.url).with_size(12.0).dimmed())),
+                    );
+                    let open = self.bind_button(
+                        Button::new(&format!("{resource_id}.open"), "Open", None)
+                            .with_accessible_name(&format!("Open {title}"))
+                            .tooltip("Open page")
+                            .with_size(if large_text { 104.0 } else { 84.0 }, action_height),
+                        &resource_id,
+                        "open",
+                    );
+                    let row_content: Box<dyn Widget> = if self.compact_chrome && large_text {
+                        Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .push(text_block)
+                                .push(Box::new(
+                                    Container::new().with_no_padding().with_height(10.0),
+                                ))
+                                .push(Box::new(open.fill_width(action_height))),
+                        )
+                    } else {
+                        Box::new(
+                            Row::new()
+                                .no_wrap()
+                                .push(Box::new(
+                                    Container::new()
+                                        .with_no_padding()
+                                        .with_flex_grow()
+                                        .with_child(text_block),
+                                ))
+                                .push(Box::new(open)),
+                        )
+                    };
                     rows = rows
                         .push(Box::new(
                             Container::new()
@@ -1559,45 +1831,14 @@ impl BrowserWidget {
                                     Row::new()
                                         .no_wrap()
                                         .with_padding(14.0, 9.0)
-                                        .push(Box::new(
-                                            Container::new()
-                                                .with_no_padding()
-                                                .with_flex_grow()
-                                                .with_child(Box::new(
-                                                    Column::new()
-                                                        .with_no_padding()
-                                                        .with_intrinsic_height()
-                                                        .push(Box::new(
-                                                            Text::new(title).with_size(15.0),
-                                                        ))
-                                                        .push(Box::new(
-                                                            Text::new(&entry.url)
-                                                                .with_size(12.0)
-                                                                .dimmed(),
-                                                        )),
-                                                )),
-                                        ))
-                                        .push(Box::new(
-                                            self.bind_button(
-                                                Button::new(
-                                                    &format!("{resource_id}.open"),
-                                                    "Open",
-                                                    None,
-                                                )
-                                                .with_accessible_name(&format!("Open {title}"))
-                                                .tooltip("Open page")
-                                                .with_size(84.0, 36.0),
-                                                &resource_id,
-                                                "open",
-                                            ),
-                                        )),
+                                        .push(row_content),
                                 )),
                         ))
                         .push(Box::new(
                             Container::new().with_no_padding().with_height(8.0),
                         ));
                 }
-                if self.compact_chrome {
+                if compact_layout {
                     Box::new(rows)
                 } else {
                     Box::new(
@@ -1621,6 +1862,58 @@ impl BrowserWidget {
                     // without its canonical trailing slash.
                     let resource_id = bookmark_resource_id(&entry.url);
                     let remove_control_id = format!("{resource_id}.remove");
+                    let text_block: Box<dyn Widget> = Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .push(Box::new(Text::new(&entry.title).with_size(15.0)))
+                            .push(Box::new(Text::new(&entry.url).with_size(12.0).dimmed())),
+                    );
+                    let open = self.bind_button(
+                        Button::new(&format!("{resource_id}.open"), "Open", None)
+                            .with_accessible_name(&format!("Open {}", entry.title))
+                            .with_size(if large_text { 120.0 } else { 84.0 }, action_height),
+                        &resource_id,
+                        "open",
+                    );
+                    let remove = self.bind_button(
+                        Button::new(&remove_control_id, "Remove", None)
+                            .with_accessible_name(&format!("Remove bookmark {}", entry.title))
+                            .tooltip("Remove bookmark")
+                            .with_size(if large_text { 150.0 } else { 96.0 }, action_height),
+                        &resource_id,
+                        "remove",
+                    );
+                    let row_content: Box<dyn Widget> = if self.compact_chrome && large_text {
+                        Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .push(text_block)
+                                .push(Box::new(
+                                    Container::new().with_no_padding().with_height(10.0),
+                                ))
+                                .push(Box::new(
+                                    Row::new()
+                                        .no_wrap()
+                                        .push(Box::new(open))
+                                        .push(Box::new(remove)),
+                                )),
+                        )
+                    } else {
+                        Box::new(
+                            Row::new()
+                                .no_wrap()
+                                .push(Box::new(
+                                    Container::new()
+                                        .with_no_padding()
+                                        .with_flex_grow()
+                                        .with_child(text_block),
+                                ))
+                                .push(Box::new(open))
+                                .push(Box::new(remove)),
+                        )
+                    };
                     rows = rows
                         .push(Box::new(
                             Container::new()
@@ -1630,60 +1923,14 @@ impl BrowserWidget {
                                     Row::new()
                                         .no_wrap()
                                         .with_padding(14.0, 9.0)
-                                        .push(Box::new(
-                                            Container::new()
-                                                .with_no_padding()
-                                                .with_flex_grow()
-                                                .with_child(Box::new(
-                                                    Column::new()
-                                                        .with_no_padding()
-                                                        .with_intrinsic_height()
-                                                        .push(Box::new(
-                                                            Text::new(&entry.title).with_size(15.0),
-                                                        ))
-                                                        .push(Box::new(
-                                                            Text::new(&entry.url)
-                                                                .with_size(12.0)
-                                                                .dimmed(),
-                                                        )),
-                                                )),
-                                        ))
-                                        .push(Box::new(
-                                            self.bind_button(
-                                                Button::new(
-                                                    &format!("{resource_id}.open"),
-                                                    "Open",
-                                                    None,
-                                                )
-                                                .with_accessible_name(&format!(
-                                                    "Open {}",
-                                                    entry.title
-                                                ))
-                                                .with_size(84.0, 36.0),
-                                                &resource_id,
-                                                "open",
-                                            ),
-                                        ))
-                                        .push(Box::new(
-                                            self.bind_button(
-                                                Button::new(&remove_control_id, "Remove", None)
-                                                    .with_accessible_name(&format!(
-                                                        "Remove bookmark {}",
-                                                        entry.title
-                                                    ))
-                                                    .tooltip("Remove bookmark")
-                                                    .with_size(96.0, 36.0),
-                                                &resource_id,
-                                                "remove",
-                                            ),
-                                        )),
+                                        .push(row_content),
                                 )),
                         ))
                         .push(Box::new(
                             Container::new().with_no_padding().with_height(8.0),
                         ));
                 }
-                if self.compact_chrome {
+                if compact_layout {
                     Box::new(rows)
                 } else {
                     Box::new(
@@ -1694,11 +1941,180 @@ impl BrowserWidget {
                     )
                 }
             }
-            LibrarySection::Downloads => Box::new(
-                EmptyState::new("Web downloads aren’t available yet")
-                    .with_icon(Icon::Download)
-                    .with_message("Download progress and saved files are unavailable."),
-            ),
+            LibrarySection::Downloads if self.downloads.entries().is_empty() => {
+                if self.compact_chrome && large_text {
+                    Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_background()
+                            .with_child(Box::new(
+                                Column::new()
+                                    .with_intrinsic_height()
+                                    .push(Box::new(
+                                        Text::new("No downloads yet")
+                                            .with_size(18.0)
+                                            .with_heading_level(2),
+                                    ))
+                                    .push(Box::new(
+                                        Text::new("Files you download appear here. You choose where each one is saved.")
+                                            .with_size(12.0)
+                                            .dimmed(),
+                                    )),
+                            )),
+                    )
+                } else {
+                    Box::new(
+                        EmptyState::new("No downloads yet")
+                            .with_icon(Icon::Download)
+                            .with_message(
+                                "Files you download appear here. You choose where each one is saved.",
+                            ),
+                    )
+                }
+            }
+            LibrarySection::Downloads => {
+                let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                for entry in self.downloads.entries().iter().rev().take(40) {
+                    let resource_id = entry.resource_id();
+                    let status = download_status_text(entry);
+                    let mut details = Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(Box::new(Text::new(entry.display_name()).with_size(15.0)))
+                        .push(Box::new(Text::new(&status).with_size(12.0).dimmed()));
+                    if entry.status == DownloadStatus::Downloading {
+                        details = details
+                            .push(Box::new(
+                                Container::new().with_no_padding().with_height(8.0),
+                            ))
+                            .push(Box::new(
+                                ProgressBar::new(entry.progress as f32)
+                                    .with_label(format!("Downloading {}", entry.display_name())),
+                            ));
+                    }
+                    let details: Box<dyn Widget> = Box::new(details);
+                    let actions: Box<dyn Widget> = match entry.status {
+                        DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
+                            Box::new(
+                                self.bind_button(
+                                    Button::new(&format!("{resource_id}.cancel"), "Cancel", None)
+                                        .with_accessible_name(&format!(
+                                            "Cancel download {}",
+                                            entry.display_name()
+                                        ))
+                                        .with_size(
+                                            if large_text { 136.0 } else { 92.0 },
+                                            action_height,
+                                        ),
+                                    &resource_id,
+                                    "cancel",
+                                ),
+                            )
+                        }
+                        DownloadStatus::Completed => Box::new(
+                            Row::new()
+                                .no_wrap()
+                                .push(Box::new(
+                                    self.bind_button(
+                                        Button::new(
+                                            &format!("{resource_id}.reveal"),
+                                            "Show in Files",
+                                            None,
+                                        )
+                                        .with_accessible_name(&format!(
+                                            "Show {} in Files",
+                                            entry.display_name()
+                                        ))
+                                        .with_size(
+                                            if large_text { 190.0 } else { 126.0 },
+                                            action_height,
+                                        ),
+                                        &resource_id,
+                                        "reveal",
+                                    ),
+                                ))
+                                .push(Box::new(
+                                    self.bind_button(
+                                        Button::new(&format!("{resource_id}.open"), "Open", None)
+                                            .with_accessible_name(&format!(
+                                                "Open downloaded file {}",
+                                                entry.display_name()
+                                            ))
+                                            .with_size(
+                                                if large_text { 120.0 } else { 84.0 },
+                                                action_height,
+                                            ),
+                                        &resource_id,
+                                        "open",
+                                    )
+                                    .primary(),
+                                )),
+                        ),
+                        DownloadStatus::Failed | DownloadStatus::Cancelled => Box::new(
+                            self.bind_button(
+                                Button::new(&format!("{resource_id}.retry"), "Retry", None)
+                                    .with_accessible_name(&format!(
+                                        "Retry download {}",
+                                        entry.display_name()
+                                    ))
+                                    .with_size(
+                                        if large_text { 128.0 } else { 88.0 },
+                                        action_height,
+                                    ),
+                                &resource_id,
+                                "retry",
+                            )
+                            .primary(),
+                        ),
+                    };
+                    let content: Box<dyn Widget> = if large_text {
+                        Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .push(details)
+                                .push(Box::new(
+                                    Container::new().with_no_padding().with_height(12.0),
+                                ))
+                                .push(actions),
+                        )
+                    } else {
+                        Box::new(
+                            Row::new()
+                                .no_wrap()
+                                .push(Box::new(
+                                    Container::new()
+                                        .with_no_padding()
+                                        .with_flex_grow()
+                                        .with_child(details),
+                                ))
+                                .push(actions),
+                        )
+                    };
+                    rows = rows
+                        .push(Box::new(
+                            Container::new()
+                                .with_no_padding()
+                                .with_background()
+                                .with_child(Box::new(
+                                    Row::new().no_wrap().with_padding(14.0, 11.0).push(content),
+                                )),
+                        ))
+                        .push(Box::new(
+                            Container::new().with_no_padding().with_height(8.0),
+                        ));
+                }
+                if compact_layout {
+                    Box::new(rows)
+                } else {
+                    Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_width(desktop_content_width)
+                            .with_child(Box::new(rows)),
+                    )
+                }
+            }
             LibrarySection::Extensions => {
                 let installed = if self.headless {
                     Vec::new()
@@ -1750,7 +2166,7 @@ impl BrowserWidget {
                                 Container::new().with_no_padding().with_height(8.0),
                             ));
                     }
-                    if self.compact_chrome {
+                    if compact_layout {
                         Box::new(rows)
                     } else {
                         Box::new(
@@ -1764,21 +2180,42 @@ impl BrowserWidget {
             }
         };
 
-        let content: Box<dyn Widget> = Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(heading))
+        let mut content_column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(heading))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(18.0),
+            ));
+        if self.compact_chrome && large_text && self.library_section == LibrarySection::History {
+            let label = if self.history_paused {
+                "Resume history"
+            } else {
+                "Pause history"
+            };
+            content_column = content_column
                 .push(Box::new(
-                    Container::new().with_no_padding().with_height(18.0),
+                    self.bind_button(
+                        Button::new("browser.library.history-pause", label, None)
+                            .with_accessible_name(label)
+                            .fill_width(action_height),
+                        "browser.session",
+                        "toggle-history-pause",
+                    ),
                 ))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(12.0),
+                ));
+        }
+        let content: Box<dyn Widget> = Box::new(
+            content_column
                 .push(sections)
                 .push(Box::new(
                     Container::new().with_no_padding().with_height(18.0),
                 ))
                 .push(body),
         );
-        let content = if self.compact_chrome {
+        let content = if compact_layout {
             content
         } else {
             Box::new(
@@ -1903,6 +2340,14 @@ impl BrowserWidget {
     /// Fold engine events into this window's chrome state. Engine state is a
     /// device-local external boundary, never a collaborative document write.
     fn apply_engine_events(&mut self) {
+        if self
+            .download_save_due
+            .is_some_and(|due| std::time::Instant::now() >= due)
+        {
+            self.persist_downloads_now();
+            self.download_save_due = None;
+        }
+        self.poll_download_picker();
         let editing = self.url_input_focused();
         for event in self.engine.drain_events() {
             match event {
@@ -1993,8 +2438,138 @@ impl BrowserWidget {
                 WebViewEvent::MediaElementUnavailable { request_id } => {
                     self.reject_media_element(request_id);
                 }
+                event @ (WebViewEvent::DownloadRequested { .. }
+                | WebViewEvent::DownloadProgress { .. }
+                | WebViewEvent::DownloadFinished { .. }
+                | WebViewEvent::DownloadFailed { .. }) => self.apply_download_event(event),
             }
         }
+    }
+
+    fn apply_download_event(&mut self, event: WebViewEvent) {
+        match event {
+            WebViewEvent::DownloadRequested {
+                id,
+                uri,
+                suggested_filename,
+            } => {
+                if !self
+                    .downloads
+                    .requested(id.clone(), uri, &suggested_filename)
+                {
+                    tracing::warn!("refusing duplicate or invalid engine download id {id}");
+                    self.engine.send(WebViewCommand::CancelDownload { id });
+                    return;
+                }
+                self.download_picker_queue
+                    .push_back((id, suggested_filename));
+                self.start_next_download_picker();
+                self.persist_downloads_now();
+                self.structure_dirty = true;
+            }
+            WebViewEvent::DownloadProgress {
+                id,
+                received_bytes,
+                total_bytes,
+                progress,
+            } => {
+                self.downloads
+                    .progress(&id, received_bytes, total_bytes, progress);
+                if self.download_save_due.is_none() {
+                    self.download_save_due =
+                        Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+                }
+                self.structure_dirty = true;
+            }
+            WebViewEvent::DownloadFinished { id, path } => {
+                self.downloads.finished(&id, path.into());
+                self.persist_downloads_now();
+                self.download_save_due = None;
+                self.structure_dirty = true;
+            }
+            WebViewEvent::DownloadFailed {
+                id,
+                error,
+                cancelled,
+            } => {
+                self.downloads.failed(&id, error, cancelled);
+                self.persist_downloads_now();
+                self.download_save_due = None;
+                self.structure_dirty = true;
+            }
+            _ => tracing::warn!("non-download event reached the download event handler"),
+        }
+    }
+
+    fn persist_downloads_now(&self) {
+        if !self.headless
+            && let Err(error) = self.downloads.save()
+        {
+            tracing::warn!("browser download history was not persisted: {error}");
+        }
+    }
+
+    fn start_next_download_picker(&mut self) {
+        if self.download_picker.is_some() {
+            return;
+        }
+        let Some((id, suggested_name)) = self.download_picker_queue.pop_front() else {
+            return;
+        };
+        let channel = ui::portal::PickRequest::save("Save download", "Save", &suggested_name)
+            .thread_name("browser-download-destination")
+            .all_files()
+            .send();
+        self.download_picker = Some((id, channel));
+    }
+
+    fn poll_download_picker(&mut self) {
+        let outcome =
+            self.download_picker
+                .as_ref()
+                .and_then(|(id, channel)| match channel.try_recv() {
+                    Ok(outcome) => Some((id.clone(), outcome)),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => Some((
+                        id.clone(),
+                        ui::portal::PortalOutcome::Failed(
+                            "The desktop save picker closed unexpectedly".into(),
+                        ),
+                    )),
+                });
+        let Some((id, outcome)) = outcome else {
+            return;
+        };
+        self.download_picker = None;
+        match outcome {
+            ui::portal::PortalOutcome::Opened(path) if path.is_absolute() => {
+                self.downloads.destination(&id, path.clone());
+                self.engine.send(WebViewCommand::SetDownloadDestination {
+                    id,
+                    path: path.to_string_lossy().into_owned(),
+                });
+            }
+            ui::portal::PortalOutcome::Opened(_) => {
+                self.downloads.failed(
+                    &id,
+                    "The save destination was not an absolute path".into(),
+                    false,
+                );
+                self.engine.send(WebViewCommand::CancelDownload { id });
+            }
+            ui::portal::PortalOutcome::Cancelled => {
+                self.downloads.failed(&id, String::new(), true);
+                self.engine.send(WebViewCommand::CancelDownload { id });
+            }
+            ui::portal::PortalOutcome::Failed(error) => {
+                self.downloads.failed(&id, error, false);
+                self.engine.send(WebViewCommand::CancelDownload { id });
+            }
+        }
+        self.persist_downloads_now();
+        self.download_save_due = None;
+        self.structure_dirty = true;
+        self.start_next_download_picker();
     }
 
     /// Navigate to whatever the address bar currently holds.
@@ -2112,7 +2687,8 @@ impl BrowserWidget {
     }
 
     fn sync_search_and_suggestions(&mut self) {
-        self.search_index.sync(&self.history, &self.bookmarks);
+        self.search_index
+            .sync_all(&self.history, &self.bookmarks, &self.downloads);
         self.update_suggestions();
     }
 
@@ -2551,6 +3127,125 @@ impl Widget for BrowserWidget {
         ) {
             downloads.actions.push(spec);
         }
+        downloads.actions.push(
+            ActionSpec::typed_operation(
+                "start",
+                "Download address",
+                "https://…",
+                OperationKind::Effect,
+                BROWSER_OPERATION_TYPE,
+                vec![ActionParam::required_owned(
+                    "url",
+                    ParamType::Text,
+                    "Absolute HTTP or HTTPS URL",
+                )],
+                |args: &ActionArgs| {
+                    encode_browser_operation(&BrowserOperation::StartDownload {
+                        url: args.text("url").unwrap_or_default().to_string(),
+                    })
+                },
+            )
+            .with_contract(local_background_contract(&[
+                "device-local",
+                "network",
+                "filesystem",
+                "download",
+            ])),
+        );
+        for entry in self
+            .downloads
+            .entries()
+            .iter()
+            .rev()
+            .take(MATERIALIZED_LIMIT)
+        {
+            let mut child = Resource::new(
+                entry.resource_id(),
+                "browser.download",
+                entry.display_name(),
+            );
+            if let Some(spec) = operation(
+                "show",
+                "Show download",
+                OperationKind::View,
+                BrowserOperation::ShowLibrary {
+                    section: LibrarySection::Downloads,
+                },
+            ) {
+                child.actions.push(spec);
+            }
+            match entry.status {
+                DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => {
+                    if let Some(spec) = operation(
+                        "cancel",
+                        "Cancel download",
+                        OperationKind::Effect,
+                        BrowserOperation::CancelDownload {
+                            id: entry.id.clone(),
+                        },
+                    ) {
+                        child.actions.push(
+                            spec.with_contract(local_effect_contract(&[
+                                "device-local",
+                                "network",
+                                "download",
+                            ]))
+                            .destructive(),
+                        );
+                    }
+                }
+                DownloadStatus::Failed | DownloadStatus::Cancelled => {
+                    if let Some(spec) = operation(
+                        "retry",
+                        "Retry download",
+                        OperationKind::Effect,
+                        BrowserOperation::RetryDownload {
+                            id: entry.id.clone(),
+                        },
+                    ) {
+                        child
+                            .actions
+                            .push(spec.with_contract(local_background_contract(&[
+                                "device-local",
+                                "network",
+                                "filesystem",
+                                "download",
+                            ])));
+                    }
+                }
+                DownloadStatus::Completed => {
+                    for (id, label, browser_operation) in [
+                        (
+                            "open",
+                            "Open downloaded file",
+                            BrowserOperation::OpenDownload {
+                                id: entry.id.clone(),
+                            },
+                        ),
+                        (
+                            "reveal",
+                            "Show downloaded file in Files",
+                            BrowserOperation::RevealDownload {
+                                id: entry.id.clone(),
+                            },
+                        ),
+                    ] {
+                        if let Some(spec) =
+                            operation(id, label, OperationKind::Effect, browser_operation)
+                        {
+                            child
+                                .actions
+                                .push(spec.with_contract(local_background_contract(&[
+                                    "device-local",
+                                    "filesystem",
+                                    "portal",
+                                ])));
+                        }
+                    }
+                }
+            }
+            downloads.children.push(child);
+        }
         let mut extensions =
             Resource::new("browser.extensions", "browser.extensions", "Extensions");
         if let Some(spec) = operation(
@@ -2776,6 +3471,21 @@ impl Widget for BrowserWidget {
                 BrowserOperation::RequestWebsiteDataClear => {
                     local_output("Website-data clear request sent to the local browser engine.")
                 }
+                BrowserOperation::StartDownload { .. } => {
+                    local_output("Download request sent to the local browser engine.")
+                }
+                BrowserOperation::CancelDownload { .. } => {
+                    local_output("Download cancellation sent to the local browser engine.")
+                }
+                BrowserOperation::RetryDownload { .. } => {
+                    local_output("Download retry sent to the local browser engine.")
+                }
+                BrowserOperation::OpenDownload { .. } => {
+                    local_output("Downloaded file was handed to the desktop open portal.")
+                }
+                BrowserOperation::RevealDownload { .. } => {
+                    local_output("Downloaded file location was handed to the desktop portal.")
+                }
                 _ => ui::qos_actions::ActionOutput::default(),
             };
             self.perform_browser_operation(operation)?;
@@ -2911,7 +3621,7 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
+        let mut composed = self.build_composition(theme);
         let child_node = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 
@@ -4715,5 +5425,116 @@ mod tests {
             engine.current_uri().as_deref(),
             Some("https://example.test/reading")
         );
+    }
+
+    #[test]
+    fn portal_cancel_cancels_the_paused_engine_download() {
+        ui::portal::suppress_for_tests();
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        engine.send(WebViewCommand::StartDownload {
+            uri: "https://example.test/archive.zip".into(),
+        });
+        widget.apply_engine_events();
+        assert!(widget.download_picker.is_some());
+        widget.apply_engine_events();
+        assert_eq!(
+            widget.downloads.entries()[0].status,
+            DownloadStatus::Cancelled
+        );
+        assert!(engine.commands().iter().any(|command| matches!(
+            command,
+            WebViewCommand::CancelDownload { id } if id == "test-download-1"
+        )));
+    }
+
+    #[test]
+    fn portal_worker_failure_cancels_webkit_but_preserves_the_actionable_error() {
+        ui::portal::suppress_for_tests();
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        engine.send(WebViewCommand::StartDownload {
+            uri: "https://example.test/archive.zip".into(),
+        });
+        widget.apply_engine_events();
+        let id = widget.downloads.entries()[0].id.clone();
+        let (sender, disconnected) = std::sync::mpsc::channel();
+        drop(sender);
+        widget.download_picker = Some((id.clone(), disconnected));
+        widget.poll_download_picker();
+        // Fold the engine's cancellation event too: it must not replace the
+        // portal failure with the much less useful generic "Cancelled".
+        widget.apply_engine_events();
+        let entry = widget.downloads.get(&id).unwrap();
+        assert_eq!(entry.status, DownloadStatus::Failed);
+        assert!(
+            entry
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("save picker"))
+        );
+        assert!(engine.commands().iter().any(|command| matches!(
+            command,
+            WebViewCommand::CancelDownload { id: cancelled } if cancelled == &id
+        )));
+    }
+
+    #[test]
+    fn duplicate_engine_ids_are_cancelled_without_replacing_history() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        assert!(widget.downloads.requested(
+            "test-download-1".into(),
+            "https://persisted.test/old".into(),
+            "old.bin",
+        ));
+        engine.send(WebViewCommand::StartDownload {
+            uri: "https://example.test/new.bin".into(),
+        });
+        widget.apply_engine_events();
+        assert_eq!(
+            widget.downloads.get("test-download-1").unwrap().source_url,
+            "https://persisted.test/old"
+        );
+        assert!(engine.commands().iter().any(|command| matches!(
+            command,
+            WebViewCommand::CancelDownload { id } if id == "test-download-1"
+        )));
+    }
+
+    #[test]
+    fn download_operations_reject_non_web_schemes_and_materialize_stable_actions() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        assert!(
+            widget
+                .perform_browser_operation(BrowserOperation::StartDownload {
+                    url: "file:///etc/passwd".into(),
+                })
+                .is_err()
+        );
+        assert!(
+            !engine
+                .commands()
+                .iter()
+                .any(|command| matches!(command, WebViewCommand::StartDownload { .. }))
+        );
+
+        widget.debug_show_downloads("completed");
+        let resource = widget
+            .resource_by_id("browser.download.review-complete")
+            .expect("download resource");
+        assert_eq!(resource.kind, "browser.download");
+        assert_eq!(
+            resource
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["show", "open", "reveal"]
+        );
+        for action in &resource.actions {
+            assert_eq!(action.locus, ui::qos_actions::ExecutionLocus::ClientLocal);
+        }
     }
 }
