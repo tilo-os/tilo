@@ -67,6 +67,7 @@ pub mod app;
 pub mod customize;
 pub mod doc;
 mod export_dialog;
+mod host;
 pub mod model;
 pub mod probe;
 pub mod release;
