@@ -75,6 +75,18 @@ impl BooksDoc {
         Self::get_or_make_map(doc, &root, key)
     }
 
+    /// Every concurrent map object stored at one root key. Fresh documents
+    /// normally have one; legacy/lazily-created roots may conflict when two
+    /// offline peers create the first child simultaneously, and reads must
+    /// materialise all branches instead of accepting Automerge's one winner.
+    fn root_maps(doc: &AutoCommit, key: &str) -> Vec<ObjId> {
+        doc.get_all(&ROOT, key)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(value, id)| matches!(value, Value::Object(ObjType::Map)).then_some(id))
+            .collect()
+    }
+
     fn scalar_f64(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<f64> {
         match doc.get(obj, key) {
             Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
@@ -122,10 +134,7 @@ impl BooksDoc {
     // --- settings ----------------------------------------------------------
 
     pub fn has_settings(doc: &AutoCommit) -> bool {
-        matches!(
-            doc.get(&ROOT, "settings"),
-            Ok(Some((Value::Object(ObjType::Map), _)))
-        )
+        !Self::root_maps(doc, "settings").is_empty()
     }
 
     pub fn write_settings(doc: &mut AutoCommit, s: &Settings) {
@@ -139,30 +148,61 @@ impl BooksDoc {
         let _ = doc.put(&m, "composition", s.composition.as_str());
     }
 
+    /// Write only fields changed by one authored settings gesture. This keeps
+    /// concurrent changes to unrelated preferences (for example theme and
+    /// line spacing) as independent Automerge register updates.
+    pub fn write_settings_delta(doc: &mut AutoCommit, before: &Settings, after: &Settings) {
+        let m = Self::root_map(doc, "settings");
+        if before.font_scale.to_bits() != after.font_scale.to_bits() {
+            let _ = doc.put(&m, "font_scale", f64::from(after.font_scale));
+        }
+        if before.line_spacing.to_bits() != after.line_spacing.to_bits() {
+            let _ = doc.put(&m, "line_spacing", f64::from(after.line_spacing));
+        }
+        if before.font_id != after.font_id {
+            let _ = doc.put(&m, "font_id", after.font_id.as_str());
+        }
+        if before.theme != after.theme {
+            let _ = doc.put(&m, "theme", after.theme.as_str());
+        }
+        if before.scheme_id != after.scheme_id {
+            let _ = doc.put(&m, "scheme_id", after.scheme_id.as_str());
+        }
+        if before.mode != after.mode {
+            let _ = doc.put(&m, "mode", after.mode.as_str());
+        }
+        if before.composition != after.composition {
+            let _ = doc.put(&m, "composition", after.composition.as_str());
+        }
+    }
+
     pub fn read_settings(doc: &AutoCommit) -> Settings {
         let mut s = Settings::default();
-        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "settings") else {
+        let maps = Self::root_maps(doc, "settings");
+        if maps.is_empty() {
             return s;
-        };
-        if let Some(v) = Self::scalar_f64(doc, &m, "font_scale") {
+        }
+        let f64_value = |key| maps.iter().find_map(|map| Self::scalar_f64(doc, map, key));
+        let str_value = |key| maps.iter().find_map(|map| Self::scalar_str(doc, map, key));
+        if let Some(v) = f64_value("font_scale") {
             s.font_scale = (v as f32).clamp(Settings::FONT_MIN, Settings::FONT_MAX);
         }
-        if let Some(v) = Self::scalar_f64(doc, &m, "line_spacing") {
+        if let Some(v) = f64_value("line_spacing") {
             s.line_spacing = (v as f32).clamp(Settings::SPACING_MIN, Settings::SPACING_MAX);
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "font_id") {
+        if let Some(v) = str_value("font_id") {
             s.font_id = v;
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "theme") {
+        if let Some(v) = str_value("theme") {
             s.theme = ReadTheme::from_str(&v);
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "scheme_id") {
+        if let Some(v) = str_value("scheme_id") {
             s.scheme_id = v;
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "mode") {
+        if let Some(v) = str_value("mode") {
             s.mode = ReadMode::from_str(&v);
         }
-        if let Some(v) = Self::scalar_str(doc, &m, "composition") {
+        if let Some(v) = str_value("composition") {
             s.composition = crate::model::CompositionStyle::from_str(&v);
         }
         s
@@ -174,31 +214,85 @@ impl BooksDoc {
     /// built-in [`default_fonts`] set is returned without writing, so the
     /// document stays clean until the user actually edits the registry.
     pub fn read_fonts(doc: &AutoCommit) -> Vec<FontEntry> {
-        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "fonts") else {
-            return default_fonts();
-        };
-        let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
-                continue;
-            };
-            let id = Self::scalar_str(doc, &e, "id").unwrap_or_default();
-            if id.is_empty() {
-                continue;
+        let mut out = default_fonts();
+        if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "fonts") {
+            out.clear();
+            for i in 0..doc.length(&list) {
+                let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                    continue;
+                };
+                if let Some(font) = Self::read_font_entry(doc, &e, None) {
+                    out.push(font);
+                }
             }
-            out.push(FontEntry {
-                kind: FontKind::from_code(
-                    &Self::scalar_str(doc, &e, "kind").unwrap_or_else(|| "default".into()),
-                ),
-                name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
-                size_mult: Self::scalar_f64(doc, &e, "size_mult").map_or(1.0, |v| {
-                    (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)
-                }),
-                shown: Self::scalar_bool(doc, &e, "shown").unwrap_or(true),
-                id,
-            });
         }
+        for entries in Self::root_maps(doc, "font_entries") {
+            let keys: Vec<String> = doc.keys(&entries).collect();
+            for id in keys {
+                if Self::has_tombstone(doc, "font_tombstones", &id) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&entries, &id) else {
+                    continue;
+                };
+                let Some(font) = Self::read_font_entry(doc, &entry, Some(id.as_str())) else {
+                    continue;
+                };
+                if let Some(existing) = out.iter_mut().find(|existing| existing.id == font.id) {
+                    *existing = font;
+                } else {
+                    out.push(font);
+                }
+            }
+        }
+        out.retain(|font| !Self::has_tombstone(doc, "font_tombstones", &font.id));
         if out.is_empty() { default_fonts() } else { out }
+    }
+
+    fn read_font_entry(
+        doc: &AutoCommit,
+        e: &ObjId,
+        fallback_id: Option<&str>,
+    ) -> Option<FontEntry> {
+        let id = Self::scalar_str(doc, e, "id").unwrap_or_default();
+        let id = if id.is_empty() {
+            fallback_id?.to_string()
+        } else {
+            id
+        };
+        Some(FontEntry {
+            kind: FontKind::from_code(
+                &Self::scalar_str(doc, e, "kind").unwrap_or_else(|| "default".into()),
+            ),
+            name: Self::scalar_str(doc, e, "name").unwrap_or_else(|| id.clone()),
+            size_mult: Self::scalar_f64(doc, e, "size_mult").map_or(1.0, |v| {
+                (v as f32).clamp(FontEntry::MULT_MIN, FontEntry::MULT_MAX)
+            }),
+            shown: Self::scalar_bool(doc, e, "shown").unwrap_or(true),
+            id,
+        })
+    }
+
+    /// Upsert one stable font entity. Tombstoned ids are never resurrected by
+    /// a delayed peer edit; a newly-added face always receives a fresh id.
+    pub fn upsert_font(doc: &mut AutoCommit, font: &FontEntry) {
+        if Self::has_tombstone(doc, "font_tombstones", &font.id) {
+            return;
+        }
+        let entries = Self::root_map(doc, "font_entries");
+        let entry = Self::get_or_make_map(doc, &entries, &font.id);
+        let _ = doc.put(&entry, "id", font.id.as_str());
+        let _ = doc.put(&entry, "kind", font.kind.as_code());
+        let _ = doc.put(&entry, "name", font.name.as_str());
+        let _ = doc.put(&entry, "size_mult", f64::from(font.size_mult));
+        let _ = doc.put(&entry, "shown", font.shown);
+    }
+
+    pub fn remove_font(doc: &mut AutoCommit, id: &str) {
+        let tombstones = Self::root_map(doc, "font_tombstones");
+        let _ = doc.put(&tombstones, id, true);
+        let entries = Self::root_map(doc, "font_entries");
+        let _ = doc.delete(&entries, id);
     }
 
     /// Replace the whole font registry (the manager edits the list wholesale).
@@ -231,12 +325,10 @@ impl BooksDoc {
     /// The registry-wide default font id (used when a book has no explicit
     /// per-reader selection). Empty string means "the first registered font".
     pub fn read_default_font(doc: &AutoCommit) -> String {
-        match doc.get(&ROOT, "settings") {
-            Ok(Some((Value::Object(ObjType::Map), m))) => {
-                Self::scalar_str(doc, &m, "default_font").unwrap_or_default()
-            }
-            _ => String::new(),
-        }
+        Self::root_maps(doc, "settings")
+            .iter()
+            .find_map(|map| Self::scalar_str(doc, map, "default_font"))
+            .unwrap_or_default()
     }
 
     pub fn write_default_font(doc: &mut AutoCommit, id: &str) {
@@ -249,13 +341,17 @@ impl BooksDoc {
     /// Read the shelf's sort order + hide-read flag (defaults when unset).
     pub fn read_library_prefs(doc: &AutoCommit) -> LibraryPrefs {
         let mut p = LibraryPrefs::default();
-        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&ROOT, "settings") else {
-            return p;
-        };
-        if let Some(v) = Self::scalar_str(doc, &m, "library_sort") {
+        let maps = Self::root_maps(doc, "settings");
+        if let Some(v) = maps
+            .iter()
+            .find_map(|map| Self::scalar_str(doc, map, "library_sort"))
+        {
             p.sort = LibrarySort::from_str(&v);
         }
-        if let Some(v) = Self::scalar_bool(doc, &m, "library_hide_read") {
+        if let Some(v) = maps
+            .iter()
+            .find_map(|map| Self::scalar_bool(doc, map, "library_hide_read"))
+        {
             p.hide_read = v;
         }
         p
@@ -265,6 +361,20 @@ impl BooksDoc {
         let m = Self::root_map(doc, "settings");
         let _ = doc.put(&m, "library_sort", p.sort.as_str());
         let _ = doc.put(&m, "library_hide_read", p.hide_read);
+    }
+
+    pub fn write_library_prefs_delta(
+        doc: &mut AutoCommit,
+        before: &LibraryPrefs,
+        after: &LibraryPrefs,
+    ) {
+        let m = Self::root_map(doc, "settings");
+        if before.sort != after.sort {
+            let _ = doc.put(&m, "library_sort", after.sort.as_str());
+        }
+        if before.hide_read != after.hide_read {
+            let _ = doc.put(&m, "library_hide_read", after.hide_read);
+        }
     }
 
     // --- the library: books the reader has added, keyed by content-hash id -
@@ -377,36 +487,91 @@ impl BooksDoc {
     /// Read the registered colour schemes, falling back to the built-ins when
     /// none are stored (kept out of the document until the user edits them).
     pub fn read_schemes(doc: &AutoCommit) -> Vec<ColorScheme> {
-        let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "schemes") else {
-            return default_schemes();
-        };
-        let mut out = Vec::new();
-        for i in 0..doc.length(&list) {
-            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
-                continue;
-            };
-            let id = Self::scalar_str(doc, &e, "id").unwrap_or_default();
-            if id.is_empty() {
-                continue;
+        let mut out = default_schemes();
+        if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&ROOT, "schemes") {
+            out.clear();
+            for i in 0..doc.length(&list) {
+                let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&list, i) else {
+                    continue;
+                };
+                if let Some(scheme) = Self::read_scheme_entry(doc, &e, None) {
+                    out.push(scheme);
+                }
             }
-            let page = unpack_rgb(Self::scalar_i64(doc, &e, "page").unwrap_or(0));
-            out.push(ColorScheme {
-                name: Self::scalar_str(doc, &e, "name").unwrap_or_else(|| id.clone()),
-                page,
-                ink: unpack_rgb(Self::scalar_i64(doc, &e, "ink").unwrap_or(0)),
-                accent: unpack_rgb(Self::scalar_i64(doc, &e, "accent").unwrap_or(0)),
-                dark: Self::scalar_bool(doc, &e, "dark")
-                    .unwrap_or_else(|| crate::model::luminance(page) < 0.5),
-                enabled: Self::scalar_bool(doc, &e, "enabled").unwrap_or(true),
-                builtin: Self::scalar_bool(doc, &e, "builtin").unwrap_or(false),
-                id,
-            });
         }
+        for entries in Self::root_maps(doc, "scheme_entries") {
+            let keys: Vec<String> = doc.keys(&entries).collect();
+            for id in keys {
+                if Self::has_tombstone(doc, "scheme_tombstones", &id) {
+                    continue;
+                }
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&entries, &id) else {
+                    continue;
+                };
+                let Some(scheme) = Self::read_scheme_entry(doc, &entry, Some(id.as_str())) else {
+                    continue;
+                };
+                if let Some(existing) = out.iter_mut().find(|existing| existing.id == scheme.id) {
+                    *existing = scheme;
+                } else {
+                    out.push(scheme);
+                }
+            }
+        }
+        out.retain(|scheme| !Self::has_tombstone(doc, "scheme_tombstones", &scheme.id));
         if out.is_empty() {
             default_schemes()
         } else {
             out
         }
+    }
+
+    fn read_scheme_entry(
+        doc: &AutoCommit,
+        e: &ObjId,
+        fallback_id: Option<&str>,
+    ) -> Option<ColorScheme> {
+        let id = Self::scalar_str(doc, e, "id").unwrap_or_default();
+        let id = if id.is_empty() {
+            fallback_id?.to_string()
+        } else {
+            id
+        };
+        let page = unpack_rgb(Self::scalar_i64(doc, e, "page").unwrap_or(0));
+        Some(ColorScheme {
+            name: Self::scalar_str(doc, e, "name").unwrap_or_else(|| id.clone()),
+            page,
+            ink: unpack_rgb(Self::scalar_i64(doc, e, "ink").unwrap_or(0)),
+            accent: unpack_rgb(Self::scalar_i64(doc, e, "accent").unwrap_or(0)),
+            dark: Self::scalar_bool(doc, e, "dark")
+                .unwrap_or_else(|| crate::model::luminance(page) < 0.5),
+            enabled: Self::scalar_bool(doc, e, "enabled").unwrap_or(true),
+            builtin: Self::scalar_bool(doc, e, "builtin").unwrap_or(false),
+            id,
+        })
+    }
+
+    pub fn upsert_scheme(doc: &mut AutoCommit, scheme: &ColorScheme) {
+        if Self::has_tombstone(doc, "scheme_tombstones", &scheme.id) {
+            return;
+        }
+        let entries = Self::root_map(doc, "scheme_entries");
+        let entry = Self::get_or_make_map(doc, &entries, &scheme.id);
+        let _ = doc.put(&entry, "id", scheme.id.as_str());
+        let _ = doc.put(&entry, "name", scheme.name.as_str());
+        let _ = doc.put(&entry, "page", pack_rgb(scheme.page));
+        let _ = doc.put(&entry, "ink", pack_rgb(scheme.ink));
+        let _ = doc.put(&entry, "accent", pack_rgb(scheme.accent));
+        let _ = doc.put(&entry, "dark", scheme.dark);
+        let _ = doc.put(&entry, "enabled", scheme.enabled);
+        let _ = doc.put(&entry, "builtin", scheme.builtin);
+    }
+
+    pub fn remove_scheme(doc: &mut AutoCommit, id: &str) {
+        let tombstones = Self::root_map(doc, "scheme_tombstones");
+        let _ = doc.put(&tombstones, id, true);
+        let entries = Self::root_map(doc, "scheme_entries");
+        let _ = doc.delete(&entries, id);
     }
 
     /// Replace the whole scheme registry (the manager edits it wholesale).
@@ -484,10 +649,9 @@ impl BooksDoc {
     }
 
     fn has_tombstone(doc: &AutoCommit, key: &str, id: &str) -> bool {
-        let Ok(Some((Value::Object(ObjType::Map), tombstones))) = doc.get(&ROOT, key) else {
-            return false;
-        };
-        Self::scalar_bool(doc, &tombstones, id).unwrap_or(false)
+        Self::root_maps(doc, key)
+            .iter()
+            .any(|tombstones| Self::scalar_bool(doc, tombstones, id).unwrap_or(false))
     }
 
     pub fn annotation_is_deleted(doc: &AutoCommit, id: Uuid) -> bool {
