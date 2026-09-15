@@ -277,6 +277,18 @@ pub enum WindowEvent {
     /// An mouse button press has been received.
     MouseInput { device_id: DeviceId, state: ElementState, button: MouseButton },
 
+    /// A completed three-finger trackpad swipe.
+    ///
+    /// Unlike scrolling or panning, this is one discrete event per swipe.
+    /// The direction is a unit vector: positive x is right, positive y is down.
+    /// It is independent of display scaling and the natural scrolling preference.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - Only available on **macOS**, when enabled in the system trackpad settings.
+    #[cfg(target_os = "macos")]
+    SwipeGesture { device_id: DeviceId, delta: PhysicalPosition<f64> },
+
     /// Two-finger pinch gesture, often used for magnification.
     ///
     /// ## Platform-specific
@@ -1114,6 +1126,11 @@ mod tests {
                     device_id: did,
                     delta: 0.0,
                     phase: event::TouchPhase::Started,
+                });
+                #[cfg(target_os = "macos")]
+                with_window_event(SwipeGesture {
+                    device_id: did,
+                    delta: PhysicalPosition::new(-1.0, 0.0),
                 });
                 with_window_event(DoubleTapGesture { device_id: did });
                 with_window_event(RotationGesture {

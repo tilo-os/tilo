@@ -1,9 +1,9 @@
 //! First-use workspace launchpad.
 //!
 //! An empty collaborative desktop should explain the useful things people can
-//! do together, rather than presenting the implementation detail that they can
-//! "open an app". Every card below publishes a semantic shell action; the
-//! overlay host then routes it through the same app, invite, and Activity paths
+//! do together, with a direct route to open any available app. Every card
+//! publishes a semantic shell action; the overlay host routes it through
+//! the same app, invite, and Activity paths
 //! used everywhere else.
 
 use std::collections::HashMap;
@@ -24,6 +24,8 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+
+pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
 
 pub const EMPTY_WORKSPACE_CHAT: &str = "shell.empty-workspace.chat";
 pub const EMPTY_WORKSPACE_NOTES: &str = "shell.empty-workspace.notes";
@@ -112,6 +114,7 @@ pub(crate) struct CollaborationLaunchpad {
     last_cursor: Point,
     focused: bool,
     selected: usize,
+    app_button_size: (f64, f64),
 }
 
 impl CollaborationLaunchpad {
@@ -122,11 +125,22 @@ impl CollaborationLaunchpad {
             last_cursor: Point::ZERO,
             focused: false,
             selected: 0,
+            app_button_size: (160.0, 36.0),
         }
     }
 
     fn fire(action: LaunchpadAction, state: &mut AutoCommit, path: &ObjId) {
         let _ = state.put(path, action.path(), true);
+    }
+
+    fn app_button_rect(&self) -> Rect {
+        let last = self.card_rects[5];
+        Rect::new(
+            last.x1 - self.app_button_size.0,
+            last.y1 + 14.0,
+            last.x1,
+            last.y1 + 14.0 + self.app_button_size.1,
+        )
     }
 
     fn hovered(&self) -> Option<usize> {
@@ -239,6 +253,7 @@ impl Widget for CollaborationLaunchpad {
     #[allow(
         clippy::arithmetic_side_effects,
         clippy::cast_possible_truncation,
+        clippy::too_many_lines,
         reason = "immediate-mode renderer composes bounded logical-pixel geometry; text width API uses f32"
     )]
     fn draw(
@@ -249,27 +264,55 @@ impl Widget for CollaborationLaunchpad {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let (cards, _) = Self::card_geometry(self.rect);
-        self.card_rects = cards;
+        // Theme tokens already include accessibility scaling; TextRenderer
+        // also applies its configured scale to authored font sizes.
+        let scale = text.text_scale();
+        let base = theme.tokens.typography.scale.base / scale;
+        let small = theme.tokens.typography.scale.sm / scale;
+        let caption = theme.tokens.typography.scale.xs / scale;
+        let heading = theme.tokens.typography.scale.x3l / scale;
+        let (button_w, button_h) = text.measure("Open an app", base, None);
+        self.app_button_size = (
+            (f64::from(button_w) + 32.0).max(160.0),
+            (f64::from(button_h) + 16.0).max(36.0),
+        );
+        self.card_rects = Self::card_geometry(self.rect).0;
+        // Leave the persistent help affordance its bottom band on laptops.
+        let overflow = (self.app_button_rect().y1 - (self.rect.y1 - 64.0)).max(0.0);
+        for card in &mut self.card_rects {
+            *card = *card + vello::kurbo::Vec2::new(0.0, -overflow);
+        }
+        let cards = self.card_rects;
         let hovered = self.hovered();
         let content_left = cards.first().map_or(self.rect.x0, |card| card.x0);
         let heading_y = cards.first().map_or(self.rect.y0, |card| card.y0) - 90.0;
+        let panel_width = cards[5].x1 - content_left;
+        let title = text.elide_to_width("Make something together", heading, panel_width as f32);
         text.draw_text(
             scene,
-            "Make something together",
-            theme.tokens.typography.scale.x3l,
+            &title,
+            heading,
             theme.text_primary,
             transform * Affine::translate((content_left, heading_y)),
             None,
         );
-        text.draw_text(
-            scene,
+        let (_, title_h) = text.measure(&title, heading, None);
+        let subtitle = text.elide_to_width(
             "Choose how to begin. Workspace content syncs; your layout and controls stay local.",
-            theme.tokens.typography.scale.sm,
-            theme.text_dim,
-            transform * Affine::translate((content_left, heading_y + 43.0)),
-            None,
+            small,
+            panel_width as f32,
         );
+        let (_, subtitle_h) = text.measure(&subtitle, small, None);
+        if f64::from(title_h + subtitle_h) + 9.0 <= 90.0 {
+            text.draw_text(
+                scene,
+                &subtitle,
+                small,
+                theme.text_dim,
+                transform * Affine::translate((content_left, heading_y + f64::from(title_h) + 3.0)),
+                None,
+            );
+        }
 
         for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
             let active = hovered == Some(index) || (self.focused && self.selected == index);
@@ -306,32 +349,71 @@ impl Widget for CollaborationLaunchpad {
             action
                 .icon()
                 .draw_with_stroke(scene, transform, icon_rect, theme.accent_primary, 1.6);
+            let label = text.elide_to_width(action.label(), base, (rect.width() - 72.0) as f32);
             text.draw_text(
                 scene,
-                action.label(),
-                theme.tokens.typography.scale.base,
+                &label,
+                base,
                 theme.text_primary,
                 transform * Affine::translate((rect.x0 + 56.0, rect.y0 + 16.0)),
                 None,
             );
-            if rect.height() >= 78.0 {
+            let (_, label_h) = text.measure(&label, base, None);
+            let (_, detail_h) = text.measure(action.detail(), caption, None);
+            let detail_y = (16.0 + f64::from(label_h) + 6.0).max(47.0);
+            if detail_y + f64::from(detail_h) + 6.0 <= rect.height() {
+                let detail =
+                    text.elide_to_width(action.detail(), caption, (rect.width() - 72.0) as f32);
                 text.draw_text(
                     scene,
-                    action.detail(),
-                    theme.tokens.typography.scale.xs,
+                    &detail,
+                    caption,
                     theme.text_dim,
-                    transform * Affine::translate((rect.x0 + 56.0, rect.y0 + 47.0)),
+                    transform * Affine::translate((rect.x0 + 56.0, rect.y0 + detail_y)),
                     Some((rect.width() - 72.0) as f32),
                 );
             }
         }
 
+        let button = self.app_button_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.bg_primary,
+            None,
+            &RoundedRect::from_rect(button, 8.0),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            if self.focused && self.selected == 6 {
+                theme.border_focus
+            } else {
+                theme.border_standard
+            },
+            None,
+            &RoundedRect::from_rect(button, 8.0),
+        );
+        text.draw_text(
+            scene,
+            "Open an app",
+            base,
+            theme.text_primary,
+            transform * Affine::translate((button.x0 + 16.0, button.y0 + 8.0)),
+            None,
+        );
         if let Some(last) = cards.last() {
+            let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
+            let hint = text.elide_to_width(
+                "Arrow keys move  ·  Enter opens  ·  Super+N shows every app",
+                caption,
+                hint_width,
+            );
             text.draw_text(
                 scene,
-                "Arrow keys move  ·  Enter opens  ·  Super+N shows every app",
-                theme.tokens.typography.scale.xs,
-                theme.text_tertiary,
+                &hint,
+                caption,
+                theme.text_primary,
                 transform * Affine::translate((content_left, last.y1 + 22.0)),
                 None,
             );
@@ -354,6 +436,9 @@ impl Widget for CollaborationLaunchpad {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        if *handled {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -363,7 +448,11 @@ impl Widget for CollaborationLaunchpad {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(index) = self.hovered() {
+                if self.app_button_rect().contains(self.last_cursor) {
+                    self.selected = 6;
+                    let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
+                    *handled = true;
+                } else if let Some(index) = self.hovered() {
                     self.selected = index;
                     if let Some(action) = LaunchpadAction::ALL.get(index).copied() {
                         Self::fire(action, state, path);
@@ -375,7 +464,7 @@ impl Widget for CollaborationLaunchpad {
                 if self.focused && event.state == ElementState::Pressed =>
             {
                 let (_, columns) = Self::card_geometry(self.rect);
-                let last_index = LaunchpadAction::ALL.len().saturating_sub(1);
+                let last_index = LaunchpadAction::ALL.len();
                 let next = match event.logical_key {
                     Key::Named(NamedKey::ArrowRight) => {
                         Some(self.selected.saturating_add(1).min(last_index))
@@ -395,7 +484,12 @@ impl Widget for CollaborationLaunchpad {
                         }
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                        if let Some(action) = LaunchpadAction::ALL.get(self.selected).copied() {
+                        if self.selected == 6 {
+                            let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
+                            *handled = true;
+                        } else if let Some(action) =
+                            LaunchpadAction::ALL.get(self.selected).copied()
+                        {
                             Self::fire(action, state, path);
                             *handled = true;
                         }
@@ -413,10 +507,9 @@ impl Widget for CollaborationLaunchpad {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.card_rects
-            .iter()
-            .any(|rect| rect.contains(point))
-            .then_some(winit::window::CursorIcon::Pointer)
+        (self.card_rects.iter().any(|rect| rect.contains(point))
+            || self.app_button_rect().contains(point))
+        .then_some(winit::window::CursorIcon::Pointer)
     }
 
     fn is_focusable(&self) -> bool {
@@ -450,9 +543,11 @@ impl Widget for CollaborationLaunchpad {
                     LaunchpadAction::ALL
                         .into_iter()
                         .enumerate()
-                        .map(|(index, action)| {
+                        .zip(self.card_rects)
+                        .map(|((index, action), bounds)| {
                             AccessNode::new(Role::Button)
                                 .with_name(action.label())
+                                .with_bounds(bounds)
                                 .with_description(action.detail())
                                 .with_action_target(action.path())
                                 .with_state(AccessState {
@@ -461,6 +556,11 @@ impl Widget for CollaborationLaunchpad {
                                     ..Default::default()
                                 })
                         })
+                        .chain(std::iter::once(AccessNode::new(Role::Button)
+                            .with_name("Open an app")
+                            .with_action_target(EMPTY_WORKSPACE_OPEN_APP)
+                            .with_bounds(self.app_button_rect())
+                            .with_state(AccessState { focusable: true, focused: self.focused && self.selected == 6, ..Default::default() })))
                         .collect(),
                 ),
         )
@@ -468,12 +568,16 @@ impl Widget for CollaborationLaunchpad {
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let [index] = path else { return None };
-        self.card_rects.get(*index).copied()
+        if *index == 6 {
+            Some(self.app_button_rect())
+        } else {
+            self.card_rects.get(*index).copied()
+        }
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
         let [index] = path else { return false };
-        if *index >= LaunchpadAction::ALL.len() {
+        if *index > LaunchpadAction::ALL.len() {
             return false;
         }
         self.focused = true;
@@ -488,6 +592,10 @@ impl Widget for CollaborationLaunchpad {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if target == EMPTY_WORKSPACE_OPEN_APP && matches!(action, Action::Activate) {
+            let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
+            return true;
+        }
         let Some(item) = LaunchpadAction::ALL
             .into_iter()
             .find(|item| item.path() == target)
@@ -506,6 +614,56 @@ impl Widget for CollaborationLaunchpad {
 mod tests {
     use super::*;
     use automerge::ReadDoc as _;
+
+    #[test]
+    fn desktop_launchpad_exposes_an_app_opener() {
+        let pad = CollaborationLaunchpad::new();
+        assert!(
+            pad.accessibility()
+                .unwrap()
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Open an app"))
+        );
+    }
+
+    #[test]
+    fn desktop_app_button_has_visible_bounds_in_compact_layouts() {
+        for (width, height) in [(1280.0, 752.0), (960.0, 492.0), (460.0, 712.0)] {
+            let mut pad = CollaborationLaunchpad::new();
+            pad.rect = Rect::new(0.0, 48.0, width, height + 48.0);
+            for scale in [1.0, 1.5, 2.0] {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut text = TextRenderer::new();
+                text.set_text_scale(scale);
+                pad.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                let button = pad.app_button_rect();
+                let (label_w, label_h) = text.measure(
+                    "Open an app",
+                    theme.tokens.typography.scale.base / scale,
+                    None,
+                );
+                assert!(
+                    f64::from(label_w) + 32.0 <= button.width()
+                        && f64::from(label_h) + 16.0 <= button.height()
+                );
+                assert!(button.width() >= 24.0 && button.height() >= 24.0);
+                assert!(
+                    pad.rect.contains(button.origin())
+                        && button.x1 <= pad.rect.x1
+                        && button.y1 <= pad.rect.y1,
+                    "{button:?} outside {:?}",
+                    pad.rect
+                );
+            }
+        }
+    }
 
     #[test]
     fn every_card_has_a_unique_semantic_route() {

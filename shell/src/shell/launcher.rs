@@ -983,9 +983,17 @@ pub fn runtime_dir() -> PathBuf {
     {
         return PathBuf::from(dir);
     }
-    // SAFETY: getuid always succeeds.
-    let uid = unsafe { libc::getuid() };
-    PathBuf::from(format!("/run/user/{uid}"))
+    #[cfg(target_os = "macos")]
+    {
+        // Darwin supplies a per-user temporary directory through TMPDIR.
+        std::env::temp_dir()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // SAFETY: getuid always succeeds.
+        let uid = unsafe { libc::getuid() };
+        PathBuf::from(format!("/run/user/{uid}"))
+    }
 }
 
 /// Every installed package, GUI or not, freshly read from the registry.

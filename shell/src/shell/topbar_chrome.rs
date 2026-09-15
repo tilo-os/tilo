@@ -2607,6 +2607,10 @@ impl Widget for TopBarChrome {
             return;
         }
 
+        // Theme typography already includes accessibility scale.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+
         // Cache miss — encode at IDENTITY, then splice with `out_transform`.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
@@ -2670,6 +2674,7 @@ impl Widget for TopBarChrome {
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_fp = fp;
+        text_renderer.set_text_scale(renderer_scale);
     }
 
     fn handle_event(
@@ -2992,6 +2997,40 @@ mod calendar_strip_tests {
 mod tests {
     use super::*;
     use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+
+    #[test]
+    fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut bar = sample_chrome();
+        bar.workspace_name = "Home".into();
+        bar.rect = Rect::new(0.0, 0.0, 960.0, 48.0);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        bar.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let runs = &scene.encoding().resources.glyph_runs;
+        assert!(!runs.is_empty());
+        assert!(
+            runs.iter()
+                .all(|run| run.font_size <= theme.tokens.typography.scale.lg)
+        );
+        assert_eq!(renderer.text_scale(), 2.0);
+        renderer.set_text_scale(1.0);
+        let (_, height) = renderer.measure_weighted(
+            "Home  1/1",
+            theme.tokens.typography.scale.sm,
+            None,
+            TextWeight::Semibold,
+        );
+        assert!(f64::from(height) <= bar.ws_pill_rect.height());
+        assert!(bar.ws_pill_rect.x1 <= bar.rect.center().x - bar.center_band_width(&theme) / 2.0);
+    }
 
     fn sample_chrome() -> TopBarChrome {
         let mut tree = WorkspaceTree {

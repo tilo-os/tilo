@@ -64,7 +64,7 @@ pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 /// Shared by the WebView's page buffers and the video decoder's hardware
 /// frames.
-#[cfg(feature = "dmabuf-import")]
+#[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
@@ -101,6 +101,7 @@ pub mod portal;
 pub mod presence;
 pub mod profiling;
 pub mod query_text;
+pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
 pub mod text_assistance;
 pub mod text_break;
