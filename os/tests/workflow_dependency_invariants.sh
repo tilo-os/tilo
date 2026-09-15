@@ -8,6 +8,7 @@ workflows="$repo/.forgejo/workflows"
 fail=0
 manifest="$repo/os/external-assets/github-assets.tsv"
 package_workflow="$workflows/package-desktop.yml"
+check_workflow="$workflows/check.yml"
 containerfile="$repo/os/Containerfile"
 nightly_workflow="$workflows/nightly.yml"
 visual_refresh_workflow="$workflows/refresh-visual-baselines.yml"
@@ -42,6 +43,14 @@ done < <(grep -R -n -o -E 'uses:[[:space:]]*[^[:space:]#]+' "$workflows")
 
 if [ "$fail" = 0 ]; then
   printf 'ok    every remote workflow action is pinned to a full commit SHA\n'
+fi
+
+if grep -Fq 'command -v openssl >/dev/null || dnf install -y openssl' \
+    "$check_workflow"; then
+  printf 'ok    affected-package CI installs the crypto tool used by security invariants\n'
+else
+  printf 'affected-package CI does not provide OpenSSL to security invariants\n' >&2
+  fail=1
 fi
 
 nightly_visual_image="$({

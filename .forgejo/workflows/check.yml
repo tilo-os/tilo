@@ -96,6 +96,7 @@ jobs:
       - name: Ensure invariant test tooling
         run: |
           command -v jq >/dev/null || dnf install -y jq
+          command -v openssl >/dev/null || dnf install -y openssl
           python3 -c 'import PIL' 2>/dev/null || dnf install -y python3-pillow
 
       # These boundaries are mostly shell, image configuration, and workflow
