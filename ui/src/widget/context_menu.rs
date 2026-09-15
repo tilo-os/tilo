@@ -290,6 +290,7 @@ fn wrapping_step(i: usize, n: usize, down: bool) -> usize {
 /// Menus are shared by pointer and touch surfaces; never shrink an action
 /// below the platform's 44 logical-pixel minimum target.
 const ROW_HEIGHT: f64 = 44.0;
+const _: () = assert!(ROW_HEIGHT >= 44.0);
 const SEPARATOR_HEIGHT: f64 = 9.0;
 const MENU_WIDTH: f64 = 220.0;
 const PADDING: f64 = 6.0;
@@ -872,7 +873,6 @@ mod tests {
     #[test]
     fn rows_are_touch_sized_and_touch_release_activates_once() {
         let (mut menu, fired) = open_menu();
-        assert!(ROW_HEIGHT >= 44.0);
         let rect = menu.get_rect();
         let point = Point::new(rect.x0 + 20.0, rect.y0 + PADDING + ROW_HEIGHT / 2.0);
 
