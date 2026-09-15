@@ -225,6 +225,7 @@ build_image() {
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
     --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
+    --build-arg "WPE_BUILD_JOBS=${QOS_WPE_BUILD_JOBS:-8}" \
     --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
     --build-arg "QOS_HARDWARE_PROFILE=$QOS_HARDWARE_PROFILE" \
     --build-arg "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" \

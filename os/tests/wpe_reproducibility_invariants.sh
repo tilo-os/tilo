@@ -44,6 +44,22 @@ else
   ok 'WPE source selection has no latest-release scrape'
 fi
 has "$build_script" 'QOS_WPE_OFFLINE' 'WPE build supports a fail-closed offline source mode'
+budget_tmp="$(mktemp -d)"
+for jobs in 0 00 -1 invalid; do
+  if JOBS="$jobs" QOS_WPE_CACHE="$budget_tmp/cache" QOS_WPE_OFFLINE=1 \
+      bash "$build_script" verify-sources >"$budget_tmp/log" 2>&1; then
+    bad "WPE accepted invalid job budget: $jobs"
+  elif grep -Fq 'JOBS must be a positive integer' "$budget_tmp/log" \
+      && [ ! -e "$budget_tmp/cache" ]; then
+    ok "WPE rejects job budget $jobs before touching build inputs"
+  else
+    bad "WPE job budget $jobs did not fail before build setup"
+  fi
+done
+rm -f "$budget_tmp/log"
+rmdir "$budget_tmp"
+has "$image_script" 'WPE_BUILD_JOBS=${QOS_WPE_BUILD_JOBS:-8}' \
+  'image builds forward the explicit browser job budget'
 has "$container" 'QOS_WPE_SOURCE_DIR=/qos-assets QOS_WPE_OFFLINE=1' \
   'production WPE compilation uses only the verified external cache'
 
