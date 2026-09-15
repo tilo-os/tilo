@@ -13468,6 +13468,7 @@ dependencies = [
  "windows-vm",
  "winit",
  "word-processor",
+ "x25519-dalek 2.0.1",
  "xattr",
  "zbus 4.4.0",
  "zeroize",
