@@ -21,6 +21,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "graph",
     "narrow",
     "narrow-more",
+    "narrow-long-stack",
     "graph-narrow",
 ];
 pub fn write_shot_image(path: &std::path::Path) -> Result<(), image::ImageError> {
