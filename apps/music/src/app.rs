@@ -156,7 +156,9 @@ enum Action {
     BrowseGenre(String),
     /// Play `queue[index]` after replacing the queue.
     Play {
-        queue: Vec<String>,
+        /// Shared across every visible row hit so drawing a long list does not
+        /// clone the full queue once per row.
+        queue: Arc<Vec<String>>,
         index: usize,
     },
     TogglePlay,
@@ -876,7 +878,7 @@ impl MusicApp {
         self.inject_live_hits();
         self.dispatch(
             Action::Play {
-                queue: vec![first],
+                queue: vec![first].into(),
                 index: 0,
             },
             state,
@@ -899,7 +901,7 @@ impl MusicApp {
             crate::search_type::DeepLink::Track(id) => {
                 self.dispatch(
                     Action::Play {
-                        queue: vec![id],
+                        queue: vec![id].into(),
                         index: 0,
                     },
                     state,
@@ -2245,8 +2247,8 @@ impl MusicApp {
         }
     }
 
-    fn on_play(&mut self, queue: Vec<String>, index: usize, state: &mut AutoCommit) {
-        self.pb.queue = queue;
+    fn on_play(&mut self, queue: Arc<Vec<String>>, index: usize, state: &mut AutoCommit) {
+        self.pb.queue = Arc::unwrap_or_clone(queue);
         // A fresh queue invalidates any prior shuffle permutation; it's
         // rebuilt (current-first) on the next shuffled advance.
         self.shuffle_order.clear();
@@ -4209,7 +4211,7 @@ impl MusicApp {
         self.push_menu(
             "Play",
             Action::Play {
-                queue: vec![track.clone()],
+                queue: vec![track.clone()].into(),
                 index: 0,
             },
         );
@@ -4793,7 +4795,9 @@ fn embedded_cover_bytes(url: &str) -> Option<Vec<u8>> {
 /// hermetic `--shots` path never opens a socket.
 #[cfg(feature = "live")]
 fn image_fetcher() -> ui::Fetcher {
+    use std::io::Read;
     use std::sync::OnceLock;
+    const MAX_COVER_BYTES: u64 = 8 * 1024 * 1024;
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     Arc::new(|url: &str| {
         if let Some(bytes) = embedded_cover_bytes(url) {
@@ -4813,12 +4817,20 @@ fn image_fetcher() -> ui::Fetcher {
         if !resp.status().is_success() {
             return None;
         }
-        let bytes = resp.bytes().ok()?;
-        // Covers are small; reject empty or absurd payloads.
-        if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+        if resp
+            .content_length()
+            .is_some_and(|len| len > MAX_COVER_BYTES)
+        {
             return None;
         }
-        Some(bytes.to_vec())
+        // `Response::bytes` would allocate the complete body before checking
+        // its size. Read through a hard cap so a lying or absent
+        // Content-Length cannot turn cover art into an unbounded allocation.
+        let mut bytes = Vec::new();
+        resp.take(MAX_COVER_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        (!bytes.is_empty() && bytes.len() <= MAX_COVER_BYTES as usize).then_some(bytes)
     })
 }
 
@@ -5174,7 +5186,7 @@ mod tests {
         let queue: Vec<String> = vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()];
         app.dispatch(
             Action::Play {
-                queue: queue.clone(),
+                queue: queue.clone().into(),
                 index: 1,
             },
             &mut doc,
@@ -5301,7 +5313,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["a".into(), "b".into()],
+                queue: vec!["a".into(), "b".into()].into(),
                 index: 1,
             },
             &mut doc,
@@ -5975,7 +5987,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["a".into(), "b".into(), "c".into()],
+                queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 0,
             },
             &mut doc,
@@ -5994,7 +6006,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["a".into(), "b".into(), "c".into()],
+                queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 1,
             },
             &mut doc,
@@ -6011,7 +6023,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["a".into(), "b".into(), "c".into()],
+                queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 0,
             },
             &mut doc,
@@ -6785,7 +6797,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["tk_g1".into()],
+                queue: vec!["tk_g1".into()].into(),
                 index: 0,
             },
             &mut doc,
@@ -6890,7 +6902,7 @@ mod tests {
         // Play it → the app requests a stream resolution on the worker.
         app.dispatch(
             Action::Play {
-                queue: vec![first.to_string()],
+                queue: vec![first.to_string()].into(),
                 index: 0,
             },
             doc,
@@ -7142,7 +7154,7 @@ mod tests {
         app.inject_live_hits();
         app.dispatch(
             Action::Play {
-                queue: vec![first],
+                queue: vec![first].into(),
                 index: 0,
             },
             &mut doc,
@@ -7309,6 +7321,17 @@ mod tests {
         app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
     }
 
+    fn draw_once_large_text(app: &mut MusicApp, doc: &mut AutoCommit) {
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        app.sync(doc, &automerge::ROOT);
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut scene = Scene::new();
+        app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+    }
+
     #[test]
     fn draw_registers_row_menu_hits() {
         let (mut app, mut doc) = app_with_doc();
@@ -7344,6 +7367,71 @@ mod tests {
         assert!(has_action("tk_g3", true), "failed download has Retry");
     }
 
+    #[test]
+    fn large_text_download_failure_exposes_full_hover_and_assistive_recovery() {
+        use ui::a11y::Action as A11yAction;
+        use ui::widget::Widget as _;
+
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Downloads;
+        app.offline_errors
+            .insert("tk_g3".into(), "connection reset while downloading".into());
+        draw_once_large_text(&mut app, &mut doc);
+
+        let retry_hit = app
+            .hits
+            .iter()
+            .find(|hit| {
+                matches!(
+                    &hit.action,
+                    Action::SetOffline { track, keep: true } if track == "tk_g3"
+                )
+            })
+            .expect("large-text failed row has Retry action");
+        app.mouse = retry_hit.rect.center();
+        assert_eq!(
+            app.tooltip(),
+            Some("connection reset while downloading"),
+            "hover exposes the unelided transport failure"
+        );
+
+        let tree = app.accessibility().expect("music semantics");
+        let page = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Downloads"))
+            .expect("Downloads page");
+        let list = page
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Downloads items"))
+            .expect("Downloads list");
+        let failed = list
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Slow Tide"))
+            .expect("failed track is retained in assistive output");
+        assert!(
+            failed.description.as_deref().is_some_and(
+                |description| description.contains("connection reset while downloading")
+            ),
+            "assistive description contains the complete failure"
+        );
+        let retry = failed
+            .children
+            .iter()
+            .find_map(|node| node.action_target.as_deref())
+            .expect("failed track has an assistive Retry action")
+            .to_string();
+        assert!(app.perform_semantic_action(
+            &retry,
+            &A11yAction::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(!app.offline_errors.contains_key("tk_g3"));
+    }
+
     // ---- 10. shuffle actually reorders playback ----------------------------
 
     /// Build a longer play queue of real seeded tracks (index 0 = current).
@@ -7363,7 +7451,7 @@ mod tests {
         let q = shuffle_queue();
         app.dispatch(
             Action::Play {
-                queue: q.clone(),
+                queue: q.clone().into(),
                 index: 0,
             },
             &mut doc,
@@ -7399,7 +7487,7 @@ mod tests {
             .collect();
         app.dispatch(
             Action::Play {
-                queue: q.clone(),
+                queue: q.clone().into(),
                 index: 0,
             },
             &mut doc,
@@ -7441,7 +7529,7 @@ mod tests {
             .collect();
         app.dispatch(
             Action::Play {
-                queue: q.clone(),
+                queue: q.clone().into(),
                 index: 0,
             },
             &mut doc,
@@ -7465,7 +7553,13 @@ mod tests {
             .iter()
             .map(std::string::ToString::to_string)
             .collect();
-        app.dispatch(Action::Play { queue: q, index: 0 }, &mut doc);
+        app.dispatch(
+            Action::Play {
+                queue: q.into(),
+                index: 0,
+            },
+            &mut doc,
+        );
         app.dispatch(Action::ToggleShuffle, &mut doc); // on
         assert!(!app.shuffle_order.is_empty());
         app.dispatch(Action::ToggleShuffle, &mut doc); // off
@@ -7489,7 +7583,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["a".into(), "b".into(), "c".into()],
+                queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 0,
             },
             &mut doc,
@@ -7507,7 +7601,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["a".into()],
+                queue: vec!["a".into()].into(),
                 index: 0,
             },
             &mut doc,
@@ -7524,7 +7618,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["a".into(), "b".into(), "c".into()],
+                queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 0,
             },
             &mut doc,
@@ -7540,7 +7634,7 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["tk_g1".into(), "tk_g2".into()],
+                queue: vec!["tk_g1".into(), "tk_g2".into()].into(),
                 index: 0,
             },
             &mut doc,
@@ -8334,11 +8428,52 @@ mod tests {
     }
 
     #[test]
+    fn dense_track_rows_share_one_queue_snapshot() {
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Songs;
+        draw_at(&mut app, &mut doc, 1_280.0, 800.0);
+        let queues = app
+            .hits
+            .iter()
+            .filter_map(|hit| match &hit.action {
+                Action::Play { queue, .. } if queue.len() > 1 => Some(queue),
+                _ => None,
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(queues.len(), 2, "two visible track-row actions");
+        assert!(
+            Arc::ptr_eq(queues[0], queues[1]),
+            "rows share one immutable queue instead of cloning it per row"
+        );
+    }
+
+    #[test]
+    fn large_text_entity_page_deduplicates_local_and_resolved_track_identity() {
+        let (mut app, mut doc) = app_with_doc();
+        app.snap_album_page();
+        draw_once_large_text(&mut app, &mut doc);
+        let queue = app
+            .hits
+            .iter()
+            .find_map(|hit| match &hit.action {
+                Action::Play { queue, .. } => Some(queue),
+                _ => None,
+            })
+            .expect("album exposes playable rows");
+        assert_eq!(
+            queue.len(),
+            5,
+            "live-style and local identities for the same recording render once"
+        );
+    }
+
+    #[test]
     fn swiping_the_bar_left_plays_next() {
         let (mut app, mut doc) = app_with_doc();
         app.dispatch(
             Action::Play {
-                queue: vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()],
+                queue: vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()].into(),
                 index: 0,
             },
             &mut doc,

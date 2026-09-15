@@ -8,11 +8,10 @@
 //! - [`doc`] — the Automerge bridge: user-authored library state replicates
 //!   across devices; audio transport/cache never do.
 //! - [`backend`] — the swappable YouTube-Music data source
-//!   ([`backend::MusicBackend`]): an offline sample impl (default) and a real
-//!   rustypipe impl (`live` feature). `PoToken` is a seam ([`backend::potoken`]).
+//!   ([`backend::MusicBackend`]): a hermetic offline sample impl and the
+//!   shipping-default rustypipe impl (`live` feature). `PoToken` is a seam
+//!   ([`backend::potoken`]).
 //! - [`stream`] — the non-blocking worker driving [`backend`] off the UI thread.
-//! - [`source`] — legacy Piped/Invidious endpoint (`streaming` feature),
-//!   superseded by [`backend`]/`live`.
 //! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
 //!   feature).
 //! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-gated
@@ -69,7 +68,6 @@ pub mod net;
 pub mod relay;
 pub mod search_type;
 pub mod seed;
-pub mod source;
 pub mod storage;
 pub mod stream;
 pub mod sync;

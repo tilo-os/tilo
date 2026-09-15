@@ -844,7 +844,7 @@ fn local_offline_spec(id: &str, label: &str, tracks: Vec<String>, keep: bool) ->
         OperationKind::Effect,
         &MusicOperation::SetOffline { tracks, keep },
     );
-    spec.execution(ExecutionMode::Background { cancellable: false })
+    spec.execution(ExecutionMode::Background { cancellable: true })
         .returns(ResultSpec::Json {
             schema: serde_json::json!({
                 "type": "object",
@@ -2051,6 +2051,16 @@ mod tests {
             ExecutionMode::Background { cancellable: false }
         );
         assert!(matches!(play.contract.result, ResultSpec::Json { .. }));
+        let offline = catalog_track_resource(&track, &ctx.playback)
+            .actions
+            .into_iter()
+            .find(|action| action.id == "keep-offline")
+            .unwrap();
+        assert_eq!(
+            offline.contract.execution,
+            ExecutionMode::Background { cancellable: true },
+            "offline transfer is a bounded cancellable device effect"
+        );
     }
 
     #[test]
