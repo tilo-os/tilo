@@ -53,6 +53,7 @@ struct Table {
     sequence: u64,
     grants: HashMap<u64, Weak<GrantRecord>>,
     snapshots: BTreeMap<u64, Snapshot>,
+    operation_owners: Vec<Arc<crate::recovery::OperationOwner>>,
 }
 
 impl Table {
@@ -71,6 +72,7 @@ struct Snapshot {
 /// Trusted-host admission boundary. Construction does no filesystem or environment I/O.
 pub struct NativeGrantAuthority {
     inner: Arc<Authority>,
+    workers: Arc<crate::operations::WorkerQueue>,
 }
 
 /// A mount-scoped view of an explicit set of grants. Clones share terminal closure.
@@ -89,6 +91,8 @@ struct Session {
     allowed: Vec<GrantLease>,
     closed: AtomicBool,
     lifetimes: Mutex<Vec<Lifetime>>,
+    workers: Weak<crate::operations::WorkerQueue>,
+    pub(super) mutation_active: AtomicBool,
 }
 
 // A terminal lifetime releases snapshots even when an operation exits early.
@@ -154,17 +158,18 @@ struct GrantRecord {
     owner: FsOwner,
     rights: Vec<FsRight>,
     parent: Option<GrantLease>,
+    name: Option<EntryName>,
     object: Mutex<Option<NativeObject>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct NativeIdentity {
-    device: u64,
-    inode: u64,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(super) struct NativeIdentity {
+    pub(super) device: u64,
+    pub(super) inode: u64,
 }
 
 impl NativeIdentity {
-    fn of(metadata: &cap_std::fs::Metadata) -> Self {
+    pub(super) fn of(metadata: &cap_std::fs::Metadata) -> Self {
         Self {
             device: metadata.dev(),
             inode: metadata.ino(),
@@ -173,7 +178,7 @@ impl NativeIdentity {
 }
 
 #[derive(Clone)]
-enum NativeObject {
+pub(super) enum NativeObject {
     Directory {
         descriptor: Arc<Dir>,
         identity: NativeIdentity,
@@ -194,11 +199,11 @@ enum NativeObject {
     },
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, FsError> {
+pub(super) fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, FsError> {
     mutex.lock().map_err(|_| FsError::StoreUnavailable)
 }
 
-fn io_error(error: std::io::Error) -> FsError {
+pub(super) fn io_error(error: std::io::Error) -> FsError {
     match error.kind() {
         std::io::ErrorKind::NotFound => FsError::NotFound,
         std::io::ErrorKind::PermissionDenied => FsError::Denied,
@@ -279,6 +284,7 @@ impl NativeGrantAuthority {
                 state: Mutex::new(Table::default()),
                 limits,
             }),
+            workers: crate::operations::WorkerQueue::new(),
         }
     }
 
@@ -305,7 +311,9 @@ impl NativeGrantAuthority {
             identity: NativeIdentity::of(&metadata),
         };
         let mut table = lock(&self.inner.state)?;
-        let lease = self.inner.insert(&mut table, owner, rights, None, object)?;
+        let lease = self
+            .inner
+            .insert(&mut table, owner, rights, None, None, object)?;
         drop(table);
         Ok(DirectoryGrant { lease })
     }
@@ -336,7 +344,9 @@ impl NativeGrantAuthority {
             }
         };
         let mut table = lock(&self.inner.state)?;
-        let lease = self.inner.insert(&mut table, owner, rights, None, object)?;
+        let lease = self
+            .inner
+            .insert(&mut table, owner, rights, None, None, object)?;
         drop(table);
         Ok(FileGrant { lease })
     }
@@ -375,6 +385,8 @@ impl NativeGrantAuthority {
                 allowed,
                 closed: AtomicBool::new(false),
                 lifetimes: Mutex::new(Vec::new()),
+                workers: Arc::downgrade(&self.workers),
+                mutation_active: AtomicBool::new(false),
             }),
         })
     }
@@ -425,6 +437,7 @@ impl Authority {
         owner: FsOwner,
         rights: Vec<FsRight>,
         parent: Option<GrantLease>,
+        name: Option<EntryName>,
         object: NativeObject,
     ) -> Result<GrantLease, FsError> {
         table.grants.retain(|_, record| record.strong_count() != 0);
@@ -436,6 +449,7 @@ impl Authority {
             owner,
             rights,
             parent,
+            name,
             object: Mutex::new(Some(object)),
         });
         table.grants.insert(slot, Arc::downgrade(&record));
@@ -579,18 +593,28 @@ impl FsSession {
         parent: &GrantLease,
         name: &EntryName,
     ) -> Result<GrantedEntry, FsError> {
-        self.validate(table, parent, Some(FsRight::Enumerate))?;
+        self.lookup_right(table, parent, name, FsRight::Enumerate)
+    }
+
+    fn lookup_right(
+        &self,
+        table: &mut Table,
+        parent: &GrantLease,
+        name: &EntryName,
+        right: FsRight,
+    ) -> Result<GrantedEntry, FsError> {
+        self.validate(table, parent, Some(right))?;
         let descriptor = Self::directory(parent)?;
         let metadata = descriptor
             .symlink_metadata(name.as_os_str())
             .map_err(io_error)?;
         let identity = NativeIdentity::of(&metadata);
         let object = if metadata.is_symlink() {
-            self.validate(table, parent, Some(FsRight::Enumerate))?;
+            self.validate(table, parent, Some(right))?;
             let target = descriptor
                 .read_link_contents(name.as_os_str())
                 .map_err(io_error)?;
-            self.validate(table, parent, Some(FsRight::Enumerate))?;
+            self.validate(table, parent, Some(right))?;
             if NativeIdentity::of(
                 &descriptor
                     .symlink_metadata(name.as_os_str())
@@ -615,9 +639,9 @@ impl FsSession {
                 scope,
             }
         } else if metadata.is_file() || metadata.is_dir() {
-            self.validate(table, parent, Some(FsRight::Enumerate))?;
+            self.validate(table, parent, Some(right))?;
             let opened = open_pinned(&descriptor, name, &metadata, || {
-                self.validate(table, parent, Some(FsRight::Enumerate))
+                self.validate(table, parent, Some(right))
             })?;
             if metadata.is_dir() {
                 NativeObject::Directory {
@@ -636,13 +660,14 @@ impl FsSession {
                 _identity: identity,
             }
         };
-        self.validate(table, parent, Some(FsRight::Enumerate))?;
+        self.validate(table, parent, Some(right))?;
         let is_directory = matches!(object, NativeObject::Directory { .. });
         let lease = self.inner.authority.insert(
             table,
             parent.record.owner.clone(),
             parent.record.rights.clone(),
             Some(parent.clone()),
+            Some(name.clone()),
             object,
         )?;
         Ok(if is_directory {
@@ -1063,5 +1088,455 @@ mod tests {
             Err(FsError::StalePage)
         ));
         assert_eq!(session.list(&root, second.next).unwrap().entries.len(), 1);
+    }
+}
+
+/// Private receipt locator. Components are names beneath a freshly allowed root,
+/// never paths to reopen from ambient authority.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct NativeLocator {
+    pub(super) root: NativeIdentity,
+    pub(super) parents: Vec<Vec<u8>>,
+    pub(super) name: Vec<u8>,
+    pub(super) identity: Option<NativeIdentity>,
+}
+
+pub(super) struct MutationSource {
+    pub(super) parent: Arc<Dir>,
+    pub(super) name: EntryName,
+    pub(super) object: NativeObject,
+    pub(super) locator: NativeLocator,
+}
+impl NativeObject {
+    pub(super) fn identity(&self) -> NativeIdentity {
+        match self {
+            Self::Directory { identity, .. }
+            | Self::File { identity, .. }
+            | Self::Link {
+                _identity: identity,
+                ..
+            }
+            | Self::Other {
+                _identity: identity,
+                ..
+            } => *identity,
+        }
+    }
+}
+impl NativeGrantAuthority {
+    /// Bind the host's durable operation namespace once for its authenticated owner.
+    /// # Errors
+    /// Returns `Denied` if a different store is already bound for this owner.
+    pub fn attach_operations(
+        &self,
+        owner: Arc<crate::recovery::OperationOwner>,
+    ) -> Result<(), FsError> {
+        let mut table = lock(&self.inner.state)?;
+        if let Some(existing) = table
+            .operation_owners
+            .iter()
+            .find(|existing| existing.owner() == owner.owner())
+        {
+            if !Arc::ptr_eq(existing, &owner) {
+                return Err(FsError::Denied);
+            }
+        } else {
+            table.operation_owners.push(Arc::clone(&owner));
+        }
+        let roots = table
+            .grants
+            .values()
+            .filter_map(Weak::upgrade)
+            .filter_map(|record| {
+                if record.parent.is_some()
+                    || &record.owner != owner.owner()
+                    || !record.rights.contains(&FsRight::Read)
+                {
+                    return None;
+                }
+                let lease = GrantLease {
+                    generation: record.generation.load(Ordering::Acquire),
+                    record,
+                };
+                if self.inner.validate(&table, &lease, owner.owner()).is_err()
+                    || !matches!(lease.object(), Ok(NativeObject::Directory { .. }))
+                {
+                    return None;
+                }
+                Some(DirectoryGrant { lease })
+            })
+            .collect::<Vec<_>>();
+        drop(table);
+        let session = self.bind(owner.owner().clone(), uuid::Uuid::nil(), &roots, &[])?;
+        let result = owner.reconcile(&session);
+        drop(owner);
+        result
+    }
+}
+impl FsSession {
+    pub(super) fn operation_store(&self) -> Result<Arc<crate::recovery::OperationOwner>, FsError> {
+        let table = self.call()?;
+        self.check_alive()?;
+        table
+            .operation_owners
+            .iter()
+            .find(|owner| owner.owner() == self.owner())
+            .cloned()
+            .ok_or(FsError::StoreUnavailable)
+    }
+    pub(super) fn operation_queue(&self) -> Result<Arc<crate::operations::WorkerQueue>, FsError> {
+        self.inner.workers.upgrade().ok_or(FsError::Closed)
+    }
+    pub(super) fn claim_mutation(&self) -> Result<(), FsError> {
+        self.check_alive()?;
+        self.inner
+            .mutation_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| ())
+            .map_err(|_| FsError::Busy)
+    }
+    pub(super) fn release_mutation(&self) {
+        self.inner.mutation_active.store(false, Ordering::Release);
+    }
+    pub(super) fn operation_effect<T>(
+        &self,
+        entries: &[(&GrantedEntry, FsRight)],
+        destination: Option<&DirectoryGrant>,
+        effect: impl FnOnce() -> Result<T, FsError>,
+    ) -> Result<T, FsError> {
+        let table = self.call()?;
+        self.check_alive()?;
+        for (entry, right) in entries {
+            let lease = entry.lease();
+            self.validate(&table, lease, Some(*right))?;
+            if matches!(right, FsRight::Copy | FsRight::Move) {
+                self.validate(&table, lease, Some(FsRight::Read))?;
+            }
+            if let (Some(parent), Some(name)) = (&lease.record.parent, &lease.record.name) {
+                self.validate(&table, parent, Some(*right))?;
+                let descriptor = Self::directory(parent)?;
+                if NativeIdentity::of(
+                    &descriptor
+                        .symlink_metadata(name.as_os_str())
+                        .map_err(io_error)?,
+                ) != lease.object()?.identity()
+                {
+                    return Err(FsError::StaleEntry);
+                }
+            }
+        }
+        if let Some(destination) = destination {
+            self.validate(&table, &destination.lease, Some(FsRight::Create))?;
+        }
+        effect()
+    }
+    pub(super) fn mutation_directory(&self, grant: &DirectoryGrant) -> Result<Arc<Dir>, FsError> {
+        let table = self.call()?;
+        self.validate(&table, &grant.lease, Some(FsRight::Create))?;
+        Self::directory(&grant.lease)
+    }
+    pub(super) fn mutation_source(
+        &self,
+        entry: &GrantedEntry,
+        right: FsRight,
+    ) -> Result<MutationSource, FsError> {
+        let table = self.call()?;
+        let lease = entry.lease();
+        self.validate(&table, lease, Some(right))?;
+        if matches!(right, FsRight::Copy | FsRight::Move) {
+            self.validate(&table, lease, Some(FsRight::Read))?;
+        }
+        let parent = lease.record.parent.as_ref().ok_or(FsError::Denied)?;
+        self.validate(&table, parent, Some(right))?;
+        let name = lease.record.name.clone().ok_or(FsError::Denied)?;
+        let descriptor = Self::directory(parent)?;
+        let object = lease.object()?;
+        let observed = descriptor
+            .symlink_metadata(name.as_os_str())
+            .map_err(io_error)?;
+        if NativeIdentity::of(&observed) != object.identity() {
+            return Err(FsError::StaleEntry);
+        }
+        let locator = self.locator_locked(parent, &name, Some(object.identity()))?;
+        Ok(MutationSource {
+            parent: descriptor,
+            name,
+            object,
+            locator,
+        })
+    }
+    fn locator_locked(
+        &self,
+        parent: &GrantLease,
+        name: &EntryName,
+        identity: Option<NativeIdentity>,
+    ) -> Result<NativeLocator, FsError> {
+        let mut current = parent;
+        let mut components = Vec::new();
+        while !self
+            .inner
+            .allowed
+            .iter()
+            .any(|allowed| Arc::ptr_eq(&allowed.record, &current.record))
+        {
+            let name = current.record.name.as_ref().ok_or(FsError::Denied)?;
+            components.push(name.as_os_str().as_bytes().to_vec());
+            current = current.record.parent.as_ref().ok_or(FsError::Denied)?;
+        }
+        components.reverse();
+        Ok(NativeLocator {
+            root: current.object()?.identity(),
+            parents: components,
+            name: name.as_os_str().as_bytes().to_vec(),
+            identity,
+        })
+    }
+    pub(super) fn mutation_locator(
+        &self,
+        parent: &DirectoryGrant,
+        name: &EntryName,
+        identity: Option<NativeIdentity>,
+    ) -> Result<NativeLocator, FsError> {
+        let table = self.call()?;
+        self.validate(&table, &parent.lease, Some(FsRight::Create))?;
+        self.locator_locked(&parent.lease, name, identity)
+    }
+    pub(super) fn mutation_result(
+        &self,
+        parent: &DirectoryGrant,
+        name: &EntryName,
+    ) -> Result<GrantedEntry, FsError> {
+        let mut table = self.call()?;
+        self.lookup_right(&mut table, &parent.lease, name, FsRight::Create)
+    }
+    pub(super) fn rename_result(
+        &self,
+        parent: &DirectoryGrant,
+        name: &EntryName,
+    ) -> Result<GrantedEntry, FsError> {
+        let mut table = self.call()?;
+        self.lookup_right(&mut table, &parent.lease, name, FsRight::Rename)
+    }
+    pub(super) fn mutation_parent(&self, entry: &GrantedEntry) -> Result<DirectoryGrant, FsError> {
+        let table = self.call()?;
+        self.validate(&table, entry.lease(), None)?;
+        Ok(DirectoryGrant {
+            lease: entry.lease().record.parent.clone().ok_or(FsError::Denied)?,
+        })
+    }
+    pub(super) fn recovery_source(
+        &self,
+        locator: &NativeLocator,
+    ) -> Result<(GrantedEntry, Arc<Dir>, EntryName), FsError> {
+        use std::os::unix::ffi::OsStringExt;
+        let table = self.call()?;
+        self.check_alive()?;
+        for root in &self.inner.allowed {
+            if self.validate(&table, root, None).is_err() {
+                continue;
+            }
+            if root.object()?.identity() != locator.root {
+                continue;
+            }
+            if self.validate(&table, root, Some(FsRight::Read)).is_err() {
+                continue;
+            }
+            let mut dir = Self::directory(root)?;
+            for component in &locator.parents {
+                let component = EntryName::new(OsString::from_vec(component.clone()))?;
+                self.validate(&table, root, Some(FsRight::Read))?;
+                let metadata = dir
+                    .symlink_metadata(component.as_os_str())
+                    .map_err(io_error)?;
+                if !metadata.is_dir() {
+                    return Err(FsError::StaleEntry);
+                }
+                let file = open_pinned(&dir, &component, &metadata, || {
+                    self.validate(&table, root, Some(FsRight::Read))
+                })?;
+                dir = Arc::new(Dir::from_std_file(file.into_std()));
+            }
+            let name = EntryName::new(OsString::from_vec(locator.name.clone()))?;
+            self.validate(&table, root, Some(FsRight::Read))?;
+            if Some(NativeIdentity::of(
+                &dir.symlink_metadata(name.as_os_str()).map_err(io_error)?,
+            )) != locator.identity
+            {
+                return Err(FsError::StaleEntry);
+            }
+            return Ok((
+                GrantedEntry::Directory(DirectoryGrant {
+                    lease: root.clone(),
+                }),
+                dir,
+                name,
+            ));
+        }
+        Err(FsError::Denied)
+    }
+}
+
+impl FsSession {
+    pub(super) fn observe_receipt(
+        &self,
+        locator: &NativeLocator,
+    ) -> Result<crate::recovery::Fingerprint, FsError> {
+        let (grant, parent, name) = self.recovery_source(locator)?;
+        let mut hash = blake3::Hasher::new();
+        let mut length = 0;
+        let mut count = 0;
+        self.hash_receipt_object(
+            &grant,
+            &parent,
+            &name,
+            &mut hash,
+            &mut length,
+            0,
+            &mut count,
+        )?;
+        self.operation_effect(&[(&grant, FsRight::Read)], None, || {
+            let identity = NativeIdentity::of(
+                &parent
+                    .symlink_metadata(name.as_os_str())
+                    .map_err(io_error)?,
+            );
+            if Some(identity) != locator.identity {
+                return Err(FsError::StaleEntry);
+            }
+            Ok(crate::recovery::Fingerprint {
+                identity,
+                length,
+                digest: *hash.finalize().as_bytes(),
+            })
+        })
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "bounded read-only directory, file and link verification share one confinement gate"
+    )]
+    fn hash_receipt_object(
+        &self,
+        grant: &GrantedEntry,
+        parent: &Dir,
+        name: &EntryName,
+        hash: &mut blake3::Hasher,
+        length: &mut u64,
+        depth: usize,
+        count: &mut usize,
+    ) -> Result<(), FsError> {
+        if depth > 128 || *count == 1_000_000 {
+            return Err(FsError::LimitExceeded);
+        }
+        *count = count.checked_add(1).ok_or(FsError::LimitExceeded)?;
+        let effect = |action: &mut dyn FnMut() -> Result<(), FsError>| {
+            self.operation_effect(&[(grant, FsRight::Read)], None, action)
+        };
+        let metadata = self.operation_effect(&[(grant, FsRight::Read)], None, || {
+            parent.symlink_metadata(name.as_os_str()).map_err(io_error)
+        })?;
+        if metadata.is_symlink() {
+            effect(&mut || {
+                let target = parent
+                    .read_link_contents(name.as_os_str())
+                    .map_err(io_error)?;
+                if NativeIdentity::of(
+                    &parent
+                        .symlink_metadata(name.as_os_str())
+                        .map_err(io_error)?,
+                ) != NativeIdentity::of(&metadata)
+                {
+                    return Err(FsError::StaleEntry);
+                }
+                hash.update(b"link");
+                hash.update(&(target.as_os_str().as_bytes().len() as u64).to_le_bytes());
+                hash.update(target.as_os_str().as_bytes());
+                *length = length
+                    .checked_add(target.as_os_str().as_bytes().len() as u64)
+                    .ok_or(FsError::LimitExceeded)?;
+                Ok(())
+            })?;
+        } else if metadata.is_file() {
+            hash.update(b"file");
+            hash.update(&metadata.len().to_le_bytes());
+            let file = self.operation_effect(&[(grant, FsRight::Read)], None, || {
+                open_pinned(parent, name, &metadata, || Ok(()))
+            })?;
+            let mut buffer = vec![0; 1024 * 1024];
+            let mut offset = 0;
+            while offset < metadata.len() {
+                let len = usize::try_from(
+                    (metadata.len().saturating_sub(offset)).min(buffer.len() as u64),
+                )
+                .map_err(|_| FsError::LimitExceeded)?;
+                let read = self.operation_effect(&[(grant, FsRight::Read)], None, || {
+                    rustix::io::pread(
+                        &file,
+                        buffer.get_mut(..len).ok_or(FsError::LimitExceeded)?,
+                        offset,
+                    )
+                    .map_err(|e| io_error(e.into()))
+                })?;
+                if read == 0 {
+                    return Err(FsError::StaleEntry);
+                }
+                hash.update(buffer.get(..read).ok_or(FsError::LimitExceeded)?);
+                offset = offset
+                    .checked_add(read as u64)
+                    .ok_or(FsError::LimitExceeded)?;
+                *length = length
+                    .checked_add(read as u64)
+                    .ok_or(FsError::LimitExceeded)?;
+            }
+            self.operation_effect(&[(grant, FsRight::Read)], None, || {
+                let observed = file.metadata().map_err(io_error)?;
+                if observed.len() != metadata.len()
+                    || observed.mtime() != metadata.mtime()
+                    || observed.mtime_nsec() != metadata.mtime_nsec()
+                {
+                    return Err(FsError::StaleEntry);
+                }
+                Ok(())
+            })?;
+        } else if metadata.is_dir() {
+            hash.update(b"dir");
+            let dir = self.operation_effect(&[(grant, FsRight::Read)], None, || {
+                Ok(Dir::from_std_file(
+                    open_pinned(parent, name, &metadata, || Ok(()))?.into_std(),
+                ))
+            })?;
+            let mut entries = self.operation_effect(&[(grant, FsRight::Read)], None, || {
+                dir.entries().map_err(io_error)
+            })?;
+            let mut names = Vec::new();
+            loop {
+                let next = self.operation_effect(&[(grant, FsRight::Read)], None, || {
+                    entries.next().transpose().map_err(io_error)
+                })?;
+                let Some(next) = next else { break };
+                if names.len() >= 1_000_000_usize.saturating_sub(*count) {
+                    return Err(FsError::LimitExceeded);
+                }
+                names.push(next.file_name());
+            }
+            names.sort();
+            for native in names {
+                hash.update(&(native.as_bytes().len() as u64).to_le_bytes());
+                hash.update(native.as_bytes());
+                self.hash_receipt_object(
+                    grant,
+                    &dir,
+                    &EntryName::new(native)?,
+                    hash,
+                    length,
+                    depth.saturating_add(1),
+                    count,
+                )?;
+            }
+            hash.update(b"end");
+        } else {
+            return Err(FsError::Unsupported("special staged object"));
+        }
+        Ok(())
     }
 }
