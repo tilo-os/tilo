@@ -293,6 +293,20 @@ fn visible_operation_status(status: &str) -> String {
     visible
 }
 
+/// Name the result region for what it actually contains.  A responsive
+/// large-text layout may choose one catalogue list instead of availability
+/// shelves, but that must not turn an untouched catalogue into “Search
+/// results” for sighted or screen-reader users.
+fn catalogue_region_heading(grouped_by_availability: bool, query: &str) -> &'static str {
+    if grouped_by_availability {
+        "Browse apps"
+    } else if query.trim().is_empty() {
+        "All apps"
+    } else {
+        "Search results"
+    }
+}
+
 fn report_note_key(app_id: &str) -> String {
     format!("{REPORT_NOTE_KEY_PREFIX}{app_id}")
 }
@@ -3276,14 +3290,10 @@ impl StoreApp {
                     .with_intrinsic_height()
                     .with_gap(3.0)
                     .push(Box::new(
-                        Text::new(if group_by_availability {
-                            "Browse apps"
-                        } else {
-                            "Search results"
-                        })
-                        .with_scaled_size(20.0)
-                        .with_weight(TextWeight::Semibold)
-                        .with_heading_level(if self.readable_type_layout() { 1 } else { 2 }),
+                        Text::new(catalogue_region_heading(group_by_availability, &self.query))
+                            .with_scaled_size(20.0)
+                            .with_weight(TextWeight::Semibold)
+                            .with_heading_level(if self.readable_type_layout() { 1 } else { 2 }),
                     ))
                     .push(Box::new(
                         Text::new(&format!("{visible_count} available"))
@@ -4955,6 +4965,13 @@ mod tests {
             !app.group_catalogue_by_availability(),
             "search results remain a single relevance-ranked sequence"
         );
+    }
+
+    #[test]
+    fn catalogue_heading_does_not_claim_an_empty_query_is_a_search() {
+        assert_eq!(catalogue_region_heading(true, ""), "Browse apps");
+        assert_eq!(catalogue_region_heading(false, "  "), "All apps");
+        assert_eq!(catalogue_region_heading(false, "notes"), "Search results");
     }
 
     #[test]
