@@ -94,8 +94,15 @@ jobs:
           export QOS_REQUIRE_WPE_SIGNATURE=1
           ./os/dev/build-image.sh
           ./os/dev/build-custom-installer.sh
-          apps/imager/packaging/package-install-medium.sh \
-            os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}"
+          package_args=(os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}")
+          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
+            apps/imager/packaging/package-install-medium.sh "${package_args[@]}"
+          else
+            QOS_INSTALLER_RELEASE_TAG="rehearsal-${GITHUB_SHA}" \
+            QOS_INSTALLER_VERSION=0.0.0 \
+            QOS_INSTALLER_CHANNEL=rehearsal \
+              apps/imager/packaging/package-install-medium.sh "${package_args[@]}"
+          fi
       - name: Remove native image registry credentials
         if: always()
         run: rm -f -- "${REGISTRY_AUTH_FILE:?}"

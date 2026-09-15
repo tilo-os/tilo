@@ -43,6 +43,15 @@ grep -Fq 'QOS_REQUIRE_SIGNING=1' "$workflow" \
   && ok 'tag releases fail closed without signed native packages' \
   || bad 'tag releases can publish unsigned or substitute packages'
 
+if grep -Fq 'QOS_INSTALLER_RELEASE_TAG="rehearsal-${GITHUB_SHA}"' "$workflow" \
+   && grep -Fq 'QOS_INSTALLER_CHANNEL=rehearsal' "$workflow" \
+   && grep -Fq 'rehearsal media require an explicit source-bound tag and version' \
+     "$repo/apps/imager/packaging/package-install-medium.sh"; then
+  ok 'manual rehearsals package source-bound non-stable installer media'
+else
+  bad 'manual release rehearsal cannot package its tested installer medium honestly'
+fi
+
 if grep -Eq 'uses: [^#[:space:]]+@(v[0-9]|main|master)([[:space:]#]|$)' "$workflow"; then
   bad 'release workflow executes a mutable third-party action reference'
 else
@@ -78,11 +87,17 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   && grep -Fq 'IMAGER_MAC_CERT_SHA256' "$workflow" \
   && grep -Fq 'QOS_MAC_EXPECTED_CERT_SHA256' \
     "$repo/apps/imager/packaging/package-host.sh" \
+  && grep -Fq '$Current = if ($Current -is [IO.FileInfo])' \
+    "$repo/apps/imager/packaging/Acquire-ReleaseCredentials.ps1" \
+  && grep -Fq 'and -not $TrustedPrincipal' \
+    "$repo/apps/imager/packaging/Acquire-ReleaseCredentials.ps1" \
   && [ "$(grep -Fc 'if: always()' "$workflow")" -ge 2 ] \
   && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
   || bad 'release credential outputs or signing identities are insufficiently constrained'
 
 mac_broker="$repo/apps/imager/packaging/acquire-release-credentials.sh"
+token_broker="$repo/apps/imager/packaging/acquire-release-token.sh"
+runner_launcher="$repo/tools/run-imager-ephemeral-runner.sh"
 homebrew_publish="$repo/apps/imager/packaging/publish-homebrew-tap.sh"
 site_publish="$repo/apps/imager/packaging/publish-site-release.sh"
 if ! grep -Fq 'declare -A' "$mac_broker" \
@@ -91,6 +106,9 @@ if ! grep -Fq 'declare -A' "$mac_broker" \
      "$repo/apps/imager/packaging/Acquire-ReleaseCredentials.ps1" \
    && grep -Fq '"$broker" "$kind" "$output" >/dev/null' \
      "$repo/apps/imager/packaging/acquire-release-token.sh" \
+   && ! grep -Fq 'realpath -e' "$mac_broker" \
+   && ! grep -Fq 'realpath -e' "$token_broker" \
+   && ! grep -Fq 'realpath -e' "$runner_launcher" \
    && ! grep -Fq '${EXPECTED_CERT_SHA256^^}' "$workflow" \
    && ! grep -Fq 'sort -V' "$homebrew_publish" \
    && [ "$(grep -Fc 'Out-File -FilePath $env:GITHUB_ENV' "$workflow")" -eq \

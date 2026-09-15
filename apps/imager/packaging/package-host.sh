@@ -55,7 +55,7 @@ sign_linux_artifact() {
     "$QOS_LINUX_SIGNER" "$artifact" "$artifact.asc"
     [ -s "$artifact.asc" ] \
       || { printf 'external Linux signer did not create %s.asc\n' "$artifact" >&2; exit 1; }
-    signature_identity="$(gpg --batch --status-fd 1 \
+    signature_identity="$("${linux_release_gpg[@]}" --status-fd 1 \
       --verify "$artifact.asc" "$artifact" 2>/dev/null \
       | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3 " " $NF; exit }')"
     read -r signing_fingerprint primary_fingerprint <<<"$signature_identity"
@@ -68,7 +68,7 @@ sign_linux_artifact() {
   elif [ -n "${QOS_LINUX_SIGNING_KEY:-}" ]; then
     gpg --batch --yes --local-user "$QOS_LINUX_SIGNING_KEY" \
       --armor --detach-sign "$artifact"
-    signature_identity="$(gpg --batch --status-fd 1 \
+    signature_identity="$("${linux_release_gpg[@]}" --status-fd 1 \
       --verify "$artifact.asc" "$artifact" 2>/dev/null \
       | awk '$1 == "[GNUPG:]" && $2 == "VALIDSIG" { print $3 " " $NF; exit }')"
     read -r signing_fingerprint primary_fingerprint <<<"$signature_identity"
@@ -85,17 +85,29 @@ sign_linux_artifact() {
 }
 
 prepare_linux_release_identity() {
-  local selector expected key_file fingerprint_file
+  local selector expected key_file fingerprint_file verify_home
   local -a fingerprints
   selector="${QOS_LINUX_VERIFY_KEY:-${QOS_LINUX_SIGNING_KEY:-}}"
   [ -n "$selector" ] \
     || { printf 'no Linux release-key selector was configured\n' >&2; exit 1; }
 
-  mapfile -t fingerprints < <(
-    gpg --batch --with-colons --fingerprint "$selector" 2>/dev/null \
-      | awk -F: '$1 == "pub" { want = 1; next }
-                   want && $1 == "fpr" { print toupper($10); want = 0 }'
-  )
+  linux_release_gpg=(gpg --batch)
+  if [ -n "${QOS_LINUX_VERIFY_KEY:-}" ]; then
+    [ -f "$QOS_LINUX_VERIFY_KEY" ] && [ ! -L "$QOS_LINUX_VERIFY_KEY" ] \
+      || { printf 'QOS_LINUX_VERIFY_KEY must be a regular public-key file\n' >&2; exit 1; }
+    mapfile -t fingerprints < <(
+      gpg --batch --with-colons --show-keys --fingerprint \
+        "$QOS_LINUX_VERIFY_KEY" 2>/dev/null \
+        | awk -F: '$1 == "pub" { want = 1; next }
+                     want && $1 == "fpr" { print toupper($10); want = 0 }'
+    )
+  else
+    mapfile -t fingerprints < <(
+      gpg --batch --with-colons --fingerprint "$selector" 2>/dev/null \
+        | awk -F: '$1 == "pub" { want = 1; next }
+                     want && $1 == "fpr" { print toupper($10); want = 0 }'
+    )
+  fi
   [ "${#fingerprints[@]}" -eq 1 ] \
     || { printf 'Linux release-key selector must resolve to exactly one primary key\n' >&2; exit 1; }
   linux_release_fingerprint="${fingerprints[0]}"
@@ -110,9 +122,20 @@ prepare_linux_release_identity() {
   [ "$linux_release_fingerprint" = "$expected" ] \
     || { printf 'Linux release key fingerprint does not match protected release policy\n' >&2; exit 1; }
 
+  if [ -n "${QOS_LINUX_VERIFY_KEY:-}" ]; then
+    verify_home="$(mktemp -d "${TMPDIR:-/tmp}/qos-imager-verify.XXXXXX")"
+    chmod 0700 "$verify_home"
+    linux_release_verify_home="$verify_home"
+    trap 'gpgconf --homedir "$linux_release_verify_home" --kill all >/dev/null 2>&1 || true; rm -rf -- "$linux_release_verify_home"' EXIT
+    gpg --batch --homedir "$verify_home" --import-options import-minimal \
+      --import "$QOS_LINUX_VERIFY_KEY" >/dev/null 2>&1 \
+      || { printf 'could not import the Linux release verification key\n' >&2; exit 1; }
+    linux_release_gpg=(gpg --batch --homedir "$verify_home")
+  fi
+
   key_file="$out/qos-release-key.asc"
   fingerprint_file="$out/qos-release-key.fingerprint"
-  gpg --batch --armor --export "$linux_release_fingerprint" >"$key_file"
+  "${linux_release_gpg[@]}" --armor --export "$linux_release_fingerprint" >"$key_file"
   [ -s "$key_file" ] \
     || { printf 'could not export the Linux release public key\n' >&2; exit 1; }
   printf '%s\n' "$linux_release_fingerprint" >"$fingerprint_file"

@@ -10,7 +10,7 @@ output="${3:-}"
   || { printf 'usage: %s {homebrew|winget|site} BROKER RUNNER_TEMP/OUTPUT\n' "$0" >&2; exit 2; }
 [[ "$broker" = /* && -x "$broker" && ! -L "$broker" ]] \
   || { printf 'credential broker must be an absolute executable non-symlink\n' >&2; exit 1; }
-[ "$(realpath -e "$broker")" = "$broker" ] \
+[ "$(realpath "$broker")" = "$broker" ] \
   || { printf 'credential broker must be canonical\n' >&2; exit 1; }
 case "$broker" in "$GITHUB_WORKSPACE"/*|"$RUNNER_TEMP"/*) printf 'credential broker is in an untrusted directory\n' >&2; exit 1;; esac
 current="$broker"

@@ -223,10 +223,7 @@ if [ -z "$required" ]; then
   ok "no app declares a required sandbox service"
 else
   for svc in $required; do
-    # The public service is `models`; its implementation is deliberately named
-    # model-manager to distinguish it from the root-owned inference runtime.
     unit_name=$svc
-    [ "$svc" != models ] || unit_name=model-manager
     unit_rel="os/usr/lib/systemd/user/qos-$unit_name.service"
     unit="$REPO/$unit_rel"
     users="$(grep -l "^$svc *= *\"required@" "${manifests[@]}" \

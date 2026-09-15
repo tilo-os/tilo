@@ -26,6 +26,7 @@ for tool in cryptsetup; do
   command -v "$tool" >/dev/null || { echo "SKIP: $tool is not installed"; exit 0; }
 done
 [ -x "$QOS_ROLLBACK_BIN" ] || { echo "SKIP: no qos-rollback binary at $QOS_ROLLBACK_BIN"; exit 0; }
+QOS_ROLLBACK_BIN="$(realpath "$QOS_ROLLBACK_BIN")"
 
 # The helpers call `qos-rollback` by name, so put the binary under test on PATH.
 BINDIR="$(mktemp -d)"
@@ -64,10 +65,11 @@ printf 'a-generation-secret' > "$W/gen.key"
 cryptsetup luksAddKey --batch-mode --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
   --key-file "$W/rec.key" "$W/one.img" "$W/gen.key"
 cat > "$W/token.json" <<'JSON'
-{"type":"qos-rollback","keyslots":["1"],"version":1,"generation":7,
- "nv_index":31002880,"nv_operand":7,"nv_base":0,"pcr_bank":"sha256","pcrs":[7,11],
+{"type":"qos-rollback","keyslots":["1"],"version":2,"generation":7,
+ "nv_index":31002880,"nv_operand":7,"nv_base":0,"pcr_bank":"sha256","pcrs":[11],
+ "platform_pcrs":[7],
  "pin":false,"sealed_public":"AA==","sealed_private":"AA==","key_name":"AA==",
- "policy_digest":"AA==","nv_name":"",
+ "policy_digest":"AA==",
  "predictions":[{"approved_policy":"AA==","signature":"AA==","label":""}]}
 JSON
 cryptsetup token import --token-id 0 --json-file "$W/token.json" "$W/one.img"
@@ -81,10 +83,11 @@ fi
 # qos-rollback token, so there is nothing left that does not need the TPM.
 luks_image "$W/two.img" "$W/gen.key"
 cat > "$W/token0.json" <<'JSON'
-{"type":"qos-rollback","keyslots":["0"],"version":1,"generation":7,
- "nv_index":31002880,"nv_operand":7,"nv_base":0,"pcr_bank":"sha256","pcrs":[7,11],
+{"type":"qos-rollback","keyslots":["0"],"version":2,"generation":7,
+ "nv_index":31002880,"nv_operand":7,"nv_base":0,"pcr_bank":"sha256","pcrs":[11],
+ "platform_pcrs":[7],
  "pin":false,"sealed_public":"AA==","sealed_private":"AA==","key_name":"AA==",
- "policy_digest":"AA==","nv_name":"",
+ "policy_digest":"AA==",
  "predictions":[{"approved_policy":"AA==","signature":"AA==","label":""}]}
 JSON
 cryptsetup token import --token-id 0 --json-file "$W/token0.json" "$W/two.img"
