@@ -728,7 +728,11 @@ impl Theme {
     pub fn with_text_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 4.0);
         self.text_scale = factor;
+        self.multiply_type_sizes(factor);
+        self
+    }
 
+    fn multiply_type_sizes(&mut self, factor: f32) {
         let scale = &mut self.tokens.typography.scale;
         scale.xs *= factor;
         scale.sm *= factor;
@@ -740,8 +744,6 @@ impl Theme {
         scale.x4l *= factor;
 
         self.tokens.font_size_base *= factor;
-
-        self
     }
 
     /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
@@ -751,7 +753,15 @@ impl Theme {
     pub fn with_ui_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 3.0);
         self.ui_scale = factor;
+        self.multiply_dimensions(factor);
+        self.multiply_type_sizes(factor);
+        self.radius_standard = f64::from(self.tokens.radii.md);
+        self.padding_standard = self.tokens.spacing.s3;
+        self.gap_standard = self.tokens.spacing.s3;
+        self
+    }
 
+    fn multiply_dimensions(&mut self, factor: f32) {
         let sp = &mut self.tokens.spacing;
         sp.s0 *= factor;
         sp.s1 *= factor;
@@ -769,23 +779,30 @@ impl Theme {
         r.lg *= factor;
         r.xl *= factor;
         // `full` is a "make it a pill" sentinel, not a real length — leave it.
+    }
 
-        let scale = &mut self.tokens.typography.scale;
-        scale.xs *= factor;
-        scale.sm *= factor;
-        scale.base *= factor;
-        scale.lg *= factor;
-        scale.xl *= factor;
-        scale.x2l *= factor;
-        scale.x3l *= factor;
-        scale.x4l *= factor;
-
-        self.tokens.font_size_base *= factor;
-
-        self.radius_standard = f64::from(self.tokens.radii.md);
-        self.padding_standard = self.tokens.spacing.s3;
-        self.gap_standard = self.tokens.spacing.s3;
-
+    /// Replace factors already baked into an effective component snapshot.
+    /// Its metadata must describe the supplied values; public builders remain cumulative.
+    pub(crate) fn with_component_scales(mut self, text_scale: f32, ui_scale: f32) -> Self {
+        let text_scale = if text_scale.is_finite() {
+            text_scale.clamp(0.5, 4.0)
+        } else {
+            1.0
+        };
+        let ui_scale = if ui_scale.is_finite() {
+            ui_scale.clamp(0.5, 3.0)
+        } else {
+            1.0
+        };
+        let ui_ratio = ui_scale / self.ui_scale;
+        self.multiply_type_sizes(text_scale / self.text_scale * ui_ratio);
+        self.multiply_dimensions(ui_ratio);
+        // Unlike the public builder, preserve independently customized aliases.
+        self.radius_standard *= f64::from(ui_ratio);
+        self.padding_standard *= ui_ratio;
+        self.gap_standard *= ui_ratio;
+        self.text_scale = text_scale;
+        self.ui_scale = ui_scale;
         self
     }
 

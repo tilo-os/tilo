@@ -1579,6 +1579,11 @@ impl ActionFrame {
         status
     }
     fn commit_physical(&self, doc: &mut AutoCommit) -> Vec<ChangeHash> {
+        // Automerge 0.8 can retain an unused actor in its patch log after an
+        // empty commit_with. A read-only preflight needs only the existing heads.
+        if doc.pending_ops() == 0 {
+            return doc.get_heads();
+        }
         let context = if let Some(operation) = self
             .operations
             .last()

@@ -808,7 +808,6 @@ impl TextInput {
     }
 
     /// Explicit host language without discovery or background dictionary warmup.
-    #[cfg(test)]
     pub(crate) fn local_with_language(language: &str) -> Self {
         Self::with_language(Vec::new(), language.to_owned())
     }
