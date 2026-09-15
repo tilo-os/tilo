@@ -16,7 +16,13 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImageEditorApp::new())
 }
-pub const SHOT_SCENARIOS: &[&str] = &["canvas-stack", "graph", "narrow", "narrow-more"];
+pub const SHOT_SCENARIOS: &[&str] = &[
+    "canvas-stack",
+    "graph",
+    "narrow",
+    "narrow-more",
+    "graph-narrow",
+];
 pub fn write_shot_image(path: &std::path::Path) -> Result<(), image::ImageError> {
     let mut image = image::RgbaImage::new(1200, 800);
     for (y, row) in image.rows_mut().enumerate() {
