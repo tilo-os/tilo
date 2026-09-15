@@ -174,7 +174,7 @@ enum DocumentJobResult {
     Capture(Result<image::DynamicImage, String>),
     Recognize {
         page: usize,
-        result: Result<qos_ocr::Document, String>,
+        result: Result<qos_ocr::Document, qos_ocr::Error>,
     },
 }
 
@@ -1527,17 +1527,16 @@ impl CameraApp {
         let spawn = std::thread::Builder::new()
             .name("camera-document-ocr".into())
             .spawn(move || {
-                let result =
-                    qos_ocr::recognize(&image, language).map_err(|error| error.to_string());
+                let result = qos_ocr::recognize(&image, language);
                 let _ = sender.send(DocumentJobResult::Recognize {
                     page: index,
                     result,
                 });
             });
-        if let Err(error) = spawn {
+        if spawn.is_err() {
             self.document_job = None;
             self.document_job_kind = None;
-            self.toast = Some(format!("Could not start text recognition: {error}"));
+            self.toast = Some("Text recognition could not start. Try again in a moment.".into());
         }
     }
 
@@ -1616,7 +1615,7 @@ impl CameraApp {
             }
             DocumentJobResult::Recognize {
                 result: Err(error), ..
-            } => self.toast = Some(format!("Text recognition failed: {error}")),
+            } => self.toast = Some(error.user_message().into()),
         }
     }
 
@@ -3976,7 +3975,8 @@ impl CameraApp {
         let kind = if msg.starts_with("Save failed")
             || msg.starts_with("Couldn't")
             || msg.starts_with("Could not")
-            || msg.starts_with("Text recognition failed")
+            || msg.starts_with("Text recognition")
+            || msg.starts_with("Text could not")
         {
             ToastKind::Error
         } else if msg.starts_with("Connect a camera")
@@ -7403,6 +7403,28 @@ mod tests {
 
         app.document_settings.ocr_language = OcrLanguage::German;
         assert_eq!(app.document_text_status(), "Language changed; update text");
+    }
+
+    #[test]
+    fn document_ocr_failures_never_expose_engine_diagnostics() {
+        let (mut app, _, _) = sample_app();
+        let (sender, receiver) = mpsc::channel();
+        app.document_job = Some(receiver);
+        app.document_job_kind = Some(DocumentJobKind::Recognize);
+        sender
+            .send(DocumentJobResult::Recognize {
+                page: 0,
+                result: Err(qos_ocr::Error::Engine(
+                    "/private/receipt.png: tesseract internals".into(),
+                )),
+            })
+            .unwrap();
+
+        app.poll_document_job();
+        let message = app.toast.as_deref().unwrap();
+        assert!(message.contains("clearer scan"));
+        assert!(!message.contains("/private"));
+        assert!(!message.contains("tesseract"));
     }
 
     #[test]
