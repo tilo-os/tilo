@@ -33,9 +33,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{
-    Button, ButtonFace, SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget,
-};
+use ui::widget::{Button, ButtonFace, SegmentedFace, SidebarDrawer, ToggleGroup, Widget};
 use ui::{card_column_width, card_columns};
 
 use crate::actions::{self, BACKUPS_ACTION_TYPE};
@@ -54,8 +52,10 @@ const TAB_H: f64 = 34.0;
 const ROW_H: f64 = 46.0;
 const DETAIL_H: f64 = 70.0;
 const DAY_H: f64 = 30.0;
-const LIVE_VIEWS: [View; 3] = [View::Timeline, View::Sources, View::Destinations];
-
+/// Space permanently reserved for the transient status pill. The bubble can
+/// surface after a job finishes or while the user reaches the lower corner,
+/// so content must never be placed underneath it.
+const STATUS_SAFE_BOTTOM: f64 = 56.0;
 /// Below this window width the Timeline source rail overlays (a summoned
 /// drawer) instead of docking beside the snapshot list.
 const RAIL_BREAKPOINT: f64 = 820.0;
@@ -360,7 +360,7 @@ impl BackupsApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.job = Some(rx);
         self.job_status = Some("Preparing files…".into());
-        let _ = std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("backups-create".into())
             .spawn(move || {
                 let progress_tx = tx.clone();
@@ -374,7 +374,12 @@ impl BackupsApp {
                         let _ = tx.send(JobEvent::Failed(error.to_string()));
                     }
                 }
-            });
+            })
+        {
+            self.job = None;
+            self.job_status = None;
+            self.toast_error(format!("Couldn't start the backup worker: {error}"));
+        }
     }
 
     fn start_verify(&mut self) {
@@ -386,7 +391,7 @@ impl BackupsApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.job = Some(rx);
         self.job_status = Some("Checking every file…".into());
-        let _ = std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("backups-verify".into())
             .spawn(
                 move || match crate::engine::verify_snapshot(&destination, &id) {
@@ -397,7 +402,12 @@ impl BackupsApp {
                         let _ = tx.send(JobEvent::Failed(error.to_string()));
                     }
                 },
-            );
+            )
+        {
+            self.job = None;
+            self.job_status = None;
+            self.toast_error(format!("Couldn't start the verification worker: {error}"));
+        }
     }
 
     fn start_restore(&mut self, restore_to: PathBuf) {
@@ -409,7 +419,7 @@ impl BackupsApp {
         let (tx, rx) = std::sync::mpsc::channel();
         self.job = Some(rx);
         self.job_status = Some("Restoring and checking files…".into());
-        let _ = std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("backups-restore".into())
             .spawn(move || {
                 let progress_tx = tx.clone();
@@ -429,7 +439,12 @@ impl BackupsApp {
                         let _ = tx.send(JobEvent::Failed(error.to_string()));
                     }
                 }
-            });
+            })
+        {
+            self.job = None;
+            self.job_status = None;
+            self.toast_error(format!("Couldn't start the recovery worker: {error}"));
+        }
     }
 
     fn drain_effects(&mut self) {
@@ -596,18 +611,23 @@ impl BackupsApp {
     fn render(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.hits.clear();
         let c = &theme.tokens.colors;
+        let bar_h = Self::bar_height(theme);
 
         // Window background.
         paint::fill_rect(scene, t, self.rect, c.surfaces.base);
 
         // Content spans to the window bottom; the tally lives in the floating
         // status bubble, not a permanent bottom strip.
-        let progress_h = if self.job_status.is_some() { 42.0 } else { 0.0 };
+        let progress_h = if self.job_status.is_some() {
+            42.0 * f64::from(theme.text_scale)
+        } else {
+            0.0
+        };
         let content = Rect::new(
             self.rect.x0 + PAD,
-            self.rect.y0 + BAR_H + 14.0 + progress_h,
+            self.rect.y0 + bar_h + 14.0 + progress_h,
             self.rect.x1 - PAD,
-            self.rect.y1 - 12.0,
+            self.rect.y1 - 12.0 - STATUS_SAFE_BOTTOM,
         );
 
         // Advance + resolve the Timeline source rail. Ticking eases the reveal
@@ -653,6 +673,11 @@ impl BackupsApp {
             }
         }
 
+        // The phone-width primary action is a compact plus glyph. Keep its
+        // full purpose discoverable for pointer users as well as in the
+        // semantic tree below.
+        self.draw_compact_backup_tooltip(scene, t, tr, theme);
+
         // The transient status pill floats over the bottom-right, beneath the
         // restore modal + toast so those still overlay it.
         self.draw_status_bubble(scene, t, tr, theme);
@@ -666,6 +691,39 @@ impl BackupsApp {
         self.draw_toast(scene, t, tr, theme);
     }
 
+    fn bar_height(theme: &Theme) -> f64 {
+        BAR_H * f64::from(theme.text_scale)
+    }
+
+    fn draw_compact_backup_tooltip(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.rect.width() >= NARROW_BREAKPOINT || self.hover != Some(Hit::BackupNow) {
+            return;
+        }
+        let Some((anchor, _)) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, hit)| matches!(hit, Hit::BackupNow))
+        else {
+            return;
+        };
+        ui::widget::tooltip::draw_hover_tooltip(
+            scene,
+            t,
+            tr,
+            theme,
+            *anchor,
+            "Back up now",
+            self.rect,
+        );
+    }
+
     fn draw_job_progress(
         &self,
         scene: &mut Scene,
@@ -677,11 +735,13 @@ impl BackupsApp {
             return;
         };
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
+        let bar_h = Self::bar_height(theme);
         let rect = Rect::new(
             self.rect.x0 + PAD,
-            self.rect.y0 + BAR_H + 8.0,
+            self.rect.y0 + bar_h + 8.0,
             self.rect.x1 - PAD,
-            self.rect.y0 + BAR_H + 42.0,
+            self.rect.y0 + bar_h + 42.0 * scale,
         );
         paint::fill_rrect(scene, t, rect, 8.0, c.surfaces.raised);
         paint::text(
@@ -691,8 +751,8 @@ impl BackupsApp {
             "Backup in progress",
             12.0,
             c.text_primary,
-            rect.x0 + 12.0,
-            rect.y0 + 10.0,
+            rect.x0 + 12.0 * scale,
+            rect.y0 + 10.0 * scale,
         );
         paint::text(
             scene,
@@ -701,10 +761,15 @@ impl BackupsApp {
             status,
             12.0,
             c.text_dim,
-            rect.x0 + 132.0,
-            rect.y0 + 10.0,
+            rect.x0 + 132.0 * scale,
+            rect.y0 + 10.0 * scale,
         );
-        let track = Rect::new(rect.x0 + 12.0, rect.y1 - 7.0, rect.x1 - 12.0, rect.y1 - 4.0);
+        let track = Rect::new(
+            rect.x0 + 12.0 * scale,
+            rect.y1 - 7.0 * scale,
+            rect.x1 - 12.0 * scale,
+            rect.y1 - 4.0 * scale,
+        );
         paint::fill_rrect(scene, t, track, 2.0, c.neutral[4]);
         // Indeterminate progress is honest: traversal totals are not known before
         // walking the tree, so this communicates work without inventing a percent.
@@ -724,11 +789,13 @@ impl BackupsApp {
 
     fn draw_top_bar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
+        let bar_h = Self::bar_height(theme);
         let bar = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + BAR_H,
+            self.rect.y0 + bar_h,
         );
         paint::fill_rect(scene, t, bar, c.neutral[0]);
         paint::hline(
@@ -741,11 +808,20 @@ impl BackupsApp {
             1.0,
         );
 
-        let cy = bar.y0 + BAR_H / 2.0;
+        let cy = bar.y0 + bar_h / 2.0;
         let narrow = self.rect.width() < NARROW_BREAKPOINT;
 
         let brand_right = self.draw_top_bar_left_cluster(scene, tr, theme, t, bar, cy, narrow);
-        let action_width = if self.is_empty() { 0.0 } else { 122.0 };
+        // A phone-width primary action stays available but compacts to its
+        // familiar plus glyph.  Reserving the full text button here used to
+        // make the four view tabs overlap it at 390 px wide.
+        let action_width = if self.is_empty() {
+            0.0
+        } else if narrow {
+            42.0 * scale
+        } else {
+            122.0 * scale
+        };
         self.draw_top_bar_tabs(
             scene,
             tr,
@@ -756,7 +832,21 @@ impl BackupsApp {
             bar.x1 - PAD - action_width,
         );
         if !self.is_empty() {
-            let rect = Rect::new(bar.x1 - PAD - 114.0, cy - 17.0, bar.x1 - PAD, cy + 17.0);
+            let rect = if narrow {
+                Rect::new(
+                    bar.x1 - PAD - 34.0 * scale,
+                    cy - 17.0 * scale,
+                    bar.x1 - PAD,
+                    cy + 17.0 * scale,
+                )
+            } else {
+                Rect::new(
+                    bar.x1 - PAD - 114.0 * scale,
+                    cy - 17.0 * scale,
+                    bar.x1 - PAD,
+                    cy + 17.0 * scale,
+                )
+            };
             Button::paint(
                 scene,
                 t,
@@ -765,7 +855,9 @@ impl BackupsApp {
                 &ButtonFace::new(
                     rect,
                     if self.job.is_some() || self.job_status.is_some() {
-                        "Backing up…"
+                        if narrow { "…" } else { "Backing up…" }
+                    } else if narrow {
+                        "+"
                     } else {
                         "Back up now"
                     },
@@ -848,13 +940,15 @@ impl BackupsApp {
         // button, with the per-tab width clamped so four tabs always fit.
         let band_x0 = brand_right + 14.0;
         let band_x1 = btn_x0 - 14.0;
-        let views: &[View] = if self.source_path.is_some() {
-            &LIVE_VIEWS
-        } else {
-            &View::ALL
-        };
+        // Retention is durable configuration regardless of whether this is a
+        // first-run, demo, or configured local repository.  Keeping this
+        // single view set prevents the live tab strip and keyboard traversal
+        // from silently hiding the policy editor after setup.
+        let views = &View::ALL;
         let n = views.len() as f64;
-        let tab_w = ((band_x1 - band_x0) / n).clamp(58.0, TAB_W);
+        // Four compact labels fit cleanly on a phone.  The prior 58 px floor
+        // overflowed the available band and collided with the primary action.
+        let tab_w = ((band_x1 - band_x0) / n).clamp(40.0, TAB_W);
         let seg_total = tab_w * n;
         let seg_x0 = (band_x0 + ((band_x1 - band_x0) - seg_total) / 2.0).max(band_x0);
         let seg = Rect::new(
@@ -877,7 +971,8 @@ impl BackupsApp {
         // once the tabs get too tight so "Destinations"/"Schedules" don't
         // collide with their neighbours — the abbreviation is content the app
         // owns; the pill fill + selection palette come from the shared control.
-        let narrow_tabs = tab_w < 96.0;
+        let narrow_tabs = tab_w < 96.0 * f64::from(theme.text_scale);
+        let ultra_narrow_tabs = tab_w < 58.0;
         let fs = if narrow_tabs { 12.0_f32 } else { 13.5 };
         let mut pill_rects: Vec<Rect> = Vec::with_capacity(views.len());
         let mut labels: Vec<&str> = Vec::with_capacity(views.len());
@@ -894,7 +989,14 @@ impl BackupsApp {
                 tab.x1 - 4.0,
                 tab.y1 - 4.0,
             ));
-            labels.push(if narrow_tabs {
+            labels.push(if ultra_narrow_tabs {
+                match v {
+                    View::Timeline => "Time",
+                    View::Sources => "Src",
+                    View::Destinations => "Dest",
+                    View::Schedules => "Plan",
+                }
+            } else if narrow_tabs {
                 match v {
                     View::Timeline => "Timeline",
                     View::Sources => "Sources",
@@ -1589,6 +1691,13 @@ impl BackupsApp {
             .collect();
         let show_source = self.ui.sel_source.is_none();
 
+        if snaps.is_empty() {
+            self.timeline_content_h = 0.0;
+            self.timeline_scroll = 0.0;
+            Self::draw_timeline_empty_state(scene, t, tr, theme, list);
+            return;
+        }
+
         // First measure total content height (so we can clamp scroll).
         let mut content_h = 0.0;
         let mut last_day: Option<u32> = None;
@@ -1664,6 +1773,42 @@ impl BackupsApp {
             let thumb = Rect::new(list.x1 - 4.0, thumb_y, list.x1 - 1.0, thumb_y + thumb_h);
             paint::fill_rrect(scene, t, thumb, 2.0, c.neutral[3]);
         }
+    }
+
+    /// A configured repository may legitimately have no completed snapshots
+    /// yet (for example immediately after migration or pruning).  That is a
+    /// ready-to-use state, not an empty broken list.
+    fn draw_timeline_empty_state(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        list: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let title_y = list.y0 + list.height().min(220.0) * 0.38;
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            "No snapshots yet",
+            16.0,
+            c.text_primary,
+            list.x0,
+            list.x1,
+            title_y,
+        );
+        paint::text_center(
+            scene,
+            tr,
+            t,
+            "Run a backup to create the first verified recovery point.",
+            12.5,
+            c.text_dim,
+            list.x0,
+            list.x1,
+            title_y + 26.0,
+        );
     }
 
     #[allow(clippy::too_many_arguments)] // see `draw_source_row` above.
@@ -2016,25 +2161,22 @@ impl BackupsApp {
             card.y0 + card_h - 24.0,
         );
 
-        // Enable switch (shared Toggle look).
-        let tw = 52.0;
-        let tog = Rect::new(
-            card.x1 - 22.0 - tw,
-            card.y0 + card_h - 30.0,
-            card.x1 - 22.0,
-            card.y0 + card_h - 30.0 + 22.0,
-        );
-        let on = src.enabled;
-        Toggle::paint(scene, t, theme, &ToggleFace::new(tog, on));
+        // The current local engine has no scheduler daemon to mutate. Show
+        // the observed schedule state as status instead of painting a switch
+        // that looks actionable but cannot change the repository.
         paint::text_right(
             scene,
             tr,
             t,
-            if on { "Enabled" } else { "Paused" },
+            if src.enabled { "Enabled" } else { "Paused" },
             10.5,
-            c.text_dim,
-            tog.x0 - 8.0,
-            tog.center().y - 5.0,
+            if src.enabled {
+                Self::health_color(theme, Health::Ok)
+            } else {
+                c.text_dim
+            },
+            card.x1 - 22.0,
+            card.y0 + card_h - 24.0,
         );
 
         self.hits.push((card, Hit::Source(Some(src.id.clone()))));
@@ -2903,11 +3045,12 @@ impl BackupsApp {
         theme: &Theme,
         content: Rect,
     ) {
+        let scale = f64::from(theme.text_scale);
         // Below this the editor + summary stack vertically instead of a 60/40 split.
         let stacked = content.width() < 660.0;
         Self::draw_schedules_header(scene, t, tr, theme, content, stacked);
 
-        let panel = Self::schedules_panel_rect(content, stacked);
+        let panel = Self::schedules_panel_rect(content, stacked, scale);
         let c = &theme.tokens.colors;
         paint::card(
             scene,
@@ -2923,13 +3066,13 @@ impl BackupsApp {
 
         // Summary of effective retention — beside the editor when wide, stacked
         // beneath it when narrow.
-        let side = Self::schedules_side_rect(content, panel, stacked);
+        let side = Self::schedules_side_rect(content, panel, stacked, scale);
         Self::draw_schedules_summary(scene, t, tr, theme, side, p);
 
         // Retention ruler — one lane per class, dots = snapshots kept. Sits
         // below whichever of {editor, stacked summary} is lowest.
-        let ruler_top = if stacked { side.y1 } else { panel.y1 } + 22.0;
-        let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0);
+        let ruler_top = if stacked { side.y1 } else { panel.y1 } + 22.0 * scale;
+        let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0 * scale);
         if ruler.y1 < content.y1 {
             Self::draw_retention_ruler(scene, t, tr, theme, ruler, p);
         }
@@ -2946,6 +3089,7 @@ impl BackupsApp {
         stacked: bool,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
         paint::text_bold(
             scene,
             tr,
@@ -2969,24 +3113,29 @@ impl BackupsApp {
             12.5,
             c.text_dim,
             content.x0,
-            content.y0 + 24.0,
+            content.y0 + 24.0 * scale,
         );
     }
 
     /// The editor panel's rect: full width when stacked, 60% when
     /// side-by-side with the summary. Split out of
     /// [`Self::draw_schedules_view`] to keep it under the line budget.
-    fn schedules_panel_rect(content: Rect, stacked: bool) -> Rect {
+    fn schedules_panel_rect(content: Rect, stacked: bool, scale: f64) -> Rect {
         let panel_w = if stacked {
             content.width()
         } else {
             content.width() * 0.6
         };
+        // Large type needs more breathing room than the title's baseline but
+        // not a linear doubling of every historical gap; this leaves all four
+        // controls clear of the bottom status-safe inset at 200%.
+        let header_space = 52.0 + (scale - 1.0) * 30.0;
+        let row_step = 64.0 + (scale - 1.0) * 52.0;
         Rect::new(
             content.x0,
-            content.y0 + 52.0,
+            content.y0 + header_space,
             content.x0 + panel_w,
-            content.y0 + 52.0 + 4.0 * 64.0 + 16.0,
+            content.y0 + header_space + 4.0 * row_step + 16.0 * scale,
         )
     }
 
@@ -3025,8 +3174,16 @@ impl BackupsApp {
         value: u32,
     ) {
         let c = &theme.tokens.colors;
-        let ry = panel.y0 + 14.0 + i as f64 * 64.0;
-        let row = Rect::new(panel.x0 + 12.0, ry, panel.x1 - 12.0, ry + 56.0);
+        let scale = f64::from(theme.text_scale);
+        let row_step = 64.0 + (scale - 1.0) * 52.0;
+        let row_h = 56.0 + (scale - 1.0) * 44.0;
+        let ry = panel.y0 + 14.0 * scale + i as f64 * row_step;
+        let row = Rect::new(
+            panel.x0 + 12.0 * scale,
+            ry,
+            panel.x1 - 12.0 * scale,
+            ry + row_h,
+        );
         let focused = self.policy_focus == i;
         if focused {
             paint::fill_rrect(
@@ -3054,7 +3211,13 @@ impl BackupsApp {
                 PolicyField::Monthly => Retention::Monthly,
             },
         );
-        paint::dot(scene, t, Point::new(row.x0 + 18.0, row.center().y), 5.0, rc);
+        paint::dot(
+            scene,
+            t,
+            Point::new(row.x0 + 18.0 * scale, row.center().y),
+            5.0 * scale,
+            rc,
+        );
         paint::text_bold(
             scene,
             tr,
@@ -3062,8 +3225,8 @@ impl BackupsApp {
             field.label(),
             14.5,
             c.text_primary,
-            row.x0 + 34.0,
-            row.y0 + 12.0,
+            row.x0 + 34.0 * scale,
+            row.y0 + 12.0 * scale,
         );
         paint::text(
             scene,
@@ -3072,15 +3235,25 @@ impl BackupsApp {
             &format!("keep over the {}", field.unit()),
             11.0,
             c.text_dim,
-            row.x0 + 34.0,
-            row.y0 + 32.0,
+            row.x0 + 34.0 * scale,
+            row.y0 + 32.0 * scale,
         );
 
         // Stepper: [-]  value  [+]
         let cy = row.center().y;
-        let plus = Rect::new(row.x1 - 44.0, cy - 18.0, row.x1 - 8.0, cy + 18.0);
-        let valx0 = plus.x0 - 64.0;
-        let minus = Rect::new(valx0 - 44.0, cy - 18.0, valx0 - 8.0, cy + 18.0);
+        let plus = Rect::new(
+            row.x1 - 44.0 * scale,
+            cy - 18.0 * scale,
+            row.x1 - 8.0 * scale,
+            cy + 18.0 * scale,
+        );
+        let valx0 = plus.x0 - 64.0 * scale;
+        let minus = Rect::new(
+            valx0 - 44.0 * scale,
+            cy - 18.0 * scale,
+            valx0 - 8.0 * scale,
+            cy + 18.0 * scale,
+        );
         self.draw_stepper(scene, t, tr, theme, minus, "–", Hit::Policy(field, -1));
         self.draw_stepper(scene, t, tr, theme, plus, "+", Hit::Policy(field, 1));
         paint::text_center(
@@ -3090,25 +3263,31 @@ impl BackupsApp {
             &format!("{value}"),
             20.0,
             c.text_primary,
-            valx0 - 8.0,
+            valx0 - 8.0 * scale,
             plus.x0,
-            cy - 12.0,
+            cy - 12.0 * scale,
         );
     }
 
     /// The side summary panel's rect: beside the editor when wide, stacked
     /// beneath it when narrow. Split out of [`Self::draw_schedules_view`] to
     /// keep it under the line budget.
-    fn schedules_side_rect(content: Rect, panel: Rect, stacked: bool) -> Rect {
+    fn schedules_side_rect(content: Rect, panel: Rect, stacked: bool, scale: f64) -> Rect {
         if stacked {
             Rect::new(
                 content.x0,
-                panel.y1 + 16.0,
+                panel.y1 + 16.0 * scale,
                 content.x1,
-                panel.y1 + 16.0 + 210.0,
+                panel.y1 + 16.0 * scale + 210.0 * scale,
             )
         } else {
-            Rect::new(panel.x1 + 18.0, content.y0 + 52.0, content.x1, panel.y1)
+            let header_space = 52.0 + (scale - 1.0) * 30.0;
+            Rect::new(
+                panel.x1 + 18.0 * scale,
+                content.y0 + header_space,
+                content.x1,
+                panel.y1,
+            )
         }
     }
 
@@ -3123,6 +3302,7 @@ impl BackupsApp {
         p: RetentionPolicy,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
         paint::card(
             scene,
             t,
@@ -3138,8 +3318,8 @@ impl BackupsApp {
             "Effective window",
             13.5,
             c.text_primary,
-            side.x0 + 16.0,
-            side.y0 + 14.0,
+            side.x0 + 16.0 * scale,
+            side.y0 + 14.0 * scale,
         );
         let total = p.hourly + p.daily + p.weekly + p.monthly;
         let lines = [
@@ -3156,16 +3336,16 @@ impl BackupsApp {
                 line,
                 12.0,
                 c.text_dim,
-                side.x0 + 16.0,
-                side.y0 + 44.0 + i as f64 * 24.0,
+                side.x0 + 16.0 * scale,
+                side.y0 + 44.0 * scale + i as f64 * 24.0 * scale,
             );
         }
         paint::hline(
             scene,
             t,
-            side.x0 + 16.0,
-            side.x1 - 16.0,
-            side.y0 + 150.0,
+            side.x0 + 16.0 * scale,
+            side.x1 - 16.0 * scale,
+            side.y0 + 150.0 * scale,
             ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
             1.0,
         );
@@ -3176,8 +3356,8 @@ impl BackupsApp {
             "Snapshots retained",
             11.5,
             c.text_dim,
-            side.x0 + 16.0,
-            side.y0 + 162.0,
+            side.x0 + 16.0 * scale,
+            side.y0 + 162.0 * scale,
         );
         paint::text_bold(
             scene,
@@ -3186,8 +3366,8 @@ impl BackupsApp {
             &format!("up to {total}"),
             20.0,
             theme.accent_primary,
-            side.x0 + 16.0,
-            side.y0 + 180.0,
+            side.x0 + 16.0 * scale,
+            side.y0 + 180.0 * scale,
         );
     }
 
@@ -3978,11 +4158,7 @@ impl BackupsApp {
     }
 
     fn cycle_view(&mut self, dir: i32, doc: &AutoCommit, root: &ObjId) {
-        let views: &[View] = if self.source_path.is_some() {
-            &LIVE_VIEWS
-        } else {
-            &View::ALL
-        };
+        let views = &View::ALL;
         let idx = views.iter().position(|v| *v == self.ui.view).unwrap_or(0) as i32;
         let n = views.len() as i32;
         let next = ((idx + dir) % n + n) % n;
@@ -4536,11 +4712,9 @@ impl BackupsApp {
                 *handled = true;
             }
             "4" => {
-                if self.source_path.is_none() {
-                    self.ui.view = View::Schedules;
-                    self.load_cache(doc, root);
-                    *handled = true;
-                }
+                self.ui.view = View::Schedules;
+                self.load_cache(doc, root);
+                *handled = true;
             }
             "+" | "=" if self.ui.view == View::Schedules => {
                 // `policy_focus` is always kept `% PolicyField::ALL.len()`.
@@ -4736,6 +4910,67 @@ mod tests {
         // And a second tab confirms it is not a one-shot.
         f.click_hit(|h| matches!(h, Hit::Tab(View::Schedules)));
         assert_eq!(f.view(), View::Schedules);
+    }
+
+    #[test]
+    fn configured_repositories_keep_the_retention_view_reachable() {
+        let mut f = Frame::demo();
+        // A real repository sets this after reading its local configuration.
+        f.app.source_path = Some(PathBuf::from("/protected"));
+        f.app.destination_path = Some(PathBuf::from("/backups"));
+        f.draw();
+
+        assert!(f.has_hit(|hit| matches!(hit, Hit::Tab(View::Schedules))));
+        f.key(&Key::Character("4".into()));
+        assert_eq!(f.view(), View::Schedules);
+    }
+
+    #[test]
+    fn phone_tabs_do_not_overlap_the_compact_backup_action() {
+        let mut f = Frame::demo();
+        f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        f.draw();
+
+        let backup = f.rect_of(|hit| matches!(hit, Hit::BackupNow));
+        for (tab, _) in f
+            .app
+            .hits
+            .iter()
+            .filter(|(_, hit)| matches!(hit, Hit::Tab(_)))
+        {
+            assert!(
+                tab.x1 <= backup.x0 || tab.x0 >= backup.x1,
+                "tab {tab:?} overlaps the compact backup action {backup:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_phone_chrome_keeps_full_semantic_names() {
+        let mut f = Frame::demo();
+        f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        f.draw();
+
+        let tree = f.app.accessibility().expect("phone accessibility tree");
+        let names: Vec<&str> = tree
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Back up now"));
+        assert!(names.contains(&"Destinations view"));
+        assert!(names.contains(&"Schedules view"));
+    }
+
+    #[test]
+    fn configured_empty_repository_has_no_phantom_snapshot_controls() {
+        let mut f = Frame::demo();
+        f.app.catalog.snapshots.clear();
+        f.draw();
+
+        assert!(f.app.timeline_content_h.abs() < f64::EPSILON);
+        assert!(!f.has_hit(|hit| matches!(hit, Hit::Snap(_) | Hit::Verify | Hit::RestoreOpen)));
+        assert!(f.has_hit(|hit| matches!(hit, Hit::BackupNow)));
     }
 
     #[test]
