@@ -4,7 +4,7 @@
 
 use crate::icons::Icon;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
 /// Maximum number of rows a provider should return from the legacy, unbudgeted
@@ -37,10 +37,8 @@ use std::borrow::Borrow;
 
 /// A compact, reusable exact substring index for app search providers.
 ///
-/// The complete supplied corpus is retained. Normalisation and Unicode
-/// 1/2/3/4-gram posting lists are built once. Unlike a suffix array, this stores
-/// only a constant number of postings per input scalar rather than retaining
-/// and comparing every suffix.
+/// The complete supplied corpus is retained. Normalisation and a sorted
+/// suffix-reference array are built once without copying suffix text.
 /// Providers keep
 /// ownership of their domain records and use the returned stable snapshot
 /// offsets to materialise typed [`SearchResult`]s.
@@ -51,7 +49,156 @@ use std::borrow::Borrow;
 #[derive(Clone, Debug, Default)]
 pub struct SearchTextIndex {
     texts: Vec<String>,
-    postings: HashMap<String, BTreeSet<usize>>,
+    suffixes: Vec<SuffixRef>,
+    suffix_records: WaveletIndex,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SuffixRef {
+    record_id: usize,
+    byte_offset: usize,
+}
+
+/// Succinct range-successor index over the record ids in suffix-array order.
+///
+/// One bit-vector per record-id bit uses `O(suffixes * log(records))` bits,
+/// which is linear in the machine-word representation of the suffix refs. It
+/// lets a query enumerate distinct matching record ids in snapshot order
+/// without walking every suffix occurrence or any false n-gram candidate.
+#[derive(Clone, Debug, Default)]
+struct WaveletIndex {
+    levels: Vec<WaveletLevel>,
+    value_count: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+struct WaveletLevel {
+    bits: Vec<u64>,
+    prefix_ones: Vec<usize>,
+    zeros: usize,
+}
+
+impl WaveletLevel {
+    fn rank_ones(&self, end: usize) -> usize {
+        let end = end.min(self.prefix_ones.len().saturating_sub(1).saturating_mul(64));
+        let word = end / 64;
+        let remainder = end % 64;
+        let complete = self.prefix_ones.get(word).copied().unwrap_or_default();
+        let partial = self.bits.get(word).map_or(0, |bits| {
+            if remainder == 0 {
+                0
+            } else {
+                let shift = u32::try_from(remainder).unwrap_or_default();
+                let mask = 1u64
+                    .checked_shl(shift)
+                    .unwrap_or_default()
+                    .saturating_sub(1);
+                (bits & mask).count_ones() as usize
+            }
+        });
+        complete.saturating_add(partial)
+    }
+}
+
+impl WaveletIndex {
+    fn new(values: &[usize], value_count: usize) -> Self {
+        if values.is_empty() || value_count == 0 {
+            return Self::default();
+        }
+        let bit_count = usize::BITS.saturating_sub(value_count.saturating_sub(1).leading_zeros());
+        let mut ordered = values.to_vec();
+        let mut levels = Vec::with_capacity(bit_count as usize);
+        for bit in (0..bit_count).rev() {
+            let mut bits = vec![0u64; ordered.len().div_ceil(64)];
+            let mut zeros = Vec::with_capacity(ordered.len());
+            let mut ones = Vec::with_capacity(ordered.len());
+            for (position, value) in ordered.iter().copied().enumerate() {
+                if value & (1usize << bit) == 0 {
+                    zeros.push(value);
+                } else {
+                    if let Some(word) = bits.get_mut(position / 64) {
+                        *word |= 1u64 << (position % 64);
+                    }
+                    ones.push(value);
+                }
+            }
+            let zero_count = zeros.len();
+            zeros.extend(ones);
+            ordered = zeros;
+            let mut prefix_ones = Vec::with_capacity(bits.len().saturating_add(1));
+            prefix_ones.push(0usize);
+            for word in &bits {
+                let count = prefix_ones
+                    .last()
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(word.count_ones() as usize);
+                prefix_ones.push(count);
+            }
+            levels.push(WaveletLevel {
+                bits,
+                prefix_ones,
+                zeros: zero_count,
+            });
+        }
+        Self {
+            levels,
+            value_count,
+        }
+    }
+
+    fn range_successor(&self, range: Range<usize>, lower: usize) -> Option<usize> {
+        if range.start >= range.end || lower >= self.value_count {
+            return None;
+        }
+        let before = self.range_count_less_than(range.clone(), lower);
+        (before < range.len()).then(|| self.range_kth(range, before))
+    }
+
+    fn range_count_less_than(&self, mut range: Range<usize>, value: usize) -> usize {
+        if value >= self.value_count {
+            return range.len();
+        }
+        let mut count = 0usize;
+        let bit_count = self.levels.len();
+        for (level_index, level) in self.levels.iter().enumerate() {
+            let ones_before = level.rank_ones(range.start);
+            let ones_end = level.rank_ones(range.end);
+            let zeros_before = range.start.saturating_sub(ones_before);
+            let zeros_end = range.end.saturating_sub(ones_end);
+            let bit = bit_count.saturating_sub(level_index).saturating_sub(1);
+            if value & (1usize << bit) == 0 {
+                range = zeros_before..zeros_end;
+            } else {
+                count = count.saturating_add(zeros_end.saturating_sub(zeros_before));
+                range =
+                    level.zeros.saturating_add(ones_before)..level.zeros.saturating_add(ones_end);
+            }
+        }
+        count
+    }
+
+    fn range_kth(&self, mut range: Range<usize>, mut rank: usize) -> usize {
+        let mut value = 0usize;
+        let bit_count = self.levels.len();
+        for (level_index, level) in self.levels.iter().enumerate() {
+            let ones_before = level.rank_ones(range.start);
+            let ones_end = level.rank_ones(range.end);
+            let zeros_before = range.start.saturating_sub(ones_before);
+            let zeros_end = range.end.saturating_sub(ones_end);
+            let zeros_in_range = zeros_end.saturating_sub(zeros_before);
+            if rank < zeros_in_range {
+                range = zeros_before..zeros_end;
+            } else {
+                rank = rank.saturating_sub(zeros_in_range);
+                let bit = bit_count.saturating_sub(level_index).saturating_sub(1);
+                value |= 1usize << bit;
+                range =
+                    level.zeros.saturating_add(ones_before)..level.zeros.saturating_add(ones_end);
+            }
+        }
+        value
+    }
 }
 
 /// A bounded page of snapshot offsets from [`SearchTextIndex`].
@@ -60,7 +207,9 @@ pub struct SearchTextPage {
     pub ids: Vec<usize>,
     /// Resume strictly after this snapshot offset. `None` means exhausted.
     pub next_after: Option<usize>,
-    /// Number of complete candidate texts verified for this page.
+    /// Number of distinct exact-match records materialised for this page.
+    /// Suffix-range comparisons are bounded by query length and do not scan
+    /// complete false-candidate records.
     pub inspected: usize,
 }
 
@@ -74,14 +223,34 @@ impl SearchTextIndex {
             .into_iter()
             .map(|text| normalize_search_text(text.as_ref()))
             .collect();
-        let mut postings: HashMap<String, BTreeSet<usize>> = HashMap::new();
+        let mut suffixes = Vec::new();
         for (record_id, text) in texts.iter().enumerate() {
-            for gram in index_grams(text) {
-                postings.entry(gram).or_default().insert(record_id);
+            for (byte_offset, _) in text.char_indices() {
+                suffixes.push(SuffixRef {
+                    record_id,
+                    byte_offset,
+                });
             }
         }
+        suffixes.sort_unstable_by(|left, right| {
+            suffix_text(&texts, *left)
+                .cmp(&suffix_text(&texts, *right))
+                .then_with(|| left.record_id.cmp(&right.record_id))
+                .then_with(|| left.byte_offset.cmp(&right.byte_offset))
+        });
+        let suffix_records = WaveletIndex::new(
+            &suffixes
+                .iter()
+                .map(|suffix| suffix.record_id)
+                .collect::<Vec<_>>(),
+            texts.len(),
+        );
 
-        Self { texts, postings }
+        Self {
+            texts,
+            suffixes,
+            suffix_records,
+        }
     }
 
     /// Number of complete records represented by this snapshot.
@@ -106,10 +275,10 @@ impl SearchTextIndex {
 
     /// Return a deterministic bounded page of matching snapshot offsets.
     ///
-    /// The cursor is an offset rather than a byte position, so Unicode and
-    /// embedded NULs cannot split or corrupt it.  A broad posting can be
-    /// continued without rescanning earlier records; a rare posting reaches a
-    /// late unique match after inspecting only that posting's candidates.
+    /// The cursor is a record offset rather than a byte position, so Unicode
+    /// and embedded NULs cannot split or corrupt it. A binary-searched suffix
+    /// range excludes false candidates; the range-successor index then pages
+    /// distinct matches in snapshot order without rescanning earlier records.
     #[must_use]
     pub fn matching_page(
         &self,
@@ -124,51 +293,66 @@ impl SearchTextIndex {
         let Some(query) = normalize_bounded_search_query(query) else {
             return SearchTextPage::default();
         };
-        let grams = search_grams(&query);
-        let candidates = if query.is_empty() {
-            None
-        } else {
-            let Some(candidates) = rarest_posting(&self.postings, &grams) else {
-                return SearchTextPage::default();
-            };
-            Some(candidates)
-        };
-        let mut inspected = 0usize;
-        let mut ids = Vec::new();
-        let mut last = None;
-        let mut stopped = false;
-        let iterator: Box<dyn Iterator<Item = usize> + '_> = match candidates {
-            Some(candidates) => match after {
-                Some(after) => Box::new(candidates.range((Excluded(after), Unbounded)).copied()),
-                None => Box::new(candidates.iter().copied()),
-            },
-            None => Box::new(after.map_or(0, |offset| offset.saturating_add(1))..self.texts.len()),
-        };
-        for record_id in iterator {
-            if inspected == work_budget || ids.len() == result_limit {
-                stopped = true;
-                break;
-            }
-            inspected = inspected.saturating_add(1);
-            last = Some(record_id);
-            let exact = query.is_empty()
-                || (grams.iter().all(|gram| {
-                    self.postings
-                        .get(gram)
-                        .is_some_and(|posting| posting.contains(&record_id))
-                }) && self
-                    .texts
-                    .get(record_id)
-                    .is_some_and(|text| text.contains(&query)));
-            if exact {
-                ids.push(record_id);
-            }
+        if query.is_empty() {
+            return self.empty_query_page(after, work_budget, result_limit);
         }
+        let suffix_range = self.exact_suffix_range(&query);
+        let mut ids = Vec::with_capacity(work_budget.min(result_limit));
+        let mut last = after;
+        while ids.len() < work_budget && ids.len() < result_limit {
+            let lower = last.map_or(0, |record_id| record_id.saturating_add(1));
+            let Some(record_id) = self
+                .suffix_records
+                .range_successor(suffix_range.clone(), lower)
+            else {
+                break;
+            };
+            ids.push(record_id);
+            last = Some(record_id);
+        }
+        let has_more = last.is_some_and(|record_id| {
+            self.suffix_records
+                .range_successor(suffix_range, record_id.saturating_add(1))
+                .is_some()
+        });
+        let inspected = ids.len();
         SearchTextPage {
             ids,
-            next_after: stopped.then_some(last).flatten(),
+            next_after: has_more.then_some(last).flatten(),
             inspected,
         }
+    }
+
+    fn empty_query_page(
+        &self,
+        after: Option<usize>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchTextPage {
+        let start = after.map_or(0, |offset| offset.saturating_add(1));
+        let take = work_budget.min(result_limit);
+        let ids: Vec<usize> = (start..self.texts.len()).take(take).collect();
+        let inspected = ids.len();
+        let next_after = ids
+            .last()
+            .copied()
+            .filter(|last| last.saturating_add(1) < self.texts.len());
+        SearchTextPage {
+            ids,
+            next_after,
+            inspected,
+        }
+    }
+
+    fn exact_suffix_range(&self, query: &str) -> Range<usize> {
+        let lower = self.suffixes.partition_point(|suffix| {
+            suffix_text(&self.texts, *suffix).is_some_and(|text| text < query)
+        });
+        let upper = self.suffixes.partition_point(|suffix| {
+            suffix_text(&self.texts, *suffix)
+                .is_some_and(|text| text <= query || text.starts_with(query))
+        });
+        lower..upper
     }
 
     /// The normalised text stored for a snapshot offset, for provider-specific
@@ -177,6 +361,12 @@ impl SearchTextIndex {
     pub fn normalized_text(&self, record_id: usize) -> Option<&str> {
         self.texts.get(record_id).map(String::as_str)
     }
+}
+
+fn suffix_text(texts: &[String], suffix: SuffixRef) -> Option<&str> {
+    texts
+        .get(suffix.record_id)
+        .and_then(|text| text.get(suffix.byte_offset..))
 }
 
 fn search_grams(text: &str) -> Vec<String> {
@@ -1188,7 +1378,10 @@ mod tests {
 
     #[test]
     fn shared_text_index_pages_a_broad_hundred_thousand_row_posting() {
-        let index = SearchTextIndex::new((0..100_001).map(|i| format!("common item {i}")));
+        let index = SearchTextIndex::new(
+            std::iter::once("common common item 0".to_owned())
+                .chain((1..100_001).map(|i| format!("common item {i}"))),
+        );
         let first = index.matching_page("common", None, 7, 3);
         assert_eq!(first.inspected, 3);
         assert_eq!(first.ids, vec![0, 1, 2]);
@@ -1249,14 +1442,54 @@ mod tests {
 
     #[test]
     fn exact_suffix_range_does_not_lose_late_matches_to_false_candidates() {
-        let mut texts = vec!["abcXbcd"; DEFAULT_SEARCH_CANDIDATE_LIMIT + 40];
-        texts.push("the exact abcd resource");
+        let false_candidate = "abcXbcdXcdeXdefXefgXfgh";
+        let mut texts = vec![false_candidate; DEFAULT_SEARCH_CANDIDATE_LIMIT + 40];
+        texts.push("the exact abcdefgh resource");
         let index = SearchTextIndex::new(texts);
 
         assert_eq!(
-            index.matching_ids("abcd", DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            index.matching_ids("abcdefgh", 1),
             vec![DEFAULT_SEARCH_CANDIDATE_LIMIT + 40]
         );
+    }
+
+    #[test]
+    fn suffix_pages_match_naive_exact_record_order_across_cursors_and_budgets() {
+        let source = ["banana", "bandana", "ananas", "", "BANANA"];
+        let index = SearchTextIndex::new(source);
+        for query in ["a", "ana", "nana", "band", "missing"] {
+            let normalized = normalize_search_text(query);
+            let matches: Vec<usize> = source
+                .iter()
+                .enumerate()
+                .filter_map(|(record_id, text)| {
+                    normalize_search_text(text)
+                        .contains(&normalized)
+                        .then_some(record_id)
+                })
+                .collect();
+            for after in [None, Some(0), Some(1), Some(3), Some(usize::MAX)] {
+                for budget in 1..=3 {
+                    let remaining: Vec<usize> = matches
+                        .iter()
+                        .copied()
+                        .filter(|record_id| after.is_none_or(|after| *record_id > after))
+                        .collect();
+                    let expected: Vec<usize> = remaining.iter().copied().take(budget).collect();
+                    let expected_next = expected
+                        .last()
+                        .copied()
+                        .filter(|_| remaining.len() > expected.len());
+                    let page = index.matching_page(query, after, budget, budget);
+                    assert_eq!(page.ids, expected, "query={query:?}, after={after:?}");
+                    assert_eq!(
+                        page.next_after, expected_next,
+                        "query={query:?}, after={after:?}"
+                    );
+                    assert_eq!(page.inspected, page.ids.len());
+                }
+            }
+        }
     }
 
     fn catalog_hit(resource_id: &str, title: impl Into<String>) -> SearchResult {
@@ -1339,16 +1572,16 @@ mod tests {
 
         let mut cursor = None;
         let mut found = Vec::new();
-        let mut pages = 0;
+        let mut pages = 0usize;
         loop {
             let page = catalog.query_page("abc d", cursor.as_ref(), 31, 4);
             assert!(page.inspected <= 31);
-            pages += 1;
+            pages = pages.saturating_add(1);
             found.extend(page.results);
             let Some(next) = page.next else { break };
             cursor = Some(next);
         }
-        assert!(pages > 1);
+        assert!(pages <= 1_001usize.div_ceil(31));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].title, "Target");
     }
