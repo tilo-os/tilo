@@ -690,6 +690,13 @@ pub trait Widget {
 
     fn get_rect(&self) -> vello::kurbo::Rect;
 
+    /// Absolute logical clip applied to ordinary children during painting and
+    /// pointer routing. Inspectors and enclosing scroll regions must respect
+    /// this boundary instead of treating clipped descendants as visible extent.
+    fn child_clip_rect(&self) -> Option<vello::kurbo::Rect> {
+        None
+    }
+
     /// One-shot request to hand app content to the shared floating-surface
     /// host. Shell and in-app hosts consume the same description, so `PiP` does
     /// not require a second rendering/widget API.

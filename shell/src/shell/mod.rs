@@ -955,6 +955,23 @@ pub(crate) fn to_ui_tile_with_inputs(
     }
 }
 
+pub(crate) fn to_ui_tile_for_tab_with_inputs(
+    t: &ShellTile,
+    tab: state::TabId,
+    inputs: &hosted_inputs::HostedTileInputs,
+) -> UiTile {
+    try_to_ui_tile_for_tab(
+        t,
+        terminal::HostedProcessServices::default(),
+        inputs,
+        Some(tab),
+    )
+    .unwrap_or_else(|error| UiTile::Notice {
+        title: "Application unavailable".into(),
+        detail: error.to_string(),
+    })
+}
+
 /// Construct the actual embedded app using explicit host startup inputs.
 /// # Errors
 /// A required service must exist before the widget or a process is constructed.
@@ -962,6 +979,15 @@ pub fn try_to_ui_tile(
     t: &ShellTile,
     services: terminal::HostedProcessServices,
     inputs: &hosted_inputs::HostedTileInputs,
+) -> Result<UiTile, hosted_inputs::HostedTileError> {
+    try_to_ui_tile_for_tab(t, services, inputs, None)
+}
+
+fn try_to_ui_tile_for_tab(
+    t: &ShellTile,
+    services: terminal::HostedProcessServices,
+    inputs: &hosted_inputs::HostedTileInputs,
+    tab: Option<state::TabId>,
 ) -> Result<UiTile, hosted_inputs::HostedTileError> {
     Ok(match t {
         ShellTile::Stub { kind, label } => UiTile::Stub {
@@ -1038,7 +1064,25 @@ pub fn try_to_ui_tile(
                 UiTile::App(Box::new(NotesApp::new()))
             }
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Editor") => {
-                UiTile::App(Box::new(EditorApp::new()))
+                match tab.and_then(|tab| inputs.document(tab)) {
+                    Some(hosted_inputs::HostedDocumentState::Ready(document)) => {
+                        UiTile::App(Box::new(EditorApp::for_file(
+                            document.path,
+                            document.provider_id,
+                            document.text,
+                        )))
+                    }
+                    Some(hosted_inputs::HostedDocumentState::Unavailable {
+                        path, reason, ..
+                    }) => UiTile::Notice {
+                        title: path.file_name().map_or_else(
+                            || "Document unavailable".to_string(),
+                            |name| format!("{} unavailable", name.to_string_lossy()),
+                        ),
+                        detail: reason,
+                    },
+                    None => UiTile::App(Box::new(EditorApp::new())),
+                }
             }
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Word") => {
                 UiTile::App(Box::new(word_processor::WordProcessorWidget::new()))
@@ -1118,7 +1162,7 @@ pub fn to_ui_window_group_with_inputs(
                     title: t.title.clone(),
                     app_kind: Some(kind),
                 },
-                to_ui_tile_with_inputs(&t.tile, inputs),
+                to_ui_tile_for_tab_with_inputs(&t.tile, t.id, inputs),
             )
         })
         .collect();
@@ -1136,6 +1180,45 @@ pub fn to_ui_window_group_with_inputs(
 pub fn install_document_opener(chrome: &chrome_state::Chrome) {
     let chrome = chrome.clone();
     file_explorer::files_app::set_document_opener(move |path| {
+        let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
+        if let Some(app) = native_app {
+            let path = path
+                .canonicalize()
+                .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+            let text = std::fs::read_to_string(&path)
+                .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+            let title = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            let tab = window_actions::open_hosted(
+                &mut chrome.borrow_mut(),
+                app.kind,
+                title,
+                window_actions::Destination::Here,
+            );
+            {
+                let state = chrome.borrow_mut();
+                let mut tree = state.tree_mut();
+                tree.native_document_tabs.insert(
+                    tab,
+                    state::NativeDocumentReference {
+                        provider_id: app.package_id.to_string(),
+                        path: path.clone(),
+                    },
+                );
+                tree.flush_to_disk();
+            }
+            chrome.borrow().hosted_inputs.bind_document(
+                tab,
+                hosted_inputs::HostedDocument {
+                    provider_id: app.package_id,
+                    path,
+                    text,
+                },
+            );
+            return Ok(());
+        }
         doc_open::open_in_workspace(path, &chrome)
             .map(|_| ())
             .map_err(|e| e.user_message())

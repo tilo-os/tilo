@@ -1,0 +1,164 @@
+{
+  "name": "Scroll Files content without moving the workspace",
+  "goal": "Scroll down by 60 logical pixels and back with a trackpad gesture",
+  "fixture": "files",
+  "viewport": [
+    1280,
+    800
+  ],
+  "budget": {
+    "clicks": 0,
+    "keys": 0
+  },
+  "steps": [
+    {
+      "op": "checkpoint",
+      "name": "before",
+      "checks": [
+        {
+          "kind": "state",
+          "pointer": "/tab_titles/0",
+          "equals": "Files"
+        }
+      ]
+    },
+    {
+      "op": "wheel",
+      "at": [
+        600,
+        400
+      ],
+      "delta": [
+        0,
+        0
+      ],
+      "unit": "physical_pixels",
+      "phase": "started"
+    },
+    {
+      "op": "wheel",
+      "at": [
+        600,
+        400
+      ],
+      "delta": [
+        0,
+        -60
+      ],
+      "unit": "physical_pixels",
+      "phase": "moved"
+    },
+    {
+      "op": "wheel",
+      "at": [
+        600,
+        400
+      ],
+      "delta": [
+        0,
+        0
+      ],
+      "unit": "physical_pixels",
+      "phase": "ended"
+    },
+    {
+      "op": "checkpoint",
+      "name": "down",
+      "checks": [
+        {
+          "kind": "image_shift",
+          "from": "before",
+          "region": [
+            480,
+            260,
+            300,
+            380
+          ],
+          "axis": "y",
+          "min": -61,
+          "max": -59
+        },
+        {
+          "kind": "state",
+          "pointer": "/active_workspace",
+          "equals": "Home"
+        },
+        {
+          "kind": "image_unchanged",
+          "from": "before",
+          "region": [
+            480,
+            170,
+            300,
+            20
+          ]
+        }
+      ]
+    },
+    {
+      "op": "wheel",
+      "at": [
+        600,
+        400
+      ],
+      "delta": [
+        0,
+        60
+      ],
+      "unit": "physical_pixels",
+      "phase": "moved"
+    },
+    {
+      "op": "wheel",
+      "at": [
+        600,
+        400
+      ],
+      "delta": [
+        0,
+        0
+      ],
+      "unit": "physical_pixels",
+      "phase": "cancelled"
+    },
+    {
+      "op": "checkpoint",
+      "name": "back",
+      "checks": [
+        {
+          "kind": "image_shift",
+          "from": "down",
+          "region": [
+            480,
+            260,
+            300,
+            380
+          ],
+          "axis": "y",
+          "min": 59,
+          "max": 61
+        },
+        {
+          "kind": "state",
+          "pointer": "/active_workspace",
+          "equals": "Home"
+        },
+        {
+          "kind": "state",
+          "pointer": "/tab_titles/0",
+          "equals": "Files"
+        },
+        {
+          "kind": "image_unchanged",
+          "from": "before",
+          "region": [
+            480,
+            170,
+            300,
+            20
+          ]
+        }
+      ]
+    }
+  ]
+}

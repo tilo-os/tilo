@@ -13,6 +13,7 @@
 //! out of scope.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -84,6 +85,7 @@ pub struct EditorApp {
     /// Byte offset into `body.text` for the caret.
     cursor_pos: usize,
     last_mouse: Point,
+    source: Option<(PathBuf, &'static str)>,
 }
 
 impl EditorApp {
@@ -95,6 +97,7 @@ impl EditorApp {
             body: CrdtTextBody::new(BODY_KEY),
             cursor_pos: 0,
             last_mouse: Point::ZERO,
+            source: None,
         }
     }
 
@@ -107,6 +110,12 @@ impl EditorApp {
 
     pub fn with_default_snippet() -> Self {
         Self::with_seed(DEFAULT_SEED)
+    }
+
+    pub fn for_file(path: PathBuf, provider_id: &'static str, text: String) -> Self {
+        let mut app = Self::with_seed(text);
+        app.source = Some((path, provider_id));
+        app
     }
 
     fn clamp_cursor(&mut self) {
@@ -661,6 +670,29 @@ impl Widget for EditorApp {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.body.sync(state, root);
         self.clamp_cursor();
+    }
+
+    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
+        self.source.as_ref().map(|(path, _)| {
+            ui::record::RecordCheckout::new(
+                ui::record::RecordId::for_file(path),
+                ui::record::RecordKind::new("text-document"),
+            )
+        })
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let (path, provider) = self.source.as_ref()?;
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Document)
+                .with_name(path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                ))
+                .with_value(self.body.text.clone())
+                .with_description((*provider).to_string())
+                .with_bounds(self.rect),
+        )
     }
 
     fn build_layout(
