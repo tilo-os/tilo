@@ -51,7 +51,7 @@ jobs = 4
 # x86-64 target-cpu/shadow-stack flags made every aarch64 build fail before it
 # reached the workspace.
 
-[target.'cfg(target_arch = "x86_64")']
+[target.'cfg(all(target_arch = "x86_64", target_os = "linux"))']
 rustflags = [
     "-C", "target-cpu=x86-64-v3",
     "-C", "force-frame-pointers=yes",
@@ -67,12 +67,28 @@ rustflags = [
     "--remap-path-prefix=/build=.",
 ]
 
-[target.'cfg(target_arch = "aarch64")']
+[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))']
 rustflags = [
     "-C", "target-cpu=generic",
     "-C", "force-frame-pointers=yes",
     "-C", "relro-level=full",
     "-C", "link-arg=-Wl,-z,noexecstack",
+    "--remap-path-prefix=/build=.",
+]
+
+# Imager also builds on Windows and macOS, whose linkers do not accept ELF
+# -z options. Keep the architecture floor and reproducible paths on those hosts.
+[target.'cfg(all(target_arch = "x86_64", not(target_os = "linux")))']
+rustflags = [
+    "-C", "target-cpu=x86-64-v3",
+    "-C", "force-frame-pointers=yes",
+    "--remap-path-prefix=/build=.",
+]
+
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "linux")))']
+rustflags = [
+    "-C", "target-cpu=generic",
+    "-C", "force-frame-pointers=yes",
     "--remap-path-prefix=/build=.",
 ]
 
@@ -139,10 +155,16 @@ rustflags = [
 # replaces this list and silently un-hardens the vendored C. Copy the flags
 # across if you ever need to.
 [env]
-CFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
-CXXFLAGS = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+# Scope GNU C/assembler options to Linux targets, too. Global CFLAGS would
+# send -Wa,--noexecstack to MSVC/Apple clang while building the host Imager.
+CFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CXXFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
 CFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
 CXXFLAGS_x86_64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -fcf-protection=full -Wa,--noexecstack", force = true }
+CFLAGS_aarch64_unknown_linux_musl = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CXXFLAGS_aarch64_unknown_linux_musl = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CFLAGS_x86_64_unknown_linux_musl = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
+CXXFLAGS_x86_64_unknown_linux_musl = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
 
 # sccache refuses `-C incremental=`; with it on, 13,417/16,947 requests refused.
 # Here rather than Cargo.toml: a config [profile] overrides the manifest.
