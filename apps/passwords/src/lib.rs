@@ -4,7 +4,7 @@
 //! Apps obtain credentials through `accounts::CredentialBroker`; this process
 //! is for organizing, reviewing and revoking them.
 
-use accounts::{GeneratedPasswordPolicy, SecretId, SecretItem, SecretStore};
+use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretStore};
 use std::collections::HashMap;
 use ui::widget::Widget;
 
@@ -82,6 +82,22 @@ impl PasswordsModel {
     }
     pub fn items(&self) -> Vec<SecretItem> {
         self.store.list()
+    }
+    /// Durable application access shown in the vault's management UI.
+    pub fn app_grants(&self) -> Vec<CredentialGrant> {
+        self.store.grants()
+    }
+    /// Revoke one exact app/account/origin relationship.
+    pub fn revoke_app_grant(&mut self, grant: &CredentialGrant) -> Result<bool, String> {
+        self.store
+            .revoke_grant(grant)
+            .map_err(|error| format!("could not revoke app access: {error:?}"))
+    }
+    /// Revoke all durable vault access for an application.
+    pub fn revoke_all_app_grants(&mut self, app_id: &str) -> Result<usize, String> {
+        self.store
+            .revoke_app_grants(app_id)
+            .map_err(|error| format!("could not revoke app access: {error:?}"))
     }
     pub fn search(&self, query: &str) -> Vec<SecretItem> {
         let query = query.trim().to_lowercase();

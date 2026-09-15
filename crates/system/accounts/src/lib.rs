@@ -42,8 +42,8 @@ pub use vault::{Secret, SecretCustody, SecretVault};
 pub mod secrets;
 pub use secrets::{
     AccessDecision, AccessRequest, BrokerError, ClipboardLease, CredentialBroker,
-    CredentialCandidate, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind,
-    SecretStore,
+    CredentialCandidate, CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem,
+    SecretItemKind, SecretStore,
 };
 pub mod status;
 pub use status::{

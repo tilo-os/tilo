@@ -20,7 +20,7 @@ use zeroize::Zeroizing;
 
 use crate::actions;
 use crate::transfer::ImportLogin;
-use accounts::{GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
+use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
 
 enum TransferDialog {
     ImportPreview {
@@ -149,6 +149,7 @@ pub enum ShowcaseMode {
     Vault,
     Editor,
     Health,
+    AppAccess,
     Import,
     Export,
     DeleteConfirm,
@@ -157,7 +158,10 @@ pub enum ShowcaseMode {
 fn compact_content_rect(mode: ShowcaseMode, main: Rect) -> Rect {
     if matches!(
         mode,
-        ShowcaseMode::Editor | ShowcaseMode::Health | ShowcaseMode::DeleteConfirm
+        ShowcaseMode::Editor
+            | ShowcaseMode::Health
+            | ShowcaseMode::AppAccess
+            | ShowcaseMode::DeleteConfirm
     ) {
         main
     } else {
@@ -190,6 +194,8 @@ pub struct PasswordsSurface {
     list_touch: Option<(u64, Point, usize)>,
     editor_scroll: f64,
     editor_touch: Option<(u64, Point, f64)>,
+    app_access_scroll: f64,
+    app_access_touch: Option<(u64, Point, f64)>,
     query: String,
     editing: Option<SecretId>,
     draft_title: String,
@@ -206,6 +212,7 @@ pub struct PasswordsSurface {
     status: String,
     mobile_detail: bool,
     health: crate::VaultHealth,
+    app_grants: Vec<CredentialGrant>,
     import_portal: Option<ui::portal::OpenFileChannel>,
     import_parse: Option<std::sync::mpsc::Receiver<Result<Vec<ImportLogin>, String>>>,
     export_portal: Option<ui::portal::PortalChannel>,
@@ -450,6 +457,8 @@ impl PasswordsSurface {
             list_touch: None,
             editor_scroll: 0.0,
             editor_touch: None,
+            app_access_scroll: 0.0,
+            app_access_touch: None,
             query: String::new(),
             editing: None,
             draft_title: String::new(),
@@ -466,6 +475,7 @@ impl PasswordsSurface {
             status: String::new(),
             mobile_detail: false,
             health: crate::VaultHealth::default(),
+            app_grants: Vec::new(),
             import_portal: None,
             import_parse: None,
             export_portal: None,
@@ -530,6 +540,8 @@ impl PasswordsSurface {
             list_touch: None,
             editor_scroll: 0.0,
             editor_touch: None,
+            app_access_scroll: 0.0,
+            app_access_touch: None,
             query: String::new(),
             editing,
             draft_title: "Northstar Bank".into(),
@@ -552,6 +564,7 @@ impl PasswordsSurface {
             status: String::new(),
             mobile_detail: false,
             health,
+            app_grants: Vec::new(),
             import_portal: None,
             import_parse: None,
             export_portal: None,
@@ -589,6 +602,7 @@ impl PasswordsSurface {
     fn refresh(&mut self) {
         if let Some(model) = &self.model {
             self.health = model.health();
+            self.app_grants = model.app_grants();
             self.items = model
                 .search(&self.query)
                 .into_iter()
@@ -1716,6 +1730,10 @@ impl PasswordsSurface {
                 self.mode = ShowcaseMode::Health;
                 self.mobile_detail = false;
             }
+            "app-access" => {
+                self.mode = ShowcaseMode::AppAccess;
+                self.mobile_detail = false;
+            }
             "import" => self.request_import(),
             "export" => self.request_export_confirmation(),
             "backup" => self.request_backup(),
@@ -1958,6 +1976,9 @@ impl PasswordsSurface {
         } else {
             list
         };
+        if self.mode == ShowcaseMode::AppAccess && self.activate_app_access(panel, point) {
+            return true;
+        }
         if self.mode == ShowcaseMode::Vault && self.drawer.is_docked() {
             if Rect::new(
                 panel.x1 - 110.0,
@@ -2203,6 +2224,9 @@ impl PasswordsSurface {
                     vec![
                         SidebarNavItem::new("review", "Password review")
                             .selected(self.mode == ShowcaseMode::Health),
+                        SidebarNavItem::new("app-access", "App access")
+                            .badge(self.app_grants.len().to_string())
+                            .selected(self.mode == ShowcaseMode::AppAccess),
                         SidebarNavItem::new("backup", "Back up vault…"),
                         SidebarNavItem::new("restore", "Restore backup…"),
                         SidebarNavItem::new("import", "Import passwords"),
@@ -3578,6 +3602,213 @@ impl PasswordsSurface {
             );
         }
     }
+
+    fn app_access_viewport(rect: Rect) -> Rect {
+        Rect::new(
+            rect.x0 + 18.0,
+            rect.y0 + 96.0,
+            rect.x1 - 18.0,
+            rect.y1 - 18.0,
+        )
+    }
+
+    fn max_app_access_scroll(&self, rect: Rect) -> f64 {
+        let content = self.app_grants.len() as f64 * 88.0;
+        (content - Self::app_access_viewport(rect).height()).max(0.0)
+    }
+
+    fn scroll_app_access_by(&mut self, rect: Rect, delta: f64) -> bool {
+        let before = self
+            .app_access_scroll
+            .clamp(0.0, self.max_app_access_scroll(rect));
+        self.app_access_scroll = (before + delta).clamp(0.0, self.max_app_access_scroll(rect));
+        self.app_access_scroll.to_bits() != before.to_bits()
+    }
+
+    fn activate_app_access(&mut self, rect: Rect, point: Point) -> bool {
+        let viewport = Self::app_access_viewport(rect);
+        if !viewport.contains(point) || point.x < viewport.x1 - 106.0 {
+            return false;
+        }
+        let scroll = self
+            .app_access_scroll
+            .clamp(0.0, self.max_app_access_scroll(rect));
+        let content_y = point.y - viewport.y0 + scroll;
+        let index = (content_y / 88.0) as usize;
+        let row_y = viewport.y0 + index as f64 * 88.0 - scroll;
+        if !Rect::new(viewport.x1 - 106.0, row_y, viewport.x1, row_y + 76.0).contains(point) {
+            return false;
+        }
+        let Some(grant) = self.app_grants.get(index).cloned() else {
+            return false;
+        };
+        self.revoke_app_grant_index(index, grant, rect)
+    }
+
+    fn revoke_app_grant_index(&mut self, index: usize, grant: CredentialGrant, rect: Rect) -> bool {
+        if let Some(model) = &mut self.model {
+            match model.revoke_app_grant(&grant) {
+                Ok(true) => self.status = "App access revoked".into(),
+                Ok(false) => self.status = "That access was already removed".into(),
+                Err(error) => self.status = error,
+            }
+            self.app_grants = model.app_grants();
+        } else {
+            self.app_grants.remove(index);
+            self.status = "App access revoked".into();
+        }
+        self.app_access_scroll = self.app_access_scroll.min(self.max_app_access_scroll(rect));
+        true
+    }
+
+    fn draw_app_access(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        Self::card(scene, transform, c.surfaces.raised, rect, 18.0);
+        let compact = rect.width() < 420.0;
+        let x = rect.x0 + if compact { 18.0 } else { 34.0 };
+        let header_x = if compact && self.drawer.is_overlay() {
+            x + 60.0
+        } else {
+            x
+        };
+        Self::text(
+            tr,
+            scene,
+            "App access",
+            25.0,
+            c.text_primary,
+            transform,
+            header_x,
+            rect.y0 + 30.0,
+            TextWeight::Bold,
+        );
+        Self::text(
+            tr,
+            scene,
+            if !self.status.is_empty() {
+                &self.status
+            } else if self.app_grants.is_empty() {
+                "Apps you always allow will appear here"
+            } else {
+                "Apps can use only the accounts and sites shown below"
+            },
+            13.0,
+            c.text_dim,
+            transform,
+            header_x,
+            rect.y0 + 66.0,
+            TextWeight::Regular,
+        );
+        let viewport = Self::app_access_viewport(rect);
+        if self.app_grants.is_empty() {
+            let empty = Rect::new(
+                viewport.x0,
+                viewport.y0 + 18.0,
+                viewport.x1,
+                viewport.y0 + 150.0,
+            );
+            Self::card(scene, transform, c.surfaces.base, empty, 14.0);
+            Self::text(
+                tr,
+                scene,
+                "No ongoing access",
+                17.0,
+                c.text_primary,
+                transform,
+                empty.x0 + 22.0,
+                empty.y0 + 26.0,
+                TextWeight::Bold,
+            );
+            Self::text(
+                tr,
+                scene,
+                "One-time and while-open access ends automatically. You stay in control when an app asks again.",
+                13.0,
+                c.text_dim,
+                transform,
+                empty.x0 + 22.0,
+                empty.y0 + 62.0,
+                TextWeight::Regular,
+            );
+            return;
+        }
+        scene.push_clip_layer(Fill::NonZero, transform, &viewport);
+        let scroll = self
+            .app_access_scroll
+            .clamp(0.0, self.max_app_access_scroll(rect));
+        for (index, grant) in self.app_grants.iter().enumerate() {
+            let y = viewport.y0 + index as f64 * 88.0 - scroll;
+            let row = Rect::new(viewport.x0, y, viewport.x1, y + 76.0);
+            if row.y1 < viewport.y0 || row.y0 > viewport.y1 {
+                continue;
+            }
+            Self::card(scene, transform, c.surfaces.base, row, 12.0);
+            let app_name = grant.app_id.rsplit('.').next().unwrap_or(&grant.app_id);
+            let title = self
+                .items
+                .iter()
+                .find(|item| item.id == grant.item_id)
+                .map_or("Saved account", |item| item.title.as_str());
+            tr.draw_text_weighted(
+                scene,
+                app_name,
+                15.0,
+                c.text_primary,
+                transform.pre_translate((row.x0 + 16.0, row.y0 + 14.0).into()),
+                Some((row.width() - 132.0).max(40.0) as f32),
+                TextWeight::Bold,
+            );
+            let scope = grant.origin.as_deref().unwrap_or("This saved account");
+            tr.draw_text_weighted(
+                scene,
+                &format!("{title}  ·  {scope}"),
+                12.0,
+                c.text_dim,
+                transform.pre_translate((row.x0 + 16.0, row.y0 + 43.0).into()),
+                Some((row.width() - 132.0).max(40.0) as f32),
+                TextWeight::Regular,
+            );
+            Button::paint(
+                scene,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(
+                    Rect::new(row.x1 - 94.0, row.y0 + 16.0, row.x1 - 12.0, row.y0 + 60.0),
+                    "Revoke",
+                )
+                .style(ui::widget::ButtonStyle::Danger),
+            );
+        }
+        scene.pop_layer();
+        let metrics = ScrollMetrics::new(
+            self.app_grants.len() as f64 * 88.0,
+            viewport.height(),
+            scroll,
+        );
+        let track = Rect::new(
+            viewport.x1 - 4.0,
+            viewport.y0 + 4.0,
+            viewport.x1,
+            viewport.y1 - 4.0,
+        );
+        if let Some(thumb) = Scrollbar::vertical().thumb_rect(track, metrics) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c.border_standard,
+                None,
+                &RoundedRect::from_rect(thumb, 2.0),
+            );
+        }
+    }
 }
 
 impl Widget for PasswordsSurface {
@@ -3726,6 +3957,9 @@ impl Widget for PasswordsSurface {
                 ShowcaseMode::Health => {
                     self.draw_health(scene, tr, transform, theme, compact_content)
                 }
+                ShowcaseMode::AppAccess => {
+                    self.draw_app_access(scene, tr, transform, theme, compact_content)
+                }
                 ShowcaseMode::Import | ShowcaseMode::Export => {
                     self.draw_list(scene, tr, transform, theme, compact_content, true)
                 }
@@ -3763,6 +3997,7 @@ impl Widget for PasswordsSurface {
                 self.draw_editor(scene, tr, transform, theme, detail)
             }
             ShowcaseMode::Health => self.draw_health(scene, tr, transform, theme, detail),
+            ShowcaseMode::AppAccess => self.draw_app_access(scene, tr, transform, theme, detail),
             ShowcaseMode::Import | ShowcaseMode::Export => {
                 self.draw_detail(scene, tr, transform, theme, detail)
             }
@@ -4013,6 +4248,12 @@ impl Widget for PasswordsSurface {
                     list
                 };
                 match self.mode {
+                    ShowcaseMode::AppAccess => {
+                        if self.activate_app_access(panel, self.last_pointer) {
+                            *handled = true;
+                            return;
+                        }
+                    }
                     ShowcaseMode::Vault if self.drawer.is_overlay() && self.mobile_detail => {
                         if Rect::new(panel.x0, panel.y0 + 18.0, panel.x0 + 62.0, panel.y0 + 76.0)
                             .contains(self.last_pointer)
@@ -4189,7 +4430,17 @@ impl Widget for PasswordsSurface {
                     self.rect.y1 - 24.0,
                 ));
                 let panel = self.current_panel_rect();
-                if self.mode == ShowcaseMode::Editor
+                if self.mode == ShowcaseMode::AppAccess
+                    && Self::app_access_viewport(panel).contains(self.last_pointer)
+                {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 46.0,
+                        MouseScrollDelta::PixelDelta(position) => -position.y,
+                    };
+                    if self.scroll_app_access_by(panel, dy) {
+                        *handled = true;
+                    }
+                } else if self.mode == ShowcaseMode::Editor
                     && self.editor_body_viewport(panel).contains(self.last_pointer)
                 {
                     let dy = match delta {
@@ -4248,6 +4499,13 @@ impl Widget for PasswordsSurface {
                     *handled = true;
                 } else {
                     let panel = self.current_panel_rect();
+                    if self.mode == ShowcaseMode::AppAccess
+                        && Self::app_access_viewport(panel).contains(point)
+                    {
+                        self.app_access_touch = Some((touch.id, point, self.app_access_scroll));
+                        *handled = true;
+                        return;
+                    }
                     if self.mode == ShowcaseMode::Editor
                         && self.editor_body_viewport(panel).contains(point)
                     {
@@ -4280,6 +4538,14 @@ impl Widget for PasswordsSurface {
                     let panel = self.current_panel_rect();
                     let _ = self.scroll_editor_by(panel, start.y - point.y);
                     *handled = true;
+                } else if let Some((id, start, initial_scroll)) = self.app_access_touch
+                    && id == touch.id
+                {
+                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    self.app_access_scroll = initial_scroll;
+                    let panel = self.current_panel_rect();
+                    let _ = self.scroll_app_access_by(panel, start.y - point.y);
+                    *handled = true;
                 } else if let Some((id, start, initial_scroll)) = self.list_touch
                     && id == touch.id
                 {
@@ -4304,7 +4570,12 @@ impl Widget for PasswordsSurface {
                 let editor_scroll = self.editor_touch.take().is_some_and(|(id, start, _)| {
                     id == touch.id && (start.y - point.y).abs() > 8.0
                 });
-                let was_scroll = sidebar_scroll || list_scroll || editor_scroll;
+                let app_access_scroll =
+                    self.app_access_touch.take().is_some_and(|(id, start, _)| {
+                        id == touch.id && (start.y - point.y).abs() > 8.0
+                    });
+                let was_scroll =
+                    sidebar_scroll || list_scroll || editor_scroll || app_access_scroll;
                 if touch.phase == TouchPhase::Ended && !was_scroll {
                     self.last_pointer = point;
                     if self.activate_touch(point) {
@@ -4506,6 +4777,7 @@ impl Widget for PasswordsSurface {
                         "wifi" => "passwords.filter.wifi",
                         "other" => "passwords.filter.other",
                         "review" => "passwords.review",
+                        "app-access" => "passwords.app-access",
                         "backup" => "passwords.backup",
                         "restore" => "passwords.restore",
                         "import" => "passwords.import",
@@ -4715,6 +4987,35 @@ impl Widget for PasswordsSurface {
                         .with_action_target("passwords.delete"),
                 );
             }
+        } else if self.mode == ShowcaseMode::AppAccess {
+            let grants = self
+                .app_grants
+                .iter()
+                .enumerate()
+                .map(|(index, grant)| {
+                    let account = self
+                        .items
+                        .iter()
+                        .find(|item| item.id == grant.item_id)
+                        .map_or("Saved account", |item| item.title.as_str());
+                    AccessNode::new(Role::Group)
+                        .with_name(&grant.app_id)
+                        .with_description(format!(
+                            "Can use {account} for {}",
+                            grant.origin.as_deref().unwrap_or("this saved account")
+                        ))
+                        .with_children(vec![
+                            AccessNode::new(Role::Button)
+                                .with_name(format!("Revoke {} access", grant.app_id))
+                                .with_action_target(format!("passwords.app-access.revoke:{index}")),
+                        ])
+                })
+                .collect();
+            children.push(
+                AccessNode::new(Role::List)
+                    .with_name("Apps with ongoing access")
+                    .with_children(grants),
+            );
         } else if let Some(detail) = detail {
             children.push(detail);
         }
@@ -4840,6 +5141,22 @@ impl Widget for PasswordsSurface {
             ("passwords.review", Action::Activate) => {
                 self.mode = ShowcaseMode::Health;
                 self.mobile_detail = false;
+            }
+            ("passwords.app-access", Action::Activate) => {
+                self.mode = ShowcaseMode::AppAccess;
+                self.mobile_detail = false;
+            }
+            (target, Action::Activate) if target.starts_with("passwords.app-access.revoke:") => {
+                let Some(index) = target
+                    .strip_prefix("passwords.app-access.revoke:")
+                    .and_then(|value| value.parse::<usize>().ok())
+                else {
+                    return false;
+                };
+                let Some(grant) = self.app_grants.get(index).cloned() else {
+                    return false;
+                };
+                self.revoke_app_grant_index(index, grant, self.current_panel_rect());
             }
             ("passwords.import", Action::Activate) => self.request_import(),
             ("passwords.export", Action::Activate) => self.request_export_confirmation(),
@@ -5117,6 +5434,59 @@ mod tests {
 
         assert!(app.scroll_sidebar_by(-f64::MAX));
         assert_eq!(app.sidebar_scroll, 0.0);
+    }
+
+    #[test]
+    fn app_access_is_scrollable_revocable_and_assistive_on_a_phone() {
+        let root = std::env::temp_dir().join(format!(
+            "qos-passwords-access-ui-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut store = accounts::SecretStore::open_in(&root);
+        let mut item = SecretItem::login("Northstar Bank", "ada", "not-rendered");
+        item.add_origin("https://bank.example").unwrap();
+        store.put(&mut item).unwrap();
+        let mut broker = accounts::CredentialBroker::new(store);
+        for index in 0..10 {
+            broker
+                .request(
+                    &accounts::AccessRequest {
+                        app_id: format!("org.example.App{index}"),
+                        item_id: item.id.clone(),
+                        purpose: "Sign in".into(),
+                        origin: Some("https://bank.example".into()),
+                    },
+                    |_, _| accounts::AccessDecision::AllowAlways,
+                )
+                .unwrap();
+        }
+        drop(broker);
+
+        let mut app = PasswordsSurface::demo(ShowcaseMode::AppAccess);
+        app.model = Some(crate::PasswordsModel::open_in(&root));
+        app.refresh();
+        app.rect = Rect::new(0.0, 0.0, 390.0, 640.0);
+        app.drawer.resolve(Rect::new(24.0, 24.0, 366.0, 616.0));
+        let panel = app.current_panel_rect();
+        assert_eq!(app.app_grants.len(), 10);
+        assert!(app.max_app_access_scroll(panel) > 0.0);
+        assert!(app.scroll_app_access_by(panel, f64::MAX));
+        assert_eq!(app.app_access_scroll, app.max_app_access_scroll(panel));
+
+        let json = serde_json::to_string(&Widget::accessibility(&app)).unwrap();
+        assert!(json.contains("Apps with ongoing access"));
+        assert!(json.contains("passwords.app-access.revoke:9"));
+        assert!(!json.contains("not-rendered"));
+
+        let grant = app.app_grants[9].clone();
+        assert!(app.revoke_app_grant_index(9, grant, panel));
+        assert_eq!(app.app_grants.len(), 9);
+        assert_eq!(crate::PasswordsModel::open_in(&root).app_grants().len(), 9);
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
