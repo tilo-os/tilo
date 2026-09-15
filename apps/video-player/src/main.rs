@@ -65,11 +65,13 @@ extern crate runtime_dylib;
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.qos.video-player", live_root)
+            .configure_app(|app| video_player::actions::register(app.action_registry_mut()))
             .shot_handler(render_shot)
             .allowed_live_options(&["--open"])
             .max_positionals(1)
             .scenarios(&[
                 "empty",
+                "loading",
                 "error",
                 "native-error",
                 "playing",
@@ -79,6 +81,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "library",
                 "library-focus",
                 "recent",
+                "shared",
                 "fullscreen",
             ]),
     )?;
@@ -116,8 +119,21 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
-    render_shot_to_png(Box::new(app), viewport, out)
+    render_shot_to_png(Box::new(app), viewport, args.text_scale, out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
+}
+
+fn shot_theme(kind: Option<&str>, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    let theme = match kind {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let theme = match text_scale {
+        Some(scale) => theme.with_text_scale(scale),
+        None => theme,
+    };
+    theme.with_reduce_motion(reduce_motion)
 }
 
 /// Render one offscreen frame of `widget` and write it as a PNG. Mirrors
@@ -125,25 +141,22 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_reduce_motion(
-        ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
-            .into_iter()
-            .filter_map(|key| std::env::var(key).ok())
-            .any(|value| {
-                let value = value.trim();
-                !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-            }),
-    );
+    let reduce_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        });
+    let shot_theme_name = std::env::var("QOS_SHOTS_THEME").ok();
+    let theme = shot_theme(shot_theme_name.as_deref(), text_scale, reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut state = ui::State::new();
     let (w, h) = viewport;
 
@@ -202,4 +215,19 @@ fn render_shot_to_png(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("video-player: wrote shot to {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod shot_tests {
+    use super::*;
+
+    #[test]
+    fn custom_shot_theme_propagates_text_scale_and_reduced_motion() {
+        let theme = shot_theme(Some("high-contrast"), Some(2.0), true);
+        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
+        assert!(theme.reduce_motion);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        assert!((renderer.text_scale() - 2.0).abs() < f32::EPSILON);
+    }
 }
