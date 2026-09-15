@@ -36,8 +36,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    Button, ButtonFace, CropSelection, Image, ImageCropEditor, ImageFit, Popover, Toggle,
-    ToggleFace, Widget,
+    Button, ButtonFace, CropSelection, Image, ImageCropEditor, ImageFit, Popover, SidebarDrawer,
+    Toggle, ToggleFace, Widget,
 };
 use winit::event::WindowEvent;
 
@@ -65,6 +65,12 @@ const THUMB: (u32, u32) = (512, 342);
 /// Below this content width the side panels fold away for a single-column
 /// layout.
 const WIDE_MIN: f64 = 900.0;
+/// Camera's real navigation is a shared responsive drawer: a useful, docked
+/// navigator at desktop widths and an overlay that is closed by default on a
+/// narrow or high-zoom window.  Keep the capture surface immersive inside the
+/// resolved content area instead of maintaining a second bespoke rail/flap.
+const NAV_WIDTH: f64 = 232.0;
+const NAV_BREAKPOINT: f64 = 760.0;
 /// Renderer/upload admission limit for external camera data. This mirrors the
 /// capture callback limit and remains here for the feature-off/test path: no
 /// caller can smuggle malformed pixels into an `Image`.
@@ -252,9 +258,19 @@ impl Default for DocumentSettings {
     }
 }
 
+/// A local, physical-capture countdown.  It intentionally is not document
+/// state: a peer changing a preference may replicate the preferred delay, but
+/// must never arm or replay this device's shutter.
+struct Countdown {
+    due: Instant,
+    mode: CaptureMode,
+}
+
 #[derive(Clone, Debug)]
 enum Action {
     Nav(Screen),
+    ToggleNavigation,
+    CloseNavigation,
     /// Dismiss an overlay screen (Gallery / Settings) back to the viewfinder
     /// it was opened from.
     Back,
@@ -341,6 +357,10 @@ pub struct CameraApp {
     /// The viewfinder screen an overlay (Gallery / Settings) was opened from,
     /// so its back button returns there rather than always to Camera.
     return_to: Screen,
+    /// Shared docked/overlay navigation controller.  It is intentionally
+    /// presentation-only: opening the drawer must never move a collaborator
+    /// away from their own current camera view.
+    navigation: SidebarDrawer,
     filter: GalleryFilter,
     selected_capture: Option<String>,
     /// In-app destructive operations use the same explicit confirmation
@@ -378,6 +398,7 @@ pub struct CameraApp {
     // mode). The worker owns its encoder and gets coalesced latest frames.
     recording: Option<RecState>,
     video_finalizing: bool,
+    countdown: Option<Countdown>,
 
     // Live camera frame (populated by the live-capture worker / tests).
     latest_frame: Option<FrameBuf>,
@@ -470,6 +491,11 @@ impl CameraApp {
             library_generation: 0,
             library_pending: None,
             return_to: Screen::Camera,
+            navigation: SidebarDrawer::new()
+                .left()
+                .docked_width(NAV_WIDTH)
+                .overlay_width(NAV_WIDTH.min(320.0))
+                .breakpoint(NAV_BREAKPOINT),
             filter: GalleryFilter::All,
             selected_capture: None,
             pending_delete: None,
@@ -496,6 +522,7 @@ impl CameraApp {
             document_job_kind: None,
             recording: None,
             video_finalizing: false,
+            countdown: None,
             latest_frame: None,
             frame_gen: 0,
             io_generation: 0,
@@ -564,6 +591,76 @@ impl CameraApp {
     /// True while a video recording is in progress.
     fn is_recording(&self) -> bool {
         self.recording.is_some()
+    }
+
+    fn is_counting_down(&self) -> bool {
+        self.countdown.is_some()
+    }
+
+    /// The countdown is local device choreography, not a durable action.  A
+    /// second shutter press is always a safe cancel; this avoids an accidental
+    /// capture when someone changes their mind while the timer is visible.
+    fn arm_or_cancel_timer(&mut self) -> Result<(), String> {
+        if self.countdown.take().is_some() {
+            self.toast = Some("Timer cancelled".into());
+            self.dirty = true;
+            return Ok(());
+        }
+        if !self.feed_active() {
+            return Err(if self.mode == CaptureMode::Video {
+                "Connect a camera to record"
+            } else {
+                "Connect a camera to capture"
+            }
+            .into());
+        }
+        let seconds = self.settings.timer.seconds();
+        if seconds <= 0 {
+            return self.fire_shutter();
+        }
+        self.countdown = Some(Countdown {
+            due: Instant::now() + Duration::from_secs(seconds as u64),
+            mode: self.mode,
+        });
+        self.toast = Some(format!("Timer set for {seconds} seconds"));
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn fire_shutter(&mut self) -> Result<(), String> {
+        match self.mode {
+            CaptureMode::Photo => self.capture(None),
+            CaptureMode::Video if self.is_recording() => self.stop_recording(None),
+            CaptureMode::Video => {
+                self.start_recording();
+                Ok(())
+            }
+        }
+    }
+
+    /// Complete a local countdown from `sync`, the lifecycle boundary that is
+    /// also called by reduced-motion wakeups.  No peer action and no resource
+    /// replay can reach this path.
+    fn poll_countdown(&mut self) {
+        let Some(countdown) = self.countdown.as_ref() else {
+            return;
+        };
+        if Instant::now() < countdown.due {
+            self.dirty = true;
+            return;
+        }
+        let mode = countdown.mode;
+        self.countdown = None;
+        // Mode is held with the timer, so a later document sync cannot make a
+        // photo timer unexpectedly begin recording.
+        if self.mode != mode {
+            self.toast = Some("Timer cancelled because capture mode changed".into());
+            return;
+        }
+        if let Err(error) = self.fire_shutter() {
+            self.toast = Some(error);
+        }
+        self.dirty = true;
     }
 
     /// Begin a recording. Honest about missing hardware: with no live feed the
@@ -716,6 +813,8 @@ impl CameraApp {
     fn a11y_target(action: &Action) -> String {
         match action {
             Action::Nav(screen) => format!("camera.nav:{}", screen.as_str()),
+            Action::ToggleNavigation => "camera.toggle-navigation".into(),
+            Action::CloseNavigation => "camera.close-navigation".into(),
             Action::Back => "camera.back".into(),
             Action::Shutter => "camera.shutter".into(),
             Action::SetMode(mode) => format!("camera.mode:{}", mode.as_str()),
@@ -772,6 +871,23 @@ impl CameraApp {
                 format!("Open {}", screen.label()),
                 AccessState::new().focusable(true),
             ),
+            Action::ToggleNavigation => (
+                Role::Button,
+                if self.navigation.is_open() {
+                    "Collapse navigation"
+                } else {
+                    "Open navigation"
+                }
+                .into(),
+                AccessState::new()
+                    .focusable(true)
+                    .expanded(self.navigation.is_open()),
+            ),
+            Action::CloseNavigation => (
+                Role::Button,
+                "Close navigation".into(),
+                AccessState::new().focusable(true),
+            ),
             Action::Back => (
                 Role::Button,
                 "Back".into(),
@@ -779,7 +895,9 @@ impl CameraApp {
             ),
             Action::Shutter => (
                 Role::Button,
-                if self.is_recording() {
+                if self.is_counting_down() {
+                    "Cancel capture timer"
+                } else if self.is_recording() {
                     "Stop recording"
                 } else if self.mode == CaptureMode::Video {
                     "Start recording"
@@ -1241,6 +1359,8 @@ impl CameraApp {
         self.toast = None;
         match action {
             Action::Nav(s) => self.apply_nav(s, doc, root),
+            Action::ToggleNavigation => self.navigation.toggle(),
+            Action::CloseNavigation => self.navigation.close(),
             Action::Back => self.apply_back(doc, root),
             Action::Shutter => self.apply_shutter(doc, root),
             Action::SetMode(m) => self.apply_set_mode(m, doc, root),
@@ -1307,6 +1427,11 @@ impl CameraApp {
             self.return_to = self.screen;
         }
         self.screen = s;
+        // A selected destination dismisses an overlay drawer.  This is local
+        // presentation state, never a shared navigation replay.
+        if self.navigation.is_overlay() {
+            self.navigation.close();
+        }
     }
 
     fn capture_document_page(&mut self) {
@@ -1742,27 +1867,14 @@ impl CameraApp {
     }
 
     fn apply_shutter(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
-        match self.mode {
-            CaptureMode::Photo => {
-                if let Err(error) = self.capture(None) {
-                    self.toast = Some(error);
-                }
-            }
-            CaptureMode::Video => {
-                if self.is_recording() {
-                    if let Err(error) = self.stop_recording(None) {
-                        self.toast = Some(error);
-                    }
-                } else {
-                    self.start_recording();
-                }
-            }
+        if let Err(error) = self.arm_or_cancel_timer() {
+            self.toast = Some(error);
         }
     }
 
     fn apply_set_mode(&mut self, m: CaptureMode, doc: &mut AutoCommit, _root: &ObjId) {
         // Switching mode mid-record would strand the clip; ignore.
-        if !self.is_recording() {
+        if !self.is_recording() && !self.is_counting_down() {
             self.mode = m;
             self.perform_action(doc, &crate::actions::CameraAction::SetMode { mode: m });
             // Photo/Video also bring the viewfinder forward when chosen
@@ -2581,6 +2693,7 @@ impl Widget for CameraApp {
             doc::init_defaults(state, path, self.initial_screen);
             self.initialized = true;
         }
+        self.poll_countdown();
         while let Some(result) = self.worker.try_recv() {
             let terminal = result.invocation.filter(|invocation| {
                 self.pending_capture.is_some_and(|(pending, generation)| {
@@ -2842,6 +2955,25 @@ impl Widget for CameraApp {
         self.favorites = doc::read_favorites(state, path);
         self.scans = doc::read_scans(state, path);
 
+        // Screenshot-only presentation fixtures.  They are restricted to the
+        // hermetic sample storage, so no launch option can arm a physical
+        // camera or modify a collaborator's preferred capture settings.
+        if matches!(self.storage, Storage::Sample) {
+            if let Ok(mode) = std::env::var("CAMERA_SHOT_MODE") {
+                self.mode = CaptureMode::parse_str(&mode);
+            }
+            if std::env::var_os("CAMERA_SHOT_TIMER_RUNNING").is_some() && self.countdown.is_none() {
+                self.settings.timer = Timer::S3;
+                self.countdown = Some(Countdown {
+                    due: Instant::now() + Duration::from_secs(3),
+                    mode: self.mode,
+                });
+            }
+            if std::env::var_os("CAMERA_SHOT_DRAWER").is_some() {
+                self.navigation.snap(true);
+            }
+        }
+
         // Offscreen fixtures may request a concrete unavailable state without
         // fabricating a feed. Production state below still comes from an
         // actual device-open result.
@@ -3036,18 +3168,41 @@ impl Widget for CameraApp {
     ) {
         self.regions.clear();
         p::fill_rect(scene, t, self.rect, theme.tokens.colors.surfaces.base);
-        // An immersive camera: every screen is full-bleed. The viewfinder
-        // (Camera/Scanner) and the gallery fill the window edge-to-edge with
-        // controls floating over them; Settings is an overlay sheet. There is
-        // no navigation rail — secondary screens are reached from the
-        // viewfinder and dismissed back to it.
-        let full = self.rect;
+        // The shared controller owns the wide dock / narrow overlay decision,
+        // including scrim dismissal and reduced-motion settling.  The camera
+        // remains immersive *within* its content rect rather than retaining a
+        // bespoke floating rail.
+        // The shared drawer owns this width; Camera only supplies the content
+        // minimum needed by its labels.  At large text it expands to preserve
+        // readable navigation rather than clipping the destination names.
+        self.navigation
+            .set_overlay_width(if theme.text_scale >= 1.5 {
+                (self.rect.width() - 56.0).clamp(NAV_WIDTH, 320.0)
+            } else {
+                NAV_WIDTH.min(320.0)
+            });
+        self.navigation.resolve(self.rect);
+        self.navigation.tick(self.motion_reduced);
+        let full = self.navigation.content_rect();
         match self.screen {
             Screen::Camera => self.draw_camera(scene, t, tr, theme, full),
             Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
             Screen::Document => self.draw_document_scanner(scene, t, tr, theme, full),
             Screen::Gallery => self.draw_gallery(scene, t, tr, theme, full),
             Screen::Settings => self.draw_settings(scene, t, tr, theme, full),
+        }
+        if self.navigation.is_overlay() && self.navigation.is_open() {
+            // An overlay drawer owns the interaction tree until dismissed;
+            // exposed controls behind it would be an accessibility trap.
+            self.regions.clear();
+            self.navigation.draw_scrim(scene, t);
+            self.push_region(self.navigation.scrim_rect(), Action::CloseNavigation);
+        } else if !self.navigation.is_docked() {
+            self.draw_navigation_summon(scene, t, theme, full);
+        }
+        let rail = self.navigation.sidebar_rect();
+        if rail.width() > 4.0 && self.navigation.reveal() > 0.001 {
+            self.draw_navigation(scene, t, tr, theme, rail);
         }
         if self.pending_delete.is_some() {
             // The modal owns interaction while visible. Removing the obscured
@@ -3062,7 +3217,7 @@ impl Widget for CameraApp {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "the root input router keeps pointer, touch, keyboard, crop, and modal overlay precedence auditable in one place"
+        reason = "the root event router keeps pointer, touch, keyboard, crop, modal, and drawer precedence together so painted and semantic hit-testing cannot diverge"
     )]
     fn handle_event(
         &mut self,
@@ -3113,6 +3268,11 @@ impl Widget for CameraApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                if self.navigation.press_dismisses(self.last_mouse) {
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if self.hit(self.last_mouse, state, path) {
                     *handled = true;
                 }
@@ -3218,6 +3378,15 @@ impl Widget for CameraApp {
                         self.apply(action, state, path);
                         *handled = true;
                     }
+                    return;
+                }
+                if matches!(logical_key, Key::Named(NamedKey::Escape))
+                    && self.navigation.is_overlay()
+                    && self.navigation.is_open()
+                {
+                    self.navigation.close();
+                    self.dirty = true;
+                    *handled = true;
                     return;
                 }
                 let act = match logical_key {
@@ -3360,16 +3529,18 @@ impl Widget for CameraApp {
         // it advances the elapsed indicator and drains the real camera worker.
         // Reduced-motion users receive the same capture correctness through a
         // low-frequency wake deadline below, without a continuous UI loop.
-        self.recording.is_some() && !self.motion_reduced
+        ((self.recording.is_some() || self.countdown.is_some()) && !self.motion_reduced)
+            || self.navigation.is_animating()
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.recording
-            .as_ref()
-            .filter(|_| self.motion_reduced)
+        if self.motion_reduced && (self.recording.is_some() || self.countdown.is_some()) {
             // The visible counter changes once per second; four wakeups per
             // second keep worker settlement responsive without recreating a
             // 30 fps decorative frame loop for reduced-motion users.
-            .map(|_| Instant::now() + Duration::from_millis(250))
+            Some(Instant::now() + Duration::from_millis(250))
+        } else {
+            None
+        }
     }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.motion_reduced = reduced;
@@ -3414,10 +3585,201 @@ struct EmptyStateLayout {
 }
 
 impl CameraApp {
+    /// Shared `SidebarDrawer` summon affordance for narrow/high-zoom layouts.
+    /// It is deliberately kept outside the drawer itself so a closed overlay
+    /// has one consistent, 44pt target in every Camera screen.
+    fn draw_navigation_summon(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        theme: &Theme,
+        content: Rect,
+    ) {
+        let toggle = Rect::new(
+            content.x0 + 14.0,
+            content.y0 + 14.0,
+            content.x0 + 50.0,
+            content.y0 + 50.0,
+        );
+        self.navigation
+            .draw_toggle(scene, t, theme, toggle, toggle.contains(self.last_mouse));
+        self.push_tap_region(toggle, Action::ToggleNavigation);
+    }
+
+    /// Paint Camera's actual navigation surface from the geometry supplied by
+    /// `SidebarDrawer`.  This has no independent breakpoint, slide, scrim, or
+    /// collapse state — those semantics live in the shared primitive above.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the immediate-mode navigation surface intentionally owns its visual chrome and the exact action regions together"
+    )]
+    fn draw_navigation(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rail: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        let large_type = theme.text_scale >= 1.5;
+        p::push_clip_rect(scene, t, rail);
+        p::fill_rect(scene, t, rail, c.surfaces.raised);
+        p::line(
+            scene,
+            t,
+            rail.x1 - 0.5,
+            rail.y0,
+            rail.x1 - 0.5,
+            rail.y1,
+            c.border_standard,
+            1.0,
+        );
+
+        let toggle = Rect::new(
+            rail.x1 - 48.0,
+            rail.y0 + 14.0,
+            rail.x1 - 14.0,
+            rail.y0 + 48.0,
+        );
+        self.navigation
+            .draw_toggle(scene, t, theme, toggle, toggle.contains(self.last_mouse));
+        self.push_tap_region(
+            toggle,
+            if self.navigation.is_overlay() {
+                Action::CloseNavigation
+            } else {
+                Action::ToggleNavigation
+            },
+        );
+
+        let mark = Rect::new(
+            rail.x0 + 18.0,
+            rail.y0 + 18.0,
+            rail.x0 + 42.0,
+            rail.y0 + 42.0,
+        );
+        p::fill_round(scene, t, mark, 8.0, theme.accent_primary);
+        p::icon(scene, t, "camera", shrink(mark, 5.0), white(), 1.7);
+        p::text(
+            scene,
+            tr,
+            rail.x0 + 52.0,
+            rail.y0 + 21.0,
+            "Camera",
+            17.0,
+            c.text_primary,
+        );
+        if !large_type {
+            p::text(
+                scene,
+                tr,
+                rail.x0 + 52.0,
+                rail.y0 + 42.0,
+                "Capture workspace",
+                10.5,
+                c.text_dim,
+            );
+        }
+
+        let mut y = rail.y0 + 78.0;
+        for (screen, icon) in [
+            (Screen::Camera, "camera"),
+            (Screen::Scanner, "scan"),
+            (Screen::Gallery, "gallery"),
+            (Screen::Settings, "settings"),
+        ] {
+            let row = Rect::new(rail.x0 + 10.0, y, rail.x1 - 10.0, y + 42.0);
+            let active = self.screen == screen;
+            if active {
+                p::fill_round(scene, t, row, 11.0, p::alpha(theme.accent_primary, 0.18));
+            }
+            let fg = if active {
+                theme.accent_primary
+            } else {
+                c.text_primary
+            };
+            p::icon(
+                scene,
+                t,
+                icon,
+                Rect::new(
+                    row.x0 + 12.0,
+                    row.center().y - 9.0,
+                    row.x0 + 30.0,
+                    row.center().y + 9.0,
+                ),
+                fg,
+                1.7,
+            );
+            p::text(
+                scene,
+                tr,
+                row.x0 + 42.0,
+                row.center().y - 8.0,
+                screen.label(),
+                13.5,
+                fg,
+            );
+            self.push_region(row, Action::Nav(screen));
+            y += 46.0;
+        }
+
+        let device = if self.feed_active() {
+            "Viewfinder ready"
+        } else if self.camera_issue == Some(CameraIssue::PermissionDenied) {
+            "Camera permission needed"
+        } else {
+            "No active camera"
+        };
+        let status = Rect::new(
+            rail.x0 + 14.0,
+            rail.y1 - 72.0,
+            rail.x1 - 14.0,
+            rail.y1 - 16.0,
+        );
+        p::fill_round(scene, t, status, 12.0, c.surfaces.base);
+        p::circle(
+            scene,
+            t,
+            status.x0 + 15.0,
+            status.y0 + 18.0,
+            4.0,
+            if self.feed_active() {
+                theme.status_success
+            } else {
+                c.semantic.warning
+            },
+        );
+        p::text(
+            scene,
+            tr,
+            status.x0 + 26.0,
+            status.y0 + 10.0,
+            device,
+            11.0,
+            c.text_primary,
+        );
+        p::text(
+            scene,
+            tr,
+            status.x0 + 14.0,
+            status.y0 + 31.0,
+            if large_type {
+                "Local media"
+            } else {
+                "Media stays on this device"
+            },
+            10.0,
+            c.text_dim,
+        );
+        p::pop(scene);
+    }
+
     /// Horizontal centre of the window — the shutter, mode switcher, toasts and
     /// recording badge all centre here.
     fn stage_center_x(&self) -> f64 {
-        self.rect.center().x
+        self.navigation.content_rect().center().x
     }
 
     /// A round floating glass button (used for the settings gear, the lens
@@ -3473,12 +3835,13 @@ impl CameraApp {
     ) {
         // Keep the three mode targets inside a narrow/high-zoom viewport
         // instead of letting the fixed desktop-width pill clip off-screen.
-        let seg_w = (self.rect.width() - EDGE * 2.0).clamp(260.0, 340.0);
+        let seg_w = (self.navigation.content_rect().width() - EDGE * 2.0).clamp(150.0, 240.0);
+        let height = if theme.text_scale >= 1.5 { 48.0 } else { 34.0 };
         let seg = Rect::new(
             center_x - seg_w / 2.0,
             top_y,
             center_x + seg_w / 2.0,
-            top_y + 34.0,
+            top_y + height,
         );
         let on_cam = matches!(self.screen, Screen::Camera);
         let items: Vec<(String, bool, Action)> = vec![
@@ -3814,7 +4177,8 @@ impl CameraApp {
         // pointer- and screen-reader-only.
         if !matches!(
             action,
-            Action::Nav(Screen::Settings | Screen::Gallery)
+            Action::ToggleNavigation
+                | Action::Nav(Screen::Settings | Screen::Gallery)
                 | Action::Back
                 | Action::Shutter
                 | Action::CycleFacing
@@ -4146,6 +4510,8 @@ impl CameraApp {
             self.draw_camera_top_controls(scene, t, tr, theme, full);
             if recording {
                 self.draw_rec_indicator(scene, t, tr, full, theme);
+            } else if self.is_counting_down() {
+                self.draw_timer_indicator(scene, t, tr, full, theme);
             }
         } else {
             let (title, subtitle) = self.no_feed_copy();
@@ -4310,7 +4676,10 @@ impl CameraApp {
         theme: &Theme,
         full: Rect,
     ) {
-        let mut x = full.x0 + EDGE;
+        // Keep the compact, shared drawer summon clear of the quick controls
+        // on narrow/high-zoom viewfinder layouts.
+        let compact_nav = self.navigation.is_overlay();
+        let mut x = full.x0 + EDGE + if compact_nav { 44.0 } else { 0.0 };
         let y = full.y0 + 20.0;
         let gap = 9.0;
 
@@ -4329,20 +4698,26 @@ impl CameraApp {
         self.push_tap_region(r, Action::CycleResolution);
         x = r.x1 + gap;
 
-        let r = Self::ctrl_pill(
-            scene,
-            t,
-            tr,
-            theme,
-            Point::new(x, y),
-            PillContent {
-                icon: None,
-                label: "HDR",
-                active: self.settings.hdr,
-            },
-        );
-        self.push_tap_region(r, Action::ToggleHdr);
-        x = r.x1 + gap;
+        // At extreme narrow/high-zoom widths, keep the capture surface clear
+        // rather than clipping a row of tiny pills.  Every hidden quick
+        // control remains in the Settings destination from the shared drawer.
+        let compact_controls = full.width() < 420.0 || theme.text_scale >= 1.5;
+        if !compact_controls && full.width() >= 300.0 {
+            let r = Self::ctrl_pill(
+                scene,
+                t,
+                tr,
+                theme,
+                Point::new(x, y),
+                PillContent {
+                    icon: None,
+                    label: "HDR",
+                    active: self.settings.hdr,
+                },
+            );
+            self.push_tap_region(r, Action::ToggleHdr);
+            x = r.x1 + gap;
+        }
 
         let next_timer = cycle(&Timer::ALL, self.settings.timer);
         let tlabel = if self.settings.timer == Timer::Off {
@@ -4365,19 +4740,21 @@ impl CameraApp {
         self.push_tap_region(r, Action::SetTimer(next_timer));
         x = r.x1 + gap;
 
-        let r = Self::ctrl_pill(
-            scene,
-            t,
-            tr,
-            theme,
-            Point::new(x, y),
-            PillContent {
-                icon: Some("grid"),
-                label: "",
-                active: self.settings.grid,
-            },
-        );
-        self.push_tap_region(r, Action::ToggleGrid);
+        if !compact_controls && full.width() >= 340.0 {
+            let r = Self::ctrl_pill(
+                scene,
+                t,
+                tr,
+                theme,
+                Point::new(x, y),
+                PillContent {
+                    icon: Some("grid"),
+                    label: "",
+                    active: self.settings.grid,
+                },
+            );
+            self.push_tap_region(r, Action::ToggleGrid);
+        }
     }
 
     /// The bottom capture cluster floating over the viewfinder: a gallery
@@ -4399,7 +4776,17 @@ impl CameraApp {
         // recording (mode is locked; the stop-square shutter + REC badge carry
         // the state).
         if !state.recording {
-            self.draw_mode_switcher(scene, t, tr, theme, scx, full.y1 - 132.0);
+            // Large type turns the selector into a true 48pt band and reserves
+            // 18pt before the shutter ring / 13pt before the thumbnail badge.
+            // This keeps the four bottom controls visibly separate, not just
+            // semantically non-overlapping.
+            let selector_top = full.y1
+                - if theme.text_scale >= 1.5 {
+                    164.0
+                } else {
+                    132.0
+                };
+            self.draw_mode_switcher(scene, t, tr, theme, scx, selector_top);
         }
         self.draw_gallery_thumb_peek(scene, t, tr, theme, full, cy);
         self.draw_shutter(scene, t, theme, scx, cy, state);
@@ -4592,6 +4979,65 @@ impl CameraApp {
         );
         p::stroke_round(scene, t, pill, 14.0, p::alpha(red, 0.55), 1.0);
         p::circle(scene, t, pill.x0 + 17.0, pill.center().y, 5.0, red);
+        p::text(
+            scene,
+            tr,
+            pill.x0 + 29.0,
+            pill.center().y - 8.0,
+            &label,
+            12.5,
+            white(),
+        );
+    }
+
+    /// High-contrast, calm timer feedback.  It uses the same discrete cadence
+    /// as the operating countdown (and settles to that cadence under reduced
+    /// motion), instead of introducing a decorative looping animation.
+    fn draw_timer_indicator(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        full: Rect,
+        theme: &Theme,
+    ) {
+        let Some(countdown) = self.countdown.as_ref() else {
+            return;
+        };
+        let duration = countdown.due.saturating_duration_since(Instant::now());
+        let remaining = (duration.as_secs() + u64::from(duration.subsec_nanos() != 0)).max(1);
+        let label = format!("{remaining}  ·  Tap shutter to cancel");
+        let tw = f64::from(p::text_w(tr, &label, 12.5));
+        let w = tw + 38.0;
+        let pill = Rect::new(
+            self.stage_center_x() - w / 2.0,
+            full.y0 + 18.0,
+            self.stage_center_x() + w / 2.0,
+            full.y0 + 50.0,
+        );
+        p::fill_round(
+            scene,
+            t,
+            pill,
+            16.0,
+            p::alpha(theme.tokens.colors.neutral[0], 0.72),
+        );
+        p::stroke_round(
+            scene,
+            t,
+            pill,
+            16.0,
+            p::alpha(theme.accent_primary, 0.7),
+            1.0,
+        );
+        p::circle(
+            scene,
+            t,
+            pill.x0 + 17.0,
+            pill.center().y,
+            5.0,
+            theme.accent_primary,
+        );
         p::text(
             scene,
             tr,
@@ -7033,6 +7479,61 @@ mod tests {
         assert_eq!(app.screen, Screen::Gallery);
         assert_eq!(doc.get_heads(), before);
         assert!(app.take_committed_action().is_none());
+    }
+
+    #[test]
+    fn shared_navigation_docks_wide_and_overlays_narrow_without_doc_writes() {
+        let (mut app, mut doc, root) = sample_app();
+        let heads = doc.get_heads();
+        render_at(&mut app, &mut doc, &root, 1_100.0, 720.0);
+        assert!(app.navigation.is_docked() && app.navigation.is_open());
+        assert!(app.navigation.content_rect().x0 > app.rect.x0);
+
+        render_at(&mut app, &mut doc, &root, 390.0, 720.0);
+        assert!(app.navigation.is_overlay() && !app.navigation.is_open());
+        assert!(app.perform_semantic_action(
+            "camera.toggle-navigation",
+            &A11yAction::Activate,
+            &mut doc,
+            &root,
+        ));
+        render_at(&mut app, &mut doc, &root, 390.0, 720.0);
+        assert!(app.navigation.is_open());
+        let tree = app.accessibility().expect("drawer semantics");
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Open Gallery")
+                && node.action_target.as_deref() == Some("camera.nav:gallery")
+        }));
+        assert!(tree.children.iter().any(|node| {
+            node.name.as_deref() == Some("Close navigation")
+                && node.action_target.as_deref() == Some("camera.close-navigation")
+        }));
+        assert!(
+            tree.children
+                .iter()
+                .all(|node| { node.action_target.as_deref() != Some("camera.shutter") }),
+            "an overlay drawer must not expose controls behind its scrim"
+        );
+        assert_eq!(doc.get_heads(), heads, "navigation remains local");
+    }
+
+    #[test]
+    fn self_timer_is_a_local_cancellable_countdown_before_capture() {
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(Action::SetTimer(Timer::S3), &mut doc, &root);
+        let before = app.captures.len();
+        app.apply(Action::Shutter, &mut doc, &root);
+        assert!(app.is_counting_down());
+        assert_eq!(app.captures.len(), before, "timer does not capture early");
+        app.countdown.as_mut().expect("armed timer").due = Instant::now();
+        app.sync(&mut doc, &root);
+        assert!(!app.is_counting_down());
+        assert_eq!(app.captures.len(), before + 1);
+
+        app.apply(Action::Shutter, &mut doc, &root);
+        assert!(app.is_counting_down());
+        app.apply(Action::Shutter, &mut doc, &root);
+        assert!(!app.is_counting_down(), "second shutter cancels safely");
     }
 
     #[test]
