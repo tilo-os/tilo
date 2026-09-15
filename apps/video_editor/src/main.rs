@@ -117,6 +117,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
             args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
             out,
             state,
+            args.text_scale,
         )?;
         return Ok(());
     }
@@ -126,6 +127,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
             args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
             out,
             ui::State::new(),
+            args.text_scale,
         )?;
     } else if args.has("--narrow") {
         render_shot_to_png(
@@ -133,6 +135,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
             args.viewport.unwrap_or(NARROW_SHOTS_VIEWPORT),
             out,
             ui::State::new(),
+            args.text_scale,
         )?;
     } else {
         let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
@@ -145,6 +148,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
                 viewport,
                 out,
                 ui::State::new(),
+                args.text_scale,
             )?,
             None => {
                 render_shot_to_png(
@@ -152,6 +156,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
                     viewport,
                     out,
                     ui::State::new(),
+                    args.text_scale,
                 )?;
             }
         }
@@ -171,6 +176,7 @@ fn render_shot_to_png(
     viewport: (u32, u32),
     out: &std::path::Path,
     mut state: ui::State,
+    text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // Keep visual-review captures faithful to the live accessibility setting:
@@ -181,13 +187,16 @@ fn render_shot_to_png(
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
-    let theme = theme.with_reduce_motion(matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
+    let theme = theme
+        .with_text_scale(text_scale.unwrap_or(1.0))
+        .with_reduce_motion(matches!(
+            std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+            Some("1" | "true" | "yes")
+        ));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
