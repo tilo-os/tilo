@@ -832,6 +832,7 @@ impl Widget for ImageEditorApp {
         let compact = compact_toolbar_for(self.rect.width());
         let gap = 6.0;
         let top_count = if compact { 4 } else { self.toolbar.len() - 1 };
+        let advanced_graph = self.advanced_graph;
         let width = ((self.rect.width() - 24.0 - gap * (top_count - 1) as f64) / top_count as f64)
             .min(if compact { 104.0 } else { 96.0 });
         let mut x = self.rect.x0 + 12.0;
@@ -839,11 +840,12 @@ impl Widget for ImageEditorApp {
             let top_level = if compact {
                 matches!(
                     command,
-                    ToolbarCommand::Open
-                        | ToolbarCommand::Exposure
-                        | ToolbarCommand::More
-                        | ToolbarCommand::Export
-                )
+                    ToolbarCommand::Open | ToolbarCommand::More | ToolbarCommand::Export
+                ) || if advanced_graph {
+                    matches!(command, ToolbarCommand::Graph)
+                } else {
+                    matches!(command, ToolbarCommand::Exposure)
+                }
             } else {
                 !matches!(command, ToolbarCommand::More)
             };
@@ -882,7 +884,8 @@ impl Widget for ImageEditorApp {
                         | ToolbarCommand::Fit
                         | ToolbarCommand::Compare
                         | ToolbarCommand::Graph
-                ) {
+                ) && !(advanced_graph && matches!(command, ToolbarCommand::Graph))
+                {
                     let column = index % 2;
                     let row = index / 2;
                     let x0 = self.more_rect.x0 + 12.0 + column as f64 * (cell_width + cell_gap);
@@ -1224,9 +1227,14 @@ impl Widget for ImageEditorApp {
             }
         } else {
             s.fill(Fill::NonZero, a, c.neutral[1], None, &self.graph_rect);
+            let graph_hint = if self.rect.width() < 820.0 {
+                "Drag empty space to pan. Drag ports to reconnect. Tap Graph to return."
+            } else {
+                "Drag ports to reconnect. Keyboard: select a step, Ctrl+Enter, Tab, Enter. Press G to return."
+            };
             tr.draw_text_weighted(
                 s,
-                "Drag ports to reconnect. Keyboard: select a step, Ctrl+Enter, Tab, Enter. Press G to return.",
+                graph_hint,
                 12.0,
                 c.text_dim,
                 a.pre_translate((self.graph_rect.x0 + 18.0, self.graph_rect.y0 + 22.0).into()),
