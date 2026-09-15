@@ -390,9 +390,8 @@ jobs:
           test -s "$smoke/archive.png"
           appimage="dist/qos-imager/qos-imager-linux-${{ matrix.arch }}.AppImage"
           if [ -f "$appimage" ]; then
-            APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" \
-              --shots "$smoke/appimage.png" --scenario done --viewport 1180x820
-            test -s "$smoke/appimage.png"
+            apps/imager/packaging/verify-appimage-runtime.sh \
+              "$appimage" "$smoke/appimage"
           elif [[ "${GITHUB_REF:-}" == refs/tags/imager-v* ]]; then
             printf 'release AppImage is missing\n' >&2
             exit 1

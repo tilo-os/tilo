@@ -9,6 +9,8 @@ ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
 bash -n "$repo/apps/imager/packaging/package-host.sh" \
+  "$repo/apps/imager/packaging/package-flatpak.sh" \
+  "$repo/apps/imager/packaging/verify-appimage-runtime.sh" \
   "$repo/apps/imager/packaging/linux/qos-imager" \
   "$repo/apps/imager/packaging/macos/qos-imager" \
   "$repo/apps/imager/packaging/package-install-medium.sh" \
@@ -43,6 +45,33 @@ grep -Fq '"$appdir/usr/share/metainfo/org.qos.Imager.appdata.xml"' \
   "$repo/apps/imager/packaging/package-host.sh" \
   && ok 'AppImage metadata uses the desktop-id filename expected by linuxdeploy' \
   || bad 'AppImage packaging will omit discoverable application metadata'
+
+appimage_verify="$repo/apps/imager/packaging/verify-appimage-runtime.sh"
+flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
+if grep -Fq 'APPIMAGE_EXTRACT_AND_RUN=1 "$appimage"' "$appimage_verify" \
+   && grep -Fq '"$appimage" \' "$appimage_verify" \
+   && grep -Fq "awk '\$2 == \"fuse\"" "$appimage_verify" \
+   && grep -Fq 'refusing extract-only release verification' "$appimage_verify" \
+   && grep -Fq 'appimage-runtime-mode.txt' "$appimage_verify" \
+   && grep -Fq 'GITHUB_STEP_SUMMARY' "$appimage_verify"; then
+  ok 'AppImage verifies extraction and its normal FUSE runtime with a bounded fallback'
+else
+  bad 'AppImage can publish without proving its normal runtime or recording a genuine no-FUSE fallback'
+fi
+
+if grep -Fq 'export FLATPAK_USER_DIR="$isolated_install"' "$flatpak_package" \
+   && grep -Fq -- '--disable-rofiles-fuse' "$flatpak_package" \
+   && grep -Fq -- '--state-dir="$work/state"' "$flatpak_package" \
+   && grep -Fq 'flatpak install --user --noninteractive --no-deps --bundle "$artifact"' "$flatpak_package" \
+   && grep -Fq 'flatpak run --user org.qos.Imager --qos-package-smoke' "$flatpak_package" \
+   && grep -Fq 'flatpak run --user org.qos.Imager --qos-flatpak-probe-smoke' "$flatpak_package" \
+   && grep -Fq 'flatpak run --user --filesystem="$smoke" org.qos.Imager' "$flatpak_package" \
+   && grep -Fq 'test -s "$smoke/flatpak-installed.png"' "$flatpak_package" \
+   && ! grep -Fq 'flatpak-builder "$flatpak_scope" --run' "$flatpak_package"; then
+  ok 'the emitted Flatpak bundle is installed and launched from an isolated user installation'
+else
+  bad 'Flatpak verification bypasses the emitted bundle installation path'
+fi
 
 grep -Fq 'QOS_REQUIRE_SIGNING=1' "$workflow" \
   && grep -Fq 'QOS_REQUIRE_NATIVE_PACKAGES=1' "$workflow" \
