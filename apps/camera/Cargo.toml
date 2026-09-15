@@ -45,6 +45,9 @@ anyhow.workspace = true
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 png.workspace = true
 dirs.workspace = true
+qos-ocr = { path = "../../crates/media/ocr" }
+qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
+os-actions = { path = "../../crates/system/os-actions" }
 
 # QR / barcode pipeline — both pure Rust.
 #   qrcode:  encode payloads into a module matrix (used to synthesize the

@@ -35,7 +35,7 @@
 )]
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 
 use file_explorer::FileExplorerWidget;
 use taffy::prelude::*;
@@ -126,6 +126,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("thumbnails") => Some(seed_thumbnails_demo()),
             Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
             Some("history") => Some(seed_history_demo()),
+            Some("archive" | "archive-menu") => Some(seed_archive_demo()),
             _ => None,
         };
         // Audits must not inherit a developer's persisted item zoom or custom
@@ -346,6 +347,32 @@ fn seed_history_demo() -> std::path::PathBuf {
     // SAFETY: shots seed before the app or any worker thread is constructed.
     unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
     dir
+}
+
+/// Build a believable archive hierarchy for permanent responsive screenshots.
+/// The shot navigates the actual ZIP reader rather than injecting sample rows.
+fn seed_archive_demo() -> std::path::PathBuf {
+    let path = std::env::temp_dir().join("qos-files-archive-demo.zip");
+    let file = std::fs::File::create(&path)
+        .unwrap_or_else(|error| panic!("could not create archive screenshot fixture: {error}"));
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, content) in [
+        ("Photos/Coast/IMG_2048.jpg", b"photo".as_slice()),
+        ("Photos/Coast/IMG_2051.jpg", b"photo".as_slice()),
+        ("Documents/Itinerary.pdf", b"document".as_slice()),
+        ("Documents/Packing list.txt", b"list".as_slice()),
+        ("Read me.txt", b"A trip archive".as_slice()),
+    ] {
+        zip.start_file(name, options)
+            .unwrap_or_else(|error| panic!("could not add archive screenshot entry: {error}"));
+        zip.write_all(content)
+            .unwrap_or_else(|error| panic!("could not write archive screenshot entry: {error}"));
+    }
+    zip.finish()
+        .unwrap_or_else(|error| panic!("could not finish archive screenshot fixture: {error}"));
+    path
 }
 
 /// Seed a demo directory of **real** sample files — gradient images, a genuine
@@ -785,6 +812,9 @@ fn apply_post_layout_scenario(
         }
         Some("history") => {
             widget.debug_open_history_demo();
+        }
+        Some("archive-menu") => {
+            widget.debug_open_view_menu();
         }
         _ => {}
     }

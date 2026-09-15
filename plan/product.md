@@ -31,6 +31,7 @@ now: keep them working, but do not prioritize them over the focus list.
 | **RSS** (feeds) | Optional Gemini support. |
 | **E-book** | Annotations/bookmarks/comments — shared primitives with PDF + word processor. |
 | **2FA TOTP** | — |
+| **Passwords** | Encrypted user-facing vault plus origin-bound credential broker for app sign-ins. |
 | **Weather** | — |
 | **Maps** | OSM-based; car/bike/foot nav (OSMand / Organic Maps-like); strong public transport (oeffi / public-transport-enabler-like); a custom crowdsourced real-time traffic + route-data layer over OSM. |
 

@@ -1601,7 +1601,10 @@ pub use app_shell::{
     AppShell, DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH, NarrowScreen, ShellLayout,
 };
 mod sidebar;
-pub use sidebar::{DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_WIDTH, SidebarDrawer, SidebarSide};
+pub use sidebar::{
+    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_WIDTH, SidebarDrawer, SidebarNav, SidebarNavItem,
+    SidebarNavSection, SidebarSide,
+};
 mod nav_shell;
 pub use nav_shell::{
     Affordance, ContentLayout, DEFAULT_NAVSHELL_BREAKPOINT, DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
@@ -1624,6 +1627,8 @@ mod spacer;
 pub use spacer::Spacer;
 mod image;
 pub use image::{Image, ImageDecodeError, ImageFit};
+mod image_crop;
+pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
 pub use slider::{Slider, SliderFace};
 mod text_input;
@@ -1711,6 +1716,8 @@ pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOut
 
 pub mod progress_bar;
 pub use progress_bar::ProgressBar;
+pub mod page_preview;
+pub use page_preview::PagePreview;
 pub mod spinner;
 pub use spinner::Spinner;
 pub mod date_picker;

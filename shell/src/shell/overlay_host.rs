@@ -4169,7 +4169,9 @@ impl ShellOverlayHost {
                 visible_x1,
             })
         });
-        chrome.borrow_mut().set_strip_viewport(viewport);
+        let mut state = chrome.borrow_mut();
+        state.set_strip_viewport(viewport);
+        state.set_viewport_size((self.rect.width(), self.rect.height()));
     }
 
     /// Routes a cross-strip tab drop: hit-tests the release point against

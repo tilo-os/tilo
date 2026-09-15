@@ -1,0 +1,138 @@
+use std::collections::HashMap;
+use ui::launch::{LaunchArgs, LaunchSpec};
+use ui::{
+    permissions::PermissionContext,
+    presence::PresenceCtx,
+    taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree},
+    text_render::TextRenderer,
+    theme::Theme,
+    vello::{
+        Scene,
+        kurbo::{Affine, Point},
+        peniko::Color,
+    },
+    widget::Widget,
+};
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ui::launch::run(
+        &LaunchSpec::new("dev.qos.image-editor", image_editor::app_root)
+            .open_state_with_args(open_state)
+            .shot_handler(render_shot)
+            .allowed_options(&["--size"])
+            .allowed_live_options(&["--open"])
+            .scenarios(image_editor::SHOT_SCENARIOS)
+            .configure_app(|app| image_editor::actions::register(app.action_registry_mut())),
+    )?;
+    Ok(())
+}
+fn render_shot(args: &LaunchArgs) -> Result<(), ui::launch::LaunchError> {
+    let out = args
+        .shots
+        .as_deref()
+        .ok_or_else(|| ui::launch::LaunchError::Operation("missing shot path".into()))?;
+    let scenario = args.scenario.as_deref().unwrap_or("canvas-stack");
+    let viewport = args
+        .value("--size")
+        .and_then(|s| s.split_once('x'))
+        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+        .or(args.viewport)
+        .unwrap_or(if scenario == "narrow" {
+            (620, 760)
+        } else {
+            (1280, 800)
+        });
+    render(scenario, viewport, out).map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))
+}
+fn render(
+    scenario: &str,
+    (w, h): (u32, u32),
+    out: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let staging = out
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("image-editor-shot-source.png");
+    if let Some(parent) = staging.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    image_editor::write_shot_image(&staging)?;
+    let mut state = ui::State::new();
+    let mut widget = image_editor::ImageEditorApp::new();
+    widget.seed_shot(&mut state.doc, &staging, scenario == "graph");
+    if scenario == "narrow-more" {
+        widget.open_more_for_shot();
+    }
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let mut scene = Scene::new();
+    for _ in 0..2 {
+        widget.sync(&mut state.doc, &state.root);
+        let mut t: TaffyTree<()> = TaffyTree::new();
+        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = widget.build_layout(&mut t, &theme, &mut map);
+        let root = t.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )?;
+        let mm = map.clone();
+        t.compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |k, a, id, _, _| {
+                if let Some(&ptr) = mm.get(&id) {
+                    unsafe { (*ptr).measure(k, a, &mut tr) }
+                } else {
+                    ui::taffy::Size::ZERO
+                }
+            },
+        )?;
+        widget.apply_layout(&t, child, Point::ORIGIN);
+        scene = Scene::new();
+        widget.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+            &PermissionContext::permissive(),
+        );
+    }
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    ui::offscreen::OffscreenRenderer::new(w, h).render_png(&scene, Color::TRANSPARENT, out);
+    Ok(())
+}
+fn open_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    let (mut state, save) = ui::persist::open(id);
+    image_editor::doc::ProjectDoc::seed(&mut state.doc);
+    if let Some(path) = args
+        .value("--open")
+        .or_else(|| args.positionals().first().map(String::as_str))
+    {
+        let mut p = image_editor::doc::ProjectDoc::read(&state.doc);
+        if let Some(image_editor::model::Operation::Source { path: source }) =
+            p.operations.get_mut("source")
+        {
+            *source = path.into();
+            p.name = std::path::Path::new(path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Untitled image")
+                .into();
+            image_editor::doc::ProjectDoc::write(&mut state.doc, &p);
+        }
+    }
+    (state, save)
+}
