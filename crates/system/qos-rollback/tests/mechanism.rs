@@ -400,8 +400,10 @@ impl Fixture {
             &self.key_name,
             &policy::pcr_selection(&self.cfg.pcr_bank, &self.cfg.platform_pcrs),
             generation,
-            self.cfg.nv_index,
-            operand,
+            policy::NvConstraint {
+                index: self.cfg.nv_index,
+                operand,
+            },
             pin.is_some(),
         )
         .expect("seal policy");

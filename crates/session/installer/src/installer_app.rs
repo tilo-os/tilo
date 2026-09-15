@@ -463,7 +463,9 @@ fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'stat
         if !chars.iter().all(char::is_ascii_digit) {
             return Err("The TPM-protected startup PIN must contain digits only");
         }
-        if chars.iter().all(|c| *c == chars[0])
+        if chars
+            .first()
+            .is_some_and(|first| chars.iter().all(|c| c == first))
             || ["012345", "123456", "234567", "345678", "456789", "987654"]
                 .iter()
                 .any(|bad| secret.contains(bad))
@@ -492,7 +494,9 @@ fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'stat
     }
     for period in 1..=4 {
         if chars.len().is_multiple_of(period)
-            && chars.chunks(period).all(|chunk| chunk == &chars[..period])
+            && chars
+                .get(..period)
+                .is_some_and(|prefix| chars.chunks(period).all(|chunk| chunk == prefix))
         {
             return Err("That passphrase is a repeated pattern; use several unrelated words");
         }

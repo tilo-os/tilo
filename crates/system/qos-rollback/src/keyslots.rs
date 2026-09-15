@@ -733,8 +733,10 @@ pub fn enroll_generation(
         &key_name,
         &policy::pcr_selection(&cfg.pcr_bank, &cfg.platform_pcrs),
         generation,
-        cfg.nv_index,
-        operand,
+        policy::NvConstraint {
+            index: cfg.nv_index,
+            operand,
+        },
         pin.is_some(),
     )?;
     let pass = new_passphrase()?;

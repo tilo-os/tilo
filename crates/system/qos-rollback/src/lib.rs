@@ -107,7 +107,7 @@ pub struct Config {
     /// PCR bank and selection the prediction authority signs over.
     pub pcr_bank: String,
     pub pcrs: Vec<u32>,
-    /// Device-local PCRs applied after PolicyAuthorize. These cannot be part of
+    /// Device-local PCRs applied after `PolicyAuthorize`. These cannot be part of
     /// a release prediction because their values depend on the machine.
     pub platform_pcrs: Vec<u32>,
     /// Public half of the PCR-prediction signing key.
