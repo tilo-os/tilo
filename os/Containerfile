@@ -401,7 +401,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          BROWSER_PKG="-p browser --features browser/wpe"; \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
-    && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
     && if [ "${QOS_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
