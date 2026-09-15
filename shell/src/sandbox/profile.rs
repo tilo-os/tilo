@@ -143,8 +143,10 @@ pub struct SandboxProfile {
     /// suppresses the `--seccomp` flag rather than emitting a stale
     /// magic number.
     pub seccomp_fd: Option<i32>,
-    /// Per-workspace Wayland bridge socket on the host. Bound into the
-    /// sandbox at `/run/user/<uid>/wayland-0` by [`for_workspace_test`].
+    /// Public compositor Wayland socket on the host. Bound into the sandbox
+    /// at `/run/user/<uid>/wayland-0` by [`for_workspace_test`]. Production
+    /// workspace attribution is attached by the compositor from kernel peer
+    /// credentials and the live launcher registry, not encoded in this path.
     pub wayland_socket: PathBuf,
     /// Optional per-workspace D-Bus session bus socket on the host.
     pub dbus_socket: Option<PathBuf>,

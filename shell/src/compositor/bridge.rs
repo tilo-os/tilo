@@ -1,14 +1,17 @@
-//! Per-workspace Wayland bridge socket.
+//! Raw Wayland proxy retained for relay tests and compatibility experiments.
 //!
-//! Spawns a UNIX listener at `$XDG_RUNTIME_DIR/nirios-ws-<ws_id>` and,
+//! This is **not** the production app-isolation boundary. Production accepts
+//! apps on the compositor's public socket, authenticates each connection from
+//! kernel `SO_PEERCRED` plus the live launcher registry, and stores package and
+//! workspace attribution in `ClientState`. A byte proxy cannot tag smithay
+//! clients and must never be treated as workspace authorization.
+//!
+//! This utility spawns a UNIX listener at `$XDG_RUNTIME_DIR/nirios-ws-<ws_id>` and,
 //! for each accepted connection, opens a parallel connection to the main
-//! wayland socket and shovels bytes both ways, so apps inside the bwrap
-//! sandbox see a `WAYLAND_DISPLAY` they can bind to. Message-filtering at
-//! the bridge boundary (tagging connections with a workspace id via
-//! smithay `Client::UserData`) is not yet implemented — this delivers
-//! only listen+proxy plus the spawn-helper integration.
+//! Wayland socket and shovels bytes both ways.
 
 use std::io;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,11 +46,9 @@ pub struct BridgeSocket {
 impl BridgeSocket {
     /// Bind a fresh listening socket for `workspace_id`.
     ///
-    /// If a stale socket file exists at the bridge path (e.g., previous
-    /// session crashed before [`Drop`] could unlink), it is removed
-    /// best-effort before the bind. Failures of the unlink are swallowed
-    /// because they may simply mean "no stale file" — only a real
-    /// `bind(2)` failure surfaces as an error.
+    /// A stale socket owned by this uid is removed. Other filesystem objects
+    /// and foreign-owned sockets are refused, so a predictable bridge name
+    /// cannot unlink an attacker-chosen file.
     ///
     /// # Errors
     ///
@@ -60,9 +61,19 @@ impl BridgeSocket {
         upstream_wayland_socket: &Path,
     ) -> io::Result<Self> {
         let bridge_path = runtime_dir.join(format!("nirios-ws-{workspace_id}"));
-        // Best-effort cleanup of stale.
-        let _ = std::fs::remove_file(&bridge_path);
+        if let Ok(metadata) = std::fs::symlink_metadata(&bridge_path) {
+            // SAFETY: `geteuid` has no failure mode.
+            let owner = unsafe { libc::geteuid() };
+            if !metadata.file_type().is_socket() || metadata.uid() != owner {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "bridge path is not a stale socket owned by this uid",
+                ));
+            }
+            std::fs::remove_file(&bridge_path)?;
+        }
         let listener = UnixListener::bind(&bridge_path)?;
+        std::fs::set_permissions(&bridge_path, std::fs::Permissions::from_mode(0o600))?;
         Ok(Self {
             workspace_id,
             bridge_path,
@@ -235,15 +246,31 @@ mod tests {
         let upstream = runtime.path().join("wayland-0");
         std::fs::File::create(&upstream).unwrap();
 
-        // Plant a stale file at the bridge path.
+        // Plant a stale same-uid socket at the bridge path.
         let stale_path = runtime.path().join("nirios-ws-7");
-        std::fs::write(&stale_path, b"stale").unwrap();
+        let stale = UnixListener::bind(&stale_path).unwrap();
+        drop(stale);
         assert!(stale_path.exists());
 
         // bind should unlink the stale and re-bind cleanly.
         let bridge = BridgeSocket::bind(7, runtime.path(), &upstream).unwrap();
         assert_eq!(bridge.path(), stale_path);
         assert!(bridge.path().exists());
+    }
+
+    #[test]
+    fn bind_never_unlinks_a_non_socket_at_the_predictable_path() {
+        let runtime = tempfile::tempdir().unwrap();
+        let upstream = runtime.path().join("wayland-0");
+        std::fs::File::create(&upstream).unwrap();
+        let occupied = runtime.path().join("nirios-ws-8");
+        std::fs::write(&occupied, b"keep me").unwrap();
+
+        let error = BridgeSocket::bind(8, runtime.path(), &upstream)
+            .err()
+            .expect("regular file must be refused");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&occupied).unwrap(), b"keep me");
     }
 
     /// End-to-end round trip: upstream listener → bridge → client.

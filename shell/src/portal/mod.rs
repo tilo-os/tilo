@@ -724,7 +724,10 @@ impl PromptQueueHandle {
 pub struct PortalContext {
     pub grants: GrantStoreHandle,
     pub prompts: PromptQueueHandle,
-    /// D-Bus unique-name → `PortalCaller`. Production fills it in when the per-workspace bridge spawns an app; tests poke entries directly.
+    /// Optional D-Bus unique-name → `PortalCaller` lookup used by focused
+    /// tests. Production authenticates the portal frontend's current bus owner
+    /// and resolves its asserted app id against the compositor's live,
+    /// Wayland-authenticated application instances.
     pub caller_map: CallerMap,
     /// The `FileChooser` backend calls [`FilePickerSpawner::spawn`] on
     /// `Allow`; tests pass a [`MockFilePickerSpawner`] with canned paths.
