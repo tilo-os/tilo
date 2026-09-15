@@ -60,7 +60,9 @@ fn render(
     image_editor::write_shot_image(&staging)?;
     let mut state = ui::State::new();
     let mut widget = image_editor::ImageEditorApp::new();
-    widget.seed_shot(&mut state.doc, &staging, scenario.starts_with("graph"));
+    if scenario != "empty" {
+        widget.seed_shot(&mut state.doc, &staging, scenario.starts_with("graph"));
+    }
     if scenario == "narrow-long-stack" {
         widget.seed_long_stack_for_shot(&mut state.doc);
     }
