@@ -2041,6 +2041,33 @@ fn comment_text_anchor(block: &str, start: usize, end: usize) -> qos_actions::In
     }
 }
 
+fn selection_text_anchor(
+    start_block: &str,
+    start: usize,
+    end_block: &str,
+    end: usize,
+) -> qos_actions::InteractionAnchor {
+    let range = |block: &str, start, end| qos_actions::InteractionTextRange {
+        block: block.to_string(),
+        start: u64::try_from(start).unwrap_or(u64::MAX),
+        end: u64::try_from(end).unwrap_or(u64::MAX),
+    };
+    qos_actions::InteractionAnchor::Text {
+        region: "document".into(),
+        ranges: if start_block == end_block {
+            vec![range(start_block, start, end)]
+        } else {
+            vec![range(start_block, start, start), range(end_block, end, end)]
+        },
+    }
+}
+
+fn object_anchor(id: &str) -> qos_actions::InteractionAnchor {
+    qos_actions::InteractionAnchor::Objects {
+        ids: vec![id.to_string()],
+    }
+}
+
 fn word_action_anchor(
     action: &WordProcessorAction,
     _focus: &str,
@@ -2067,29 +2094,14 @@ fn word_action_anchor(
             end_block,
             end,
             ..
-        } => qos_actions::InteractionAnchor::Text {
-            region: "document".into(),
-            ranges: if start_block == end_block {
-                vec![qos_actions::InteractionTextRange {
-                    block: start_block.clone(),
-                    start: u64::try_from(*start).unwrap_or(u64::MAX),
-                    end: u64::try_from(*end).unwrap_or(u64::MAX),
-                }]
-            } else {
-                vec![
-                    qos_actions::InteractionTextRange {
-                        block: start_block.clone(),
-                        start: u64::try_from(*start).unwrap_or(u64::MAX),
-                        end: u64::try_from(*start).unwrap_or(u64::MAX),
-                    },
-                    qos_actions::InteractionTextRange {
-                        block: end_block.clone(),
-                        start: u64::try_from(*end).unwrap_or(u64::MAX),
-                        end: u64::try_from(*end).unwrap_or(u64::MAX),
-                    },
-                ]
-            },
-        },
+        }
+        | WordProcessorAction::PasteFragment {
+            start_block,
+            start,
+            end_block,
+            end,
+            ..
+        } => selection_text_anchor(start_block, *start, end_block, *end),
         WordProcessorAction::SetMark { spans, .. } => qos_actions::InteractionAnchor::Text {
             region: "document".into(),
             ranges: spans
@@ -2107,20 +2119,22 @@ fn word_action_anchor(
         | WordProcessorAction::RemoveBlocks { blocks } => qos_actions::InteractionAnchor::Objects {
             ids: blocks.clone(),
         },
-        WordProcessorAction::InsertParagraph { after, .. }
-        | WordProcessorAction::InsertTable { after, .. } => {
-            qos_actions::InteractionAnchor::Objects {
-                ids: vec![after.clone()],
-            }
+        WordProcessorAction::SetPageMargins { .. } | WordProcessorAction::GenerateToc { .. } => {
+            qos_actions::InteractionAnchor::Resource
         }
+        WordProcessorAction::SetStyleProperty { style, .. }
+        | WordProcessorAction::DeleteStyle { style, .. } => object_anchor(style),
+        WordProcessorAction::EditTable { table, .. } => object_anchor(table),
+        WordProcessorAction::InsertParagraph { after, .. }
+        | WordProcessorAction::InsertTable { after, .. } => object_anchor(after),
         WordProcessorAction::InsertImage { block, .. }
         | WordProcessorAction::InsertPageBreak { block, .. }
         | WordProcessorAction::SetImageCrop { block, .. }
         | WordProcessorAction::SetImageSize { block, .. }
-        | WordProcessorAction::SetImagePlacement { block, .. } => {
-            qos_actions::InteractionAnchor::Objects {
-                ids: vec![block.clone()],
-            }
+        | WordProcessorAction::SetImagePlacement { block, .. } => object_anchor(block),
+        WordProcessorAction::SplitBlock { block, at, .. }
+        | WordProcessorAction::InsertField { block, at, .. } => {
+            comment_text_anchor(block, *at, *at)
         }
         WordProcessorAction::ReplaceBody { .. } => qos_actions::InteractionAnchor::Resource,
         WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
