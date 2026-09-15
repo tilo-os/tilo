@@ -29,6 +29,27 @@ struct ActionDirectoryCursor {
     root_provider_cursor: Option<Vec<u8>>,
 }
 
+#[cfg(test)]
+mod room_record_launch_tests {
+    use super::App;
+    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordSet, room};
+    use crate::{State, widget::Text};
+    use automerge::AutoCommit;
+
+    #[test]
+    fn launch_reads_existing_room_index_without_opening_its_records() {
+        let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
+        let mut room_index = AutoCommit::new();
+        assert!(room::reference(&mut room_index, &entry.id, &entry.kind));
+
+        let app = App::new(State::new(), Box::new(Text::new("PDF")))
+            .with_records(RecordSet::in_memory().with_home("room-a"), room_index);
+        let records = app.records().expect("record-aware launch installs the set");
+        assert_eq!(records.known_records(), vec![entry]);
+        assert!(records.open_records().is_empty());
+    }
+}
+
 const ACTION_DIRECTORY_MAX_RESULTS: usize = 128;
 const ACTION_DIRECTORY_MAX_WORK: usize = 512;
 const ACTION_DIRECTORY_MAX_BYTES: usize = 64 * 1024;
@@ -495,6 +516,11 @@ pub struct App {
 
     // Collaboration
     collab_manager: CollaborationManager,
+    /// The unqualified `(app, room)` channel carries the room's record
+    /// index.  Once a widget checks out a record, `collab_manager` switches
+    /// to that record's route while this manager remains subscribed solely
+    /// to grants/discovery.
+    room_collab_manager: Option<CollaborationManager>,
     /// Every committed action is attributed to it and Ctrl+Z only reverts
     /// actions carrying it, so undo walks past collaborators' work rather
     /// than through it.
@@ -708,6 +734,7 @@ impl App {
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager,
+            room_collab_manager: None,
             local_author: crate::collaboration::local_user_id(),
             presence_ctx: Self::initial_presence_context(),
             permission_ctx: PermissionContext::permissive(),
@@ -3542,14 +3569,46 @@ impl App {
 
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
-        if !self.collab_manager.is_connected() {
+        if self.collab_manager.is_connected() {
+            let delta = self.state.save_incremental();
+            if !delta.is_empty() {
+                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                    crate::diag!("[app] broadcast doc delta {}B", delta.len());
+                }
+                self.collab_manager
+                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
+            }
+        }
+        self.broadcast_room_index_delta();
+    }
+
+    /// The room index is a distinct document from the live record.  Keep its
+    /// incremental cursor and route separate so an annotation/document delta
+    /// can never be merged into the index (or vice versa).
+    fn broadcast_room_index_delta(&mut self) {
+        let connected = self.room_collab_manager.as_ref().map_or_else(
+            || self.records.is_some() && self.collab_manager.is_connected(),
+            CollaborationManager::is_connected,
+        );
+        if !connected {
             return;
         }
-        let delta = self.state.save_incremental();
-        if !delta.is_empty() {
-            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                crate::diag!("[app] broadcast doc delta {}B", delta.len());
+        let Some(room) = self.room_index.as_mut() else {
+            return;
+        };
+        let delta = room.save_incremental();
+        if delta.is_empty() {
+            return;
+        }
+        if let Some(manager) = self.room_collab_manager.as_mut() {
+            if manager.is_connected() {
+                manager
+                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
             }
+        } else if self.records.is_some() && self.collab_manager.is_connected() {
+            // Before the first record checkout the primary manager is the
+            // room route. It becomes `room_collab_manager` at that checkout.
+            // Do not advance this cursor for ordinary (non-record) apps.
             self.collab_manager
                 .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
         }
@@ -3660,6 +3719,7 @@ impl App {
     /// event loop.
     #[doc(hidden)]
     pub fn poll_and_apply_collab_events(&mut self) {
+        self.pump_room_index_events();
         let events = self.collab_manager.poll();
         for event in events {
             self.apply_collab_event_for_test(event);
@@ -3671,6 +3731,10 @@ impl App {
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) {
+        if self.records.is_some() && self.room_collab_manager.is_none() {
+            let _ = self.apply_room_index_document_envelope(envelope, decrypted_payload);
+            return;
+        }
         let applied = match collab_types::DocumentMutation::decode(
             decrypted_payload.unwrap_or(&envelope.payload),
         ) {
@@ -3697,6 +3761,83 @@ impl App {
         }
     }
 
+    /// Apply a document envelope received on the unqualified room route.
+    /// The broker authenticated the route; discovery still validates and
+    /// bounds its names before exposing them to the app.
+    fn apply_room_index_document_envelope(
+        &mut self,
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) -> bool {
+        let Some(room) = self.room_index.as_mut() else {
+            return false;
+        };
+        let applied = match collab_types::DocumentMutation::decode(
+            decrypted_payload.unwrap_or(&envelope.payload),
+        ) {
+            Ok(collab_types::DocumentMutation::Snapshot(data)) => {
+                automerge::AutoCommit::load(&data)
+                    .and_then(|mut incoming| room.merge(&mut incoming))
+                    .is_ok()
+            }
+            Ok(collab_types::DocumentMutation::Incremental(data)) => {
+                room.load_incremental(&data).is_ok()
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: broker delivered an untyped room-index op");
+                false
+            }
+        };
+        if applied
+            && let (Some(records), Some(room)) = (self.records.as_mut(), self.room_index.as_ref())
+        {
+            records.discover_room(room);
+            self.invalidate_widget_resource_cache();
+        }
+        applied
+    }
+
+    /// Drain only document traffic on the room-index route. Actions and
+    /// presence are record scoped, so an index update cannot alter the app's
+    /// resource/action namespace or presentation state.
+    fn pump_room_index_events(&mut self) -> bool {
+        let Some(manager) = self.room_collab_manager.as_mut() else {
+            return false;
+        };
+        let events = manager.poll();
+        let mut any = false;
+        for event in events {
+            match event {
+                CollabEvent::Document {
+                    envelope,
+                    decrypted_payload,
+                    ..
+                } => {
+                    any |= self.apply_room_index_document_envelope(
+                        &envelope,
+                        decrypted_payload.as_deref(),
+                    );
+                }
+                CollabEvent::ScrollbackBatch {
+                    ops,
+                    decrypted_payloads,
+                    ..
+                } => {
+                    for (index, envelope) in ops.into_iter().enumerate() {
+                        any |= self.apply_room_index_document_envelope(
+                            &envelope,
+                            decrypted_payloads
+                                .get(index)
+                                .and_then(|payload| payload.as_deref()),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        any
+    }
+
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
     #[allow(
@@ -3704,6 +3845,7 @@ impl App {
         reason = "one ordered pump drains directory callbacks and applies every collaboration lifecycle event before the next frame"
     )]
     pub fn pump_collab_presence(&mut self) -> bool {
+        let mut any = self.pump_room_index_events();
         // Replies to broker pull-directory callbacks must run before regular
         // inbound events. This is the sole place capability requests acquire
         // widget/document authority, and it always runs on the App owner
@@ -3713,7 +3855,6 @@ impl App {
             self.collab_manager.send(request);
         }
         let events = self.collab_manager.poll();
-        let mut any = false;
         for event in events {
             any = true;
             self.root_widget.handle_collab_event(&event);
@@ -4941,9 +5082,13 @@ impl App {
     #[must_use]
     pub fn with_records(
         mut self,
-        records: crate::record::RecordSet,
+        mut records: crate::record::RecordSet,
         room_index: automerge::AutoCommit,
     ) -> Self {
+        // Learn the current room grant before the widget selects a record.
+        // Discovery is metadata-only: it must not create an empty record
+        // replica or join a collaboration route for every indexed document.
+        records.discover_room(&room_index);
         self.records = Some(records);
         self.room_index = Some(room_index);
         self
@@ -4972,7 +5117,19 @@ impl App {
         );
         match switched {
             Some(id) => {
-                self.collab_manager = CollaborationManager::for_record(&id);
+                // Preserve the launcher's unqualified route for the room
+                // index before moving the editable document to its record
+                // route. The two Automerge graphs never share a channel or
+                // an apply target.
+                if self.room_collab_manager.is_none() {
+                    let room = std::mem::replace(
+                        &mut self.collab_manager,
+                        CollaborationManager::for_record(&id),
+                    );
+                    self.room_collab_manager = Some(room);
+                } else {
+                    self.collab_manager = CollaborationManager::for_record(&id);
+                }
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                     crate::diag!(
                         "[app] checked out record {}; collab connected={}",

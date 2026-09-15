@@ -18,7 +18,7 @@
 //! in each frame. Not all app state is a record — a theme or account stays
 //! in the package-level document ([`crate::persist`]) instead.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use automerge::transaction::Transactable;
@@ -31,6 +31,15 @@ const META: &str = "qos:record";
 const ROOM: &str = "room";
 /// Key, in a room's index document, of the map of record references.
 const INDEX: &str = "qos:records";
+
+/// Upper bound for the records an app learns from one room index at once.
+/// This is deliberately small: the index is replicated input, not a request
+/// to allocate one local document per entry.
+pub const MAX_DISCOVERED_ROOM_RECORDS: usize = 64;
+const MAX_ROOM_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_ROOM_RECORDS * 4;
+const MAX_RECORD_ID_BYTES: usize = 1024;
+const MAX_RECORD_KIND_BYTES: usize = 64;
+const MAX_RECORD_RELATION_BYTES: usize = 64;
 
 /// The stable identity of a record. Three shapes, encoded by prefix:
 /// `file:<absolute path>` (identity is the path — opening it twice reaches
@@ -82,12 +91,11 @@ impl RecordId {
     }
 
     /// Adopt an id read back from a document, a room index, or the wire.
-    /// `None` for the empty string, which addresses nothing.
+    /// Invalid, oversized, or non-canonical names fail closed: IDs name
+    /// collaboration routes and storage directories, so accepting arbitrary
+    /// strings here would turn a room index into an allocation oracle.
     pub fn parse(s: &str) -> Option<Self> {
-        if s.is_empty() {
-            return None;
-        }
-        Some(Self(s.to_string()))
+        valid_record_id(s, 0).then(|| Self(s.to_string()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -119,6 +127,41 @@ impl RecordId {
         }
         format!("{prefix}-{:016x}", fnv1a64(self.0.as_bytes()))
     }
+}
+
+fn valid_record_id(s: &str, depth: usize) -> bool {
+    if s.is_empty() || s.len() > MAX_RECORD_ID_BYTES || s.contains('\0') || depth > 4 {
+        return false;
+    }
+    if let Some(path) = s.strip_prefix("file:") {
+        let path = Path::new(path);
+        return path.is_absolute() && normalise(path) == path;
+    }
+    if let Some(uuid) = s.strip_prefix("uuid:") {
+        return uuid::Uuid::parse_str(uuid).is_ok();
+    }
+    if let Some(tab) = s.strip_prefix("tab:") {
+        return tab.len() == 16 && tab.bytes().all(|c| c.is_ascii_hexdigit());
+    }
+    let Some(derived) = s.strip_prefix("derived:") else {
+        return false;
+    };
+    let Some((role, target)) = derived.split_once('@') else {
+        return false;
+    };
+    valid_label(role, MAX_RECORD_RELATION_BYTES)
+        && depth
+            .checked_add(1)
+            .is_some_and(|next| valid_record_id(target, next))
+}
+
+fn valid_label(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value.bytes().enumerate().all(|(i, byte)| {
+            (byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+                && (i != 0 || byte.is_ascii_alphabetic())
+        })
 }
 
 impl std::fmt::Display for RecordId {
@@ -170,6 +213,11 @@ impl RecordKind {
     }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Whether this can safely travel in a room index or record stamp.
+    pub fn is_valid(&self) -> bool {
+        valid_label(&self.0, MAX_RECORD_KIND_BYTES)
     }
 }
 
@@ -226,6 +274,19 @@ impl RecordCheckout {
         self.references.push((target, relation.into()));
         self
     }
+
+    /// Room indexes contain names supplied by collaborators.  Keep the
+    /// transport boundary typed and bounded before a host considers one.
+    pub fn is_valid(&self) -> bool {
+        RecordId::parse(self.id.as_str()).is_some()
+            && self.kind.is_valid()
+            && self.references.iter().all(|(target, relation)| {
+                target.references.is_empty()
+                    && RecordId::parse(target.id.as_str()).is_some()
+                    && target.kind.is_valid()
+                    && valid_label(relation, MAX_RECORD_RELATION_BYTES)
+            })
+    }
 }
 
 /// `None` only if `put_object` on the document root itself fails, which
@@ -266,6 +327,9 @@ pub fn init_scoped(
     home: &str,
     room: Option<&str>,
 ) -> bool {
+    if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
+        return false;
+    }
     let Some(m) = meta_obj(doc) else {
         // The document's root object is gone — nothing to stamp.
         return false;
@@ -343,6 +407,11 @@ fn refs_obj(doc: &mut AutoCommit) -> Option<ObjId> {
 /// Idempotent on `(target, relation)`: a reference is a fact, not an
 /// event.
 pub fn add_reference(doc: &mut AutoCommit, r: &RecordRef) -> bool {
+    if RecordId::parse(r.target.as_str()).is_none()
+        || !valid_label(&r.relation, MAX_RECORD_RELATION_BYTES)
+    {
+        return false;
+    }
     if references(doc).iter().any(|e| e == r) {
         return false;
     }
@@ -372,10 +441,11 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
                 return None;
             };
             let target = RecordId::parse(&str_at(doc, &entry, "target")?)?;
-            Some(RecordRef {
-                target,
-                relation: str_at(doc, &entry, "relation").unwrap_or_default(),
-            })
+            let relation = str_at(doc, &entry, "relation")?;
+            if !valid_label(&relation, MAX_RECORD_RELATION_BYTES) {
+                return None;
+            }
+            Some(RecordRef { target, relation })
         })
         .collect()
 }
@@ -387,10 +457,6 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
 /// A room's index of the records it holds. Ownership of the index document
 /// is the caller's business — the compositor keeps one per room
 /// (`shell::room_records`).
-///
-/// Known gap: an app launched into a room does not yet read that room's
-/// index; today a record is attributed to its room via its own `home`
-/// stamp. Closing the gap means partitioning app state per room.
 ///
 /// **The reference is what grants access.** A member can reach only the
 /// records the room references. Removing a reference stops future changes
@@ -422,6 +488,9 @@ pub mod room {
     /// converge on one index entry. The document it resolves to remains
     /// room-scoped; this is not a cross-room data grant.
     pub fn reference(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind) -> bool {
+        if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
+            return false;
+        }
         let Some(idx) = index_obj(doc) else {
             return false;
         };
@@ -463,7 +532,9 @@ pub mod room {
         index_ro(doc).is_some_and(|idx| matches!(doc.get(&idx, id.as_str()), Ok(Some(_))))
     }
 
-    /// Every record this room references.
+    /// Every well-formed record this room references.  This is retained for
+    /// callers that already have their own work bound; hosts that learn a
+    /// room supplied index should use [`discoverable_references`] instead.
     pub fn references(doc: &AutoCommit) -> Vec<RecordCheckout> {
         let Some(idx) = index_ro(doc) else {
             return Vec::new();
@@ -476,12 +547,41 @@ pub mod room {
                     Ok(Some((Value::Object(ObjType::Map), obj))) => {
                         RecordKind::new(str_at(doc, &obj, "kind").unwrap_or_default())
                     }
-                    _ => RecordKind::new(""),
+                    _ => return None,
                 };
-                Some(RecordCheckout::new(id, kind))
+                let checkout = RecordCheckout::new(id, kind);
+                checkout.is_valid().then_some(checkout)
             })
             .collect();
         out.sort();
+        out
+    }
+
+    /// A deterministic, resource-bounded view of collaborator-supplied room
+    /// names.  It reads at most a small fixed prefix of the CRDT map and
+    /// returns at most [`super::MAX_DISCOVERED_ROOM_RECORDS`] valid entries.
+    /// It does **not** open records, create persistence, or join record
+    /// routes; the caller must make that explicit after choosing a record.
+    pub fn discoverable_references(doc: &AutoCommit) -> Vec<RecordCheckout> {
+        let Some(idx) = index_ro(doc) else {
+            return Vec::new();
+        };
+        let mut out: Vec<RecordCheckout> = doc
+            .keys(&idx)
+            .take(super::MAX_ROOM_INDEX_KEYS_SCANNED)
+            .filter_map(|key| {
+                let id = RecordId::parse(&key)?;
+                let Ok(Some((Value::Object(ObjType::Map), entry))) = doc.get(&idx, key.as_str())
+                else {
+                    return None;
+                };
+                let kind = RecordKind::new(str_at(doc, &entry, "kind")?);
+                let checkout = RecordCheckout::new(id, kind);
+                checkout.is_valid().then_some(checkout)
+            })
+            .collect();
+        out.sort();
+        out.truncate(super::MAX_DISCOVERED_ROOM_RECORDS);
         out
     }
 
@@ -555,6 +655,10 @@ pub struct RecordSet {
     /// Stamped as a record's home when it is first created here.
     home: String,
     open: HashMap<RecordId, Parked>,
+    /// Names currently granted by the room index.  Discovery is intentionally
+    /// separate from `open`: a hostile or merely large index must not create
+    /// local replicas or subscribe the app to unrelated documents.
+    known: BTreeMap<RecordId, RecordKind>,
     active: Option<RecordId>,
     /// False for [`RecordSet::in_memory`]: no per-record files are opened, so
     /// a test drives the same checkout path without touching the disk.
@@ -587,6 +691,7 @@ impl RecordSet {
             package_id,
             home,
             open: HashMap::new(),
+            known: BTreeMap::new(),
             active: None,
             persistent: true,
         }
@@ -604,6 +709,7 @@ impl RecordSet {
             package_id: String::new(),
             home: String::new(),
             open: HashMap::new(),
+            known: BTreeMap::new(),
             active: None,
             persistent: false,
         }
@@ -638,6 +744,40 @@ impl RecordSet {
         out
     }
 
+    /// The bounded, validated names currently granted by the room index.
+    /// Unlike [`Self::open_records`], this does not imply their documents
+    /// were loaded, persisted, or joined on the collaboration transport.
+    pub fn known_records(&self) -> Vec<RecordCheckout> {
+        self.known
+            .iter()
+            .map(|(id, kind)| RecordCheckout::new(id.clone(), kind.clone()))
+            .collect()
+    }
+
+    /// Refresh the room-granted record names without opening any of them.
+    /// A removed/tombstoned index entry disappears from future discovery, but
+    /// already-open data remains in memory: revocation stops future access;
+    /// it cannot un-share bytes the process has already received.
+    pub fn discover_room(&mut self, room: &AutoCommit) -> Vec<RecordCheckout> {
+        let found = room::discoverable_references(room);
+        self.known = found
+            .iter()
+            .map(|checkout| (checkout.id.clone(), checkout.kind.clone()))
+            .collect();
+        found
+    }
+
+    fn remember(&mut self, want: &RecordCheckout) {
+        if want.is_valid() {
+            self.known.insert(want.id.clone(), want.kind.clone());
+            for (target, _) in &want.references {
+                if target.is_valid() {
+                    self.known.insert(target.id.clone(), target.kind.clone());
+                }
+            }
+        }
+    }
+
     /// Read a parked record's document without checking it out. `None` for
     /// the record currently checked out — its document is the live one.
     pub fn peek(&self, id: &RecordId) -> Option<&AutoCommit> {
@@ -655,6 +795,10 @@ impl RecordSet {
         room: Option<&mut AutoCommit>,
         want: &RecordCheckout,
     ) -> bool {
+        if !want.is_valid() {
+            tracing::warn!(record = %want.id, "refusing invalid record checkout");
+            return false;
+        }
         if self.active.as_ref() == Some(&want.id) {
             return false;
         }
@@ -748,6 +892,7 @@ impl RecordSet {
             }
         }
         self.active = Some(want.id.clone());
+        self.remember(want);
         true
     }
 
@@ -856,6 +1001,10 @@ impl RecordSet {
     /// its own file and bringing it into `room`'s index. Returns whether
     /// this opened it.
     pub fn open_record(&mut self, want: &RecordCheckout, room: Option<&mut AutoCommit>) -> bool {
+        if !want.is_valid() {
+            tracing::warn!(record = %want.id, "refusing invalid record open");
+            return false;
+        }
         let fresh = !self.open.contains_key(&want.id);
         if fresh {
             let (mut doc, autosave) = self.load(&want.id);
@@ -891,6 +1040,7 @@ impl RecordSet {
                 room::reference(room, &target.id, &target.kind);
             }
         }
+        self.remember(want);
         fresh
     }
 
@@ -1188,6 +1338,89 @@ mod tests {
             "dropping the reference removes the access"
         );
         assert!(room::holds(&room_doc, &b), "and touches nothing else");
+    }
+
+    #[test]
+    fn room_discovery_is_metadata_only_and_tracks_remote_grants() {
+        let mut remote_room = AutoCommit::new();
+        let remote = RecordCheckout::new(RecordId::minted(), RecordKind::new("annotation-set"));
+        assert!(room::reference(&mut remote_room, &remote.id, &remote.kind));
+
+        // Simulate a collaborator's room-index snapshot arriving before this
+        // process starts. Learning it must not manufacture a record document.
+        let mut local_room = AutoCommit::new();
+        local_room
+            .merge(&mut remote_room)
+            .expect("room indexes merge like other collaboration documents");
+        let mut set = RecordSet::in_memory().with_home("room-a");
+        assert_eq!(set.discover_room(&local_room), vec![remote.clone()]);
+        assert_eq!(set.known_records(), vec![remote.clone()]);
+        assert!(
+            set.open_records().is_empty(),
+            "discovery does not open replicas"
+        );
+
+        assert!(room::unreference(&mut local_room, &remote.id));
+        assert!(set.discover_room(&local_room).is_empty());
+        assert!(
+            set.known_records().is_empty(),
+            "revocation removes future discovery"
+        );
+        assert!(set.open_records().is_empty());
+    }
+
+    #[test]
+    fn derived_file_record_ids_are_valid_room_names() {
+        let file = RecordId::for_file("/tmp/shared/report.pdf");
+        let derived = RecordId::derived("annotations", &file);
+        assert!(RecordId::parse(derived.as_str()).is_some(), "{derived}");
+    }
+
+    #[test]
+    fn room_discovery_rejects_hostile_entries_and_is_bounded() {
+        let mut room_doc = AutoCommit::new();
+        let idx = room_doc
+            .put_object(&ROOT, INDEX, ObjType::Map)
+            .expect("room index");
+        // Not an ID shape the host understands, and not a typed map.
+        let _ = room_doc.put(&idx, "../../escape", "annotation-set");
+        let _ = room_doc.put_object(&idx, "uuid:not-a-uuid", ObjType::Map);
+        for _ in 0..(MAX_DISCOVERED_ROOM_RECORDS + 8) {
+            let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+            assert!(room::reference(&mut room_doc, &checkout.id, &checkout.kind));
+        }
+
+        let mut set = RecordSet::in_memory().with_home("room-a");
+        let found = set.discover_room(&room_doc);
+        assert_eq!(found.len(), MAX_DISCOVERED_ROOM_RECORDS);
+        assert!(found.iter().all(RecordCheckout::is_valid));
+        assert!(set.open_records().is_empty());
+    }
+
+    #[test]
+    fn room_discovery_never_crosses_scopes_after_restart() {
+        let dir = tempfile::tempdir().expect("temporary state directory");
+        // SAFETY: serialised by this module's persistent-record tests.
+        unsafe { std::env::set_var("XDG_DATA_HOME", dir.path()) };
+        let package = "dev.qos.room-discovery";
+        let a = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let b = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let entry = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+
+        let (mut room_a, mut saver_a) = crate::persist::open_room(package, a);
+        assert!(room::reference(&mut room_a.doc, &entry.id, &entry.kind));
+        saver_a.request(&mut room_a.doc);
+        saver_a.flush();
+
+        let (room_b, _) = crate::persist::open_room(package, b);
+        let mut set_b = RecordSet::open(package).with_home(b);
+        assert!(set_b.discover_room(&room_b.doc).is_empty());
+
+        let (room_a_restarted, _) = crate::persist::open_room(package, a);
+        let mut set_a = RecordSet::open(package).with_home(a);
+        assert_eq!(set_a.discover_room(&room_a_restarted.doc), vec![entry]);
+        assert!(set_a.open_records().is_empty());
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
