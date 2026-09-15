@@ -401,6 +401,17 @@ impl AppComponent {
         Ok(callback(&current, root, registry))
     }
 
+    /// Sample and deliver only after the caller has released its document loan.
+    /// The same checked callback lifetime owns both the sample and the hook.
+    pub(crate) fn project_record_save_status(&mut self) {
+        let captured = self.callback_binding();
+        let _ = self.with_live_component(&captured, |binding, root, _registry| {
+            if let Ok(status) = binding.records.save_status(&binding.checkout.id) {
+                root.record_save_status(status);
+            }
+        });
+    }
+
     pub fn new(
         context: HostContext,
         root: Box<dyn AppWidget>,
