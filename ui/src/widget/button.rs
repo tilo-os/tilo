@@ -51,6 +51,7 @@ pub struct Button {
     click_value: Option<String>,
     /// Size the width from the visible label rather than using the 120px default.
     fit_content: bool,
+    measured_fit_width: Option<f32>,
     content_sized: bool,
     content_padding: f32,
     /// Fires on release-while-hovered *in addition to* any
@@ -105,6 +106,7 @@ impl Button {
             on_click_path: on_click_path.map(std::string::ToString::to_string),
             click_value: None,
             fit_content: false,
+            measured_fit_width: None,
             content_sized: false,
             content_padding: 16.0,
             on_click: None,
@@ -271,6 +273,12 @@ impl Button {
 
     /// Measure the actual label and icon width, retaining the supplied fixed height.
     /// Long text may intentionally overflow that explicit height.
+    ///
+    /// App and `FrameHarness` settle the measured width before applying layout.
+    /// Manual hosts must use [`crate::widget::compute_widget_layout`]; direct
+    /// Taffy computation skips this settlement and can stretch the auto width.
+    /// Rebuild layout after changing renderer metrics or localization so the
+    /// next measurement resolves current content rather than a previous width.
     #[must_use]
     pub fn fit_content(mut self, height: f32) -> Self {
         self.fit_content = true;
@@ -818,6 +826,7 @@ impl Widget for Button {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_i18n_revision();
+        self.measured_fit_width = None;
         self.content_padding = theme.padding_standard;
         let (mut w, mut h) = self.size.unwrap_or((120.0, 40.0));
         let minimum_target = self.interaction.minimum_target();
@@ -901,13 +910,17 @@ impl Widget for Button {
             None
         };
         let (width, height) = text.measure(&label, 14.0, max_width);
+        let intrinsic_width = (width + extra_width)
+            .ceil()
+            .max(if self.content_sized { 0.0 } else { 64.0 })
+            .max(self.interaction.minimum_target());
+        if self.fit_content {
+            // Capture the real width even when a stretching parent supplies
+            // a known width. The shared solver pins it before geometry lands.
+            self.measured_fit_width = Some(intrinsic_width);
+        }
         Size {
-            width: known.width.unwrap_or_else(|| {
-                (width + extra_width)
-                    .ceil()
-                    .max(if self.content_sized { 0.0 } else { 64.0 })
-                    .max(self.interaction.minimum_target())
-            }),
+            width: known.width.unwrap_or(intrinsic_width),
             height: known.height.unwrap_or_else(|| {
                 if self.content_sized {
                     (height.max(icon_width) + self.content_padding)
@@ -918,6 +931,22 @@ impl Widget for Button {
                 }
             }),
         }
+    }
+
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self.measured_fit_width.filter(|_| self.fit_content) else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1374,6 +1403,230 @@ mod tests {
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn layout_fit_host(
+        host: &mut dyn Widget,
+        alignment: taffy::AlignItems,
+        theme: &Theme,
+        text: &mut TextRenderer,
+    ) -> Rect {
+        let mut tree = TaffyTree::new();
+        let mut map = std::collections::HashMap::new();
+        let root = host.build_layout(&mut tree, theme, &mut map);
+        let mut style = tree.style(root).unwrap().clone();
+        style.size.width = Dimension::length(600.0);
+        if style.display == taffy::Display::Grid {
+            style.justify_items = Some(alignment);
+        } else if style.flex_direction == taffy::FlexDirection::Row {
+            style.justify_content = Some(match alignment {
+                taffy::AlignItems::Center => taffy::JustifyContent::Center,
+                taffy::AlignItems::End => taffy::JustifyContent::End,
+                _ => taffy::JustifyContent::Start,
+            });
+        } else {
+            style.align_items = Some(alignment);
+        }
+        tree.set_style(root, style).unwrap();
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        unsafe {
+            bindings.rebuild(host, &tree, root, &map);
+            crate::widget::compute_widget_layout(
+                &mut tree,
+                root,
+                Size {
+                    width: taffy::AvailableSpace::Definite(600.0),
+                    height: taffy::AvailableSpace::Definite(200.0),
+                },
+                &map,
+                &bindings,
+                text,
+            )
+            .unwrap();
+        }
+        host.apply_layout(&tree, root, Point::ZERO);
+        host.children()[0].get_rect()
+    }
+
+    fn fit_host(kind: usize, button: Button) -> crate::widget::Element {
+        match kind {
+            0 => Box::new(
+                crate::widget::Column::new()
+                    .with_no_padding()
+                    .push(Box::new(button)),
+            ),
+            1 => Box::new(
+                crate::widget::Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(button)),
+            ),
+            _ => Box::new(
+                crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(button)),
+            ),
+        }
+    }
+
+    #[test]
+    fn fit_content_stays_compact_in_stretched_flex_column() {
+        let mut host = fit_host(
+            0,
+            Button::new("back", "Back to apps", None).fit_content(40.0),
+        );
+        let rect = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert!(rect.width() < 300.0, "fit_content stretched: {rect:?}");
+        assert_eq!(rect.height(), 40.0);
+    }
+
+    #[test]
+    fn fit_content_stays_compact_in_intrinsic_grid_column() {
+        let mut host = fit_host(
+            1,
+            Button::new("back", "Back to apps", None).fit_content(40.0),
+        );
+        let rect = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert!(rect.width() < 300.0, "fit_content stretched: {rect:?}");
+        assert_eq!(rect.height(), 40.0);
+    }
+
+    #[test]
+    fn compact_fit_width_preserves_host_center_and_end_alignment() {
+        for kind in 0..3 {
+            for alignment in [taffy::AlignItems::Center, taffy::AlignItems::End] {
+                let mut host = fit_host(
+                    kind,
+                    Button::new("back", "Back to apps", None).fit_content(40.0),
+                );
+                let rect = layout_fit_host(
+                    host.as_mut(),
+                    alignment,
+                    &Theme::dark(),
+                    &mut TextRenderer::new(),
+                );
+                assert!(rect.width() < 300.0, "host {kind}: {rect:?}");
+                let edge = if alignment == taffy::AlignItems::Center {
+                    rect.center().x * 2.0
+                } else {
+                    rect.x1
+                };
+                assert!(
+                    (edge - 600.0).abs() <= 1.0,
+                    "host {kind}, {alignment:?}: {rect:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn compact_fit_width_is_the_prepaint_click_and_focus_geometry() {
+        let fired = Arc::new(AtomicUsize::new(0));
+        let clicks = Arc::clone(&fired);
+        let button = Button::new("back", "Back to apps", None)
+            .fit_content(40.0)
+            .on_click(move || {
+                clicks.fetch_add(1, Ordering::SeqCst);
+            });
+        let mut harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            fit_host(1, button),
+            (600, 200),
+            Theme::dark(),
+        );
+        let before = harness.inspection().root.children[0].rect;
+        harness.click_at(550.0, before[1] + before[3] / 2.0);
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            0,
+            "blank grid track must not activate compact button"
+        );
+        harness.click_at(before[0] + before[2] / 2.0, before[1] + before[3] / 2.0);
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            harness
+                .focused_access_node()
+                .unwrap()
+                .semantic_key
+                .as_deref(),
+            Some("back")
+        );
+        harness.resize((800, 200)).unwrap();
+        assert_eq!(harness.inspection().root.children[0].rect[2], before[2]);
+    }
+
+    #[test]
+    fn retained_fit_width_remeasures_scale_and_locale_after_rebuild() {
+        use crate::i18n::I18nManager;
+        I18nManager::install(
+            "en-US",
+            "en-US",
+            &[
+                ("en-US", "fit-refresh = Refresh"),
+                ("de", "fit-refresh = Verbindungen aktualisieren"),
+            ],
+        )
+        .unwrap();
+        let mut host = fit_host(
+            1,
+            Button::new("refresh", "fit-refresh", None).fit_content(40.0),
+        );
+        let mut text = TextRenderer::new();
+        let normal = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark(),
+            &mut text,
+        );
+        text.set_text_scale(2.0);
+        let large = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark().with_text_scale(2.0),
+            &mut text,
+        );
+        assert!(
+            large.width() > normal.width(),
+            "renderer scale must refresh retained width: {normal:?} -> {large:?}"
+        );
+        I18nManager::set_locale("de");
+        assert!(host.is_layout_dirty());
+        let localized = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark().with_text_scale(2.0),
+            &mut text,
+        );
+        assert!(
+            localized.width() > large.width(),
+            "locale must refresh retained width: {large:?} -> {localized:?}"
+        );
+        assert_eq!(localized.height(), 40.0);
+    }
+
+    #[test]
+    fn explicit_fill_width_still_stretches_in_intrinsic_column() {
+        let mut host = fit_host(
+            1,
+            Button::new("fill", "Back to apps", None).fill_width(40.0),
+        );
+        let rect = layout_fit_host(
+            host.as_mut(),
+            taffy::AlignItems::Stretch,
+            &Theme::dark(),
+            &mut TextRenderer::new(),
+        );
+        assert_eq!(rect.width(), 600.0);
+    }
 
     fn measured_button_rect(button: Button, scale: f32) -> Rect {
         let harness = crate::headless::FrameHarness::new_with_theme(
