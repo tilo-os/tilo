@@ -19,10 +19,10 @@ seccomp = "qos-default"
 landlock = "strict"
 
 [sandbox.net]
-mode = "none"
+mode = "off"
 
 [sandbox.portals]
-notifications = "required@2"
+notifications = "via-host"
 
 [entrypoint]
 bin = "bin/clocks"
