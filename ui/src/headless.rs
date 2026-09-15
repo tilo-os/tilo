@@ -702,7 +702,7 @@ impl FrameHarness {
     /// Returns a layout error if measurement or bounded composition settlement
     /// fails. The failed frame is not painted; callers may retry the resize.
     pub fn resize(&mut self, viewport: (u32, u32)) -> Result<(), crate::widget::WidgetLayoutError> {
-        if self.last_layout_viewport == Some(viewport) {
+        if self.viewport == viewport && self.last_layout_viewport == Some(viewport) {
             return Ok(());
         }
         self.viewport = viewport;
@@ -995,6 +995,10 @@ impl FrameHarness {
         use crate::widget::layout::{
             CompositionFocus, composition_geometry, settle_widget_composition,
         };
+        let viewport_changed = self.last_layout_viewport != Some(self.viewport);
+        // A failed attempt mutates the tree as well as the requested viewport.
+        // Only a successful complete frame may restore this validity marker.
+        self.last_layout_viewport = None;
         // SAFETY: the current admitted maps belong to this exclusive runner.
         let focus =
             unsafe { CompositionFocus::capture(self.focused, &self.node_map, &self.bindings) };
@@ -1017,7 +1021,6 @@ impl FrameHarness {
         }
 
         let view = self.root.view_state();
-        let viewport_changed = self.last_layout_viewport != Some(self.viewport);
         let mut first = true;
         settle_widget_composition(viewport_changed, |rebuild| {
             let t_build = self.profiler.as_ref().map(|_| std::time::Instant::now());
@@ -1054,7 +1057,7 @@ impl FrameHarness {
                 }
                 if let Some(focus) = &focus {
                     // SAFETY: freshly admitted stable tree, exclusively owned.
-                    self.focused = unsafe { focus.restore(&self.node_map, &self.bindings) };
+                    self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
                 }
                 let (w, h) = self.viewport;
                 self.root_node = self.taffy.parent_node(
