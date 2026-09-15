@@ -87,6 +87,9 @@ fn forbidden_patterns() -> Vec<(Regex, &'static str)> {
 /// the failure mode is a skipped line rather than a false accusation.
 fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
     let lines: Vec<&str> = content.lines().collect();
+    if lines.iter().any(|line| line.trim() == "#![cfg(test)]") {
+        return vec![(0, lines.len())];
+    }
     let mut spans = Vec::new();
     let mut i = 0;
     while i < lines.len() {
@@ -124,6 +127,13 @@ fn test_module_spans(content: &str) -> Vec<(usize, usize)> {
         i = i.saturating_add(1);
     }
     spans
+}
+
+#[test]
+fn a_file_gated_to_tests_has_no_production_style_lines() {
+    let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
+    assert_eq!(test_module_spans(source), vec![(0, 3)]);
+    assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
 }
 
 #[test]

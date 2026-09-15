@@ -1479,10 +1479,15 @@ impl Widget for FileView {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
+                let bounds = match self.mode {
+                    ViewMode::List => self.list_row_rect(index),
+                    ViewMode::Grid => self.cell_rect(index),
+                };
                 AccessNode::new(Role::ListItem)
                     .with_name(entry.name.clone())
                     .with_description(accessible_entry_description(entry))
                     .with_position(index + 1, self.entries.len())
+                    .with_bounds(bounds)
                     .with_state(AccessState {
                         selected: self.selection.is_selected(index),
                         ..Default::default()
