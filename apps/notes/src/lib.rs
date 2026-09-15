@@ -34,6 +34,8 @@
 
 pub mod actions;
 pub mod app;
+pub mod component;
+pub use component::definition;
 pub mod doc;
 pub mod legacy_import;
 pub mod main_panel;

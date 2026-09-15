@@ -1324,7 +1324,7 @@ impl RecordStore {
     /// # Errors
     /// Reports missing/reserved records.
     pub fn save_status(&self, id: &RecordId) -> Result<RecordSaveStatus, RecordOpenError> {
-        let set = self.0.borrow();
+        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
         if set.pending.contains_key(id) {
             return Err(RecordOpenError::Busy);
         }
@@ -1562,6 +1562,90 @@ pub fn tick(
 mod tests {
     use super::*;
     use crate::state::State;
+
+    #[test]
+    fn save_status_older_ack_keeps_newer_pending_edit_saving() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = RecordOwners::new(temp.path().join("state"));
+        let store = owners.open("dev.qos.test", "status-room").unwrap();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let mut reservation = store.reserve_record(&checkout).unwrap();
+        reservation
+            .initialize(|doc| {
+                doc.put(ROOT, "value", 0_u64)
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        store.try_flush().unwrap();
+        store
+            .with(&checkout.id, |doc| doc.put(ROOT, "value", 1_u64).unwrap())
+            .unwrap();
+        store.tick();
+        let older = store.read(&checkout.id, AutoCommit::base_heads).unwrap();
+        store
+            .with(&checkout.id, |doc| doc.put(ROOT, "value", 2_u64).unwrap())
+            .unwrap();
+        let pending = store
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap();
+        assert!(pending.1 > 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let acknowledged = store.0.borrow().open[&checkout.id]
+                .autosave
+                .as_ref()
+                .unwrap()
+                .durability_snapshot()
+                .durable_heads
+                == Some(older.clone());
+            if acknowledged {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "older writer acknowledgement missing"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            store.save_status(&checkout.id).unwrap(),
+            RecordSaveStatus::Saving
+        );
+        assert_eq!(
+            store
+                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap(),
+            pending
+        );
+        store.try_flush().unwrap();
+        assert_eq!(
+            store.save_status(&checkout.id).unwrap(),
+            RecordSaveStatus::Saved
+        );
+        drop(reservation);
+        drop(store);
+        drop(owners);
+    }
+
+    #[test]
+    fn save_status_returns_busy_during_record_loan() {
+        let store = RecordStore::in_memory();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        assert!(store.open_record(&checkout));
+        store
+            .with_action_state(&checkout.id, |_, _, _| {
+                assert!(matches!(
+                    store.save_status(&checkout.id),
+                    Err(RecordOpenError::Busy)
+                ));
+            })
+            .unwrap();
+        assert_eq!(
+            store.save_status(&checkout.id).unwrap(),
+            RecordSaveStatus::MemoryOnly
+        );
+    }
 
     #[test]
     fn canonical_startup_failure_retains_reservation_and_stale_drop_is_inert() {

@@ -1479,16 +1479,7 @@ impl FrameHarness {
         use crate::a11y::Action as SemanticAction;
         self.pump_component_wakes();
 
-        let mut targets = HashMap::new();
-        let mut counts = HashMap::new();
-        collect_target_nodes(
-            self.child_node,
-            self.root.as_ref(),
-            &self.taffy,
-            "",
-            &mut counts,
-            &mut targets,
-        );
+        let targets = self.named_target_nodes();
         let node = targets
             .get(name)
             .copied()
@@ -1666,21 +1657,64 @@ impl FrameHarness {
         }
     }
 
+    // Address/name is bounded correlation, not universal Rust object identity:
+    // a non-retained hidden child with its wrapper's exact name/address cannot
+    // be distinguished. Refuse ambiguity observed in either registered or
+    // retained sets; all resulting nodes still pass normal bound admission.
+    fn named_target_nodes(&self) -> HashMap<String, NodeId> {
+        let mut registered = HashMap::with_capacity(self.node_map.len());
+        for &node in self.node_map.keys() {
+            // Read correlation metadata only through the existing admitted
+            // inspection. A data address alone also names inline first fields;
+            // a dyn vtable is not a stable type identity across codegen sites.
+            let Ok(key) = self.inspect_node(node, |widget| {
+                (
+                    std::ptr::from_ref(widget).cast::<()>() as usize,
+                    widget.name().to_owned(),
+                )
+            }) else {
+                continue;
+            };
+            registered
+                .entry(key)
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(node));
+        }
+        let mut retained = Vec::new();
+        collect_named_targets(self.root.as_ref(), "", &mut HashMap::new(), &mut retained);
+        let mut unique = HashMap::new();
+        for target in &retained {
+            unique
+                .entry(target.key.clone())
+                .and_modify(|entry| *entry = false)
+                .or_insert(true);
+        }
+        let mut targets = HashMap::new();
+        // Retained order keeps the established deterministic path/test-id aliases.
+        for target in retained {
+            if unique.get(&target.key) != Some(&true) {
+                continue;
+            }
+            let Some(&Some(node)) = registered.get(&target.key) else {
+                continue;
+            };
+            targets.insert(target.path, node);
+            if let Some(bare) = target.bare {
+                targets.entry(bare).or_insert(node);
+            }
+            if let Some(id) = target.id {
+                targets.insert(id, node);
+            }
+        }
+        targets
+    }
+
     fn access_node_named(
         &self,
         name: &str,
         semantic_target: Option<&str>,
     ) -> Result<AccessNode, String> {
-        let mut targets = HashMap::new();
-        let mut counts = HashMap::new();
-        collect_target_nodes(
-            self.child_node,
-            self.root.as_ref(),
-            &self.taffy,
-            "",
-            &mut counts,
-            &mut targets,
-        );
+        let targets = self.named_target_nodes();
         let node = targets
             .get(name)
             .copied()
@@ -1987,13 +2021,30 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments)
+        self.invoke_bound_action_checked(address, arguments, false)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
+
+    /// Invoke an action after the host caller explicitly confirmed this exact
+    /// request. Permission, live owner and action availability are still checked.
+    ///
+    /// # Errors
+    /// Refuses unavailable, denied, stale or ambiguous destinations and action failures.
+    pub fn invoke_bound_action_confirmed(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, qos_actions::DoorError> {
+        self.pump_component_wakes();
+        self.invoke_bound_action_checked(address, arguments, true)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+    }
+
     fn invoke_bound_action_checked(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
         let snapshots = crate::bound_dispatch::discover_bound_resources(
@@ -2016,7 +2067,7 @@ impl FrameHarness {
             None,
             Some(arguments),
             &self.author.0,
-            false,
+            confirmed,
             false,
             invocation,
             None,
@@ -2627,42 +2678,41 @@ fn collect_targets(
     }
 }
 
-fn collect_target_nodes(
-    node: NodeId,
+struct RetainedNamedTarget {
+    key: (usize, String),
+    path: String,
+    bare: Option<String>,
+    id: Option<String>,
+}
+
+fn collect_named_targets(
     widget: &dyn Widget,
-    taffy: &TaffyTree<()>,
     parent_path: &str,
     sibling_counts: &mut HashMap<String, usize>,
-    out: &mut HashMap<String, NodeId>,
+    out: &mut Vec<RetainedNamedTarget>,
 ) {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
         return;
     };
     let (name, path, my_index) = next_widget_path(widget, parent_path, sibling_counts);
-    out.insert(path.clone(), node);
-    if my_index == 0 {
-        let bare = if parent_path.is_empty() {
-            name
+    // Include even unregistered wrappers: otherwise their same-name inline
+    // child could be mistaken for them by a registration-only uniqueness check.
+    let bare = (my_index == 0).then(|| {
+        if parent_path.is_empty() {
+            name.clone()
         } else {
             format!("{parent_path}/{name}")
-        };
-        out.entry(bare).or_insert(node);
-    }
-    if let Some(id) = widget.test_id() {
-        out.insert(id.to_owned(), node);
-    }
-    let mut child_counts = HashMap::new();
-    if let Ok(children) = taffy.children(node) {
-        for (child_widget, &child_node) in widget.children().iter().zip(children.iter()) {
-            collect_target_nodes(
-                child_node,
-                *child_widget,
-                taffy,
-                &path,
-                &mut child_counts,
-                out,
-            );
         }
+    });
+    out.push(RetainedNamedTarget {
+        key: (std::ptr::from_ref(widget).cast::<()>() as usize, name),
+        path: path.clone(),
+        bare,
+        id: widget.test_id().map(str::to_owned),
+    });
+    let mut child_counts = HashMap::new();
+    for child in widget.children() {
+        collect_named_targets(child, &path, &mut child_counts, out);
     }
 }
 

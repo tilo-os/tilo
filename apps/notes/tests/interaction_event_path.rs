@@ -28,7 +28,6 @@ use taffy::prelude::*;
 use tempfile::TempDir;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
@@ -112,7 +111,7 @@ fn settle_layout(
     h: u16,
 ) -> Result<(TaffyTree<()>, NodeId), String> {
     let theme = Theme::dark();
-    let mut text_renderer = TextRenderer::new();
+    let mut text_renderer = crate::component_support::renderer();
     app.sync(&mut state.doc, &state.root);
     let mut result: Option<(TaffyTree<()>, NodeId)> = None;
     for _ in 0..5 {
@@ -207,7 +206,7 @@ fn click_row(
 /// first-note CTA) resolve their hit rects exactly as they do in the app.
 fn paint(app: &mut NotesApp) {
     let mut scene = Scene::new();
-    let mut text = TextRenderer::new();
+    let mut text = crate::component_support::renderer();
     app.draw_with_presence(
         &mut scene,
         Affine::IDENTITY,
