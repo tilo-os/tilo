@@ -710,6 +710,7 @@ impl ComposeWindow {
             subject: self.subject.value().to_string(),
             body,
             html_body,
+            calendar_ics: None,
             attachments: self.attachments.clone(),
             in_reply_to: None,
         }

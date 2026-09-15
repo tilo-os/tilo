@@ -79,13 +79,22 @@ impl CalendarSearchProvider {
     }
 
     fn event_subtitle(event: &Event) -> String {
-        if event.all_day {
+        let when = if event.all_day {
             date::fmt_day_long(event.start.date())
         } else {
             format!(
                 "{} · {}",
                 date::fmt_day_long(event.start.date()),
                 date::fmt_time(&event.start)
+            )
+        };
+        if event.attendees.is_empty() && event.timezone == "floating" {
+            when
+        } else {
+            format!(
+                "{when} · {} · {} guests",
+                event.timezone,
+                event.attendees.len()
             )
         }
     }
@@ -135,11 +144,26 @@ impl CalendarSearchProvider {
             return;
         };
         let id = address.resource;
+        let attendees = event
+            .attendees
+            .iter()
+            .map(|attendee| {
+                format!(
+                    "{} {} {}",
+                    attendee.name,
+                    attendee.email,
+                    attendee.status.label()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
         let searchable = format!(
-            "{}\0{}\0{}\0{}",
+            "{}\0{}\0{}\0{}\0{}\0{}",
             event.display_title(),
             event.location,
             event.calendar_id.as_deref().unwrap_or(""),
+            event.timezone,
+            attendees,
             note.map_or("", String::as_str),
         );
         let _ = self.catalog.upsert(id.clone(), searchable, result);

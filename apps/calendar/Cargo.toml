@@ -28,6 +28,10 @@ accounts = { path = "../../crates/system/accounts" }
 # and the Ctrl+K command palette all work from a single implementation.
 qos-actions = { path = "../../crates/collab/actions" }
 chrono = { workspace = true, features = ["std", "clock"] }
+# RFC 5545 TZID values are IANA names.  Keep the transition database in the
+# app so imported wall times resolve identically on every peer, including DST
+# gaps/folds, rather than depending on the host's current `/usr/share/zoneinfo`.
+chrono-tz = "0.10.4"
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -65,6 +69,7 @@ live = ["dep:reqwest"]
 # `QOS_CALENDAR_IMPORT_DIR` env var (export/import go through `transfer_dir`),
 # so they never race each other under cargo's default parallel runner.
 serial_test.workspace = true
+mail = { path = "../mail" }
 
 [lints]
 workspace = true

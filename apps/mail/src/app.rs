@@ -2609,6 +2609,7 @@ fn draft_from_message(m: &Message) -> Draft {
         },
         body: m.body.clone(),
         html_body: None,
+        calendar_ics: None,
         attachments: Vec::new(),
         in_reply_to: None,
     }
@@ -3036,6 +3037,28 @@ impl Widget for MailApp {
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         let operation = crate::actions::decode_operation(type_id, payload)?;
+        if kind == qos_actions::OperationKind::Effect
+            && let Some(crate::actions::MailOperation::PrepareCalendarInvitation {
+                to,
+                subject,
+                body,
+                calendar_ics,
+            }) = operation.clone()
+        {
+            let draft = prepare_calendar_invitation_draft(&to, &subject, &body, &calendar_ics)?;
+            self.shared.borrow_mut().save_draft(doc, &draft);
+            self.compose.open_with_draft(&draft);
+            self.editing_draft = None;
+            self.shared.borrow_mut().status =
+                Some("Invitation prepared — review it before sending".into());
+            self.dirty = true;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                qos_actions::ActionOutput {
+                    value: None,
+                    resources: vec!["mail.draft".into()],
+                },
+            )));
+        }
         if kind == qos_actions::OperationKind::View
             && let Some(crate::actions::MailOperation::RevealMessage { id }) = operation
         {
@@ -3942,6 +3965,39 @@ impl Widget for MailApp {
     }
 }
 
+fn prepare_calendar_invitation_draft(
+    to: &str,
+    subject: &str,
+    body: &str,
+    calendar_ics: &str,
+) -> Result<Draft, String> {
+    let to = to.trim();
+    if to.len() > 8 * 1024 || !to.contains('@') || to.chars().any(char::is_control) {
+        return Err("invitation recipient is invalid".into());
+    }
+    let subject = subject.trim();
+    if subject.is_empty() || subject.len() > 998 || subject.chars().any(char::is_control) {
+        return Err("invitation subject is invalid".into());
+    }
+    if body.len() > 256 * 1024 || body.contains('\0') {
+        return Err("invitation message is too large or invalid".into());
+    }
+    if !crate::actions::valid_calendar_invitation(calendar_ics) {
+        return Err("calendar invitation is not a bounded METHOD:REQUEST VCALENDAR".into());
+    }
+    Ok(Draft {
+        to: to.into(),
+        cc: String::new(),
+        bcc: String::new(),
+        subject: subject.into(),
+        body: body.to_string(),
+        html_body: None,
+        calendar_ics: Some(calendar_ics.to_string()),
+        attachments: Vec::new(),
+        in_reply_to: None,
+    })
+}
+
 impl MailApp {
     #[allow(clippy::too_many_arguments)]
     fn handle_setup_event(
@@ -4262,6 +4318,45 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
+    }
+
+    #[test]
+    fn calendar_invitation_handoff_creates_a_durable_reviewable_draft() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:event@example\r\nDTSTART:20260915T120000Z\r\nDTEND:20260915T130000Z\r\nSUMMARY:Review\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let draft = prepare_calendar_invitation_draft(
+            "guest@example.com",
+            "Invitation: Review",
+            "Please review this invitation.",
+            ics,
+        )
+        .unwrap();
+        let mut doc = AutoCommit::new();
+        let mut state = MailState::new_sample(avatar_store_offline());
+        state.save_draft(&mut doc, &draft);
+        let stored = MailDoc::load_draft(&doc);
+        assert_eq!(stored.to, "guest@example.com");
+        assert_eq!(stored.subject, "Invitation: Review");
+        assert_eq!(stored.calendar_ics.as_deref(), Some(ics));
+        assert!(
+            stored.attachments.is_empty(),
+            "no host path crosses the action"
+        );
+        assert!(state.take_committed_action().is_some());
+    }
+
+    #[test]
+    fn calendar_invitation_handoff_refuses_malformed_and_oversized_payloads() {
+        let valid = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:x\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert!(prepare_calendar_invitation_draft("bad", "Invite", "", valid).is_err());
+        assert!(
+            prepare_calendar_invitation_draft(
+                "a@example.com",
+                "Invite",
+                "",
+                &"x".repeat(256 * 1024 + 1),
+            )
+            .is_err()
+        );
     }
 
     fn click_at(app: &mut MailApp, doc: &mut AutoCommit, p: Point) -> bool {

@@ -114,6 +114,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // review: `due`, `priority`, or `project`.
         let task_picker = parse_flag_value(&args, "--task-picker")
             .and_then(|value| value.to_str().map(ToOwned::to_owned));
+        let sheet_scroll_end = args.iter().any(|arg| arg == "--sheet-scroll-end");
         // `--scroll-hour N` pins the week/day timeline scroll to hour N (0 = top
         // of the day, 24 = bottom) so a shot can prove the full 24h scrolls.
         let scroll_hour = parse_flag_value(&args, "--scroll-hour")
@@ -156,6 +157,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if collapse {
                 app.shots_collapse_sidebar();
+            }
+            if sheet_scroll_end {
+                app.shots_scroll_detail_to_end();
             }
             if date_popover {
                 app.shots_open_date_popover();
