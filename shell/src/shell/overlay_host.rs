@@ -11825,7 +11825,7 @@ impl Widget for ShellOverlayHost {
                         {
                             Some(true)
                         }
-                        _ => return None,
+                        _ => None,
                     }
                 });
                 if let Some(undo) = notification_focus {
