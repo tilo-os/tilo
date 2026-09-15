@@ -138,9 +138,11 @@ The landing-page manifest records package-channel state separately from signed
 download availability. Homebrew is marked available only after its native
 install matrix passes. A newly opened WinGet submission is marked `submitted`,
 so the site recommends the signed setup EXE instead of showing a command that
-cannot resolve yet. Re-running the idempotent site promotion after Microsoft
-accepts the exact version detects the public manifest and changes WinGet to
-`available`.
+cannot resolve yet. The scheduled acceptance monitor checks Microsoft's exact
+version manifest every six hours with the short-lived site credential broker.
+Once accepted, it runs the same idempotent site verification/build and changes
+WinGet to `available`; transient GitHub failures remain fail-safe as
+`submitted`.
 
 Forgejo releases remain drafts while artifacts are uploaded. Publication reads
 every attachment back and compares its exact bytes, then makes the complete
