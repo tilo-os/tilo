@@ -67,20 +67,7 @@ const TITLE_HEIGHT: f64 = 44.0;
 /// body, so they are scannable without stealing the first editable block.
 const TAG_ROW_HEIGHT: f64 = 28.0;
 
-fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
-    use ui::widget::BlockKind;
-    match kind {
-        BlockKind::Paragraph => "paragraph".into(),
-        BlockKind::Heading(level) => format!("heading{}", level.clamp(&1, &3)),
-        BlockKind::Bullet { indent } => format!("bullet:{}", (*indent).min(5)),
-        BlockKind::Numbered { indent } => format!("numbered:{}", (*indent).min(5)),
-        BlockKind::Checklist { indent, done } => {
-            format!("checklist:{}:{}", (*indent).min(5), i32::from(*done))
-        }
-        BlockKind::CodeBlock { lang } => format!("code:{}", lang.as_deref().unwrap_or_default()),
-        BlockKind::Divider => "divider".into(),
-    }
-}
+use crate::markdown::block_kind_wire;
 
 pub struct MainPanel {
     /// Currently displayed page (None until a selection lands). Also the

@@ -243,6 +243,12 @@ impl ActionPalette {
         Self::with_inputs(TextRenderer::new(), SearchField::new)
     }
 
+    /// A closed palette that owns an explicitly configured layout renderer.
+    pub fn with_text_renderer(renderer: TextRenderer) -> Self {
+        let language = renderer.font_system.locale().to_owned();
+        Self::with_source(Some(renderer), PaletteFieldSource::Language(language))
+    }
+
     /// Use the host's explicit font construction input for the real initializer.
     pub(crate) fn with_inputs(measure: TextRenderer, field_factory: fn() -> SearchField) -> Self {
         Self::with_source(Some(measure), PaletteFieldSource::Factory(field_factory))
