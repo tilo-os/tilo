@@ -56,11 +56,15 @@ mod sidebar;
 pub mod store;
 mod timeline_interaction;
 mod timeline_viewport;
+pub mod timezone;
 mod topbar;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
 pub use app::CalendarApp;
-pub use model::{Event, Model, Priority, Project, Recurrence, Task, View};
+pub use model::{
+    Attendee, Event, InviteStatus, Model, OccurrenceOverride, Priority, Project, Recurrence, Task,
+    View,
+};
 
 use ui::widget::Widget;
 

@@ -116,6 +116,13 @@ pub fn build_mime(from: &Addr, draft: &Draft) -> std::io::Result<Vec<u8>> {
         let mime = mime_from_filename(&name);
         builder = builder.attachment(mime, name, bytes);
     }
+    if let Some(calendar_ics) = &draft.calendar_ics {
+        builder = builder.attachment(
+            "text/calendar; method=REQUEST",
+            "invitation.ics",
+            calendar_ics.as_bytes().to_vec(),
+        );
+    }
 
     builder.write_to_vec()
 }
@@ -501,6 +508,20 @@ Content-Type: text/html; charset=utf-8\r\n\
             b"REAL-ATTACHMENT-CONTENT-\x00\x01\x02"
         );
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn calendar_invitation_attachment_declares_the_itip_method() {
+        let draft = Draft {
+            to: "guest@example.com".into(),
+            subject: "Invitation".into(),
+            body: "See attached.".into(),
+            calendar_ics: Some("BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n".into()),
+            ..Default::default()
+        };
+        let bytes = build_mime(&Addr::new("Me", "me@example.com"), &draft).unwrap();
+        let wire = String::from_utf8_lossy(&bytes);
+        assert!(wire.contains("text/calendar; method=REQUEST"), "{wire}");
     }
 
     #[test]

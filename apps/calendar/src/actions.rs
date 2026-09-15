@@ -25,19 +25,22 @@
 //! **no-op** rather than an error, so a bad replay can't wedge a peer.
 
 use automerge::AutoCommit;
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 use ui::widget::BlockEditOp;
 use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource, ResourceProvider,
-    RetryPolicy,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, PermissionRequirement, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::CalDoc;
-use crate::model::{Event, Id, Palette, Priority, Project, Recurrence, Task};
+use crate::model::{
+    Attendee, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Project, Recurrence,
+    Task,
+};
 
 /// Registry `type_id` for every calendar action.
 pub const CALENDAR_ACTION_TYPE: &str = "calendar.action";
@@ -69,6 +72,18 @@ pub fn calendar_resource_id(id: &str) -> String {
     format!("calendar.collection:{id}")
 }
 
+pub fn attendee_resource_id(event_id: Id, attendee_id: Id) -> String {
+    format!("calendar.attendee:{event_id}:{attendee_id}")
+}
+
+pub fn occurrence_resource_id(event_id: Id, original_date: NaiveDate) -> String {
+    format!("calendar.occurrence:{event_id}:{original_date}")
+}
+
+pub fn reminder_resource_id(event_id: Id) -> String {
+    format!("calendar.reminder:{event_id}:primary")
+}
+
 /// Canonical view action that reveals one event in the calendar.
 pub fn open_event_address(id: Id) -> ActionAddress {
     ActionAddress::new(event_resource_id(id), "open")
@@ -94,6 +109,10 @@ pub enum CalendarOperation {
     OpenEvent {
         id: String,
     },
+    OpenOccurrence {
+        event_id: String,
+        original_date: String,
+    },
     OpenTask {
         id: String,
     },
@@ -114,6 +133,12 @@ pub enum CalendarOperation {
     /// captures parsed records into one [`CalendarAction`] before it reports
     /// success; its retry contract is therefore at-most-once.
     ImportIcs,
+    /// Produce the exact typed invocation accepted by Mail's invitation-draft
+    /// action. This prepares a reviewable draft; it never claims SMTP delivery.
+    PrepareInvitationInMail {
+        event_id: String,
+        attendee_id: String,
+    },
 }
 
 fn calendar_operation(
@@ -133,6 +158,7 @@ fn calendar_operation(
         });
     match operation {
         CalendarOperation::OpenEvent { .. }
+        | CalendarOperation::OpenOccurrence { .. }
         | CalendarOperation::OpenTask { .. }
         | CalendarOperation::OpenProject { .. }
         | CalendarOperation::OpenCalendar { .. }
@@ -147,6 +173,20 @@ fn calendar_operation(
         CalendarOperation::ExportIcs | CalendarOperation::ImportIcs => {
             spec.retry_policy(RetryPolicy::AtMostOnce)
         }
+        CalendarOperation::PrepareInvitationInMail { .. } => spec
+            .retry_policy(RetryPolicy::Idempotent)
+            .requiring(PermissionRequirement::Invite)
+            .returns(ResultSpec::Json {
+                schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["delivery", "target", "arguments"],
+                    "properties": {
+                        "delivery": {"const": "not_sent"},
+                        "target": {"type": "object"},
+                        "arguments": {"type": "object"}
+                    }
+                }),
+            }),
     }
 }
 
@@ -201,12 +241,56 @@ pub struct EventData {
     pub location: String,
     pub color: usize,
     pub rrule: String,
+    #[serde(default = "default_recurrence_interval")]
+    pub recurrence_interval: u32,
+    #[serde(default)]
+    pub recurrence_until: String,
+    #[serde(default)]
+    pub recurrence_count: u32,
+    #[serde(default)]
+    pub recurrence_exdates: Vec<String>,
+    #[serde(default)]
+    pub occurrence_overrides: Vec<OccurrenceOverrideData>,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+    #[serde(default)]
+    pub organizer: String,
+    #[serde(default)]
+    pub attendees: Vec<AttendeeData>,
     /// Minutes before start for a reminder, or `-1` for none.
     pub reminder: i64,
     /// Owning project id (string form), or `""` for none.
     pub project: String,
     /// Source calendar id, or `""` for the local on-device calendar.
     pub calendar_id: String,
+}
+
+fn default_recurrence_interval() -> u32 {
+    1
+}
+
+fn default_timezone() -> String {
+    "floating".into()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttendeeData {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OccurrenceOverrideData {
+    pub original_date: String,
+    #[serde(default)]
+    pub original_time: String,
+    pub cancelled: bool,
+    pub start: String,
+    pub end: String,
+    pub title: String,
+    pub location: String,
 }
 
 impl EventData {
@@ -220,6 +304,28 @@ impl EventData {
             location: e.location.clone(),
             color: e.color.index(),
             rrule: e.recurrence.to_rrule(),
+            recurrence_interval: e.recurrence_interval,
+            recurrence_until: e
+                .recurrence_until
+                .map_or_else(String::new, |date| date.to_string()),
+            recurrence_count: e.recurrence_count.unwrap_or(0),
+            recurrence_exdates: e
+                .recurrence_exdates
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            occurrence_overrides: e
+                .occurrence_overrides
+                .iter()
+                .map(OccurrenceOverrideData::from_override)
+                .collect(),
+            timezone: e.timezone.clone(),
+            organizer: e.organizer.map_or_else(String::new, |id| id.to_string()),
+            attendees: e
+                .attendees
+                .iter()
+                .map(AttendeeData::from_attendee)
+                .collect(),
             // External imports may carry an alarm interval Calendar does not
             // offer in its closed editing domain. Normalize at the action
             // authoring boundary so replay never persists an unsupported
@@ -238,13 +344,26 @@ impl EventData {
     /// wall-clock value, which would break replay determinism.
     fn to_event(&self) -> Option<Event> {
         let id = self.id.parse::<Id>().ok()?;
-        let start = NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?;
-        let end = NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?;
+        let mut start = NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?;
+        let mut end = NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?;
+        let timezone = normalize_timezone(&self.timezone)?;
+        if timezone != "floating" {
+            start = crate::timezone::normalize_wall(&timezone, start)?.0;
+            end = crate::timezone::normalize_wall(&timezone, end)?.0;
+        }
+        let attendees = self
+            .attendees
+            .iter()
+            .map(AttendeeData::to_attendee)
+            .collect::<Option<Vec<_>>>()?;
+        let organizer = parse_optional_id(&self.organizer)?;
         if start > end
             || self.color >= Palette::ALL.len()
             || !matches!(self.reminder, -1 | 10 | 30 | 60)
             || Recurrence::from_rrule(&self.rrule).to_rrule() != self.rrule
             || (!self.project.is_empty() && self.project.parse::<Id>().is_err())
+            || organizer
+                .is_some_and(|organizer| !attendees.iter().any(|attendee| attendee.id == organizer))
         {
             return None;
         }
@@ -257,6 +376,23 @@ impl EventData {
             location: self.location.clone(),
             color: Palette::from_index(self.color),
             recurrence: Recurrence::from_rrule(&self.rrule),
+            recurrence_interval: self.recurrence_interval.max(1),
+            recurrence_until: parse_optional_date(&self.recurrence_until)?,
+            recurrence_count: (self.recurrence_count != 0).then_some(self.recurrence_count),
+            recurrence_exdates: self
+                .recurrence_exdates
+                .iter()
+                .map(|date| NaiveDate::parse_from_str(date, DATE_FMT))
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?,
+            occurrence_overrides: self
+                .occurrence_overrides
+                .iter()
+                .map(OccurrenceOverrideData::to_override)
+                .collect::<Option<Vec<_>>>()?,
+            timezone,
+            organizer,
+            attendees,
             reminder_min: (self.reminder != -1).then_some(self.reminder),
             project: parse_opt_id(&self.project),
             calendar_id: if self.calendar_id.is_empty() {
@@ -264,6 +400,112 @@ impl EventData {
             } else {
                 Some(self.calendar_id.clone())
             },
+        })
+    }
+}
+
+#[allow(
+    clippy::option_option,
+    reason = "outer option rejects malformed input; inner option represents an explicit empty value"
+)]
+fn parse_optional_date(value: &str) -> Option<Option<NaiveDate>> {
+    if value.is_empty() {
+        Some(None)
+    } else {
+        NaiveDate::parse_from_str(value, DATE_FMT).ok().map(Some)
+    }
+}
+
+#[allow(
+    clippy::option_option,
+    reason = "outer option rejects malformed input; inner option represents an explicit empty value"
+)]
+fn parse_optional_id(value: &str) -> Option<Option<Id>> {
+    if value.is_empty() {
+        Some(None)
+    } else {
+        value.parse::<Id>().ok().map(Some)
+    }
+}
+
+fn normalize_timezone(value: &str) -> Option<String> {
+    (value.len() <= 128)
+        .then(|| crate::timezone::canonical_zone(value))
+        .flatten()
+}
+
+impl AttendeeData {
+    fn from_attendee(value: &Attendee) -> Self {
+        Self {
+            id: value.id.to_string(),
+            name: value.name.clone(),
+            email: value.email.clone(),
+            status: value.status.as_ical().into(),
+        }
+    }
+
+    fn to_attendee(&self) -> Option<Attendee> {
+        let email = self.email.trim();
+        Some(Attendee {
+            id: self.id.parse().ok()?,
+            name: self.name.trim().to_string(),
+            email: email_address(email)?.to_string(),
+            status: InviteStatus::from_ical(&self.status),
+        })
+    }
+}
+
+fn email_address(value: &str) -> Option<&str> {
+    let (local, domain) = value.split_once('@')?;
+    (!local.is_empty() && domain.contains('.') && !domain.contains(char::is_whitespace))
+        .then_some(value)
+}
+
+impl OccurrenceOverrideData {
+    fn from_override(value: &OccurrenceOverride) -> Self {
+        Self {
+            original_date: value.original_date.to_string(),
+            original_time: value
+                .original_time
+                .map_or_else(String::new, |time| time.format("%H:%M:%S").to_string()),
+            cancelled: value.cancelled,
+            start: value
+                .start
+                .map_or_else(String::new, |date| date.format(DT_FMT).to_string()),
+            end: value
+                .end
+                .map_or_else(String::new, |date| date.format(DT_FMT).to_string()),
+            title: value.title.clone().unwrap_or_default(),
+            location: value.location.clone().unwrap_or_default(),
+        }
+    }
+
+    fn to_override(&self) -> Option<OccurrenceOverride> {
+        let start = if self.start.is_empty() {
+            None
+        } else {
+            Some(NaiveDateTime::parse_from_str(&self.start, DT_FMT).ok()?)
+        };
+        let end = if self.end.is_empty() {
+            None
+        } else {
+            Some(NaiveDateTime::parse_from_str(&self.end, DT_FMT).ok()?)
+        };
+        if start.zip(end).is_some_and(|(start, end)| start > end) {
+            return None;
+        }
+        Some(OccurrenceOverride {
+            original_date: NaiveDate::parse_from_str(&self.original_date, DATE_FMT).ok()?,
+            original_time: if self.original_time.is_empty() {
+                None
+            } else {
+                Some(NaiveTime::parse_from_str(&self.original_time, "%H:%M:%S").ok()?)
+            },
+            cancelled: self.cancelled,
+            start,
+            end,
+            title: (!self.title.is_empty()).then(|| self.title.clone()),
+            location: (!self.location.is_empty()).then(|| self.location.clone()),
         })
     }
 }
@@ -328,6 +570,14 @@ pub struct EventPatch {
     pub location: Option<String>,
     pub color: Option<usize>,
     pub rrule: Option<String>,
+    pub recurrence_interval: Option<u32>,
+    /// `""` clears the inclusive recurrence end date.
+    pub recurrence_until: Option<String>,
+    /// `0` clears the occurrence limit.
+    pub recurrence_count: Option<u32>,
+    pub timezone: Option<String>,
+    /// `""` clears the organizer.
+    pub organizer: Option<String>,
     pub reminder: Option<i64>,
     /// Project id, or an empty string to remove the project association.
     pub project: Option<String>,
@@ -335,6 +585,23 @@ pub struct EventPatch {
     /// Only calendar moves affect the remote outbox. `Some(true)` queues a
     /// remote upload; `Some(false)` removes a now-local event from it.
     pub enqueue_remote: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttendeePatch {
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OccurrencePatch {
+    pub cancelled: Option<bool>,
+    /// Empty strings clear an override and inherit the series value.
+    pub start: Option<String>,
+    pub end: Option<String>,
+    pub title: Option<String>,
+    pub location: Option<String>,
 }
 
 /// A sparse, field-level change to one task. Keeping task edits as patches is
@@ -380,6 +647,21 @@ impl EventPatch {
             location: (before.location != after.location).then(|| after.location.clone()),
             color: (before.color != after.color).then_some(after.color.index()),
             rrule: (before.recurrence != after.recurrence).then(|| after.recurrence.to_rrule()),
+            recurrence_interval: (before.recurrence_interval != after.recurrence_interval)
+                .then_some(after.recurrence_interval),
+            recurrence_until: (before.recurrence_until != after.recurrence_until).then(|| {
+                after
+                    .recurrence_until
+                    .map_or_else(String::new, |date| date.to_string())
+            }),
+            recurrence_count: (before.recurrence_count != after.recurrence_count)
+                .then_some(after.recurrence_count.unwrap_or(0)),
+            timezone: (before.timezone != after.timezone).then(|| after.timezone.clone()),
+            organizer: (before.organizer != after.organizer).then(|| {
+                after
+                    .organizer
+                    .map_or_else(String::new, |id| id.to_string())
+            }),
             reminder: (before.reminder_min != after.reminder_min)
                 .then_some(after.reminder_min.unwrap_or(-1)),
             project: (before.project != after.project).then(|| {
@@ -462,6 +744,34 @@ pub enum CalendarAction {
     /// Update only named event registers. This is what all ordinary editor and
     /// agent field edits use; `UpsertEvent` is reserved for creation/import.
     PatchEvent { id: String, patch: EventPatch },
+    /// Add one stable invitation participant. Ordinary participant edits use
+    /// `PatchAttendee` so independent RSVP/name changes do not overwrite each
+    /// other or the event.
+    UpsertAttendee {
+        event_id: String,
+        attendee: AttendeeData,
+    },
+    PatchAttendee {
+        event_id: String,
+        attendee_id: String,
+        patch: AttendeePatch,
+    },
+    DeleteAttendee {
+        event_id: String,
+        attendee_id: String,
+    },
+    /// Include/exclude one original recurrence date by absolute identity.
+    SetRecurrenceException {
+        event_id: String,
+        date: String,
+        excluded: bool,
+    },
+    /// Change one generated occurrence, keyed by its immutable original date.
+    PatchOccurrence {
+        event_id: String,
+        original_date: String,
+        patch: OccurrencePatch,
+    },
     /// Delete an event, clearing any queued upload. When the event was synced
     /// from a still-configured remote calendar, `remote_delete` carries that
     /// calendar id so `apply` also queues a `CalDAV` delete of the server copy.
@@ -505,6 +815,10 @@ pub enum NoteOwner {
 }
 
 /// Durable, browseable history metadata for a calendar mutation.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive action-to-history metadata table is clearer kept beside the action enum"
+)]
 pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
     let mut context =
         qos_actions::ActionContext::for_action("org.qos.Calendar", "Calendar", action);
@@ -535,6 +849,38 @@ pub fn history_context(action: &CalendarAction) -> qos_actions::ActionContext {
             };
             (label, id.clone(), "calendar.event", id.clone())
         }
+        CalendarAction::UpsertAttendee {
+            event_id: _,
+            attendee,
+        } => (
+            "Invite attendee",
+            attendee.id.clone(),
+            "calendar.attendee",
+            attendee.email.clone(),
+        ),
+        CalendarAction::PatchAttendee { attendee_id, .. } => (
+            "Update attendee",
+            attendee_id.clone(),
+            "calendar.attendee",
+            attendee_id.clone(),
+        ),
+        CalendarAction::DeleteAttendee { attendee_id, .. } => (
+            "Remove attendee",
+            attendee_id.clone(),
+            "calendar.attendee",
+            attendee_id.clone(),
+        ),
+        CalendarAction::SetRecurrenceException { event_id, date, .. }
+        | CalendarAction::PatchOccurrence {
+            event_id,
+            original_date: date,
+            ..
+        } => (
+            "Update occurrence",
+            format!("{event_id}:{date}"),
+            "calendar.occurrence",
+            date.clone(),
+        ),
         CalendarAction::DeleteEvent { id, .. } => {
             ("Delete event", id.clone(), "calendar.event", id.clone())
         }
@@ -679,6 +1025,29 @@ fn validate_event_patch(doc: &Doc, id: Id, patch: &EventPatch) -> Result<(), Act
     {
         return Err(refused("event recurrence is unsupported"));
     }
+    if patch.recurrence_interval == Some(0) {
+        return Err(refused("recurrence interval must be positive"));
+    }
+    if let Some(until) = &patch.recurrence_until
+        && !until.is_empty()
+        && NaiveDate::parse_from_str(until, DATE_FMT).is_err()
+    {
+        return Err(refused("recurrence end date is invalid"));
+    }
+    if let Some(timezone) = &patch.timezone
+        && normalize_timezone(timezone).is_none()
+    {
+        return Err(refused("event timezone is invalid"));
+    }
+    if let Some(organizer) = &patch.organizer
+        && !organizer.is_empty()
+        && organizer
+            .parse::<Id>()
+            .ok()
+            .is_none_or(|id| !event.attendees.iter().any(|attendee| attendee.id == id))
+    {
+        return Err(refused("organizer must be an event attendee"));
+    }
     if let Some(project) = &patch.project {
         let project = (!project.is_empty())
             .then(|| project.parse::<Id>().ok())
@@ -698,6 +1067,145 @@ fn validate_event_patch(doc: &Doc, id: Id, patch: &EventPatch) -> Result<(), Act
     {
         return Err(refused("a local event cannot be queued for remote sync"));
     }
+    Ok(())
+}
+
+fn event_and_attendee(
+    doc: &Doc,
+    event_id: &str,
+    attendee_id: &str,
+) -> Result<(Id, Id, Event), ActionError> {
+    let event_id = event_id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    let attendee_id = attendee_id
+        .parse::<Id>()
+        .map_err(|_| refused("attendee id is invalid"))?;
+    let event = CalDoc::read_model(doc)
+        .event(event_id)
+        .cloned()
+        .ok_or_else(|| refused("event no longer exists"))?;
+    Ok((event_id, attendee_id, event))
+}
+
+fn apply_upsert_attendee(
+    doc: &mut Doc,
+    event_id: &str,
+    data: &AttendeeData,
+) -> Result<(), ActionError> {
+    let event_id = event_id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    if CalDoc::read_model(doc).event(event_id).is_none() {
+        return Err(refused("event no longer exists"));
+    }
+    let attendee = data
+        .to_attendee()
+        .ok_or_else(|| refused("attendee is invalid"))?;
+    CalDoc::upsert_attendee(doc, event_id, &attendee);
+    Ok(())
+}
+
+fn apply_patch_attendee(
+    doc: &mut Doc,
+    event_id: &str,
+    attendee_id: &str,
+    patch: &AttendeePatch,
+) -> Result<(), ActionError> {
+    let (event_id, attendee_id, event) = event_and_attendee(doc, event_id, attendee_id)?;
+    if !event
+        .attendees
+        .iter()
+        .any(|attendee| attendee.id == attendee_id)
+    {
+        return Err(refused("attendee no longer exists"));
+    }
+    if patch
+        .email
+        .as_deref()
+        .is_some_and(|email| email_address(email.trim()).is_none())
+    {
+        return Err(refused("attendee email is invalid"));
+    }
+    if patch.status.as_deref().is_some_and(|status| {
+        !matches!(
+            status,
+            "NEEDS-ACTION" | "ACCEPTED" | "TENTATIVE" | "DECLINED"
+        )
+    }) {
+        return Err(refused("attendee response is invalid"));
+    }
+    CalDoc::patch_attendee(doc, event_id, attendee_id, patch);
+    Ok(())
+}
+
+fn apply_delete_attendee(
+    doc: &mut Doc,
+    event_id: &str,
+    attendee_id: &str,
+) -> Result<(), ActionError> {
+    let (event_id, attendee_id, event) = event_and_attendee(doc, event_id, attendee_id)?;
+    if !event
+        .attendees
+        .iter()
+        .any(|attendee| attendee.id == attendee_id)
+    {
+        return Err(refused("attendee no longer exists"));
+    }
+    CalDoc::delete_attendee(doc, event_id, attendee_id);
+    Ok(())
+}
+
+fn apply_recurrence_exception(
+    doc: &mut Doc,
+    event_id: &str,
+    date: &str,
+    excluded: bool,
+) -> Result<(), ActionError> {
+    let event_id = event_id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    let date = NaiveDate::parse_from_str(date, DATE_FMT)
+        .map_err(|_| refused("occurrence date is invalid"))?;
+    if CalDoc::read_model(doc).event(event_id).is_none() {
+        return Err(refused("event no longer exists"));
+    }
+    CalDoc::set_exception(doc, event_id, date, excluded);
+    Ok(())
+}
+
+fn apply_occurrence_patch(
+    doc: &mut Doc,
+    event_id: &str,
+    original_date: &str,
+    patch: &OccurrencePatch,
+) -> Result<(), ActionError> {
+    let event_id = event_id
+        .parse::<Id>()
+        .map_err(|_| refused("event id is invalid"))?;
+    let original_date = NaiveDate::parse_from_str(original_date, DATE_FMT)
+        .map_err(|_| refused("occurrence date is invalid"))?;
+    if CalDoc::read_model(doc).event(event_id).is_none() {
+        return Err(refused("event no longer exists"));
+    }
+    let start = patch
+        .start
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| NaiveDateTime::parse_from_str(value, DT_FMT))
+        .transpose()
+        .map_err(|_| refused("occurrence start is invalid"))?;
+    let end = patch
+        .end
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|value| NaiveDateTime::parse_from_str(value, DT_FMT))
+        .transpose()
+        .map_err(|_| refused("occurrence end is invalid"))?;
+    if start.zip(end).is_some_and(|(start, end)| start > end) {
+        return Err(refused("occurrence end must not precede start"));
+    }
+    CalDoc::patch_occurrence_override(doc, event_id, original_date, patch);
     Ok(())
 }
 
@@ -879,6 +1387,28 @@ impl Action for CalendarAction {
             CalendarAction::DeleteProject { id } => apply_delete_project(doc, id)?,
             CalendarAction::UpsertEvent(data) => apply_upsert_event(doc, data),
             CalendarAction::PatchEvent { id, patch } => apply_patch_event(doc, id, patch)?,
+            CalendarAction::UpsertAttendee { event_id, attendee } => {
+                apply_upsert_attendee(doc, event_id, attendee)?;
+            }
+            CalendarAction::PatchAttendee {
+                event_id,
+                attendee_id,
+                patch,
+            } => apply_patch_attendee(doc, event_id, attendee_id, patch)?,
+            CalendarAction::DeleteAttendee {
+                event_id,
+                attendee_id,
+            } => apply_delete_attendee(doc, event_id, attendee_id)?,
+            CalendarAction::SetRecurrenceException {
+                event_id,
+                date,
+                excluded,
+            } => apply_recurrence_exception(doc, event_id, date, *excluded)?,
+            CalendarAction::PatchOccurrence {
+                event_id,
+                original_date,
+                patch,
+            } => apply_occurrence_patch(doc, event_id, original_date, patch)?,
             CalendarAction::DeleteEvent { id, remote_delete } => {
                 apply_delete_event(doc, id, remote_delete.as_ref())?;
             }
@@ -1642,6 +2172,148 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             },
         ));
         child = child.with_action(event_update_spec(
+            "set-repeat-interval",
+            "Set repeat interval",
+            "positive interval",
+            vec![
+                ActionParam::required("interval", ParamType::Integer, "Repeat every N periods")
+                    .with_schema(serde_json::json!({"minimum": 1, "maximum": 999})),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let interval = u32::try_from(args.integer("interval").unwrap_or(0))
+                    .map_err(|_| "interval must be a positive integer")?;
+                if !(1..=999).contains(&interval) {
+                    return Err("interval must be between 1 and 999".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        recurrence_interval: Some(interval),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-repeat-until",
+            "Set repeat end date",
+            "YYYY-MM-DD, or empty",
+            vec![ActionParam::required(
+                "until",
+                ParamType::Text,
+                "Inclusive recurrence end date, or empty to clear",
+            )],
+            ev.data.clone(),
+            |data, args| {
+                let until = args.text("until").unwrap_or_default().trim();
+                if !until.is_empty() && NaiveDate::parse_from_str(until, DATE_FMT).is_err() {
+                    return Err("until must be YYYY-MM-DD or empty".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        recurrence_until: Some(until.to_string()),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-repeat-count",
+            "Set occurrence count",
+            "0 clears the limit",
+            vec![
+                ActionParam::required("count", ParamType::Integer, "Maximum occurrences")
+                    .with_schema(serde_json::json!({"minimum": 0, "maximum": 100_000})),
+            ],
+            ev.data.clone(),
+            |data, args| {
+                let count = u32::try_from(args.integer("count").unwrap_or(-1))
+                    .map_err(|_| "count must be zero or positive")?;
+                if count > 100_000 {
+                    return Err("count must not exceed 100000".into());
+                }
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        recurrence_count: Some(count),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        child = child.with_action(event_update_spec(
+            "set-timezone",
+            "Set time zone",
+            "IANA time zone or floating",
+            vec![ActionParam::required(
+                "timezone",
+                ParamType::Text,
+                "IANA time-zone id such as Europe/Berlin, UTC, or floating",
+            )],
+            ev.data.clone(),
+            |data, args| {
+                let timezone = normalize_timezone(args.text("timezone").unwrap_or_default())
+                    .ok_or_else(|| "timezone is invalid".to_string())?;
+                Ok(patch_event_action(
+                    data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
+                    EventPatch {
+                        timezone: Some(timezone),
+                        ..EventPatch::default()
+                    },
+                ))
+            },
+        ));
+        let event_id_for_invite = id.clone();
+        child = child.with_action(ActionSpec::typed(
+            "invite",
+            "Invite attendee",
+            "name and email",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::optional("name", ParamType::Text, "Display name"),
+                ActionParam::required("email", ParamType::Text, "Email address"),
+            ],
+            move |args| {
+                let email = args.text("email").unwrap_or_default().trim();
+                if email_address(email).is_none() {
+                    return invalid_arguments("attendee email is invalid");
+                }
+                encode(&CalendarAction::UpsertAttendee {
+                    event_id: event_id_for_invite.clone(),
+                    attendee: AttendeeData {
+                        id: Uuid::new_v4().to_string(),
+                        name: args.text("name").unwrap_or_default().trim().to_string(),
+                        email: email.to_string(),
+                        status: "NEEDS-ACTION".into(),
+                    },
+                })
+            },
+        ));
+        let event_id_for_exception = id.clone();
+        child = child.with_action(ActionSpec::typed(
+            "set-exception",
+            "Include or exclude occurrence",
+            "original date and excluded state",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::required("date", ParamType::Text, "Original date (YYYY-MM-DD)"),
+                ActionParam::required("excluded", ParamType::Boolean, "Whether to skip it"),
+            ],
+            move |args| {
+                let date = args.text("date").unwrap_or_default();
+                if NaiveDate::parse_from_str(date, DATE_FMT).is_err() {
+                    return invalid_arguments("date must be YYYY-MM-DD");
+                }
+                encode(&CalendarAction::SetRecurrenceException {
+                    event_id: event_id_for_exception.clone(),
+                    date: date.to_string(),
+                    excluded: args.boolean("excluded").unwrap_or(false),
+                })
+            },
+        ));
+        child = child.with_action(event_update_spec(
             "set-reminder",
             "Set reminder",
             "none / 10 / 30 / 60",
@@ -1775,6 +2447,175 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             &event_resource_id(parsed_id),
             NoteOwner::Event { id: id.clone() },
         ));
+        if ev.data.reminder >= 0 {
+            let event_id_s = ev.data.id.clone();
+            let event_id = parsed_id;
+            let reminder = Resource::new(
+                reminder_resource_id(event_id),
+                "calendar.reminder",
+                format!("{} minutes before", ev.data.reminder),
+            )
+            .with_action(event_update_spec(
+                "set-minutes-before",
+                "Set reminder time",
+                "10 / 30 / 60",
+                vec![
+                    ActionParam::required(
+                        "minutes_before",
+                        ParamType::Integer,
+                        "Minutes before the event",
+                    )
+                    .with_schema(serde_json::json!({"enum": [10, 30, 60]})),
+                ],
+                ev.data.clone(),
+                |data, args| {
+                    let value = args.integer("minutes_before").unwrap_or(-1);
+                    if !matches!(value, 10 | 30 | 60) {
+                        return Err("reminder must be 10, 30, or 60 minutes".into());
+                    }
+                    Ok(CalendarAction::PatchEvent {
+                        id: data.id.clone(),
+                        patch: EventPatch {
+                            reminder: Some(value),
+                            ..EventPatch::default()
+                        },
+                    })
+                },
+            ))
+            .with_action(immediate_spec(
+                "remove",
+                "Remove reminder",
+                &CalendarAction::PatchEvent {
+                    id: event_id_s,
+                    patch: EventPatch {
+                        reminder: Some(-1),
+                        ..EventPatch::default()
+                    },
+                },
+            ));
+            child = child.with_child(reminder);
+        }
+        for attendee in ev.data.attendees.iter().take(24) {
+            let Ok(event_id) = ev.data.id.parse::<Id>() else {
+                continue;
+            };
+            let Ok(attendee_id) = attendee.id.parse::<Id>() else {
+                continue;
+            };
+            let event_id_s = ev.data.id.clone();
+            let attendee_id_s = attendee.id.clone();
+            let mut attendee_resource = Resource::new(
+                attendee_resource_id(event_id, attendee_id),
+                "calendar.attendee",
+                if attendee.name.is_empty() {
+                    attendee.email.clone()
+                } else {
+                    attendee.name.clone()
+                },
+            );
+            let patch_event_id = event_id_s.clone();
+            let patch_attendee_id = attendee_id_s.clone();
+            attendee_resource =
+                attendee_resource.with_action(ActionSpec::typed(
+                    "respond",
+                    "Set invitation response",
+                    "accepted / tentative / declined / needs-action",
+                    ExecutionLocus::ClientLocal,
+                    vec![
+                        ActionParam::required("status", ParamType::Text, "Response")
+                            .with_choices(["ACCEPTED", "TENTATIVE", "DECLINED", "NEEDS-ACTION"]),
+                    ],
+                    move |args| {
+                        encode(&CalendarAction::PatchAttendee {
+                            event_id: patch_event_id.clone(),
+                            attendee_id: patch_attendee_id.clone(),
+                            patch: AttendeePatch {
+                                status: Some(args.text("status").unwrap_or("NEEDS-ACTION").into()),
+                                ..AttendeePatch::default()
+                            },
+                        })
+                    },
+                ));
+            attendee_resource = attendee_resource.with_action(immediate_spec(
+                "make-organizer",
+                "Make organizer",
+                &CalendarAction::PatchEvent {
+                    id: event_id_s.clone(),
+                    patch: EventPatch {
+                        organizer: Some(attendee_id_s.clone()),
+                        ..EventPatch::default()
+                    },
+                },
+            ));
+            attendee_resource = attendee_resource.with_action(calendar_operation(
+                "prepare-in-mail",
+                "Prepare invitation in Mail",
+                OperationKind::Effect,
+                &CalendarOperation::PrepareInvitationInMail {
+                    event_id: event_id_s.clone(),
+                    attendee_id: attendee_id_s.clone(),
+                },
+            ));
+            attendee_resource = attendee_resource.with_action(immediate_spec(
+                "remove",
+                "Remove attendee",
+                &CalendarAction::DeleteAttendee {
+                    event_id: event_id_s,
+                    attendee_id: attendee_id_s,
+                },
+            ));
+            child = child.with_child(attendee_resource);
+        }
+        let occurrence_dates = ev
+            .data
+            .recurrence_exdates
+            .iter()
+            .chain(
+                ev.data
+                    .occurrence_overrides
+                    .iter()
+                    .map(|edit| &edit.original_date),
+            )
+            .filter_map(|date| NaiveDate::parse_from_str(date, DATE_FMT).ok())
+            .collect::<std::collections::BTreeSet<_>>();
+        for original_date in occurrence_dates.into_iter().take(24) {
+            let Ok(event_id) = ev.data.id.parse::<Id>() else {
+                continue;
+            };
+            let mut occurrence = Resource::new(
+                occurrence_resource_id(event_id, original_date),
+                "calendar.occurrence",
+                format!("{} · {original_date}", event_label(&ev.data)),
+            )
+            .with_action(calendar_operation(
+                "open",
+                "Open occurrence",
+                OperationKind::View,
+                &CalendarOperation::OpenOccurrence {
+                    event_id: ev.data.id.clone(),
+                    original_date: original_date.to_string(),
+                },
+            ));
+            occurrence = occurrence.with_action(immediate_spec(
+                "exclude",
+                "Skip occurrence",
+                &CalendarAction::SetRecurrenceException {
+                    event_id: ev.data.id.clone(),
+                    date: original_date.to_string(),
+                    excluded: true,
+                },
+            ));
+            occurrence = occurrence.with_action(immediate_spec(
+                "restore",
+                "Restore occurrence",
+                &CalendarAction::SetRecurrenceException {
+                    event_id: ev.data.id.clone(),
+                    date: original_date.to_string(),
+                    excluded: false,
+                },
+            ));
+            child = child.with_child(occurrence);
+        }
         root = root.with_child(child);
     }
 
@@ -2063,6 +2904,83 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
             .take(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
             .cloned()
             .collect();
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.attendee:") {
+        let (event_raw, attendee_raw) = raw.split_once(':')?;
+        let event_id = event_raw.parse::<Id>().ok()?;
+        let attendee_id = attendee_raw.parse::<Id>().ok()?;
+        if attendee_resource_id(event_id, attendee_id) != id {
+            return None;
+        }
+        let mut event = ctx
+            .events
+            .iter()
+            .find(|event| event.data.id == event_raw)?
+            .clone();
+        let attendee = event
+            .data
+            .attendees
+            .iter()
+            .find(|attendee| attendee.id == attendee_raw)?
+            .clone();
+        event.data.attendees = vec![attendee];
+        event.data.recurrence_exdates.clear();
+        event.data.occurrence_overrides.clear();
+        scoped.calendars.clear();
+        scoped.events.push(event);
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.reminder:") {
+        let event_raw = raw.strip_suffix(":primary")?;
+        let event_id = event_raw.parse::<Id>().ok()?;
+        if reminder_resource_id(event_id) != id {
+            return None;
+        }
+        let event = ctx
+            .events
+            .iter()
+            .find(|event| event.data.id == event_raw && event.data.reminder >= 0)?
+            .clone();
+        scoped.calendars.clear();
+        scoped.events.push(event);
+        return find_resource(provide_resources(&scoped, doc), id);
+    }
+
+    if let Some(raw) = id.strip_prefix("calendar.occurrence:") {
+        let (event_raw, date_raw) = raw.split_once(':')?;
+        let event_id = event_raw.parse::<Id>().ok()?;
+        let original_date = NaiveDate::parse_from_str(date_raw, DATE_FMT).ok()?;
+        if occurrence_resource_id(event_id, original_date) != id {
+            return None;
+        }
+        let mut event = ctx
+            .events
+            .iter()
+            .find(|event| event.data.id == event_raw)?
+            .clone();
+        let mut base = event.data.to_event()?;
+        base.recurrence_exdates.clear();
+        base.occurrence_overrides.clear();
+        if !base.occurs_on(original_date) {
+            return None;
+        }
+        event
+            .data
+            .recurrence_exdates
+            .retain(|date| date == date_raw);
+        event
+            .data
+            .occurrence_overrides
+            .retain(|edit| edit.original_date == date_raw);
+        if event.data.recurrence_exdates.is_empty() && event.data.occurrence_overrides.is_empty() {
+            event.data.recurrence_exdates.push(date_raw.to_string());
+        }
+        event.data.attendees.clear();
+        scoped.calendars.clear();
+        scoped.events.push(event);
         return find_resource(provide_resources(&scoped, doc), id);
     }
 
@@ -3003,6 +3921,124 @@ mod tests {
     }
 
     #[test]
+    fn invite_recurrence_and_timezone_actions_converge_across_divergent_replicas() {
+        let (_app, mut first) = seeded();
+        let event_id = CalDoc::read_model(&first).events[0].id;
+        let attendee_id = Uuid::new_v4();
+        CalendarAction::UpsertAttendee {
+            event_id: event_id.to_string(),
+            attendee: AttendeeData {
+                id: attendee_id.to_string(),
+                name: "Sam".into(),
+                email: "sam@example.com".into(),
+                status: "NEEDS-ACTION".into(),
+            },
+        }
+        .apply(&mut first)
+        .expect("invite applies");
+        first.commit();
+        let bytes = first.save();
+        let mut second = AutoCommit::load(&bytes).expect("second replica");
+
+        CalendarAction::PatchAttendee {
+            event_id: event_id.to_string(),
+            attendee_id: attendee_id.to_string(),
+            patch: AttendeePatch {
+                status: Some("ACCEPTED".into()),
+                ..AttendeePatch::default()
+            },
+        }
+        .apply(&mut first)
+        .expect("response applies");
+        CalendarAction::PatchEvent {
+            id: event_id.to_string(),
+            patch: EventPatch {
+                timezone: Some("Europe/Berlin".into()),
+                recurrence_interval: Some(2),
+                recurrence_count: Some(7),
+                ..EventPatch::default()
+            },
+        }
+        .apply(&mut second)
+        .expect("series edit applies");
+        CalendarAction::SetRecurrenceException {
+            event_id: event_id.to_string(),
+            date: "2026-06-17".into(),
+            excluded: true,
+        }
+        .apply(&mut second)
+        .expect("exception applies");
+        first.commit();
+        second.commit();
+        let mut first_peer = AutoCommit::load(&first.save()).expect("first peer");
+        let mut second_peer = AutoCommit::load(&second.save()).expect("second peer");
+        first
+            .merge(&mut second_peer)
+            .expect("merge second into first");
+        second
+            .merge(&mut first_peer)
+            .expect("merge first into second");
+
+        let left = CalDoc::read_model(&first).event(event_id).cloned().unwrap();
+        let right = CalDoc::read_model(&second)
+            .event(event_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(left.timezone, right.timezone);
+        assert_eq!(left.recurrence_interval, 2);
+        assert_eq!(left.recurrence_count, Some(7));
+        assert_eq!(left.recurrence_exdates, right.recurrence_exdates);
+        assert_eq!(left.attendees, right.attendees);
+        assert_eq!(left.attendees[0].status, InviteStatus::Accepted);
+    }
+
+    #[test]
+    fn attendee_delete_tombstone_wins_over_stale_update() {
+        let (_app, mut first) = seeded();
+        let event_id = CalDoc::read_model(&first).events[0].id;
+        let attendee_id = Uuid::new_v4();
+        CalendarAction::UpsertAttendee {
+            event_id: event_id.to_string(),
+            attendee: AttendeeData {
+                id: attendee_id.to_string(),
+                name: "Sam".into(),
+                email: "sam@example.com".into(),
+                status: "NEEDS-ACTION".into(),
+            },
+        }
+        .apply(&mut first)
+        .unwrap();
+        first.commit();
+        let mut second = AutoCommit::load(&first.save()).unwrap();
+        CalendarAction::DeleteAttendee {
+            event_id: event_id.to_string(),
+            attendee_id: attendee_id.to_string(),
+        }
+        .apply(&mut first)
+        .unwrap();
+        CalendarAction::PatchAttendee {
+            event_id: event_id.to_string(),
+            attendee_id: attendee_id.to_string(),
+            patch: AttendeePatch {
+                status: Some("ACCEPTED".into()),
+                ..AttendeePatch::default()
+            },
+        }
+        .apply(&mut second)
+        .unwrap();
+        first.commit();
+        second.commit();
+        first.merge(&mut second).unwrap();
+        assert!(
+            CalDoc::read_model(&first)
+                .event(event_id)
+                .unwrap()
+                .attendees
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn task_field_actions_are_sparse_and_reject_hostile_priority_values() {
         let (app, mut doc) = seeded();
         let resources = Widget::resources(&app, &doc);
@@ -3071,6 +4107,14 @@ mod tests {
             location: String::new(),
             color: Palette::Indigo.index(),
             rrule: String::new(),
+            recurrence_interval: 1,
+            recurrence_until: String::new(),
+            recurrence_count: 0,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: String::new(),
+            attendees: Vec::new(),
             reminder: -1,
             project: String::new(),
             calendar_id: String::new(),
