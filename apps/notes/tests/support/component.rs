@@ -150,7 +150,7 @@ pub struct BoundNotes {
     bindings: ui::bound_dispatch::BoundNodeMap,
     nodes: std::collections::HashMap<taffy::NodeId, *mut dyn ui::Widget>,
     node: taffy::NodeId,
-    _tree: taffy::TaffyTree<()>,
+    tree: taffy::TaffyTree<()>,
     outer: automerge::AutoCommit,
 }
 impl BoundNotes {
@@ -184,7 +184,7 @@ impl BoundNotes {
             bindings,
             nodes,
             node: matching[0],
-            _tree: tree,
+            tree,
             outer: automerge::AutoCommit::new(),
         }
     }
@@ -203,6 +203,44 @@ impl BoundNotes {
                 |_, doc, _| edit(doc),
             )
         }
+    }
+
+    pub fn queue_block_move(&mut self, block: &str) {
+        // SAFETY: same owned, admitted editor as pending_edit; only its local
+        // semantic intent changes, and Notes drains that intent on its next sync.
+        let handled = unsafe {
+            ui::bound_dispatch::invoke_bound_node(
+                &self.bindings,
+                &self.nodes,
+                self.node,
+                &mut self.outer,
+                &automerge::ROOT,
+                |widget, doc, root| {
+                    widget.perform_semantic_action(
+                        &format!("notes.block-move:{block}:up"),
+                        &ui::a11y::Action::Activate,
+                        doc,
+                        root,
+                    )
+                },
+            )
+        }
+        .unwrap();
+        assert!(handled);
+    }
+
+    pub fn into_driver(self, author: ui::permissions::UserId) -> ui::headless::Driver {
+        drop(self.bindings);
+        drop(self.nodes);
+        drop(self.tree);
+        ui::headless::Driver::new_with_controlled_inputs(
+            ui::state::State::new(),
+            self.tile,
+            (1000, 700),
+            ui::Theme::dark(),
+            renderer(),
+            author,
+        )
     }
 
     pub fn close(&mut self) {

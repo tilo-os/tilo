@@ -1012,3 +1012,322 @@ fn context_menu_select(driver: &mut ui::headless::Driver, page: notes::PageId, s
     }
     driver.key("Enter");
 }
+
+#[test]
+fn bound_first_type_undo_to_empty_retypes_once() {
+    let f = LegacyFixture::rich();
+    let component = component(&f, 11, ui::application::LaunchTarget::New);
+    let checkout = component.record().clone();
+    let mut a =
+        ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+    invoke(
+        &mut a,
+        11,
+        "notes.notebook",
+        "new-page",
+        Some("Empty again"),
+    );
+    let page = f
+        .records
+        .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
+        .unwrap();
+    a.perform_named("block_editor", &ui::a11y::Action::Focus)
+        .unwrap();
+    a.type_text("a");
+    assert_eq!(revision(&f, &checkout), 2);
+    f.records
+        .with_history(&checkout.id, |doc, history| {
+            history.undo_in(doc, &f.author, 11, None, None).unwrap();
+            assert!(NotesDoc::page_block_snapshots(doc, page).is_empty());
+        })
+        .unwrap();
+    assert_empty_retypes_once(&f, &checkout, page, &mut a);
+    close_driver(&mut a);
+}
+
+#[test]
+fn bound_peer_undo_to_empty_retypes_once() {
+    let f = LegacyFixture::rich();
+    let component = component(&f, 11, ui::application::LaunchTarget::New);
+    let checkout = component.record().clone();
+    let mut a =
+        ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+    invoke(&mut a, 11, "notes.notebook", "new-page", Some("Peer page"));
+    let page = f
+        .records
+        .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
+        .unwrap();
+    a.perform_named("block_editor", &ui::a11y::Action::Focus)
+        .unwrap();
+    a.type_text("a");
+    // B binds a nonempty list; A's actual insertion undo removes its sole block.
+    let mut b = driver(&f, 12, &checkout);
+    f.records
+        .with_history(&checkout.id, |doc, history| {
+            history.undo_in(doc, &f.author, 11, None, None).unwrap();
+            assert!(NotesDoc::page_block_snapshots(doc, page).is_empty());
+        })
+        .unwrap();
+    assert_empty_retypes_once(&f, &checkout, page, &mut b);
+    close_driver(&mut a);
+    close_driver(&mut b);
+}
+
+fn inspected_widget<'a>(
+    node: &'a ui::headless::InspectionNode,
+    id: &str,
+) -> Option<&'a ui::headless::InspectionNode> {
+    if node.test_id.as_deref() == Some(id) {
+        return Some(node);
+    }
+    node.children
+        .iter()
+        .find_map(|child| inspected_widget(child, id))
+}
+
+fn placeholder_key(driver: &ui::headless::Driver) -> String {
+    let snapshot = driver.inspection();
+    let editor = inspected_widget(&snapshot.root, "block_editor").unwrap();
+    let blocks = &editor.semantics.as_ref().unwrap().children;
+    assert_eq!(blocks.len(), 1);
+    blocks[0].semantic_key.clone().unwrap()
+}
+
+fn has_selected_node(node: &ui::headless::InspectionNode) -> bool {
+    fn selected(node: &ui::a11y::AccessNode) -> bool {
+        node.state.selected || node.children.iter().any(selected)
+    }
+    node.semantics.as_ref().is_some_and(selected) || node.children.iter().any(has_selected_node)
+}
+
+fn assert_empty_retypes_once(
+    f: &LegacyFixture,
+    checkout: &ui::record::RecordCheckout,
+    page: notes::PageId,
+    driver: &mut ui::headless::Driver,
+) {
+    driver.relayout();
+    let placeholder = placeholder_key(driver);
+    let before = f
+        .records
+        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .unwrap();
+    let revision_before = revision(f, checkout);
+    for _ in 0..3 {
+        driver.relayout();
+        assert_eq!(
+            placeholder_key(driver),
+            placeholder,
+            "empty placeholder must survive no-op sync"
+        );
+    }
+    assert_eq!(
+        f.records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap(),
+        before
+    );
+    assert_eq!(revision(f, checkout), revision_before);
+    driver
+        .perform_named("block_editor", &ui::a11y::Action::Focus)
+        .unwrap();
+    driver.type_text("é");
+    f.records
+        .read(&checkout.id, |doc| {
+            notes::notebook::validate(doc).unwrap();
+            let blocks = NotesDoc::page_block_snapshots(doc, page);
+            assert_eq!(
+                blocks,
+                vec![(
+                    placeholder.strip_prefix("notes.block:").unwrap().to_owned(),
+                    "é".into()
+                )]
+            );
+        })
+        .unwrap();
+    assert_eq!(
+        revision(f, checkout),
+        revision_before.checked_add(1).unwrap()
+    );
+    assert!(driver.state_mut().doc.base_heads().is_empty());
+    assert_eq!(driver.state_mut().doc.pending_ops(), 0);
+}
+
+#[test]
+fn bound_rejected_editor_delta_after_last_page_delete_shows_empty_cta() {
+    let f = LegacyFixture::rich();
+    let component = component(&f, 12, ui::application::LaunchTarget::New);
+    let checkout = component.record().clone();
+    let mut b =
+        ui::headless::Driver::from_component(component, (1000, 700), runner_inputs()).unwrap();
+    invoke(&mut b, 12, "notes.notebook", "new-page", Some("Last page"));
+    let page = f
+        .records
+        .read(&checkout.id, |doc| NotesDoc::list_pages(doc)[0].id)
+        .unwrap();
+    b.perform_named("block_editor", &ui::a11y::Action::Focus)
+        .unwrap();
+    b.type_text("a");
+    b.key("Enter");
+    b.type_text("b");
+    let blocks = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, page)
+        })
+        .unwrap();
+    let mut a = BoundNotes::new(crate::component_support::component(
+        &f,
+        11,
+        existing(&checkout),
+    ));
+    let queued_before = f
+        .records
+        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .unwrap();
+    let queued_revision = revision(&f, &checkout);
+    a.queue_block_move(&blocks[1].0);
+    assert_eq!(
+        f.records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap(),
+        queued_before
+    );
+    assert_eq!(revision(&f, &checkout), queued_revision);
+    invoke_confirmed(&mut b, 12, actions::page_resource_id(page), "delete");
+    let deleted = f
+        .records
+        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .unwrap();
+    let deleted_revision = revision(&f, &checkout);
+    // Driver construction syncs the existing A widget; it does not replace NotesApp.
+    let mut a = a.into_driver(f.author.clone());
+    for _ in 0..3 {
+        a.relayout();
+        a.expect(
+            &ui::headless::SemanticExpectation::named("notes.first_note")
+                .role(ui::a11y::Role::Button)
+                .name("New note"),
+        )
+        .unwrap();
+        let snapshot = a.inspection();
+        assert!(!has_selected_node(&snapshot.root));
+        let panel = inspected_widget(&snapshot.root, "notes.first_note").unwrap();
+        assert!(panel.children.is_empty());
+        assert!(panel.semantics.as_ref().unwrap().value.is_none());
+        assert!(inspected_widget(&snapshot.root, "note_title").is_none());
+        assert!(inspected_widget(&snapshot.root, "block_editor").is_none());
+        f.records
+            .read(&checkout.id, |doc| {
+                assert!(
+                    notes::notebook::project(doc, None)
+                        .unwrap()
+                        .pages()
+                        .is_empty()
+                );
+                assert_eq!((doc.base_heads(), doc.pending_ops()), deleted);
+            })
+            .unwrap();
+        assert_eq!(revision(&f, &checkout), deleted_revision);
+    }
+    close_driver(&mut a);
+    close_driver(&mut b);
+}
+
+#[test]
+fn bound_open_tag_uses_current_membership_without_prior_sync() {
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let mut a = driver(&f, 11, &checkout);
+    let mut b = driver(&f, 12, &checkout);
+    invoke(&mut a, 11, actions::page_resource_id(f.child), "open", None);
+    invoke(
+        &mut b,
+        12,
+        actions::page_resource_id(f.child),
+        format!("unassign-tag:{}", f.tag),
+        None,
+    );
+    invoke(
+        &mut b,
+        12,
+        actions::page_resource_id(f.empty),
+        format!("assign-tag:{}", f.tag),
+        None,
+    );
+    invoke(
+        &mut b,
+        12,
+        actions::page_resource_id(f.root),
+        format!("assign-tag:{}", f.tag),
+        None,
+    );
+    // A still displays the old member, but OpenTag must choose the current first UUID.
+    assert_eq!(
+        inspected_widget(&a.inspection().root, "note_title")
+            .unwrap()
+            .semantics
+            .as_ref()
+            .unwrap()
+            .value
+            .as_deref(),
+        Some("Launch")
+    );
+    assert_open_tag_view(&f, &checkout, &mut a, f.tag, "Projects");
+    invoke(&mut a, 11, actions::page_resource_id(f.empty), "open", None);
+    assert_open_tag_view(&f, &checkout, &mut a, f.tag, "Empty");
+    invoke(&mut b, 12, "notes.tags", "new-tag", Some("Fresh"));
+    let fresh = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::list_tags(doc)
+                .into_iter()
+                .find(|tag| tag.name == "Fresh")
+                .unwrap()
+                .id
+        })
+        .unwrap();
+    invoke(
+        &mut b,
+        12,
+        actions::page_resource_id(f.child),
+        format!("assign-tag:{fresh}"),
+        None,
+    );
+    assert_open_tag_view(&f, &checkout, &mut a, fresh, "Launch");
+    close_driver(&mut a);
+    close_driver(&mut b);
+}
+
+fn assert_open_tag_view(
+    f: &LegacyFixture,
+    checkout: &ui::record::RecordCheckout,
+    a: &mut ui::headless::Driver,
+    tag: uuid::Uuid,
+    title: &str,
+) {
+    let before = f
+        .records
+        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .unwrap();
+    let history = revision(f, checkout);
+    // Invoke directly before relayout; the public bound front door must resolve current data.
+    a.invoke_bound_action(
+        &ui::bound_dispatch::BoundActionAddress {
+            instance_id: 11,
+            address: qos_actions::ActionAddress::new(actions::tag_resource_id(tag), "open"),
+        },
+        &serde_json::Map::new(),
+    )
+    .unwrap();
+    a.relayout();
+    a.expect(&ui::headless::SemanticExpectation::named("note_title").value(title))
+        .unwrap();
+    assert_eq!(
+        f.records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap(),
+        before
+    );
+    assert_eq!(revision(f, checkout), history);
+}
