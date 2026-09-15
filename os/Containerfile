@@ -70,7 +70,8 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 # CI restores these checksum-pinned files from persistent storage before the
 # build; local builds use the same resumable verifier.
-FROM github-assets AS github-assets
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
 
 # ---- Minimal Windows paravirtual driver media -----------------------------
@@ -115,7 +116,7 @@ FROM ${BASE_REF} AS windows-compat-artifacts
 ## Bottles' upstream program records improve catalogue matching. They are data,
 ## never an instruction source: qOS imports identity/runner hints only and does
 ## not execute a record's Steps, URLs, shell snippets, or dependencies.
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
     mkdir -p /out/bin /out/proton \
     && install -D -m 0644 /qos-assets/umu-database-8297d420.csv /out/catalogues/umu-database.csv \
     && tar -xf /qos-assets/umu-launcher-1.4.0.tar -C /tmp \
@@ -135,7 +136,7 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
 # suite, and copy only the static sender into the OS image.
 FROM docker.io/library/golang:1.25.0-bookworm@sha256:81dc45d05a7444ead8c92a389621fafabc8e40f8fd1a19d7e5df14e61e98bc1a AS doubletake-builder
 ENV GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
     mkdir -p /src /out \
     && tar -xzf /qos-assets/doubletake-ae06722.tar.gz --strip-components=1 -C /src
 WORKDIR /src
@@ -155,7 +156,7 @@ FROM ${BASE_REF} AS fluxcast-builder
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     dnf install -y --setopt=reposdir=/repo python3 \
     && dnf clean all
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
     mkdir -p /src \
     && tar -xzf /qos-assets/fluxcast-a74f39f.tar.gz --strip-components=1 -C /src
 COPY os/tests/fluxcast-rtsp-receiver.py /fluxcast-rtsp-receiver.py
@@ -180,7 +181,7 @@ RUN test -s /usr/lib/qos/wpe-buildroot-packages.txt \
 
 COPY os/dev/build-wpe.sh /build-wpe.sh
 RUN --mount=type=cache,target=/wpe-cache \
-    --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+    --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
     QOS_WPE_CACHE=/wpe-cache QOS_WPE_SOURCE_DIR=/qos-assets QOS_WPE_OFFLINE=1 \
     QOS_WPE_PREFIX=/usr QOS_WPE_DESTDIR=/wpe \
     bash /build-wpe.sh build \
@@ -257,7 +258,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
 ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
     case "$(uname -m)" in \
       x86_64) sccache_arch=x86_64; sccache_sha="$SCCACHE_SHA256_X86_64" ;; \
       aarch64) sccache_arch=aarch64; sccache_sha="$SCCACHE_SHA256_AARCH64" ;; \
@@ -1030,7 +1031,7 @@ RUN chmod 0755 /usr/bin/qos-relay /usr/bin/qos-relay-admin /usr/bin/qos-enroll /
 # Miracast/Wi-Fi Display sender: full NetworkManager P2P, RTSP negotiation and
 # H.264/AAC RTP media, copied from the architecture-neutral tested source stage.
 COPY os/usr/libexec/qos-fluxcast /usr/libexec/qos-fluxcast
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
     install -D -m 0644 /qos-assets/doubletake-ae06722-LICENSE \
       /usr/share/licenses/qos-doubletake/LICENSE \
     && install -D -m 0644 /qos-assets/fluxcast-a74f39f-LICENSE \
