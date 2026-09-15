@@ -98,3 +98,26 @@ guest process exits. Both observed first-case timeouts (`clock-2-1` and the
 32-bit `20000609-1` case) passed in 0.10 seconds when the server was managed
 explicitly. This resolves the test-process lifecycle issue; it does not waive
 the remaining ABI, permissions, or runtime checks.
+
+## Target headers for ABI verification
+
+Put `os/tests/fex-cross-clang` on the test container's `PATH` as `clang` and set
+`QOS_FEX_X86_SYSROOT` to the mounted x86 development filesystem. The wrapper
+passes its sysroot and GCC toolchain to native Clang for the two x86 targets
+requested by upstream `StructPackVerifier.py`. Other targets use native headers.
+The upstream verifier and its expected layouts remain unchanged.
+
+The SDK needs both `glibc-devel.x86_64` and `glibc-devel.i686`, plus both
+`libstdc++-devel.x86_64` and `libstdc++-devel.i686`. Installing `gcc-c++` alongside
+only the i686 C++ development package can satisfy RPM dependencies while leaving
+the x86-64 C++ configuration headers absent. With both header sets present, all
+40 upstream structure verification tests passed on the native ARM build.
+
+The local SDK is a diagnostic input assembled from Fedora RPMs using the host's
+pre-existing QEMU binfmt handler. An earlier container recipe's `SHELL` setting
+was ignored for OCI output; its successful package transaction therefore did
+not prove execution through FEX. Explicit FEX execution subsequently exposed a
+crash in Fedora's static PIE `ldconfig`, which remains unresolved. Preserve
+normal RPM scriptlets and distinguish SDK construction from translator runtime
+acceptance. Release SDK production still requires a pinned, reproducible build
+and its own acceptance evidence.
