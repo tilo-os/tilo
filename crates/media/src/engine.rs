@@ -173,6 +173,7 @@ fn mono_now_ms() -> u64 {
 /// [`Self::latest_frame`].
 pub struct MediaEngine {
     handoff_id: u64,
+    handoff_controller_bus_name: Option<String>,
     backend: Backend,
     source: Option<Source>,
     volume: f32,
@@ -200,12 +201,23 @@ impl MediaEngine {
     fn refresh_handoff(&self) {
         crate::handoff::update(
             self.handoff_id,
-            self.source.as_ref(),
-            self.volume > 0.0,
-            self.position_ms(),
-            self.duration_ms(),
-            self.is_playing(),
+            crate::handoff::EnginePlayback {
+                source: self.source.as_ref(),
+                audible: self.volume > 0.0,
+                position_ms: self.position_ms(),
+                duration_ms: self.duration_ms(),
+                playing: self.is_playing(),
+                has_video: self.latest().is_some(),
+                controller_bus_name: self.handoff_controller_bus_name.as_deref(),
+            },
         );
+    }
+
+    /// Bind this engine to the exact MPRIS player that can pause it after a
+    /// destination acknowledges a cross-device handoff.
+    pub fn set_handoff_controller(&mut self, bus_name: Option<String>) {
+        self.handoff_controller_bus_name = bus_name;
+        self.refresh_handoff();
     }
 
     /// Build an engine with the default configuration: system-memory RGBA
@@ -235,6 +247,7 @@ impl MediaEngine {
             {
                 return Self {
                     handoff_id: Self::next_handoff_id(),
+                    handoff_controller_bus_name: None,
                     backend: Backend::Gst(gst),
                     source: None,
                     volume: config.volume,
@@ -246,6 +259,7 @@ impl MediaEngine {
         }
         Self {
             handoff_id: Self::next_handoff_id(),
+            handoff_controller_bus_name: None,
             backend: Backend::Synth(SynthState::new()),
             source: None,
             volume: config.volume,
@@ -261,6 +275,7 @@ impl MediaEngine {
     pub fn new_synthesized() -> Self {
         Self {
             handoff_id: Self::next_handoff_id(),
+            handoff_controller_bus_name: None,
             backend: Backend::Synth(SynthState::new()),
             source: None,
             volume: 0.8,
