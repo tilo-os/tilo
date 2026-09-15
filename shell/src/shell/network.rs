@@ -914,6 +914,20 @@ impl ShellNetwork {
         self.local_peer_hash
     }
 
+    /// Certified local identity used to author personal-fabric state.
+    pub fn local_device_fabric_identity(
+        &self,
+    ) -> Option<(crate::shell::personal_continuity::DeviceId, String)> {
+        Some((
+            self.personal_continuity_device.clone()?,
+            self.host_identity
+                .as_ref()?
+                .device_cert
+                .device_label
+                .clone(),
+        ))
+    }
+
     /// Resolve and open a qOS workspace-control session over an authenticated
     /// exact-target device route. A successful route is transport reachability
     /// only: the returned session still waits for the target's authenticated

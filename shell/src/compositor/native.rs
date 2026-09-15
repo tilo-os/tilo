@@ -4104,6 +4104,9 @@ pub fn run() -> ! {
     let mut peer_sync = enable_peer_sync
         .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
         .flatten();
+    let mut device_fabric_runtime = peer_sync
+        .as_ref()
+        .map(|network| crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network));
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -5368,6 +5371,27 @@ pub fn run() -> ! {
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
         if let Some(net) = peer_sync.as_ref() {
             net.tick();
+            let runtime = device_fabric_runtime.get_or_insert_with(|| {
+                crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(net)
+            });
+            let (width, height) = combined_geometry(backend.outputs());
+            let display =
+                (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                });
+            runtime.pump(
+                net,
+                &state.selection_store(),
+                crate::shell::device_fabric_runtime::LocalFabricCapabilities {
+                    display,
+                    pointer: true,
+                    keyboard: true,
+                    audio_output: system_audio,
+                },
+            );
             let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
