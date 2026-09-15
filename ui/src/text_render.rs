@@ -752,7 +752,11 @@ pub struct TextLayoutConstraints {
 
 /// Replaceable measurement/painting boundary used by [`crate::widget::Text`].
 /// Implementations keep localization, accessibility, Taffy integration, scene
-/// caching, and inspection supplied by the standard widget.
+/// caching, and inspection supplied by the standard widget. `style` is always
+/// renderer-relative: implementations which delegate to [`TextRenderer`] pass
+/// it through unchanged. For theme-resolved or fixed-size widgets, `Text`
+/// compensates the font size for the renderer's current multiplier before this
+/// boundary; renderer-relative letter spacing keeps its established behavior.
 pub trait TextLayoutEngine {
     fn measure(
         &mut self,
@@ -3127,6 +3131,39 @@ mod tests {
             misses, 2,
             "each scaled style owns a distinct shape-cache entry"
         );
+    }
+
+    #[test]
+    fn custom_canvas_styles_remain_renderer_relative_at_supported_scales() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let mut renderer = crate::font_catalog::fixture_renderer();
+            renderer.set_text_scale(scale);
+            let style = TextStyle::new(14.0).with_letter_spacing(2.0);
+            let (_, height) = renderer.measure_style("Canvas", None, &style);
+            assert!(
+                (height - 14.0 * 1.25 * scale).abs() < 0.001,
+                "custom canvas measure at {scale}x: {height}"
+            );
+
+            let mut scene = Scene::new();
+            renderer.draw_style(
+                &mut scene,
+                "Canvas",
+                Color::WHITE,
+                Affine::IDENTITY,
+                None,
+                &style,
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty(), "custom canvas draw emitted no glyphs");
+            for run in runs {
+                assert!(
+                    (run.font_size - 14.0 * scale).abs() < 0.001,
+                    "custom canvas draw at {scale}x: {}",
+                    run.font_size
+                );
+            }
+        }
     }
 }
 
