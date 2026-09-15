@@ -420,4 +420,30 @@ mod tests {
         assert!(unsafe { focus.restore(&nodes, &bindings) }.is_none());
         assert!(!survivor.is_focused());
     }
+    #[test]
+    fn review_disabled_duplicate_target_does_not_transfer_focus_to_enabled_other() {
+        use crate::widget::{Button, Column};
+        let mut old = Button::new("target", "Original", None);
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        let mut bindings = BoundNodeMap::new();
+        unsafe {
+            bindings.rebuild(&old, &tree, root, &nodes);
+        }
+        let focus = unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
+        nodes.clear();
+        bindings.clear();
+        let mut disabled = Button::new("target", "Original", None);
+        disabled.set_enabled(false);
+        let mut rebuilt = Column::new()
+            .push(Box::new(disabled))
+            .push(Box::new(Button::new("target", "Other", None)));
+        let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        unsafe {
+            bindings.rebuild(&rebuilt, &tree, root, &nodes);
+        }
+        assert!(unsafe { focus.restore(&nodes, &bindings) }.is_none());
+        assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
+    }
 }
