@@ -531,7 +531,7 @@ impl AgentModelsPane {
                 fallback_snapshot(),
                 false,
                 Some(format!(
-                    "Local model service is not connected. Hardware guidance is approximate; installation controls become available when qos-model-manager is installed. {error}"
+                    "The local model service is unavailable ({error}). Install or start qos-model-manager to inspect hardware, install models, or manage local model lifecycle."
                 )),
             ),
         };
@@ -1159,6 +1159,16 @@ impl AgentModelsPane {
                 value_row("Downloads", "Explicit, pinned, and visible here"),
             ]),
         )];
+        if !self.manager_available {
+            cards.push(card(
+                "Local model service unavailable",
+                caption(
+                    "Install or start qos-model-manager to inspect hardware, install models, or manage local model lifecycle. Existing hosted providers remain available below.",
+                ),
+            ));
+            cards.push(self.hosted_profiles());
+            return crate::widgets::cards(cards);
+        }
         if let Some(notice) = &self.notice {
             cards.push(card("Local model service", caption(notice)));
         }
