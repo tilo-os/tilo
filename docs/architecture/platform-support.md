@@ -38,15 +38,16 @@ support. A completed compile check alone is not a claim of hardware support.
 | --- | --- | --- |
 | Rust workspace | Native ARM64 `cargo check --workspace --all-targets --locked` passed | Native runtime/integration coverage in CI; external optional-feature builds |
 | Compiler configuration | Linux hardening separated from Windows/macOS linker flags | Keep both native target configurations covered |
-| Kernel | Native boot-image/RPM selection and ARM64 DTB payloads; shared hardening checks | Full native kernel build; dual-architecture dependency publication |
+| Kernel | Native boot-image/RPM selection and ARM64 DTB payloads; shared hardening checks; verified two-architecture publication gate | Complete native kernel build and release-run acceptance |
 | Hardware profiles | Declarative definitions, optional DTBs, exact firmware mappings, immutable UKI validation | Live acceptance per board and exact artifact |
 | Build contexts | Actual offline Podman asset-stage builds pass for OS, RPM and CI-builder Containerfiles | Full native builds using the same contexts |
-| Dependency snapshots | Base index has ARM64; existing pinned RPM/kernel artifacts are x86-64 | Native snapshots and atomic multi-architecture promotion |
+| Dependency snapshots | Base index has ARM64; native RPM/kernel publication verifies both signed children and their source revision | Produce complete ARM64 dependencies and update existing x86-only pins |
 | Browser | WPE has native-architecture buildroot selection | Produce and validate an ARM64 WPE buildroot |
 | Windows compatibility | Service crates compile on ARM64 | Fedora ARM64 lacks Wine/DXVK RPMs; pinned Proton and VM hardware definitions need an explicit ARM64 implementation |
-| Imager | Correct native host detection under Windows x64 emulation; 143 library tests pass | Native Windows ARM64 packaging and release-contract coverage |
+| Imager | Native Windows host detection; ARM64 packaging checks PE architecture; both Windows release lanes and combined WinGet manifests required | Complete native Windows build, signed installer and UI acceptance |
 | Desktop packaging | Build scripts contain ARM64 targets | Enable and validate native release lanes and architecture-specific assets |
-| CI | Some release workflows already have native ARM64 lanes | Extend builder, dependency and affected-component gates; remove x86-only graphics-driver assumptions |
+| CI | Both native architectures selected for affected packages; builder publication waits for native cache tests; native Vulkan paths | Run new lanes against published native builder/dependency indexes; extend remaining nightly coverage |
+| Speech | Unix socket backend scoped to Unix; portable speech tests pass on Linux ARM64 (31) and Windows ARM64 (28) | Live speech and accessibility acceptance on each supported host |
 
 Validation was performed on a native ARM64 Fedora WSL environment. It exposes
 software QEMU emulation but no `/dev/kvm`. Secure Boot, measured boot and
