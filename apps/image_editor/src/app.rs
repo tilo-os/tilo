@@ -93,6 +93,7 @@ pub struct ImageEditorApp {
     pinch_distance: Option<f64>,
     step_previews: Vec<(String, Image)>,
     toolbar: Vec<(ToolbarCommand, Button)>,
+    empty_open: Button,
     toolbar_pending: Rc<Cell<Option<ToolbarCommand>>>,
     more_open: bool,
     more_rect: Rect,
@@ -154,6 +155,12 @@ impl ImageEditorApp {
                 (command, button)
             })
             .collect();
+        let empty_sink = pending.clone();
+        let empty_open = Button::new("image-editor.empty.open", "Open image", None)
+            .with_icon(ui::icons::Icon::FolderOpen)
+            .with_size(140.0, 44.0)
+            .primary()
+            .on_view(move || empty_sink.set(Some(ToolbarCommand::Open)));
         Self {
             project: Project::blank(),
             editor: GraphEditor::default(),
@@ -194,6 +201,7 @@ impl ImageEditorApp {
             pinch_distance: None,
             step_previews: Vec::new(),
             toolbar,
+            empty_open,
             toolbar_pending: pending,
             more_open: false,
             more_rect: Rect::ZERO,
@@ -779,6 +787,26 @@ impl ImageEditorApp {
     fn scroll_stack_by(&mut self, delta: f64) {
         self.stack_scroll = (self.stack_scroll + delta).clamp(0.0, self.max_stack_scroll());
     }
+
+    fn empty_card_rect(&self) -> Rect {
+        let viewport = self.canvas_rect.inflate(-28.0, -28.0);
+        let height = if viewport.width() < 500.0 {
+            240.0
+        } else {
+            220.0
+        };
+        Rect::from_center_size(viewport.center(), (viewport.width().min(460.0), height))
+    }
+
+    fn empty_open_rect(&self) -> Rect {
+        let card = self.empty_card_rect();
+        let top = if card.width() < 400.0 {
+            card.y0 + 166.0
+        } else {
+            card.y0 + 142.0
+        };
+        Rect::new(card.x0 + 32.0, top, card.x0 + 172.0, top + 44.0)
+    }
     fn inspector_controls(&self) -> (Rect, Rect) {
         (
             Rect::new(
@@ -1108,6 +1136,8 @@ impl Widget for ImageEditorApp {
             self.rect.x0 + ins.x1,
             self.rect.y0 + ins.y1,
         );
+        let empty_open_rect = self.empty_open_rect();
+        self.empty_open.apply_layout_external(empty_open_rect);
     }
     fn draw(
         &mut self,
@@ -1170,8 +1200,7 @@ impl Widget for ImageEditorApp {
                 image.paint_at(s, a, target);
                 s.stroke(&Stroke::new(1.0), a, c.border_standard, None, &target);
             } else {
-                let card =
-                    Rect::from_center_size(viewport.center(), (viewport.width().min(460.0), 220.0));
+                let card = self.empty_card_rect();
                 s.fill(
                     Fill::NonZero,
                     a,
@@ -1182,22 +1211,20 @@ impl Widget for ImageEditorApp {
                 tr.draw_text_weighted(
                     s,
                     "Make something beautiful",
-                    24.0,
+                    if card.width() < 400.0 { 22.0 } else { 24.0 },
                     c.text_primary,
-                    a.pre_translate((card.x0 + 32.0, card.y0 + 58.0).into()),
+                    a.pre_translate(
+                        (
+                            card.x0 + 32.0,
+                            card.y0 + if card.width() < 400.0 { 44.0 } else { 58.0 },
+                        )
+                            .into(),
+                    ),
                     Some((card.width() - 64.0) as f32),
                     TextWeight::Semibold,
                 );
-                tr.draw_text_weighted(s,"Open an image or drop it anywhere. Every adjustment remains editable, in any order.",14.0,c.text_dim,a.pre_translate((card.x0+32.0,card.y0+98.0).into()),Some((card.width()-64.0) as f32),TextWeight::Regular);
-                tr.draw_text_weighted(
-                    s,
-                    "Open image",
-                    15.0,
-                    c.accent[6],
-                    a.pre_translate((card.x0 + 32.0, card.y0 + 158.0).into()),
-                    None,
-                    TextWeight::Semibold,
-                );
+                tr.draw_text_weighted(s,"Open an image or drop it anywhere. Every adjustment remains editable, in any order.",14.0,c.text_dim,a.pre_translate((card.x0+32.0,card.y0+if card.width()<400.0 {108.0}else{98.0}).into()),Some((card.width()-64.0) as f32),TextWeight::Regular);
+                self.empty_open.draw(s, a, tr, theme, &PresenceCtx::empty());
             }
             s.fill(Fill::NonZero, a, c.surfaces.raised, None, &self.stack_rect);
             tr.draw_text_weighted(
@@ -1652,6 +1679,19 @@ impl Widget for ImageEditorApp {
                     taffy,
                 );
             }
+        }
+        if !self.advanced_graph && self.preview.is_none() {
+            self.empty_open.handle_event(
+                e,
+                scale_factor,
+                &ui::winit::event::Modifiers::default(),
+                state,
+                &automerge::ROOT,
+                handled,
+                focus,
+                node_id,
+                taffy,
+            );
         }
         if let Some(command) = self.toolbar_pending.take() {
             self.run_toolbar(state, command);
@@ -2402,6 +2442,15 @@ impl Widget for ImageEditorApp {
             .filter(|(_, button)| button.get_rect().area() > 0.0)
             .filter_map(|(_, button)| button.accessibility())
             .collect::<Vec<_>>();
+        if !self.advanced_graph && self.preview.is_none() {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Open image")
+                    .with_action_target("image-editor.empty.open")
+                    .with_bounds(self.empty_open.get_rect())
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         children.push(
             AccessNode::new(Role::Image).with_name(if self.compare_original {
                 "Original image"
@@ -2601,6 +2650,7 @@ impl Widget for ImageEditorApp {
             return self.finish_keyboard_connection(state);
         }
         match target {
+            "image-editor.empty.open" => self.request_open(),
             "image-editor.adjust.decrease" => self.adjust_selected(state, -1.0),
             "image-editor.adjust.increase" => self.adjust_selected(state, 1.0),
             _ => {
@@ -2628,6 +2678,29 @@ mod portal_tests {
         assert!(compact_toolbar_for(820.0));
         assert!(compact_toolbar_for(1_024.0));
         assert!(!compact_toolbar_for(1_280.0));
+    }
+
+    #[test]
+    fn empty_state_open_is_a_real_touch_sized_semantic_button() {
+        let mut app = ImageEditorApp::new();
+        layout_at(&mut app, 390.0, 760.0);
+        let rect = app.empty_open.get_rect();
+        assert!(rect.width() >= 44.0 && rect.height() >= 44.0);
+        assert!(app.canvas_rect.contains(rect.center()));
+
+        let access = app.accessibility().unwrap();
+        assert!(access.children.iter().any(|child| {
+            child.action_target.as_deref() == Some("image-editor.empty.open")
+                && child.role == Role::Button
+        }));
+        let mut state = AutoCommit::new();
+        assert!(app.perform_semantic_action(
+            "image-editor.empty.open",
+            &ui::a11y::Action::Activate,
+            &mut state,
+            &automerge::ROOT,
+        ));
+        assert!(app.picker.is_some());
     }
 
     fn layout_at(app: &mut ImageEditorApp, width: f32, height: f32) {
