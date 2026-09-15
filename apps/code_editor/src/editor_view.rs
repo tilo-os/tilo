@@ -90,15 +90,15 @@ struct InlineDiag {
 /// Monospace cell metrics. The editor advances a fixed cell width per column;
 /// for the bundled monospace font at this size that tracks the glyph advance
 /// closely enough for crisp caret placement.
-const FONT_SIZE: f32 = 14.0;
-const LINE_HEIGHT: f64 = 20.0;
-/// Approximate monospace advance for `FONT_SIZE`. Measured lazily against the
+const BASE_FONT_SIZE: f32 = 14.0;
+const BASE_LINE_HEIGHT: f64 = 20.0;
+/// Approximate monospace advance for `self.font_size()`. Measured lazily against the
 /// real font on first layout and cached, so it stays correct if the system
 /// monospace face changes.
 const FALLBACK_CELL_W: f64 = 8.4;
 /// Left padding inside the gutter and right padding before code starts.
-const GUTTER_PAD: f64 = 12.0;
-const CODE_PAD_LEFT: f64 = 12.0;
+const BASE_GUTTER_PAD: f64 = 12.0;
+const BASE_CODE_PAD_LEFT: f64 = 12.0;
 
 /// A single caret + optional selection anchor, in (line, col) char coords.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +147,11 @@ pub struct EditorView {
     scroll_x: f64,
     /// Measured monospace cell width, resolved on first draw.
     cell_w: f64,
+    /// The visual type scale most recently supplied by the host theme. This
+    /// custom document surface owns its row/gutter geometry, so it cannot rely
+    /// on the shared renderer alone: every hit target and painted baseline
+    /// must grow together.
+    text_scale: f64,
     is_focused: bool,
     dirty: bool,
     /// Snapshot of the buffer text the line cache was built from — lets `sync`
@@ -219,6 +224,7 @@ impl EditorView {
             scroll_y: 0.0,
             scroll_x: 0.0,
             cell_w: FALLBACK_CELL_W,
+            text_scale: 1.0,
             is_focused: true,
             dirty: true,
             cached_text: String::new(),
@@ -696,22 +702,38 @@ impl EditorView {
         self.lines.len()
     }
 
+    fn font_size(&self) -> f32 {
+        BASE_FONT_SIZE * self.text_scale as f32
+    }
+
+    fn line_height(&self) -> f64 {
+        BASE_LINE_HEIGHT * self.text_scale
+    }
+
+    fn gutter_pad(&self) -> f64 {
+        BASE_GUTTER_PAD * self.text_scale
+    }
+
+    fn code_pad_left(&self) -> f64 {
+        BASE_CODE_PAD_LEFT * self.text_scale
+    }
+
     /// The width of the gutter (line-number column) for the current line count.
     fn gutter_width(&self) -> f64 {
         let digits = self.lines.len().max(1).to_string().len().max(2);
-        GUTTER_PAD * 2.0 + digits as f64 * self.cell_w
+        self.gutter_pad() * 2.0 + digits as f64 * self.cell_w
     }
 
     /// Visible-line capacity of the viewport.
     fn visible_lines(&self) -> usize {
-        (self.rect.height() / LINE_HEIGHT).ceil() as usize + 1
+        (self.rect.height() / self.line_height()).ceil() as usize + 1
     }
 
     /// Scroll so the primary caret is visible.
     fn scroll_to_caret(&mut self) {
         let (line, col) = self.primary_caret();
         let top = self.scroll_y;
-        let rows = (self.rect.height() / LINE_HEIGHT).floor().max(1.0);
+        let rows = (self.rect.height() / self.line_height()).floor().max(1.0);
         let bottom = top + rows - 1.0;
         if (line as f64) < top {
             self.scroll_y = line as f64;
@@ -719,7 +741,7 @@ impl EditorView {
             self.scroll_y = line as f64 - rows + 1.0;
         }
         // Horizontal: keep the caret column in view.
-        let code_w = (self.rect.width() - self.gutter_width() - CODE_PAD_LEFT).max(0.0);
+        let code_w = (self.rect.width() - self.gutter_width() - self.code_pad_left()).max(0.0);
         let caret_px = col as f64 * self.cell_w;
         if caret_px < self.scroll_x {
             self.scroll_x = caret_px;
@@ -1316,10 +1338,10 @@ impl EditorView {
     /// Map a pixel point to a (line, col) caret position.
     fn point_to_caret(&self, p: Point) -> (usize, usize) {
         let gutter = self.gutter_width();
-        let rel_y = p.y - self.rect.y0 + self.scroll_y * LINE_HEIGHT;
-        let line = ((rel_y / LINE_HEIGHT).floor() as isize).clamp(0, self.lines.len() as isize - 1)
-            as usize;
-        let rel_x = p.x - self.rect.x0 - gutter - CODE_PAD_LEFT + self.scroll_x;
+        let rel_y = p.y - self.rect.y0 + self.scroll_y * self.line_height();
+        let line = ((rel_y / self.line_height()).floor() as isize)
+            .clamp(0, self.lines.len() as isize - 1) as usize;
+        let rel_x = p.x - self.rect.x0 - gutter - self.code_pad_left() + self.scroll_x;
         let max_col = self.lines.get(line).map_or(0, |l| l.chars().count());
         let col = ((rel_x / self.cell_w).round().max(0.0) as usize).min(max_col);
         (line, col)
@@ -1331,8 +1353,14 @@ impl EditorView {
     /// caching it on `self` (the fallback stays in place until the first
     /// successful measurement).
     fn measure_cell_width(&mut self, text_renderer: &mut TextRenderer) {
-        let (mw, _) =
-            text_renderer.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
+        let (mw, _) = text_renderer.measure_styled(
+            "M",
+            self.font_size(),
+            None,
+            TextWeight::Regular,
+            false,
+            true,
+        );
         if mw > 0.0 {
             self.cell_w = f64::from(mw);
         }
@@ -1343,7 +1371,7 @@ impl EditorView {
     /// fractional scroll offset, and how many rows fit in the viewport.
     fn layout_metrics(&self) -> (f64, f64, usize, f64, usize) {
         let gutter_w = self.gutter_width();
-        let code_x0 = self.rect.x0 + gutter_w + CODE_PAD_LEFT;
+        let code_x0 = self.rect.x0 + gutter_w + self.code_pad_left();
         let first_line = self.scroll_y.floor() as usize;
         let frac = self.scroll_y - first_line as f64;
         let n_visible = self.visible_lines();
@@ -1396,14 +1424,19 @@ impl EditorView {
             let Some(line) = self.lines.get(line_idx) else {
                 break;
             };
-            let y = self.rect.y0 + (vi as f64 - frac) * LINE_HEIGHT;
+            let y = self.rect.y0 + (vi as f64 - frac) * self.line_height();
             if y > self.rect.y1 {
                 break;
             }
 
             // Active-line highlight across the code area.
             if line_idx == primary_line && self.carets.len() == 1 {
-                let hl = Rect::new(self.rect.x0 + gutter_w, y, self.rect.x1, y + LINE_HEIGHT);
+                let hl = Rect::new(
+                    self.rect.x0 + gutter_w,
+                    y,
+                    self.rect.x1,
+                    y + self.line_height(),
+                );
                 scene.fill(Fill::NonZero, transform, c.lift(0.35), None, &hl);
             }
 
@@ -1419,7 +1452,7 @@ impl EditorView {
                     mx0.max(self.rect.x0 + gutter_w),
                     y + 1.0,
                     mx1,
-                    y + LINE_HEIGHT - 1.0,
+                    y + self.line_height() - 1.0,
                 );
                 if band.width() <= 0.0 {
                     continue;
@@ -1467,7 +1500,12 @@ impl EditorView {
                     };
                     let sx0 = code_x0 + start_col as f64 * self.cell_w - self.scroll_x;
                     let sx1 = code_x0 + end_col as f64 * self.cell_w - self.scroll_x;
-                    let sel = Rect::new(sx0.max(self.rect.x0 + gutter_w), y, sx1, y + LINE_HEIGHT);
+                    let sel = Rect::new(
+                        sx0.max(self.rect.x0 + gutter_w),
+                        y,
+                        sx1,
+                        y + self.line_height(),
+                    );
                     // Translucent accent for the selection band; alpha is read
                     // from the theme accent so a theme swap recolours it.
                     let sel_color = c.accent[5].multiply_alpha(0.35);
@@ -1513,7 +1551,7 @@ impl EditorView {
             let Some(line) = self.lines.get(line_idx) else {
                 break;
             };
-            let y = self.rect.y0 + (vi as f64 - frac) * LINE_HEIGHT;
+            let y = self.rect.y0 + (vi as f64 - frac) * self.line_height();
             if y > self.rect.y1 {
                 break;
             }
@@ -1521,7 +1559,7 @@ impl EditorView {
             // Line number, right-aligned in the gutter.
             let num = (line_idx + 1).to_string();
             let num_w = num.len() as f64 * self.cell_w;
-            let num_x = self.rect.x0 + gutter_w - GUTTER_PAD - num_w;
+            let num_x = self.rect.x0 + gutter_w - self.gutter_pad() - num_w;
             let num_color = if line_idx == primary_line {
                 c.text_primary
             } else {
@@ -1530,7 +1568,7 @@ impl EditorView {
             text_renderer.draw_text_styled(
                 scene,
                 &num,
-                FONT_SIZE,
+                self.font_size(),
                 num_color,
                 transform * Affine::translate((num_x, y + 2.0)),
                 None,
@@ -1556,7 +1594,7 @@ impl EditorView {
                 text_renderer.draw_text_styled(
                     scene,
                     line,
-                    FONT_SIZE,
+                    self.font_size(),
                     c.text_primary,
                     transform * Affine::translate((base_x, y + 2.0)),
                     None,
@@ -1590,7 +1628,7 @@ impl EditorView {
                     text_renderer.draw_text_styled(
                         scene,
                         seg,
-                        FONT_SIZE,
+                        self.font_size(),
                         color,
                         transform * Affine::translate((x, y + 2.0)),
                         None,
@@ -1625,7 +1663,7 @@ impl EditorView {
             if d.line < first_line || d.line >= first_line + n_visible {
                 continue;
             }
-            let y = self.rect.y0 + (d.line as f64 - self.scroll_y) * LINE_HEIGHT;
+            let y = self.rect.y0 + (d.line as f64 - self.scroll_y) * self.line_height();
             if y > self.rect.y1 {
                 continue;
             }
@@ -1643,7 +1681,7 @@ impl EditorView {
             if x_right <= x_left {
                 continue;
             }
-            let sy = y + LINE_HEIGHT - 3.0;
+            let sy = y + self.line_height() - 3.0;
             let color = match d.severity {
                 Severity::Error => c.semantic.danger,
                 Severity::Warning => c.semantic.warning,
@@ -1692,13 +1730,15 @@ impl EditorView {
             if caret.line < first_line || caret.line >= first_line + n_visible {
                 continue;
             }
-            let y = self.rect.y0 + (caret.line as f64 - self.scroll_y) * LINE_HEIGHT;
+            let y = self.rect.y0 + (caret.line as f64 - self.scroll_y) * self.line_height();
             let x = code_x0 + caret.col as f64 * self.cell_w - self.scroll_x;
             if x < self.rect.x0 + gutter_w {
                 continue;
             }
-            let caret_line =
-                Line::new(Point::new(x, y + 2.0), Point::new(x, y + LINE_HEIGHT - 2.0));
+            let caret_line = Line::new(
+                Point::new(x, y + 2.0),
+                Point::new(x, y + self.line_height() - 2.0),
+            );
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
@@ -1715,7 +1755,8 @@ impl EditorView {
     /// showing.
     #[allow(
         clippy::too_many_arguments,
-        reason = "a draw pass threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
+        clippy::too_many_lines,
+        reason = "a draw pass threads the same caret, viewport, and completion geometry through one visual unit; splitting it would separate sizing from its corresponding paint and clipping rules"
     )]
     fn draw_completion_popup(
         &self,
@@ -1727,7 +1768,7 @@ impl EditorView {
         caret_x: f64,
         caret_top: f64,
     ) {
-        const ROW_H: f64 = 20.0;
+        let row_h = 20.0 * self.text_scale;
         if !self.completion_active() {
             return;
         }
@@ -1741,12 +1782,12 @@ impl EditorView {
         } else {
             0
         };
-        let width = 340.0_f64.min(self.rect.width() - (gutter_w + 20.0));
-        let height = shown as f64 * ROW_H + 8.0;
+        let width = (340.0 * self.text_scale).min(self.rect.width() - (gutter_w + 20.0));
+        let height = shown as f64 * row_h + 8.0 * self.text_scale;
         let px = caret_x
             .min(self.rect.x1 - width - 8.0)
             .max(self.rect.x0 + gutter_w + 2.0);
-        let py = (caret_top + LINE_HEIGHT + 2.0)
+        let py = (caret_top + self.line_height() + 2.0)
             .min(self.rect.y1 - height - 4.0)
             .max(self.rect.y0);
         let popup = Rect::new(px, py, px + width, py + height);
@@ -1765,9 +1806,14 @@ impl EditorView {
             let Some(item) = self.completions.get(idx) else {
                 break;
             };
-            let ry = py + 4.0 + row as f64 * ROW_H;
+            let ry = py + 4.0 * self.text_scale + row as f64 * row_h;
             if idx == self.completion_index {
-                let hl = Rect::new(px + 2.0, ry, px + width - 2.0, ry + ROW_H);
+                let hl = Rect::new(
+                    px + 2.0 * self.text_scale,
+                    ry,
+                    px + width - 2.0 * self.text_scale,
+                    ry + row_h,
+                );
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -1781,9 +1827,10 @@ impl EditorView {
             text_renderer.draw_text_styled(
                 scene,
                 glyph,
-                FONT_SIZE,
+                self.font_size(),
                 c.accent[6],
-                transform * Affine::translate((px + 8.0, ry + 3.0)),
+                transform
+                    * Affine::translate((px + 8.0 * self.text_scale, ry + 3.0 * self.text_scale)),
                 None,
                 TextWeight::Regular,
                 false,
@@ -1792,9 +1839,10 @@ impl EditorView {
             text_renderer.draw_text_styled(
                 scene,
                 &item.label,
-                FONT_SIZE,
+                self.font_size(),
                 c.text_primary,
-                transform * Affine::translate((px + 26.0, ry + 3.0)),
+                transform
+                    * Affine::translate((px + 26.0 * self.text_scale, ry + 3.0 * self.text_scale)),
                 None,
                 TextWeight::Regular,
                 false,
@@ -1809,20 +1857,25 @@ impl EditorView {
             {
                 let (lw, _) = text_renderer.measure_styled(
                     &item.label,
-                    FONT_SIZE,
+                    self.font_size(),
                     None,
                     TextWeight::Regular,
                     false,
                     true,
                 );
-                let available = width - 40.0 - f64::from(lw);
-                let detail = fit_completion_detail(text_renderer, detail, available);
+                let available = width - 40.0 * self.text_scale - f64::from(lw);
+                let detail =
+                    fit_completion_detail(text_renderer, detail, available, self.font_size() - 1.0);
                 text_renderer.draw_text_styled(
                     scene,
                     &detail,
-                    FONT_SIZE - 1.0,
+                    self.font_size() - 1.0,
                     c.text_dim,
-                    transform * Affine::translate((px + 34.0 + f64::from(lw), ry + 3.5)),
+                    transform
+                        * Affine::translate((
+                            px + 34.0 * self.text_scale + f64::from(lw),
+                            ry + 3.5 * self.text_scale,
+                        )),
                     None,
                     TextWeight::Regular,
                     false,
@@ -1854,10 +1907,10 @@ impl EditorView {
         };
         let c = &theme.tokens.colors;
         let first: String = hover.lines().take(4).collect::<Vec<_>>().join("\n");
-        let (tw, _) = text_renderer.measure(&first, FONT_SIZE, None);
+        let (tw, _) = text_renderer.measure(&first, self.font_size(), None);
         let width = (f64::from(tw) + 20.0).min(self.rect.width() - (gutter_w + 20.0));
         let lines = first.lines().count().max(1);
-        let height = lines as f64 * (f64::from(FONT_SIZE) + 4.0) + 12.0;
+        let height = lines as f64 * (f64::from(self.font_size()) + 4.0) + 12.0;
         let px = caret_x
             .min(self.rect.x1 - width - 8.0)
             .max(self.rect.x0 + gutter_w + 2.0);
@@ -1865,7 +1918,7 @@ impl EditorView {
         let py = if caret_top - height - 4.0 >= self.rect.y0 {
             caret_top - height - 4.0
         } else {
-            caret_top + LINE_HEIGHT + 2.0
+            caret_top + self.line_height() + 2.0
         };
         let box_rect = Rect::new(px, py, px + width, py + height);
         let shape = RoundedRect::from_rect(box_rect, 6.0);
@@ -1881,12 +1934,12 @@ impl EditorView {
             text_renderer.draw_text(
                 scene,
                 line,
-                FONT_SIZE,
+                self.font_size(),
                 c.text_primary,
                 transform
                     * Affine::translate((
                         px + 10.0,
-                        py + 6.0 + i as f64 * (f64::from(FONT_SIZE) + 4.0),
+                        py + 6.0 + i as f64 * (f64::from(self.font_size()) + 4.0),
                     )),
                 Some((width - 20.0) as f32),
             );
@@ -1896,17 +1949,15 @@ impl EditorView {
 
 /// Fit completion metadata into exactly one row. Text renderer bounds may
 /// wrap a long type signature; completion rows intentionally never do.
-fn fit_completion_detail(text_renderer: &mut TextRenderer, detail: &str, max_width: f64) -> String {
+fn fit_completion_detail(
+    text_renderer: &mut TextRenderer,
+    detail: &str,
+    max_width: f64,
+    font_size: f32,
+) -> String {
     let fits = |text: &str, renderer: &mut TextRenderer| {
         renderer
-            .measure_styled(
-                text,
-                FONT_SIZE - 1.0,
-                None,
-                TextWeight::Regular,
-                false,
-                true,
-            )
+            .measure_styled(text, font_size, None, TextWeight::Regular, false, true)
             .0
             <= max_width as f32
     };
@@ -2014,7 +2065,7 @@ impl EditorView {
         }
         let dy = match delta {
             MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 3.0,
-            MouseScrollDelta::PixelDelta(p) => p.y / LINE_HEIGHT,
+            MouseScrollDelta::PixelDelta(p) => p.y / self.line_height(),
         };
         let max = (self.lines.len() as f64 - 1.0).max(0.0);
         self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
@@ -2185,11 +2236,11 @@ impl EditorView {
             Key::Named(NamedKey::Home) => self.move_home(shift),
             Key::Named(NamedKey::End) => self.move_end(shift),
             Key::Named(NamedKey::PageUp) => {
-                let rows = (self.rect.height() / LINE_HEIGHT).floor() as isize;
+                let rows = (self.rect.height() / self.line_height()).floor() as isize;
                 self.move_caret(0, -rows, shift);
             }
             Key::Named(NamedKey::PageDown) => {
-                let rows = (self.rect.height() / LINE_HEIGHT).floor() as isize;
+                let rows = (self.rect.height() / self.line_height()).floor() as isize;
                 self.move_caret(0, rows, shift);
             }
             _ => return false,
@@ -2389,6 +2440,11 @@ impl Widget for EditorView {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        if (self.text_scale - f64::from(theme.text_scale)).abs() > f64::EPSILON {
+            self.text_scale = f64::from(theme.text_scale);
+            self.cell_w = FALLBACK_CELL_W * self.text_scale;
+            self.scroll_to_caret();
+        }
         let c = &theme.tokens.colors;
         self.measure_cell_width(text_renderer);
         let (gutter_w, code_x0, first_line, frac, n_visible) = self.layout_metrics();
@@ -2462,7 +2518,7 @@ impl Widget for EditorView {
         // Caret pixel, reused by the completion popup + hover tooltip.
         let (caret_line, caret_col) = self.primary_caret();
         let caret_x = code_x0 + caret_col as f64 * self.cell_w - self.scroll_x;
-        let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * LINE_HEIGHT;
+        let caret_top = self.rect.y0 + (caret_line as f64 - self.scroll_y) * self.line_height();
 
         self.draw_completion_popup(
             scene,
@@ -2654,8 +2710,9 @@ impl EditorView {
     /// known caret cell. Assumes `scroll == 0` (the test default).
     #[cfg(test)]
     pub fn pixel_for_test(&self, line: usize, col: usize) -> Point {
-        let x = self.rect.x0 + self.gutter_width() + CODE_PAD_LEFT + col as f64 * self.cell_w;
-        let y = self.rect.y0 + (line as f64 - self.scroll_y) * LINE_HEIGHT + 1.0;
+        let x =
+            self.rect.x0 + self.gutter_width() + self.code_pad_left() + col as f64 * self.cell_w;
+        let y = self.rect.y0 + (line as f64 - self.scroll_y) * self.line_height() + 1.0;
         Point::new(x, y)
     }
 

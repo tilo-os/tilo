@@ -16,10 +16,10 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::model::{NodeId as TreeId, NodeKind, Project};
 
-const ROW_HEIGHT: f64 = 24.0;
-const HEADER_HEIGHT: f64 = 38.0;
-const INDENT: f64 = 14.0;
-const ICON_PAD: f64 = 10.0;
+const BASE_ROW_HEIGHT: f64 = 24.0;
+const BASE_HEADER_HEIGHT: f64 = 38.0;
+const BASE_INDENT: f64 = 14.0;
+const BASE_ICON_PAD: f64 = 10.0;
 
 /// What the user did in the tree, for the app to apply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +42,7 @@ pub struct FileTree {
     scroll_y: f64,
     pending: Vec<TreeEvent>,
     last_cursor: Point,
+    text_scale: f64,
     dirty: bool,
 }
 
@@ -66,6 +67,7 @@ impl FileTree {
             scroll_y: 0.0,
             pending: Vec::new(),
             last_cursor: Point::ZERO,
+            text_scale: 1.0,
             dirty: true,
         }
     }
@@ -121,16 +123,32 @@ impl FileTree {
         if !self.rect.contains(p) {
             return None;
         }
-        let y = p.y - self.rect.y0 - HEADER_HEIGHT + self.scroll_y;
+        let y = p.y - self.rect.y0 - self.header_height() + self.scroll_y;
         if y < 0.0 {
             return None;
         }
-        let idx = (y / ROW_HEIGHT).floor() as usize;
+        let idx = (y / self.row_height()).floor() as usize;
         if idx < self.row_meta.len() {
             Some(idx)
         } else {
             None
         }
+    }
+
+    fn row_height(&self) -> f64 {
+        BASE_ROW_HEIGHT * self.text_scale
+    }
+
+    fn header_height(&self) -> f64 {
+        BASE_HEADER_HEIGHT * self.text_scale
+    }
+
+    fn indent(&self) -> f64 {
+        BASE_INDENT * self.text_scale
+    }
+
+    fn icon_pad(&self) -> f64 {
+        BASE_ICON_PAD * self.text_scale
     }
 }
 
@@ -186,6 +204,7 @@ impl Widget for FileTree {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.text_scale = f64::from(theme.text_scale);
         let c = &theme.tokens.colors;
         // Sidebar background.
         scene.fill(
@@ -201,7 +220,7 @@ impl Widget for FileTree {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + HEADER_HEIGHT,
+            self.rect.y0 + self.header_height(),
         );
         scene.fill(
             Fill::NonZero,
@@ -213,38 +232,43 @@ impl Widget for FileTree {
         text_renderer.draw_text_weighted(
             scene,
             &self.project_name.to_uppercase(),
-            12.0,
+            12.0 * theme.text_scale,
             c.text_dim,
-            transform * Affine::translate((self.rect.x0 + 14.0, self.rect.y0 + 12.0)),
+            transform
+                * Affine::translate((
+                    self.rect.x0 + 14.0 * self.text_scale,
+                    self.rect.y0 + 12.0 * self.text_scale,
+                )),
             Some(self.rect.width() as f32),
             TextWeight::Bold,
         );
 
         // Rows.
-        let first = (self.scroll_y / ROW_HEIGHT).floor() as usize;
+        let first = (self.scroll_y / self.row_height()).floor() as usize;
         for (i, meta) in self.row_meta.iter().enumerate().skip(first) {
-            let y = self.rect.y0 + HEADER_HEIGHT + i as f64 * ROW_HEIGHT - self.scroll_y;
+            let y =
+                self.rect.y0 + self.header_height() + i as f64 * self.row_height() - self.scroll_y;
             if y > self.rect.y1 {
                 break;
             }
-            if y + ROW_HEIGHT < self.rect.y0 + HEADER_HEIGHT {
+            if y + self.row_height() < self.rect.y0 + self.header_height() {
                 continue;
             }
-            let row_rect = Rect::new(self.rect.x0, y, self.rect.x1, y + ROW_HEIGHT);
+            let row_rect = Rect::new(self.rect.x0, y, self.rect.x1, y + self.row_height());
 
             // Active / hover background.
             if self.active == Some(meta.id) {
                 scene.fill(Fill::NonZero, transform, c.lift(0.72), None, &row_rect);
                 // Accent rail on the left of the active row.
-                let rail = Rect::new(self.rect.x0, y, self.rect.x0 + 2.0, y + ROW_HEIGHT);
+                let rail = Rect::new(self.rect.x0, y, self.rect.x0 + 2.0, y + self.row_height());
                 scene.fill(Fill::NonZero, transform, c.accent[5], None, &rail);
             } else if self.hovered == Some(i) {
                 scene.fill(Fill::NonZero, transform, c.lift(0.35), None, &row_rect);
             }
 
-            let base_x = self.rect.x0 + 10.0 + meta.depth as f64 * INDENT;
-            let icon_cx = base_x + 6.0;
-            let icon_cy = y + ROW_HEIGHT / 2.0;
+            let base_x = self.rect.x0 + 10.0 * self.text_scale + meta.depth as f64 * self.indent();
+            let icon_cx = base_x + 6.0 * self.text_scale;
+            let icon_cy = y + self.row_height() / 2.0;
 
             if meta.is_folder {
                 // Disclosure chevron.
@@ -259,7 +283,7 @@ impl Widget for FileTree {
                 draw_folder_icon(
                     scene,
                     transform,
-                    Point::new(icon_cx + 14.0, icon_cy),
+                    Point::new(icon_cx + 14.0 * self.text_scale, icon_cy),
                     if meta.expanded {
                         c.accent[6]
                     } else {
@@ -270,12 +294,12 @@ impl Widget for FileTree {
                 draw_file_icon(
                     scene,
                     transform,
-                    Point::new(icon_cx + 14.0, icon_cy),
+                    Point::new(icon_cx + 14.0 * self.text_scale, icon_cy),
                     c.text_dim,
                 );
             }
 
-            let label_x = base_x + 28.0 + ICON_PAD;
+            let label_x = base_x + 28.0 * self.text_scale + self.icon_pad();
             let label_color = if self.active == Some(meta.id) {
                 c.text_primary
             } else {
@@ -284,9 +308,9 @@ impl Widget for FileTree {
             text_renderer.draw_text(
                 scene,
                 &meta.name,
-                13.0,
+                13.0 * theme.text_scale,
                 label_color,
-                transform * Affine::translate((label_x, y + 4.0)),
+                transform * Affine::translate((label_x, y + 4.0 * self.text_scale)),
                 Some((self.rect.x1 - label_x) as f32),
             );
         }
@@ -332,11 +356,11 @@ impl Widget for FileTree {
             }
             WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.last_cursor) => {
                 let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * ROW_HEIGHT,
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.row_height(),
                     MouseScrollDelta::PixelDelta(p) => p.y,
                 };
-                let content = self.row_meta.len() as f64 * ROW_HEIGHT;
-                let view = (self.rect.height() - HEADER_HEIGHT).max(0.0);
+                let content = self.row_meta.len() as f64 * self.row_height();
+                let view = (self.rect.height() - self.header_height()).max(0.0);
                 let max = (content - view).max(0.0);
                 self.scroll_y = (self.scroll_y - dy).clamp(0.0, max);
                 self.dirty = true;
