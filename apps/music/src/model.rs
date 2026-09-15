@@ -39,7 +39,7 @@ pub struct Album {
 }
 
 /// One track. `yt_id` is the YouTube-Music video id used to resolve a
-/// streamable audio URL via the [`crate::source`] layer; for the offline
+/// streamable audio URL via the [`crate::backend`] worker; for the offline
 /// sample library it is a synthetic id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Track {
