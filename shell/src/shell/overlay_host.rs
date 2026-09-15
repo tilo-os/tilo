@@ -9459,99 +9459,102 @@ impl ShellOverlayHost {
             .as_ref()
             .is_some_and(|c| c.borrow().quick_settings.wifi_password.is_some());
         if prompt_up {
-            let (cancel, connect) = self.qs_password_button_rects();
-            if back.contains(p) || cancel.contains(p) {
-                self.cancel_wifi_password();
-                return;
-            }
-            if connect.contains(p) {
-                self.submit_wifi_password();
-            }
-            // The field is always focused; nothing else
-            // on the pane can be focused by a click.
+            self.handle_wifi_password_prompt_click(p, back);
             return;
         }
-        if back.contains(p)
-            && !matches!(
-                current_level,
-                crate::shell::quick_settings::QsLevel::Wifi
-                    | crate::shell::quick_settings::QsLevel::Bluetooth
-                    | crate::shell::quick_settings::QsLevel::Vpn
-            )
+        match current_level {
+            crate::shell::quick_settings::QsLevel::Wifi => self.handle_qs_wifi_click(p),
+            crate::shell::quick_settings::QsLevel::Bluetooth => self.handle_qs_bluetooth_click(p),
+            crate::shell::quick_settings::QsLevel::Vpn => self.handle_qs_vpn_click(p),
+            crate::shell::quick_settings::QsLevel::Notifications => {
+                self.handle_qs_notifications_click(p, back);
+            }
+            _ if back.contains(p) => self.pop_quick_settings_level(),
+            _ => {}
+        }
+    }
+
+    fn handle_wifi_password_prompt_click(&mut self, p: Point, back: Rect) {
+        let (cancel, connect) = self.qs_password_button_rects();
+        if back.contains(p) || cancel.contains(p) {
+            self.cancel_wifi_password();
+        } else if connect.contains(p) {
+            self.submit_wifi_password();
+        }
+        // The field is always focused; nothing else on the pane can be
+        // focused while the prompt owns it.
+    }
+
+    fn finish_quick_settings_drill_in_click(chrome: &Chrome, outcome: DrillInOutcome) {
+        let mut state = chrome.borrow_mut();
+        match outcome {
+            DrillInOutcome::Back => state.quick_settings.pop_level(),
+            DrillInOutcome::Changed => {}
+            DrillInOutcome::None => return,
+        }
+        state.bump();
+    }
+
+    fn handle_qs_wifi_click(&mut self, p: Point) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let outcome = self.qs_wifi_pane.handle_click(
+            p,
+            self.quick_settings_rect(),
+            &mut chrome.borrow_mut().quick_settings,
+            self.qs_actions.as_ref(),
+        );
+        Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+    }
+
+    fn handle_qs_bluetooth_click(&mut self, p: Point) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let outcome = self.qs_bluetooth_pane.handle_click(
+            p,
+            self.quick_settings_rect(),
+            &chrome.borrow().quick_settings.bt_devices,
+        );
+        Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+    }
+
+    fn handle_qs_vpn_click(&mut self, p: Point) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let outcome = self.qs_vpn_pane.handle_click(
+            p,
+            self.quick_settings_rect(),
+            &mut chrome.borrow_mut().quick_settings.vpns,
+            self.qs_actions.as_ref(),
+        );
+        Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+    }
+
+    fn handle_qs_notifications_click(&mut self, p: Point, back: Rect) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        if back.contains(p) {
+            self.pop_quick_settings_level();
+        } else if self.qs_notification_undo_rect().contains(p)
+            && chrome.borrow().can_undo_notification_history_clear()
         {
-            if let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.quick_settings.pop_level();
-                st.bump();
-            }
-            return;
+            chrome.borrow_mut().undo_notification_history_clear();
+        } else if self.qs_notification_clear_rect().contains(p) {
+            chrome.borrow_mut().clear_notification_history();
+            self.qs_notification_history_start = 0;
+            self.qs_notification_wheel_remainder = 0.0;
         }
-        if matches!(current_level, crate::shell::quick_settings::QsLevel::Wifi) {
-            if let Some(chrome) = self.chrome.clone() {
-                let panel = self.quick_settings_rect();
-                let mut st = chrome.borrow_mut();
-                let outcome = self.qs_wifi_pane.handle_click(
-                    p,
-                    panel,
-                    &mut st.quick_settings,
-                    self.qs_actions.as_ref(),
-                );
-                match outcome {
-                    DrillInOutcome::Back => st.quick_settings.pop_level(),
-                    DrillInOutcome::Changed => {}
-                    DrillInOutcome::None => return,
-                }
-                st.bump();
-            }
-        } else if matches!(
-            current_level,
-            crate::shell::quick_settings::QsLevel::Bluetooth
-        ) {
-            if let Some(chrome) = self.chrome.clone() {
-                let panel = self.quick_settings_rect();
-                let mut st = chrome.borrow_mut();
-                let outcome =
-                    self.qs_bluetooth_pane
-                        .handle_click(p, panel, &st.quick_settings.bt_devices);
-                match outcome {
-                    DrillInOutcome::Back => st.quick_settings.pop_level(),
-                    DrillInOutcome::Changed => {}
-                    DrillInOutcome::None => return,
-                }
-                st.bump();
-            }
-        } else if matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn) {
-            if let Some(chrome) = self.chrome.clone() {
-                let panel = self.quick_settings_rect();
-                let mut st = chrome.borrow_mut();
-                let outcome = self.qs_vpn_pane.handle_click(
-                    p,
-                    panel,
-                    &mut st.quick_settings.vpns,
-                    self.qs_actions.as_ref(),
-                );
-                match outcome {
-                    DrillInOutcome::Back => st.quick_settings.pop_level(),
-                    DrillInOutcome::Changed => {}
-                    DrillInOutcome::None => return,
-                }
-                st.bump();
-            }
-        } else if matches!(
-            current_level,
-            crate::shell::quick_settings::QsLevel::Notifications
-        ) {
-            if let Some(chrome) = self.chrome.clone() {
-                if self.qs_notification_undo_rect().contains(p)
-                    && chrome.borrow().can_undo_notification_history_clear()
-                {
-                    chrome.borrow_mut().undo_notification_history_clear();
-                } else if self.qs_notification_clear_rect().contains(p) {
-                    chrome.borrow_mut().clear_notification_history();
-                    self.qs_notification_history_start = 0;
-                    self.qs_notification_wheel_remainder = 0.0;
-                }
-            }
+    }
+
+    fn pop_quick_settings_level(&self) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.pop_level();
+            state.bump();
         }
     }
     /// Routes a click through the root-page component, then applies the
