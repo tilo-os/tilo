@@ -189,6 +189,11 @@ pub struct Attachment {
     pub size: u64,
     /// Whether the bytes are present locally (vs. server-side only).
     pub hydrated: bool,
+    /// Portable draft-content identity when this attachment is a Drafts
+    /// projection. Incoming mail leaves this absent; drafts use it to reopen
+    /// with the same qdoc-backed bytes on any collaborator.
+    #[serde(default)]
+    pub content_id: Option<String>,
     /// The decoded bytes, when hydrated. Never serialised into the shared
     /// settings store (it holds message content, not settings).
     #[serde(skip, default)]
@@ -203,6 +208,7 @@ impl Attachment {
             mime: mime.into(),
             size,
             hydrated: false,
+            content_id: None,
             content: Vec::new(),
         }
     }
@@ -218,6 +224,7 @@ impl Attachment {
             mime: mime.into(),
             size: content.len() as u64,
             hydrated: true,
+            content_id: None,
             content,
         }
     }
@@ -594,18 +601,22 @@ pub struct Draft {
     /// Stored inline so a collaborative draft never grants a host-path read.
     #[serde(default)]
     pub calendar_ics: Option<String>,
-    /// Filesystem paths of files staged as attachments for this draft. The
-    /// bytes are read from these paths when the message is built (see
-    /// `transport::build_mime`), so what is sent is the real file — no
-    /// fabricated placeholder payload.
-    pub attachments: Vec<String>,
+    /// Verified portable attachment metadata.  `content_id` names qdoc blob
+    /// bytes; no participant's filesystem path is persisted or replicated.
+    #[serde(default)]
+    pub attachments: Vec<DraftAttachment>,
     /// If this draft is a reply, the message it answers.
     pub in_reply_to: Option<MessageId>,
 }
 
-/// The display name (final path component) of a staged attachment path.
-pub fn attachment_display_name(path: &str) -> &str {
-    path.rsplit(['/', '\\']).next().unwrap_or(path)
+/// Metadata for one staged draft attachment. The content is addressed by a
+/// verified qdoc blob identity and materialized only at the send boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftAttachment {
+    pub content_id: String,
+    pub filename: String,
+    pub mime: String,
+    pub size: u64,
 }
 
 /// The whole mailbox aggregate: an account, its messages, and the derived
