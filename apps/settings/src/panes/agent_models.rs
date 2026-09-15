@@ -262,6 +262,10 @@ impl LocalModelControl for ModelManagerCli {
 /// Read the manager's current, signed inventory for the resource tree and
 /// effect-time validation.  This performs no mutation and deliberately keeps
 /// manager implementation details out of `actions.rs`.
+///
+/// # Errors
+///
+/// Returns the local manager's unavailable or malformed-snapshot error.
 pub fn live_snapshot() -> Result<LocalModelSnapshot, String> {
     LocalModelControl::snapshot(&ModelManagerCli)
 }
@@ -1230,25 +1234,22 @@ impl AgentModelsPane {
                 self.control.remove(&model.package.id)
             }
         };
-        match result {
-            Err(error) => {
-                self.operation_finished(
-                    &operation,
-                    Err(format!("{} failed: {error}", action_label(action))),
-                );
-                self.notice = Some(format!("{} failed: {error}", action_label(action)));
-                self.structure_dirty = true;
-            }
-            Ok(()) => {
-                self.refresh();
-                self.operation_finished(
-                    &operation,
-                    Ok(format!(
-                        "{} request accepted by the local model manager",
-                        action_label(action)
-                    )),
-                );
-            }
+        if let Err(error) = result {
+            self.operation_finished(
+                &operation,
+                Err(format!("{} failed: {error}", action_label(action))),
+            );
+            self.notice = Some(format!("{} failed: {error}", action_label(action)));
+            self.structure_dirty = true;
+        } else {
+            self.refresh();
+            self.operation_finished(
+                &operation,
+                Ok(format!(
+                    "{} request accepted by the local model manager",
+                    action_label(action)
+                )),
+            );
         }
     }
 

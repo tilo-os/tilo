@@ -70,11 +70,11 @@ pub const POWER_OPERATION_TYPE: &str = "settings.power-operation";
 /// Hardware-network commands. They intentionally address the current
 /// machine's radios and diagnostics, rather than a replicated preference.
 pub const NETWORK_OPERATION_TYPE: &str = "settings.network-operation";
-/// Adapter and device discovery commands owned by the local BlueZ service.
+/// Adapter and device discovery commands owned by the local `BlueZ` service.
 pub const BLUETOOTH_OPERATION_TYPE: &str = "settings.bluetooth-operation";
 /// Storage maintenance and tool-handoff commands scoped to this device.
 pub const STORAGE_OPERATION_TYPE: &str = "settings.storage-operation";
-/// PipeWire device and stream-routing commands scoped to this device.
+/// `PipeWire` device and stream-routing commands scoped to this device.
 pub const AUDIO_OPERATION_TYPE: &str = "settings.audio-operation";
 /// Compositor-backed output configuration commands. These stage or confirm a
 /// transaction for the current machine; they never become shared preferences.
@@ -1598,7 +1598,7 @@ fn displays_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             }
             for profile in &descriptor.color_profiles {
                 if let Some(action) = local_operation_spec(
-                    format!("profile-{}", profile),
+                    format!("profile-{profile}"),
                     format!("Use colour profile {profile}"),
                     OperationKind::Effect,
                     DISPLAY_OPERATION_TYPE,
@@ -2237,7 +2237,6 @@ pub fn accessibility_text_binding(action_id: &str) -> Option<qos_actions::Action
     reason = "the ordered local-operation declarations mirror the Updates pane"
 )]
 fn updates_section() -> Resource {
-    use crate::panes;
     let mut sec = Resource::new("settings.section:updates", "settings.section", "Updates");
     // The timer is an effective property of this machine, not a shared
     // preference.  It gets a typed local request so its result can be read
