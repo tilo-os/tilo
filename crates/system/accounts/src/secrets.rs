@@ -25,6 +25,9 @@ use crate::{AccountId, Secret, SecretVault};
 
 const ITEM_PREFIX: &str = "qos-secret-item:";
 const GRANT_PREFIX: &str = "qos-secret-grant:";
+const MAX_APP_ID_BYTES: usize = 255;
+const MAX_PURPOSE_BYTES: usize = 160;
+const MAX_ORIGIN_BYTES: usize = 2_048;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -333,6 +336,8 @@ pub enum BrokerError {
     NotFound,
     OriginMismatch,
     InvalidOrigin,
+    InvalidAppId,
+    InvalidPurpose,
     CorruptItem,
     Storage(String),
     Randomness,
@@ -406,6 +411,8 @@ impl CredentialBroker {
     where
         F: FnOnce(&AccessRequest, &SecretItem) -> AccessDecision,
     {
+        validate_app_id(&request.app_id)?;
+        validate_purpose(&request.purpose)?;
         let item = self
             .store
             .get(&request.item_id)
@@ -544,19 +551,51 @@ fn random_index(bound: usize) -> Result<usize, BrokerError> {
 }
 
 fn canonical_origin(input: &str) -> Result<String, BrokerError> {
-    let trimmed = input.trim().to_ascii_lowercase();
-    let Some((scheme, remainder)) = trimmed.split_once("://") else {
-        return Err(BrokerError::InvalidOrigin);
-    };
-    let authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
-    if !matches!(scheme, "https" | "http")
-        || authority.is_empty()
-        || !authority.is_ascii()
-        || authority.contains(['/', '@', ' ', '\\'])
+    let trimmed = input.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_ORIGIN_BYTES
+        || trimmed.chars().any(char::is_control)
     {
         return Err(BrokerError::InvalidOrigin);
     }
-    Ok(format!("{scheme}://{authority}"))
+    let parsed = url::Url::parse(trimmed).map_err(|_| BrokerError::InvalidOrigin)?;
+    if !matches!(parsed.scheme(), "https" | "http")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err(BrokerError::InvalidOrigin);
+    }
+    Ok(parsed.origin().ascii_serialization())
+}
+
+fn validate_app_id(app_id: &str) -> Result<(), BrokerError> {
+    if app_id.is_empty()
+        || app_id.len() > MAX_APP_ID_BYTES
+        || !app_id.is_ascii()
+        || app_id.starts_with('.')
+        || app_id.ends_with('.')
+        || app_id.split('.').any(|part| {
+            part.is_empty()
+                || !part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        })
+    {
+        return Err(BrokerError::InvalidAppId);
+    }
+    Ok(())
+}
+
+fn validate_purpose(purpose: &str) -> Result<(), BrokerError> {
+    let purpose = purpose.trim();
+    if purpose.is_empty()
+        || purpose.len() > MAX_PURPOSE_BYTES
+        || purpose.chars().any(char::is_control)
+    {
+        return Err(BrokerError::InvalidPurpose);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -753,6 +792,62 @@ mod tests {
                 username: "ada@example.com".into(),
             }]
         );
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn origins_use_web_origin_rules_and_reject_credential_or_control_injection() {
+        assert_eq!(
+            canonical_origin(" HTTPS://BÜCHER.example:443/path?q=1 ").unwrap(),
+            "https://xn--bcher-kva.example"
+        );
+        assert_eq!(
+            canonical_origin("http://example.com:8080/a").unwrap(),
+            "http://example.com:8080"
+        );
+        for invalid in [
+            "https://user:password@example.com",
+            "https://example.com\nspoofed",
+            "file:///etc/passwd",
+            "https://",
+        ] {
+            assert_eq!(canonical_origin(invalid), Err(BrokerError::InvalidOrigin));
+        }
+    }
+
+    #[test]
+    fn broker_rejects_untrusted_prompt_metadata_before_consulting_the_user() {
+        let root = root();
+        let mut store = SecretStore::open_in(&root);
+        let mut item = SecretItem::login("Bank", "ada", "pw");
+        store.put(&mut item).unwrap();
+        let mut broker = CredentialBroker::new(store);
+        let mut prompted = false;
+        let invalid_app = AccessRequest {
+            app_id: "org.qos.Browser\nFake".into(),
+            item_id: item.id.clone(),
+            purpose: "Sign in".into(),
+            origin: None,
+        };
+        assert_eq!(
+            broker.request(&invalid_app, |_, _| {
+                prompted = true;
+                AccessDecision::AllowAlways
+            }),
+            Err(BrokerError::InvalidAppId)
+        );
+        assert!(!prompted);
+
+        let invalid_purpose = AccessRequest {
+            app_id: "org.qos.Browser".into(),
+            purpose: "Sign in\nApprove something else".into(),
+            ..invalid_app
+        };
+        assert_eq!(
+            broker.request(&invalid_purpose, |_, _| AccessDecision::AllowAlways),
+            Err(BrokerError::InvalidPurpose)
+        );
+        assert!(broker.persistent_grants().is_empty());
         std::fs::remove_dir_all(root).ok();
     }
 
