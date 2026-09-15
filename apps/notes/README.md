@@ -3,9 +3,9 @@
 A native note-taking app for qOS. Pages live in a side-tree; each page
 is a stack of editable blocks (paragraphs, headings, bullets,
 checklists, code, dividers) with inline marks for bold, italic, code,
-and `[[Page]]` links. Cmd-K jumps to any page. The bottom status bar
+and `[[Page]]` links. Cmd-K jumps to any page. A transient status bubble
 tells you whether your edits are saved and how many words live on the
-current page.
+current page without permanently stealing editor space.
 
 The layout is responsive: on a narrow window the page tree collapses
 into an overlay drawer reached from a top-bar button, and the editor
@@ -143,14 +143,6 @@ sidebar tests; they are deliberately not listed as missing features.
   rename the target page, the link still navigates correctly but the
   visible text in the source page stays the old title until you
   manually re-type it.
-- **Popover anchoring is line-bottom, not caret-pixel.** The link
-  popover and slash menu open at the bottom-left of the current line
-  rather than directly under the caret. Reads as "close enough" for
-  v0.1 but a polish target.
-- **Link click hit-testing relies on the editor's zero-padding invariant.** The
-  byte→pixel reverse lookup currently supplies `Theme::dark()`, while the
-  plain-chrome editor deliberately uses zero horizontal padding in every
-  theme. Passing the active theme directly would remove that hidden coupling.
 - **No simultaneous independent carets.** A single user can make a free-form
   selection across blocks, but the editor does not expose multiple local
   carets/selections at once. Remote collaborator carets are still shown.
