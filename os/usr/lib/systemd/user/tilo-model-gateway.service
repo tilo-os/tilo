@@ -3,6 +3,7 @@ Description=Tilo per-user hosted model gateway
 Documentation=file:///usr/share/doc/tilo/model-gateway.md
 After=network-online.target
 Wants=network-online.target
+PartOf=tilo-graphical-session.target
 
 [Service]
 Type=simple
