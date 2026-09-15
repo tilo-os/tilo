@@ -320,3 +320,7 @@ workspace = true
 [[example]]
 name = "card-composition-shots"
 path = "examples/card_composition_shots.rs"
+
+[[example]]
+name = "form-composition-shots"
+path = "examples/form_composition_shots.rs"
