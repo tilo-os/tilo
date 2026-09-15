@@ -44,13 +44,7 @@ pub struct DeviceFabricRuntime {
 
 impl DeviceFabricRuntime {
     pub fn new(network: &ShellNetwork) -> Self {
-        let counter = network
-            .device_fabric()
-            .snapshots()
-            .values()
-            .map(snapshot_max_counter)
-            .max()
-            .unwrap_or(0);
+        let counter = network.device_fabric().max_counter();
         Self {
             counter,
             last_sample: None,
@@ -84,6 +78,7 @@ impl DeviceFabricRuntime {
             self.seed_remote_setting_origins(network, &device);
             self.settings_origin_initialized = true;
         }
+        self.counter = self.counter.max(network.device_fabric().max_counter());
         let previous = network.device_fabric().snapshots().get(&device).cloned();
         let tentative_stamp = FabricStamp {
             counter: self.counter.saturating_add(1).max(1),
@@ -127,6 +122,9 @@ impl DeviceFabricRuntime {
             }
         }
         self.merge_remote_state(network, selection, &device);
+        if let Err(error) = network.refresh_wifi_credential_recipients() {
+            tracing::warn!(%error, "could not refresh per-device Wi-Fi credential envelopes");
+        }
     }
 
     fn seed_remote_setting_origins(
@@ -274,17 +272,6 @@ fn preserve_unchanged_stamps(
             display.stamp = old.stamp.clone();
         }
     }
-}
-
-fn snapshot_max_counter(snapshot: &DeviceFabricSnapshot) -> u64 {
-    std::iter::once(snapshot.presence.stamp.counter)
-        .chain(snapshot.media.iter().map(|item| item.stamp.counter))
-        .chain(snapshot.clipboard.iter().map(|item| item.stamp.counter))
-        .chain(snapshot.settings.iter().map(|item| item.stamp.counter))
-        .chain(snapshot.wifi.iter().map(|item| item.stamp.counter))
-        .chain(snapshot.display.iter().map(|item| item.stamp.counter))
-        .max()
-        .unwrap_or(0)
 }
 
 fn stamp_snapshot(snapshot: &mut DeviceFabricSnapshot, stamp: &FabricStamp, now_unix_ms: u64) {

@@ -2367,6 +2367,126 @@ impl ShellNetwork {
         Ok(changed)
     }
 
+    /// Encrypt and publish a newly learned Wi-Fi passphrase to the local
+    /// device plus every non-revoked home device in the enrollment registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when identity/fabric state is unavailable or sealing
+    /// and validation fail. The passphrase is never logged or persisted in
+    /// plaintext by this path.
+    pub fn share_wifi_credential(
+        &self,
+        ssid: &str,
+        security: &str,
+        password: &str,
+    ) -> Result<(), String> {
+        let local = self
+            .personal_continuity_device
+            .clone()
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let fabric = self.device_fabric();
+        let mut snapshot = fabric
+            .snapshots()
+            .get(&local)
+            .cloned()
+            .ok_or_else(|| "this device has not published fabric presence yet".to_string())?;
+        let recipients = self.certified_secret_recipients();
+        let stamp = crate::shell::device_fabric::FabricStamp {
+            counter: fabric.max_counter().saturating_add(1).max(1),
+            device: local,
+        };
+        let credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            ssid,
+            security,
+            password,
+            &snapshot.owner,
+            recipients,
+            stamp.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+        snapshot
+            .wifi
+            .retain(|saved| saved.network_id != credential.network_id);
+        snapshot.wifi.push(credential);
+        snapshot.presence.stamp = stamp;
+        snapshot.presence.last_seen_unix_ms = now_unix_seconds().saturating_mul(1000);
+        self.upsert_local_device_fabric(snapshot)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Decrypt a retained credential only for this certified device.
+    /// The returned string is intended for an immediate `NetworkManager` call.
+    pub fn shared_wifi_password(&self, ssid: &str) -> Option<String> {
+        let recipient_key = &self.host_identity.as_ref()?.device_signing_key;
+        self.device_fabric()
+            .merged_wifi()
+            .into_values()
+            .filter(|credential| credential.ssid == ssid)
+            .find_map(|credential| {
+                crate::shell::device_fabric_secrets::open_wifi_credential(
+                    &credential,
+                    recipient_key,
+                )
+                .ok()
+            })
+    }
+
+    /// Rewrap credentials this device can open whenever certified device
+    /// membership changes. This is decentralized: any online recipient can
+    /// onboard a new device without uploading a universal key to a service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a retained envelope is malformed or resealing the
+    /// credential into the local authored snapshot fails.
+    pub fn refresh_wifi_credential_recipients(&self) -> Result<bool, String> {
+        let Some(recipient_key) = self
+            .host_identity
+            .as_ref()
+            .map(|identity| &identity.device_signing_key)
+        else {
+            return Ok(false);
+        };
+        let desired = self.certified_secret_recipients();
+        let credentials = self.device_fabric().merged_wifi().into_values();
+        let mut changed = false;
+        for credential in credentials {
+            let current =
+                crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
+                    .map_err(|error| error.to_string())?;
+            if current == desired {
+                continue;
+            }
+            let Ok(password) = crate::shell::device_fabric_secrets::open_wifi_credential(
+                &credential,
+                recipient_key,
+            ) else {
+                continue;
+            };
+            self.share_wifi_credential(&credential.ssid, &credential.security, &password)?;
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    fn certified_secret_recipients(
+        &self,
+    ) -> std::collections::BTreeSet<crate::shell::personal_continuity::DeviceId> {
+        let mut recipients = self
+            .personal_continuity_device
+            .clone()
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Ok(peers) = self.registered_home_peer_ids.lock() {
+            recipients.extend(peers.iter().filter_map(|peer| {
+                crate::shell::personal_continuity::DeviceId::new(hex::encode(peer.as_bytes())).ok()
+            }));
+        }
+        recipients
+    }
+
     fn local_device_fabric_checkpoint(&self) -> Option<Vec<u8>> {
         let local = self.personal_continuity_device.as_ref()?;
         let snapshot = self

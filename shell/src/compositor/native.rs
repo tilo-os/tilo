@@ -3147,6 +3147,19 @@ fn spawn_session_peer_sync(
             let _ = handle.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             let net = Arc::new(handle);
+            let wifi_net = Arc::clone(&net);
+            frame_builder
+                .host_mut()
+                .set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
+                    crate::shell::overlay_host::WifiSecretAction::Lookup { ssid } => {
+                        Ok(wifi_net.shared_wifi_password(&ssid))
+                    }
+                    crate::shell::overlay_host::WifiSecretAction::Share { ssid, password } => {
+                        wifi_net
+                            .share_wifi_credential(&ssid, "wpa2", &password)
+                            .map(|()| None)
+                    }
+                }));
             let stream_net = Arc::clone(&net);
             state.set_legacy_stream_publisher(Arc::new(move |message| {
                 stream_net.publish_legacy_active(message)
