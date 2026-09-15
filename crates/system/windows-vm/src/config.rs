@@ -13,11 +13,32 @@ pub enum CpuMode {
     HostModel,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuestArchitecture {
+    X86_64,
+    Aarch64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FirmwareConfig {
-    pub secure_boot_loader: PathBuf,
-    pub nvram_template: PathBuf,
-    pub nvram: PathBuf,
+pub enum FirmwareConfig {
+    X86Pflash {
+        secure_boot_loader: PathBuf,
+        nvram_template: PathBuf,
+        nvram: PathBuf,
+    },
+    /// Libvirt >= 12.1 selects enrolled Secure Boot firmware and protects
+    /// authenticated variables using QEMU's uefi-vars device.
+    Arm64Variables { varstore: PathBuf },
+}
+
+impl FirmwareConfig {
+    #[must_use]
+    pub const fn architecture(&self) -> GuestArchitecture {
+        match self {
+            Self::X86Pflash { .. } => GuestArchitecture::X86_64,
+            Self::Arm64Variables { .. } => GuestArchitecture::Aarch64,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,15 +70,38 @@ impl ApplianceConfig {
         system_disk: impl Into<PathBuf>,
         nvram: impl Into<PathBuf>,
     ) -> Self {
+        let architecture = if cfg!(target_arch = "aarch64") {
+            GuestArchitecture::Aarch64
+        } else {
+            GuestArchitecture::X86_64
+        };
+        Self::recommended_for(architecture, domain_uuid, system_disk, nvram)
+    }
+
+    /// Explicit architecture selection for domain rendering and cross-platform tests.
+    #[must_use]
+    pub fn recommended_for(
+        architecture: GuestArchitecture,
+        domain_uuid: impl Into<String>,
+        system_disk: impl Into<PathBuf>,
+        variables: impl Into<PathBuf>,
+    ) -> Self {
+        let variables = variables.into();
+        let firmware = match architecture {
+            GuestArchitecture::X86_64 => FirmwareConfig::X86Pflash {
+                secure_boot_loader: PathBuf::from("/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd"),
+                nvram_template: PathBuf::from("/usr/share/edk2/ovmf/OVMF_VARS.fd"),
+                nvram: variables,
+            },
+            GuestArchitecture::Aarch64 => FirmwareConfig::Arm64Variables {
+                varstore: variables,
+            },
+        };
         Self {
             domain_name: APPLIANCE_DOMAIN_NAME.to_string(),
             domain_uuid: domain_uuid.into(),
             system_disk: system_disk.into(),
-            firmware: FirmwareConfig {
-                secure_boot_loader: PathBuf::from("/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd"),
-                nvram_template: PathBuf::from("/usr/share/edk2/ovmf/OVMF_VARS.fd"),
-                nvram: nvram.into(),
-            },
+            firmware,
             performance: PerformanceConfig {
                 memory_mib: 8192,
                 vcpus: 4,
@@ -80,9 +124,20 @@ impl ApplianceConfig {
             return Err(ConfigError::InvalidUuid);
         }
         validate_absolute("system disk", &self.system_disk)?;
-        validate_absolute("secure boot loader", &self.firmware.secure_boot_loader)?;
-        validate_absolute("NVRAM template", &self.firmware.nvram_template)?;
-        validate_absolute("NVRAM", &self.firmware.nvram)?;
+        match &self.firmware {
+            FirmwareConfig::X86Pflash {
+                secure_boot_loader,
+                nvram_template,
+                nvram,
+            } => {
+                validate_absolute("secure boot loader", secure_boot_loader)?;
+                validate_absolute("NVRAM template", nvram_template)?;
+                validate_absolute("NVRAM", nvram)?;
+            }
+            FirmwareConfig::Arm64Variables { varstore } => {
+                validate_absolute("UEFI variable store", varstore)?;
+            }
+        }
         if self.performance.memory_mib < 4096 {
             return Err(ConfigError::InsufficientMemory);
         }
