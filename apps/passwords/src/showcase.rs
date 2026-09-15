@@ -1020,6 +1020,67 @@ impl PasswordsSurface {
         (self.editor_scroll - previous).abs() > f64::EPSILON
     }
 
+    /// Keep a non-pointer focus target inside the clipped editor body.
+    fn ensure_editor_field_visible(&mut self, panel: Rect, field: ActiveField) {
+        if field == ActiveField::Name {
+            // Returning to the first field should also restore the item-kind
+            // choices which precede it in the same scrolling body.
+            self.editor_scroll = 0.0;
+            return;
+        }
+
+        let ordinary: Vec<_> = self
+            .editor_field_order()
+            .into_iter()
+            .filter(|candidate| {
+                !matches!(
+                    candidate,
+                    ActiveField::Notes | ActiveField::Tags | ActiveField::CustomFields
+                )
+            })
+            .collect();
+        let bounds = if let Some(index) = ordinary.iter().position(|candidate| *candidate == field)
+        {
+            let top = self.editor_fields_top(panel)
+                + f64::from(u32::try_from(index).unwrap_or(0)) * self.editor_field_step(panel)
+                + 16.0;
+            (top, top + 52.0)
+        } else {
+            match field {
+                ActiveField::Notes => {
+                    let top = self.editor_note_y(panel) + 16.0;
+                    (
+                        top,
+                        top + if Self::editor_is_compact(panel) {
+                            58.0
+                        } else {
+                            72.0
+                        },
+                    )
+                }
+                ActiveField::Tags => {
+                    let top = self.editor_tags_y(panel) + 16.0;
+                    (top, top + 52.0)
+                }
+                ActiveField::CustomFields => {
+                    let top = self.editor_custom_fields_y(panel) + 16.0;
+                    (top, top + 88.0)
+                }
+                ActiveField::Search
+                | ActiveField::Name
+                | ActiveField::Username
+                | ActiveField::Origin
+                | ActiveField::Password => return,
+            }
+        };
+        let viewport = self.editor_body_viewport(panel);
+        if bounds.0 < viewport.y0 + 4.0 {
+            let _ = self.scroll_editor_by(panel, bounds.0 - viewport.y0 - 4.0);
+        } else if bounds.1 > viewport.y1 - 4.0 {
+            let _ = self.scroll_editor_by(panel, bounds.1 - viewport.y1 + 4.0);
+        }
+    }
+
     fn kind_segments(&self, panel: Rect) -> Vec<Rect> {
         let x = panel.x0 + 36.0;
         let width = panel.width() - 72.0;
@@ -4298,11 +4359,25 @@ impl Widget for PasswordsSurface {
                 match &event.logical_key {
                     Key::Named(NamedKey::Tab) if self.mode == ShowcaseMode::Editor => {
                         let fields = self.editor_field_order();
+                        let backwards = modifiers.state().shift_key();
+                        let last = fields.len().saturating_sub(1);
                         let next = self
                             .active_field
                             .and_then(|active| fields.iter().position(|field| *field == active))
-                            .map_or(0, |index| (index + 1) % fields.len());
+                            .map_or_else(
+                                || if backwards { last } else { 0 },
+                                |index| {
+                                    if backwards {
+                                        index.checked_sub(1).unwrap_or(last)
+                                    } else {
+                                        index.saturating_add(1) % fields.len()
+                                    }
+                                },
+                            );
                         self.active_field = fields.get(next).copied();
+                        if let Some(field) = self.active_field {
+                            self.ensure_editor_field_visible(self.current_panel_rect(), field);
+                        }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Enter) if self.mode == ShowcaseMode::Editor => {
@@ -4833,6 +4908,9 @@ impl Widget for PasswordsSurface {
                     Some("custom-fields") => Some(ActiveField::CustomFields),
                     _ => return false,
                 };
+                if let Some(field) = self.active_field {
+                    self.ensure_editor_field_visible(self.current_panel_rect(), field);
+                }
             }
             (_, Action::SetValue(value)) if target.starts_with("passwords.field.") => {
                 let field: &mut String = match target.strip_prefix("passwords.field.") {
@@ -5131,6 +5209,21 @@ mod tests {
         assert!(app.scroll_editor_by(panel, -f64::MAX));
         assert_eq!(app.editor_scroll, 0.0);
         assert!(!app.scroll_editor_by(panel, -1.0));
+    }
+
+    #[test]
+    fn short_editor_focus_scrolls_fields_into_view_and_restores_the_top() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
+        let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
+
+        app.ensure_editor_field_visible(panel, ActiveField::CustomFields);
+        assert!(app.editor_scroll > 0.0);
+        let custom_bottom = app.editor_custom_fields_y(panel) + 104.0;
+        assert!(custom_bottom <= app.editor_body_viewport(panel).y1 + f64::EPSILON);
+
+        app.ensure_editor_field_visible(panel, ActiveField::Name);
+        assert_eq!(app.editor_scroll, 0.0);
+        assert!(app.kind_segments(panel)[0].y0 >= app.editor_body_viewport(panel).y0);
     }
 
     #[test]
