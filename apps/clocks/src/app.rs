@@ -291,15 +291,19 @@ fn timers_screen(state: &ui::LocalState<ClockState>) -> Element {
                         .with_no_padding()
                         .with_intrinsic_height()
                         .with_gap(12.0)
-                        .push(Box::new(Text::new(&duration(remaining_ms)).with_size(48.0)))
+                        .push(Box::new(
+                            Row::new()
+                                .push(Box::new(Text::new(&duration(remaining_ms)).with_size(48.0)))
+                                .push(Box::new(Spacer::new()))
+                                .push(Box::new(
+                                    Text::new(if running { "Running" } else { "Paused" }).dimmed(),
+                                )),
+                        ))
                         .push(Box::new(
                             Container::new().with_no_padding().with_child(Box::new(
                                 ProgressBar::new(progress)
                                     .with_label(format!("{} remaining", timer.label)),
                             )),
-                        ))
-                        .push(Box::new(
-                            Text::new(if running { "Running" } else { "Paused" }).dimmed(),
                         ))
                         .push(Box::new(
                             Row::new()
@@ -525,7 +529,7 @@ fn surface(mode: &ui::LocalState<usize>, state: &ui::LocalState<ClockState>) -> 
         mode.get(),
     )
     .with_flexible_width()
-    .with_style(ui::widget::toggle_group::SegmentedStyle::Pill)
+    .with_style(ui::widget::toggle_group::SegmentedStyle::Underline)
     .with_id("clocks.mode")
     .on_view("clocks.mode.select", move |i| select.set(i));
     let nav = Row::new()
