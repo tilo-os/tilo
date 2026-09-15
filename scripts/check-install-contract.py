@@ -43,6 +43,12 @@ assert """            (cd "$(dirname "$path")" && sha256sum --check --strict "$(
 assert 'qos-installer-*.asc' in imager_workflow
 for host in ("linux", "windows", "macos"):
     assert f"  {host}:" in imager_workflow
+windows_host = next(host for host in contract["imager"]["hosts"] if host["os"].startswith("Windows"))
+assert windows_host["architectures"] == ["x86_64", "aarch64"]
+for architecture in windows_host["architectures"]:
+    assert f"runner: imager-windows-{architecture}" in imager_workflow
+    assert f"            qos-imager-setup-windows-{architecture}.exe" in imager_workflow
+assert "python3 apps/imager/packaging/generate-winget.py release-assets" in imager_workflow
 
 # Imager's native Windows release includes `ui`. The Wayland clipboard backend
 # consumes Unix file descriptors, so it must never enter non-Linux builds.
