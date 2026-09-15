@@ -138,7 +138,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("charts" | "comments") => Box::new(sheets::SheetsApp::shots_seed_charts_and_comments),
         _ => Box::new(|_a, _d| {}),
     };
-    render_shot_to_png(app, viewport, out, setup)
+    render_shot_to_png(app, viewport, args.text_scale, out, setup)
         .map_err(|error| LaunchError::Operation(format!("Sheets screenshot failed: {error}")))
 }
 
@@ -155,6 +155,7 @@ type ShotSetup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoComm
 fn render_shot_to_png(
     mut app: sheets::SheetsApp,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     out: &std::path::Path,
     setup: ShotSetup,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -165,9 +166,24 @@ fn render_shot_to_png(
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
+    }
+    .with_reduce_motion(matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ));
+    let theme = if let Some(scale) = text_scale {
+        theme.with_text_scale(scale)
+    } else {
+        theme
     };
     let presence = PresenceCtx::empty();
     let permission_ctx = PermissionContext::permissive();
+    // `Theme::with_text_scale` has already expanded every token size.  The
+    // custom Sheets canvas passes those token sizes directly to the renderer,
+    // so applying the multiplier a second time here would turn a requested
+    // 2× accessibility size into 4× text and make the interactive chrome
+    // unusable.  (Toolkit widgets hand the renderer their unscaled base
+    // sizes, which is why their harness sets this separately.)
     let mut text_renderer = TextRenderer::new();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
