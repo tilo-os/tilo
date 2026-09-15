@@ -168,6 +168,8 @@ RUN set -eux; \
 # Reproducible timestamp: buildkit passes SOURCE_DATE_EPOCH; the kernel's
 # KBUILD_BUILD_TIMESTAMP honours it.
 ARG SOURCE_DATE_EPOCH=0
+# Override on memory-constrained native builders; an empty value uses all CPUs.
+ARG KERNEL_BUILD_JOBS
 ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
     KBUILD_BUILD_USER=qos \
     KBUILD_BUILD_HOST=qos-build \
@@ -184,7 +186,9 @@ ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
 RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     cd "$KSRC"; \
-    make -j"$(nproc)" all; \
+    JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}"; \
+    case "$JOBS" in ''|*[!0-9]*|0) echo "KERNEL_BUILD_JOBS must be a positive integer" >&2; exit 1;; esac; \
+    make -j"$JOBS" all; \
     KVER="$(make -s kernelrelease)"; \
     printf 'KVER=%s\n' "$KVER" > /work/kver.env; \
     STAGE=/work/stage; \
