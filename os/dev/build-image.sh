@@ -52,17 +52,13 @@ done
 # Hardware profiles affect the sealed rootfs and UKI. Generic builds remain the
 # default; a machine-specific image must be requested explicitly.
 : "${QOS_HARDWARE_PROFILE:=generic}"
-case "$QOS_HARDWARE_PROFILE" in
-  generic) ;;
-  lenovo-83ed)
+if [ "$QOS_HARDWARE_PROFILE" != generic ]; then
     [ "${QOS_SKIP_BUILD:-0}" != 1 ] \
-      || die "QOS_SKIP_BUILD cannot apply the lenovo-83ed hardware profile; rebuild the image with its firmware and device tree"
-    [ "$(uname -m)" = aarch64 ] || die "lenovo-83ed requires a native ARM64 builder"
-    [ -s "$QOS_OS_DIR/hardware/firmware/lenovo-83ed/manifest.json" ] \
-      || die "stage the Lenovo firmware manifest first; see os/hardware/README.md"
-    ;;
-  *) die "unsupported hardware profile: $QOS_HARDWARE_PROFILE" ;;
-esac
+      || die "QOS_SKIP_BUILD cannot apply a hardware profile; rebuild the image with its firmware and device tree"
+    python3 "$QOS_OS_DIR/dev/hardware_profile.py" "$QOS_HARDWARE_PROFILE" \
+      "$QOS_OS_DIR/hardware/profiles" "$(uname -m)" "$QOS_OS_DIR/hardware/firmware" \
+      || die "hardware-profile build inputs are invalid; see os/hardware/README.md"
+fi
 
 # Reproducible builds: derive a deterministic SOURCE_DATE_EPOCH from the HEAD
 # commit time (same commit -> same value), pass it through to the build, and

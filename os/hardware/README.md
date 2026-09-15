@@ -1,14 +1,43 @@
 # Hardware profiles
 
-The default `generic` image uses its existing firmware and boot path.
-`lenovo-83ed` prepares a Lenovo Yoga Slim 7x ARM64 image using local OEM
-firmware. It requires a native aarch64 builder, the matching kernel's
-`CONFIG_ARM64=y` configuration, and its
-`dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb`.
+Architecture and hardware model are separate build inputs. The default
+`generic` image uses the platform firmware's boot description on either
+x86-64 or ARM64. Registered profiles add model-specific firmware and an
+optional device tree without changing the common build scripts.
+
+## Defining a hardware profile
+
+Add `os/hardware/profiles/<id>.json`, following the validated schema:
+
+```json
+{
+  "schema_version": 1,
+  "id": "example-board",
+  "architecture": "aarch64",
+  "devicetree": "vendor/example-board.dtb",
+  "firmware": {"radio.bin": "vendor/example-board/radio.bin"}
+}
+```
+
+`architecture` is `aarch64` or `x86_64` and must match the native builder and
+installed kernel. `devicetree` names a file relative to that kernel's `dtb/`
+directory; it is `null` for ACPI or firmware-provided device descriptions.
+Only ARM64 profiles may embed a DTB. `firmware` maps local input basenames
+to unique paths under `/usr/lib/firmware/`; an empty mapping needs no local
+firmware manifest. Paths cannot be absolute, traverse directories, or contain
+shell metacharacters. Unknown fields and unsupported architectures fail.
+
+The reviewed definition is copied into the immutable rootfs beside the
+generated profile. The UKI builder checks both files' ownership and permissions,
+their matching identity and architecture, and the exact kernel-specific DTB
+path and hash. Adding a board does not add a new branch to the UKI builder.
+
+The first registered profile, `lenovo-83ed`, describes the Lenovo Yoga Slim 7x.
+Its kernel must supply `dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb`.
 
 ## Local firmware input
 
-Place these six files and `manifest.json` in
+For the Lenovo profile, place these six files and `manifest.json` in
 `os/hardware/firmware/lenovo-83ed/`. This directory is a local build input;
 firmware blobs must not be committed. Preserve the matching Windows driver
 package pair when selecting `qccdsp8380.mbn` and `cdsp_dtbs.elf`.
@@ -51,6 +80,8 @@ and incomplete manifests. It writes root-owned files with mode `0644`:
 - `/usr/lib/qos/hardware-profile.json` binds the model, aarch64 architecture,
   kernel-specific DTB path, and that DTB's SHA-256. The UKI builder validates
   this immutable image input before embedding the device tree and signing.
+- `/usr/lib/qos/hardware-profile-definition.json` holds the reviewed definition
+  used to validate that generated profile.
 
 Passing `--profile generic` creates no files and needs no local firmware.
 These checks prepare build inputs; a signed image, VM installer checks, and a
