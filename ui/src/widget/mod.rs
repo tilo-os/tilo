@@ -1715,7 +1715,7 @@ impl TaffyTreeExt for TaffyTree<()> {
 
 pub type Element = Box<dyn Widget>;
 
-mod layout;
+pub(crate) mod layout;
 pub use layout::{WidgetLayoutError, compute_widget_layout};
 
 mod button;
