@@ -192,7 +192,9 @@ interface ChannelHandle {
   publishedInvocationStatus @22 (id :UInt64)
       -> (found :Bool, updateJson :Text);
   cancelPublishedInvocation @23 (id :UInt64) -> (updateJson :Text);
-  launchPublishedApplication @24 (appId :Text)
+  # Optional content-addressed object to stage read-only for the launched app.
+  # Empty keeps the ordinary app-launch behavior.
+  launchPublishedApplication @24 (appId :Text, contentHash :Text)
       -> (id :UInt64, updateJson :Text);
 
   # Ask this session to open the "say something about this" surface.
