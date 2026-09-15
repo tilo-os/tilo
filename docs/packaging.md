@@ -40,11 +40,11 @@ the journal keeps the host's normal per-user/root access controls.
 | Arch Linux | `qos-session-*.pkg.tar.zst`, `qos-session-devel-*.pkg.tar.zst` | `x86_64`; `aarch64` when enabled |
 | NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`; `aarch64-linux` when enabled |
 
-The complete ARM64 package definitions and release verifier remain in tree,
-but ARM64 publication is temporarily disabled by
-`QOS_DESKTOP_ARM64_RELEASES` until a native `runner-arm64` host is available.
-Current tags therefore publish the x86-64 set. Changing that single workflow
-switch to `"1"` restores the complete native ARM64 release lane.
+The complete ARM64 package definitions and release verifier are enabled by
+`QOS_DESKTOP_ARM64_RELEASES`. Tagged and explicit full-native builds use the
+native `runner-arm64` pool and publish both architecture sets; ordinary changes
+retain one amd64 lane for faster feedback. The single workflow switch remains
+the emergency control for temporarily pausing ARM64 scheduling.
 
 `qos-session-devel` is optional and is only for machines developing qOS. It
 adds a second login entry that can start a user-selected local build after

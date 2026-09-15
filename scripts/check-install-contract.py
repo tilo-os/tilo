@@ -102,7 +102,7 @@ assert "RPM is unsigned" in rpm_release_verifier
 assert "make-repo-file.sh" in rpm_release_verifier
 assert "cmp -- \"$expected_repo\" \"$release_dir/qos-fedora-44.repo\"" in rpm_release_verifier
 assert "Select native release lanes" in session_workflow
-assert 'QOS_DESKTOP_ARM64_RELEASES: "0"' in session_workflow
+assert 'QOS_DESKTOP_ARM64_RELEASES: "1"' in session_workflow
 assert '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow
 for desktop in contract["desktopSession"]:
     assert len(desktop["architectures"]) == 1
