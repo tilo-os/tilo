@@ -548,8 +548,10 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
                     block_len(*region, &span.block)
                         .is_some_and(|len| span.start < span.end && span.end <= len)
                 })
-                && match value {
-                    Some(MarkVal::Str(text)) => safe_text(text),
+                && match (name.as_str(), value) {
+                    ("link", Some(MarkVal::Str(target))) => valid_hyperlink_target(target),
+                    ("link", Some(_)) => false,
+                    (_, Some(MarkVal::Str(text))) => safe_text(text),
                     _ => true,
                 }
         }
@@ -1919,6 +1921,37 @@ pub fn set_hyperlink_action(
     )
 }
 
+/// Accept only link targets the editor can safely activate and round-trip.
+/// Imported documents may preserve other URI forms for fidelity, but newly
+/// authored actions deliberately have a narrower contract.
+pub fn valid_hyperlink_target(target: &str) -> bool {
+    if target.is_empty() || target.trim() != target || target.chars().count() > 2_048 {
+        return false;
+    }
+    if let Some(fragment) = target.strip_prefix('#') {
+        return !fragment.is_empty()
+            && fragment.len() <= 128
+            && fragment
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    }
+    let Ok(url) = url::Url::parse(target) else {
+        return false;
+    };
+    match url.scheme() {
+        "https" => {
+            url.host_str().is_some() && url.username().is_empty() && url.password().is_none()
+        }
+        "mailto" => {
+            let address = url.path();
+            address
+                .split_once('@')
+                .is_some_and(|(local, domain)| !local.is_empty() && !domain.is_empty())
+        }
+        _ => false,
+    }
+}
+
 /// Set one block attribute on `blocks`.
 pub fn set_block_attr_action(
     region: RegionKind,
@@ -2496,10 +2529,11 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             )],
             move |args: &ActionArgs| {
                 let target = args.text("target").unwrap_or_default().trim();
-                if target.is_empty() {
+                if !valid_hyperlink_target(target) {
                     return EncodedAction {
                         type_id: qos_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"hyperlink target is required".to_vec(),
+                        payload: b"hyperlink target must use https:, mailto:, or #bookmark"
+                            .to_vec(),
                     };
                 }
                 encode(&set_hyperlink_action(region, spans.clone(), target))
@@ -3577,6 +3611,84 @@ mod tests {
                 && mark.end == 4
                 && mark.value.as_str() == Some("https://example.com/guide")
         }));
+    }
+
+    #[test]
+    fn hyperlink_targets_are_limited_to_safe_authored_schemes() {
+        for target in [
+            "https://example.com/guide?q=writer#links",
+            "mailto:writer@example.com",
+            "#introduction",
+            "#_heading_actor-42",
+        ] {
+            assert!(valid_hyperlink_target(target), "expected valid: {target}");
+        }
+        for target in [
+            "",
+            " https://example.com",
+            "http://example.com",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://user:secret@example.com",
+            "mailto:not-an-address",
+            "#",
+            "#two words",
+        ] {
+            assert!(
+                !valid_hyperlink_target(target),
+                "expected refusal: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn hyperlink_validation_is_enforced_by_both_resource_and_executor() {
+        let (mut state, ids) = seeded("Read this\n");
+        let block = ids[0].clone();
+        let span = Span {
+            block: block.clone(),
+            start: 0,
+            end: 4,
+        };
+        let ctx = WpResourceCtx {
+            format_spans: vec![span.clone()],
+            selection: None,
+            region: RegionKind::Body,
+            caret_block: block,
+            caret_offset: 4,
+            target_blocks: vec![ids[0].clone()],
+            search_hits: Vec::new(),
+        };
+        let root = provide_resources(&ctx, &state.doc).pop().unwrap();
+        let link = root
+            .actions
+            .iter()
+            .find(|action| action.id == "set-hyperlink")
+            .expect("selected text exposes link authoring");
+        let encoded = link
+            .build_args([(
+                "target".to_string(),
+                qos_actions::ArgValue::Text("javascript:alert(1)".into()),
+            )])
+            .unwrap();
+        assert_eq!(
+            encoded.type_id,
+            qos_actions::resource::INVALID_ARGUMENTS_TYPE,
+            "the prompt reports invalid input before dispatch"
+        );
+
+        let action = set_hyperlink_action(RegionKind::Body, vec![span], "javascript:alert(1)");
+        assert!(matches!(
+            action.apply(&mut state.doc),
+            Err(ActionError::Refused(_))
+        ));
+        assert!(
+            body_blocks(&state.doc)[0]
+                .marks
+                .iter()
+                .all(|mark| mark.name != "link"),
+            "a refused target leaves the document untouched"
+        );
     }
 
     #[test]
