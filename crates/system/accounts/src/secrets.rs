@@ -24,6 +24,7 @@ use zeroize::Zeroizing;
 use crate::{AccountId, Secret, SecretVault};
 
 const ITEM_PREFIX: &str = "qos-secret-item:";
+const GRANT_PREFIX: &str = "qos-secret-grant:";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -171,6 +172,79 @@ impl SecretStore {
             .vault
             .remove(&AccountId::new(format!("{ITEM_PREFIX}{}", id.0)));
         if removed {
+            self.remove_grants_matching(|grant| grant.item_id == *id);
+            self.vault.try_save().map_err(BrokerError::Storage)?;
+        }
+        Ok(removed)
+    }
+
+    /// Durable application access, sorted for a stable management UI.
+    pub fn grants(&self) -> Vec<CredentialGrant> {
+        let mut grants = self
+            .vault
+            .entries_with_prefix(GRANT_PREFIX)
+            .into_iter()
+            .filter_map(|(_, entry)| entry.token)
+            .filter_map(|json| serde_json::from_str(&json).ok())
+            .collect::<Vec<CredentialGrant>>();
+        grants.sort_by(|a, b| {
+            a.app_id
+                .cmp(&b.app_id)
+                .then_with(|| a.item_id.cmp(&b.item_id))
+                .then_with(|| a.origin.cmp(&b.origin))
+        });
+        grants
+    }
+
+    fn has_persistent_grant(&self, key: &GrantKey) -> bool {
+        self.grants().iter().any(|grant| grant.key() == *key)
+    }
+
+    fn persist_grant(&mut self, grant: &CredentialGrant) -> Result<(), BrokerError> {
+        let payload =
+            Zeroizing::new(serde_json::to_string(grant).map_err(|_| BrokerError::CorruptItem)?);
+        let key = AccountId::new(grant.storage_key());
+        self.vault.put(
+            &key,
+            &Secret {
+                password: String::new(),
+                token: Some(payload.to_string()),
+            },
+        );
+        if let Err(error) = self.vault.try_save() {
+            // A failed durable decision must not become an in-memory grant for
+            // the remainder of this broker process.
+            self.vault.remove(&key);
+            return Err(BrokerError::Storage(error));
+        }
+        Ok(())
+    }
+
+    fn remove_grants_matching(&mut self, predicate: impl Fn(&CredentialGrant) -> bool) -> usize {
+        let matches = self
+            .grants()
+            .into_iter()
+            .filter(predicate)
+            .collect::<Vec<_>>();
+        for grant in &matches {
+            self.vault.remove(&AccountId::new(grant.storage_key()));
+        }
+        matches.len()
+    }
+
+    /// Revoke one exact durable application permission.
+    pub fn revoke_grant(&mut self, grant: &CredentialGrant) -> Result<bool, BrokerError> {
+        let removed = self.remove_grants_matching(|candidate| candidate == grant) > 0;
+        if removed {
+            self.vault.try_save().map_err(BrokerError::Storage)?;
+        }
+        Ok(removed)
+    }
+
+    /// Revoke every durable permission held by one application.
+    pub fn revoke_app_grants(&mut self, app_id: &str) -> Result<usize, BrokerError> {
+        let removed = self.remove_grants_matching(|grant| grant.app_id == app_id);
+        if removed > 0 {
             self.vault.try_save().map_err(BrokerError::Storage)?;
         }
         Ok(removed)
@@ -207,6 +281,50 @@ pub enum AccessDecision {
     Deny,
     AllowOnce,
     AllowForSession,
+    AllowAlways,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct GrantKey {
+    app_id: String,
+    item_id: SecretId,
+    origin: Option<String>,
+}
+
+/// One durable credential permission. It contains no secret material and is
+/// nevertheless kept inside the encrypted vault because the relationship
+/// between an application, account, and site is sensitive metadata.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialGrant {
+    id: String,
+    pub app_id: String,
+    pub item_id: SecretId,
+    pub origin: Option<String>,
+    pub created_unix: u64,
+}
+
+impl CredentialGrant {
+    fn new(key: GrantKey) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            app_id: key.app_id,
+            item_id: key.item_id,
+            origin: key.origin,
+            created_unix: now_unix(),
+        }
+    }
+
+    fn key(&self) -> GrantKey {
+        GrantKey {
+            app_id: self.app_id.clone(),
+            item_id: self.item_id.clone(),
+            origin: self.origin.clone(),
+        }
+    }
+
+    fn storage_key(&self) -> String {
+        format!("{GRANT_PREFIX}{}", self.id)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,7 +342,7 @@ pub enum BrokerError {
 /// gesture can create a grant. `AllowOnce` is consumed immediately.
 pub struct CredentialBroker {
     store: SecretStore,
-    session_grants: BTreeSet<(String, SecretId)>,
+    session_grants: BTreeSet<GrantKey>,
 }
 
 /// A short-lived clipboard ownership lease. Callers clear the clipboard only
@@ -292,27 +410,53 @@ impl CredentialBroker {
             .store
             .get(&request.item_id)
             .ok_or(BrokerError::NotFound)?;
-        if let Some(origin) = &request.origin {
-            let origin = canonical_origin(origin)?;
-            if !item.origins.contains(&origin) {
+        let origin = request
+            .origin
+            .as_deref()
+            .map(canonical_origin)
+            .transpose()?;
+        if let Some(origin) = &origin {
+            if !item.origins.contains(origin.as_str()) {
                 return Err(BrokerError::OriginMismatch);
             }
         }
-        let grant = (request.app_id.clone(), request.item_id.clone());
-        if !self.session_grants.contains(&grant) {
+        let grant = GrantKey {
+            app_id: request.app_id.clone(),
+            item_id: request.item_id.clone(),
+            origin,
+        };
+        if !self.session_grants.contains(&grant) && !self.store.has_persistent_grant(&grant) {
             match decide(request, &item) {
                 AccessDecision::Deny => return Err(BrokerError::Denied),
                 AccessDecision::AllowOnce => {}
                 AccessDecision::AllowForSession => {
                     self.session_grants.insert(grant);
                 }
+                AccessDecision::AllowAlways => {
+                    self.store.persist_grant(&CredentialGrant::new(grant))?;
+                }
             }
         }
         Ok(Zeroizing::new(item.password))
     }
 
-    pub fn revoke_app(&mut self, app_id: &str) {
-        self.session_grants.retain(|(app, _)| app != app_id);
+    /// List durable permissions for the Passwords app's access-management UI.
+    /// Session and one-shot decisions intentionally disappear with the broker.
+    pub fn persistent_grants(&self) -> Vec<CredentialGrant> {
+        self.store.grants()
+    }
+
+    /// Revoke every session and durable permission held by an application.
+    pub fn revoke_app(&mut self, app_id: &str) -> Result<usize, BrokerError> {
+        self.session_grants.retain(|grant| grant.app_id != app_id);
+        self.store.revoke_app_grants(app_id)
+    }
+
+    /// Revoke one exact durable permission without affecting another account
+    /// or another origin used by the same application.
+    pub fn revoke_grant(&mut self, grant: &CredentialGrant) -> Result<bool, BrokerError> {
+        self.session_grants.remove(&grant.key());
+        self.store.revoke_grant(grant)
     }
 }
 
@@ -486,6 +630,95 @@ mod tests {
             "pw"
         );
         assert_eq!(prompts, 1);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn durable_consent_survives_restart_but_is_scoped_to_the_exact_origin() {
+        let root = root();
+        let mut store = SecretStore::open_in(&root);
+        let mut item = SecretItem::login("Bank", "ada", "pw");
+        item.add_origin("https://bank.example").unwrap();
+        item.add_origin("https://accounts.bank.example").unwrap();
+        store.put(&mut item).unwrap();
+        let bank = AccessRequest {
+            app_id: "org.qos.Browser".into(),
+            item_id: item.id.clone(),
+            purpose: "Sign in".into(),
+            origin: Some("https://bank.example/login".into()),
+        };
+
+        CredentialBroker::new(store)
+            .request(&bank, |_, _| AccessDecision::AllowAlways)
+            .unwrap();
+        let mut restarted = CredentialBroker::new(SecretStore::open_in(&root));
+        let mut prompts = 0;
+        assert_eq!(
+            restarted
+                .request(&bank, |_, _| {
+                    prompts += 1;
+                    AccessDecision::Deny
+                })
+                .unwrap()
+                .as_str(),
+            "pw"
+        );
+        let other_origin = AccessRequest {
+            origin: Some("https://accounts.bank.example".into()),
+            ..bank
+        };
+        assert_eq!(
+            restarted.request(&other_origin, |_, _| {
+                prompts += 1;
+                AccessDecision::Deny
+            }),
+            Err(BrokerError::Denied)
+        );
+        assert_eq!(prompts, 1, "only the differently scoped origin prompts");
+        assert_eq!(restarted.persistent_grants().len(), 1);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn durable_access_can_be_inspected_and_revoked_by_app_or_item() {
+        let root = root();
+        let mut store = SecretStore::open_in(&root);
+        let mut item = SecretItem::login("Bank", "ada", "pw");
+        item.add_origin("https://bank.example").unwrap();
+        store.put(&mut item).unwrap();
+        let request = AccessRequest {
+            app_id: "org.qos.Browser".into(),
+            item_id: item.id.clone(),
+            purpose: "Sign in".into(),
+            origin: Some("https://bank.example".into()),
+        };
+        let mut broker = CredentialBroker::new(store);
+        broker
+            .request(&request, |_, _| AccessDecision::AllowAlways)
+            .unwrap();
+        let grant = broker.persistent_grants().pop().unwrap();
+        assert_eq!(grant.app_id, "org.qos.Browser");
+        assert_eq!(grant.origin.as_deref(), Some("https://bank.example"));
+        assert!(broker.revoke_grant(&grant).unwrap());
+
+        broker
+            .request(&request, |_, _| AccessDecision::AllowAlways)
+            .unwrap();
+        assert_eq!(broker.revoke_app("org.qos.Browser").unwrap(), 1);
+        assert!(broker.persistent_grants().is_empty());
+
+        broker
+            .request(&request, |_, _| AccessDecision::AllowAlways)
+            .unwrap();
+        drop(broker);
+        let mut store = SecretStore::open_in(&root);
+        assert!(store.remove(&item.id).unwrap());
+        assert!(
+            CredentialBroker::new(SecretStore::open_in(&root))
+                .persistent_grants()
+                .is_empty(),
+            "deleting an item cannot leave an orphaned app permission"
+        );
         std::fs::remove_dir_all(root).ok();
     }
 
