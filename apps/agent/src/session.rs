@@ -1238,6 +1238,7 @@ impl Session {
             self.link.send(&CollabRequest::LaunchPublishedApplication {
                 request_id,
                 app_id: offer.app.clone(),
+                content_hash: None,
             })?;
         } else {
             self.link.send(&CollabRequest::InvokePublishedAction {
