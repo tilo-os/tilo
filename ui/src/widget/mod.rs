@@ -579,6 +579,29 @@ pub trait Widget {
         false
     }
 
+    /// Read-only resolved decisions for widgets with an explicit layout policy.
+    /// `None` means the widget has no such policy; ordinary manual widgets remain
+    /// valid. Values are available after build/settlement and carry real origins.
+    fn layout_info(&self) -> Option<LayoutInfo> {
+        None
+    }
+
+    /// Renderer-aware prepaint policy adjustment. The default preserves the
+    /// existing self-node-only `adjust_layout_style` contract. An override may
+    /// measure its owned children through ordinary references, entering their
+    /// callback binding when present. Never reenter descendants through the raw
+    /// node map while borrowing their parent, change topology, or build another
+    /// layout tree. Change only this node's style; inherited decisions may be
+    /// retained for child hooks. Return true if styles or those decisions change.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        self.adjust_layout_style(taffy, node)
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
     fn draw(
         &mut self,
@@ -1726,6 +1749,14 @@ mod column;
 pub use column::Column;
 mod composition;
 mod form;
+mod composition_parts;
+mod form_composition;
+mod layout_info;
+pub use form_composition::{Field, Form, FormPage, Section};
+pub use layout_info::{
+    Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
+    PageLayout, SectionLayout,
+};
 pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 mod row;
 pub use row::Row;

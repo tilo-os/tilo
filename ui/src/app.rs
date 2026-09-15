@@ -17617,3 +17617,7 @@ mod viewport_composition_tests {
 #[cfg(test)]
 #[path = "app/card_composition_tests.rs"]
 mod card_composition_tests;
+
+#[cfg(test)]
+#[path = "app/form_composition_tests.rs"]
+mod form_composition_tests;
