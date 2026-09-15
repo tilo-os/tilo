@@ -2,11 +2,11 @@
 //!
 //! A canvas-heavy app: rather than composing dozens of taffy nodes, the
 //! root occupies a single layout node and paints every screen (Camera,
-//! Scanner, Gallery, Settings) straight into the Vello scene, hit-testing
+//! Scanner, and Settings) straight into the Vello scene, hit-testing
 //! its own controls.
 //!
 //! The photo/video library has an optional real file projection (see
-//! [`crate::library`]) backed by verified qdoc media blobs; the gallery
+//! [`crate::library`]) backed by verified qdoc media blobs; recent captures
 //! reflects whatever is materialized locally, the shutter writes a PNG, and
 //! delete removes that projection only after its canonical metadata preflight.
 //! The Automerge document (see [`crate::doc`]) holds collaborative metadata —
@@ -34,6 +34,7 @@ use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::ActionEmitter;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, CropSelection, Image, ImageCropEditor, ImageFit, Popover, SidebarDrawer,
@@ -45,20 +46,20 @@ use crate::doc;
 use crate::frame::{self, FrameBuf};
 use crate::library;
 use crate::model::{
-    Capture, CaptureKind, CaptureMode, CodeKind, Facing, GalleryFilter, PhotoFormat, Resolution,
-    ScanEntry, ScannedCode, Screen, Settings, Timer, classify,
+    Capture, CaptureKind, CaptureMode, CodeKind, Facing, PhotoFormat, Resolution, ScanEntry,
+    ScannedCode, Screen, Settings, Timer, classify,
 };
 use crate::paint as p;
 
 /// Uniform inset for floating controls from the window edge. The camera is an
 /// immersive, full-bleed app: the viewfinder fills the window edge-to-edge and
 /// every control floats over it at this margin — there is no navigation rail
-/// or sidebar (the OS owns window chrome). Gallery and Settings are reached
+/// or sidebar (the OS owns window chrome). Recent captures and Settings are reached
 /// from the viewfinder as a push and an overlay sheet, not as rail items.
 const EDGE: f64 = 18.0;
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;";
-/// Single decoded-size budget for gallery thumbnails/previews (one decode
+/// Single decoded-size budget for recent-capture thumbnails/previews (one decode
 /// per item, reused across the card, detail preview, and camera library
 /// button).
 const THUMB: (u32, u32) = (512, 342);
@@ -76,7 +77,7 @@ const NAV_BREAKPOINT: f64 = 760.0;
 /// caller can smuggle malformed pixels into an `Image`.
 const MAX_FRAME_PIXELS: u64 = 8_847_360; // 4096 × 2160
 const MAX_FRAME_BYTES: usize = 48 * 1024 * 1024;
-/// Gallery images are decoded lazily, but must not accumulate without bound
+/// Capture thumbnails are decoded lazily, but must not accumulate without bound
 /// while someone scrolls a large camera roll.
 const MAX_THUMB_CACHE: usize = 48;
 fn white() -> Color {
@@ -271,19 +272,13 @@ enum Action {
     Nav(Screen),
     ToggleNavigation,
     CloseNavigation,
-    /// Dismiss an overlay screen (Gallery / Settings) back to the viewfinder
+    /// Dismiss an overlay screen (Settings) back to the viewfinder
     /// it was opened from.
     Back,
     Shutter,
+    OpenRecentCapture,
     SetMode(CaptureMode),
     CycleFacing,
-    SetFilter(GalleryFilter),
-    SelectCapture(String),
-    CloseDetail,
-    ToggleFavSelected,
-    DeleteSelected,
-    ConfirmDeleteSelected,
-    CancelDelete,
     DismissScan,
     Scan(usize),
     /// Decode a QR/barcode out of a library photo (used when no camera feed
@@ -301,7 +296,6 @@ enum Action {
     MoveDocumentPageEarlier,
     MoveDocumentPageLater,
     RemoveDocumentPage,
-    ShareSelected,
     CycleResolution,
     CycleFormat,
     SetTimer(Timer),
@@ -354,25 +348,20 @@ pub struct CameraApp {
     library_pending: Option<u64>,
 
     // ephemeral UI state
-    /// The viewfinder screen an overlay (Gallery / Settings) was opened from,
+    /// The viewfinder screen the Settings overlay was opened from,
     /// so its back button returns there rather than always to Camera.
     return_to: Screen,
     /// Shared docked/overlay navigation controller.  It is intentionally
     /// presentation-only: opening the drawer must never move a collaborator
     /// away from their own current camera view.
     navigation: SidebarDrawer,
-    filter: GalleryFilter,
     selected_capture: Option<String>,
-    /// In-app destructive operations use the same explicit confirmation
-    /// contract as palette/agent invocations. The value is the exact capture
-    /// revalidated again at confirmation time.
     pending_delete: Option<String>,
     scan_dismissed: bool,
     scanned: Option<ScannedCode>,
     scan_gen: (u32, u32),
     toast: Option<String>,
     last_mouse: Point,
-    gallery_scroll: f64,
     settings_scroll: f64,
     document_scan: crate::document_scan::ScanSession,
     document_settings: DocumentSettings,
@@ -443,6 +432,11 @@ pub struct CameraApp {
     /// button and its palette `ActionSpec` build the same `EncodedAction`.
     actions: ui::ActionHost,
     search_provider: crate::search::CameraSearchProvider,
+    /// The last-capture thumbnail invokes Photos through the shell's typed
+    /// application-open boundary. Camera never imports Photos or serializes a
+    /// side-channel payload; Photos receives only a verified portable hash.
+    photos_handoff: Option<ActionEmitter<String>>,
+    video_handoff: Option<ActionEmitter<String>>,
 }
 
 impl Default for CameraApp {
@@ -453,7 +447,7 @@ impl Default for CameraApp {
 
 impl CameraApp {
     /// The live app: library backed by real files on disk. Opens on the
-    /// viewfinder — the camera's home — with the gallery a tap away.
+    /// viewfinder — the camera's home — with the recent captures a tap away.
     pub fn disk() -> Self {
         Self::with(Storage::Disk(library::resolve_dir()), Screen::Camera)
     }
@@ -496,7 +490,6 @@ impl CameraApp {
                 .docked_width(NAV_WIDTH)
                 .overlay_width(NAV_WIDTH.min(320.0))
                 .breakpoint(NAV_BREAKPOINT),
-            filter: GalleryFilter::All,
             selected_capture: None,
             pending_delete: None,
             scan_dismissed: false,
@@ -504,7 +497,6 @@ impl CameraApp {
             scan_gen: (0, 0),
             toast: None,
             last_mouse: Point::new(-1_000.0, -1_000.0),
-            gallery_scroll: 0.0,
             settings_scroll: 0.0,
             document_scan: crate::document_scan::ScanSession::default(),
             document_settings: DocumentSettings::default(),
@@ -553,7 +545,60 @@ impl CameraApp {
             initialized: false,
             actions: ui::ActionHost::new(),
             search_provider: crate::search::CameraSearchProvider::new(),
+            photos_handoff: Self::media_handoff_emitter("dev.qos.photos", "Photos"),
+            video_handoff: Self::media_handoff_emitter("dev.qos.video-player", "Video Player"),
         }
+    }
+
+    fn media_handoff_resource(app_id: &str, label: &str) -> qos_actions::Resource {
+        use qos_actions::{
+            ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
+        };
+
+        let launch_app_id = app_id.to_owned();
+        let spec = ActionSpec::typed_operation(
+            "open",
+            format!("Open {label}"),
+            format!("Open the latest capture in {label}"),
+            OperationKind::Effect,
+            crate::actions::APPLICATION_LAUNCH_TYPE,
+            vec![ActionParam::required(
+                "content_hash",
+                ParamType::Text,
+                "Verified portable BLAKE3 media hash",
+            )],
+            move |args| {
+                EncodedAction::encode_operation(
+                    crate::actions::APPLICATION_LAUNCH_TYPE,
+                    &serde_json::json!({
+                        "app_id": launch_app_id,
+                        "content_hash": args.text("content_hash").unwrap_or(""),
+                    }),
+                )
+                .unwrap_or_else(|_| EncodedAction {
+                    type_id: crate::actions::APPLICATION_LAUNCH_TYPE.into(),
+                    payload: Vec::new(),
+                })
+            },
+        );
+        Resource::new(format!("{app_id}.app"), "applications.app", label).with_action(spec)
+    }
+
+    fn media_handoff_emitter(app_id: &str, label: &str) -> Option<ActionEmitter<String>> {
+        use qos_actions::ActionBinding;
+
+        let resource = Self::media_handoff_resource(app_id, label);
+        let spec = resource.actions.first()?;
+        ActionBinding::new(&resource, &spec, |content_hash| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                "content_hash".into(),
+                serde_json::Value::String(content_hash),
+            );
+            arguments
+        })
+        .ok()
+        .map(ActionEmitter::new)
     }
 
     /// Hand a freshly captured RGBA frame to the app (live-capture worker or
@@ -788,7 +833,7 @@ impl CameraApp {
 
     /// Register a compact painted affordance with a 44 pt minimum touch and
     /// accessibility target. Larger cards keep their exact bounds through
-    /// [`Self::push_region`] so neighbouring gallery items never overlap.
+    /// [`Self::push_region`] so neighbouring capture controls never overlap.
     fn push_tap_region(&mut self, rect: Rect, action: Action) {
         let w = rect.width().max(44.0);
         let h = rect.height().max(44.0);
@@ -817,15 +862,9 @@ impl CameraApp {
             Action::CloseNavigation => "camera.close-navigation".into(),
             Action::Back => "camera.back".into(),
             Action::Shutter => "camera.shutter".into(),
+            Action::OpenRecentCapture => "camera.open-recent-capture".into(),
             Action::SetMode(mode) => format!("camera.mode:{}", mode.as_str()),
             Action::CycleFacing => "camera.facing".into(),
-            Action::SetFilter(filter) => format!("camera.filter:{}", filter.label()),
-            Action::SelectCapture(id) => format!("camera.capture:{id}"),
-            Action::CloseDetail => "camera.close-detail".into(),
-            Action::ToggleFavSelected => "camera.favorite".into(),
-            Action::DeleteSelected => "camera.delete".into(),
-            Action::ConfirmDeleteSelected => "camera.confirm-delete".into(),
-            Action::CancelDelete => "camera.cancel-delete".into(),
             Action::DismissScan => "camera.dismiss-scan".into(),
             Action::Scan(index) => format!("camera.scan:{index}"),
             Action::ScanLibraryItem(id) => format!("camera.scan-library:{id}"),
@@ -843,7 +882,6 @@ impl CameraApp {
             Action::MoveDocumentPageEarlier => "camera.document.move-earlier".into(),
             Action::MoveDocumentPageLater => "camera.document.move-later".into(),
             Action::RemoveDocumentPage => "camera.document.remove".into(),
-            Action::ShareSelected => "camera.share".into(),
             Action::CycleResolution => "camera.resolution".into(),
             Action::CycleFormat => "camera.format".into(),
             Action::SetTimer(timer) => format!("camera.timer:{}", timer.seconds()),
@@ -907,6 +945,11 @@ impl CameraApp {
                 .into(),
                 AccessState::new().focusable(true),
             ),
+            Action::OpenRecentCapture => (
+                Role::Button,
+                "Open latest capture".into(),
+                AccessState::new().focusable(true),
+            ),
             Action::SetMode(mode) => (
                 Role::RadioButton,
                 format!("{} mode", mode.as_str()),
@@ -917,53 +960,6 @@ impl CameraApp {
             Action::CycleFacing => (
                 Role::Button,
                 format!("Switch camera, currently {}", self.facing.label()),
-                AccessState::new().focusable(true),
-            ),
-            Action::SetFilter(filter) => (
-                Role::RadioButton,
-                format!("Show {}", filter.label()),
-                AccessState::new()
-                    .focusable(true)
-                    .checked(self.filter == *filter),
-            ),
-            Action::SelectCapture(id) => (
-                Role::Button,
-                self.captures
-                    .iter()
-                    .find(|capture| capture.id == *id)
-                    .map_or_else(
-                        || "Open media".into(),
-                        |capture| format!("Open {}", capture.label),
-                    ),
-                AccessState::new().focusable(true),
-            ),
-            Action::CloseDetail => (
-                Role::Button,
-                "Close preview".into(),
-                AccessState::new().focusable(true),
-            ),
-            Action::ToggleFavSelected => (
-                Role::ToggleButton,
-                "Favorite selected media".into(),
-                AccessState::new().focusable(true).checked(
-                    self.selected_capture
-                        .as_ref()
-                        .is_some_and(|id| self.favorites.contains(id)),
-                ),
-            ),
-            Action::DeleteSelected => (
-                Role::Button,
-                "Delete selected media".into(),
-                AccessState::new().focusable(true),
-            ),
-            Action::ConfirmDeleteSelected => (
-                Role::Button,
-                "Delete capture permanently".into(),
-                AccessState::new().focusable(true),
-            ),
-            Action::CancelDelete => (
-                Role::Button,
-                "Cancel deletion".into(),
                 AccessState::new().focusable(true),
             ),
             Action::DismissScan => (
@@ -985,11 +981,6 @@ impl CameraApp {
                         || "Scan media".into(),
                         |capture| format!("Scan {}", capture.label),
                     ),
-                AccessState::new().focusable(true),
-            ),
-            Action::ShareSelected => (
-                Role::Button,
-                "Share selected media".into(),
                 AccessState::new().focusable(true),
             ),
             Action::CycleResolution => (
@@ -1284,7 +1275,7 @@ impl CameraApp {
             .map_err(|error| error.to_string())
     }
 
-    /// The context Ctrl+K needs to build Camera's resource tree: the gallery
+    /// The context Ctrl+K needs to build Camera's resource tree: recent captures
     /// shots currently in the library cache, with their favorite state. Derived
     /// entirely from state the app already holds; nothing is fabricated.
     pub(crate) fn camera_resource_ctx(&self) -> crate::actions::CameraResourceCtx {
@@ -1292,23 +1283,24 @@ impl CameraApp {
             .captures
             .iter()
             .take(crate::actions::MAX_CONTEXT_CAPTURE_RESOURCES)
-            .map(Self::gallery_item)
+            .map(Self::capture_item)
             .collect();
         self.camera_resource_ctx_with_items(items)
     }
 
-    fn gallery_item(capture: &Capture) -> crate::actions::GalleryItem {
-        crate::actions::GalleryItem {
+    fn capture_item(capture: &Capture) -> crate::actions::CaptureItem {
+        crate::actions::CaptureItem {
             id: capture.id.clone(),
             label: capture.label.clone(),
             favorite: capture.favorite,
             is_video: capture.is_video(),
+            media_id: capture.media_id.clone(),
         }
     }
 
     fn camera_resource_ctx_with_items(
         &self,
-        items: Vec<crate::actions::GalleryItem>,
+        items: Vec<crate::actions::CaptureItem>,
     ) -> crate::actions::CameraResourceCtx {
         let camera_devices = self.available_camera_devices();
         crate::actions::CameraResourceCtx {
@@ -1329,7 +1321,7 @@ impl CameraApp {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<qos_actions::Resource> {
-        if matches!(id, "camera.gallery" | "camera.settings" | "camera") {
+        if matches!(id, "camera.captures" | "camera.settings" | "camera") {
             return crate::actions::resolve_resource(&self.camera_resource_ctx(), doc, id);
         }
         let (capture_id, expect_video) = id
@@ -1343,12 +1335,12 @@ impl CameraApp {
             .captures
             .iter()
             .find(|capture| capture.id == capture_id && capture.is_video() == expect_video)
-            .map(Self::gallery_item)?;
+            .map(Self::capture_item)?;
         crate::actions::resolve_resource(&self.camera_resource_ctx_with_items(vec![item]), doc, id)
     }
 
     fn refresh_search_provider(&self) {
-        let items: Vec<_> = self.captures.iter().map(Self::gallery_item).collect();
+        let items: Vec<_> = self.captures.iter().map(Self::capture_item).collect();
         self.search_provider.sync(&items);
     }
 
@@ -1363,26 +1355,10 @@ impl CameraApp {
             Action::CloseNavigation => self.navigation.close(),
             Action::Back => self.apply_back(doc, root),
             Action::Shutter => self.apply_shutter(doc, root),
+            Action::OpenRecentCapture => self.open_recent_capture(),
             Action::SetMode(m) => self.apply_set_mode(m, doc, root),
             Action::CycleFacing => self.apply_cycle_facing(doc, root),
-            Action::SetFilter(f) => {
-                self.filter = f;
-                self.gallery_scroll = 0.0;
-            }
-            Action::SelectCapture(id) => {
-                self.selected_capture = Some(id);
-                self.pending_delete = None;
-            }
-            Action::CloseDetail => {
-                self.selected_capture = None;
-                self.pending_delete = None;
-            }
-            Action::ToggleFavSelected => self.apply_toggle_fav_selected(doc),
-            Action::DeleteSelected => self.apply_delete_selected(),
-            Action::ConfirmDeleteSelected => self.apply_confirm_delete_selected(doc),
-            Action::CancelDelete => self.pending_delete = None,
             Action::DismissScan => self.scan_dismissed = true,
-            Action::ShareSelected => self.apply_share_selected(),
             Action::Scan(i) => self.apply_scan_action(i, doc, root),
             Action::ScanLibraryItem(id) => self.scan_library_item(&id, doc, root),
             Action::RetryCamera => self.retry_camera(),
@@ -1418,7 +1394,7 @@ impl CameraApp {
     fn apply_nav(&mut self, s: Screen, _doc: &mut AutoCommit, _root: &ObjId) {
         // Remember which viewfinder an overlay was summoned from so its
         // back button returns there.
-        if matches!(s, Screen::Gallery | Screen::Settings)
+        if matches!(s, Screen::Settings)
             && matches!(
                 self.screen,
                 Screen::Camera | Screen::Scanner | Screen::Document
@@ -1872,6 +1848,44 @@ impl CameraApp {
         }
     }
 
+    fn open_recent_capture(&mut self) {
+        let Some(capture) = self.captures.first() else {
+            self.toast = Some("Take a capture before opening it".into());
+            return;
+        };
+        let media_id = capture
+            .media_id
+            .clone()
+            .or_else(|| capture.path.as_deref().and_then(crate::media::store_file));
+        let Some(media_id) = media_id else {
+            self.toast = Some("Latest capture is not available as portable media".into());
+            return;
+        };
+        let Some(hash) = media_id.strip_prefix(crate::media::MEDIA_PREFIX) else {
+            self.toast = Some("Latest capture has an invalid portable media identity".into());
+            return;
+        };
+        if crate::media::read(&media_id).is_none() {
+            self.toast = Some("Latest capture bytes are unavailable on this device".into());
+            return;
+        }
+        let (handoff, destination) = if capture.is_video() {
+            (&mut self.video_handoff, "Video Player")
+        } else {
+            (&mut self.photos_handoff, "Photos")
+        };
+        let Some(handoff) = handoff.as_mut() else {
+            self.toast = Some(format!(
+                "{destination} handoff is unavailable in this Camera session"
+            ));
+            return;
+        };
+        match handoff.emit(hash.to_owned()) {
+            Ok(()) => self.toast = Some(format!("Opening latest capture in {destination}…")),
+            Err(error) => self.toast = Some(format!("Couldn't open {destination}: {error}")),
+        }
+    }
+
     fn apply_set_mode(&mut self, m: CaptureMode, doc: &mut AutoCommit, _root: &ObjId) {
         // Switching mode mid-record would strand the clip; ignore.
         if !self.is_recording() && !self.is_counting_down() {
@@ -1896,48 +1910,6 @@ impl CameraApp {
         self.cam_view = None;
     }
 
-    fn apply_toggle_fav_selected(&mut self, doc: &mut AutoCommit) {
-        if let Some(id) = self.selected_capture.clone() {
-            // Flip the cached state for immediate feedback, then route
-            // the doc write through the shared action so the heart, a
-            // delete's cleanup, and Ctrl+K all dispatch one thing.
-            let mut toggled = None;
-            if let Some(c) = self.captures.iter_mut().find(|c| c.id == id) {
-                c.favorite = !c.favorite;
-                toggled = Some(c.favorite);
-            }
-            if let Some(on) = toggled {
-                if on {
-                    self.favorites.insert(id.clone());
-                } else {
-                    self.favorites.remove(&id);
-                }
-                self.perform_action(
-                    doc,
-                    &crate::actions::CameraAction::SetFavorite { id: id.clone(), on },
-                );
-                self.refresh_search_provider();
-            }
-        }
-    }
-
-    fn apply_delete_selected(&mut self) {
-        self.pending_delete = self.selected_capture.clone();
-    }
-
-    fn apply_confirm_delete_selected(&mut self, doc: &mut AutoCommit) {
-        let Some(id) = self.pending_delete.take() else {
-            return;
-        };
-        if self.selected_capture.as_deref() != Some(id.as_str()) {
-            self.toast = Some("The selected capture changed; nothing was deleted".into());
-            return;
-        }
-        if let Err(error) = self.delete_capture(&id, doc) {
-            self.toast = Some(format!("Couldn't delete: {error}"));
-        }
-    }
-
     /// Delete external pixels only after the bounded canonical-removal
     /// preflight. This never lets a hostile shared list turn a refused removal
     /// into irreversible local deletion.
@@ -1950,7 +1922,7 @@ impl CameraApp {
             library::delete(dir, id).map_err(|error| error.to_string())?;
         }
         // The pixels are device I/O (removed above / reconciled via FUSE).
-        // The resource's shared gallery row and favorite state are both
+        // The resource's shared capture row and favorite state are both
         // canonical actions, so peers/history never retain a ghost capture.
         self.try_perform_action(
             doc,
@@ -1969,20 +1941,8 @@ impl CameraApp {
         self.refresh_search_provider();
         self.thumbs.remove(id);
         self.favorites.remove(id);
-        if self.selected_capture.as_deref() == Some(id) {
-            self.selected_capture = None;
-        }
         self.toast = Some("Deleted".into());
         Ok(())
-    }
-
-    fn apply_share_selected(&mut self) {
-        let Some(id) = self.selected_capture.clone() else {
-            return;
-        };
-        if let Err(error) = self.share_capture(&id) {
-            self.toast = Some(error);
-        }
     }
 
     /// Copy a qdoc-backed, portable capture identity. This is deliberately a
@@ -2109,7 +2069,6 @@ impl CameraApp {
                     media_id: None,
                 };
                 self.captures.insert(0, cap);
-                self.selected_capture = Some(id);
                 self.toast = Some("Photo saved".into());
                 Ok(())
             }
@@ -2146,14 +2105,6 @@ impl CameraApp {
         use crate::actions::CameraOperation;
         match operation {
             CameraOperation::Reveal { screen } => self.screen = screen,
-            CameraOperation::OpenCapture { id } => {
-                if !self.captures.iter().any(|capture| capture.id == id) {
-                    return Err("the capture no longer exists".into());
-                }
-                self.selected_capture = Some(id);
-                self.pending_delete = None;
-                self.screen = Screen::Gallery;
-            }
             CameraOperation::Capture => self.capture(None)?,
             CameraOperation::ToggleRecording => {
                 if self.is_recording() {
@@ -2166,7 +2117,6 @@ impl CameraApp {
             CameraOperation::OpenCameraPrivacySettings => self.open_camera_privacy_settings(),
             CameraOperation::SelectCamera { device } => self.select_camera(&device),
             CameraOperation::Share { id } => {
-                self.selected_capture = Some(id.clone());
                 self.share_capture(&id)?;
             }
             CameraOperation::Delete { .. } => {
@@ -2326,15 +2276,6 @@ impl CameraApp {
         } else {
             false
         }
-    }
-
-    /// Captures passing the active gallery filter.
-    fn filtered(&self) -> Vec<Capture> {
-        self.captures
-            .iter()
-            .filter(|c| self.filter.matches(c))
-            .cloned()
-            .collect()
     }
 
     #[cfg(feature = "live-capture")]
@@ -2523,7 +2464,11 @@ fn sample_captures() -> Vec<Capture> {
         facing,
         scene,
         path: None,
-        media_id: None,
+        // Screenshot fixtures need a stable portable identity so their
+        // resource/search contracts exercise the same typed handoff as a
+        // captured item. The headless fixture intentionally has no local
+        // blob; the real launcher reports that absence honestly if invoked.
+        media_id: Some(format!("{}{:064x}", crate::media::MEDIA_PREFIX, scene)),
     };
     vec![
         mk("c1", Photo, 120, 1, true, Back, "Golden hour", 0),
@@ -2543,15 +2488,60 @@ impl Widget for CameraApp {
         &[crate::actions::CAMERA_OPERATION_TYPE]
     }
 
-    /// Publish the open gallery + its shots so the host's Ctrl+K action palette
+    /// Publish capture resources so the host's Ctrl+K action palette
     /// scopes to them. Delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
-        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+        let mut resources = <Self as qos_actions::ResourceProvider>::resources(self, doc);
+        resources.push(Self::media_handoff_resource("dev.qos.photos", "Photos"));
+        resources.push(Self::media_handoff_resource(
+            "dev.qos.video-player",
+            "Video Player",
+        ));
+        resources
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.photos_handoff
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| self.video_handoff.as_mut().and_then(ActionEmitter::take))
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        if let Some(handoff) = self.photos_handoff.as_ref() {
+            bindings.push(handoff.metadata("camera.open-recent-in-photos"));
+        }
+        if let Some(handoff) = self.video_handoff.as_ref() {
+            bindings.push(handoff.metadata("camera.open-recent-in-video-player"));
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<qos_actions::ActionAddress>,
+    ) {
+        if let Some(handoff) = self.photos_handoff.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
+        if let Some(handoff) = self.video_handoff.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        if id == "dev.qos.photos.app" {
+            return Some(Self::media_handoff_resource("dev.qos.photos", "Photos"));
+        }
+        if id == "dev.qos.video-player.app" {
+            return Some(Self::media_handoff_resource(
+                "dev.qos.video-player",
+                "Video Player",
+            ));
+        }
         <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
@@ -2751,7 +2741,6 @@ impl Widget for CameraApp {
                         resources: vec![format!("camera.photo:{}", saved.name.clone())],
                     };
                     self.lib_dirty = true;
-                    self.selected_capture = Some(saved.name);
                     self.toast = Some("Photo saved".into());
                     if let Some(invocation) = terminal {
                         self.completed_operations.insert(
@@ -2839,7 +2828,6 @@ impl Widget for CameraApp {
                         resources: vec![format!("camera.video:{}", saved.name.clone())],
                     };
                     self.lib_dirty = true;
-                    self.selected_capture = Some(saved.name);
                     self.toast = Some("Video saved".into());
                     if let Some(invocation) = terminal {
                         self.completed_operations.insert(
@@ -3011,7 +2999,7 @@ impl Widget for CameraApp {
         if self.lib_dirty {
             self.request_library_reload();
         }
-        // Materialize peer-published capture metadata as normal gallery
+        // Materialize peer-published capture metadata as normal capture
         // resources. The local path remains `None`; pixels are requested only
         // through the verified qdoc media identity when a thumbnail is needed.
         let shared_captures = doc::read_shared_captures(state, path);
@@ -3022,7 +3010,12 @@ impl Widget for CameraApp {
         let mut search_changed = false;
         let before_retain = self.captures.len();
         self.captures.retain(|capture| {
-            capture.path.is_some()
+            // Hermetic samples exercise the capture handoff contract without
+            // fabricating a qdoc row or a local blob. They remain local test
+            // fixtures; real disk/peer captures still require their canonical
+            // source below.
+            matches!(&self.storage, Storage::Sample)
+                || capture.path.is_some()
                 || capture.media_id.is_none()
                 || shared_ids.contains(capture.id.as_str())
         });
@@ -3102,12 +3095,10 @@ impl Widget for CameraApp {
         {
             self.scan_library_item(&id, state, path);
         }
-        // Screenshot hook: pin a scroll position (clamped at draw time) so a
-        // scrolled state can be captured headless. No runtime effect.
+        // Screenshot hook: pin the Settings scroll position for headless rendering.
         if let Ok(v) = std::env::var("CAMERA_SCROLL")
             && let Ok(px) = v.parse::<f64>()
         {
-            self.gallery_scroll = px;
             self.settings_scroll = px;
         }
         // A deterministic cursor fixture makes it possible to inspect compact
@@ -3188,7 +3179,6 @@ impl Widget for CameraApp {
             Screen::Camera => self.draw_camera(scene, t, tr, theme, full),
             Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
             Screen::Document => self.draw_document_scanner(scene, t, tr, theme, full),
-            Screen::Gallery => self.draw_gallery(scene, t, tr, theme, full),
             Screen::Settings => self.draw_settings(scene, t, tr, theme, full),
         }
         if self.navigation.is_overlay() && self.navigation.is_open() {
@@ -3203,12 +3193,6 @@ impl Widget for CameraApp {
         let rail = self.navigation.sidebar_rect();
         if rail.width() > 4.0 && self.navigation.reveal() > 0.001 {
             self.draw_navigation(scene, t, tr, theme, rail);
-        }
-        if self.pending_delete.is_some() {
-            // The modal owns interaction while visible. Removing the obscured
-            // hit map also keeps the accessibility tree genuinely modal.
-            self.regions.clear();
-            self.draw_delete_confirmation(scene, t, tr, theme, full);
         }
         self.draw_hover_tooltip(scene, t, tr, theme);
         self.draw_toast(scene, t, tr, theme);
@@ -3346,11 +3330,6 @@ impl Widget for CameraApp {
                 };
                 // Wheel up (dy > 0) scrolls toward the top of the content.
                 match self.screen {
-                    Screen::Gallery => {
-                        self.gallery_scroll = (self.gallery_scroll - dy).max(0.0);
-                        self.dirty = true;
-                        *handled = true;
-                    }
                     Screen::Settings => {
                         self.settings_scroll = (self.settings_scroll - dy).max(0.0);
                         self.dirty = true;
@@ -3368,18 +3347,6 @@ impl Widget for CameraApp {
                     },
                 ..
             } => {
-                if self.pending_delete.is_some() {
-                    let act = match logical_key {
-                        Key::Named(NamedKey::Escape) => Some(Action::CancelDelete),
-                        Key::Named(NamedKey::Enter) => Some(Action::ConfirmDeleteSelected),
-                        _ => None,
-                    };
-                    if let Some(action) = act {
-                        self.apply(action, state, path);
-                        *handled = true;
-                    }
-                    return;
-                }
                 if matches!(logical_key, Key::Named(NamedKey::Escape))
                     && self.navigation.is_overlay()
                     && self.navigation.is_open()
@@ -3393,9 +3360,7 @@ impl Widget for CameraApp {
                     Key::Character(c) => match c.as_str() {
                         "1" => Some(Action::Nav(Screen::Camera)),
                         "2" => Some(Action::Nav(Screen::Scanner)),
-                        "3" => Some(Action::Nav(Screen::Document)),
-                        "4" => Some(Action::Nav(Screen::Gallery)),
-                        "5" => Some(Action::Nav(Screen::Settings)),
+                        "3" => Some(Action::Nav(Screen::Settings)),
                         "g" | "G" => Some(Action::ToggleGrid),
                         "f" | "F" => Some(Action::CycleFacing),
                         "r" | "R"
@@ -3418,9 +3383,6 @@ impl Widget for CameraApp {
                         } else {
                             Action::Nav(Screen::Camera)
                         })
-                    }
-                    Key::Named(NamedKey::Escape) if matches!(self.screen, Screen::Gallery) => {
-                        Some(Action::CloseDetail)
                     }
                     Key::Named(NamedKey::Escape) if matches!(self.screen, Screen::Settings) => {
                         Some(Action::Back)
@@ -3686,7 +3648,6 @@ impl CameraApp {
         for (screen, icon) in [
             (Screen::Camera, "camera"),
             (Screen::Scanner, "scan"),
-            (Screen::Gallery, "gallery"),
             (Screen::Settings, "settings"),
         ] {
             let row = Rect::new(rail.x0 + 10.0, y, rail.x1 - 10.0, y + 42.0);
@@ -3766,9 +3727,9 @@ impl CameraApp {
             status.x0 + 14.0,
             status.y0 + 31.0,
             if large_type {
-                "Local media"
+                "Saved locally"
             } else {
-                "Media stays on this device"
+                "Saved locally · share when you choose"
             },
             10.0,
             c.text_dim,
@@ -4178,7 +4139,7 @@ impl CameraApp {
         if !matches!(
             action,
             Action::ToggleNavigation
-                | Action::Nav(Screen::Settings | Screen::Gallery)
+                | Action::Nav(Screen::Settings)
                 | Action::Back
                 | Action::Shutter
                 | Action::CycleFacing
@@ -4223,112 +4184,6 @@ impl CameraApp {
         p::text_in(scene, tr, rect, label, 11.5, white());
     }
 
-    fn draw_delete_confirmation(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        full: Rect,
-    ) {
-        let Some(id) = self.pending_delete.as_deref() else {
-            return;
-        };
-        let label = self
-            .captures
-            .iter()
-            .find(|capture| capture.id == id)
-            .map_or_else(
-                || "this capture".to_string(),
-                |capture| capture.label.clone(),
-            );
-        p::fill_rect(scene, t, full, theme.tokens.colors.surfaces.scrim);
-        self.push_region(full, Action::CancelDelete);
-
-        let width = 420.0_f64.min((full.width() - 32.0).max(280.0));
-        let height = 214.0_f64.min((full.height() - 32.0).max(190.0));
-        let panel = Rect::new(
-            full.center().x - width / 2.0,
-            full.center().y - height / 2.0,
-            full.center().x + width / 2.0,
-            full.center().y + height / 2.0,
-        );
-        let colors = &theme.tokens.colors;
-        p::fill_round(scene, t, panel, 20.0, colors.surfaces.raised);
-        p::stroke_round(scene, t, panel, 20.0, colors.border_standard, 1.0);
-        p::circle(
-            scene,
-            t,
-            panel.x0 + 38.0,
-            panel.y0 + 40.0,
-            20.0,
-            p::alpha(colors.semantic.danger, 0.16),
-        );
-        p::icon(
-            scene,
-            t,
-            "trash",
-            Rect::new(
-                panel.x0 + 27.0,
-                panel.y0 + 29.0,
-                panel.x0 + 49.0,
-                panel.y0 + 51.0,
-            ),
-            colors.semantic.danger,
-            1.8,
-        );
-        p::text(
-            scene,
-            tr,
-            panel.x0 + 68.0,
-            panel.y0 + 25.0,
-            "Delete capture?",
-            18.0,
-            colors.text_primary,
-        );
-        let label = ellipsize(tr, &format!("“{label}”"), 13.0, panel.width() - 48.0);
-        p::text(
-            scene,
-            tr,
-            panel.x0 + 24.0,
-            panel.y0 + 82.0,
-            &label,
-            13.0,
-            colors.text_primary,
-        );
-        p::text(
-            scene,
-            tr,
-            panel.x0 + 24.0,
-            panel.y0 + 108.0,
-            "It will be permanently removed from this device.",
-            12.5,
-            colors.text_primary,
-        );
-        p::text(
-            scene,
-            tr,
-            panel.x0 + 24.0,
-            panel.y0 + 132.0,
-            "This cannot be undone.",
-            12.5,
-            colors.text_dim,
-        );
-
-        let gap = 10.0;
-        let button_w = (panel.width() - 48.0 - gap) / 2.0;
-        let y = panel.y1 - 62.0;
-        let cancel = Rect::new(panel.x0 + 24.0, y, panel.x0 + 24.0 + button_w, y + 42.0);
-        let confirm = Rect::new(cancel.x1 + gap, y, panel.x1 - 24.0, y + 42.0);
-        p::fill_round(scene, t, cancel, 12.0, colors.neutral[2]);
-        p::stroke_round(scene, t, cancel, 12.0, colors.border_standard, 1.0);
-        p::text_in(scene, tr, cancel, "Cancel", 12.5, colors.text_primary);
-        p::fill_round(scene, t, confirm, 12.0, colors.semantic.danger);
-        p::text_in(scene, tr, confirm, "Delete", 12.5, white());
-        self.push_tap_region(cancel, Action::CancelDelete);
-        self.push_tap_region(confirm, Action::ConfirmDeleteSelected);
-    }
-
     fn draw_toast(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let Some(msg) = self.toast.as_deref() else {
             return;
@@ -4354,7 +4209,7 @@ impl CameraApp {
         let reserved_bottom = match self.screen {
             Screen::Document => 130.0,
             Screen::Camera | Screen::Scanner => 64.0,
-            Screen::Gallery | Screen::Settings => 0.0,
+            Screen::Settings => 0.0,
         };
         let area = if reserved_bottom > 0.0 {
             Rect::new(
@@ -4409,37 +4264,7 @@ impl CameraApp {
             p::alpha(c.text_dim, 0.55),
         );
     }
-}
 
-/// Scroll position/extent bundle for [`CameraApp::draw_scrollbar`].
-#[derive(Clone, Copy)]
-struct ScrollMetrics {
-    scroll: f64,
-    max_scroll: f64,
-    view_h: f64,
-    content_h: f64,
-}
-
-// ====================================================================
-// Camera screen
-// ====================================================================
-
-/// Icon/label/style bundle for [`CameraApp::ctrl_pill`].
-#[derive(Clone, Copy)]
-struct PillContent<'a> {
-    icon: Option<&'a str>,
-    label: &'a str,
-    active: bool,
-}
-
-/// Feed/recording state for [`CameraApp::draw_capture_cluster`] and its helpers.
-#[derive(Clone, Copy)]
-struct CaptureClusterState {
-    has_feed: bool,
-    recording: bool,
-}
-
-impl CameraApp {
     fn draw_camera(
         &mut self,
         scene: &mut Scene,
@@ -4757,7 +4582,7 @@ impl CameraApp {
         }
     }
 
-    /// The bottom capture cluster floating over the viewfinder: a gallery
+    /// The bottom capture cluster floating over the viewfinder: a capture history
     /// thumbnail peek, the shutter, a lens switch, and — when idle — the
     /// Photo/Video/Scan mode switcher above the shutter.
     fn draw_capture_cluster(
@@ -4788,13 +4613,13 @@ impl CameraApp {
                 };
             self.draw_mode_switcher(scene, t, tr, theme, scx, selector_top);
         }
-        self.draw_gallery_thumb_peek(scene, t, tr, theme, full, cy);
+        self.draw_recent_capture_peek(scene, t, tr, theme, full, cy);
         self.draw_shutter(scene, t, theme, scx, cy, state);
         self.draw_lens_switch(scene, t, tr, theme, full, cy);
     }
 
-    /// Gallery thumbnail peek, bottom-left of the capture cluster. Tap → Gallery.
-    fn draw_gallery_thumb_peek(
+    /// Recent-capture thumbnail peek, bottom-left of the capture cluster. Tap opens its owner.
+    fn draw_recent_capture_peek(
         &mut self,
         scene: &mut Scene,
         t: Affine,
@@ -4810,6 +4635,7 @@ impl CameraApp {
             full.x0 + EDGE + 8.0 + ts * 2.0,
             cy + ts,
         );
+        self.push_region(thumb, Action::OpenRecentCapture);
         if let Some(cap) = self.captures.first().cloned() {
             self.ensure_thumb(&cap);
             p::push_clip_round(scene, t, thumb, 14.0);
@@ -4841,13 +4667,12 @@ impl CameraApp {
             p::icon(
                 scene,
                 t,
-                "gallery",
+                "image",
                 shrink(thumb, 16.0),
                 p::alpha(white(), 0.7),
                 1.6,
             );
         }
-        self.push_region(thumb, Action::Nav(Screen::Gallery));
     }
 
     /// Shutter (centre of the capture cluster). Photo: white disc. Video: red
@@ -5597,22 +5422,35 @@ impl CameraApp {
         }
 
         // Floating title, top-left over the feed.
-        let title = if live {
+        let title = if theme.text_scale >= 1.5 {
+            "Scan"
+        } else if live {
             "Scan a code"
         } else {
             "Scan from a photo"
         };
-        let subtitle = if live {
+        let subtitle = if theme.text_scale >= 1.5 {
+            ""
+        } else if live {
             "Point at any QR or barcode — detection is automatic"
         } else {
             "No camera — pick a saved photo to scan a code from it"
+        };
+        // On overlay-nav layouts the summon button occupies the top-left
+        // corner. Start the header after its 44pt target so title text is
+        // never painted underneath an interactive control.
+        let header_left = if self.navigation.is_docked() {
+            EDGE
+        } else {
+            62.0
         };
         Self::draw_glass_header(
             scene,
             t,
             tr,
             theme,
-            Point::new(full.x0 + EDGE, full.y0 + 18.0),
+            Point::new(full.x0 + header_left, full.y0 + 18.0),
+            (full.width() - header_left - EDGE - 48.0).max(120.0),
             title,
             subtitle,
         );
@@ -5643,7 +5481,7 @@ impl CameraApp {
         // you switch back to the camera the same way you got here. Centred on
         // the feed (clear of the recent-scans panel) to align with the scan
         // window and result card.
-        self.draw_mode_switcher(scene, t, tr, theme, full.center().x, full.y1 - 56.0);
+        self.draw_mode_switcher(scene, t, tr, theme, stage.center().x, full.y1 - 56.0);
     }
 
     /// A compact floating glass header (title + subtitle) used as an overlay
@@ -5654,14 +5492,21 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         pos: Point,
+        max_width: f64,
         title: &str,
         subtitle: &str,
     ) {
         let colors = &theme.tokens.colors;
-        let tw = f64::from(p::text_w(tr, title, 15.0));
-        let sw = f64::from(p::text_w(tr, subtitle, 11.5));
-        let width = tw.max(sw) + 32.0;
-        let rect = Rect::new(pos.x, pos.y, pos.x + width, pos.y + 52.0);
+        let inner = (max_width - 32.0).max(40.0);
+        let title = ellipsize(tr, title, 15.0, inner);
+        let subtitle = (!subtitle.is_empty()).then(|| ellipsize(tr, subtitle, 11.5, inner));
+        let tw = f64::from(p::text_w(tr, &title, 15.0));
+        let sw = subtitle
+            .as_deref()
+            .map_or(0.0, |value| f64::from(p::text_w(tr, value, 11.5)));
+        let width = (tw.max(sw) + 32.0).min(max_width);
+        let height = if subtitle.is_some() { 52.0 } else { 36.0 };
+        let rect = Rect::new(pos.x, pos.y, pos.x + width, pos.y + height);
         p::fill_round(scene, t, rect, 16.0, p::alpha(colors.neutral[0], 0.55));
         p::stroke_round(
             scene,
@@ -5671,16 +5516,18 @@ impl CameraApp {
             ui::tokens::colors::Colors::hairline_on(colors.surfaces.raised, 26),
             1.0,
         );
-        p::text(scene, tr, pos.x + 16.0, pos.y + 12.0, title, 15.0, white());
-        p::text(
-            scene,
-            tr,
-            pos.x + 16.0,
-            pos.y + 32.0,
-            subtitle,
-            11.5,
-            p::alpha(white(), 0.7),
-        );
+        p::text(scene, tr, pos.x + 16.0, pos.y + 12.0, &title, 15.0, white());
+        if let Some(subtitle) = subtitle {
+            p::text(
+                scene,
+                tr,
+                pos.x + 16.0,
+                pos.y + 32.0,
+                &subtitle,
+                11.5,
+                p::alpha(white(), 0.7),
+            );
+        }
     }
 
     fn draw_scanner_feed(
@@ -5692,16 +5539,19 @@ impl CameraApp {
         full: Rect,
         stage: Rect,
     ) {
-        self.update_scan_state(full);
-        self.paint_scan_feed(scene, t, full);
+        // The fixture/decode coordinate space is the same panel-excluded stage
+        // used by the guide and result card.  This keeps the QR target centred
+        // inside its guide rather than spilling into the Recent scans rail.
+        self.update_scan_state(stage);
+        self.paint_scan_feed(scene, t, stage);
         Self::draw_scan_window(scene, t, theme, full, stage);
-        self.draw_detected_overlay(scene, t, tr, theme, full);
+        self.draw_detected_overlay(scene, t, tr, theme, stage);
 
         // Floating result card, centred on the frame under the scan window.
         if let Some(s) = self.scanned.clone()
             && !self.scan_dismissed
         {
-            self.draw_scan_card(scene, t, tr, theme, full, &s);
+            self.draw_scan_card(scene, t, tr, theme, stage, &s);
         }
     }
 
@@ -5781,7 +5631,7 @@ impl CameraApp {
     /// wide layouts.
     fn draw_scan_window(scene: &mut Scene, t: Affine, theme: &Theme, full: Rect, stage: Rect) {
         let side = (stage.width().min(stage.height()) * 0.62).clamp(180.0, 460.0);
-        let wc = Point::new(full.center().x, full.center().y);
+        let wc = Point::new(stage.center().x, full.center().y);
         let win = Rect::new(
             wc.x - side / 2.0,
             wc.y - side / 2.0,
@@ -5974,7 +5824,32 @@ impl CameraApp {
     ) {
         let c = &theme.tokens.colors;
         let cw = stage.width().min(560.0) - 36.0;
-        let ch = 122.0;
+        let actions = s.kind.actions();
+        let available = cw - 32.0;
+        let large_type = theme.text_scale >= 1.5;
+        // Text is scaled by the theme at paint time. Give zoomed labels a
+        // larger hit target and extra horizontal breathing room rather than
+        // letting the painted glyphs escape the normal-size pill.
+        let button_font = if large_type { 11.0 } else { 13.0 };
+        let button_padding = if large_type { 42.0 } else { 30.0 };
+        let button_height = if large_type { 48.0 } else { 30.0 };
+        let button_gap = if large_type { 10.0 } else { 10.0 };
+        let widths: Vec<f64> = actions
+            .iter()
+            .map(|label| f64::from(p::text_w(tr, label, button_font)) + button_padding)
+            .collect();
+        let mut rows = 1usize;
+        let mut used = 0.0;
+        for width in &widths {
+            if used > 0.0 && used + 10.0 + width > available {
+                rows += 1;
+                used = 0.0;
+            }
+            used += if used > 0.0 { 10.0 } else { 0.0 } + width;
+        }
+        let action_height =
+            button_height * rows as f64 + button_gap * rows.saturating_sub(1) as f64;
+        let ch = if large_type { 94.0 } else { 82.0 } + 16.0 + action_height;
         // Sit above the bottom mode switcher rather than under it.
         let bottom = stage.y1 - 76.0;
         let card = Rect::new(
@@ -6011,16 +5886,26 @@ impl CameraApp {
         );
 
         let tx = badge.x1 + 14.0;
-        p::text(scene, tr, tx, card.y0 + 16.0, s.kind.title(), 15.0, white());
-        let summ = s.kind.summary(&s.raw);
-        let summ = ellipsize(tr, &summ, 13.0, card.x1 - tx - 40.0);
+        let title_size = if large_type { 13.0 } else { 15.0 };
+        let summary_size = if large_type { 11.0 } else { 13.0 };
         p::text(
             scene,
             tr,
             tx,
-            card.y0 + 39.0,
+            card.y0 + 16.0,
+            s.kind.title(),
+            title_size,
+            white(),
+        );
+        let summ = s.kind.summary(&s.raw);
+        let summ = ellipsize(tr, &summ, summary_size, card.x1 - tx - 40.0);
+        p::text(
+            scene,
+            tr,
+            tx,
+            card.y0 + if large_type { 50.0 } else { 39.0 },
             &summ,
-            13.0,
+            summary_size,
             p::alpha(white(), 0.7),
         );
 
@@ -6033,19 +5918,20 @@ impl CameraApp {
         p::icon(scene, t, "close", xr, p::alpha(white(), 0.6), 1.8);
         self.push_tap_region(xr, Action::DismissScan);
 
-        let actions = s.kind.actions();
         let mut bx = card.x0 + 16.0;
-        let by = card.y1 - 42.0;
-        for (i, label) in actions.iter().enumerate() {
-            let tw = f64::from(p::text_w(tr, label, 13.0));
-            let bw = tw + 30.0;
-            let br = Rect::new(bx, by, bx + bw, by + 30.0);
+        let mut by = card.y1 - 16.0 - action_height;
+        for (i, (label, bw)) in actions.iter().zip(widths).enumerate() {
+            if bx > card.x0 + 16.0 && bx + bw > card.x1 - 16.0 {
+                bx = card.x0 + 16.0;
+                by += button_height + button_gap;
+            }
+            let br = Rect::new(bx, by, bx + bw, by + button_height);
             if i == 0 {
-                p::fill_round(scene, t, br, 15.0, theme.accent_primary);
-                p::text_in(scene, tr, br, label, 13.0, white());
+                p::fill_round(scene, t, br, button_height / 2.0, theme.accent_primary);
+                p::text_in(scene, tr, br, label, button_font, white());
             } else {
-                p::fill_round(scene, t, br, 15.0, c.lift(0.72));
-                p::text_in(scene, tr, br, label, 13.0, p::alpha(white(), 0.92));
+                p::fill_round(scene, t, br, button_height / 2.0, c.lift(0.72));
+                p::text_in(scene, tr, br, label, button_font, p::alpha(white(), 0.92));
             }
             self.push_tap_region(br, Action::Scan(i));
             bx += bw + 10.0;
@@ -6176,720 +6062,28 @@ fn code_icon(kind: &CodeKind) -> &'static str {
     }
 }
 
-// ====================================================================
-// Gallery screen
-// ====================================================================
-
-/// Layout + selection bundle for [`CameraApp::draw_gallery_grid`].
+/// Scroll position/extent bundle for [`CameraApp::draw_scrollbar`].
 #[derive(Clone, Copy)]
-struct GalleryGridCtx<'a> {
-    grid: Rect,
-    filtered: &'a [Capture],
-    sel_id: Option<&'a str>,
-    wide: bool,
-    now: i64,
+struct ScrollMetrics {
+    scroll: f64,
+    max_scroll: f64,
+    view_h: f64,
+    content_h: f64,
 }
 
-impl CameraApp {
-    fn draw_gallery(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-    ) {
-        let pad = 24.0;
-        let now = now_secs();
-        let wide = content.width() >= WIDE_MIN;
-
-        self.draw_gallery_header(scene, t, tr, theme, content, pad);
-        self.draw_gallery_filter(scene, t, tr, theme, content, pad);
-
-        let filtered = self.filtered();
-
-        // Empty state — anchored in a centred card so it never reads as a lone
-        // cluster stranded in a wide, empty window.
-        if filtered.is_empty() {
-            self.draw_gallery_empty(scene, t, tr, theme, content, pad);
-            return;
-        }
-
-        // Selection: on wide, always show a detail panel (default to first);
-        // on narrow, only when the user explicitly picked an item (overlay).
-        let sel_id = self
-            .selected_capture
-            .clone()
-            .filter(|id| filtered.iter().any(|c| &c.id == id))
-            .or_else(|| {
-                if wide {
-                    filtered.first().map(|c| c.id.clone())
-                } else {
-                    None
-                }
-            });
-
-        let detail_w = if wide && sel_id.is_some() { 332.0 } else { 0.0 };
-        let detail_gap = if detail_w > 0.0 { 18.0 } else { 0.0 };
-        let grid = Rect::new(
-            content.x0 + pad,
-            content.y0 + if content.width() < 460.0 { 104.0 } else { 64.0 },
-            content.x1 - pad - detail_w - detail_gap,
-            content.y1 - pad,
-        );
-
-        self.draw_gallery_grid(
-            scene,
-            t,
-            tr,
-            theme,
-            GalleryGridCtx {
-                grid,
-                filtered: &filtered,
-                sel_id: sel_id.as_deref(),
-                wide,
-                now,
-            },
-        );
-
-        // Detail — side panel (wide) or full overlay (narrow).
-        if let Some(id) = sel_id
-            && let Some(cap) = filtered.iter().find(|c| c.id == id).cloned()
-        {
-            self.draw_gallery_selection(
-                scene, t, tr, theme, content, grid, detail_gap, &cap, wide, now, pad,
-            );
-        }
-    }
-
-    /// The gallery's empty state, matching the active filter.
-    fn draw_gallery_empty(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        pad: f64,
-    ) {
-        let area = Rect::new(
-            content.x0 + pad,
-            content.y0 + if content.width() < 460.0 { 104.0 } else { 64.0 },
-            content.x1 - pad,
-            content.y1 - pad,
-        );
-        let loading = self.library_pending.is_some();
-        let msg = if loading {
-            "Loading library…"
-        } else {
-            match self.filter {
-                GalleryFilter::All => "No photos yet",
-                GalleryFilter::Photos => "No photos",
-                GalleryFilter::Videos => "No videos",
-                GalleryFilter::Favorites => "No favorites yet",
-            }
-        };
-        let sub = if loading {
-            Some("Getting your captures ready")
-        } else {
-            matches!(self.filter, GalleryFilter::All)
-                .then_some("Take a photo and it'll show up here")
-        };
-        Self::draw_empty_state(
-            scene,
-            t,
-            tr,
-            theme,
-            area,
-            &EmptyStateContent {
-                icon: "gallery",
-                title: msg,
-                subtitle: sub,
-                glass: false,
-                recovery: false,
-            },
-        );
-    }
-
-    /// The selected capture's detail — a side panel on a wide layout, a full
-    /// overlay (with a dismiss scrim) on a narrow one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the panel/overlay geometry inputs and the selected \
-                  capture; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
-    fn draw_gallery_selection(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        grid: Rect,
-        detail_gap: f64,
-        cap: &Capture,
-        wide: bool,
-        now: i64,
-        pad: f64,
-    ) {
-        if wide {
-            let panel = Rect::new(
-                grid.x1 + detail_gap,
-                content.y0 + 64.0,
-                content.x1 - pad,
-                content.y1 - pad,
-            );
-            self.draw_gallery_detail(scene, t, tr, theme, panel, cap, now, false);
-        } else {
-            let panel = Rect::new(
-                content.x0 + pad,
-                content.y0 + 64.0,
-                content.x1 - pad,
-                content.y1 - pad,
-            );
-            // Scrim behind the overlay — tapping it dismisses.
-            p::fill_rect(scene, t, content, p::alpha(Color::from_rgb8(0, 0, 0), 0.4));
-            self.push_region(content, Action::CloseDetail);
-            self.draw_gallery_detail(scene, t, tr, theme, panel, cap, now, true);
-        }
-    }
-
-    /// Back button + "Library" title/count, top-left of the gallery.
-    fn draw_gallery_header(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        pad: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        // Back button, top-left — returns to the viewfinder the gallery was
-        // opened from (there is no rail to navigate from).
-        let back_btn = Point::new(content.x0 + pad + 16.0, content.y0 + 30.0);
-        p::circle(scene, t, back_btn.x, back_btn.y, 16.0, c.surfaces.raised);
-        p::circle_stroke(
-            scene,
-            t,
-            back_btn.x,
-            back_btn.y,
-            16.0,
-            p::alpha(c.border_standard, 0.5),
-            1.0,
-        );
-        p::icon(
-            scene,
-            t,
-            "back",
-            Rect::new(
-                back_btn.x - 8.0,
-                back_btn.y - 8.0,
-                back_btn.x + 8.0,
-                back_btn.y + 8.0,
-            ),
-            c.text_primary,
-            1.9,
-        );
-        self.push_tap_region(
-            Rect::new(
-                back_btn.x - 16.0,
-                back_btn.y - 16.0,
-                back_btn.x + 16.0,
-                back_btn.y + 16.0,
-            ),
-            Action::Back,
-        );
-
-        // Header, beside the back button.
-        let hx = back_btn.x + 16.0 + 16.0;
-        p::text(
-            scene,
-            tr,
-            hx,
-            content.y0 + 16.0,
-            "Library",
-            20.0,
-            c.text_primary,
-        );
-        let count = match self.captures.len() {
-            0 => "Empty".to_string(),
-            1 => "1 item".to_string(),
-            n => format!("{n} items"),
-        };
-        p::text(scene, tr, hx, content.y0 + 44.0, &count, 12.5, c.text_dim);
-    }
-
-    /// The All/Photos/Videos/Favorites segmented filter, top-right of the gallery.
-    fn draw_gallery_filter(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: Rect,
-        pad: f64,
-    ) {
-        // On a phone the filter owns the row below the title rather than
-        // forcing a desktop-width strip off either edge of the viewport.
-        let narrow = content.width() < 460.0;
-        let available = (content.width() - 2.0 * pad).max(1.0);
-        let seg_w = available.min(320.0);
-        let seg = Rect::new(
-            content.x1 - pad - seg_w,
-            if narrow {
-                content.y0 + 56.0
-            } else {
-                content.y0 + 16.0
-            },
-            content.x1 - pad,
-            if narrow {
-                content.y0 + 88.0
-            } else {
-                content.y0 + 48.0
-            },
-        );
-        let items: Vec<(String, bool, Action)> = GalleryFilter::ALL
-            .iter()
-            .map(|f| {
-                (
-                    f.label().to_string(),
-                    *f == self.filter,
-                    Action::SetFilter(*f),
-                )
-            })
-            .collect();
-        self.segmented(scene, t, tr, theme, seg, items);
-    }
-
-    /// The scrollable capture grid plus its scrollbar.
-    fn draw_gallery_grid(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        ctx: GalleryGridCtx,
-    ) {
-        let GalleryGridCtx {
-            grid,
-            filtered,
-            sel_id,
-            wide,
-            now,
-        } = ctx;
-        // Grid layout. Shared reflow math (one canonical formula) so this roll
-        // aligns exactly like every other card grid in the OS.
-        let target_w = 196.0;
-        let gap = 14.0;
-        let cols = ui::widget::card_columns(grid.width(), target_w, gap);
-        let cell_w = ui::widget::card_column_width(grid.width(), cols, gap);
-        let card_h = (cell_w * 0.76).clamp(120.0, 168.0);
-
-        // Vertical scroll over the full roll — clamped to the content extent
-        // so the last row is always reachable.
-        let rows = filtered.len().div_ceil(cols);
-        let content_h = rows as f64 * card_h + rows.saturating_sub(1) as f64 * gap;
-        let max_scroll = (content_h - grid.height()).max(0.0);
-        self.gallery_scroll = self.gallery_scroll.clamp(0.0, max_scroll);
-        let off = self.gallery_scroll;
-
-        p::push_clip_rect(scene, t, grid);
-        for (i, cap) in filtered.iter().enumerate() {
-            let col = i % cols;
-            let row = i / cols;
-            let x0 = grid.x0 + col as f64 * (cell_w + gap);
-            let y0 = grid.y0 + row as f64 * (card_h + gap) - off;
-            // Cull rows scrolled out of view.
-            if y0 + card_h < grid.y0 || y0 > grid.y1 {
-                continue;
-            }
-            let card = Rect::new(x0, y0, x0 + cell_w, y0 + card_h);
-            let selected = sel_id == Some(cap.id.as_str()) && wide;
-            self.draw_gallery_card(scene, t, tr, theme, card, cap, now, selected);
-        }
-        p::pop(scene);
-        if max_scroll > 0.0 {
-            Self::draw_scrollbar(
-                scene,
-                t,
-                theme,
-                grid,
-                ScrollMetrics {
-                    scroll: off,
-                    max_scroll,
-                    view_h: grid.height(),
-                    content_h,
-                },
-            );
-        }
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the card geometry, the capture and its selection/\
-                  clock state; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
-    fn draw_gallery_card(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        cap: &Capture,
-        now: i64,
-        selected: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        self.ensure_thumb(cap);
-        let unavailable =
-            cap.path.is_none() && cap.media_id.is_some() && self.thumb_failed.contains(&cap.id);
-        p::push_clip_round(scene, t, card, 14.0);
-        if let Some(img) = self.thumbs.get_mut(&cap.id) {
-            img.paint_at(scene, t, card);
-        }
-        let strip = Rect::new(card.x0, card.y1 - 44.0, card.x1, card.y1);
-        p::fill_rect(scene, t, strip, p::alpha(Color::from_rgb8(0, 0, 0), 0.45));
-        let label = ellipsize(tr, &cap.label, 12.5, card.width() - 20.0);
-        p::text(
-            scene,
-            tr,
-            card.x0 + 10.0,
-            card.y1 - 34.0,
-            &label,
-            12.5,
-            white(),
-        );
-        p::text(
-            scene,
-            tr,
-            card.x0 + 10.0,
-            card.y1 - 18.0,
-            &ago(cap.ts, now),
-            10.5,
-            p::alpha(white(), 0.8),
-        );
-        p::pop(scene);
-
-        if unavailable {
-            let badge = Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x0 + 91.0, card.y0 + 30.0);
-            p::fill_round(
-                scene,
-                t,
-                badge,
-                8.0,
-                p::alpha(theme.tokens.colors.surfaces.raised, 0.88),
-            );
-            p::text_in(scene, tr, badge, "Unavailable", 10.0, c.text_primary);
-        }
-
-        if cap.is_video() {
-            let pl = Rect::new(card.x0 + 8.0, card.y0 + 8.0, card.x0 + 30.0, card.y0 + 30.0);
-            p::circle(
-                scene,
-                t,
-                pl.center().x,
-                pl.center().y,
-                11.0,
-                p::alpha(Color::from_rgb8(0, 0, 0), 0.5),
-            );
-            p::icon(scene, t, "play", shrink(pl, 5.0), white(), 1.5);
-            if cap.dur_ms > 0 {
-                let dur = fmt_dur(cap.dur_ms);
-                let dw = f64::from(p::text_w(tr, &dur, 11.0)) + 14.0;
-                let dr = Rect::new(
-                    card.x1 - dw - 8.0,
-                    card.y0 + 8.0,
-                    card.x1 - 8.0,
-                    card.y0 + 30.0,
-                );
-                p::fill_round(scene, t, dr, 8.0, p::alpha(Color::from_rgb8(0, 0, 0), 0.5));
-                p::text_in(scene, tr, dr, &dur, 11.0, white());
-            }
-        } else if cap.favorite {
-            let st = Rect::new(card.x1 - 30.0, card.y0 + 8.0, card.x1 - 8.0, card.y0 + 30.0);
-            p::icon(
-                scene,
-                t,
-                "star",
-                st,
-                theme.tokens.colors.semantic.warning,
-                1.5,
-            );
-        }
-
-        let ring = if selected {
-            theme.accent_primary
-        } else {
-            p::alpha(c.border_standard, 0.0)
-        };
-        p::stroke_round(scene, t, card, 14.0, ring, 2.5);
-        self.push_region(card, Action::SelectCapture(cap.id.clone()));
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the panel geometry, the capture and its narrow/wide \
-                  layout flag; bundling them would only re-create this argument list as a \
-                  throwaway struct"
-    )]
-    fn draw_gallery_detail(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        cap: &Capture,
-        now: i64,
-        overlay: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        p::fill_round(scene, t, panel, 18.0, c.surfaces.raised);
-        p::stroke_round(scene, t, panel, 18.0, p::alpha(c.border_standard, 0.5), 1.0);
-
-        // Close button on the overlay variant.
-        if overlay {
-            let xr = Rect::new(
-                panel.x1 - 40.0,
-                panel.y0 + 14.0,
-                panel.x1 - 16.0,
-                panel.y0 + 38.0,
-            );
-            p::fill_round(scene, t, xr, 12.0, p::alpha(c.neutral[2], 0.9));
-            p::icon(scene, t, "close", shrink(xr, 6.0), c.text_primary, 1.8);
-            self.push_tap_region(xr, Action::CloseDetail);
-        }
-
-        let preview_bottom = self.draw_gallery_detail_preview(scene, t, tr, panel, cap, overlay);
-        Self::draw_gallery_detail_info(scene, tr, theme, panel, cap, now, preview_bottom);
-        self.draw_gallery_detail_actions(scene, t, tr, theme, panel, cap);
-    }
-
-    /// The detail panel's media preview: the thumbnail plus a play glyph for
-    /// video. Returns the preview's bottom edge so the info block below can
-    /// start there.
-    fn draw_gallery_detail_preview(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        panel: Rect,
-        cap: &Capture,
-        overlay: bool,
-    ) -> f64 {
-        let preview_h = if overlay {
-            (panel.height() * 0.42).clamp(150.0, 320.0)
-        } else {
-            188.0
-        };
-        let preview = Rect::new(
-            panel.x0 + 16.0,
-            panel.y0 + 16.0,
-            panel.x1 - 16.0,
-            panel.y0 + 16.0 + preview_h,
-        );
-        self.ensure_thumb(cap);
-        let unavailable =
-            cap.path.is_none() && cap.media_id.is_some() && self.thumb_failed.contains(&cap.id);
-        p::push_clip_round(scene, t, preview, 14.0);
-        if let Some(img) = self.thumbs.get_mut(&cap.id) {
-            img.paint_at(scene, t, preview);
-        }
-        if cap.is_video() {
-            p::circle(
-                scene,
-                t,
-                preview.center().x,
-                preview.center().y,
-                22.0,
-                p::alpha(Color::from_rgb8(0, 0, 0), 0.45),
-            );
-            p::icon(
-                scene,
-                t,
-                "play",
-                Rect::new(
-                    preview.center().x - 11.0,
-                    preview.center().y - 11.0,
-                    preview.center().x + 11.0,
-                    preview.center().y + 11.0,
-                ),
-                white(),
-                2.0,
-            );
-        }
-        p::pop(scene);
-        if unavailable {
-            p::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    preview.x0 + 12.0,
-                    preview.y1 - 38.0,
-                    preview.x0 + 184.0,
-                    preview.y1 - 12.0,
-                ),
-                10.0,
-                p::alpha(Color::from_rgb8(0, 0, 0), 0.62),
-            );
-            p::text(
-                scene,
-                tr,
-                preview.x0 + 22.0,
-                preview.y1 - 32.0,
-                "Media unavailable on this device",
-                10.5,
-                white(),
-            );
-        }
-        preview.y1
-    }
-
-    /// The detail panel's info block: title, relative timestamp, then a
-    /// key/value row per metadata field (type, resolution, format, size).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the panel geometry, the capture and the layout \
-                  inputs (now, preview bottom) needed to lay out the info block; bundling them \
-                  would only re-create this argument list as a throwaway struct"
-    )]
-    fn draw_gallery_detail_info(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        cap: &Capture,
-        now: i64,
-        preview_bottom: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let mut y = preview_bottom + 16.0;
-        let title = ellipsize(tr, &cap.label, 17.0, panel.width() - 36.0);
-        p::text(scene, tr, panel.x0 + 18.0, y, &title, 17.0, c.text_primary);
-        y += 24.0;
-        p::text(
-            scene,
-            tr,
-            panel.x0 + 18.0,
-            y,
-            &ago(cap.ts, now),
-            12.0,
-            c.text_dim,
-        );
-        y += 28.0;
-
-        let mut rows = vec![(
-            "Type",
-            if cap.is_video() {
-                "Video".to_string()
-            } else {
-                "Photo".to_string()
-            },
-        )];
-        if cap.w > 0 && cap.h > 0 {
-            rows.push(("Resolution", format!("{} × {}", cap.w, cap.h)));
-        }
-        rows.push(("Format", format_label(cap)));
-        if let Some(size) = cap
-            .path
-            .as_ref()
-            .and_then(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len())
-        {
-            rows.push(("Size", human_size(size)));
-        } else if cap.w > 0 && cap.h > 0 {
-            rows.push((
-                "Size",
-                format!(
-                    "{:.1} MB",
-                    (f64::from(cap.w) * f64::from(cap.h) * 1.5) / 1_000_000.0
-                ),
-            ));
-        }
-        for (key, value) in rows {
-            p::text(scene, tr, panel.x0 + 18.0, y, key, 12.5, c.text_dim);
-            p::text_right(scene, tr, panel.x1 - 18.0, y, &value, 12.5, c.text_primary);
-            y += 26.0;
-        }
-    }
-
-    /// The detail panel's Favorite / Share / Delete action row.
-    fn draw_gallery_detail_actions(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel: Rect,
-        cap: &Capture,
-    ) {
-        let c = &theme.tokens.colors;
-        let by = panel.y1 - 52.0;
-        let bw = (panel.width() - 36.0 - 20.0) / 3.0;
-        let labels = [
-            ("star", "Favorite", Action::ToggleFavSelected),
-            ("share", "Share", Action::ShareSelected),
-            ("trash", "Delete", Action::DeleteSelected),
-        ];
-        for (i, (icon, label, action)) in labels.into_iter().enumerate() {
-            let x0 = panel.x0 + 18.0 + i as f64 * (bw + 10.0);
-            let br = Rect::new(x0, by, x0 + bw, by + 38.0);
-            let danger = icon == "trash";
-            let on = icon == "star" && cap.favorite;
-            let col = if danger {
-                theme.tokens.colors.semantic.danger
-            } else if on {
-                theme.tokens.colors.semantic.warning
-            } else {
-                c.text_primary
-            };
-            p::fill_round(scene, t, br, 12.0, p::alpha(c.neutral[2], 0.9));
-            let lw = f64::from(p::text_w(tr, label, 11.5));
-            let group_w = 16.0 + 6.0 + lw;
-            let ix = br.center().x - group_w / 2.0;
-            p::icon(
-                scene,
-                t,
-                icon,
-                Rect::new(ix, br.center().y - 8.0, ix + 16.0, br.center().y + 8.0),
-                col,
-                1.8,
-            );
-            p::text(scene, tr, ix + 22.0, br.center().y - 7.0, label, 11.5, col);
-            self.push_tap_region(br, action);
-        }
-    }
+/// Icon/label/style bundle for compact camera controls.
+#[derive(Clone, Copy)]
+struct PillContent<'a> {
+    icon: Option<&'a str>,
+    label: &'a str,
+    active: bool,
 }
 
-fn format_label(cap: &Capture) -> String {
-    if let Some(ext) = cap
-        .path
-        .as_ref()
-        .and_then(|p| p.extension())
-        .and_then(|e| e.to_str())
-    {
-        return ext.to_uppercase();
-    }
-    if cap.is_video() {
-        "MP4".into()
-    } else {
-        "PNG".into()
-    }
-}
-
-fn human_size(bytes: u64) -> String {
-    let b = bytes as f64;
-    if b >= 1_000_000.0 {
-        format!("{:.1} MB", b / 1_000_000.0)
-    } else if b >= 1_000.0 {
-        format!("{:.0} KB", b / 1_000.0)
-    } else {
-        format!("{bytes} B")
-    }
+/// Feed/recording state for the viewfinder capture-cluster helpers.
+#[derive(Clone, Copy)]
+struct CaptureClusterState {
+    has_feed: bool,
+    recording: bool,
 }
 
 /// The concise narrow label is paint-only; accessibility retains the full
@@ -6902,7 +6096,6 @@ fn recovery_button_label<'a>(action: &Action, label: &'a str, width: f64) -> &'a
     }
 }
 
-// ====================================================================
 // Settings screen
 // ====================================================================
 
@@ -7392,21 +6585,6 @@ fn ellipsize(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
 /// production code an on-screen control does.
 #[cfg(test)]
 impl CameraApp {
-    /// Select a gallery shot by id, exactly as clicking its card does.
-    pub(crate) fn test_select(&mut self, id: &str) {
-        self.apply(
-            Action::SelectCapture(id.to_string()),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        );
-    }
-
-    /// Fire the favorite affordance on the current selection through the real
-    /// handler (which dispatches the shared action).
-    pub(crate) fn test_toggle_favorite(&mut self, doc: &mut AutoCommit) {
-        self.apply(Action::ToggleFavSelected, doc, &automerge::ROOT);
-    }
-
     /// The `EncodedAction` the most recent affordance dispatched.
     pub(crate) fn test_last_dispatched(&self) -> Option<EncodedAction> {
         self.actions.last_dispatched().cloned()
@@ -7463,7 +6641,7 @@ mod tests {
         // Point at a directory that does not exist → an empty library, never
         // fabricated samples.
         let dir = std::env::temp_dir().join("camera-empty-lib-xyz-does-not-exist");
-        let mut app = CameraApp::with(Storage::Disk(dir), Screen::Gallery);
+        let mut app = CameraApp::with(Storage::Disk(dir), Screen::Camera);
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         sync_until(&mut app, &mut doc, &root, |app| !app.lib_dirty);
@@ -7475,8 +6653,8 @@ mod tests {
     fn navigation_is_presentation_only() {
         let (mut app, mut doc, root) = sample_app();
         let before = doc.get_heads();
-        app.apply(Action::Nav(Screen::Gallery), &mut doc, &root);
-        assert_eq!(app.screen, Screen::Gallery);
+        app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
+        assert_eq!(app.screen, Screen::Settings);
         assert_eq!(doc.get_heads(), before);
         assert!(app.take_committed_action().is_none());
     }
@@ -7501,8 +6679,8 @@ mod tests {
         assert!(app.navigation.is_open());
         let tree = app.accessibility().expect("drawer semantics");
         assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("Open Gallery")
-                && node.action_target.as_deref() == Some("camera.nav:gallery")
+            node.name.as_deref() == Some("Open Settings")
+                && node.action_target.as_deref() == Some("camera.nav:settings")
         }));
         assert!(tree.children.iter().any(|node| {
             node.name.as_deref() == Some("Close navigation")
@@ -8024,7 +7202,7 @@ mod tests {
     }
 
     #[test]
-    fn sample_video_record_round_trips_into_gallery() {
+    fn sample_video_record_round_trips_into_capture_history() {
         let (mut app, mut doc, root) = sample_app();
         app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
         let before = app.captures.len();
@@ -8041,7 +7219,7 @@ mod tests {
         );
 
         // Stop queues finalization; the bounded worker produces a real clip
-        // before sync registers its canonical gallery resource.
+        // before sync registers its canonical capture resource.
         app.apply(Action::Shutter, &mut doc, &root);
         assert!(!app.is_recording());
         sync_until(&mut app, &mut doc, &root, |app| {
@@ -8112,7 +7290,7 @@ mod tests {
         assert_eq!((w, h), (128, 96));
         assert!(dur > 0);
 
-        // The gallery rescans it as a video with dimensions + duration.
+        // Recent captures rescans it as a video with dimensions + duration.
         assert_eq!(app.captures.len(), 1);
         assert!(app.captures[0].is_video());
         assert_eq!((app.captures[0].w, app.captures[0].h), (128, 96));
@@ -8531,7 +7709,7 @@ mod tests {
         let id = "IMG_keep.jpg";
         let file = dir.join(id);
         std::fs::write(&file, b"local capture").expect("local projection");
-        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Gallery);
+        let mut app = CameraApp::with(Storage::Disk(dir.clone()), Screen::Camera);
         app.captures.push(Capture {
             id: id.into(),
             kind: CaptureKind::Photo,
@@ -8618,18 +7796,6 @@ mod tests {
             &taffy,
         );
         handled
-    }
-
-    #[test]
-    fn wheel_scrolls_gallery_and_clamps_at_top() {
-        let (mut app, mut doc, root) = sample_app();
-        app.apply(Action::Nav(Screen::Gallery), &mut doc, &root);
-        assert!(app.gallery_scroll.abs() < f64::EPSILON);
-        // Wheel down moves the roll; wheel far up clamps back to the top.
-        assert!(drive(&mut app, &wheel(-3.0), &mut doc, &root));
-        assert!(app.gallery_scroll > 0.0);
-        assert!(drive(&mut app, &wheel(100.0), &mut doc, &root));
-        assert!(app.gallery_scroll.abs() < f64::EPSILON);
     }
 
     #[test]
@@ -8726,66 +7892,6 @@ mod tests {
         assert_eq!(app.scans.len(), 1);
         assert_eq!(app.scans[0].raw, payload);
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn in_app_delete_requires_a_modal_confirmation_and_traps_semantics() {
-        let (mut app, mut doc, root) = sample_app();
-        let id = app.captures[0].id.clone();
-        let before = app.captures.len();
-        app.apply(Action::Nav(Screen::Gallery), &mut doc, &root);
-        app.apply(Action::SelectCapture(id.clone()), &mut doc, &root);
-        app.apply(Action::DeleteSelected, &mut doc, &root);
-        assert_eq!(app.captures.len(), before, "request alone never deletes");
-        assert_eq!(app.pending_delete.as_deref(), Some(id.as_str()));
-
-        render_at(&mut app, &mut doc, &root, 390.0, 844.0);
-        let dialog = app.accessibility().expect("confirmation semantics");
-        assert_eq!(dialog.role, Role::Dialog);
-        assert!(dialog.state.modal);
-        let names: Vec<_> = dialog
-            .children
-            .iter()
-            .filter_map(|node| node.name.as_deref())
-            .collect();
-        assert_eq!(names, vec!["Cancel deletion", "Delete capture permanently"]);
-        assert!(app.perform_semantic_action(
-            "camera.cancel-delete",
-            &A11yAction::Activate,
-            &mut doc,
-            &root,
-        ));
-        assert!(app.pending_delete.is_none());
-        assert_eq!(app.captures.len(), before);
-
-        app.apply(Action::DeleteSelected, &mut doc, &root);
-        render_at(&mut app, &mut doc, &root, 390.0, 844.0);
-        assert!(app.perform_semantic_action(
-            "camera.confirm-delete",
-            &A11yAction::Activate,
-            &mut doc,
-            &root,
-        ));
-        assert_eq!(app.captures.len(), before - 1);
-        assert!(!app.captures.iter().any(|capture| capture.id == id));
-    }
-
-    #[test]
-    fn canonical_open_capture_operation_reveals_the_exact_gallery_item() {
-        let (mut app, _doc, _root) = sample_app();
-        let id = app.captures[3].id.clone();
-        app.perform_resource_operation(crate::actions::CameraOperation::OpenCapture {
-            id: id.clone(),
-        })
-        .expect("open capture");
-        assert_eq!(app.screen, Screen::Gallery);
-        assert_eq!(app.selected_capture.as_deref(), Some(id.as_str()));
-        assert!(
-            app.perform_resource_operation(crate::actions::CameraOperation::OpenCapture {
-                id: "missing.jpg".into(),
-            })
-            .is_err()
-        );
     }
 
     #[test]

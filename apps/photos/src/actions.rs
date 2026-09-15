@@ -94,6 +94,10 @@ pub enum PhotosOperation {
     Open {
         path: Option<String>,
     },
+    ImportCameraMedia {
+        media_id: String,
+        name: String,
+    },
     Copy,
     /// Copy a portable resource reference to the local clipboard. This is an
     /// explicit share handoff, not a claim that a remote recipient accepted it.
@@ -141,7 +145,9 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
         | PhotosOperation::ViewTag { .. } => vec!["device-local".into(), "presentation".into()],
-        PhotosOperation::Open { .. } | PhotosOperation::Save { .. } => vec![
+        PhotosOperation::Open { .. }
+        | PhotosOperation::Save { .. }
+        | PhotosOperation::ImportCameraMedia { .. } => vec![
             "device-local".into(),
             "filesystem".into(),
             "portal".into(),
@@ -174,7 +180,9 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         | PhotosOperation::Open { .. }
         | PhotosOperation::Copy
         | PhotosOperation::ShareReference { .. } => spec.retry_policy(RetryPolicy::Idempotent),
-        PhotosOperation::Save { .. } => spec.retry_policy(RetryPolicy::AtMostOnce),
+        PhotosOperation::Save { .. } | PhotosOperation::ImportCameraMedia { .. } => {
+            spec.retry_policy(RetryPolicy::AtMostOnce)
+        }
     })
 }
 
@@ -338,8 +346,13 @@ impl Action for PhotosAction {
                 }
                 let mut library = PhotosDoc::library(doc);
                 library.add_photo(photo.clone());
+                let selected = library.photo(&photo.id).ok_or_else(|| {
+                    ActionError::Refused("photo import did not produce a library entry".into())
+                })?;
                 PhotosDoc::set_library(doc, &library);
-                PhotosDoc::set_image(doc, Some(&photo.image));
+                // A duplicate content hash preserves its existing library
+                // metadata, and selection follows that canonical record too.
+                PhotosDoc::set_image(doc, Some(&selected.image));
                 Ok(())
             }
             Self::SelectPhoto { photo_id } => {

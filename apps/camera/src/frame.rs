@@ -2,9 +2,9 @@
 //!
 //! `--shots` has no camera and no event loop, so the viewfinder is painted
 //! from code: a handful of deterministic "scenes" (landscape, city, portrait
-//! bokeh, …) rendered straight into an RGBA buffer. The gallery thumbnails
+//! bokeh, …) rendered straight into an RGBA buffer. Recent-capture thumbnails
 //! are the same generator at a smaller size, seeded per-capture, so the
-//! gallery is fully populated without bundling any binary assets.
+//! capture history is fully populated without bundling any binary assets.
 //!
 //! The scanner frame additionally composites a real QR poster into the
 //! scene and decodes it back with [`crate::scan`], so the on-screen
