@@ -34,7 +34,7 @@
 //! That leaves exactly one thing: the **guided-customization install profile**
 //! (see [`InstallProfile`](crate::model::InstallProfile)) — the non-secret
 //! identity / region fields that the live installer actually consumes
-//! (hostname, full name, username, locale, timezone, keyboard). These are
+//! (hostname, full name, username, locale, timezone, keyboard, filesystem). These are
 //! user-authored, they survive restarts, and they replicate to collaborators,
 //! so editing one is a document-mutating operation: an
 //! [`Action`]. Each carries the **absolute** target value in its payload, so
@@ -44,7 +44,7 @@
 //! every replica. A malformed install-mode string normalises to the canonical
 //! form rather than erroring, so a bad replay can't wedge a peer.
 //!
-//! The resource tree mirrors that: an *installable* qOS image (the only source a
+//! The resource tree mirrors that: an authenticated, installable qOS image (the only source a
 //! profile applies to) is the presented resource, and those applied fields are
 //! the [`ActionSpec`]s Ctrl+K offers for it. A plain ISO — written as-is, no
 //! customization — publishes nothing. Credentials, destructive disk choices,
@@ -61,7 +61,7 @@ use qos_actions::{
 };
 
 use crate::doc::ImagerDoc;
-use crate::model::{InstallMode, InstallProfile, Source, TargetDrive};
+use crate::model::{Filesystem, InstallMode, InstallProfile, Source, SourceKind, TargetDrive};
 
 /// Registry `type_id` for every imager action.
 pub const IMAGER_ACTION_TYPE: &str = "imager.action";
@@ -289,6 +289,8 @@ pub enum ImagerAction {
     SetTimezone { value: String },
     /// Set the keyboard layout.
     SetKeyboard { value: String },
+    /// Set the installed system's filesystem.
+    SetFilesystem { filesystem: Filesystem },
 }
 
 impl Action for ImagerAction {
@@ -329,6 +331,9 @@ impl Action for ImagerAction {
             }
             ImagerAction::SetKeyboard { value } => {
                 ImagerDoc::set_profile_text(doc, "keyboard", value);
+            }
+            ImagerAction::SetFilesystem { filesystem } => {
+                ImagerDoc::set_profile_filesystem(doc, *filesystem);
             }
         }
         Ok(())
@@ -390,7 +395,7 @@ fn profile_contract() -> ActionContract {
 
 /// Add the identity/region prompted fields — hostname, full name, username,
 /// timezone, keyboard — to `res` in order. Split out of [`provide_resources`]
-/// to keep it under the line budget; these five don't depend on `profile`,
+/// to keep it under the line budget; these fields don't depend on `profile`,
 /// only on the shape of [`ImagerAction`]. The password is intentionally
 /// absent: a secret must never be echoed through a palette prompt.
 fn with_identity_fields(mut res: Resource) -> Resource {
@@ -487,11 +492,30 @@ fn with_identity_fields(mut res: Resource) -> Resource {
     res
 }
 
+fn with_filesystem(res: Resource, profile: &InstallProfile) -> Resource {
+    let current = profile.filesystem;
+    res.with_action(
+        ActionSpec::prompted(
+            "filesystem",
+            "Set filesystem",
+            "Filesystem (btrfs, ext4 or xfs)",
+            current.key(),
+            ExecutionLocus::ClientLocal,
+            move |text| {
+                encode(&ImagerAction::SetFilesystem {
+                    filesystem: Filesystem::from_key(&text.to_ascii_lowercase()).unwrap_or(current),
+                })
+            },
+        )
+        .with_contract(profile_contract()),
+    )
+}
+
 /// The applied, non-secret install-profile fields exported as Ctrl+K actions on
 /// an open customizable image. This list intentionally mirrors
 /// `InstallProfile::to_media_profile_json`: never advertise a host-side choice
 /// that the live installer cannot consume.
-pub fn provide_resources(source_label: &str, _profile: &InstallProfile) -> Vec<Resource> {
+pub fn provide_resources(source_label: &str, profile: &InstallProfile) -> Vec<Resource> {
     let label = if source_label.trim().is_empty() {
         "qOS install options".to_string()
     } else {
@@ -504,7 +528,7 @@ pub fn provide_resources(source_label: &str, _profile: &InstallProfile) -> Vec<R
     );
 
     // Identity / region fields — prompted (the palette collects the new value).
-    let res = with_identity_fields(res);
+    let res = with_filesystem(with_identity_fields(res), profile);
 
     vec![res]
 }
@@ -555,7 +579,13 @@ pub fn plan_resources(
     );
     resources.push(source_root);
 
-    if let Some(source) = source.filter(|source| source.installable) {
+    if let Some(source) = source.filter(|source| {
+        source.installable
+            && source.kind == SourceKind::QosImage
+            && source.expected_sha256.as_deref().is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+    }) {
         resources.extend(provide_resources(&source.name, profile));
     }
 
@@ -688,6 +718,12 @@ mod tests {
             },
         );
         dispatch(&mut doc, &ImagerAction::SetKeyboard { value: "nl".into() });
+        dispatch(
+            &mut doc,
+            &ImagerAction::SetFilesystem {
+                filesystem: Filesystem::Xfs,
+            },
+        );
 
         let p = ImagerDoc::profile(&doc);
         assert_eq!(p.mode, InstallMode::Persistent);
@@ -703,6 +739,7 @@ mod tests {
         assert_eq!(p.locale, "nl_NL.UTF-8");
         assert_eq!(p.timezone, "Europe/Amsterdam");
         assert_eq!(p.keyboard, "nl");
+        assert_eq!(p.filesystem, Filesystem::Xfs);
     }
 
     /// A single field-set leaves every *other* profile field untouched — the
@@ -772,6 +809,7 @@ mod tests {
                 "username",
                 "timezone",
                 "keyboard",
+                "filesystem",
             ],
         );
         // The password is deliberately never a palette row.
@@ -924,6 +962,22 @@ mod tests {
             built,
             encode(&ImagerAction::SetHostname {
                 value: "lab01".into()
+            })
+        );
+
+        let filesystem = resources[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "filesystem")
+            .unwrap();
+        let built = match &filesystem.input {
+            ActionInput::Prompted { build, .. } => build("xfs"),
+            ActionInput::Immediate(_) => panic!("filesystem is a prompted action"),
+        };
+        assert_eq!(
+            built,
+            encode(&ImagerAction::SetFilesystem {
+                filesystem: Filesystem::Xfs,
             })
         );
     }

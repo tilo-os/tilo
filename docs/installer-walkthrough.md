@@ -52,6 +52,10 @@ credential is absent; see `apps/imager/packaging/README.md`.
 
 The application starts with no fabricated releases or drives. Choose a local
 `.iso`, `.img`, or `.raw` file using the operating system's own file dialog.
+Local files are always labelled **Local · unverified** and written as-is; a
+qOS-looking filename or ISO volume label never grants official status or setup
+profile access. Only an image selected from the authenticated bundled release
+catalog is labelled **Official · verified** and can be pre-configured.
 Insert a removable drive, refresh, select it, and inspect its model, capacity,
 and current partitions. Internal and running-system disks are hidden behind
 additional acknowledgement. The confirmation page requires the exact device
@@ -62,9 +66,9 @@ means that verification succeeded, not merely that the write call returned.
 
 Everything currently on the selected installation medium is erased.
 
-For a qOS image, Customize collects the non-destructive install profile before
+For a verified official qOS image, Customize collects the non-destructive install profile before
 the medium is written: account name, host name, locale, keyboard, time zone and
-filesystem. The imager writes a checksummed, secret-free profile into a fixed
+an explicit Btrfs (recommended), Ext4, or XFS filesystem choice. The imager writes a checksummed, secret-free profile into a fixed
 reserved block on the medium and reads it back during verification. Before the
 live UI starts, a privileged one-shot service extracts and verifies that block;
 the installer validates every field again, applies it, and starts at the first

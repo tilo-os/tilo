@@ -74,9 +74,11 @@ Download qOS Imager on the computer you are using now:
 | Windows 10 or 11 | x86-64 | signed setup EXE | WinGet after promotion |
 | macOS | Intel, Apple silicon | signed and notarized DMG | Homebrew cask after promotion |
 
-The Imager authenticates the selected qOS image, writes an 8 GiB or larger USB
-drive, reads it back, and can carry account name, host name, locale, keyboard,
-time zone, and filesystem choice into the live installer. It does not inspect
+The Imager authenticates qOS images selected from its bundled release catalog,
+writes an 8 GiB or larger USB drive, reads it back, and can carry account name,
+host name, locale, keyboard, time zone, and a Btrfs (recommended), Ext4, or XFS
+choice into the live installer. Local image files remain visibly unverified and
+write-only even when their filename or volume label says qOS. It does not inspect
 or copy your files, resize an internal disk, or carry a password or recovery
 secret.
 
