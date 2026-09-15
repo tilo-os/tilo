@@ -627,6 +627,10 @@ pub struct SlidesApp {
     /// reveal is snapped to the resolved default so the very first frame at a
     /// narrow width shows the (closed) flap without a one-frame flash.
     flap_uninitialised: bool,
+    /// Last applied theme text scale. Chrome construction is also used for
+    /// pointer hit testing and accessibility bounds, so large-text mode is a
+    /// layout state rather than a draw-only override.
+    text_scale: f32,
     /// Width breakpoint between the docked and overlay rail layouts. A field
     /// (not a constant) so `--shots` can force a narrow layout deterministically.
     breakpoint: f64,
@@ -789,6 +793,7 @@ impl SlidesApp {
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
             last_flap_tick: std::time::Instant::now(),
             flap_uninitialised: true,
+            text_scale: 1.0,
             breakpoint: NARROW_BREAKPOINT,
             deck_rev: 0,
             search_provider,
@@ -1276,6 +1281,7 @@ impl SlidesApp {
                         id: e.id.clone(),
                         kind: e.kind,
                         text: e.text.clone(),
+                        z: e.z,
                     })
                     .collect(),
             })
@@ -1388,7 +1394,14 @@ impl SlidesApp {
                 let Some(id) = self.deck.slides.get(from).map(|slide| slide.id.clone()) else {
                     return;
                 };
-                self.perform_action(doc, &actions::move_slide_action(from, to, id));
+                // A reorder is authored as one absolute rank, not as a
+                // receiver-relative destination index. This keeps the same
+                // encoded action deterministic if remote inserts land before
+                // it is replayed elsewhere.
+                let Some(rank) = SlidesDoc::rank_for_move(doc, from, to) else {
+                    return;
+                };
+                self.perform_action(doc, &actions::set_slide_order_action(id, rank));
                 self.cur_slide = to;
                 self.reload(doc);
                 self.scroll_rail_to_current();
@@ -1415,6 +1428,9 @@ impl SlidesApp {
     // --- geometry -----------------------------------------------------------
 
     fn compute_chrome(&self) -> Chrome {
+        if self.text_scale >= 1.5 {
+            return self.compute_large_text_chrome();
+        }
         let r = self.rect;
         let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
         let panels = self.compute_panels(r, toolbar);
@@ -1457,7 +1473,7 @@ impl SlidesApp {
         let tools_right = right_edge - 12.0;
         let toolbar_tools =
             self.toolbar_tools
-                .layout(&mut buttons, tools_x, tools_right, by, bh, toolbar);
+                .layout(&mut buttons, tools_x, tools_right, by, bh, toolbar, 1.0);
 
         // Thumbnail rail ----------------------------------------------------
         let rail_viewport = self.build_rail_chrome(panels.rail, &mut buttons, &mut labels);
@@ -1490,6 +1506,147 @@ impl SlidesApp {
             scrim: panels.scrim,
             reveal: panels.reveal,
             inspector_reveal: panels.insp_reveal,
+        }
+    }
+
+    /// An intrinsically spaced editor shell for 200% type. Author content is
+    /// intentionally rendered at its authored size (a deck's typography is
+    /// not desktop chrome); all application controls use the active type scale
+    /// and the exact same rectangles feed draw, pointer routing, and a11y.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "large-text chrome is one shared geometry snapshot for drawing, pointer routing, and accessibility; keeping its complete rectangle set together prevents those paths diverging"
+    )]
+    fn compute_large_text_chrome(&self) -> Chrome {
+        let r = self.rect;
+        let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + 82.0);
+        let inspector_open = self.inspector_open();
+        let inspector = if inspector_open {
+            Rect::new(r.x1 - 470.0, toolbar.y1, r.x1, r.y1)
+        } else {
+            Rect::ZERO
+        };
+        let canvas = Rect::new(r.x0, toolbar.y1, inspector.x0.max(r.x0), r.y1);
+        let (slide_dest, scale) = Self::fit_slide(canvas);
+        let mut buttons = vec![
+            UiButton {
+                rect: Rect::new(r.x1 - 300.0, r.y0 + 10.0, r.x1 - 174.0, r.y0 + 72.0),
+                kind: ButtonKind::IconOnly {
+                    icon: Icon::Settings2,
+                    active: inspector_open,
+                },
+                hit: Hit::ToggleInspector,
+            },
+            UiButton {
+                rect: Rect::new(r.x1 - 154.0, r.y0 + 10.0, r.x1 - 20.0, r.y0 + 72.0),
+                kind: ButtonKind::IconText {
+                    icon: Icon::Monitor,
+                    label: "Present".into(),
+                    accent: true,
+                },
+                hit: Hit::Present,
+            },
+        ];
+        let toolbar_tools = self.toolbar_tools.layout(
+            &mut buttons,
+            r.x0 + 390.0,
+            r.x0 + 620.0,
+            r.y0 + 10.0,
+            62.0,
+            toolbar,
+            f64::from(self.text_scale),
+        );
+        let mut labels = vec![Label {
+            pos: Point::new(r.x0 + 650.0, r.y0 + 22.0),
+            text: elide(&self.deck.title, 17.0, 220.0),
+            font: 17.0,
+            color: LabelColor::Primary,
+            weight: TextWeight::Bold,
+        }];
+        if inspector_open {
+            labels.push(Label {
+                pos: Point::new(inspector.x0 + 28.0, inspector.y0 + 28.0),
+                text: "PROPERTIES".into(),
+                font: 14.0,
+                color: LabelColor::Primary,
+                weight: TextWeight::Bold,
+            });
+            if self.selected_element().is_some() {
+                buttons.extend([
+                    UiButton {
+                        rect: Rect::new(
+                            inspector.x0 + 28.0,
+                            inspector.y0 + 82.0,
+                            inspector.x0 + 218.0,
+                            inspector.y0 + 140.0,
+                        ),
+                        kind: ButtonKind::Text {
+                            label: "Bold".into(),
+                            active: false,
+                            danger: false,
+                        },
+                        hit: Hit::ToggleBold,
+                    },
+                    UiButton {
+                        rect: Rect::new(
+                            inspector.x0 + 238.0,
+                            inspector.y0 + 82.0,
+                            inspector.x1 - 28.0,
+                            inspector.y0 + 140.0,
+                        ),
+                        kind: ButtonKind::Text {
+                            label: "Italic".into(),
+                            active: false,
+                            danger: false,
+                        },
+                        hit: Hit::ToggleItalic,
+                    },
+                    UiButton {
+                        rect: Rect::new(
+                            inspector.x0 + 28.0,
+                            inspector.y0 + 162.0,
+                            inspector.x1 - 28.0,
+                            inspector.y0 + 220.0,
+                        ),
+                        kind: ButtonKind::Text {
+                            label: "Delete object".into(),
+                            active: false,
+                            danger: true,
+                        },
+                        hit: Hit::DeleteElement,
+                    },
+                ]);
+            } else {
+                labels.push(Label {
+                    pos: Point::new(inspector.x0 + 28.0, inspector.y0 + 86.0),
+                    text: "Select an object to edit its properties.".into(),
+                    font: 13.0,
+                    color: LabelColor::Dim,
+                    weight: TextWeight::Regular,
+                });
+            }
+        }
+        Chrome {
+            toolbar,
+            title_rect: Rect::new(r.x0 + 640.0, r.y0, r.x1 - 310.0, toolbar.y1),
+            title_pos: Point::new(r.x0 + 650.0, r.y0 + 22.0),
+            rail: Rect::ZERO,
+            inspector,
+            slide_dest,
+            scale,
+            thumbs: Vec::new(),
+            buttons,
+            labels,
+            rail_viewport: Rect::ZERO,
+            notes_box: None,
+            font_input_rect: None,
+            fill_picker_rect: None,
+            toolbar_tools,
+            layout: SplitLayout::Overlay,
+            inspector_layout: SplitLayout::Docked,
+            scrim: Rect::ZERO,
+            reveal: 0.0,
+            inspector_reveal: 1.0,
         }
     }
 
@@ -2526,18 +2683,20 @@ impl SlidesApp {
 
     fn restack(&mut self, doc: &mut AutoCommit, front: bool) {
         let Some(id) = self.sel.clone() else { return };
-        let action = if front {
-            actions::raise_element_action(self.cur_slide, id)
-        } else {
-            actions::lower_element_action(self.cur_slide, id)
+        let Some(slide_id) = self.slide().map(|slide| slide.id.clone()) else {
+            return;
         };
-        self.perform_action(doc, &action);
+        let Some(rank) = actions::restack_z_for_author(doc, &slide_id, &id, front) else {
+            return;
+        };
+        self.perform_action(doc, &actions::set_element_z_action(slide_id, id, rank));
     }
 
     fn new_slide(&mut self, doc: &mut AutoCommit) {
         let s = actions::new_slide_template();
         let at = self.cur_slide + 1;
-        self.perform_action(doc, &actions::insert_slide_action(at, &s));
+        let rank = SlidesDoc::rank_for_insert(doc, at);
+        self.perform_action(doc, &actions::insert_slide_with_order_action(&s, rank));
         self.cur_slide = at;
         self.sel = None;
         self.editing_text = false;
@@ -2554,7 +2713,8 @@ impl SlidesApp {
             e.id = new_id();
         }
         let at = self.cur_slide + 1;
-        self.perform_action(doc, &actions::insert_slide_action(at, &copy));
+        let rank = SlidesDoc::rank_for_insert(doc, at);
+        self.perform_action(doc, &actions::insert_slide_with_order_action(&copy, rank));
         self.cur_slide = at;
         self.sel = None;
         self.scroll_rail_to_current();
@@ -3607,10 +3767,13 @@ impl SlidesApp {
         // Resolve any pending pointer interaction (click-to-place caret,
         // double-click word-select, drag-extend) now that the text layout is
         // measurable, before anything borrows the slide immutably.
+        let chrome_text_scale = tr.text_scale();
+        tr.set_text_scale(1.0);
         self.resolve_text_pointer(tr, chrome);
 
         self.draw_editor_panels_base(scene, t, theme, chrome, rail_overlay, insp_overlay, div);
         self.draw_editor_canvas(scene, t, tr, theme, chrome, &pal);
+        tr.set_text_scale(chrome_text_scale);
         self.draw_editor_base_chrome(scene, t, tr, theme, chrome, &pal);
 
         // Inline title rename: an accent underline reads the toolbar title as an
@@ -5562,6 +5725,7 @@ impl Widget for SlidesApp {
         if self.rect.width() < 2.0 {
             return;
         }
+        self.text_scale = theme.text_scale;
         // Fold in any images that finished decoding on their worker thread. A
         // freshly-decoded image must re-shape the cached present-mode slide.
         if self.images.pump() {
@@ -6742,7 +6906,7 @@ impl SlidesApp {
         let mut picked: Option<Id> = None;
         if let Some(slide) = self.slide() {
             let mut z: Vec<&Element> = slide.elements.iter().collect();
-            z.sort_by_key(|e| -e.z);
+            z.sort_by(|a, b| b.z.cmp(&a.z).then_with(|| b.id.cmp(&a.id)));
             for el in z {
                 let er = render::element_dest(dest, s, el);
                 if er.inflate(2.0, 2.0).contains(p) {
@@ -6822,7 +6986,7 @@ impl SlidesApp {
         let s = chrome.scale;
         let slide = self.slide()?;
         let mut z: Vec<&Element> = slide.elements.iter().collect();
-        z.sort_by_key(|e| -e.z);
+        z.sort_by(|a, b| b.z.cmp(&a.z).then_with(|| b.id.cmp(&a.id)));
         for el in z {
             if render::element_dest(dest, s, el)
                 .inflate(2.0, 2.0)
@@ -7792,7 +7956,7 @@ impl SlidesApp {
             return;
         }
         let mut z: Vec<&Element> = slide.elements.iter().collect();
-        z.sort_by_key(|e| e.z);
+        z.sort_by(|a, b| a.z.cmp(&b.z).then_with(|| a.id.cmp(&b.id)));
         let ids: Vec<Id> = z.iter().map(|e| e.id.clone()).collect();
         let Some(first) = ids.first() else { return };
         let next = match &self.sel {
@@ -8357,6 +8521,36 @@ mod tests {
         assert!(
             chrome.slide_dest.x1 < chrome.inspector.x0 + 1.0,
             "canvas sits to the left of the docked inspector"
+        );
+    }
+
+    #[test]
+    fn large_text_chrome_keeps_hidden_tools_on_discoverable_routes() {
+        let mut app = SlidesApp::demo(None);
+        sized(&mut app, 1440.0, 960.0);
+        app.text_scale = 2.0;
+        let chrome = app.compute_chrome();
+        assert!(
+            chrome
+                .buttons
+                .iter()
+                .any(|button| matches!(button.hit, Hit::ToggleToolbarMenu))
+        );
+        assert!(
+            chrome
+                .buttons
+                .iter()
+                .any(|button| matches!(button.hit, Hit::ToggleInspector))
+        );
+        assert!(
+            chrome
+                .buttons
+                .iter()
+                .any(|button| matches!(button.hit, Hit::Present))
+        );
+        assert!(
+            chrome.slide_dest.width() > 600.0,
+            "large type keeps a practical authored-slide canvas"
         );
     }
 
