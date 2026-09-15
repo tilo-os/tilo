@@ -1,0 +1,608 @@
+//! Retained content-card regions and their small standard action group.
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::{auto, fr, length, min_content, minmax, percent};
+use taffy::{NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::{Button, Element, TaffyTreeExt, Text, Widget};
+
+/// A themed card with retained header, body, and footer regions.
+/// The body absorbs surplus row height; equal-height footers align fully.
+/// Wrapping footers retain a common bottom edge, but may have different tops.
+/// Construct with [`super::Card::composed`].
+pub struct ContentCard {
+    parts: Parts,
+    has_header: bool,
+    has_footer: bool,
+}
+
+impl ContentCard {
+    pub(super) fn new(body: Element) -> Self {
+        Self {
+            parts: Parts::new(vec![body]),
+            has_header: false,
+            has_footer: false,
+        }
+    }
+
+    /// Replace the header region, including any header installed by `with_title`.
+    #[must_use]
+    pub fn with_header(mut self, header: Element) -> Self {
+        if self.has_header
+            && let Some(slot) = self.parts.children.first_mut()
+        {
+            *slot = header;
+        } else {
+            self.parts.children.insert(0, header);
+            self.has_header = true;
+        }
+        self
+    }
+
+    /// Replace the entire header with a semantic heading. Last header setter wins.
+    #[must_use]
+    pub fn with_title(self, title: impl Into<String>) -> Self {
+        self.with_header(Box::new(
+            Text::new(&title.into()).with_role(crate::tokens::typography::TextRole::Heading),
+        ))
+    }
+
+    /// Replace the footer region. Standard [`Actions`] provide trailing placement.
+    #[must_use]
+    pub fn with_footer(mut self, footer: Element) -> Self {
+        if self.has_footer {
+            self.parts.children.pop();
+        }
+        self.parts.children.push(footer);
+        self.has_footer = true;
+        self
+    }
+}
+
+/// Standard actions in declaration/focus order: secondaries, then primary.
+/// Unspecified buttons use measured content sizing; explicit sizes remain manual.
+/// Each wrapped line aligns to the trailing edge.
+pub struct Actions {
+    parts: Parts,
+}
+
+impl Actions {
+    pub fn new(primary: Button) -> Self {
+        Self {
+            parts: Parts::new(vec![Box::new(primary.with_action_sizing())]),
+        }
+    }
+
+    #[must_use]
+    pub fn secondary(mut self, button: Button) -> Self {
+        let index = self.parts.children.len().saturating_sub(1);
+        self.parts
+            .children
+            .insert(index, Box::new(button.with_action_sizing()));
+        self
+    }
+}
+
+// Shared retained-child plumbing only. Layout policy stays in the two widgets.
+struct Parts {
+    children: Vec<Element>,
+    nodes: Vec<NodeId>,
+    rect: Rect,
+}
+
+impl Parts {
+    fn new(children: Vec<Element>) -> Self {
+        Self {
+            children,
+            nodes: Vec::new(),
+            rect: Rect::ZERO,
+        }
+    }
+
+    fn build(
+        &mut self,
+        style: Style,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.nodes = self
+            .children
+            .iter_mut()
+            .map(|child| child.build_layout(taffy, theme, map))
+            .collect();
+        taffy.parent_node(style, &self.nodes)
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in &mut self.children {
+            child.draw(scene, transform, text, theme, presence);
+        }
+    }
+}
+
+macro_rules! retained_parts {
+    ($name:literal) => {
+        fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+            let mut changed = false;
+            for child in &mut self.parts.children {
+                changed |= child.update(state, path);
+            }
+            changed
+        }
+        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+            for child in &mut self.parts.children {
+                child.sync(state, path);
+            }
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).copied().unwrap_or_default();
+            let start = Point::new(
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+            );
+            self.parts.rect = Rect::from_origin_size(
+                start,
+                (f64::from(layout.size.width), f64::from(layout.size.height)),
+            );
+            for (child, &node) in self.parts.children.iter_mut().zip(&self.parts.nodes) {
+                child.apply_layout(taffy, node, start);
+            }
+        }
+        fn handle_event(
+            &mut self,
+            event: &winit::event::WindowEvent,
+            scale: f64,
+            modifiers: &winit::event::Modifiers,
+            state: &mut AutoCommit,
+            path: &ObjId,
+            handled: &mut bool,
+            focus: &mut Option<NodeId>,
+            _node: NodeId,
+            taffy: &TaffyTree<()>,
+        ) {
+            for (child, &node) in self.parts.children.iter_mut().zip(&self.parts.nodes) {
+                child.handle_event(
+                    event, scale, modifiers, state, path, handled, focus, node, taffy,
+                );
+                if *handled {
+                    break;
+                }
+            }
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.parts
+                .children
+                .iter()
+                .map(|child| child.as_ref())
+                .collect()
+        }
+        fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+            for child in &self.parts.children {
+                visitor(child.as_ref());
+            }
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.parts
+                .children
+                .iter_mut()
+                .map(|child| child.as_mut() as &mut (dyn Widget + '_))
+                .collect()
+        }
+        fn mark_drawn(&mut self) {
+            for child in &mut self.parts.children {
+                child.mark_drawn();
+            }
+        }
+        fn needs_commit(&self) -> bool {
+            self.parts.children.iter().any(|child| child.needs_commit())
+        }
+        fn on_commit(&mut self) {
+            for child in &mut self.parts.children {
+                child.on_commit();
+            }
+        }
+        fn take_structure_dirty(&mut self) -> bool {
+            let mut dirty = false;
+            for child in &mut self.parts.children {
+                dirty |= child.take_structure_dirty();
+            }
+            dirty
+        }
+        fn wants_pointer_capture(&self) -> bool {
+            self.parts
+                .children
+                .iter()
+                .any(|child| child.wants_pointer_capture())
+        }
+        fn get_rect(&self) -> Rect {
+            self.parts.rect
+        }
+        fn name(&self) -> &'static str {
+            $name
+        }
+    };
+}
+
+impl Widget for ContentCard {
+    retained_parts!("ContentCard");
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let mut tracks = Vec::new();
+        if self.has_header {
+            tracks.push(min_content());
+        }
+        tracks.push(minmax(min_content(), fr(1.0_f32)));
+        if self.has_footer {
+            tracks.push(min_content());
+        }
+        let node = self.parts.build(
+            Style {
+                display: taffy::Display::Grid,
+                grid_template_rows: tracks,
+                grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: auto(),
+                },
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: length(0.0_f32),
+                },
+                flex_shrink: 0.0,
+                padding: taffy::Rect {
+                    left: length(theme.padding_standard),
+                    right: length(theme.padding_standard),
+                    top: length(theme.padding_standard),
+                    bottom: length(theme.padding_standard),
+                },
+                gap: Size {
+                    width: length(theme.gap_standard),
+                    height: length(theme.gap_standard),
+                },
+                ..Default::default()
+            },
+            taffy,
+            theme,
+            map,
+        );
+        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let shape = RoundedRect::from_rect(self.parts.rect, theme.radius_standard);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.bg_primary,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.border_standard,
+            None,
+            &shape,
+        );
+        self.parts.draw(scene, transform, text, theme, presence);
+    }
+}
+
+impl Widget for Actions {
+    retained_parts!("Actions");
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = self.parts.build(
+            Style {
+                display: taffy::Display::Flex,
+                flex_wrap: taffy::FlexWrap::Wrap,
+                justify_content: Some(taffy::JustifyContent::End),
+                align_items: Some(taffy::AlignItems::End),
+                align_content: Some(taffy::AlignContent::Start),
+                size: Size {
+                    width: auto(),
+                    height: auto(),
+                },
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: length(0.0_f32),
+                },
+                flex_shrink: 0.0,
+                gap: Size {
+                    width: length(theme.gap_standard),
+                    height: length(theme.gap_standard),
+                },
+                ..Default::default()
+            },
+            taffy,
+            theme,
+            map,
+        );
+        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.parts.draw(scene, transform, text, theme, presence);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::headless::{FrameHarness, InspectionNode};
+    use crate::widget::{Card, CardGrid};
+
+    fn fixture() -> Element {
+        Box::new(CardGrid::content_sized(vec![
+            Box::new(
+                Card::composed(Box::new(Text::new("Short description")))
+                    .with_title("Terminal")
+                    .with_footer(Box::new(Actions::new(
+                        Button::new("open", "Open", Some("opened")).primary(),
+                    ))),
+            ),
+            Box::new(
+                Card::composed(Box::new(Text::new(
+                    &"A longer description with useful details. ".repeat(10),
+                )))
+                .with_title("Workspace")
+                .with_footer(Box::new(Actions::new(
+                    Button::new("install", "Install", None).primary(),
+                ))),
+            ),
+        ]))
+    }
+
+    fn rect(node: &InspectionNode) -> Rect {
+        let [x, y, w, h] = node.rect;
+        Rect::new(x, y, x + w, y + h)
+    }
+
+    fn assert_contained(node: &InspectionNode, bounds: Rect) {
+        let child = rect(node);
+        assert!(
+            child.x0 >= bounds.x0 - 1.0
+                && child.x1 <= bounds.x1 + 1.0
+                && child.y0 >= bounds.y0 - 1.0
+                && child.y1 <= bounds.y1 + 1.0,
+            "{} {child:?} escapes {bounds:?}",
+            node.widget
+        );
+        for descendant in &node.children {
+            assert_contained(descendant, bounds);
+        }
+    }
+
+    fn long_fixture() -> Element {
+        Box::new(CardGrid::content_sized(
+            (0..3)
+                .map(|index| {
+                    Box::new(
+                        Card::composed(Box::new(Text::new(
+                            &"Manage your documents and shared workspace. ".repeat(index + 1),
+                        )))
+                        .with_title("Workspace connections and documents")
+                        .with_footer(Box::new(
+                            Actions::new(
+                                Button::new(
+                                    &format!("primary-{index}"),
+                                    "Refresh all remote connections",
+                                    None,
+                                )
+                                .with_icon(crate::icons::Icon::Search)
+                                .primary(),
+                            )
+                            .secondary(Button::new(
+                                &format!("secondary-{index}"),
+                                "View details",
+                                None,
+                            )),
+                        )),
+                    ) as Element
+                })
+                .collect(),
+        ))
+    }
+
+    #[test]
+    fn narrow_scaled_regions_contain_content_and_resize_matches_fresh() {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut resized = FrameHarness::new_with_theme(
+                crate::State::new(),
+                long_fixture(),
+                (1000, 1800),
+                theme.clone(),
+            );
+            resized.tab(false);
+            resized.resize((240, 1800)).unwrap();
+            let fresh = FrameHarness::new_with_theme(
+                crate::State::new(),
+                long_fixture(),
+                (240, 1800),
+                theme,
+            );
+            let a = resized.inspection();
+            let b = fresh.inspection();
+            fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
+                let mut all = vec![node.rect];
+                for child in &node.children {
+                    all.extend(geometry(child));
+                }
+                all
+            }
+            assert_eq!(geometry(&a.root), geometry(&b.root));
+            for card in &a.root.children {
+                assert!(rect(card).width() <= 240.0);
+                for child in &card.children {
+                    assert_contained(child, rect(card));
+                }
+                assert!(rect(&card.children[1]).y1 <= rect(&card.children[2]).y0);
+            }
+            let last = rect(a.root.children.last().unwrap());
+            assert!((last.y1 - rect(&a.root).y1).abs() < 1.0);
+            assert_eq!(
+                resized.focused_access_node().unwrap().name.as_deref(),
+                Some("View details")
+            );
+        }
+    }
+
+    #[test]
+    fn actions_trail_an_intrinsic_column_without_caller_widths() {
+        let root = crate::widget::Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(Actions::new(Button::new(
+                "save",
+                "Save changes",
+                None,
+            ))));
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(root),
+            (600, 300),
+            Theme::dark(),
+        );
+        let snapshot = harness.inspection();
+        let action = &snapshot.root.children[0].children[0];
+        assert!((rect(action).x1 - 600.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn scrolling_reaches_the_last_scaled_action() {
+        let root = crate::widget::Scrollable::new_vertical().with_child(long_fixture());
+        let mut harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(root),
+            (240, 400),
+            Theme::dark().with_text_scale(2.0),
+        );
+        let before = harness.inspection();
+        let grid = &before.root.children[0];
+        assert!(rect(grid).height() > 400.0);
+        harness.click_at(5.0, 5.0);
+        harness.scroll(0.0, -1000.0);
+        let after = harness.inspection();
+        let last = after.root.children[0].children.last().unwrap();
+        let action = last.children[2].children.last().unwrap();
+        assert!(
+            rect(action).y0 >= 0.0 && rect(action).y1 <= 400.0,
+            "last action {:?}",
+            rect(action)
+        );
+        assert!((rect(last).y1 - 400.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn actions_keep_manual_sizes_and_secondary_then_primary_order() {
+        let actions = Actions::new(Button::new("primary", "Primary", None).with_size(97.0, 35.0))
+            .secondary(Button::new("secondary", "Secondary", None).fit_content(33.0));
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(actions),
+            (600, 80),
+            Theme::dark().with_text_scale(2.0),
+        );
+        let snapshot = harness.inspection();
+        assert_eq!(
+            snapshot.root.children[0].test_id.as_deref(),
+            Some("secondary")
+        );
+        assert_eq!(
+            snapshot.root.children[1].test_id.as_deref(),
+            Some("primary")
+        );
+        assert_eq!(rect(&snapshot.root.children[0]).height(), 33.0);
+        assert_eq!(
+            rect(&snapshot.root.children[1]).size(),
+            vello::kurbo::Size::new(97.0, 35.0)
+        );
+    }
+
+    #[test]
+    fn content_cards_keep_explicit_fixed_rows() {
+        let cards = vec![Box::new(
+            Card::composed(Box::new(Text::new(&"Long description. ".repeat(50))))
+                .with_title("Fixed card"),
+        ) as Element];
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(CardGrid::content_sized(cards).with_card_height(180.0)),
+            (300, 600),
+            Theme::dark(),
+        );
+        assert_eq!(harness.inspection().root.children[0].rect[3], 180.0);
+    }
+
+    #[test]
+    fn retained_regions_align_footers_before_paint() {
+        let mut harness =
+            FrameHarness::new_with_theme(crate::State::new(), fixture(), (700, 800), Theme::dark());
+        let inspection = harness.inspection();
+        let cards = &inspection.root.children;
+        assert_eq!(rect(&cards[0]).height(), rect(&cards[1]).height());
+        assert_eq!(
+            rect(&cards[0].children[2]).y1,
+            rect(&cards[1].children[2]).y1
+        );
+        assert_eq!(
+            harness
+                .tab_through()
+                .iter()
+                .map(|(_, name)| name.as_deref().unwrap_or(""))
+                .collect::<Vec<_>>(),
+            ["Open", "Install"]
+        );
+        let action = rect(&cards[0].children[2].children[0]);
+        harness.click_at(action.center().x, action.center().y);
+        use automerge::ReadDoc;
+        assert!(
+            harness
+                .state_mut()
+                .doc
+                .get(automerge::ROOT, "opened")
+                .unwrap()
+                .is_some()
+        );
+    }
+}

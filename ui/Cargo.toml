@@ -316,3 +316,7 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[[example]]
+name = "card-composition-shots"
+path = "examples/card_composition_shots.rs"
