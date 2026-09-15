@@ -972,6 +972,14 @@ impl Widget for Scrollable {
                 width: Dimension::percent(1.0),
                 height,
             },
+            // Vertical content must keep its intrinsic height so overflow is
+            // measurable. Scope the flex-row cross-axis opt-out to this
+            // parent; child `align_self` remains available to normal Row and
+            // other manual compositions. Horizontal-only content retains the
+            // default cross-axis stretch to the viewport height.
+            align_items: self
+                .axis_has_vertical()
+                .then_some(taffy::AlignItems::FlexStart),
             max_size: Size {
                 width: Dimension::auto(),
                 height: self.max_height.map_or(Dimension::auto(), Dimension::length),

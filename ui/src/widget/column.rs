@@ -251,10 +251,6 @@ impl Widget for Column {
                 },
                 flex_direction: taffy::FlexDirection::Column,
                 align_items: Some(taffy::AlignItems::FlexStart),
-                // Scrollable is a flex row: without this opt-out, its
-                // cross-axis stretch supplies the viewport height as the
-                // Grid's definite height and defeats intrinsic growth.
-                align_self: self.intrinsic_height.then_some(taffy::AlignSelf::FlexStart),
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0_f32),
@@ -301,12 +297,11 @@ impl Widget for Column {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        // The larger of own size and content bounds: taffy can clamp a
-        // Block container's reported size to its parent's available main
-        // axis (notably inside a Scrollable), and `layout.size` alone would
-        // make `should_cull` discard the subtree once scrolling pushed the
-        // under-reported rect off the viewport, even with children still on
-        // screen.
+        // The larger of own size and content bounds: constrained Grid/Flex
+        // layouts can report a viewport-sized box with taller overflowing
+        // content, and `layout.size` alone would make `should_cull` discard
+        // the subtree once scrolling pushed the box off the viewport, even
+        // with children still on screen.
         let w = f64::from(layout.size.width.max(layout.content_size.width));
         let h = f64::from(layout.size.height.max(layout.content_size.height));
         self.rect = vello::kurbo::Rect::new(
@@ -877,6 +872,30 @@ mod tests {
     }
 
     #[test]
+    fn intrinsic_column_in_row_respects_parent_center_alignment() {
+        let short_column = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(10.0),
+            ));
+        let mut row = Row::new()
+            .no_wrap()
+            .push(Box::new(short_column))
+            .push(Box::new(
+                Container::new().with_no_padding().with_height(30.0),
+            ));
+
+        let _ = lay_out(&mut row);
+
+        assert_eq!(row.get_rect().height(), 30.0);
+        assert_eq!(row.children()[0].get_rect().height(), 10.0);
+        assert_eq!(row.children()[0].get_rect().y0, 10.0);
+        assert_eq!(row.children()[1].get_rect().y0, 0.0);
+    }
+
+    #[test]
     fn intrinsic_column_gap_contributes_to_scrollable_content_height() {
         use crate::widget::{ScrollAxis, Scrollable};
 
@@ -906,6 +925,22 @@ mod tests {
         assert_eq!(inner.get_rect().height(), 130.0);
         assert_eq!(inner.children()[2].get_rect().y0, 100.0);
         assert_eq!(scroll.max_offset_y(), 80.0);
+    }
+
+    #[test]
+    fn horizontal_scrollable_keeps_cross_axis_stretch() {
+        use crate::widget::{ScrollAxis, Scrollable};
+
+        let mut scroll = Scrollable::new(ScrollAxis::Horizontal)
+            .with_height(50.0)
+            .with_child(Box::new(
+                Container::new().with_no_padding().with_width(1_200.0),
+            ));
+
+        let _ = lay_out(&mut scroll);
+
+        assert_eq!(scroll.get_rect().height(), 50.0);
+        assert_eq!(scroll.children()[0].get_rect().height(), 50.0);
     }
 
     /// Regression: a bare leading `Row[Text]` at the head of an
