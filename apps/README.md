@@ -132,7 +132,7 @@ semantic actions and records their mutations in shared history.
 | `tube` | Privacy YouTube client: Invidious metadata, SponsorBlock skip, DeArrow de-clickbait; openh264 H.264 decode; optional rustypipe `live` backend and Grayjay device sync over the Noise protocol. |
 | `video_editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/openh264 preview decode and GStreamer export, both feature-gated. |
 | `image_editor` | Non-destructive raster editor and reusable typed node-graph test bed; edits stay independently adjustable, projects are CRDT-native, and preview/export traverse the same DAG. |
-| `camera` | Camera + gallery + QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; live v4l2 capture via GStreamer. |
+| `camera` | Camera with QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; captured photos and videos open in their owning media apps; live v4l2 capture via GStreamer. |
 | `imager` | Install-media creator + qOS installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config. |
 | `maps` | OpenStreetMap client: Nominatim search, OSRM routing (car/bike/foot), Transitous/MOTIS transit; Vello vector basemap; device location via the XDG Location portal (GeoClue2). |
 | `weather` | Weather from the keyless Open-Meteo API: current conditions, 24h chart, 7-day forecast; reads display units from the shared Settings store. |
