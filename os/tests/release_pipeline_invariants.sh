@@ -38,10 +38,19 @@ else
   bad 'a registry cache workflow still uses the default docker driver'
 fi
 
-grep -Fq 'qos-kernel-buildcache:latest,mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Fq 'qos-kernel-buildcache:latest,mode=max' "$workflows/build-kernel.yml" \
+grep -Fq 'qos-kernel-buildcache:${{ matrix.arch }},mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Eq 'cache-to:.*qos-kernel-buildcache:.*mode=max' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate the intermediate build tree and exhaust the runner'
+
+if grep -Fq 'runner: runner-arm64' "$workflows/build-kernel.yml" \
+  && grep -Fq 'platforms: ${{ matrix.platform }}' "$workflows/build-kernel.yml" \
+  && grep -Fq 'needs: build-and-push-kernel' "$workflows/build-kernel.yml" \
+  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-kernel.yml"; then
+  ok 'kernel publication requires both native builds and verified index promotion'
+else
+  bad 'kernel publication can omit native ARM64 or bypass index verification'
+fi
 
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
