@@ -574,6 +574,7 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
             DefinitionDispatch::Headless(status) => std::process::exit(status),
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
+                    driver.prepare_component_output();
                     driver.render_png(out);
                 } else if let Some(directory) = &args.responsive_matrix {
                     for (name, viewport) in RESPONSIVE_VIEWPORTS {
@@ -691,6 +692,7 @@ fn close_component_capture(driver: &mut FrameHarness) -> Result<(), LaunchError>
 }
 
 fn finish_component_audit(driver: &mut FrameHarness, app_id: &str) -> Result<(), LaunchError> {
+    driver.prepare_component_output();
     let audit = driver.native_app_audit();
     let report = serde_json::to_string_pretty(&audit)
         .map_err(|error| LaunchError::Operation(error.to_string()));
@@ -1574,6 +1576,90 @@ mod prepared_launch_tests {
         let mut prepared = prepare(definition, args)?;
         prepared.runner_inputs = configure_presentation(prepared.runner_inputs, 2.0);
         Ok(prepared)
+    }
+
+    #[test]
+    fn definition_final_audit_and_shot_preparation_resolve_queued_component_wakes() {
+        for mode in ["audit", "shots"] {
+            let temp = tempfile::tempdir().unwrap();
+            let spec = LaunchSpec::from_definition(runner_probe_definition())
+                .component_host(prepare)
+                .allowed_live_options(&["--fixture-root"]);
+            let mut values = vec![
+                "app".into(),
+                "--fixture-root".into(),
+                temp.path().join("state").to_string_lossy().into_owned(),
+            ];
+            if mode == "audit" {
+                values.push("--native-audit".into());
+            } else {
+                values.extend([
+                    "--shots".into(),
+                    temp.path().join("shot.png").to_string_lossy().into_owned(),
+                ]);
+            }
+            let observed = observe_presentation();
+            let args = parsed(&spec, &values);
+            let (DefinitionDispatch::Audit(mut driver) | DefinitionDispatch::Rendered(mut driver)) =
+                dispatch_definition(&spec, &args).unwrap()
+            else {
+                panic!("expected prepared output driver");
+            };
+            let description = |driver: &FrameHarness| {
+                qos_actions::flatten(&driver.resources())
+                    .into_iter()
+                    .find(|action| action.action.id == "edit")
+                    .unwrap()
+                    .action
+                    .description
+                    .clone()
+                    .unwrap()
+            };
+            assert_eq!(description(&driver), "construction wake");
+            let draws = observed.borrow().local_draws.len();
+            assert!(draws > 0);
+            local_state().writer().set("queued final output".into());
+            let _ = driver.native_app_audit();
+            assert_eq!(
+                description(&driver),
+                "construction wake",
+                "read-only inspection remains a snapshot"
+            );
+            assert_eq!(observed.borrow().local_draws.len(), draws);
+            if mode == "audit" {
+                observed.borrow_mut().local_resource_reads.clear();
+                let error = finish_component_audit(&mut driver, APP).unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    format!("{APP} does not satisfy the qOS-native application contract")
+                );
+                let observation = observed.borrow();
+                assert!(!observation.local_resource_reads.is_empty());
+                assert!(
+                    observation
+                        .local_resource_reads
+                        .iter()
+                        .all(|value| value == "queued final output"),
+                    "final audit read a stale resource snapshot: {:?}",
+                    observation.local_resource_reads
+                );
+            } else {
+                driver.prepare_component_output();
+                assert_eq!(description(&driver), "queued final output");
+                close_component_capture(&mut driver).unwrap();
+            }
+            let observation = observed.borrow();
+            assert!(
+                observation.local_draws.len() > draws,
+                "final output requires a resolved frame"
+            );
+            assert_eq!(
+                observation.local_draws.last().unwrap(),
+                "queued final output"
+            );
+            assert!(!temp.path().join("shot.png").exists());
+            assert_eq!(driver.component_close_reports().len(), 1);
+        }
     }
 
     #[test]
