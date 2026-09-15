@@ -67,6 +67,7 @@ impl ToolbarTools {
         by: f64,
         bh: f64,
         toolbar: Rect,
+        text_scale: f64,
     ) -> ToolbarToolsLayout {
         let tools = tools();
         let widths: Vec<f64> = tools.iter().map(tool_width).collect();
@@ -106,7 +107,7 @@ impl ToolbarTools {
             return ToolbarToolsLayout::default();
         }
 
-        menu_layout(&tools, &hidden, overflow, toolbar)
+        menu_layout(&tools, &hidden, overflow, toolbar, text_scale)
     }
 
     pub(super) fn on_press(
@@ -241,20 +242,23 @@ fn menu_layout(
     hidden: &[usize],
     overflow: Rect,
     toolbar: Rect,
+    text_scale: f64,
 ) -> ToolbarToolsLayout {
-    let row_h = 34.0;
-    let pad = 6.0;
+    let scale = text_scale.clamp(1.0, 2.0);
+    let row_h = 34.0 * scale;
+    let pad = 8.0 * scale;
+    let gap = 6.0 * scale;
     let menu_w = hidden
         .iter()
         .filter_map(|&index| tools.get(index))
-        .map(|tool| chrome::est_width(tool.menu, 13.0) + 52.0)
-        .fold(150.0_f64, f64::max)
+        .map(|tool| chrome::est_width(tool.menu, 13.0) * scale + 64.0 * scale)
+        .fold(164.0 * scale, f64::max)
         .min(toolbar.width() - 16.0);
     let mx1 = overflow
         .x1
         .clamp(toolbar.x0 + 8.0 + menu_w, toolbar.x1 - 8.0);
     let mx0 = mx1 - menu_w;
-    let my0 = overflow.y1 + 6.0;
+    let my0 = overflow.y1 + gap;
     let bg = Rect::new(mx0, my0, mx1, my0 + pad * 2.0 + row_h * hidden.len() as f64);
     let menu_buttons = hidden
         .iter()
@@ -263,7 +267,7 @@ fn menu_layout(
         .map(|(row, tool)| {
             let y = my0 + pad + row as f64 * row_h;
             UiButton {
-                rect: Rect::new(mx0 + pad, y, mx1 - pad, y + row_h - 4.0),
+                rect: Rect::new(mx0 + pad, y, mx1 - pad, y + row_h - gap),
                 kind: ButtonKind::Text {
                     label: tool.menu.into(),
                     active: false,
@@ -293,6 +297,7 @@ mod tests {
             11.0,
             34.0,
             Rect::new(0.0, 0.0, 560.0, 56.0),
+            1.0,
         );
         (buttons, layout)
     }

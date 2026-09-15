@@ -61,6 +61,10 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("high-contrast") => ui::Theme::high_contrast(),
         _ => ui::Theme::dark(),
     }
+    // The live launcher applies this from `LaunchArgs`; `--shots` owns a
+    // standalone harness, so forward it here too.  Without this seam Slides'
+    // 200% accessibility capture silently remained at 100%.
+    .with_text_scale(args.text_scale.unwrap_or(1.0))
     .with_reduce_motion(matches!(
         std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
