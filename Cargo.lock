@@ -12323,14 +12323,18 @@ dependencies = [
 name = "runtime-fs"
 version = "0.1.0"
 dependencies = [
+ "cap-std",
  "capnp",
  "capnp-rpc",
  "capnpc",
  "postcard",
  "runtime-portal",
+ "rustix 1.1.4",
  "serde",
+ "tempfile",
  "tokio",
  "tokio-util",
+ "uuid",
 ]
 
 [[package]]
