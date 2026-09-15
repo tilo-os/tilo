@@ -76,6 +76,7 @@ const RELEASE_ZERO_H: f64 = 84.0;
 enum Hit {
     PickFile,
     Release(usize),
+    CancelDownload,
     Recent(usize),
     Target(usize),
     Rescan,
@@ -130,7 +131,11 @@ pub struct ImagerApp {
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
     job_control: Option<JobControl>,
     portal_rx: Option<PortalChannel>,
-    release_rx: Option<std::sync::mpsc::Receiver<Result<Source, String>>>,
+    release_rx: Option<std::sync::mpsc::Receiver<crate::release::DownloadEvent>>,
+    release_control: Option<crate::release::DownloadControl>,
+    release_download_index: Option<usize>,
+    release_download_progress: Option<(u64, u64)>,
+    release_download_stage: Option<&'static str>,
     export_dialog: ExportDialog,
     /// Stages the read-only export modal after the demo document has synced.
     /// Used only by the deterministic `export` screenshot scenario.
@@ -194,6 +199,10 @@ impl ImagerApp {
             job_control: None,
             portal_rx: None,
             release_rx: None,
+            release_control: None,
+            release_download_index: None,
+            release_download_progress: None,
+            release_download_stage: None,
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
             shot_confirmation_ready: false,
@@ -494,6 +503,7 @@ impl ImagerApp {
         match hit {
             Hit::PickFile => "imager:hit:pick-file".into(),
             Hit::Release(index) => format!("imager:hit:release:{index}"),
+            Hit::CancelDownload => "imager:hit:cancel-download".into(),
             Hit::Recent(index) => format!("imager:hit:recent:{index}"),
             Hit::Target(index) => format!("imager:hit:target:{index}"),
             Hit::Rescan => "imager:hit:rescan".into(),
@@ -517,6 +527,7 @@ impl ImagerApp {
             "next" => Some(Hit::Next),
             "start-write" => Some(Hit::StartWrite),
             "cancel-write" => Some(Hit::CancelWrite),
+            "cancel-download" => Some(Hit::CancelDownload),
             "write-another" => Some(Hit::WriteAnother),
             _ => {
                 let (kind, value) = suffix.split_once(':')?;
@@ -548,7 +559,11 @@ impl ImagerApp {
                 .job_control
                 .as_ref()
                 .is_some_and(|control| !control.is_cancelled()),
-            Hit::Release(index) => self.releases.get(index).is_some(),
+            Hit::CancelDownload => self
+                .release_control
+                .as_ref()
+                .is_some_and(|control| !control.is_cancelled()),
+            Hit::Release(index) => self.release_rx.is_none() && self.releases.get(index).is_some(),
             Hit::Recent(index) => self.recent.get(index).is_some(),
             Hit::Target(index) => self
                 .targets
@@ -640,6 +655,18 @@ impl ImagerApp {
                     .with_description(format!("{} image", fmt_size(release.size)))
                     .with_action_target(format!("imager:release:{}", release.version))
                 }),
+                Hit::CancelDownload => Some(
+                    self.a11y_control(
+                        ui::a11y::Role::Button,
+                        "Cancel qOS installer download",
+                        *rect,
+                        *hit,
+                        self.release_control
+                            .as_ref()
+                            .is_none_or(crate::release::DownloadControl::is_cancelled),
+                    )
+                    .with_description("Keeps the verified partial download for a safe resume"),
+                ),
                 Hit::Recent(index) => self.recent.get(index).map(|source| {
                     self.a11y_control(
                         ui::a11y::Role::Button,
@@ -1380,7 +1407,11 @@ impl ImagerApp {
         }
         for (i, _) in self.releases().iter().enumerate() {
             let r = Rect::new(x0, y, x1, y + 54.0);
-            hits.push((r, Hit::Release(i)));
+            if self.release_download_index == Some(i) {
+                hits.push((r, Hit::CancelDownload));
+            } else if self.release_rx.is_none() {
+                hits.push((r, Hit::Release(i)));
+            }
             y += 54.0 + 10.0;
         }
         // Recent list.
@@ -2037,8 +2068,8 @@ impl ImagerApp {
             // The honest zero-state says so rather than leaving a bare heading.
             y = Self::draw_no_releases_card(scene, tr, theme, t, content, y);
         }
-        for rel in self.releases() {
-            y = self.draw_release_row(scene, tr, theme, t, content, y, rel);
+        for (index, rel) in self.releases().iter().enumerate() {
+            y = self.draw_release_row(scene, tr, theme, t, content, y, index, rel);
         }
         y
     }
@@ -2084,7 +2115,11 @@ impl ImagerApp {
 
     /// One release row: selection badge, name, channel/size/location, and the
     /// "installable" tag. Returns the `y` to continue drawing from below it.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "one compact release row keeps its trust, progress, and cancellation presentation together"
+    )]
     fn draw_release_row(
         &self,
         scene: &mut Scene,
@@ -2093,6 +2128,7 @@ impl ImagerApp {
         t: Affine,
         content: Rect,
         y: f64,
+        index: usize,
         rel: &QosRelease,
     ) -> f64 {
         let c = &theme.tokens.colors;
@@ -2154,7 +2190,10 @@ impl ImagerApp {
             Some((r.width() - 160.0).max(72.0) as f32),
             TextWeight::Semibold,
         );
-        let where_ = if rel.local_path.is_empty() {
+        let downloading = self.release_download_index == Some(index);
+        let where_ = if downloading {
+            self.release_download_stage.unwrap_or("preparing")
+        } else if rel.local_path.is_empty() {
             "download"
         } else {
             "on disk"
@@ -2173,13 +2212,44 @@ impl ImagerApp {
         Self::txt_right(
             scene,
             tr,
-            "official · verified",
+            if downloading {
+                "Cancel"
+            } else {
+                "official · verified"
+            },
             11.0,
-            c.semantic.success,
+            if downloading {
+                c.semantic.danger
+            } else {
+                c.semantic.success
+            },
             r.x1 - 16.0,
             r.y0 + 9.0,
             TextWeight::Medium,
         );
+        if downloading {
+            let fraction = self
+                .release_download_progress
+                .and_then(|(done, total)| (total > 0).then_some(done as f64 / total as f64))
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0);
+            let track = Rect::new(r.x0 + 68.0, r.y1 - 5.0, r.x1 - 16.0, r.y1 - 2.0);
+            Self::fill_rr(scene, t, track, 1.5, c.border_standard);
+            if fraction > 0.0 {
+                Self::fill_rr(
+                    scene,
+                    t,
+                    Rect::new(
+                        track.x0,
+                        track.y0,
+                        track.x0 + track.width() * fraction,
+                        track.y1,
+                    ),
+                    1.5,
+                    c.accent[5],
+                );
+            }
+        }
         y + 54.0 + 10.0
     }
 
@@ -3575,7 +3645,7 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn download_release(&mut self, state: &AutoCommit, release: QosRelease) {
+    fn download_release(&mut self, state: &AutoCommit, index: usize, release: QosRelease) {
         if self.release_rx.is_some() {
             self.set_status(state, "A qOS installer download is already in progress.");
             return;
@@ -3584,36 +3654,79 @@ impl ImagerApp {
             state,
             &format!("Downloading and verifying qOS {}…", release.version),
         );
-        self.release_rx = Some(crate::release::spawn_download(release));
+        let job = crate::release::spawn_download(release);
+        self.release_rx = Some(job.events);
+        self.release_control = Some(job.control);
+        self.release_download_index = Some(index);
+        self.release_download_progress = None;
+        self.release_download_stage = Some("preparing");
         self.dirty = true;
     }
 
     fn drain_release(&mut self, state: &mut AutoCommit) {
         let Some(rx) = &self.release_rx else { return };
-        let result = match rx.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("The qOS installer download stopped unexpectedly.".into())
-            }
-        };
-        self.release_rx = None;
-        match result {
-            Ok(source) => {
-                if let Some(release) = self
-                    .releases
-                    .iter_mut()
-                    .find(|release| source.name == format!("{} {}", release.name, release.version))
-                {
-                    release.local_path.clone_from(&source.path);
+        let mut events = Vec::new();
+        loop {
+            match rx.try_recv() {
+                Ok(event) => events.push(event),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    if !events
+                        .iter()
+                        .any(|event| matches!(event, crate::release::DownloadEvent::Finished(_)))
+                    {
+                        events.push(crate::release::DownloadEvent::Finished(Err(
+                            "The qOS installer download stopped unexpectedly.".into(),
+                        )));
+                    }
+                    break;
                 }
-                self.select_source(state, &source);
-                self.set_status(
-                    state,
-                    "qOS installer downloaded and cryptographically verified.",
-                );
             }
-            Err(error) => self.set_status(state, &error),
+        }
+        if events.is_empty() {
+            return;
+        }
+        for event in events {
+            match event {
+                crate::release::DownloadEvent::Downloading { received, total } => {
+                    self.release_download_progress = Some((received, total));
+                    self.release_download_stage = Some("downloading");
+                    let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
+                    self.set_status(state, &format!("Downloading qOS installer… {percent}%"));
+                }
+                crate::release::DownloadEvent::Verifying => {
+                    self.release_download_progress = None;
+                    self.release_download_stage = Some("verifying");
+                    self.set_status(state, "Cryptographically verifying the qOS installer…");
+                }
+                crate::release::DownloadEvent::Expanding { written, total } => {
+                    self.release_download_progress = Some((written, total));
+                    self.release_download_stage = Some("preparing image");
+                    self.set_status(state, "Preparing the verified qOS installer image…");
+                }
+                crate::release::DownloadEvent::Finished(result) => {
+                    self.release_rx = None;
+                    self.release_control = None;
+                    self.release_download_index = None;
+                    self.release_download_progress = None;
+                    self.release_download_stage = None;
+                    match result {
+                        Ok(source) => {
+                            if let Some(release) = self.releases.iter_mut().find(|release| {
+                                source.name == format!("{} {}", release.name, release.version)
+                            }) {
+                                release.local_path.clone_from(&source.path);
+                            }
+                            self.select_source(state, &source);
+                            self.set_status(
+                                state,
+                                "qOS installer downloaded and cryptographically verified.",
+                            );
+                        }
+                        Err(error) => self.set_status(state, &error),
+                    }
+                }
+            }
         }
         self.dirty = true;
     }
@@ -3973,8 +4086,18 @@ impl ImagerApp {
                     if release.url.is_empty() {
                         self.select_source(state, &release.to_source());
                     } else {
-                        self.download_release(state, release);
+                        self.download_release(state, i, release);
                     }
+                }
+            }
+            Hit::CancelDownload => {
+                if let Some(control) = self.release_control.clone() {
+                    control.cancel();
+                    self.set_status(
+                        state,
+                        "Cancelling safely… The verified partial download will be kept for resume.",
+                    );
+                    self.dirty = true;
                 }
             }
             Hit::Recent(i) => {
@@ -5506,6 +5629,60 @@ mod tests {
 
         app.release_rx = None;
         assert!(!app.needs_animation_frame());
+    }
+
+    #[test]
+    fn active_release_download_replaces_selection_with_an_accessible_cancel_action() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        let (_tx, rx) = std::sync::mpsc::channel();
+        app.release_rx = Some(rx);
+        app.release_control = Some(crate::release::DownloadControl::default());
+        app.release_download_index = Some(0);
+        app.release_download_progress = Some((25, 100));
+        app.release_download_stage = Some("downloading");
+
+        let layout = app.compute_layout();
+        assert!(
+            layout
+                .hits
+                .iter()
+                .any(|(_, hit)| *hit == Hit::CancelDownload)
+        );
+        assert!(
+            !layout
+                .hits
+                .iter()
+                .any(|(_, hit)| matches!(hit, Hit::Release(_)))
+        );
+        let tree = app.accessibility_tree();
+        assert!(accessible_named(&tree, "Cancel qOS installer download").is_some());
+    }
+
+    #[test]
+    fn release_progress_is_local_visible_and_terminal_events_clear_the_job() {
+        let (mut app, mut doc) = seeded_app();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.release_rx = Some(rx);
+        app.release_control = Some(crate::release::DownloadControl::default());
+        app.release_download_index = Some(0);
+        tx.send(crate::release::DownloadEvent::Downloading {
+            received: 25,
+            total: 100,
+        })
+        .unwrap();
+        app.drain_release(&mut doc);
+        assert_eq!(app.release_download_progress, Some((25, 100)));
+        assert!(app.status.contains("25%"));
+
+        tx.send(crate::release::DownloadEvent::Finished(Err(
+            "qOS installer download cancelled.".into(),
+        )))
+        .unwrap();
+        app.drain_release(&mut doc);
+        assert!(app.release_rx.is_none());
+        assert!(app.release_control.is_none());
+        assert!(app.status.contains("cancelled"));
     }
 
     #[test]
