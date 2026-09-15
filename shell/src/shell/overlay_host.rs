@@ -175,6 +175,8 @@ mod device_fabric_ui_tests {
                     audio_output: true,
                     video_output: true,
                     display: true,
+                    controls_local: false,
+                    local_can_control: false,
                 }],
                 local_media: vec![FabricMediaView {
                     session_id: "dev.qos.video:7".into(),
@@ -216,11 +218,20 @@ mod device_fabric_ui_tests {
 
         host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
         host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+        let (place, control) = ShellOverlayHost::qs_device_row_actions(host.qs_device_row_rect(2));
+        host.handle_qs_device_fabric_click(place.center());
+        host.handle_qs_device_fabric_click(control.center());
         let actions = actions.borrow();
         assert!(actions.contains(&DeviceFabricUiAction::RouteLocalAudio { node_id: 41 }));
         assert!(actions.contains(&DeviceFabricUiAction::HandoffMedia {
             session_id: "dev.qos.video:7".into(),
             target: remote,
+        }));
+        assert!(actions.contains(&DeviceFabricUiAction::PlaceRight {
+            device: DeviceId::new("certified-laptop").unwrap(),
+        }));
+        assert!(actions.contains(&DeviceFabricUiAction::GrantControl {
+            controller: DeviceId::new("certified-laptop").unwrap(),
         }));
     }
 
@@ -406,6 +417,10 @@ pub struct FabricDeviceView {
     pub audio_output: bool,
     pub video_output: bool,
     pub display: bool,
+    /// This remote device currently holds a lease issued by the local one.
+    pub controls_local: bool,
+    /// The local device currently holds a lease issued by this remote one.
+    pub local_can_control: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -441,6 +456,15 @@ pub enum DeviceFabricUiAction {
     },
     RouteLocalAudio {
         node_id: u32,
+    },
+    PlaceRight {
+        device: crate::shell::personal_continuity::DeviceId,
+    },
+    GrantControl {
+        controller: crate::shell::personal_continuity::DeviceId,
+    },
+    RevokeControl {
+        controller: crate::shell::personal_continuity::DeviceId,
     },
 }
 
@@ -9956,14 +9980,49 @@ impl ShellOverlayHost {
         };
         self.normalise_qs_selected_media(&view);
         let rows = device_fabric_pane_rows(&view);
-        let Some(item) = rows
+        let Some((row_index, item)) = rows
             .iter()
             .enumerate()
             .find(|(index, _)| self.qs_device_row_rect(*index).contains(point))
-            .map(|(_, item)| item.clone())
+            .map(|(index, item)| (index, item.clone()))
         else {
             return;
         };
+        let secondary = if let DeviceFabricPaneRow::Device(device) = &item {
+            let (place, control) = Self::qs_device_row_actions(self.qs_device_row_rect(row_index));
+            if place.contains(point) && !device.is_local && device.online && device.display {
+                Some((
+                    DeviceFabricUiAction::PlaceRight {
+                        device: device.id.clone(),
+                    },
+                    format!("{} will sit to the right after it confirms", device.label),
+                ))
+            } else if control.contains(point) && !device.is_local && device.online {
+                if device.controls_local {
+                    Some((
+                        DeviceFabricUiAction::RevokeControl {
+                            controller: device.id.clone(),
+                        },
+                        format!("{} can no longer control this device", device.label),
+                    ))
+                } else {
+                    Some((
+                        DeviceFabricUiAction::GrantControl {
+                            controller: device.id.clone(),
+                        },
+                        format!("{} may control this device for 15 minutes", device.label),
+                    ))
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some((action, success)) = secondary {
+            self.finish_qs_device_action(action, success);
+            return;
+        }
         let action = match item {
             DeviceFabricPaneRow::Media(media) => {
                 self.qs_selected_media = Some(media.session_id);
@@ -10000,6 +10059,10 @@ impl ShellOverlayHost {
         let Some((action, success)) = action else {
             return;
         };
+        self.finish_qs_device_action(action, success);
+    }
+
+    fn finish_qs_device_action(&self, action: DeviceFabricUiAction, success: String) {
         let result = self.device_fabric_call(action);
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
@@ -16393,6 +16456,13 @@ impl ShellOverlayHost {
         Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 52.0)
     }
 
+    fn qs_device_row_actions(row: Rect) -> (Rect, Rect) {
+        (
+            Rect::new(row.x1 - 70.0, row.y0 + 10.0, row.x1 - 38.0, row.y1 - 10.0),
+            Rect::new(row.x1 - 34.0, row.y0 + 10.0, row.x1 - 2.0, row.y1 - 10.0),
+        )
+    }
+
     fn normalise_qs_selected_media(&mut self, view: &DeviceFabricView) {
         if self.qs_selected_media.as_ref().is_some_and(|selected| {
             view.local_media
@@ -16418,6 +16488,15 @@ impl ShellOverlayHost {
         }
         if !device.online {
             return "Offline · identity-certified".into();
+        }
+        if device.controls_local && device.local_can_control {
+            return "Mutual control active · local input always wins".into();
+        }
+        if device.controls_local {
+            return "May control this device · local input always wins".into();
+        }
+        if device.local_can_control {
+            return "Control granted · place beside this display to cross".into();
         }
         match selected {
             Some(media) if media.targets.contains(&device.id) => {
@@ -16536,6 +16615,11 @@ impl ShellOverlayHost {
                 face = face.primary();
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
+            let trailing = if matches!(item, DeviceFabricPaneRow::Device(_)) {
+                78.0
+            } else {
+                0.0
+            };
             ui::icons::draw_icon(
                 scene,
                 transform,
@@ -16559,7 +16643,7 @@ impl ShellOverlayHost {
                 theme.tokens.typography.scale.sm,
                 text_color,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 54.0)),
+                Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
                 TextWeight::Medium,
             );
             text_renderer.draw_text(
@@ -16572,8 +16656,46 @@ impl ShellOverlayHost {
                     theme.tokens.colors.text_dim
                 },
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
-                Some(f64_to_f32_lossy(row.width() - 54.0)),
+                Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
             );
+            if let DeviceFabricPaneRow::Device(device) = item {
+                let (place, control) = Self::qs_device_row_actions(row);
+                Button::paint(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    &ButtonFace::new(place, "")
+                        .ghost()
+                        .icon(ui::icons::Icon::ArrowRight)
+                        .hovered(
+                            device.online
+                                && device.display
+                                && self.last_cursor.is_some_and(|point| place.contains(point)),
+                        )
+                        .disabled(device.is_local || !device.online || !device.display)
+                        .accessible_name("Place this display to the right"),
+                );
+                let mut control_face = ButtonFace::new(control, "")
+                    .ghost()
+                    .icon(ui::icons::Icon::Mouse)
+                    .hovered(
+                        device.online
+                            && self
+                                .last_cursor
+                                .is_some_and(|point| control.contains(point)),
+                    )
+                    .disabled(device.is_local || !device.online)
+                    .accessible_name(if device.controls_local {
+                        "Revoke control of this device"
+                    } else {
+                        "Allow this device to control this device for 15 minutes"
+                    });
+                if device.controls_local {
+                    control_face = control_face.primary();
+                }
+                Button::paint(scene, transform, text_renderer, theme, &control_face);
+            }
         }
     }
 
