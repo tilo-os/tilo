@@ -12,7 +12,8 @@
 # base it will be installed on.
 # ============================================================================
 ARG BASE_REF
-FROM github-assets AS external-assets
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
 FROM ${BASE_REF} AS resolve
 
