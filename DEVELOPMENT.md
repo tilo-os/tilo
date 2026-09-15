@@ -41,6 +41,29 @@ The last two are test *subjects*: those suites fail rather than skip without
 them, which is deliberate. They belong wherever `cargo` runs — inside the
 container if you build in one, since that is the `/usr` the sandbox binds.
 
+### Native Windows Imager builds
+
+Install the pinned Rust toolchain, a Windows SDK, and the Visual Studio C++
+tools for the target architecture. Windows ARM64 needs the Build Tools
+component `Microsoft.VisualStudio.Component.VC.Tools.ARM64`; installing only
+the x64 C++ tools does not provide ARM64 target libraries. Put a working
+`capnp` schema compiler on PATH. For a fully native ARM64 toolchain, build it
+from the [Cap'n Proto source](https://capnproto.org/install.html) with CMake's
+Visual Studio generator and `-A ARM64`.
+
+From an ARM64 host, run:
+
+```powershell
+cargo test -p imager --lib --features host-media-writer --target aarch64-pc-windows-msvc --locked
+cargo test -p ui --test hosted-platform --target aarch64-pc-windows-msvc --locked
+```
+
+Use `x86_64-pc-windows-msvc` on an x64 host. Keep the target explicit: an
+emulated shell or tool must not determine the release architecture. These
+tests cover the hosted client; the compositor and local identity authority
+remain Linux/Unix services. Signed installer prerequisites and both native
+release lanes are documented in [Imager release operations](docs/imager-release-operations.md).
+
 ### If you build in a container (optional)
 
 For image-based hosts (Silverblue, Bazzite) where `/usr` is read-only and the
