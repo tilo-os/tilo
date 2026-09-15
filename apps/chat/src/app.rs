@@ -604,7 +604,7 @@ pub struct ChatApp {
     // Persistence (None for ephemeral / `--shots` instances).
 
     // Background image loader/cache for attachment thumbnails (decodes off
-    // the UI thread; real bytes come from the FUSE mount).
+    // the UI thread; real bytes come from qdoc's blob store).
     pub(crate) images: ui::ImageStore,
 
     // Layout + render caches.
@@ -1094,8 +1094,8 @@ impl ChatApp {
             }
             "attach" => {
                 // Show the workspace file picker with real, decodable
-                // thumbnails (the demo scheme drives the same decode path a
-                // projected FUSE image would). Ephemeral shot only.
+                // thumbnails (the demo scheme drives the same decode path as
+                // a qdoc image). Ephemeral shot only.
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
