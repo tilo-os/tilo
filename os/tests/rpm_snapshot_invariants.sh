@@ -58,7 +58,7 @@ PY
     || bad "$relative has no package captured by the workflow grammar"
 done
 
-all_packages="$("$derive")"
+all_packages="$("$derive" --arch x86_64)"
 for package in wine wine-dxvk gamescope qemu-kvm libvirt-client \
   libvirt-daemon-kvm libvirt-daemon-config-nwfilter swtpm swtpm-tools \
   edk2-ovmf virtio-win freerdp xwayland-satellite virt-viewer xorriso \
@@ -67,6 +67,17 @@ for package in wine wine-dxvk gamescope qemu-kvm libvirt-client \
     && ok "$package is in the derived frozen package set" \
     || bad "$package is missing from the derived frozen package set"
 done
+
+arm_packages="$("$derive" --arch aarch64)"
+if printf '%s\n' "$arm_packages" | grep -Fxq edk2-aarch64 \
+  && ! printf '%s\n' "$arm_packages" | grep -Fxq edk2-ovmf \
+  && ! printf '%s\n' "$all_packages" | grep -Fxq edk2-aarch64; then
+  ok 'each architecture selects its native Windows VM firmware'
+else
+  bad 'Windows VM firmware package selection crosses architectures'
+fi
+has "$workflow" "--arch '\${{ matrix.arch }}'" \
+  'snapshot package selection uses the explicit native matrix architecture'
 
 has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'

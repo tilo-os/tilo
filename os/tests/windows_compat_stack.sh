@@ -11,11 +11,20 @@ fail=0
 ok()  { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm edk2-ovmf freerdp xwayland-satellite virt-viewer xorriso; do
+for package in wine wine-dxvk gamescope qemu-kvm libvirt-daemon-kvm swtpm freerdp xwayland-satellite virt-viewer xorriso; do
   grep -q "^    $package \\\\$" "$CF" \
     && ok "$package is part of the immutable image" \
     || bad "$package is absent from the Windows compatibility package transaction"
 done
+
+for selection in 'x86_64) vm_firmware=edk2-ovmf ;;' 'aarch64) vm_firmware=edk2-aarch64 ;;'; do
+  grep -Fq "$selection" "$CF" \
+    && ok "native VM firmware selection: $selection" \
+    || bad "missing VM firmware selection: $selection"
+done
+grep -Fq '    "$vm_firmware" \' "$CF" \
+  && ok 'selected native VM firmware is installed in the compatibility transaction' \
+  || bad 'native VM firmware is absent from the compatibility transaction'
 
 grep -q '^# qos-rpm-snapshot-package: virtio-win$' "$CF" \
   && grep -q 'COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso' "$CF" \
