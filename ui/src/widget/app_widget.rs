@@ -62,6 +62,33 @@ impl std::fmt::Debug for AppCommand {
 /// `TileContent::App`. `AppWidget: Widget` means the shell always falls
 /// through to the widget contract for layout, draw, and events.
 pub trait AppWidget: Widget {
+    /// Capture app-owned local presentation alongside the ordinary View.
+    /// # Errors
+    /// Rejects an invalid application contribution before either contribution is saved.
+    fn capture_application_view(
+        &self,
+    ) -> Result<Option<crate::application_view::ApplicationLocalView>, crate::view::ThawError> {
+        Ok(None)
+    }
+    /// Prepare current topology from an immutable latest-record loan.
+    /// # Errors
+    /// A payload requires explicit application support and validation.
+    fn restore_application_view(
+        &mut self,
+        _local: &crate::application_view::ApplicationLocalView,
+        _doc: &automerge::AutoCommit,
+    ) -> Result<crate::application_view::ApplicationFocusRestore, crate::view::ThawError> {
+        Err(crate::view::ThawError::State(
+            "application-local restoration unsupported".into(),
+        ))
+    }
+    /// Finish after ordinary View restoration and before any mount or capture.
+    /// # Errors
+    /// Applications may reject a prepared local plan without publishing a partial view.
+    fn finish_application_view_restore(&mut self) -> Result<(), crate::view::ThawError> {
+        Ok(())
+    }
+
     fn app_kind(&self) -> AppKind;
     fn app_title(&self) -> &str;
     fn app_icon(&self) -> IconDescriptor;
