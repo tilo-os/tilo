@@ -74,7 +74,7 @@ pub struct RollbackToken {
     pub nv_base: i64,
     pub pcr_bank: String,
     pub pcrs: Vec<u32>,
-    /// Device-local PCRs applied after PolicyAuthorize.
+    /// Device-local PCRs applied after `PolicyAuthorize`.
     pub platform_pcrs: Vec<u32>,
     /// Is a PIN part of the policy?
     pub pin: bool,
