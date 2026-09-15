@@ -31,7 +31,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::{ActionEmitter, TaffyTreeExt, Widget};
 
@@ -143,13 +143,32 @@ fn paint_empty_state(
     let title_size = theme.tokens.typography.scale.xl;
     let msg_size = theme.tokens.typography.scale.sm;
     let btn_size = theme.tokens.typography.scale.sm;
-    let btn_h = 34.0_f64;
+    let drawn_btn_size = f64::from(btn_size) * f64::from(theme.text_scale);
+    // A 34 px pill works at the default scale, but at 200% the label can be
+    // taller than the fixed control and paint outside both the pill and a
+    // narrow recovery pane. Keep the default compact while reserving a
+    // readable line-height plus vertical breathing room at larger scales.
+    let btn_h = (drawn_btn_size + 12.0).max(34.0);
 
-    let (title_w, title_h) = text_renderer.measure(title, title_size, None);
-    let (msg_w, msg_h) = message.map_or((0.0, 0.0), |m| text_renderer.measure(m, msg_size, None));
+    // Empty states are often used for the most important recovery path. A
+    // high text scale must make that explanation taller, not let a one-line
+    // title or message paint beyond a narrow pane. Use the same constrained,
+    // centered style for measurement and draw so the stack fit calculation
+    // cannot drift from the pixels.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "widget rects are bounded logical-pixel dimensions; text layout accepts f32"
+    )]
+    let text_width = (rect.width() - gap * 2.0).max(1.0) as f32;
+    let mut title_style = TextStyle::new(title_size).with_align(ParagraphAlign::Center);
+    let message_style = TextStyle::new(msg_size).with_align(ParagraphAlign::Center);
+    let (_, mut title_h) = text_renderer.measure_style(title, Some(text_width), &title_style);
+    let (_, msg_h) = message.map_or((0.0, 0.0), |m| {
+        text_renderer.measure_style(m, Some(text_width), &message_style)
+    });
     let (act_w, _) = action_label.map_or((0.0, 0.0), |a| text_renderer.measure(a, btn_size, None));
 
-    let fit = Fit::choose(
+    let mut fit = Fit::choose(
         rect.height(),
         Parts {
             icon: icon.is_some(),
@@ -163,6 +182,40 @@ fn paint_empty_state(
             btn_h,
         },
     );
+    // On a phone at a high text scale a three-line headline can crowd out
+    // the recovery explanation even after the decorative icon is shed.
+    // Preserve the action *and* the explanation by compacting only the
+    // display size of the heading, while keeping its heading semantics and
+    // full accessible name intact.  The final fallback still prefers the
+    // action if a parent genuinely offers too little vertical space.
+    if message.is_some() && !fit.message {
+        for factor in [0.82_f32, 0.72, 0.60] {
+            let candidate_style =
+                TextStyle::new(title_size * factor).with_align(ParagraphAlign::Center);
+            let (_, candidate_h) =
+                text_renderer.measure_style(title, Some(text_width), &candidate_style);
+            let candidate_fit = Fit::choose(
+                rect.height(),
+                Parts {
+                    icon: icon.is_some(),
+                    message: true,
+                    action: action_label.is_some(),
+                },
+                Metrics {
+                    title_h: f64::from(candidate_h),
+                    msg_h: f64::from(msg_h),
+                    gap,
+                    btn_h,
+                },
+            );
+            if candidate_fit.message {
+                title_style = candidate_style;
+                title_h = candidate_h;
+                fit = candidate_fit;
+                break;
+            }
+        }
+    }
     let icon = if fit.icon { icon } else { None };
     let message = if fit.message { message } else { None };
     let total = fit.total;
@@ -185,25 +238,25 @@ fn paint_empty_state(
         y += DISC_D + gap;
     }
 
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         title,
-        title_size,
         theme.text_primary,
-        translated(transform, cx - f64::from(title_w) / 2.0, y),
-        None,
+        translated(transform, rect.x0 + gap, y),
+        Some(text_width),
+        &title_style,
     );
     y += f64::from(title_h);
 
     if let Some(msg) = message {
         y += gap * 0.5;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             msg,
-            msg_size,
             theme.text_dim,
-            translated(transform, cx - f64::from(msg_w) / 2.0, y),
-            None,
+            translated(transform, rect.x0 + gap, y),
+            Some(text_width),
+            &message_style,
         );
         y += f64::from(msg_h);
     }
@@ -234,7 +287,7 @@ fn paint_empty_state(
                 &pill,
             );
         }
-        let ty = action_rect.y0 + (btn_h - f64::from(btn_size)) / 2.0;
+        let ty = action_rect.y0 + (btn_h - drawn_btn_size) / 2.0;
         text_renderer.draw_text(
             scene,
             label,
@@ -791,6 +844,55 @@ mod tests {
         assert!(
             fit.total >= m.title_h + m.gap + m.btn_h,
             "the pill is still in the measured stack"
+        );
+    }
+
+    #[test]
+    fn narrow_large_text_recovery_copy_wraps_inside_the_empty_state() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let rect = Rect::new(0.0, 0.0, 390.0, 680.0);
+        let gap = f64::from(theme.tokens.spacing.s4);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "test viewport is an ordinary logical-pixel dimension"
+        )]
+        let width = (rect.width() - gap * 2.0).max(1.0) as f32;
+        let title = "Couldn’t open this page";
+        let message = "The site did not respond. Check your connection and try again.";
+        let title_style =
+            TextStyle::new(theme.tokens.typography.scale.xl).with_align(ParagraphAlign::Center);
+        let message_style =
+            TextStyle::new(theme.tokens.typography.scale.sm).with_align(ParagraphAlign::Center);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        let (_, title_one_line_height) = renderer.measure_style(title, None, &title_style);
+        let (title_width, title_height) = renderer.measure_style(title, Some(width), &title_style);
+        let (message_width, message_height) =
+            renderer.measure_style(message, Some(width), &message_style);
+
+        assert!(title_width <= width);
+        assert!(message_width <= width);
+        assert!(title_height > title_one_line_height);
+        assert!(message_height > 0.0);
+
+        let mut state = EmptyState::new(title)
+            .with_message(message)
+            .with_action("Try again");
+        state.apply_layout_external(rect);
+        let mut scene = Scene::new();
+        state.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        let action = state.action_rect();
+        assert!(rect.contains(action.center()));
+        assert!(
+            action.height()
+                >= f64::from(theme.tokens.typography.scale.sm) * f64::from(theme.text_scale) + 12.0,
+            "large-text action reserves its label's full line height"
         );
     }
 
