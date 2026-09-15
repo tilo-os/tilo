@@ -52,6 +52,15 @@ else
   bad 'kernel publication can omit native ARM64 or bypass index verification'
 fi
 
+if grep -Fq 'needs: [build, cache-warm]' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'runner: runner-arm64' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
+  && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
+  ok 'native CI builder publication waits for cache acceptance on both architectures'
+else
+  bad 'native CI builder or affected-package architecture coverage is missing'
+fi
+
 grep -Fq 'tags: ["desktop-v*"]' "$desktop" \
   && grep -Fq 'tags: ["apps-v*", "app-*-v*"]' "$apps" \
   && grep -Fq 'tags: ["v*"]' "$os" \

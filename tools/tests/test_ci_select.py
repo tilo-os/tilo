@@ -85,6 +85,17 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(sorted(names), sorted(packages))
         self.assertEqual(len(names), len(set(names)))
 
+    def test_each_selected_package_runs_once_on_each_native_architecture(self) -> None:
+        plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
+        rows = plan["matrix"]["include"]
+        self.assertEqual({row["arch"] for row in rows}, {"x86_64", "aarch64"})
+        for arch, runner in ci_select.NATIVE_RUNNERS.items():
+            native = [row for row in rows if row["arch"] == arch]
+            self.assertEqual({row["runner"] for row in native}, {runner})
+            names = " ".join(row["packages"] for row in native).split()[1::2]
+            self.assertEqual(sorted(names), plan["selected"])
+            self.assertEqual(len(native), plan["shard_count"])
+
     def test_cost_threshold_adds_shards_only_when_useful(self) -> None:
         packages, _ = ci_select.package_maps(self.metadata, self.root)
         names = set(packages)
