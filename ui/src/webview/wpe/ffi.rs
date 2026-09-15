@@ -362,6 +362,9 @@ pub enum WebKitUserContentManager {}
 pub enum WebKitUserContentFilterStore {}
 pub enum WebKitUserContentFilter {}
 pub enum WebKitNetworkSession {}
+pub enum WebKitDownload {}
+pub enum WebKitURIRequest {}
+pub enum WebKitURIResponse {}
 pub enum WebKitUserScript {}
 pub enum WebKitWebsiteDataManager {}
 
@@ -452,6 +455,19 @@ unsafe extern "C" {
     pub fn webkit_web_view_get_network_session(
         view: *mut WebKitWebView,
     ) -> *mut WebKitNetworkSession;
+    pub fn webkit_web_view_download_uri(
+        view: *mut WebKitWebView,
+        uri: *const c_char,
+    ) -> *mut WebKitDownload;
+    pub fn webkit_download_get_request(download: *mut WebKitDownload) -> *mut WebKitURIRequest;
+    pub fn webkit_uri_request_get_uri(request: *mut WebKitURIRequest) -> *const c_char;
+    pub fn webkit_download_get_response(download: *mut WebKitDownload) -> *mut WebKitURIResponse;
+    pub fn webkit_uri_response_get_content_length(response: *mut WebKitURIResponse) -> u64;
+    pub fn webkit_download_get_estimated_progress(download: *mut WebKitDownload) -> c_double;
+    pub fn webkit_download_get_received_data_length(download: *mut WebKitDownload) -> u64;
+    pub fn webkit_download_get_destination(download: *mut WebKitDownload) -> *const c_char;
+    pub fn webkit_download_set_destination(download: *mut WebKitDownload, path: *const c_char);
+    pub fn webkit_download_cancel(download: *mut WebKitDownload);
     pub fn webkit_network_session_get_website_data_manager(
         session: *mut WebKitNetworkSession,
     ) -> *mut WebKitWebsiteDataManager;
@@ -481,21 +497,6 @@ unsafe extern "C" {
         result: *mut GAsyncResult,
         error: *mut *mut GError,
     ) -> *mut WebKitUserContentFilter;
-    /// Retrieve a *previously compiled* filter by identifier without
-    /// recompiling — the fast path when the source is unchanged.
-    pub fn webkit_user_content_filter_store_load(
-        store: *mut WebKitUserContentFilterStore,
-        identifier: *const c_char,
-        cancellable: *mut GCancellable,
-        callback: GAsyncReadyCallback,
-        user_data: *mut c_void,
-    );
-    pub fn webkit_user_content_filter_store_load_finish(
-        store: *mut WebKitUserContentFilterStore,
-        result: *mut GAsyncResult,
-        error: *mut *mut GError,
-    ) -> *mut WebKitUserContentFilter;
-
     // WPEWebKit's public API exposes JSCValue and exports this symbol itself.
     // Recent WPE installations do not ship a separate
     // `libWPEJavaScriptCore-2.0`, so keep it in the WPEWebKit link block.
