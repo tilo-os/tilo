@@ -227,15 +227,10 @@ impl ui::widget::Widget for LiveStore {
                 self.inner.set_moderation_case(state, path, &case);
             }
         }
-        // `inner.sync` drains click edges into the pending-action
-        // queue; hand each one to the worker with the full item so it
-        // has the download URL etc.
+        // Widget sync only reconciles local view state and collaborative
+        // report text. Package and remote work arrives below through typed
+        // lifecycle actions, never through document-backed click edges.
         self.inner.sync(state, path);
-        for (id, action) in self.inner.take_pending_actions() {
-            if let Some(item) = self.inner.items().iter().find(|i| i.id == id).cloned() {
-                self.worker.request(Request::Act(Box::new(item), action));
-            }
-        }
         for (id, action, invocation) in self.inner.take_lifecycle_actions() {
             if let Some(item) = self.inner.items().iter().find(|i| i.id == id).cloned() {
                 if !self
@@ -254,9 +249,6 @@ impl ui::widget::Widget for LiveStore {
                 );
             }
         }
-        if self.inner.take_refresh_requested() {
-            self.worker.request(Request::Refresh);
-        }
         if let Some(invocation) = self.inner.take_lifecycle_refresh()
             && !self
                 .worker
@@ -272,14 +264,6 @@ impl ui::widget::Widget for LiveStore {
         }
         if let Some(id) = self.inner.take_detail_requested() {
             self.worker.request(Request::Detail(id));
-        }
-        for intent in self.inner.take_remote_intents() {
-            let request = match intent {
-                RemoteIntent::Refresh => Request::RefreshRemotes,
-                RemoteIntent::Add { name, url } => Request::RemoteAdd { name, url },
-                RemoteIntent::Remove(name) => Request::RemoteRemove(name),
-            };
-            self.worker.request(request);
         }
         for (intent, invocation) in self.inner.take_lifecycle_remote() {
             let request = match intent {
