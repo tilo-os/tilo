@@ -139,7 +139,7 @@ impl ImageEditorApp {
                 } else {
                     ButtonStyle::Ghost
                 })
-                .on_click(move || sink.set(Some(command)));
+                .on_view(move || sink.set(Some(command)));
                 (command, button)
             })
             .collect();
