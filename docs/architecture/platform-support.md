@@ -83,9 +83,11 @@ provides this on ARM through `uefi-vars-sysbus`.
 [Libvirt's `varstore` configuration](https://libvirt.org/formatdomain.html)
 supports it starting with libvirt 12.1.0. The queried Fedora ARM64 repository
 provides libvirt 12.0.0, while its edk2 package already contains qemuvars firmware
-and enrolled Secure Boot variable templates. A maintained newer libvirt package,
-architecture-specific domain configuration and native VM acceptance are still
-required; compilation of the service crates does not satisfy this requirement.
+and enrolled Secure Boot variable templates. A maintained newer libvirt package and
+native VM acceptance are still required. Domain rendering now selects ARM64 `virt`, GICv3 and TPM TIS with
+protected variable storage and explicitly enrolled Secure Boot keys; x86 keeps
+its q35/SMM configuration. Both domain variants are covered by native ARM64
+unit tests, but XML rendering alone does not establish guest boot support.
 
 The pinned `virtio-win-0.1.302-1.noarch.rpm` was downloaded and verified against
 its manifest SHA-256. Inspection found 76 ARM64 PE driver files, including

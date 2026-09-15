@@ -49,7 +49,8 @@ pub use appliance::{
 };
 pub use command::{CommandError, CommandOutput, CommandRequest, CommandRunner, StdCommandRunner};
 pub use config::{
-    APPLIANCE_DOMAIN_NAME, ApplianceConfig, ConfigError, CpuMode, FirmwareConfig, PerformanceConfig,
+    APPLIANCE_DOMAIN_NAME, ApplianceConfig, ConfigError, CpuMode, FirmwareConfig,
+    GuestArchitecture, PerformanceConfig,
 };
 pub use graphics::{
     GraphicsAssignment, GraphicsCapabilities, GraphicsDeviceCapability, GraphicsProbeError,
