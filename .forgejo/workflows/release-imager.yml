@@ -50,6 +50,7 @@ jobs:
     enable-openid-connect: true
     env:
       REGISTRY_AUTH_FILE: /tmp/qos-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
+      QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
       QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}
       QOS_EFI_SIGNING_CERT_SHA256: ${{ vars.QOS_EFI_SIGNING_CERT_SHA256 }}
       QOS_REQUIRE_PCR_PREDICTION: ${{ startsWith(github.ref, 'refs/tags/imager-v') && '1' || '0' }}
