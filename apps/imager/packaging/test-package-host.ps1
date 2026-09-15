@@ -15,23 +15,26 @@ function cargo {
 }
 
 try {
+  foreach ($Architecture in @("x86_64", "aarch64")) {
+    $BuildArguments.Clear()
     $Failure = $null
     try {
-        & "$PSScriptRoot/package-host.ps1" $OutputPath
+        & "$PSScriptRoot/package-host.ps1" $OutputPath -Architecture $Architecture
     } catch {
         $Failure = $_
     }
-    if (-not $Failure -or $Failure.Exception.Message -ne "qOS Imager build failed for x86_64-pc-windows-msvc") {
+    if (-not $Failure -or $Failure.Exception.Message -ne "qOS Imager build failed for $Architecture-pc-windows-msvc") {
         throw "The packager must report the failed build before copying or signing any binary."
     }
     $TargetIndex = $BuildArguments.IndexOf("--target")
-    if ($TargetIndex -lt 0 -or $BuildArguments[$TargetIndex + 1] -ne "x86_64-pc-windows-msvc") {
+    if ($TargetIndex -lt 0 -or $BuildArguments[$TargetIndex + 1] -ne "$Architecture-pc-windows-msvc") {
         throw "The Windows package must explicitly compile the architecture in its filename."
     }
     if (Test-Path -LiteralPath $OutputPath) {
         throw "A failed build must not create a package directory or reuse a stale binary."
     }
-    Write-Output "PASS: explicit x86_64 build target; failed build stops before packaging."
+    Write-Output "PASS: explicit $Architecture build target; failed build stops before packaging."
+  }
 } finally {
     foreach ($Name in $SigningVariables) {
         [Environment]::SetEnvironmentVariable($Name, $SavedSigning[$Name], "Process")

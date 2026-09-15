@@ -480,6 +480,11 @@ jobs:
         env:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
         run: apps/imager/packaging/package-host.ps1
+      - name: Verify Windows package architecture boundaries
+        shell: powershell
+        run: |
+          & apps/imager/packaging/test-package-host.ps1
+          & apps/imager/packaging/test-package-architecture.ps1
       - name: Remove bootstrap Windows signing material
         if: always()
         shell: powershell

@@ -8,6 +8,16 @@
   #define MyOut "dist/qos-imager"
 #endif
 
+#ifndef MyArch
+  #define MyArch "x86_64"
+#endif
+#ifndef MyInstallerArch
+  #define MyInstallerArch "x64compatible"
+#endif
+#ifndef MyBundle
+  #error MyBundle must be the absolute path to the verified package directory
+#endif
+
 [Setup]
 AppId={{A47B49F8-4B63-4CE8-886D-3C124393028C}
 AppName={#MyAppName}
@@ -16,19 +26,19 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\qOS Imager
 DefaultGroupName=qOS
 OutputDir={#MyOut}
-OutputBaseFilename=qos-imager-setup-windows-x86_64
+OutputBaseFilename=qos-imager-setup-windows-{#MyArch}
 Compression=lzma2/max
 SolidCompression=yes
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#MyInstallerArch}
+ArchitecturesInstallIn64BitMode={#MyInstallerArch}
 PrivilegesRequired=lowest
 WizardStyle=modern
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Files]
-Source: "dist\qos-imager\qos-imager-windows-x86_64\qos-imager.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\qos-imager\qos-imager-windows-x86_64\README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\qos-imager\qos-imager-windows-x86_64\Start-qOS-Imager.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyBundle}\qos-imager.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyBundle}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MyBundle}\Start-qOS-Imager.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\qOS Imager"; Filename: "{sysnative}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\Start-qOS-Imager.ps1"""; IconFilename: "{app}\{#MyAppExeName}"
