@@ -947,12 +947,17 @@ impl UpdatesPane {
             self.overview_card(),
             self.status_card(),
             self.firmware_card(),
-            self.firmware_history_card(),
             self.detail_card(),
             self.lifecycle_card(),
             self.rollback_card(),
             self.help_card(),
         ];
+        // Firmware history is useful only when fwupd answered and there is a
+        // transaction to describe. If the service is unavailable, the single
+        // firmware recovery card above owns that explanation and retry.
+        if matches!(&self.firmware_history, Ok(history) if !history.is_empty()) {
+            all.insert(3, self.firmware_history_card());
+        }
         if let Some(msg) = &self.notice {
             // In front of everything, because it is about the thing the person
             // just tried to do. A failed switch that only warns into the
@@ -999,27 +1004,25 @@ impl UpdatesPane {
     }
 
     fn overview_card(&self) -> El {
-        card(
-            "Update overview",
-            rows(vec![
-                value_row(
-                    "Operating system",
-                    if self.status.staged_version.is_some() {
-                        "Update staged · restart required"
-                    } else {
-                        "No staged update"
-                    },
-                ),
-                value_row(
-                    "Device firmware",
-                    match &self.firmware_updates {
-                        Err(_) => "Could not query fwupd",
-                        Ok(updates) if updates.is_empty() => "Up to date",
-                        Ok(_) => "Updates available",
-                    },
-                ),
-            ]),
-        )
+        let mut overview = vec![value_row(
+            "Operating system",
+            if self.status.staged_version.is_some() {
+                "Update staged · restart required"
+            } else {
+                "No staged update"
+            },
+        )];
+        if let Ok(updates) = &self.firmware_updates {
+            overview.push(value_row(
+                "Device firmware",
+                if updates.is_empty() {
+                    "Up to date"
+                } else {
+                    "Updates available"
+                },
+            ));
+        }
+        card("Update overview", rows(overview))
     }
 
     fn detail_card(&self) -> El {
