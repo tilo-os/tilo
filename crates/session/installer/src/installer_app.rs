@@ -78,7 +78,9 @@ use crate::status_log::StatusLog;
 use crate::step_indicator::StepIndicator;
 
 const USERNAME_PATH: &str = "installer.username";
+const FULL_NAME_PATH: &str = "installer.full_name";
 const HOSTNAME_PATH: &str = "installer.hostname";
+const LOCALE_PATH: &str = "installer.locale";
 const TIMEZONE_PATH: &str = "installer.timezone";
 /// CRDT path holding the selected keyboard layout's *display name*.
 const KEYMAP_PATH: &str = "installer.keymap";
@@ -145,6 +147,57 @@ const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detecte
 enum InstallMethod {
     Erase,
     Alongside,
+}
+
+/// Which non-secret choices were independently validated from the medium.
+/// This deliberately records fields rather than treating a profile as one
+/// all-or-nothing shortcut: an invalid value can be repaired without asking
+/// for the sound choices again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum FieldCompletion {
+    #[default]
+    NeedsRepair,
+    Complete,
+}
+
+impl FieldCompletion {
+    const fn is_complete(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+}
+
+impl From<bool> for FieldCompletion {
+    fn from(complete: bool) -> Self {
+        if complete {
+            Self::Complete
+        } else {
+            Self::NeedsRepair
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ProfileCompletion {
+    hostname: FieldCompletion,
+    username: FieldCompletion,
+    full_name: FieldCompletion,
+    locale: FieldCompletion,
+    keyboard: FieldCompletion,
+    timezone: FieldCompletion,
+    filesystem: FieldCompletion,
+}
+
+impl ProfileCompletion {
+    fn identity_complete(self) -> bool {
+        self.username.is_complete() && self.full_name.is_complete()
+    }
+
+    fn options_complete(self) -> bool {
+        self.hostname.is_complete()
+            && self.locale.is_complete()
+            && self.timezone.is_complete()
+            && self.filesystem.is_complete()
+    }
 }
 
 /// One-line explanation for each filesystem, shown under the chooser.
@@ -369,6 +422,31 @@ pub fn valid_username(username: &str) -> bool {
                 | "greetd"
                 | "qos"
         )
+}
+
+pub fn valid_full_name(full_name: &str) -> bool {
+    full_name.chars().count() <= 100
+        && !full_name
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ':' | '\n' | '\r'))
+}
+
+pub fn valid_locale(locale: &str) -> bool {
+    !locale.is_empty()
+        && locale.len() <= 64
+        && locale
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'@' | b'-'))
+}
+
+pub fn valid_timezone_name(timezone: &str) -> bool {
+    !timezone.is_empty()
+        && timezone.len() <= 128
+        && !timezone.starts_with('/')
+        && !timezone.contains("..")
+        && timezone
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-'))
 }
 
 /// Guard for advancing out of `step`. `Ok(())` means it's valid to move
@@ -1029,8 +1107,9 @@ pub struct InstallerApp {
     /// probe to disk/root/ESP identities.
     storage_preflight_request: Option<String>,
     storage_preflight_passed: bool,
-    /// A validated qOS Imager profile supplied the non-secret setup choices.
-    preconfigured: bool,
+    /// Independently validated choices supplied by qOS Imager. `None` is the
+    /// ordinary manual flow; incomplete fields route to their repair screen.
+    profile_completion: Option<ProfileCompletion>,
     /// Wired by `main` so the worker thread can pump progress back.
     proxy_slot: Option<ProxySlot>,
     /// Scroll position survives incidental composition rebuilds (network
@@ -1110,27 +1189,55 @@ impl InstallerApp {
             install_launched: false,
             storage_preflight_request: None,
             storage_preflight_passed: false,
-            preconfigured: false,
+            profile_completion: None,
             proxy_slot: None,
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
 
     fn apply_media_profile(&mut self, profile: crate::media_profile::MediaProfile) {
-        let keyboard = profile.keyboard_display_name().to_string();
-        self.hostname = profile.hostname;
-        self.username = profile.username;
-        self.full_name = profile.full_name;
-        self.locale = profile.locale;
-        self.keymap = keyboard;
-        self.timezone = profile.timezone;
-        self.selected_fs = FILESYSTEMS
-            .iter()
-            .position(|filesystem| *filesystem == profile.filesystem)
-            .unwrap_or(0);
-        self.step = Step::Disk;
-        self.preconfigured = true;
-        self.status = "Your setup choices are ready. Choose where to install qOS.".to_string();
+        let status = profile.repair_summary();
+        let keyboard_display = profile.keyboard_display_name().map(str::to_string);
+        let completion = ProfileCompletion {
+            hostname: profile.hostname.is_some().into(),
+            username: profile.username.is_some().into(),
+            full_name: profile.full_name.is_some().into(),
+            locale: profile.locale.is_some().into(),
+            keyboard: profile.keyboard.is_some().into(),
+            timezone: profile.timezone.is_some().into(),
+            filesystem: profile.filesystem.is_some().into(),
+        };
+        if let Some(value) = profile.hostname {
+            self.hostname = value;
+        }
+        if let Some(value) = profile.username {
+            self.username = value;
+        }
+        if let Some(value) = profile.full_name {
+            self.full_name = value;
+        }
+        if let Some(value) = profile.locale {
+            self.locale = value;
+        }
+        if let Some(value) = keyboard_display {
+            self.keymap = value;
+        }
+        if let Some(value) = profile.timezone {
+            self.timezone = value;
+        }
+        if let Some(value) = profile.filesystem {
+            self.selected_fs = FILESYSTEMS
+                .iter()
+                .position(|filesystem| *filesystem == value)
+                .unwrap_or(0);
+        }
+        self.step = if completion.keyboard.is_complete() {
+            Step::Disk
+        } else {
+            Step::Keyboard
+        };
+        self.profile_completion = Some(completion);
+        self.status = status;
     }
 
     /// Wire the shared event-loop-proxy slot used to stream install
@@ -1451,6 +1558,12 @@ impl InstallerApp {
         {
             let _ = state.splice_text(&obj, 0, 0, &self.username);
         }
+        if state.get(root, FULL_NAME_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, FULL_NAME_PATH, ObjType::Text)
+            && !self.full_name.is_empty()
+        {
+            let _ = state.splice_text(&obj, 0, 0, &self.full_name);
+        }
         // Hostname / timezone seed with sensible defaults so the fields
         // aren't blank (and validation passes out of the box).
         if state.get(root, HOSTNAME_PATH).ok().flatten().is_none()
@@ -1462,6 +1575,11 @@ impl InstallerApp {
             && let Ok(obj) = state.put_object(root, TIMEZONE_PATH, ObjType::Text)
         {
             let _ = state.splice_text(&obj, 0, 0, DEFAULT_TIMEZONE);
+        }
+        if state.get(root, LOCALE_PATH).ok().flatten().is_none()
+            && let Ok(obj) = state.put_object(root, LOCALE_PATH, ObjType::Text)
+        {
+            let _ = state.splice_text(&obj, 0, 0, &self.locale);
         }
         // Keyboard layout seeds with the current selection (default or a
         // shot-injected one), so the picker + preview aren't blank.
@@ -1547,6 +1665,43 @@ impl InstallerApp {
         }
     }
 
+    fn validate_current_step_details(&self) -> Result<(), String> {
+        if self.step == Step::Account && !valid_full_name(self.full_name.trim()) {
+            return Err(
+                "Use at most 100 characters for the name, without colons or control characters"
+                    .into(),
+            );
+        }
+        if self.step == Step::Account {
+            validate_passwords(
+                &secret_copy(&self.password),
+                &secret_copy(&self.password_confirmation),
+            )?;
+            validate_startup_secret_for(
+                &secret_copy(&self.password),
+                matches!(
+                    self.verified_boot_state(),
+                    VerifiedBootState::TargetVerified
+                ),
+            )
+            .map_err(str::to_string)?;
+        }
+        if self.step == Step::Options {
+            if !valid_locale(self.locale.trim()) {
+                return Err("Enter a valid locale such as en_US.UTF-8".into());
+            }
+            if !valid_timezone_name(self.timezone.trim())
+                || !self
+                    .timezones
+                    .iter()
+                    .any(|zone| zone == self.timezone.trim())
+            {
+                return Err("Choose a valid time zone from the list".into());
+            }
+        }
+        Ok(())
+    }
+
     /// Advance to the next step if the current one validates.
     fn go_next(&mut self) {
         if self.step == Step::Disk {
@@ -1592,28 +1747,31 @@ impl InstallerApp {
             &self.hostname,
         ) {
             Ok(()) => {
-                if self.step == Step::Account
-                    && let Err(message) = validate_passwords(
-                        &secret_copy(&self.password),
-                        &secret_copy(&self.password_confirmation),
-                    )
-                {
+                if let Err(message) = self.validate_current_step_details() {
                     self.set_status(&message);
                     return;
                 }
-                if self.step == Step::Account
-                    && let Err(message) = validate_startup_secret_for(
-                        &secret_copy(&self.password),
-                        matches!(
-                            self.verified_boot_state(),
-                            VerifiedBootState::TargetVerified
-                        ),
-                    )
-                {
-                    self.set_status(message);
-                    return;
+                if let Some(completion) = self.profile_completion.as_mut() {
+                    match self.step {
+                        Step::Keyboard => completion.keyboard = FieldCompletion::Complete,
+                        Step::Account => {
+                            completion.username = FieldCompletion::Complete;
+                            completion.full_name = FieldCompletion::Complete;
+                        }
+                        Step::Options => {
+                            completion.hostname = FieldCompletion::Complete;
+                            completion.locale = FieldCompletion::Complete;
+                            completion.timezone = FieldCompletion::Complete;
+                            completion.filesystem = FieldCompletion::Complete;
+                        }
+                        Step::Network | Step::Disk | Step::Review | Step::Install => {}
+                    }
                 }
-                let destination = if self.preconfigured && self.step == Step::Account {
+                let destination = if self.step == Step::Account
+                    && self
+                        .profile_completion
+                        .is_some_and(ProfileCompletion::options_complete)
+                {
                     Some(Step::Review)
                 } else {
                     next_step(self.step)
@@ -1697,11 +1855,10 @@ impl InstallerApp {
             }
             return;
         }
-        let destination = if self.preconfigured && self.step == Step::Review {
-            Some(Step::Account)
-        } else {
-            prev_step(self.step)
-        };
+        // Back always follows the visible breadcrumb. A shortened forward path
+        // must not trap the owner between Account and Review: Options (including
+        // FIDO2) and Network remain available for deliberate changes.
+        let destination = prev_step(self.step);
         if let Some(p) = destination {
             self.step = p;
             self.reset_viewport();
@@ -2183,18 +2340,39 @@ impl InstallerApp {
         let base = theme.tokens.typography.scale.base;
         let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Create your account").with_size(xl)));
-        children.push(Box::new(Text::new("Username").with_size(base)));
+        let completion = self.profile_completion.unwrap_or_default();
+        let identity_complete = self
+            .profile_completion
+            .is_some_and(ProfileCompletion::identity_complete);
         children.push(Box::new(
-            TextInput::new(Vec::new())
-                .with_id("installer.username")
-                .with_on_change_path(USERNAME_PATH),
+            Text::new(if identity_complete {
+                "Secure your account"
+            } else {
+                "Create your account"
+            })
+            .with_size(xl),
         ));
-        children.push(Box::new(
-            Text::new("Used to sign in and for your home directory.")
-                .with_size(sm)
-                .with_color(dim),
-        ));
+        if self.profile_completion.is_none() || !completion.username.is_complete() {
+            children.push(Box::new(Text::new("Username").with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.username")
+                    .with_on_change_path(USERNAME_PATH),
+            ));
+            children.push(Box::new(
+                Text::new("Used to sign in and for your home directory.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
+        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
+            children.push(Box::new(Text::new("Full name (optional)").with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.full_name")
+                    .with_on_change_path(FULL_NAME_PATH),
+            ));
+        }
         let tpm_pin = matches!(
             self.verified_boot_state(),
             VerifiedBootState::TargetVerified
@@ -2269,23 +2447,26 @@ impl InstallerApp {
         let xl = theme.tokens.typography.scale.xl;
         let base = theme.tokens.typography.scale.base;
         let sm = theme.tokens.typography.scale.sm;
+        let completion = self.profile_completion.unwrap_or_default();
 
         children.push(Box::new(Text::new("Installation options").with_size(xl)));
 
-        children.push(Box::new(Text::new("Filesystem").with_size(base)));
-        children.push(Box::new(SegChoice::new(
-            FILESYSTEMS
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect(),
-            (0..FILESYSTEMS.len()).map(fs_path).collect(),
-            self.selected_fs,
-        )));
-        children.push(Box::new(
-            Text::new(fs_description(self.selected_fs))
-                .with_size(sm)
-                .with_color(dim),
-        ));
+        if self.profile_completion.is_none() || !completion.filesystem.is_complete() {
+            children.push(Box::new(Text::new("Filesystem").with_size(base)));
+            children.push(Box::new(SegChoice::new(
+                FILESYSTEMS
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+                (0..FILESYSTEMS.len()).map(fs_path).collect(),
+                self.selected_fs,
+            )));
+            children.push(Box::new(
+                Text::new(fs_description(self.selected_fs))
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
 
         children.push(Box::new(Text::new("Disk encryption").with_size(base)));
         children.push(Box::new(
@@ -2317,30 +2498,48 @@ impl InstallerApp {
                 .with_color(dim),
         ));
 
-        children.push(Box::new(Text::new("Hostname").with_size(base)));
-        children.push(Box::new(
-            TextInput::new(Vec::new())
-                .with_id("installer.hostname")
-                .with_on_change_path(HOSTNAME_PATH),
-        ));
-        children.push(Box::new(
-            Text::new("The name your computer uses on the network.")
-                .with_size(sm)
-                .with_color(dim),
-        ));
+        if self.profile_completion.is_none() || !completion.hostname.is_complete() {
+            children.push(Box::new(Text::new("Hostname").with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.hostname")
+                    .with_on_change_path(HOSTNAME_PATH),
+            ));
+            children.push(Box::new(
+                Text::new("The name your computer uses on the network.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
 
-        children.push(Box::new(Text::new("Time zone").with_size(base)));
-        children.push(Box::new(
-            Dropdown::new(self.timezones.clone(), TIMEZONE_PATH)
-                .with_id("installer.timezone")
-                .with_placeholder("Select a time zone")
-                .open_if(self.tz_open_for_shot),
-        ));
-        children.push(Box::new(
-            Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
-                .with_size(sm)
-                .with_color(dim),
-        ));
+        if self.profile_completion.is_none() || !completion.locale.is_complete() {
+            children.push(Box::new(Text::new("Language & locale").with_size(base)));
+            children.push(Box::new(
+                TextInput::new(Vec::new())
+                    .with_id("installer.locale")
+                    .with_on_change_path(LOCALE_PATH),
+            ));
+            children.push(Box::new(
+                Text::new("Use a locale such as en_US.UTF-8 or de_DE.UTF-8.")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
+
+        if self.profile_completion.is_none() || !completion.timezone.is_complete() {
+            children.push(Box::new(Text::new("Time zone").with_size(base)));
+            children.push(Box::new(
+                Dropdown::new(self.timezones.clone(), TIMEZONE_PATH)
+                    .with_id("installer.timezone")
+                    .with_placeholder("Select a time zone")
+                    .open_if(self.tz_open_for_shot),
+            ));
+            children.push(Box::new(
+                Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
+                    .with_size(sm)
+                    .with_color(dim),
+            ));
+        }
 
         children.push(nav_row(Step::Options, NEXT_PATH, "Next", false));
     }
@@ -2921,11 +3120,17 @@ impl InstallerApp {
         if let Some(u) = Self::read_text(state, root, USERNAME_PATH) {
             self.username = u;
         }
+        if let Some(name) = Self::read_text(state, root, FULL_NAME_PATH) {
+            self.full_name = name;
+        }
         if let Some(h) = Self::read_text(state, root, HOSTNAME_PATH) {
             self.hostname = h;
         }
         if let Some(t) = Self::read_text(state, root, TIMEZONE_PATH) {
             self.timezone = t;
+        }
+        if let Some(locale) = Self::read_text(state, root, LOCALE_PATH) {
+            self.locale = locale;
         }
         if let Some(k) = Self::read_text(state, root, KEYMAP_PATH) {
             self.keymap = k;
@@ -4908,11 +5113,11 @@ mod tests {
         app.step = Step::Account;
         let (_taffy, _root) = build(&mut app);
 
-        // Username + password + confirmation + Back + Next.
+        // Username + optional full name + password + confirmation + Back + Next.
         assert_eq!(
             count_focusable(&app),
-            5,
-            "3 inputs + 2 nav buttons must be focusable"
+            6,
+            "4 inputs + 2 nav buttons must be focusable"
         );
     }
 
@@ -5009,14 +5214,14 @@ mod tests {
     fn validated_media_profile_skips_already_configured_screens() {
         let mut app = InstallerApp::with_disks(sample_disks());
         app.apply_media_profile(crate::media_profile::MediaProfile {
-            schema: 1,
-            hostname: "studio".into(),
-            username: "ada".into(),
-            full_name: "ada Example".into(),
-            locale: "de_DE.UTF-8".into(),
-            keyboard: "de".into(),
-            timezone: "Europe/Berlin".into(),
-            filesystem: "ext4".into(),
+            hostname: Some("studio".into()),
+            username: Some("ada".into()),
+            full_name: Some("ada Example".into()),
+            locale: Some("de_DE.UTF-8".into()),
+            keyboard: Some("de".into()),
+            timezone: Some("Europe/Berlin".into()),
+            filesystem: Some("ext4".into()),
+            repairs: Vec::new(),
         });
         app.tpm2 = false;
         assert_eq!(app.step, Step::Disk);
@@ -5028,11 +5233,75 @@ mod tests {
         app.selected_disk = Some(0);
         app.go_next();
         assert_eq!(app.step, Step::Account);
+        let _ = build(&mut app);
+        assert!(find_accessible(&app, "Secure your account").is_some());
+        assert!(find_accessible(&app, "Username").is_none());
         *app.password.lock().unwrap() = "correct horse battery staple".into();
         *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
         app.go_next();
         assert_eq!(app.step, Step::Review, "configured Options is not repeated");
         app.go_back();
+        assert_eq!(app.step, Step::Options);
+        let _ = build(&mut app);
+        assert!(
+            has_test_id(app.composed.as_deref().unwrap(), "fido2_choice"),
+            "Review Back must keep on-device security choices reachable"
+        );
+        app.go_back();
         assert_eq!(app.step, Step::Account);
+        app.go_back();
+        assert_eq!(app.step, Step::Disk);
+        app.go_back();
+        assert_eq!(app.step, Step::Network);
+    }
+
+    #[test]
+    fn partial_media_profile_routes_to_only_the_repair_screens() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.apply_media_profile(crate::media_profile::MediaProfile {
+            hostname: None,
+            username: Some("ada".into()),
+            full_name: Some("ada Example".into()),
+            locale: Some("de_DE.UTF-8".into()),
+            keyboard: Some("de".into()),
+            timezone: Some("Europe/Berlin".into()),
+            filesystem: Some("ext4".into()),
+            repairs: vec![crate::media_profile::MediaProfileField::Hostname],
+        });
+        app.tpm2 = false;
+        assert_eq!(app.step, Step::Disk, "sound keyboard is retained");
+        assert_eq!(app.username, "ada");
+        assert_eq!(app.filesystem(), "ext4");
+
+        app.selected_disk = Some(0);
+        app.go_next();
+        assert_eq!(app.step, Step::Account);
+        *app.password.lock().unwrap() = "correct horse battery staple".into();
+        *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
+        app.go_next();
+        assert_eq!(app.step, Step::Options, "invalid hostname needs one repair");
+        let _ = build(&mut app);
+        assert!(find_accessible(&app, "Hostname").is_some());
+        assert!(find_accessible(&app, "Filesystem").is_none());
+        assert!(find_accessible(&app, "Time zone").is_none());
+    }
+
+    #[test]
+    fn invalid_keyboard_starts_at_keyboard_but_retains_other_profile_values() {
+        let mut app = InstallerApp::with_disks(sample_disks());
+        app.apply_media_profile(crate::media_profile::MediaProfile {
+            hostname: Some("studio".into()),
+            username: Some("ada".into()),
+            full_name: Some("ada Example".into()),
+            locale: Some("de_DE.UTF-8".into()),
+            keyboard: None,
+            timezone: Some("Europe/Berlin".into()),
+            filesystem: Some("ext4".into()),
+            repairs: vec![crate::media_profile::MediaProfileField::Keyboard],
+        });
+        assert_eq!(app.step, Step::Keyboard);
+        assert_eq!(app.hostname, "studio");
+        assert_eq!(app.username, "ada");
+        assert!(app.status.contains("keyboard layout"));
     }
 }
