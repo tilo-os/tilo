@@ -169,7 +169,6 @@ const BIN_BREAKPOINT: f64 = 900.0;
 /// the collapsed-bin and collapsed-inspector controls are the only way back to
 /// those panes.
 const TOPBAR_TOUCH_TARGET: f64 = 36.0;
-const TOPBAR_CONTROL_Y: f64 = 6.0;
 const TOPBAR_EDGE: f64 = 14.0;
 const TOPBAR_GAP: f64 = 10.0;
 /// At this width the Split button is redundant with its stable `S` shortcut
@@ -1280,6 +1279,66 @@ impl ShotScenario {
     }
 }
 
+/// One-time lifecycle of deterministic screenshot setup and seeding.
+#[derive(Default)]
+struct ShotLifecycle {
+    applied: bool,
+    interaction_applied: bool,
+    seeded: bool,
+}
+
+/// The configuration and initial selection policy of this editor instance.
+#[derive(Default)]
+struct SeedState {
+    demo: bool,
+    selection_initialised: bool,
+}
+
+/// Transport-owned presentation state, kept separate from durable project time.
+#[derive(Default)]
+struct PlaybackState {
+    playing: bool,
+    chase_playhead: bool,
+}
+
+/// Immediate UI overlays and host focus, all local to this participant.
+#[derive(Default)]
+struct PresentationState {
+    export_open: bool,
+    file_hovering: bool,
+    keyboard_focus: bool,
+}
+
+/// Local navigation affordances which never belong in project collaboration.
+#[derive(Default)]
+struct NavigationState {
+    help_open: bool,
+    goto_notice: bool,
+    flap_settled: bool,
+}
+
+/// Import and audio-monitor lifecycle, independent of the render pipeline.
+#[derive(Default)]
+struct MediaPipelineState {
+    auto_place_imports: bool,
+    monitor_tried: bool,
+    monitor_stale: bool,
+}
+
+/// Preview-renderer lifecycle and deterministic capture warm-up policy.
+#[derive(Default)]
+struct RenderPipelineState {
+    compositor_tried: bool,
+    warm_waveforms_sync: bool,
+}
+
+/// Per-device project-file work deferred until the next `sync`.
+#[derive(Default)]
+struct ProjectSyncState {
+    reload_pending: bool,
+    save_requested: bool,
+}
+
 pub struct VideoEditorApp {
     project: Project,
     /// The local state each existing clip had immediately before the current
@@ -1290,11 +1349,18 @@ pub struct VideoEditorApp {
     clip_edit_bases: HashMap<ClipId, Clip>,
     /// Deterministic capture scenario applied once during the first `sync`.
     shot_scenario: ShotScenario,
-    /// Guards the one-time scenario setup so it doesn't re-run every sync.
-    shot_applied: bool,
-    /// Guards the one-time rect-dependent interaction scenario setup (applied in
-    /// `draw` once the layout rect is known).
-    shot_interaction_applied: bool,
+    shot_lifecycle: ShotLifecycle,
+    seed: SeedState,
+    playback: PlaybackState,
+    presentation: PresentationState,
+    navigation: NavigationState,
+    media_pipeline: MediaPipelineState,
+    render_pipeline: RenderPipelineState,
+    project_sync: ProjectSyncState,
+    /// Current accessibility type scale. Side panes use the effective width
+    /// so a large-text desktop promotes them to their existing overlay modes
+    /// before they crush the preview or overlap inspector controls.
+    text_scale: f64,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
     zoom: f64,   // pixels per second
@@ -1320,9 +1386,7 @@ pub struct VideoEditorApp {
     /// stages the very frames a peer would have sent and the draw reads
     /// them through the identical path.
     shot_presence: Option<PresenceCtx>,
-    playing: bool,
     // --- ui state ---
-    show_export: bool,
     export: ExportSettings,
     export_status: ExportStatus,
     /// A media-import portal request in flight, drained each `sync`.
@@ -1339,7 +1403,6 @@ pub struct VideoEditorApp {
     /// track if the blank project has none) and the playhead parked inside it —
     /// so a `--shots` capture / preload shows the clip in the preview, not just
     /// the bin. Off for a plain portal import (which lands in the bin only).
-    auto_place_imports: bool,
     /// The history the host owns, as much of it as a widget is allowed to
     /// see: whether undo and redo are available right now, and a channel to
     /// ask for one. The stacks stay with the host — this only carries the
@@ -1371,11 +1434,9 @@ pub struct VideoEditorApp {
     #[cfg(any(feature = "gst", feature = "decode"))]
     monitor: Option<crate::audio::AudioMonitor>,
     #[cfg(any(feature = "gst", feature = "decode"))]
-    monitor_tried: bool,
     /// Set when the document changes, so the monitor is handed the new
     /// timeline once per edit instead of once per frame.
     #[cfg(any(feature = "gst", feature = "decode"))]
-    monitor_stale: bool,
     /// The level the mix is running at, written by whatever is mixing and
     /// read here. **Not** feature-gated: a build with no audio backend still
     /// has a mixer, still has a meter surface, and a `--shots` capture stages
@@ -1409,7 +1470,6 @@ pub struct VideoEditorApp {
     compositor: Option<crate::gpu::HeadlessCompositor>,
     /// Set once we have tried to build the compositor, so a box that cannot
     /// have one does not retry every frame.
-    compositor_tried: bool,
     /// Scratch RGBA readback from the compositor, reused between frames.
     composited: Option<(u32, u32, std::sync::Arc<Vec<u8>>)>,
     drag: Option<Drag>,
@@ -1420,7 +1480,6 @@ pub struct VideoEditorApp {
     /// transport button, a keyboard jump) so the next frame scrolls it back
     /// into view. Deliberately *not* set by wheel panning: the view follows
     /// the playhead, never fights the user's own scroll.
-    chase_playhead: bool,
     last_mouse: Point,
     hover_clip: Option<ClipId>,
     hover_media: Option<MediaId>,
@@ -1429,12 +1488,9 @@ pub struct VideoEditorApp {
     /// fires if the press is *released* without ever passing
     /// [`BIN_DRAG_THRESHOLD`] — a drag always wins over a rename.
     pending_rename: Option<MediaId>,
-    seeded: bool,
     /// When true this is the hermetic `--shots`/demo build: the first sync
     /// seeds the bundled sample project into an empty document. The live app
     /// leaves this false and never fabricates a project — it opens blank.
-    seed_demo: bool,
-    initialised_selection: bool,
     last_tick: Instant,
     rect: Rect,
     /// Framework-owned action dispatch. Every document-mutating affordance
@@ -1455,7 +1511,6 @@ pub struct VideoEditorApp {
     /// `false` until the first laid-out frame resolves the bin flap to the
     /// width's natural state — so a cold launch into a narrow window starts
     /// with the bin already collapsed instead of flashing it open.
-    flap_settled: bool,
     // --- responsive media-bin flap (shared toolkit kernel) ---
     /// Drives the media bin's docked-vs-overlay reveal. The bin is the
     /// primary sidebar: docked beside the editor on a wide window, an
@@ -1525,7 +1580,6 @@ pub struct VideoEditorApp {
     bin_drag: Option<BinDrag>,
     /// `true` while the OS is hovering a file over the window (an external
     /// drag-and-drop), so the bin can invite the drop. Dropping imports it.
-    file_hovering: bool,
     /// Vertical scroll offset of the inspector body (px), so the effects stack
     /// can grow past the pane without clipping the actions.
     inspector_scroll: f64,
@@ -1544,23 +1598,19 @@ pub struct VideoEditorApp {
     /// Whether the host has given this widget keyboard focus. The exported
     /// tree only nominates an active descendant while it has — an unfocused
     /// widget must not move a screen reader's cursor.
-    has_focus: bool,
     /// Whether the keyboard-shortcut sheet is open. ~15 shortcuts exist and
     /// none of them were written down anywhere in the product; a sheet is also
     /// the only way a reader user learns the editor has shortcuts at all.
-    show_help: bool,
     /// An in-progress timecode entry, or `None`. Typing a timecode and
     /// pressing Enter jumps the playhead there.
     goto_entry: Option<String>,
     /// Set when the typed timecode could not be read, so the field can say so
     /// instead of closing and going nowhere.
-    goto_notice: bool,
     thumbnails: crate::thumbnail::ThumbnailCache,
     /// Real audio waveform peaks per source, computed off-thread and cached.
     waveforms: crate::waveform::WaveformCache,
     /// Compute waveforms synchronously (so a single-frame `--shots`/demo render
     /// captures them). The live app leaves this off and computes off-thread.
-    warm_waveforms_sync: bool,
     /// Sources whose bytes are **not** on this device — the media reference
     /// replicated fine but [`Hydration::Projected`](crate::media::Hydration)
     /// says the content has not been fetched from the FUSE (or the file is
@@ -1593,7 +1643,6 @@ pub struct VideoEditorApp {
     /// that arrives while one is in flight cannot be applied then (the live
     /// preview lives only in the in-memory project), and this is what
     /// remembers that it is owed.
-    project_reload_pending: bool,
     // --- project files ----------------------------------------------------
     /// The file this project is saved in, once it has one. `None` means the
     /// project has never been saved: the work is still safe (the autosave
@@ -1640,7 +1689,6 @@ pub struct VideoEditorApp {
     /// Save requested by either the UI or the resource-operation door. The
     /// effect adapter only has an immutable document borrow, so sync performs
     /// the file write with the normal mutable event-loop document.
-    pending_save: bool,
     /// The project's format, worded once for the inspector to paint.
     ///
     /// Cached against the numbers it was built from for the same reason the
@@ -1721,13 +1769,35 @@ impl Default for VideoEditorApp {
 }
 
 impl VideoEditorApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one constructor makes every persistent and local editor state explicit at its lifetime boundary"
+    )]
     pub fn new() -> Self {
         Self {
             project: Project::new("Untitled"),
             clip_edit_bases: HashMap::new(),
             shot_scenario: ShotScenario::Live,
-            shot_applied: false,
-            shot_interaction_applied: false,
+            shot_lifecycle: ShotLifecycle::default(),
+            seed: SeedState::default(),
+            playback: PlaybackState::default(),
+            presentation: PresentationState {
+                // Dev aid: `QOS_VE_EXPORT=1` opens straight into the export
+                // dialog so its layout can be screenshotted headlessly.
+                export_open: std::env::var_os("QOS_VE_EXPORT").is_some(),
+                ..PresentationState::default()
+            },
+            navigation: NavigationState::default(),
+            media_pipeline: MediaPipelineState {
+                monitor_stale: true,
+                ..MediaPipelineState::default()
+            },
+            render_pipeline: RenderPipelineState::default(),
+            project_sync: ProjectSyncState {
+                reload_pending: true,
+                ..ProjectSyncState::default()
+            },
+            text_scale: 1.0,
             local_presence: crate::presence::LocalPresence::default(),
             shot_presence: None,
             playhead: 10.0,
@@ -1738,16 +1808,11 @@ impl VideoEditorApp {
             bin_bar: ui::widget::Scrollbar::vertical(),
             selection: Selection::default(),
             selected_media: None,
-            playing: false,
-            // Dev aid: `QOS_VE_EXPORT=1` opens straight into the export
-            // dialog so its layout can be screenshotted headlessly.
-            show_export: std::env::var_os("QOS_VE_EXPORT").is_some(),
             export: ExportSettings::default(),
             export_status: ExportStatus::Idle,
             import_rx: None,
             import_notice: None,
             pending_imports: Vec::new(),
-            auto_place_imports: false,
             undo: ui::UndoAccess::default(),
             #[cfg(feature = "decode")]
             preview_decoder: preview::PreviewDecoder::new(),
@@ -1759,35 +1824,25 @@ impl VideoEditorApp {
             prune_countdown: 0,
             #[cfg(any(feature = "gst", feature = "decode"))]
             monitor: None,
-            #[cfg(any(feature = "gst", feature = "decode"))]
-            monitor_tried: false,
-            #[cfg(any(feature = "gst", feature = "decode"))]
-            monitor_stale: true,
             mix_meters: std::sync::Arc::new(crate::audio::MixMeters::new()),
             mix: crate::audio::MixSnapshot::default(),
             mix_sig: None,
             meter_tick: Instant::now(),
             doc_heads: Vec::new(),
             compositor: None,
-            compositor_tried: false,
             composited: None,
             drag: None,
             marquee: None,
-            chase_playhead: false,
             last_mouse: Point::ZERO,
             hover_clip: None,
             hover_media: None,
             last_click_media: None,
             pending_rename: None,
-            seeded: false,
-            seed_demo: false,
-            initialised_selection: false,
             last_tick: Instant::now(),
             rect: Rect::ZERO,
             actions: ui::ActionHost::new(),
             clipboard: Vec::new(),
             shuttle: 0.0,
-            flap_settled: false,
             bin_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
@@ -1811,24 +1866,18 @@ impl VideoEditorApp {
             key_menu_param: None,
             bin_rename: None,
             bin_drag: None,
-            file_hovering: false,
             inspector_scroll: 0.0,
             bin_scroll: 0.0,
             focus: PaneCursor::default(),
             bin_focus_before_open: None,
-            has_focus: false,
-            show_help: false,
             goto_entry: None,
-            goto_notice: false,
             thumbnails: crate::thumbnail::ThumbnailCache::new(),
             waveforms: crate::waveform::WaveformCache::new(),
-            warm_waveforms_sync: false,
             projected_media: HashSet::new(),
             export_job: None,
             export_dest_rx: None,
             export_notice: None,
             export_chip_text: None,
-            project_reload_pending: true,
             project_path: None,
             saved_heads: None,
             project_rx: None,
@@ -1842,7 +1891,6 @@ impl VideoEditorApp {
             recents: crate::project_file::recents::load(),
             pending_open: None,
             save_then_open: None,
-            pending_save: false,
             // Filled on the first `sync`, from whatever project the document
             // actually holds -- a blank one included.
             project_format_shown: String::new(),
@@ -1855,10 +1903,10 @@ impl VideoEditorApp {
     /// live app never fabricates a project.
     pub fn new_demo() -> Self {
         let mut app = Self::new();
-        app.seed_demo = true;
+        app.seed.demo = true;
         // A single-frame demo/`--shots` render can't wait on a background
         // waveform compute, so warm them synchronously for a deterministic shot.
-        app.warm_waveforms_sync = true;
+        app.render_pipeline.warm_waveforms_sync = true;
         app
     }
 
@@ -1887,7 +1935,7 @@ impl VideoEditorApp {
     /// capture or a `--import` preload.
     pub fn new_import_placed(paths: Vec<PathBuf>) -> Self {
         let mut app = Self::new_import(paths);
-        app.auto_place_imports = true;
+        app.media_pipeline.auto_place_imports = true;
         app
     }
 
@@ -1986,7 +2034,7 @@ impl VideoEditorApp {
         app.bin_flap.snap(true);
         // Pre-settled: the explicit open snap is authoritative, so the first
         // laid-out frame must not re-snap it to the width's default.
-        app.flap_settled = true;
+        app.navigation.flap_settled = true;
         app
     }
 
@@ -1995,14 +2043,107 @@ impl VideoEditorApp {
     /// source of truth so the kernel's reconcile/animation agree with our
     /// geometry.
     fn bin_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), BIN_BREAKPOINT)
+        SplitLayout::from_width(self.rect.width() / self.text_scale, BIN_BREAKPOINT)
     }
 
     /// Docked or overlay for the inspector, from the same shared kernel the
     /// bin uses — one rule for "this window is too narrow for a fixed side
     /// panel", applied at each panel's own breakpoint.
     fn inspector_split(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), INSPECTOR_BREAKPOINT)
+        SplitLayout::from_width(self.rect.width() / self.text_scale, INSPECTOR_BREAKPOINT)
+    }
+
+    /// Text in the inspector is rendered at the user-selected scale.  Unlike
+    /// the timeline, it is a dense form rather than a canvas, so its rows and
+    /// the column that contains them must grow by the same amount.  Capping
+    /// at 2× keeps the panel practical on a small display while still making
+    /// the platform's largest advertised text setting fully usable.
+    fn inspector_ui_scale(&self) -> f64 {
+        self.text_scale.clamp(1.0, 2.0)
+    }
+
+    /// The inspector gets wider with large text as well as taller.  At 200%
+    /// a 300px column only affords 150 logical pixels: labels and their
+    /// values then have nowhere truthful to go.  The modest cap preserves a
+    /// useful preview even when the panel is an overlay.
+    fn inspector_width(&self) -> f64 {
+        INSPECTOR_W * self.inspector_ui_scale().min(1.5)
+    }
+
+    /// The clip identity and four factual properties are persistent context,
+    /// not scroll content.  Keeping them in a fixed header makes it obvious
+    /// what a deep control edits and prevents a partially scrolled row from
+    /// ever painting beneath the editor chrome.
+    fn inspector_body_origin(&self, r: &Regions) -> f64 {
+        // Four 2× property lines need substantially more air than their 1×
+        // baselines suggest; reserve a body viewport of at least 160px even
+        // in a short window rather than allowing the last value to cross the
+        // first scrolled control.
+        let max_header = (r.inspector.height() - 160.0).max(90.0);
+        r.inspector.y0 + (190.0 * self.inspector_ui_scale()).min(max_header)
+    }
+
+    fn inspector_viewport(&self, r: &Regions) -> Rect {
+        Rect::new(
+            r.inspector.x0,
+            self.inspector_body_origin(r),
+            r.inspector.x1,
+            r.inspector.y1,
+        )
+    }
+
+    /// The top bar has a different constraint from the side panes: it must
+    /// fit labelled *commands* on one short row.  A 1440px desktop at 200%
+    /// text has about the same room for those labels as a 720px window at the
+    /// default size, even though its physical rectangles are still 1440px
+    /// wide.  Treating only the latter as compact left the scaled labels to
+    /// run into one another.
+    fn topbar_is_compact(&self) -> bool {
+        self.rect.width() < TOPBAR_COMPACT_BREAKPOINT
+            || (self.text_scale > 1.25 && self.rect.width() / self.text_scale < 800.0)
+    }
+
+    /// Canvas chrome has fixed logical geometry, whereas text is scaled by
+    /// `TextRenderer`.  Let the surrounding rhythm grow with large text too,
+    /// but cap it before a small laptop loses the entire preview to chrome.
+    fn chrome_scale(&self) -> f64 {
+        self.text_scale.clamp(1.0, 1.35)
+    }
+
+    fn topbar_height(&self) -> f64 {
+        TOPBAR_H * self.chrome_scale()
+    }
+
+    fn topbar_target(&self) -> f64 {
+        TOPBAR_TOUCH_TARGET * self.chrome_scale()
+    }
+
+    fn timeline_height(&self) -> f64 {
+        // Large type gives audio lanes the same two-row header as video
+        // lanes, so reserve their extra vertical rhythm rather than cutting
+        // the last AUDIO label off behind the add-track footer.
+        if self.text_scale > 1.25 {
+            TIMELINE_H * 1.5
+        } else {
+            TIMELINE_H * self.chrome_scale()
+        }
+    }
+
+    fn transport_height(&self) -> f64 {
+        TRANSPORT_H * self.chrome_scale()
+    }
+
+    fn ruler_height(&self) -> f64 {
+        RULER_H * self.chrome_scale()
+    }
+
+    fn lane_height(&self, kind: TrackKind) -> f64 {
+        let base = if kind == TrackKind::Video || self.text_scale > 1.25 {
+            VIDEO_LANE_H
+        } else {
+            AUDIO_LANE_H
+        };
+        base * self.chrome_scale()
     }
 
     /// Whether the inspector is on screen right now: always when docked,
@@ -2012,16 +2153,26 @@ impl VideoEditorApp {
     }
 
     // ---- region geometry -------------------------------------------------
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the coupled editor pane geometry must remain in one coordinate calculation to prevent gaps and overlaps"
+    )]
     fn regions(&self) -> Regions {
         let r = self.rect;
         let layout = self.bin_layout();
         let overlay = layout == SplitLayout::Overlay;
-        let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOPBAR_H);
+        let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.topbar_height());
+        let topbar_target = self.topbar_target();
+        let topbar_y = r.y0 + (topbar.height() - topbar_target) / 2.0;
+        let topbar_edge = TOPBAR_EDGE * self.chrome_scale();
+        let topbar_gap = TOPBAR_GAP * self.chrome_scale();
+        let topbar_compact = self.topbar_is_compact();
+        let command_w = if topbar_compact { topbar_target } else { 124.0 };
         let export_btn = Rect::new(
-            r.x1 - 124.0,
-            r.y0 + TOPBAR_CONTROL_Y,
-            r.x1 - TOPBAR_EDGE,
-            r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+            r.x1 - topbar_edge - command_w,
+            topbar_y,
+            r.x1 - topbar_edge,
+            topbar_y + topbar_target,
         );
         // Directly beneath Export, in the same strip the project notice uses,
         // so the two never share a pixel — see `project_notice_limit`.
@@ -2032,35 +2183,35 @@ impl VideoEditorApp {
             export_btn.x1,
             topbar.y1 + 32.0,
         );
-        let split_btn = if r.width() < TOPBAR_COMPACT_BREAKPOINT {
+        let split_btn = if topbar_compact {
             Rect::ZERO
         } else {
             Rect::new(
-                export_btn.x0 - TOPBAR_GAP - 110.0,
-                r.y0 + TOPBAR_CONTROL_Y,
-                export_btn.x0 - TOPBAR_GAP,
-                r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+                export_btn.x0 - topbar_gap - 110.0,
+                topbar_y,
+                export_btn.x0 - topbar_gap,
+                topbar_y + topbar_target,
             )
         };
         let import_right = if split_btn.width() > 0.0 {
-            split_btn.x0 - TOPBAR_GAP
+            split_btn.x0 - topbar_gap
         } else {
-            export_btn.x0 - TOPBAR_GAP
+            export_btn.x0 - topbar_gap
         };
         let import_btn = Rect::new(
-            import_right - 112.0,
-            r.y0 + TOPBAR_CONTROL_Y,
+            import_right - if topbar_compact { topbar_target } else { 112.0 },
+            topbar_y,
             import_right,
-            r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+            topbar_y + topbar_target,
         );
         // The hamburger replaces the static app glyph slot when the bin is an
         // overlay, so the user can summon the collapsed bin.
         let menu_btn = if overlay {
             Rect::new(
-                r.x0 + 8.0,
-                r.y0 + TOPBAR_CONTROL_Y,
-                r.x0 + 8.0 + TOPBAR_TOUCH_TARGET,
-                r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+                r.x0 + 8.0 * self.chrome_scale(),
+                topbar_y,
+                r.x0 + 8.0 * self.chrome_scale() + topbar_target,
+                topbar_y + topbar_target,
             )
         } else {
             Rect::ZERO
@@ -2071,10 +2222,10 @@ impl VideoEditorApp {
         // and a toggle that does not fit is worse than one on the wrong side.
         let inspector_btn = if self.inspector_split() == SplitLayout::Overlay {
             Rect::new(
-                import_btn.x0 - TOPBAR_GAP - TOPBAR_TOUCH_TARGET,
-                r.y0 + TOPBAR_CONTROL_Y,
-                import_btn.x0 - TOPBAR_GAP,
-                r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+                import_btn.x0 - topbar_gap - topbar_target,
+                topbar_y,
+                import_btn.x0 - topbar_gap,
+                topbar_y + topbar_target,
             )
         } else {
             Rect::ZERO
@@ -2087,7 +2238,7 @@ impl VideoEditorApp {
         // entirely: a truncation so short it reads as a different project name
         // would be worse than nothing, and the shortcuts still reach it.
         let project_x0 = if overlay {
-            menu_btn.x1 + 8.0
+            menu_btn.x1 + 8.0 * self.chrome_scale()
         } else {
             r.x0 + 12.0
         };
@@ -2097,19 +2248,34 @@ impl VideoEditorApp {
             import_btn.x0
         } - 12.0;
         let project_btn = {
-            let want = PROJECT_BTN_W.min(leading_limit - project_x0);
+            // At a large text size a short, ellipsized title is less useful
+            // than a clear project-menu affordance.  Keep the film icon and
+            // its full accessible name, but give it the same compact target
+            // as the two pane toggles.
+            let want = if topbar_compact {
+                topbar_target
+            } else {
+                PROJECT_BTN_W.min(leading_limit - project_x0)
+            };
             if want >= PROJECT_BTN_MIN_W {
                 Rect::new(
                     project_x0,
-                    r.y0 + TOPBAR_CONTROL_Y,
+                    topbar_y,
                     project_x0 + want,
-                    r.y0 + TOPBAR_CONTROL_Y + TOPBAR_TOUCH_TARGET,
+                    topbar_y + topbar_target,
+                )
+            } else if topbar_compact && leading_limit >= project_x0 + topbar_target {
+                Rect::new(
+                    project_x0,
+                    topbar_y,
+                    project_x0 + topbar_target,
+                    topbar_y + topbar_target,
                 )
             } else {
                 Rect::ZERO
             }
         };
-        let timeline_top = (r.y1 - TIMELINE_H).max(topbar.y1 + 80.0);
+        let timeline_top = (r.y1 - self.timeline_height()).max(topbar.y1 + 80.0);
         let timeline = Rect::new(r.x0, timeline_top, r.x1, r.y1);
         let mid_top = topbar.y1;
         let mid_bot = timeline.y0;
@@ -2120,12 +2286,13 @@ impl VideoEditorApp {
         // window's edge in the overlay case — that is what gives the transport
         // room for its five buttons and its timecode on a narrow window.
         let inspector_overlay = self.inspector_split() == SplitLayout::Overlay;
+        let inspector_w = self.inspector_width();
         let (inspector, preview_x1) = if inspector_overlay {
             let slide = self.inspector_flap.slide();
-            let x1 = r.x1 + INSPECTOR_W * (1.0 - slide);
-            (Rect::new(x1 - INSPECTOR_W, mid_top, x1, r.y1), r.x1)
+            let x1 = r.x1 + inspector_w * (1.0 - slide);
+            (Rect::new(x1 - inspector_w, mid_top, x1, r.y1), r.x1)
         } else {
-            let i = Rect::new(r.x1 - INSPECTOR_W, mid_top, r.x1, mid_bot);
+            let i = Rect::new(r.x1 - inspector_w, mid_top, r.x1, mid_bot);
             (i, i.x0)
         };
         // Docked: the bin occupies its column and the preview starts after it.
@@ -2147,7 +2314,12 @@ impl VideoEditorApp {
             (bin, bin.x1, Rect::ZERO)
         };
         let preview = Rect::new(preview_x0, mid_top, preview_x1, mid_bot);
-        let transport = Rect::new(preview.x0, preview.y1 - TRANSPORT_H, preview.x1, preview.y1);
+        let transport = Rect::new(
+            preview.x0,
+            preview.y1 - self.transport_height(),
+            preview.x1,
+            preview.y1,
+        );
         let canvas_area = Rect::new(
             preview.x0 + 10.0,
             preview.y0 + 10.0,
@@ -2163,17 +2335,17 @@ impl VideoEditorApp {
             timeline.x0 + GUTTER_W,
             timeline.y0,
             timeline.x1,
-            timeline.y0 + RULER_H,
+            timeline.y0 + self.ruler_height(),
         );
         let gutter = Rect::new(
             timeline.x0,
-            timeline.y0 + RULER_H,
+            timeline.y0 + self.ruler_height(),
             timeline.x0 + GUTTER_W,
             timeline.y1,
         );
         let lanes = Rect::new(
             timeline.x0 + GUTTER_W,
-            timeline.y0 + RULER_H,
+            timeline.y0 + self.ruler_height(),
             timeline.x1,
             timeline.y1,
         );
@@ -2356,11 +2528,7 @@ impl VideoEditorApp {
         let mut out = Vec::new();
         let mut y = r.lanes.y0 + LANE_GAP;
         for t in self.project.display_tracks() {
-            let h = if t.kind == TrackKind::Video {
-                VIDEO_LANE_H
-            } else {
-                AUDIO_LANE_H
-            };
+            let h = self.lane_height(t.kind);
             let lane = Rect::new(r.lanes.x0, y, r.lanes.x1, y + h);
             out.push((t.id, t.kind, lane));
             y += h + LANE_GAP;
@@ -2374,6 +2542,18 @@ impl VideoEditorApp {
         Rect::new(x0, lane.y0 + 2.0, x1.max(x0 + 2.0), lane.y1 - 2.0)
     }
 
+    /// The bounded title band at the top of every clip.  Sharing this small
+    /// geometry between drawing and the high-text regression makes a scaled
+    /// label unable to grow through the filmstrip or waveform below it.
+    fn clip_header_rect(&self, clip_rect: Rect) -> Rect {
+        Rect::new(
+            clip_rect.x0,
+            clip_rect.y0,
+            clip_rect.x1,
+            (clip_rect.y0 + 18.0 * self.chrome_scale()).min(clip_rect.y1),
+        )
+    }
+
     /// The mute pill rect on a track header (shared by draw + hit-test).
     ///
     /// Anchored to the top of the head rather than its middle. A channel
@@ -2383,12 +2563,11 @@ impl VideoEditorApp {
     /// that now carries the fader's reading, which is why that row had no
     /// width to state it in.
     fn mute_pill_rect(&self, header: Rect) -> Rect {
-        Rect::new(
-            header.x1 - 26.0,
-            header.y0 + 7.0,
-            header.x1 - 8.0,
-            header.y0 + 25.0,
-        )
+        let scale = self.chrome_scale();
+        let side = 18.0 * scale;
+        let inset = 8.0 * scale;
+        let y = header.y0 + 7.0 * scale;
+        Rect::new(header.x1 - inset - side, y, header.x1 - inset, y + side)
     }
 
     /// The master strip: the corner of the timeline left of the ruler, above
@@ -2423,24 +2602,37 @@ impl VideoEditorApp {
     /// see is a level nobody looks at. Full width, so a glance down the
     /// gutter reads every lane at once.
     fn track_meter_rect(&self, header: Rect) -> Rect {
+        let scale = self.chrome_scale();
         Rect::new(
-            header.x0 + 10.0,
-            header.y1 - 8.0,
-            header.x1 - 10.0,
-            header.y1 - 2.0,
+            header.x0 + 10.0 * scale,
+            header.y1 - 8.0 * scale,
+            header.x1 - 10.0 * scale,
+            header.y1 - 2.0 * scale,
         )
     }
 
     /// The lock pill rect, immediately left of the mute pill.
     fn lock_pill_rect(&self, header: Rect) -> Rect {
         let m = self.mute_pill_rect(header);
-        Rect::new(m.x0 - 22.0, m.y0, m.x1 - 22.0, m.y1)
+        let side = m.width();
+        let step = if self.text_scale > 1.25 {
+            side + 1.0
+        } else {
+            22.0 * self.chrome_scale()
+        };
+        Rect::new(m.x0 - step, m.y0, m.x1 - step, m.y1)
     }
 
     /// The solo pill rect, immediately left of the lock pill.
     fn solo_pill_rect(&self, header: Rect) -> Rect {
         let l = self.lock_pill_rect(header);
-        Rect::new(l.x0 - 22.0, l.y0, l.x1 - 22.0, l.y1)
+        let side = l.width();
+        let step = if self.text_scale > 1.25 {
+            side + 1.0
+        } else {
+            22.0 * self.chrome_scale()
+        };
+        Rect::new(l.x0 - step, l.y0, l.x1 - step, l.y1)
     }
 
     /// The two "add track" buttons in the gutter footer, if there is room below
@@ -2450,23 +2642,34 @@ impl VideoEditorApp {
         let y = lanes
             .last()
             .map_or(r.gutter.y0 + 6.0, |(_, _, l)| l.y1 + LANE_GAP + 4.0);
-        if y + 24.0 > r.timeline.y1 {
+        let h = 24.0 * self.chrome_scale();
+        if y + h > r.timeline.y1 {
             return Vec::new();
         }
         let pad = 8.0;
         let w = (r.gutter.width() - pad * 2.0 - 6.0) / 2.0;
-        let vbtn = Rect::new(r.gutter.x0 + pad, y, r.gutter.x0 + pad + w, y + 24.0);
-        let abtn = Rect::new(vbtn.x1 + 6.0, y, vbtn.x1 + 6.0 + w, y + 24.0);
+        let vbtn = Rect::new(r.gutter.x0 + pad, y, r.gutter.x0 + pad + w, y + h);
+        let abtn = Rect::new(vbtn.x1 + 6.0, y, vbtn.x1 + 6.0 + w, y + h);
         vec![(TrackKind::Video, vbtn), (TrackKind::Audio, abtn)]
     }
 
     fn transport_buttons(&self, r: &Regions) -> [(TransportAction, Rect); 5] {
-        let cy = r.transport.y0 + 20.0;
-        let cx0 = r.transport.x0 + 30.0;
-        let gap = 40.0;
+        let scale = self.chrome_scale();
+        let cy = r.transport.y0 + 20.0 * scale;
+        let cx0 = r.transport.x0 + 30.0 * scale;
+        let gap = 40.0 * scale;
+        let side = 30.0 * scale;
         let mk = |i: f64, a: TransportAction| {
             let cx = cx0 + i * gap;
-            (a, Rect::new(cx - 15.0, cy - 15.0, cx + 15.0, cy + 15.0))
+            (
+                a,
+                Rect::new(
+                    cx - side / 2.0,
+                    cy - side / 2.0,
+                    cx + side / 2.0,
+                    cy + side / 2.0,
+                ),
+            )
         };
         [
             mk(0.0, TransportAction::ToStart),
@@ -2488,14 +2691,19 @@ impl VideoEditorApp {
     /// the readout — the same rule the readout itself follows, and the reason
     /// the scrubber starts where it does.
     fn history_buttons(&self, r: &Regions) -> Vec<(ui::UndoRequest, Rect)> {
-        if r.transport.width() < HISTORY_MIN_STRIP_W {
+        let scale = self.chrome_scale();
+        if r.transport.width() < HISTORY_MIN_STRIP_W * scale {
             return Vec::new();
         }
-        let cy = r.transport.y0 + 20.0;
-        let x0 = r.transport.x0 + HISTORY_X;
+        let cy = r.transport.y0 + 20.0 * scale;
+        let x0 = r.transport.x0 + HISTORY_X * scale;
+        let width = HISTORY_W * scale;
         let mk = |i: f64, v: ui::UndoRequest| {
-            let x = x0 + i * (HISTORY_W + 4.0);
-            (v, Rect::new(x, cy - 13.0, x + HISTORY_W, cy + 13.0))
+            let x = x0 + i * (width + 4.0 * scale);
+            (
+                v,
+                Rect::new(x, cy - 13.0 * scale, x + width, cy + 13.0 * scale),
+            )
         };
         vec![
             mk(0.0, ui::UndoRequest::Undo),
@@ -2511,10 +2719,11 @@ impl VideoEditorApp {
     /// the buttons and the timecode drift onto each other — which is
     /// precisely what happened the first time they were laid out apart.
     fn transport_content_x(&self, r: &Regions) -> f64 {
+        let scale = self.chrome_scale();
         if self.history_buttons(r).is_empty() {
-            TRANSPORT_PLAIN_X
+            TRANSPORT_PLAIN_X * scale
         } else {
-            TRANSPORT_RIGHT_X
+            TRANSPORT_RIGHT_X * scale
         }
     }
 
@@ -2530,8 +2739,9 @@ impl VideoEditorApp {
             return Rect::ZERO;
         }
         let w = (right - left).min(MAX_SCRUBBER_W);
-        let y0 = r.transport.y0 + 38.0;
-        Rect::new(left, y0, left + w, y0 + 8.0)
+        let scale = self.chrome_scale();
+        let y0 = r.transport.y0 + 38.0 * scale;
+        Rect::new(left, y0, left + w, y0 + 8.0 * scale)
     }
 
     /// Whether the transport currently has room for a scrubber.
@@ -2665,9 +2875,10 @@ impl VideoEditorApp {
     }
 
     fn inspector_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
+        let viewport = self.inspector_viewport(r);
         ui::widget::ScrollMetrics::new(
-            r.inspector.height() + self.inspector_max_scroll(r),
-            r.inspector.height(),
+            viewport.height() + self.inspector_max_scroll(r),
+            viewport.height(),
             self.inspector_scroll,
         )
     }
@@ -2679,12 +2890,13 @@ impl VideoEditorApp {
         if !self.inspector_metrics(r).overflows() {
             return None;
         }
-        let x1 = r.inspector.x1 - SCROLLBAR_INSET;
+        let v = self.inspector_viewport(r);
+        let x1 = v.x1 - SCROLLBAR_INSET;
         Some(Rect::new(
             x1 - SCROLLBAR_THICKNESS,
-            r.inspector.y0 + SCROLLBAR_INSET,
+            v.y0 + SCROLLBAR_INSET,
             x1,
-            r.inspector.y1 - SCROLLBAR_INSET,
+            v.y1 - SCROLLBAR_INSET,
         ))
     }
 
@@ -2753,30 +2965,30 @@ impl VideoEditorApp {
     /// would restart the mix continuously. Only a real jump moves it.
     #[cfg(any(feature = "gst", feature = "decode"))]
     fn pump_monitor(&mut self) {
-        if !self.monitor_tried {
-            self.monitor_tried = true;
+        if !self.media_pipeline.monitor_tried {
+            self.media_pipeline.monitor_tried = true;
             // The demo/shots build must make no sound and open no pipeline:
             // a capture has to stay hermetic.
-            if !self.seed_demo {
+            if !self.seed.demo {
                 self.monitor = Some(crate::audio::AudioMonitor::new(
                     &self.project,
                     crate::audio::open_output(),
                     Box::new(crate::audio::DecodedPcm::new(&self.project)),
                     self.mix_meters.clone(),
                 ));
-                self.monitor_stale = false;
+                self.media_pipeline.monitor_stale = false;
             }
         }
         let Some(m) = self.monitor.as_ref() else {
             return;
         };
-        if self.monitor_stale {
+        if self.media_pipeline.monitor_stale {
             m.set_project(&self.project);
-            self.monitor_stale = false;
+            self.media_pipeline.monitor_stale = false;
         }
         // A jump this big is a scrub or a cut, not clock wander.
         const RESYNC: f64 = 0.35;
-        if self.playing {
+        if self.playback.playing {
             if !m.is_playing() {
                 m.play(self.playhead);
             } else if (m.position() - self.playhead).abs() > RESYNC {
@@ -2824,7 +3036,7 @@ impl VideoEditorApp {
         // Same gate the monitor uses (`pump_monitor`) and for the same reason:
         // a capture is hermetic, so it neither makes a sound nor watches a
         // clock.
-        if !self.seed_demo {
+        if !self.seed.demo {
             self.mix_meters.decay(dt);
         }
         self.mix = self.mix_meters.snapshot();
@@ -2859,7 +3071,7 @@ impl VideoEditorApp {
             return false;
         };
         self.playhead = at.clamp(0.0, self.project.duration());
-        self.chase_playhead = true;
+        self.playback.chase_playhead = true;
         true
     }
 
@@ -2915,15 +3127,15 @@ impl VideoEditorApp {
         let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
         let dur = self.project.duration();
-        if self.playing || self.shuttle != 0.0 {
+        if self.playback.playing || self.shuttle != 0.0 {
             // A moving playhead pulls the view along with it.
-            self.chase_playhead = true;
+            self.playback.chase_playhead = true;
         }
-        if self.playing {
+        if self.playback.playing {
             self.playhead += dt;
             if self.playhead >= dur {
                 self.playhead = dur;
-                self.playing = false;
+                self.playback.playing = false;
             }
         } else if self.shuttle != 0.0 {
             // Shuttle scrubs at `shuttle`× real time; clamps at the ends.
@@ -2954,10 +3166,10 @@ impl VideoEditorApp {
         // First settled frame: snap to the width's natural state so a cold
         // narrow launch starts collapsed (no open→closed flash) and a cold
         // wide launch starts docked-open.
-        if !self.flap_settled {
+        if !self.navigation.flap_settled {
             self.bin_flap.snap(layout == SplitLayout::Docked);
             self.inspector_flap.snap(insp == SplitLayout::Docked);
-            self.flap_settled = true;
+            self.navigation.flap_settled = true;
         }
         if reduce_motion {
             let bin_open = self.bin_flap.is_open(layout);
@@ -3042,13 +3254,13 @@ impl VideoEditorApp {
     /// not: every one of them was gated on `playing`, so a shuttle at 16× wore
     /// a play triangle and reported itself nowhere.
     fn is_moving(&self) -> bool {
-        self.playing || self.shuttle != 0.0
+        self.playback.playing || self.shuttle != 0.0
     }
 
     /// The words the transport puts above the scrubber for what the playhead is
     /// doing, or `None` when it is standing still.
     fn motion_words(&self) -> Option<String> {
-        if self.playing {
+        if self.playback.playing {
             return Some("PLAYING".to_string());
         }
         if self.shuttle == 0.0 {
@@ -3074,23 +3286,23 @@ impl VideoEditorApp {
         if self.shuttle != 0.0 {
             self.shuttle = 0.0;
             self.last_tick = Instant::now();
-            self.chase_playhead = true;
+            self.playback.chase_playhead = true;
             return;
         }
-        self.playing = !self.playing;
+        self.playback.playing = !self.playback.playing;
         self.last_tick = Instant::now();
-        if self.playing && self.playhead >= self.project.duration() {
+        if self.playback.playing && self.playhead >= self.project.duration() {
             self.playhead = 0.0;
         }
-        self.chase_playhead = true;
+        self.playback.chase_playhead = true;
     }
 
     fn step_frame(&mut self, dir: f64) {
         let step = frame_step(self.project.fps);
         self.playhead = (self.playhead + dir * step).clamp(0.0, self.project.duration());
-        self.playing = false;
+        self.playback.playing = false;
         self.shuttle = 0.0;
-        self.chase_playhead = true;
+        self.playback.chase_playhead = true;
     }
 
     /// J/K/L shuttle. Pressing in the *same* direction doubles the rate
@@ -3103,7 +3315,7 @@ impl VideoEditorApp {
         } else {
             self.shuttle = dir;
         }
-        self.playing = false; // shuttle and play are mutually exclusive
+        self.playback.playing = false; // shuttle and play are mutually exclusive
         self.last_tick = Instant::now();
     }
 
@@ -4158,9 +4370,9 @@ impl VideoEditorApp {
         };
         if let Some(t) = to {
             self.playhead = t.clamp(0.0, self.project.duration());
-            self.playing = false;
+            self.playback.playing = false;
             self.shuttle = 0.0;
-            self.chase_playhead = true;
+            self.playback.chase_playhead = true;
         }
     }
 
@@ -4174,9 +4386,9 @@ impl VideoEditorApp {
         };
         if let Some(t) = to {
             self.playhead = t.clamp(0.0, self.project.duration());
-            self.playing = false;
+            self.playback.playing = false;
             self.shuttle = 0.0;
-            self.chase_playhead = true;
+            self.playback.chase_playhead = true;
         }
     }
 
@@ -4564,9 +4776,9 @@ impl VideoEditorApp {
     /// under you.
     fn seek_to(&mut self, at: f64) {
         self.playhead = at.clamp(0.0, self.project.duration());
-        self.playing = false;
+        self.playback.playing = false;
         self.shuttle = 0.0;
-        self.chase_playhead = true;
+        self.playback.chase_playhead = true;
     }
 
     /// Park the playhead on a marker -- what clicking a marker row's body
@@ -5560,10 +5772,10 @@ impl VideoEditorApp {
             let paths = std::mem::take(&mut self.pending_imports);
             let report = self.import_files(doc, &paths);
             self.import_notice = Some(import_report_notice(&report));
-            if self.auto_place_imports {
-                if let Some(mid) = self.selected_media {
-                    self.ensure_track_and_place(doc, mid);
-                }
+            if self.media_pipeline.auto_place_imports
+                && let Some(mid) = self.selected_media
+            {
+                self.ensure_track_and_place(doc, mid);
             }
         }
         let mut clear = false;
@@ -5712,7 +5924,7 @@ impl VideoEditorApp {
         // `--import` real-decode capture (which loads genuine files) still
         // decode. This is the runtime half of "features compile the code in;
         // the runtime mode decides live vs sample".
-        if self.seed_demo {
+        if self.seed.demo {
             return;
         }
         self.preview_decoder.update(&self.project, self.playhead);
@@ -5729,8 +5941,8 @@ impl VideoEditorApp {
     /// layer draws its representative fill, which keeps a capture
     /// deterministic and free of any media pipeline.
     fn pump_compositor(&mut self, r: &Regions) {
-        if !self.compositor_tried {
-            self.compositor_tried = true;
+        if !self.render_pipeline.compositor_tried {
+            self.render_pipeline.compositor_tried = true;
             match crate::gpu::HeadlessCompositor::new() {
                 Ok(c) => self.compositor = Some(c),
                 Err(e) => tracing::warn!(error = %e, "no GPU compositor for the preview"),
@@ -5770,7 +5982,7 @@ impl VideoEditorApp {
                     // stalls the UI thread is worse than a frame of lag.
                     Some(crate::gpu::MediaFrameSource::new(
                         &self.project,
-                        if self.auto_place_imports {
+                        if self.media_pipeline.auto_place_imports {
                             crate::gpu::Fetch::Exact
                         } else {
                             crate::gpu::Fetch::Responsive
@@ -5836,8 +6048,13 @@ impl VideoEditorApp {
     /// the way of both.
     fn zoom_chip_rect(&self, r: &Regions) -> Rect {
         let y = r.ruler.y0 + 4.0;
-        let x1 = (r.ruler.x1 - 8.0).max(r.ruler.x0 + 84.0);
-        Rect::new(x1 - 84.0, y, x1, y + 22.0)
+        // TextRenderer applies the accessibility scale, while this custom
+        // chip's old 84px width did not.  At 2× the value was painted through
+        // its border and over the final ruler label.  Reserve proportional
+        // room; the ruler intentionally omits ticks behind this control.
+        let width = (84.0 * self.text_scale).min((r.ruler.width() - 8.0).max(0.0));
+        let x1 = r.ruler.x1 - 8.0;
+        Rect::new(x1 - width, y, x1, y + 22.0)
     }
 
     fn zoom_by(&mut self, factor: f64) {
@@ -5866,6 +6083,21 @@ impl VideoEditorApp {
         reason = "one geometry pass keeps every inspector section aligned to the same scroll coordinate system"
     )]
     fn inspector_layout(&self, r: &Regions) -> InspectorLayout {
+        // Layout is authored in logical inspector pixels, then projected into
+        // the physical column.  This keeps text, rows, hit targets and the
+        // accessibility focus bands in one coordinate system at every text
+        // scale instead of merely making the glyphs larger inside 1× rows.
+        let scale = self.inspector_ui_scale();
+        let physical_body_origin = self.inspector_body_origin(r);
+        let body_origin = r.inspector.y0 + (physical_body_origin - r.inspector.y0) / scale;
+        let mut logical = *r;
+        logical.inspector = Rect::new(
+            r.inspector.x0,
+            r.inspector.y0,
+            r.inspector.x0 + r.inspector.width() / scale,
+            r.inspector.y0 + r.inspector.height() / scale,
+        );
+        let r = &logical;
         let mut l = InspectorLayout::default();
         // Markers belong to the project, not to any clip, so the list is laid
         // out with nothing selected too. Without this the only way to see or
@@ -5875,29 +6107,30 @@ impl VideoEditorApp {
         if selected.is_none() {
             let x0 = r.inspector.x0 + PAD;
             let x1 = r.inspector.x1 - PAD;
-            let mut y = r.inspector.y0 - self.inspector_scroll + 116.0;
+            let mut y = body_origin - self.inspector_scroll / scale + 16.0;
             self.layout_markers(&mut l, x0, x1, &mut y);
             self.layout_project(&mut l, x0, x1, &mut y);
-            l.content_height = y - (r.inspector.y0 - self.inspector_scroll);
+            l.content_height = (y - (body_origin - self.inspector_scroll / scale)) * scale;
+            l.scale_from(r.inspector.x0, r.inspector.y0, scale);
             return l;
         }
         let Some(clip) = selected else {
             return l;
         };
         let media = self.project.media(clip.media);
-        let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
-        let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
+        let is_video = media.is_none_or(|item| item.kind.is_visual());
+        let is_title = media.is_some_and(|item| item.text.is_some());
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
         // Static header + four property rows consume a fixed block; the
         // editable controls start below it. Everything scrolls together by
         // `inspector_scroll` (the pane clips + is wheel-scrollable) so the
         // effects stack can grow without clipping the actions.
-        let top = r.inspector.y0 - self.inspector_scroll;
+        let top = body_origin - self.inspector_scroll / scale;
         // The four property rows end on a baseline at `top + 132`; a 12px
         // line reaches ~15px past it, so the first control label cannot start
         // before `top + 147` without sitting on top of "Source Out".
-        let mut y = top + 162.0;
+        let mut y = top;
         let row = 34.0; // label sits at y, the 9px track at y+19
         let track_at = |y: f64| Rect::new(x0, y + 19.0, x1, y + 28.0);
         // An animatable row indents its label past a key control at the head.
@@ -6254,8 +6487,9 @@ impl VideoEditorApp {
         l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 28.0);
         l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 28.0);
         y += 34.0;
-        l.content_height = y - top;
+        l.content_height = (y - top) * scale;
         l.valid = true;
+        l.scale_from(r.inspector.x0, r.inspector.y0, scale);
         l
     }
 
@@ -6465,6 +6699,10 @@ impl VideoEditorApp {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "marker rows share one measured scroll coordinate system for rendering, hit targets, and empty-state actions"
+    )]
     fn draw_marker_rows(
         &self,
         scene: &mut Scene,
@@ -6475,6 +6713,7 @@ impl VideoEditorApp {
         x0: f64,
     ) {
         let c = &theme.tokens.colors;
+        let inspector_scale = self.inspector_ui_scale();
         for (m, row) in &l.marker_rows {
             let (name_rect, note_btn, rename, del) = marker_row_parts(*row);
             let hovered = row.contains(self.last_mouse);
@@ -6586,7 +6825,7 @@ impl VideoEditorApp {
                     11.5,
                     c.text_dim,
                     x0,
-                    rect.y0 - 16.0,
+                    rect.y0 - 16.0 * inspector_scale,
                 );
             }
             draw_button(
@@ -6720,15 +6959,26 @@ impl VideoEditorApp {
     /// it costs is width off the effect's name, and the names are one word.
     fn effect_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect, Rect) {
         let cy = row.center().y;
+        let scale = (row.height() / 24.0).clamp(1.0, 2.0);
         // 22px tall targets — the row is 24px, so this is as close to the
         // toolkit's minimum as the row allows, and a real improvement on the
         // 16x18 boxes these were.
-        let h = 11.0;
-        let key = Rect::new(row.x0, cy - 9.0, row.x0 + KEY_BOX, cy + 9.0);
-        let up = Rect::new(key.x1 + 4.0, cy - h, key.x1 + 26.0, cy + h);
-        let down = Rect::new(up.x1 + 1.0, cy - h, up.x1 + 23.0, cy + h);
-        let remove = Rect::new(row.x1 - 22.0, cy - h, row.x1, cy + h);
-        let slider = Rect::new(row.x1 - 96.0, cy - 4.0, row.x1 - 30.0, cy + 4.0);
+        let h = 11.0 * scale;
+        let key = Rect::new(
+            row.x0,
+            cy - 9.0 * scale,
+            row.x0 + KEY_BOX * scale,
+            cy + 9.0 * scale,
+        );
+        let up = Rect::new(key.x1 + 4.0 * scale, cy - h, key.x1 + 26.0 * scale, cy + h);
+        let down = Rect::new(up.x1 + scale, cy - h, up.x1 + 23.0 * scale, cy + h);
+        let remove = Rect::new(row.x1 - 22.0 * scale, cy - h, row.x1, cy + h);
+        let slider = Rect::new(
+            row.x1 - 96.0 * scale,
+            cy - 4.0 * scale,
+            row.x1 - 30.0 * scale,
+            cy + 4.0 * scale,
+        );
         (key, up, down, slider, remove)
     }
 
@@ -6736,7 +6986,7 @@ impl VideoEditorApp {
     /// `content_height` is scroll-independent (the scroll is a pure translation),
     /// so the current layout's extent is the intrinsic content height.
     fn inspector_max_scroll(&self, r: &Regions) -> f64 {
-        (self.inspector_layout(r).content_height - r.inspector.height()).max(0.0)
+        (self.inspector_layout(r).content_height - self.inspector_viewport(r).height()).max(0.0)
     }
 
     fn export_layout(&self, r: &Regions) -> ExportLayout {
@@ -6833,7 +7083,7 @@ impl VideoEditorApp {
     fn apply_shot_scenario(&mut self, state: &mut AutoCommit) {
         match self.shot_scenario {
             ShotScenario::Live => {}
-            ShotScenario::HelpSheet => self.show_help = true,
+            ShotScenario::HelpSheet => self.navigation.help_open = true,
             ShotScenario::GotoTimecode => self.goto_entry = Some("1:30".into()),
             ShotScenario::ProjectMenu => {
                 // Recents the menu can list. Fabricated only for the capture —
@@ -6843,7 +7093,7 @@ impl VideoEditorApp {
                     .map(|n| PathBuf::from(format!("/home/you/Videos/{n}.qvp")))
                     .collect();
             }
-            ShotScenario::FileDrop => self.file_hovering = true,
+            ShotScenario::FileDrop => self.presentation.file_hovering = true,
             ShotScenario::DiscardOpen => {
                 self.pending_open = Some(PendingOpen {
                     path: PathBuf::from("/home/you/Videos/Reel_2026.qvp"),
@@ -6853,7 +7103,7 @@ impl VideoEditorApp {
             ShotScenario::ExportRunning => {
                 // Part-way through a real encode, with the dialog dismissed:
                 // the state the editor used to have nowhere to show.
-                self.show_export = false;
+                self.presentation.export_open = false;
                 self.export_status = ExportStatus::Rendering { progress: 0.62 };
             }
             ShotScenario::ExportFailed => {
@@ -6862,7 +7112,7 @@ impl VideoEditorApp {
                 // and keeps this same failure visible in the full details
                 // surface for visual review.
                 let review_dialog = std::env::var_os("QOS_VE_EXPORT").is_some();
-                self.show_export = review_dialog;
+                self.presentation.export_open = review_dialog;
                 self.export_status = ExportStatus::Failed {
                     reason: if review_dialog {
                         "No H.264 encoder is available for the selected export preset. Install an H.264-capable GStreamer plugin, then retry the export."
@@ -6877,7 +7127,7 @@ impl VideoEditorApp {
             // keyboard, and it is the gate the ring is drawn behind -- so a
             // capture of the cursor has to stand in for that hand-over.
             ShotScenario::FocusBin => {
-                self.has_focus = true;
+                self.presentation.keyboard_focus = true;
                 self.focus.pane = Pane::Bin;
                 self.focus.bin = 2;
                 // Arrowing onto a bin row selects it, so the capture shows the
@@ -6886,7 +7136,7 @@ impl VideoEditorApp {
                 self.selected_media = self.a11y_bin_items().get(self.focus.bin).copied();
             }
             ShotScenario::FocusTransport => {
-                self.has_focus = true;
+                self.presentation.keyboard_focus = true;
                 self.focus.pane = Pane::Transport;
                 // The play button: the one control in the strip with a filled
                 // accent circle under it, which is the hardest ground for a
@@ -7258,7 +7508,7 @@ impl VideoEditorApp {
                 // spent longest as a pointer-only control, so a capture of the
                 // mixer that could not show a ring on it would be a capture of
                 // the half of the feature that already worked.
-                self.has_focus = true;
+                self.presentation.keyboard_focus = true;
                 self.focus.pane = Pane::Inspector;
                 self.focus.inspector = self
                     .a11y_inspector_rows()
@@ -7280,7 +7530,7 @@ impl VideoEditorApp {
                 }
                 self.playhead = 4.0;
                 self.inspector_scroll = 0.0;
-                self.has_focus = true;
+                self.presentation.keyboard_focus = true;
                 self.focus.pane = Pane::Inspector;
                 // On one of the grade sliders: the block above the first
                 // section header, which is the part of the panel no keyboard
@@ -7664,7 +7914,7 @@ impl VideoEditorApp {
     }
 
     fn ensure_initial_selection(&mut self) {
-        if self.initialised_selection || self.project.clips.is_empty() {
+        if self.seed.selection_initialised || self.project.clips.is_empty() {
             return;
         }
         let first = self
@@ -7681,7 +7931,7 @@ impl VideoEditorApp {
         // every run because the ids are fresh UUIDs, so the same project
         // opened twice highlighted two different bin rows.
         self.selected_media = self.project.media.first().map(|m| m.id);
-        self.initialised_selection = true;
+        self.seed.selection_initialised = true;
     }
 
     /// The presentation context Ctrl+K's resource tree is built from: a snapshot
@@ -7817,6 +8067,112 @@ struct InspectorLayout {
 }
 
 impl InspectorLayout {
+    /// Project a logical inspector layout into physical pixels.  The layout
+    /// owns every interactive rectangle, so doing this once keeps painting,
+    /// hit testing, the scrollbar's extent and AT focus rings identical.
+    fn scale_from(&mut self, ox: f64, oy: f64, scale: f64) {
+        if (scale - 1.0).abs() < f64::EPSILON {
+            return;
+        }
+        let map = |r: Rect| {
+            Rect::new(
+                ox + (r.x0 - ox) * scale,
+                oy + (r.y0 - oy) * scale,
+                ox + (r.x1 - ox) * scale,
+                oy + (r.y1 - oy) * scale,
+            )
+        };
+        let one = |r: &mut Option<Rect>| *r = r.map(map);
+        one(&mut self.opacity);
+        one(&mut self.volume);
+        one(&mut self.brightness);
+        one(&mut self.contrast);
+        one(&mut self.saturation);
+        one(&mut self.fade_in);
+        one(&mut self.fade_out);
+        one(&mut self.transition_len);
+        one(&mut self.link);
+        one(&mut self.add_marker);
+        one(&mut self.reset_transform);
+        one(&mut self.mix_meter);
+        one(&mut self.mix_reset);
+        one(&mut self.reverse);
+        one(&mut self.key_enable);
+        one(&mut self.key_pick);
+        one(&mut self.mask_fit);
+        one(&mut self.mask_invert);
+        one(&mut self.title_text);
+        one(&mut self.title_font);
+        one(&mut self.title_bold);
+        one(&mut self.title_italic);
+        one(&mut self.curve_canvas);
+        one(&mut self.curve_reset);
+        one(&mut self.project_match);
+        self.split = map(self.split);
+        self.delete = map(self.delete);
+        self.transition_y = oy + (self.transition_y - oy) * scale;
+        self.colors_y = oy + (self.colors_y - oy) * scale;
+        self.link_label_y = oy + (self.link_label_y - oy) * scale;
+        self.effects_label_y = oy + (self.effects_label_y - oy) * scale;
+        self.crop_label_y = oy + (self.crop_label_y - oy) * scale;
+        self.anchor_label_y = oy + (self.anchor_label_y - oy) * scale;
+        self.mix_track_y = oy + (self.mix_track_y - oy) * scale;
+        self.key_color_y = oy + (self.key_color_y - oy) * scale;
+        self.project_format_y = oy + (self.project_format_y - oy) * scale;
+        self.project_rate_y = oy + (self.project_rate_y - oy) * scale;
+        for (_, r) in &mut self.transitions {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.colors {
+            *r = map(*r);
+        }
+        for r in &mut self.effect_rows {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.sections {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.nums {
+            *r = map(*r);
+        }
+        for (_, _, r) in &mut self.pip {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.anchor {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.speed_presets {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.key_colors {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.mask_shapes {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.title_align {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.title_colors {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.curve_channels {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.keys {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.project_frames {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.project_rates {
+            *r = map(*r);
+        }
+        for (_, r) in &mut self.marker_rows {
+            *r = map(*r);
+        }
+    }
+
     /// The track laid out for `field`, if it is on screen right now.
     fn num(&self, field: NumField) -> Option<Rect> {
         self.nums.iter().find(|(f, _)| *f == field).map(|(_, r)| *r)
@@ -7972,16 +8328,16 @@ impl Widget for VideoEditorApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        if std::mem::take(&mut self.pending_save) {
+        if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
-        if !self.seeded {
+        if !self.shot_lifecycle.seeded {
             // The live app opens on a blank project; only the hermetic demo
             // build seeds the bundled sample project into a fresh document.
-            if self.seed_demo && VideoDoc::is_empty(state) {
+            if self.seed.demo && VideoDoc::is_empty(state) {
                 VideoDoc::seed_sample(state);
             }
-            self.seeded = true;
+            self.shot_lifecycle.seeded = true;
         }
         if let Some((invocation, operation)) = self.resource_pending_operation.take() {
             use crate::actions::VideoEditorOperation;
@@ -8003,10 +8359,10 @@ impl Widget for VideoEditorApp {
         let heads = state.get_heads();
         if heads != self.doc_heads {
             self.doc_heads = heads;
-            self.project_reload_pending = true;
+            self.project_sync.reload_pending = true;
             #[cfg(any(feature = "gst", feature = "decode"))]
             {
-                self.monitor_stale = true;
+                self.media_pipeline.monitor_stale = true;
             }
         }
         // Rebuilding the whole model from the CRDT is the most expensive thing
@@ -8021,10 +8377,10 @@ impl Widget for VideoEditorApp {
         // commits — so don't clobber it by reloading a stale document
         // mid-drag. The reload stays owed and lands the moment the drag lets
         // go, so an edit that arrived meanwhile is not lost.
-        if self.project_reload_pending && !self.drag_is_editing() {
+        if self.project_sync.reload_pending && !self.drag_is_editing() {
             self.project = VideoDoc::load_project(state);
             self.clip_edit_bases.clear();
-            self.project_reload_pending = false;
+            self.project_sync.reload_pending = false;
         }
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
@@ -8091,7 +8447,7 @@ impl Widget for VideoEditorApp {
             .map(|m| (m.id, m.source()))
             .collect();
         for (id, src) in audio {
-            if self.warm_waveforms_sync {
+            if self.render_pipeline.warm_waveforms_sync {
                 self.waveforms.warm_blocking(id, &src);
             } else {
                 self.waveforms.request(id, &src);
@@ -8118,12 +8474,12 @@ impl Widget for VideoEditorApp {
             self.thumbnails.ensure(id, palette, &src, at);
         }
         // Apply a one-shot capture scenario once the project is loaded.
-        if !self.shot_applied
+        if !self.shot_lifecycle.applied
             && self.shot_scenario != ShotScenario::Live
             && !self.project.clips.is_empty()
         {
             self.apply_shot_scenario(state);
-            self.shot_applied = true;
+            self.shot_lifecycle.applied = true;
         }
         // Let the meters fall, and take the one copy the frame will draw
         // from. After the scenario, so a staged capture's levels survive into
@@ -8140,8 +8496,8 @@ impl Widget for VideoEditorApp {
         // freshly-spawned, input-free instance still seeds + paints. The live
         // app opens blank, so once seeded it must not idle-sync forever. Also
         // keep syncing while an import is pending so its outcome is drained.
-        !self.seeded
-            || (self.seed_demo && self.project.clips.is_empty())
+        !self.shot_lifecycle.seeded
+            || (self.seed.demo && self.project.clips.is_empty())
             || self.import_rx.is_some()
             || !self.pending_imports.is_empty()
             // A project chooser is a round-trip in flight exactly like an
@@ -8153,7 +8509,7 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.playing
+        self.playback.playing
             || self.shuttle != 0.0
             || self.flap_animating()
             || self.import_rx.is_some()
@@ -8172,9 +8528,10 @@ impl Widget for VideoEditorApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         let node = taffy
             .new_leaf(Style {
                 size: Size {
@@ -8227,12 +8584,12 @@ impl Widget for VideoEditorApp {
         self.pump_preview_decode();
         let mut r = self.regions();
         // Arrange a rect-dependent interaction scenario once (for --shots).
-        if !self.shot_interaction_applied
+        if !self.shot_lifecycle.interaction_applied
             && self.shot_scenario.is_interaction()
             && self.rect.width() > 1.0
         {
             self.apply_shot_interaction(&r);
-            self.shot_interaction_applied = true;
+            self.shot_lifecycle.interaction_applied = true;
             // A scenario can move a side flap, and the regions were resolved
             // before it ran — so re-resolve them, or the frame paints the
             // panel into the slot it occupied a moment ago (an inspector
@@ -8255,7 +8612,7 @@ impl Widget for VideoEditorApp {
         // Keep the playhead on screen while it is moving under its own steam,
         // and the horizontal scroll inside a timeline whose length may have
         // just changed under us (a delete, a remote edit).
-        if std::mem::take(&mut self.chase_playhead) {
+        if std::mem::take(&mut self.playback.chase_playhead) {
             self.scroll_to_time(self.playhead, &r);
         }
         self.clamp_scroll(&r);
@@ -8357,13 +8714,13 @@ impl Widget for VideoEditorApp {
                 label.draw(scene, transform, tr, theme, presence);
             }
         }
-        if self.show_export {
+        if self.presentation.export_open {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
         if self.goto_entry.is_some() {
             self.draw_goto(scene, transform, tr, theme, &r);
         }
-        if self.show_help {
+        if self.navigation.help_open {
             self.draw_help_sheet(scene, transform, tr, theme, &r);
         }
         self.draw_file_drop_invite(scene, transform, tr, theme);
@@ -8732,7 +9089,7 @@ impl Widget for VideoEditorApp {
             // External file drop (an OS drag-and-drop onto the window) imports
             // media, exactly like the portal pick — the whole editor accepts it.
             WindowEvent::DroppedFile(path) => {
-                self.file_hovering = false;
+                self.presentation.file_hovering = false;
                 if bin_overlay_open {
                     // Importing through a covered canvas would contradict the
                     // scrim's input boundary. Dismiss first, then drop again.
@@ -8746,11 +9103,11 @@ impl Widget for VideoEditorApp {
                 *handled = true;
             }
             WindowEvent::HoveredFile(_) => {
-                self.file_hovering = !bin_overlay_open;
+                self.presentation.file_hovering = !bin_overlay_open;
                 *handled = true;
             }
             WindowEvent::HoveredFileCancelled => {
-                self.file_hovering = false;
+                self.presentation.file_hovering = false;
                 *handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -8818,7 +9175,7 @@ impl Widget for VideoEditorApp {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         use winit::window::CursorIcon;
         let r = self.regions();
-        if self.show_export {
+        if self.presentation.export_open {
             let l = self.export_layout(&r);
             let over_btn = l.cancel.contains(point)
                 || l.confirm.contains(point)
@@ -8947,7 +9304,7 @@ impl Widget for VideoEditorApp {
             return Some(CursorIcon::Crosshair);
         }
         // Inspector controls.
-        if self.inspector_is_visible(&r) && r.inspector.contains(point) {
+        if self.inspector_is_visible(&r) && self.inspector_viewport(&r).contains(point) {
             let l = self.inspector_layout(&r);
             let sliders = [
                 l.opacity,
@@ -9182,11 +9539,11 @@ impl Widget for VideoEditorApp {
     }
 
     fn set_focus(&mut self, focused: bool) {
-        self.has_focus = focused;
+        self.presentation.keyboard_focus = focused;
     }
 
     fn is_focused(&self) -> bool {
-        self.has_focus
+        self.presentation.keyboard_focus
     }
 
     /// The export dialog traps the keyboard while it is open.
@@ -9271,7 +9628,7 @@ impl Widget for VideoEditorApp {
                 self.a11y_inspector(),
             ]
         };
-        if self.show_export {
+        if self.presentation.export_open {
             kids.push(self.a11y_export_dialog());
         }
         // A render that outlived its dialog. Gated on the *render*, never on
@@ -9283,7 +9640,7 @@ impl Widget for VideoEditorApp {
         if self.pending_open.is_some() {
             kids.push(self.a11y_discard_dialog());
         }
-        if self.show_help {
+        if self.navigation.help_open {
             kids.push(self.a11y_help_sheet());
         }
         Some(
@@ -9301,7 +9658,7 @@ impl Widget for VideoEditorApp {
                 ))
                 .with_state(AccessState {
                     focusable: true,
-                    focused: self.has_focus,
+                    focused: self.presentation.keyboard_focus,
                     ..Default::default()
                 })
                 .with_children(kids)
@@ -9343,7 +9700,7 @@ impl Widget for VideoEditorApp {
                 // nothing to open, and it says so rather than claiming a
                 // success.
                 if matches!(action, Action::Activate) && self.export_chip_is_shown() {
-                    self.show_export = true;
+                    self.presentation.export_open = true;
                     return true;
                 }
                 return false;
@@ -9381,11 +9738,9 @@ impl Widget for VideoEditorApp {
                 self.resolve_pending_open(state, choice);
                 return true;
             }
-            if pane_key == hash_key(&"help") {
-                if matches!(action, Action::Activate) {
-                    self.show_help = false;
-                    return true;
-                }
+            if pane_key == hash_key(&"help") && matches!(action, Action::Activate) {
+                self.navigation.help_open = false;
+                return true;
             }
             return false;
         };
@@ -9492,7 +9847,7 @@ impl VideoEditorApp {
                     return true;
                 }
                 if key == hash_key(&TOPBAR_EXPORT_KEY) && r.export_btn.width() > 0.0 {
-                    self.show_export = true;
+                    self.presentation.export_open = true;
                     return true;
                 }
                 false
@@ -10700,7 +11055,7 @@ impl VideoEditorApp {
     /// the tree whenever the dialog is not there to carry it — so a running
     /// export is announced exactly once at any moment, and never zero times.
     fn a11y_export_status(&self) -> Option<AccessNode> {
-        if self.show_export {
+        if self.presentation.export_open {
             // The dialog carries its own progress node; two live regions
             // reporting one render would narrate it twice.
             return None;
@@ -10994,7 +11349,7 @@ impl VideoEditorApp {
     /// the other three keep their cursors so Tab returns to them, but they are
     /// not where the keyboard is.
     fn shows_focus_cursor(&self, pane: Pane) -> bool {
-        self.has_focus && self.focus.pane == pane
+        self.presentation.keyboard_focus && self.focus.pane == pane
     }
 
     /// Move the keyboard cursor to whatever a press landed on.
@@ -11029,7 +11384,7 @@ impl VideoEditorApp {
             self.focus.transport = i;
             return;
         }
-        if r.inspector.contains(p) {
+        if self.inspector_viewport(r).contains(p) {
             let l = self.inspector_layout(r);
             let rows = self.a11y_inspector_rows();
             if let Some(i) = rows.iter().position(|row| {
@@ -11127,6 +11482,29 @@ impl VideoEditorApp {
         self.focus.inspector = self.focus.inspector.min(rows.saturating_sub(1));
     }
 
+    /// Keep the keyboard/AT active descendant in the inspector's actual body
+    /// viewport.  The fixed identity card deliberately is not scrollable, so
+    /// its height must be part of this calculation rather than treating the
+    /// whole side panel as available space.
+    fn reveal_inspector_focus(&mut self) {
+        let r = self.regions();
+        let rows = self.a11y_inspector_rows();
+        let Some(row) = rows.get(self.focus.inspector).copied() else {
+            return;
+        };
+        let Some(band) = Self::inspector_focus_band(&self.inspector_layout(&r), row) else {
+            return;
+        };
+        let view = self.inspector_viewport(&r);
+        if band.y0 < view.y0 {
+            self.inspector_scroll -= view.y0 - band.y0;
+        } else if band.y1 > view.y1 {
+            self.inspector_scroll += band.y1 - view.y1;
+        }
+        let max = self.inspector_max_scroll(&r);
+        self.inspector_scroll = self.inspector_scroll.clamp(0.0, max);
+    }
+
     /// Arrow navigation inside the focused pane. Returns whether the key was
     /// consumed — the timeline deliberately consumes only Up/Down, leaving
     /// Left/Right to nudge the selection and step the playhead as every
@@ -11153,6 +11531,7 @@ impl VideoEditorApp {
                     return false;
                 }
                 self.focus.inspector = step_index(self.focus.inspector, n, up);
+                self.reveal_inspector_focus();
                 true
             }
             // Up/Down walk the clips across tracks; Left/Right stay editing
@@ -11478,7 +11857,7 @@ impl VideoEditorApp {
                 self.selection.select_only(clip);
                 if let Some(c) = self.project.clip(clip) {
                     self.playhead = c.start;
-                    self.chase_playhead = true;
+                    self.playback.chase_playhead = true;
                 }
                 true
             }
@@ -11506,6 +11885,7 @@ impl VideoEditorApp {
             match row {
                 InspectorRow::Header(sec) if rest.len() == 1 && hash_key(&sec.label()) == key => {
                     self.focus.inspector = i;
+                    self.reveal_inspector_focus();
                     return match action {
                         Action::Focus => true,
                         Action::Activate | Action::Expand | Action::Collapse => {
@@ -11521,6 +11901,7 @@ impl VideoEditorApp {
                 }
                 InspectorRow::Field(f) if f.a11y_key() == key => {
                     self.focus.inspector = i;
+                    self.reveal_inspector_focus();
                     return match action {
                         Action::Focus => true,
                         Action::Increment => self.a11y_nudge_field(*f, 1.0, doc),
@@ -11530,6 +11911,7 @@ impl VideoEditorApp {
                 }
                 InspectorRow::Marker(m) if hash_key(&m.id) == key => {
                     self.focus.inspector = i;
+                    self.reveal_inspector_focus();
                     let m = *m;
                     // `[inspector, MARKERS, marker, verb]` names one of the
                     // row's three buttons; one level shorter is the row
@@ -11548,6 +11930,7 @@ impl VideoEditorApp {
                 }
                 InspectorRow::AddMarker if hash_key(&ADD_MARKER_KEY) == key => {
                     self.focus.inspector = i;
+                    self.reveal_inspector_focus();
                     return match action {
                         Action::Focus => true,
                         Action::Activate => {
@@ -11559,6 +11942,7 @@ impl VideoEditorApp {
                 }
                 InspectorRow::Pick(pk) if pk.a11y_key() == key => {
                     self.focus.inspector = i;
+                    self.reveal_inspector_focus();
                     let pk = *pk;
                     return match action {
                         Action::Focus => true,
@@ -11676,7 +12060,7 @@ impl VideoEditorApp {
             // Closing is safe now that the render reports from the chip and
             // its own live region whether or not this dialog is up.
             (2, Action::Activate) => {
-                self.show_export = false;
+                self.presentation.export_open = false;
                 true
             }
             (_, Action::Focus) => true,
@@ -11888,11 +12272,11 @@ impl VideoEditorApp {
                 _ => return false,
             }
         }
-        if self.show_export {
+        if self.presentation.export_open {
             if matches!(key, Key::Named(NamedKey::Escape)) {
                 // Esc closes the dialog, not the render: the chip under the
                 // Export button carries the job on.
-                self.show_export = false;
+                self.presentation.export_open = false;
                 return true;
             }
             if matches!(key, Key::Named(NamedKey::Enter)) {
@@ -11919,21 +12303,21 @@ impl VideoEditorApp {
                     match crate::timecode::parse(&typed, self.project.fps) {
                         Some(t) => {
                             self.playhead = t.clamp(0.0, self.project.duration().max(t));
-                            self.playing = false;
+                            self.playback.playing = false;
                             self.shuttle = 0.0;
-                            self.chase_playhead = true;
+                            self.playback.chase_playhead = true;
                             self.goto_entry = None;
                         }
                         // Keep the field open on a value that cannot be read,
                         // rather than closing it and silently going nowhere.
-                        None => self.goto_notice = true,
+                        None => self.navigation.goto_notice = true,
                     }
                 }
-                Key::Character(c) => {
-                    if entry.len() < 12 && c.chars().all(|ch| ch.is_ascii_digit() || ch == ':') {
-                        entry.push_str(c);
-                        self.goto_notice = false;
-                    }
+                Key::Character(c)
+                    if entry.len() < 12 && c.chars().all(|ch| ch.is_ascii_digit() || ch == ':') =>
+                {
+                    entry.push_str(c);
+                    self.navigation.goto_notice = false;
                 }
                 _ => {}
             }
@@ -12011,16 +12395,16 @@ impl VideoEditorApp {
             }
             Key::Named(NamedKey::Home) => {
                 self.playhead = 0.0;
-                self.playing = false;
+                self.playback.playing = false;
                 self.shuttle = 0.0;
-                self.chase_playhead = true;
+                self.playback.chase_playhead = true;
                 true
             }
             Key::Named(NamedKey::End) => {
                 self.playhead = self.project.duration();
-                self.playing = false;
+                self.playback.playing = false;
                 self.shuttle = 0.0;
-                self.chase_playhead = true;
+                self.playback.chase_playhead = true;
                 true
             }
             // Shift+Delete ripples (closes the gap); plain Delete lifts.
@@ -12033,7 +12417,7 @@ impl VideoEditorApp {
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("e") => {
-                self.show_export = true;
+                self.presentation.export_open = true;
                 let _ = r;
                 true
             }
@@ -12089,7 +12473,7 @@ impl VideoEditorApp {
             }
             Key::Character(c) if c.eq_ignore_ascii_case("k") && !ctrl => {
                 self.shuttle = 0.0;
-                self.playing = false;
+                self.playback.playing = false;
                 true
             }
             Key::Character(c) if c.eq_ignore_ascii_case("l") && !ctrl => {
@@ -12193,7 +12577,7 @@ impl VideoEditorApp {
             // The shortcut sheet. Fifteen shortcuts existed and none of them
             // were written down anywhere in the product.
             Key::Character(c) if c.as_str() == "?" || (shift && c.as_str() == "/") => {
-                self.show_help = !self.show_help;
+                self.navigation.help_open = !self.navigation.help_open;
                 true
             }
             // G opens a timecode field: type a time, press Enter, land there.
@@ -12205,8 +12589,8 @@ impl VideoEditorApp {
                 // Esc dismisses an open overlay bin first, then an open
                 // overlay inspector, then clears the selection — matching the
                 // flap kernel's Esc-to-close.
-                if self.show_help {
-                    self.show_help = false;
+                if self.navigation.help_open {
+                    self.navigation.help_open = false;
                     return true;
                 }
                 if self.bin_layout() == SplitLayout::Overlay
@@ -12243,8 +12627,8 @@ impl VideoEditorApp {
     /// unavailable, and every click belongs to the surface on top.
     fn is_modal(&self) -> bool {
         self.pending_open.is_some()
-            || self.show_export
-            || self.show_help
+            || self.presentation.export_open
+            || self.navigation.help_open
             || self.goto_entry.is_some()
     }
 
@@ -12264,7 +12648,7 @@ impl VideoEditorApp {
             }
             return;
         }
-        if self.show_export {
+        if self.presentation.export_open {
             self.press_export(state, r, p);
             return;
         }
@@ -12274,8 +12658,8 @@ impl VideoEditorApp {
         // the clip, slider or Export button underneath — a real edit, made
         // invisibly, through a surface that said the editor was unavailable.
         // Clicking away dismisses, which is what a scrim invites.
-        if self.show_help {
-            self.show_help = false;
+        if self.navigation.help_open {
+            self.navigation.help_open = false;
             return;
         }
         if self.goto_entry.is_some() {
@@ -12293,7 +12677,7 @@ impl VideoEditorApp {
         // first. It is the way back into the render it is reporting: the full
         // path, the failure's own words and Cancel all live in the dialog.
         if self.export_chip_is_shown() && r.export_chip.contains(p) {
-            self.show_export = true;
+            self.presentation.export_open = true;
             return;
         }
         // Hamburger toggle (overlay layout only).
@@ -12331,7 +12715,7 @@ impl VideoEditorApp {
             return;
         }
         if r.export_btn.contains(p) {
-            self.show_export = true;
+            self.presentation.export_open = true;
             return;
         }
         if r.import_btn.contains(p) {
@@ -12586,17 +12970,17 @@ impl VideoEditorApp {
             // that key. Checked before the trim handles and the move drag,
             // because it is the smaller, more specific target inside the same
             // body.
-            if !shift && p.y >= cr.y1 - 13.0 {
-                if let Some(t) = clip
+            if !shift
+                && p.y >= cr.y1 - 13.0
+                && let Some(t) = clip
                     .key_times()
                     .into_iter()
                     .find(|t| (self.time_to_x(*t, &r.lanes) - p.x).abs() <= 5.0)
-                {
-                    self.playhead = t.clamp(0.0, self.project.duration());
-                    self.playing = false;
-                    self.shuttle = 0.0;
-                    return;
-                }
+            {
+                self.playhead = t.clamp(0.0, self.project.duration());
+                self.playback.playing = false;
+                self.shuttle = 0.0;
+                return;
             }
             if !self.project.clip_editable(cid) || shift {
                 // A locked clip is inspectable but not draggable; a shift-click
@@ -12626,7 +13010,16 @@ impl VideoEditorApp {
         self.marquee = None;
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the inspector hit test deliberately mirrors its ordered, scroll-clipped control layout"
+    )]
     fn press_inspector(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
+        // The fixed identity card is context, not a hidden control surface.
+        // Do not let a translated row behind it receive a click.
+        if !self.inspector_viewport(r).contains(p) {
+            return;
+        }
         let l = self.inspector_layout(r);
         // The markers section and the section folds are project-level, so
         // they answer to a press whether or not a clip is selected. Every
@@ -13039,7 +13432,7 @@ impl VideoEditorApp {
             // Click outside the card dismisses. A render in flight is not
             // abandoned by that: it keeps reporting from the topbar chip and
             // its own live region, and the chip is the way back in here.
-            self.show_export = false;
+            self.presentation.export_open = false;
             return;
         }
         for (res, rect) in &l.resolution {
@@ -13069,7 +13462,7 @@ impl VideoEditorApp {
                     job.cancel();
                 }
             } else {
-                self.show_export = false;
+                self.presentation.export_open = false;
             }
             return;
         }
@@ -13163,7 +13556,7 @@ impl VideoEditorApp {
     }
 
     fn queue_save_project(&mut self) {
-        self.pending_save = true;
+        self.project_sync.save_requested = true;
     }
 
     /// Ask the host where to write the project. Under a strict sandbox this
@@ -13288,12 +13681,12 @@ impl VideoEditorApp {
         self.selected_media = None;
         self.playhead = 0.0;
         self.scroll = 0.0;
-        self.playing = false;
-        self.initialised_selection = false;
+        self.playback.playing = false;
+        self.seed.selection_initialised = false;
         self.ensure_initial_selection();
         #[cfg(any(feature = "gst", feature = "decode"))]
         {
-            self.monitor_stale = true;
+            self.media_pipeline.monitor_stale = true;
         }
     }
 
@@ -13571,17 +13964,17 @@ impl VideoEditorApp {
         match action {
             TransportAction::ToStart => {
                 self.playhead = 0.0;
-                self.playing = false;
+                self.playback.playing = false;
             }
             TransportAction::StepBack => self.step_frame(-1.0),
             TransportAction::PlayPause => self.toggle_play(),
             TransportAction::StepFwd => self.step_frame(1.0),
             TransportAction::ToEnd => {
                 self.playhead = self.project.duration();
-                self.playing = false;
+                self.playback.playing = false;
             }
         }
-        self.chase_playhead = true;
+        self.playback.chase_playhead = true;
     }
 
     /// Track the live drag, updating **only the in-memory project** for a
@@ -13608,7 +14001,7 @@ impl VideoEditorApp {
             Drag::Playhead => {
                 self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
                     .clamp(0.0, self.project.duration());
-                self.chase_playhead = true;
+                self.playback.chase_playhead = true;
             }
             Drag::Scrubber => self.apply_scrubber(p, r),
             Drag::Scrollbar(pane) => {
@@ -13921,10 +14314,10 @@ impl VideoEditorApp {
         }
         let frac = ((p.x - scrub.x0) / scrub.width()).clamp(0.0, 1.0);
         self.playhead = (frac * self.project.duration()).clamp(0.0, self.project.duration());
-        self.playing = false;
+        self.playback.playing = false;
         // The transport scrubber spans the whole project, so it can land the
         // playhead anywhere — bring the timeline along.
-        self.chase_playhead = true;
+        self.playback.chase_playhead = true;
     }
 
     fn update_hover(&mut self, r: &Regions) {
@@ -13970,6 +14363,10 @@ impl VideoEditorApp {
 // Drawing helpers
 // ==========================================================================
 impl VideoEditorApp {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "chrome composition keeps the top-bar's shared geometry and semantic controls in one paint pass"
+    )]
     fn draw_chrome(
         &self,
         scene: &mut Scene,
@@ -14037,16 +14434,32 @@ impl VideoEditorApp {
         // neither: which *file* is open, and whether it is written down, are
         // things only the app knows.
         self.draw_project_button(scene, tf, tr, theme, r);
-        draw_button(
-            scene,
-            tf,
-            tr,
-            theme,
-            r.import_btn,
-            "Import…",
-            false,
-            r.import_btn.contains(self.last_mouse),
-        );
+        if self.topbar_is_compact() {
+            draw_icon_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                IconButtonSpec {
+                    rect: r.import_btn,
+                    icon: ui::icons::Icon::FolderOpen,
+                    accessible_name: "Import media",
+                    primary: false,
+                    hovered: r.import_btn.contains(self.last_mouse),
+                },
+            );
+        } else {
+            draw_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                r.import_btn,
+                "Import…",
+                false,
+                r.import_btn.contains(self.last_mouse),
+            );
+        }
         if r.split_btn.width() > 0.0 {
             draw_button(
                 scene,
@@ -14059,16 +14472,32 @@ impl VideoEditorApp {
                 r.split_btn.contains(self.last_mouse),
             );
         }
-        draw_button(
-            scene,
-            tf,
-            tr,
-            theme,
-            r.export_btn,
-            "Export…",
-            true,
-            r.export_btn.contains(self.last_mouse),
-        );
+        if self.topbar_is_compact() {
+            draw_icon_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                IconButtonSpec {
+                    rect: r.export_btn,
+                    icon: ui::icons::Icon::ArrowUp,
+                    accessible_name: "Export video",
+                    primary: true,
+                    hovered: r.export_btn.contains(self.last_mouse),
+                },
+            );
+        } else {
+            draw_button(
+                scene,
+                tf,
+                tr,
+                theme,
+                r.export_btn,
+                "Export…",
+                true,
+                r.export_btn.contains(self.last_mouse),
+            );
+        }
     }
 
     /// The project button: which project is open, whether it has been written
@@ -14094,12 +14523,16 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         let hovered = rect.contains(self.last_mouse) || self.project_menu.is_open();
         // Room for the leading icon, the padding either side, and the badge.
-        let label = elide_at(
-            &self.project_label(),
-            (rect.width() - 52.0) as f32,
-            13.0,
-            tr,
-        );
+        let label = if self.topbar_is_compact() {
+            String::new()
+        } else {
+            elide_at(
+                &self.project_label(),
+                (rect.width() - 52.0) as f32,
+                13.0,
+                tr,
+            )
+        };
         let face = ui::widget::ButtonFace::new(rect, &label)
             .style(ui::widget::ButtonStyle::Neutral)
             .icon(ui::icons::Icon::Film)
@@ -14138,7 +14571,7 @@ impl VideoEditorApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if !self.file_hovering {
+        if !self.presentation.file_hovering {
             return;
         }
         let c = &theme.tokens.colors;
@@ -15115,6 +15548,10 @@ impl VideoEditorApp {
         scene.pop_layer();
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "transport controls, scaled time readouts, and scrubber share one collision-free composition"
+    )]
     fn draw_transport(
         &self,
         scene: &mut Scene,
@@ -15124,6 +15561,7 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
+        let chrome_scale = self.chrome_scale();
         fill_rect(scene, tf, c.surfaces.raised, r.transport);
         stroke_line(
             scene,
@@ -15239,7 +15677,7 @@ impl VideoEditorApp {
                 18.0,
                 c.text_primary,
                 x,
-                r.transport.y0 + 8.0,
+                r.transport.y0 + 8.0 * chrome_scale,
                 TextWeight::Bold,
             );
         }
@@ -15252,7 +15690,7 @@ impl VideoEditorApp {
                 13.0,
                 c.text_dim,
                 x,
-                r.transport.y0 + 13.0,
+                r.transport.y0 + 13.0 * chrome_scale,
             );
         }
         // Playing is reported in the success tint it always was; a shuttle
@@ -15261,12 +15699,21 @@ impl VideoEditorApp {
         // reported itself nowhere at all: the playhead moved under its own
         // steam with nothing on screen naming why, or how fast, or which way.
         if let (Some(x), Some(words)) = (fit.motion_x, motion.as_deref()) {
-            let tint = if self.playing {
+            let tint = if self.playback.playing {
                 c.semantic.success
             } else {
                 c.accent[5]
             };
-            text(scene, tr, tf, words, 10.0, tint, x, r.transport.y0 + 13.0);
+            text(
+                scene,
+                tr,
+                tf,
+                words,
+                10.0,
+                tint,
+                x,
+                r.transport.y0 + 13.0 * chrome_scale,
+            );
         }
         if let Some(x) = fit.meta_x {
             text(
@@ -15277,7 +15724,7 @@ impl VideoEditorApp {
                 11.5,
                 c.text_dim,
                 x,
-                r.transport.y0 + 14.0,
+                r.transport.y0 + 14.0 * chrome_scale,
             );
         }
         // Scrubber.
@@ -15295,7 +15742,7 @@ impl VideoEditorApp {
             scrub.y1,
         );
         fill_rrect(scene, tf, c.accent[5], filled, 4.0);
-        let knob = Circle::new(Point::new(filled.x1, scrub.center().y), 6.0);
+        let knob = Circle::new(Point::new(filled.x1, scrub.center().y), 6.0 * chrome_scale);
         scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &knob);
         scene.stroke(&Stroke::new(1.5), tf, c.border_focus, None, &knob);
         scene.pop_layer();
@@ -15420,7 +15867,24 @@ impl VideoEditorApp {
             tf,
             &r.inspector,
         );
+        // The scroll body gets its own clip, below the fixed identity card.
+        // Painting an opaque header over it is not enough: antialiased glyph
+        // edges and controls halfway through a translate can otherwise still
+        // show through at the seam.
+        let body_view = self.inspector_viewport(r);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &body_view,
+        );
         self.draw_inspector_body(scene, tf, tr, theme, r);
+        scene.pop_layer();
+        // The body may be translated all the way to its final action row.
+        // Paint the persistent context last, over that translated content, so
+        // a clipped control can never masquerade as part of the header.
+        self.draw_inspector_fixed_header(scene, tf, tr, theme, r);
         // A clip on a locked track has inert controls — every edit path checks
         // the lock — so they are veiled rather than left looking live. The
         // header above stays crisp, because that is where the reason is
@@ -15452,6 +15916,7 @@ impl VideoEditorApp {
             let rows = self.a11y_inspector_rows();
             if let Some(row) = rows.get(self.focus.inspector).copied()
                 && let Some(band) = Self::inspector_focus_band(&self.inspector_layout(r), row)
+                && band.intersect(self.inspector_viewport(r)).area() > 0.0
             {
                 draw_focus_ring(scene, tf, theme, band, 5.0);
             }
@@ -15478,10 +15943,10 @@ impl VideoEditorApp {
             }
         };
         if self.inspector_scroll > 0.5 {
-            fade(scene, r.inspector.y0, 1.0);
+            fade(scene, self.inspector_viewport(r).y0, 1.0);
         }
         if self.inspector_scroll < max - 0.5 {
-            fade(scene, r.inspector.y1, -1.0);
+            fade(scene, self.inspector_viewport(r).y1, -1.0);
         }
         scene.pop_layer();
         // Real, grabbable scrollbar. What stood here was a painted indicator
@@ -15491,8 +15956,143 @@ impl VideoEditorApp {
     }
 
     #[allow(
+        clippy::too_many_lines,
+        reason = "the fixed identity card's measured text, clip metadata, and viewport boundary must be composed together"
+    )]
+    fn draw_inspector_fixed_header(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
+        let s = self.inspector_ui_scale();
+        let header_bottom = self.inspector_body_origin(r);
+        let header = Rect::new(
+            r.inspector.x0,
+            r.inspector.y0,
+            r.inspector.x1,
+            header_bottom,
+        );
+        fill_rect(scene, tf, c.surfaces.raised, header);
+        let x0 = r.inspector.x0 + PAD * s;
+        let x1 = r.inspector.x1 - PAD * s;
+        let top = r.inspector.y0;
+        text_w(
+            scene,
+            tr,
+            tf,
+            "INSPECTOR",
+            11.0,
+            c.text_dim,
+            x0,
+            top + 14.0 * s,
+            TextWeight::Semibold,
+        );
+        if self.selection.len() > 1 {
+            let label = format!("{} clips selected", self.selection.len());
+            let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
+            let pillr = Rect::new(
+                x1 - f64::from(lw) - 14.0 * s,
+                top + 4.0 * s,
+                x1,
+                top + 24.0 * s,
+            );
+            fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), pillr, 10.0 * s);
+            text_w(
+                scene,
+                tr,
+                tf,
+                &label,
+                10.5,
+                c.accent[5],
+                pillr.x0 + 7.0 * s,
+                top + 9.0 * s,
+                TextWeight::Medium,
+            );
+        }
+        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
+            return;
+        };
+        let tag = Rect::new(x0, top + 36.0 * s, x0 + 6.0 * s, top + 68.0 * s);
+        fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0 * s);
+        let name = self
+            .project
+            .media(clip.media)
+            .map_or("Missing media", |item| item.name.as_str());
+        let shown = elide_w(name, (x1 - x0 - 16.0 * s) as f32, tr);
+        text_w(
+            scene,
+            tr,
+            tf,
+            &shown,
+            15.0,
+            c.text_primary,
+            x0 + 14.0 * s,
+            top + 39.0 * s,
+            TextWeight::Semibold,
+        );
+        let track_name = self
+            .project
+            .track(clip.track)
+            .map_or("track", |track| track.name.as_str());
+        let sub = if self.selection_has_locked() {
+            format!("on {track_name} · locked")
+        } else {
+            format!("on {track_name}")
+        };
+        text(
+            scene,
+            tr,
+            tf,
+            &sub,
+            11.5,
+            if self.selection_has_locked() {
+                c.semantic.warning
+            } else {
+                c.text_dim
+            },
+            x0 + 14.0 * s,
+            top + 62.0 * s,
+        );
+        let mut prop = |label: &str, value: String, y: f64| {
+            text(scene, tr, tf, label, 12.0, c.text_dim, x0, y);
+            let (w, _) = tr.measure_weighted(&value, 12.0, None, TextWeight::Medium);
+            text_w(
+                scene,
+                tr,
+                tf,
+                &value,
+                12.0,
+                c.text_primary,
+                x1 - f64::from(w),
+                y,
+                TextWeight::Medium,
+            );
+        };
+        let fps = self.project.fps;
+        prop("Position", timecode(clip.start, fps), top + 84.0 * s);
+        prop("Duration", timecode(clip.duration(), fps), top + 106.0 * s);
+        prop("Source In", timecode(clip.in_point, fps), top + 128.0 * s);
+        prop("Source Out", timecode(clip.out_point, fps), top + 150.0 * s);
+        stroke_line(
+            scene,
+            tf,
+            c.border_standard,
+            r.inspector.x0,
+            header_bottom,
+            r.inspector.x1,
+            header_bottom,
+            1.0,
+        );
+    }
+
+    #[allow(
         clippy::indexing_slicing,
-        reason = "inspector controls index fixed option tables and validated selected rows while drawing the corresponding control"
+        clippy::too_many_lines,
+        reason = "inspector controls index fixed option tables and share one scroll coordinate system with their validated hit targets"
     )]
     fn draw_inspector_body(
         &self,
@@ -15503,11 +16103,12 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
-        let x0 = r.inspector.x0 + PAD;
-        let x1 = r.inspector.x1 - PAD;
+        let inspector_scale = self.inspector_ui_scale();
+        let x0 = r.inspector.x0 + PAD * inspector_scale;
+        let x1 = r.inspector.x1 - PAD * inspector_scale;
         // The whole body scrolls together by `inspector_scroll` (clamped to 0
         // when nothing is selected, so the empty state stays put).
-        let top = r.inspector.y0 - self.inspector_scroll;
+        let top = r.inspector.y0;
         text_w(
             scene,
             tr,
@@ -15942,7 +16543,7 @@ impl VideoEditorApp {
                 11.5,
                 c.text_dim,
                 x0,
-                top.y0 - 16.0,
+                top.y0 - 16.0 * inspector_scale,
             );
             let inset = crate::model::Transform::pip(PIP_SCALE, (1.0, -1.0), PIP_INSET);
             let is_pip = (clip.transform.scale_x - inset.scale_x).abs() < 1e-6;
@@ -16921,7 +17522,8 @@ impl VideoEditorApp {
 
     #[allow(
         clippy::indexing_slicing,
-        reason = "timeline rendering indexes only lane geometry built from the same validated project track order"
+        clippy::too_many_lines,
+        reason = "timeline rendering indexes validated lane geometry and keeps ruler, headers, clips, and scrollbars in one coordinate pass"
     )]
     fn draw_timeline(
         &self,
@@ -16950,7 +17552,11 @@ impl VideoEditorApp {
 
         // --- ruler ticks ---
         fill_rect(scene, tf, c.surfaces.raised, r.ruler);
-        let tick_step = nice_tick(self.zoom);
+        // Ruler labels are rendered at the user's text scale while time is
+        // measured in physical timeline pixels.  Ask for proportionally more
+        // spacing so large labels remain individual readings instead of a
+        // single unreadable run of digits.
+        let tick_step = nice_tick(self.zoom / self.text_scale);
         let start_t = self.scroll.max(0.0);
         let end_t = self.x_to_time(r.lanes.x1, &r.lanes);
         let mut t = (start_t / tick_step).floor() * tick_step;
@@ -16968,16 +17574,22 @@ impl VideoEditorApp {
                     1.0,
                 );
                 let label = timecode(t, self.project.fps);
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    &label,
-                    10.0,
-                    c.text_dim,
-                    x + 4.0,
-                    r.ruler.y0 + 6.0,
-                );
+                let (label_w, _) = tr.measure(&label, 10.0, None);
+                // The fit-to-window chip owns the ruler's right end.  Tick
+                // labels are helpful context, not a reason to draw through a
+                // control (especially when text scaling widens both).
+                if x + 4.0 + f64::from(label_w) <= self.zoom_chip_rect(r).x0 - 4.0 {
+                    text(
+                        scene,
+                        tr,
+                        tf,
+                        &label,
+                        10.0,
+                        c.text_dim,
+                        x + 4.0,
+                        r.ruler.y0 + 6.0,
+                    );
+                }
                 // faint grid line down the lanes
                 stroke_line(
                     scene,
@@ -17095,6 +17707,7 @@ impl VideoEditorApp {
 
         // --- lanes + headers + clips ---
         let lanes = self.lane_rects(r);
+        let chrome_scale = self.chrome_scale();
         for (tid, kind, lane) in &lanes {
             // lane background stripe
             let stripe = if *kind == TrackKind::Video {
@@ -17113,17 +17726,44 @@ impl VideoEditorApp {
             fill_rect(scene, tf, c.surfaces.raised, header);
             let track = self.project.track(*tid);
             let name = track.map(|t| t.name.as_str()).unwrap_or("?");
-            text_w(
-                scene,
-                tr,
-                tf,
-                name,
-                13.0,
-                c.text_primary,
-                header.x0 + 12.0,
-                header.y0 + 8.0,
-                TextWeight::Semibold,
-            );
+            let large_track_header = self.text_scale > 1.25;
+            if large_track_header {
+                // The widened S/L/M targets deliberately reserve the right
+                // half of the first row.  Centre the short track identity in
+                // the left remainder rather than letting its scaled glyphs
+                // collide with the Solo control.
+                let name_slot = Rect::new(
+                    header.x0 + 6.0,
+                    header.y0 + 7.0 * chrome_scale,
+                    self.solo_pill_rect(header).x0 - 3.0,
+                    header.y0 + 7.0 * chrome_scale + self.mute_pill_rect(header).height(),
+                );
+                let shown = elide_at(name, name_slot.width() as f32, 10.0, tr);
+                let at = text_centre(name_slot, &shown, 10.0, TextWeight::Semibold, tr);
+                text_w(
+                    scene,
+                    tr,
+                    tf,
+                    &shown,
+                    10.0,
+                    c.text_primary,
+                    at.x,
+                    at.y,
+                    TextWeight::Semibold,
+                );
+            } else {
+                text_w(
+                    scene,
+                    tr,
+                    tf,
+                    name,
+                    13.0,
+                    c.text_primary,
+                    header.x0 + 12.0 * chrome_scale,
+                    header.y0 + 8.0 * chrome_scale,
+                    TextWeight::Semibold,
+                );
+            }
             // What the lane is, and — when it has been moved off unity or
             // centre — where its fader is. The reading belongs *here*, on the
             // lane, rather than only in a panel: a lane at +6 dB that says so
@@ -17142,22 +17782,39 @@ impl VideoEditorApp {
                     line.push_str(&format!(" · {}", t.pan_words()));
                 }
             }
-            let line = elide_at(
-                &line,
-                (header.x1 - 10.0 - (header.x0 + 12.0)) as f32,
-                9.0,
-                tr,
-            );
-            text(
-                scene,
-                tr,
-                tf,
-                &line,
-                9.0,
-                c.text_dim,
-                header.x0 + 12.0,
-                header.y0 + 26.0,
-            );
+            if large_track_header {
+                // The compact track code is the identity; the second row
+                // preserves the explicit VIDEO/AUDIO type without trying to
+                // squeeze gain/pan prose under a full-size control row.
+                let line = elide_at(knd, (header.width() - 12.0 * chrome_scale) as f32, 8.0, tr);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &line,
+                    8.0,
+                    c.text_dim,
+                    header.x0 + 8.0 * chrome_scale,
+                    header.y0 + 31.0 * chrome_scale,
+                );
+            } else {
+                let line = elide_at(
+                    &line,
+                    (header.x1 - 10.0 * chrome_scale - (header.x0 + 12.0 * chrome_scale)) as f32,
+                    9.0,
+                    tr,
+                );
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &line,
+                    9.0,
+                    c.text_dim,
+                    header.x0 + 12.0 * chrome_scale,
+                    header.y0 + 26.0 * chrome_scale,
+                );
+            }
             // The lane's level. Fed from the mix that made the sound, so a
             // bar moving here is the same measurement the master meter and
             // the clip warning are reading — never a second opinion.
@@ -17459,7 +18116,17 @@ impl VideoEditorApp {
                 6.0,
             );
             stroke_rrect(scene, tf, c.border_standard, rect, 6.0, 1.0);
-            let label = if kind == TrackKind::Video {
+            // The footer reserves two equally-sized real targets.  At large
+            // type the full words exceed those targets and were drawn into
+            // one another; V/A remain familiar track vocabulary while the
+            // accessible controls continue to say the full action.
+            let label = if self.text_scale > 1.25 {
+                if kind == TrackKind::Video {
+                    "+ V"
+                } else {
+                    "+ A"
+                }
+            } else if kind == TrackKind::Video {
                 "+ Video"
             } else {
                 "+ Audio"
@@ -17502,6 +18169,10 @@ impl VideoEditorApp {
         fill_rrect(scene, tf, col, thumb, radius);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each clip's linked, selected, media, and accessibility treatments must share the exact same lane geometry"
+    )]
     fn draw_clip(
         &self,
         scene: &mut Scene,
@@ -17543,7 +18214,8 @@ impl VideoEditorApp {
             6.0,
         );
         // header strip
-        let strip = Rect::new(cr.x0, cr.y0, cr.x1, (cr.y0 + 18.0).min(cr.y1));
+        let chrome_scale = self.chrome_scale();
+        let strip = self.clip_header_rect(cr);
         fill_rrect(scene, tf, darken(base, 0.3), strip, 6.0);
 
         // content: filmstrip or waveform
@@ -17717,7 +18389,7 @@ impl VideoEditorApp {
                 11.0,
                 head_col,
                 vx0 + 5.0 + corner + chain_w,
-                cr.y0 + 3.0,
+                cr.y0 + 3.0 * chrome_scale,
                 TextWeight::Medium,
             );
         }
@@ -17740,9 +18412,9 @@ impl VideoEditorApp {
             let (lw, _) = tr.measure_weighted(&label, 9.5, None, TextWeight::Bold);
             let pill = Rect::new(
                 vx1 - 8.0 - lw as f64 - 10.0,
-                cr.y0 + 2.0,
+                cr.y0 + 2.0 * chrome_scale,
                 vx1 - 4.0,
-                cr.y0 + 16.0,
+                cr.y0 + 16.0 * chrome_scale,
             );
             if pill.x0 > vx0 + 4.0 {
                 let bg = darken(base, 0.45);
@@ -17976,7 +18648,7 @@ impl VideoEditorApp {
         stroke_rrect(
             scene,
             tf,
-            if self.goto_notice {
+            if self.navigation.goto_notice {
                 c.semantic.danger
             } else {
                 c.accent[6]
@@ -18032,12 +18704,12 @@ impl VideoEditorApp {
                 ),
             );
         }
-        let hint = if self.goto_notice {
+        let hint = if self.navigation.goto_notice {
             "Not a timecode — try 1:30"
         } else {
             "Enter to jump, Esc to cancel"
         };
-        let hc = if self.goto_notice {
+        let hc = if self.navigation.goto_notice {
             c.semantic.danger
         } else {
             c.text_dim
@@ -18579,6 +19251,40 @@ fn draw_button(
     hovered: bool,
 ) {
     draw_button_enabled(scene, tf, tr, theme, rect, label, primary, hovered, true);
+}
+
+/// A compact command keeps the same shared button face and semantic name as
+/// its labelled sibling.  The canvas app owns the accessibility tree, while
+/// `accessible_name` keeps the immediate-mode face truthful to inspectors and
+/// makes the intent explicit at the drawing call site.
+#[derive(Clone, Copy)]
+struct IconButtonSpec<'a> {
+    rect: Rect,
+    icon: ui::icons::Icon,
+    accessible_name: &'a str,
+    primary: bool,
+    hovered: bool,
+}
+
+fn draw_icon_button(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    spec: IconButtonSpec<'_>,
+) {
+    use ui::widget::{Button, ButtonFace, ButtonStyle};
+    let face = ButtonFace::new(spec.rect, "")
+        .style(if spec.primary {
+            ButtonStyle::Primary
+        } else {
+            ButtonStyle::Neutral
+        })
+        .icon(spec.icon)
+        .accessible_name(spec.accessible_name)
+        .radius(7.0)
+        .hovered(spec.hovered);
+    Button::paint(scene, tf, tr, theme, &face);
 }
 
 /// [`draw_button`] plus an explicit enabled flag, so a control the app cannot
@@ -19842,9 +20548,12 @@ mod tests {
         let mut app = app_with_sample();
         app.focus.pane = Pane::Transport;
         app.focus.transport = 2; // Play / pause
-        assert!(!app.playing);
+        assert!(!app.playback.playing);
         nav_key(&mut app, &mut doc, Key::Named(NamedKey::Enter), false);
-        assert!(app.playing, "Enter on the play button starts playback");
+        assert!(
+            app.playback.playing,
+            "Enter on the play button starts playback"
+        );
     }
 
     #[test]
@@ -19852,11 +20561,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         VideoDoc::seed_sample(&mut doc);
         let mut app = app_with_sample();
-        assert!(!app.show_help);
+        assert!(!app.navigation.help_open);
         nav_key(&mut app, &mut doc, ch("?"), false);
-        assert!(app.show_help, "? opens the sheet");
+        assert!(app.navigation.help_open, "? opens the sheet");
         nav_key(&mut app, &mut doc, Key::Named(NamedKey::Escape), false);
-        assert!(!app.show_help, "Esc closes it");
+        assert!(!app.navigation.help_open, "Esc closes it");
     }
 
     #[test]
@@ -19926,7 +20635,10 @@ mod tests {
         nav_key(&mut app, &mut doc, ch(":"), false);
         nav_key(&mut app, &mut doc, Key::Named(NamedKey::Enter), false);
         assert!(app.goto_entry.is_some(), "the field stays open");
-        assert!(app.goto_notice, "and says the value could not be read");
+        assert!(
+            app.navigation.goto_notice,
+            "and says the value could not be read"
+        );
         assert_eq!(app.playhead, before, "the playhead did not move");
     }
 
@@ -20438,7 +21150,10 @@ mod tests {
         app.last_mouse = regions.export_btn.center();
         app.handle_press(&mut doc, &regions, false);
         assert!(!app.bin_overlay_is_open());
-        assert!(!app.show_export, "the covered Export button is inert");
+        assert!(
+            !app.presentation.export_open,
+            "the covered Export button is inert"
+        );
         assert_eq!(app.focus.pane, Pane::Timeline);
 
         app.toggle_bin();
@@ -20500,7 +21215,7 @@ mod tests {
     #[test]
     fn a_scrim_swallows_the_click_it_dims() {
         let cases: [(&str, fn(&mut VideoEditorApp)); 2] = [
-            ("shortcut sheet", |a| a.show_help = true),
+            ("shortcut sheet", |a| a.navigation.help_open = true),
             ("go-to field", |a| a.goto_entry = Some(String::new())),
         ];
         for (name, open) in cases {
@@ -20967,6 +21682,15 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.sync(&mut doc, &automerge::ROOT);
         (app, doc)
+    }
+
+    /// Pointer tests must use the same scroll viewport as a person.  A rect
+    /// from the full inspector layout is not a license to activate content
+    /// hidden beneath the fixed identity card or outside the clipped body.
+    fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: Rect) {
+        let view = app.inspector_viewport(r);
+        app.inspector_scroll = (app.inspector_scroll + rect.center().y - view.center().y)
+            .clamp(0.0, app.inspector_max_scroll(r));
     }
 
     #[test]
@@ -21454,7 +22178,10 @@ mod tests {
             "e",
             ModifiersState::CONTROL
         ));
-        assert!(app.show_export, "Ctrl+E opens the export details dialog");
+        assert!(
+            app.presentation.export_open,
+            "Ctrl+E opens the export details dialog"
+        );
         let open = app.accessibility().expect("dialog semantics");
         let details = a11y_find(&open, "Export failure details");
         assert_eq!(details.len(), 1);
@@ -21469,7 +22196,7 @@ mod tests {
     #[test]
     fn a_long_export_failure_wraps_above_the_footer_and_buttons() {
         let (mut app, _doc) = app_sized(1280.0, 800.0);
-        app.show_export = true;
+        app.presentation.export_open = true;
         let reason = "The selected encoder rejected the profile because the source contains an unsupported colour space; choose a compatible profile or install an encoder that supports this footage.";
         app.export_status = ExportStatus::Failed {
             reason: reason.into(),
@@ -22525,7 +23252,10 @@ mod tests {
         // Press play through the real transport button, then render a frame.
         let (_a, play) = app.transport_buttons(&r)[2];
         click(&mut app, &mut doc, play.center().x, play.center().y);
-        assert!(app.playing, "the transport button started playback");
+        assert!(
+            app.playback.playing,
+            "the transport button started playback"
+        );
         render(&mut app);
         let x = app.time_to_x(app.playhead, &r.lanes);
         assert!(
@@ -23183,7 +23913,7 @@ mod tests {
         let subtitle_h = tr.measure("Hg", 12.0, None).1 as f64;
         for (w, h) in SIZES {
             let (mut app, _doc) = app_sized(w, h);
-            app.show_export = true;
+            app.presentation.export_open = true;
             let r = app.regions();
             let l = app.export_layout(&r);
             let subtitle_bottom = l.card.y0 + 44.0 + subtitle_h;
@@ -23214,7 +23944,7 @@ mod tests {
     #[test]
     fn the_export_button_is_only_offered_when_export_can_actually_run() {
         let (mut app, mut doc) = app_sized(1280.0, 800.0);
-        app.show_export = true;
+        app.presentation.export_open = true;
         let r = app.regions();
         let l = app.export_layout(&r);
         assert_eq!(
@@ -23270,7 +24000,7 @@ mod tests {
             let mut app = VideoEditorApp::new();
             app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             // A render in flight, with the dialog that started it up.
-            app.show_export = true;
+            app.presentation.export_open = true;
             app.export_status = ExportStatus::Rendering { progress: 0.42 };
             let mut d = ui::headless::Driver::new(state, Box::new(app), (1280, 800));
             assert!(
@@ -23356,7 +24086,7 @@ mod tests {
             render(&mut app);
             click(&mut app, &mut doc, chip.center().x, chip.center().y);
             assert!(
-                app.show_export,
+                app.presentation.export_open,
                 "{status:?}: the chip must lead back to the render it reports",
             );
         }
@@ -23595,7 +24325,7 @@ mod tests {
     #[test]
     fn the_accessible_export_button_reports_a_press_that_did_nothing() {
         let (mut app, _doc) = app_and_doc();
-        app.show_export = true;
+        app.presentation.export_open = true;
         // A timeline whose only footage cannot be read: the worker refuses it
         // by name before it reaches an encoder, so this starts a real job
         // without starting a real encode.
@@ -23691,7 +24421,7 @@ mod tests {
     fn the_export_modal_dims_the_editor_rather_than_deleting_it() {
         for theme in [Theme::dark(), Theme::light()] {
             let (mut app, _doc) = app_sized(1280.0, 800.0);
-            app.show_export = true;
+            app.presentation.export_open = true;
             let r = app.regions();
             let px = render_pixels(&mut app, 1280, 800, &theme);
             // The timeline lanes stretch well past the card on both sides.
@@ -23712,7 +24442,7 @@ mod tests {
         // window, putting Cancel and Export outside the surface.
         for (w, h) in SIZES {
             let (mut app, _doc) = app_sized(w, h);
-            app.show_export = true;
+            app.presentation.export_open = true;
             let r = app.regions();
             let l = app.export_layout(&r);
             assert!(
@@ -23776,7 +24506,7 @@ mod tests {
         for (w, h) in SIZES {
             let (mut app, _doc) = app_sized(w, h);
             render(&mut app);
-            app.show_export = true;
+            app.presentation.export_open = true;
             render(&mut app);
         }
     }
@@ -23820,7 +24550,7 @@ mod tests {
         app.zoom = 220.0;
         app.scroll = clip.start + 0.6;
         app.playhead = clip.start + 1.0;
-        app.chase_playhead = false;
+        app.playback.chase_playhead = false;
         app.selection.clear();
 
         let r = app.regions();
@@ -23870,7 +24600,7 @@ mod tests {
         app.zoom = 220.0;
         app.scroll = clip.start + 0.6;
         app.playhead = clip.start + 1.0;
-        app.chase_playhead = false;
+        app.playback.chase_playhead = false;
         app.selection.clear();
 
         let r = app.regions();
@@ -24095,7 +24825,7 @@ mod tests {
             (720.0, 820.0),
         ] {
             let (mut app, _doc) = app_sized(w, h);
-            app.flap_settled = true;
+            app.navigation.flap_settled = true;
             app.inspector_flap.snap(false);
             let r = app.regions();
             assert!(r.inspector_overlay, "{w}x{h} must collapse the inspector");
@@ -24118,7 +24848,7 @@ mod tests {
         // Wide windows are unchanged: the inspector keeps its column.
         for (w, h) in [(900.0_f64, 700.0_f64), (1280.0, 800.0), (1920.0, 1080.0)] {
             let (mut app, _doc) = app_sized(w, h);
-            app.flap_settled = true;
+            app.navigation.flap_settled = true;
             let r = app.regions();
             assert!(!r.inspector_overlay, "{w}x{h} keeps the inspector docked");
             assert!(app.inspector_is_visible(&r));
@@ -24130,7 +24860,7 @@ mod tests {
     #[test]
     fn the_inspector_toggle_shows_and_hides_the_collapsed_panel() {
         let (mut app, mut doc) = app_sized(500.0, 640.0);
-        app.flap_settled = true;
+        app.navigation.flap_settled = true;
         app.inspector_flap.snap(false);
         let r = app.regions();
         assert!(
@@ -24156,7 +24886,7 @@ mod tests {
         assert!(!app.inspector_is_visible(&app.regions()));
         // The docked layout has no toggle to offer.
         let (mut wide, _d) = app_sized(1280.0, 800.0);
-        wide.flap_settled = true;
+        wide.navigation.flap_settled = true;
         assert_eq!(wide.regions().inspector_btn.width(), 0.0);
     }
 
@@ -24218,7 +24948,7 @@ mod tests {
             for (w, h) in [(420.0_f64, 560.0_f64), (620.0, 700.0), (720.0, 820.0)] {
                 let (mut app, _doc) = app_sized(w, h);
                 app.bin_flap.snap(true);
-                app.flap_settled = true;
+                app.navigation.flap_settled = true;
                 let r = app.regions();
                 assert!(r.bin_overlay, "{w}x{h} must be the overlay layout");
                 assert!(r.scrim.width() > 0.0, "an open overlay bin paints a scrim");
@@ -24757,7 +25487,7 @@ mod tests {
         // the sync wiring (synchronous warm, as a --shots capture uses).
         let f = write_real_wav();
         let mut app = VideoEditorApp::new();
-        app.warm_waveforms_sync = true;
+        app.render_pipeline.warm_waveforms_sync = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         let m = MediaItem {
@@ -25580,9 +26310,9 @@ mod tests {
         // And the transport's own buttons still work, so the new key lookup
         // has not shadowed them.
         let play = ui::a11y::hash_key(&2usize);
-        let before = app.playing;
+        let before = app.playback.playing;
         assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[play]));
-        assert_ne!(app.playing, before, "play/pause still activates");
+        assert_ne!(app.playback.playing, before, "play/pause still activates");
     }
 
     /// The whole point of gating these two sections' controls: an unkeyed,
@@ -26447,6 +27177,15 @@ mod tests {
             .find(|(c, _)| *c == crate::curve::Channel::Blue)
             .map(|(_, rect)| *rect)
             .expect("a blue segment");
+        reveal_inspector_rect_for_test(&mut app, &r, blue);
+        let r = app.regions();
+        let blue = app
+            .inspector_layout(&r)
+            .curve_channels
+            .iter()
+            .find(|(c, _)| *c == crate::curve::Channel::Blue)
+            .map(|(_, rect)| *rect)
+            .expect("blue stays reachable after scrolling");
         app.press_inspector(&mut doc, &r, blue.center());
         assert_eq!(app.curve_channel, crate::curve::Channel::Blue);
 
@@ -26785,6 +27524,14 @@ mod tests {
         );
 
         assert_eq!(app.key_state(Param::EffectAmount(0)), KeyState::Off);
+        reveal_inspector_rect_for_test(&mut app, &r, key);
+        let r = app.regions();
+        let row = *app
+            .inspector_layout(&r)
+            .effect_rows
+            .first()
+            .expect("the effect row stays reachable after scrolling");
+        let (key, ..) = VideoEditorApp::effect_row_parts(row);
         app.press_inspector(&mut doc, &r, key.center());
         assert_eq!(
             app.key_state(Param::EffectAmount(0)),
@@ -26823,6 +27570,15 @@ mod tests {
             .find(|(a, _)| *a == (0.0, 0.0))
             .map(|(_, rect)| *rect)
             .expect("a top-left cell");
+        reveal_inspector_rect_for_test(&mut app, &r, top_left);
+        let r = app.regions();
+        let top_left = app
+            .inspector_layout(&r)
+            .anchor
+            .iter()
+            .find(|(a, _)| *a == (0.0, 0.0))
+            .map(|(_, rect)| *rect)
+            .expect("top-left stays reachable after scrolling");
         app.press_inspector(&mut doc, &r, top_left.center());
         let t = app.project.clip(cid).unwrap().transform;
         assert_eq!((t.anchor_x, t.anchor_y), (0.0, 0.0));
@@ -26856,6 +27612,15 @@ mod tests {
             );
         }
 
+        reveal_inspector_rect_for_test(&mut app, &r, note_btn);
+        let r = app.regions();
+        let row = app
+            .inspector_layout(&r)
+            .marker_rows
+            .first()
+            .map(|(_, row)| *row)
+            .expect("marker stays reachable after scrolling");
+        let (_, note_btn, _, _) = marker_row_parts(row);
         app.press_inspector(&mut doc, &r, note_btn.center());
         assert_eq!(
             app.marker_field,
@@ -27134,7 +27899,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         let m = marker_at(&mut app, &mut doc, 12.0, "act two", "");
         app.playhead = 0.0;
-        app.playing = true;
+        app.playback.playing = true;
 
         let path = vec![
             Pane::Inspector.key(),
@@ -27156,7 +27921,7 @@ mod tests {
             app.playhead
         );
         assert!(
-            !app.playing,
+            !app.playback.playing,
             "seeking to a mark stops playback, as the click does"
         );
     }
@@ -27799,7 +28564,7 @@ mod tests {
             let render = |focused: bool| -> (Vec<u8>, Rect, Rect) {
                 let (mut app, _doc) = app_and_doc();
                 let (on, off) = place(&mut app);
-                app.has_focus = focused;
+                app.presentation.keyboard_focus = focused;
                 (render_pixels(&mut app, w, h, &theme), on, off)
             };
             let (dark, on, off) = render(false);
@@ -27812,6 +28577,7 @@ mod tests {
                      reaches"
                 ));
             }
+
             let spilled = region_diff(&dark, &lit, w, h, off);
             if spilled != 0 {
                 wrong.push(format!(
@@ -27821,6 +28587,214 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{}", wrong.join("; "));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one end-to-end 2× geometry regression keeps all cross-pane collision assertions together"
+    )]
+    fn two_x_text_scales_every_canvas_band_without_collisions() {
+        // Regression for the first accessibility-scale pass: only the side
+        // pane breakpoint used effective width, leaving 2× text painted
+        // through the top bar, transport, ruler and fixed-height tracks.
+        let (mut app, mut doc) = app_sized(1440.0, 960.0);
+        app.text_scale = 2.0;
+        let r = app.regions();
+        assert!(app.topbar_is_compact());
+        assert!(r.topbar.height() > TOPBAR_H);
+        assert!(r.transport.height() > TRANSPORT_H);
+        assert!(r.ruler.height() > RULER_H);
+
+        let commands = [
+            ("bin", r.menu_btn),
+            ("project", r.project_btn),
+            ("inspector", r.inspector_btn),
+            ("import", r.import_btn),
+            ("export", r.export_btn),
+        ];
+        for (name, rect) in commands {
+            assert!(
+                rect.width() + 0.01 >= app.topbar_target()
+                    && rect.height() + 0.01 >= app.topbar_target(),
+                "{name} remains a full compact command target: {rect:?}"
+            );
+        }
+        for (i, (_, a)) in commands.iter().enumerate() {
+            for (_, b) in commands.iter().skip(i + 1) {
+                assert!(
+                    a.x1 <= b.x0 || b.x1 <= a.x0,
+                    "2× topbar controls overlap: {a:?} vs {b:?}"
+                );
+            }
+        }
+        let toolbar = app.a11y_topbar();
+        let names: Vec<&str> = toolbar
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        assert!(names.contains(&"Import media"));
+        assert!(names.contains(&"Export video"));
+        assert!(!names.contains(&"Split at playhead"));
+        assert_eq!(
+            app.tooltip_at(r.import_btn.center()),
+            Some("Import media (Ctrl+Shift+O)")
+        );
+        assert_eq!(
+            app.tooltip_at(r.export_btn.center()),
+            Some("Export video (Ctrl+E)")
+        );
+        assert!(
+            app.a11y_project().state.focusable,
+            "the compact film icon opens the project menu"
+        );
+        assert!(app.perform_action_at(
+            &ui::a11y::Action::Activate,
+            &[
+                ui::a11y::hash_key(&TOPBAR_A11Y_KEY),
+                ui::a11y::hash_key(&TOPBAR_EXPORT_KEY),
+            ],
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            app.presentation.export_open,
+            "the accessible compact export icon invokes the same dialog"
+        );
+
+        let transport = app.transport_buttons(&r);
+        for (i, (_, a)) in transport.iter().enumerate() {
+            for (_, b) in transport.iter().skip(i + 1) {
+                assert!(a.x1 <= b.x0, "transport buttons overlap: {a:?} vs {b:?}");
+            }
+        }
+        let history = app.history_buttons(&r);
+        let controls_right = history
+            .last()
+            .map_or_else(|| transport.last().unwrap().1.x1, |(_, rect)| rect.x1);
+        assert!(
+            r.transport.x0 + app.transport_content_x(&r) > controls_right,
+            "readouts start after the complete transport button cluster"
+        );
+        let scrub = app.scrubber_rect(&r);
+        assert!(
+            scrub.y0 > r.transport.y0 + 30.0,
+            "scrubber gets a separate vertical band from scaled time text"
+        );
+
+        for (track, kind, lane) in app.lane_rects(&r) {
+            let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+            assert!(
+                header.height() >= app.lane_height(kind) - 0.01,
+                "{track:?} retains its scaled row height"
+            );
+            let pills = [
+                app.solo_pill_rect(header),
+                app.lock_pill_rect(header),
+                app.mute_pill_rect(header),
+            ];
+            for pill in pills {
+                assert!(
+                    pill.x0 >= header.x0
+                        && pill.x1 <= header.x1
+                        && pill.y0 >= header.y0
+                        && pill.y1 <= header.y1,
+                    "scaled track pill stays in its header: {pill:?} within {header:?}"
+                );
+            }
+            assert!(
+                app.track_meter_rect(header).y0 >= pills[0].y1,
+                "the meter is below the track controls, not behind their labels"
+            );
+        }
+
+        for (tid, _kind, lane) in app.lane_rects(&r) {
+            for clip in app.project.clips_on(tid) {
+                let body = app.clip_rect(clip, &lane, &r);
+                let head = app.clip_header_rect(body);
+                assert!(
+                    head.height() >= 18.0 * app.chrome_scale() - 0.01 && head.y1 <= body.y1,
+                    "a scaled clip title has a bounded header band: {head:?} in {body:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn two_x_inspector_has_a_clipped_scroll_body_and_reveals_every_focus_stop() {
+        let (mut app, _doc) = app_sized(1440.0, 960.0);
+        app.text_scale = 2.0;
+        app.collapsed.clear();
+        let clip = app
+            .project
+            .top_video_clip_at(4.0)
+            .expect("fixture has a visual clip")
+            .id;
+        app.selection.select_only(clip);
+        let r = app.regions();
+        let view = app.inspector_viewport(&r);
+        assert!(
+            view.y0 > r.inspector.y0,
+            "identity header reserves a fixed band"
+        );
+        assert!(
+            view.height() >= 150.0,
+            "body remains a useful scroll viewport"
+        );
+
+        // Top: the first editable row is below the static Source Out line.
+        app.inspector_scroll = 0.0;
+        let top = app.inspector_layout(&r);
+        assert!(top.opacity.expect("opacity").y0 >= view.y0);
+        assert!(top.fade_in.expect("fade in").y0 > top.saturation.expect("saturation").y1);
+
+        // Middle: the picture-in-picture row owns a full slot, followed by
+        // its reset button rather than another heading or icon row.
+        app.inspector_scroll = app.inspector_max_scroll(&r) * 0.5;
+        let middle = app.inspector_layout(&r);
+        let pip_bottom = middle.pip.last().expect("PIP presets").2.y1;
+        assert!(
+            middle.reset_transform.expect("fill frame").y0 > pip_bottom,
+            "PIP and its following action need separate scaled rows"
+        );
+
+        // Bottom: the marker empty copy has a whole large-text line above its
+        // button, while the destructive actions remain inside the viewport.
+        app.inspector_scroll = app.inspector_max_scroll(&r);
+        let bottom = app.inspector_layout(&r);
+        let marker_add = bottom.add_marker.expect("add marker");
+        let marker_header = bottom
+            .sections
+            .iter()
+            .find(|(section, _)| *section == Section::Markers)
+            .expect("markers section")
+            .1;
+        assert!(
+            marker_add.y0 - marker_header.y1 >= 18.0 * app.inspector_ui_scale(),
+            "empty-marker copy owns a scaled slot above its button"
+        );
+        for action in [bottom.split, bottom.delete] {
+            assert!(action.y0 >= view.y0 && action.y1 <= view.y1);
+        }
+
+        // Keyboard/AT focus uses the same row rectangles and scrolls that
+        // row into the body viewport instead of leaving the active descendant
+        // hidden under the fixed identity card.
+        let rows = app.a11y_inspector_rows();
+        app.focus.pane = Pane::Inspector;
+        app.focus.inspector = rows
+            .iter()
+            .position(|row| *row == InspectorRow::AddMarker)
+            .expect("Add marker is a keyboard stop");
+        app.inspector_scroll = 0.0;
+        app.reveal_inspector_focus();
+        let focused = VideoEditorApp::inspector_focus_band(
+            &app.inspector_layout(&r),
+            rows[app.focus.inspector],
+        )
+        .expect("focus band");
+        assert!(focused.y0 >= view.y0 && focused.y1 <= view.y1);
     }
 
     /// The ring is the theme's focus colour, not a colour of the editor's own.
@@ -27850,7 +28824,7 @@ mod tests {
                 .iter()
                 .position(|row| *row == InspectorRow::Field(NumField::Brightness))
                 .expect("brightness is a stop");
-            app.has_focus = focused;
+            app.presentation.keyboard_focus = focused;
             let band = VideoEditorApp::inspector_focus_band(
                 &app.inspector_layout(&app.regions()),
                 InspectorRow::Field(NumField::Brightness),
@@ -27903,9 +28877,9 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         assert_eq!(app.motion_words(), None, "a still playhead says nothing");
 
-        app.playing = true;
+        app.playback.playing = true;
         assert_eq!(app.motion_words().as_deref(), Some("PLAYING"));
-        app.playing = false;
+        app.playback.playing = false;
 
         // Through the production key path: L, L, L is the standard 1× → 2× → 4×.
         for _ in 0..3 {
@@ -28037,7 +29011,7 @@ mod tests {
         app.toggle_play();
         assert_eq!(app.shuttle, 0.0, "the play/pause press stopped the shuttle");
         assert!(
-            !app.playing,
+            !app.playback.playing,
             "and did not start playback on top of it, which would have left the \
              transport reporting a state nothing on screen accounted for",
         );
@@ -29361,7 +30335,7 @@ mod tests {
         let encoded = qos_actions::door::encode(&app.resources(&doc), &address, None)
             .expect("the address resolves through the live resource tree");
 
-        app.playing = true;
+        app.playback.playing = true;
         app.playhead = 0.0;
         assert!(
             app.invoke_resource_operation(
@@ -29380,7 +30354,7 @@ mod tests {
         );
         assert_eq!(app.selected(), Some(clip.id));
         assert_eq!(app.selected_media, Some(clip.media));
-        assert!(!app.playing, "the shared seek stops the transport");
+        assert!(!app.playback.playing, "the shared seek stops the transport");
     }
 
     /// Clip markers resolve their current collaborative position at execution
