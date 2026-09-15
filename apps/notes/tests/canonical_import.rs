@@ -1,3 +1,4 @@
+use crate::component_support::canonical as support;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use notes::{
     actions::{InlineMark, InlineMarkSpan},
@@ -5,14 +6,12 @@ use notes::{
     legacy_import::{self, ImportError, LegacySourceKey, destination, import_legacy},
     notebook, storage,
 };
+use support::LegacyFixture;
 use ui::record::{
     self, RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordOpenOutcome,
     RecordSaveStatus,
 };
 use uuid::Uuid;
-#[path = "support/canonical.rs"]
-mod support;
-use support::LegacyFixture;
 
 fn imported(f: &LegacyFixture) -> legacy_import::ImportOutcome {
     import_legacy(&f.records, &f.source, f.key).unwrap()

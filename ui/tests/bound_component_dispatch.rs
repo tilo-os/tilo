@@ -1632,6 +1632,68 @@ impl Widget for ReplacingHost {
     }
 }
 
+// Registration-only uniqueness must not mistake this retained wrapper for
+// its sole registered inline child. Name/address are deliberately identical.
+#[repr(transparent)]
+struct SameNameUnregisteredWrapper(Button);
+impl Widget for SameNameUnregisteredWrapper {
+    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &ui::Theme,
+        nodes: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        self.0.build_layout(tree, theme, nodes)
+    }
+    fn apply_layout(
+        &mut self,
+        tree: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        self.0.apply_layout(tree, node, origin);
+    }
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut ui::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::PresenceCtx,
+    ) {
+        self.0.draw(scene, transform, text, theme, presence);
+    }
+    fn handle_event(
+        &mut self,
+        _: &winit::event::WindowEvent,
+        _: f64,
+        _: &winit::event::Modifiers,
+        _: &mut AutoCommit,
+        _: &ObjId,
+        _: &mut bool,
+        _: &mut Option<taffy::NodeId>,
+        _: taffy::NodeId,
+        _: &taffy::TaffyTree<()>,
+    ) {
+    }
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+    fn test_id(&self) -> Option<&'static str> {
+        Some("ambiguous-wrapper")
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.0.get_rect()
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.0]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.0]
+    }
+}
+
 fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> ui::headless::Driver {
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
@@ -2306,6 +2368,47 @@ fn task4_driver_unqualified_control_selects_or_refuses_bound_targets() {
             );
         }
     }
+    assert_same_name_inline_wrapper_refused();
+}
+
+fn assert_same_name_inline_wrapper_refused() {
+    let clicked = std::rc::Rc::new(Cell::new(false));
+    let observer = clicked.clone();
+    let wrapper = Box::new(SameNameUnregisteredWrapper(
+        Button::new("ambiguous-child", "Child", None).on_click(move || observer.set(true)),
+    ));
+    assert_eq!(
+        std::ptr::from_ref(wrapper.as_ref()).cast::<()>(),
+        std::ptr::from_ref(&wrapper.0).cast::<()>(),
+    );
+    assert_eq!(wrapper.name(), wrapper.0.name());
+    let mut driver = controlled_driver(wrapper, (300, 200));
+    let before = (
+        driver.state_mut().doc.base_heads(),
+        driver.state_mut().doc.pending_ops(),
+    );
+    for id in ["ambiguous-wrapper", "ambiguous-child"] {
+        assert!(
+            driver
+                .perform_named(id, &ui::a11y::Action::Activate)
+                .is_err()
+        );
+        assert!(
+            driver
+                .expect(&ui::headless::SemanticExpectation::named(id))
+                .is_err()
+        );
+    }
+    assert!(!clicked.get());
+    assert_eq!(
+        (
+            driver.state_mut().doc.base_heads(),
+            driver.state_mut().doc.pending_ops()
+        ),
+        before
+    );
+    assert!(!driver.state_mut().can_undo_as(None));
+    driver.close_components();
 }
 
 #[test]
