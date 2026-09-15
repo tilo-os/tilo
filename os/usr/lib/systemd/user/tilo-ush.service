@@ -12,6 +12,7 @@ Description=Tilo confined shell runtime supervisor
 # short window at login where an app launched immediately would still find the
 # socket absent; the supervisor binds in well under a second and the launcher's
 # error names the missing socket.
+PartOf=tilo-graphical-session.target
 
 [Service]
 Type=simple
