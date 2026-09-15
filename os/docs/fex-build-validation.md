@@ -151,3 +151,25 @@ With a read-only runtime view, a root-owned supervisor, unprivileged test
 processes, the two devices, and the diagnostic seccomp setting, all 11 previously
 failing syscall groups passed. The complete suite must still pass with this
 fixture; targeted success alone is not full acceptance.
+
+The complete rerun of FEX-2609 with this fixture finished in 590.61 seconds:
+11,616 passes, 458 upstream skips, and zero failures across 12,074 cases.
+This baseline does not cover the separate Fedora `ldconfig` crash.
+
+## Consecutive syscall regression
+
+`os/tests/fixtures/fex-consecutive-brk.asm` reduces the static PIE startup
+failure to querying and extending the program break, then writing into the
+allocated page. On FEX-2609 the second `brk` never reaches its handler and the
+program exits unsuccessfully. A diagnostic run with `FEX_MAXINST=1` passes;
+disabling optimization passes alone does not fix the failure. Do not use that
+diagnostic block-size override as a production workaround.
+
+The emitted IR reuses the original syscall-number constant after the first
+syscall overwrites its allocated register. Upstream
+[commit 91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20](https://github.com/FEX-Emu/FEX/commit/91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20)
+fixes Linux syscall block boundaries and advances the saved instruction
+pointer, including cache format invalidation. Validate that exact revision
+against the regression, actual `ldconfig`, and the complete suite before
+promoting its source pin. The upstream suite passing by itself did not expose
+this application startup failure.
