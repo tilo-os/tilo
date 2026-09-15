@@ -92,10 +92,18 @@ struct LibraryRowHit {
     remove: Option<Rect>,
 }
 
+#[derive(Clone)]
+struct SharedRowHit {
+    id: String,
+    remove: Rect,
+    annotation: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LibraryTab {
     Queue,
     Recent,
+    Shared,
 }
 
 fn configured_player(autoplay: bool, loop_enabled: bool) -> VideoPlayer {
@@ -138,6 +146,12 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
         RATES.into_iter().map(str::to_string).collect(),
         selected,
     ));
+    player.set_setting(PlayerSetting::button(
+        "picture-in-picture",
+        Icon::PictureInPicture2,
+        "Picture in Picture",
+        0,
+    ));
 }
 
 /// Build a taffy node from `children` already built in the same tree.
@@ -155,6 +169,21 @@ fn fill_rect(scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, transform, color, None, &rect);
 }
 
+/// Shared title/description/tab rhythm for the custom library panel. Text
+/// metrics are expressed in logical pixels and expanded exactly once by the
+/// active accessibility scale, so paint and hit geometry cannot drift.
+fn library_vertical_metrics(scale: f64, description_lines: usize) -> (f64, f64, f64) {
+    let title_top = 10.0;
+    let title_height = 18.0 * scale;
+    let privacy_top = title_top + title_height + 8.0 * scale;
+    let privacy_line_height = 16.0 * scale;
+    let privacy_bottom = privacy_top + privacy_line_height * description_lines as f64;
+    let tabs_top = privacy_bottom + 8.0 * scale;
+    let tab_height = if scale > 1.25 { 50.0 } else { 30.0 };
+    let rows_top = tabs_top + tab_height + if scale > 1.25 { 14.0 } else { 12.0 };
+    (privacy_top, tabs_top, rows_top)
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "immediate-mode panel text needs its render context and explicit style"
@@ -170,12 +199,14 @@ fn panel_text(
     weight: TextWeight,
 ) {
     let _ = weight;
+    let display = text_renderer.elide_to_width(text, size, rect.width().max(0.0) as f32);
+    let baseline = f64::from(size) * f64::from(text_renderer.text_scale());
     text_renderer.draw_text(
         scene,
-        text,
+        &display,
         size,
         color,
-        transform * Affine::translate((rect.x0, rect.y0 + f64::from(size))),
+        transform * Affine::translate((rect.x0, rect.y0 + baseline)),
         None,
     );
 }
@@ -246,6 +277,9 @@ pub struct PlayerApp {
     player: VideoPlayer,
     title: String,
     rect: Rect,
+    /// Accessibility text scale captured from the live theme. Only geometry
+    /// containing text expands; the media surface itself remains unscaled.
+    text_scale: f64,
     /// The floating Open pill's hit rect (top-right of the video). Only live
     /// while the overlay is shown.
     open_button_rect: Rect,
@@ -253,9 +287,13 @@ pub struct PlayerApp {
     library_panel_rect: Rect,
     library_queue_tab_rect: Rect,
     library_recent_tab_rect: Rect,
+    library_shared_tab_rect: Rect,
     library_close_rect: Rect,
     library_row_hits: Vec<LibraryRowHit>,
     library_clear_rect: Rect,
+    shared_watch_later_rect: Rect,
+    shared_bookmark_rect: Rect,
+    shared_row_hits: Vec<SharedRowHit>,
     library_visible: bool,
     library_tab: LibraryTab,
     queue: Vec<LocalMediaEntry>,
@@ -284,6 +322,14 @@ pub struct PlayerApp {
     /// Deterministic decoder metadata used only by the explicit headless
     /// `metadata` screenshot fixture. Live runs always read the active engine.
     shot_metadata: Option<DecoderMetadata>,
+    /// Deterministically holds the production no-frame/loading presentation
+    /// for visual regression capture while the synthesized engine stays
+    /// hermetic. Live runs always derive loading from decoder frame state.
+    shot_loading: bool,
+    pending_pip: Option<ui::floating_surface::FloatingSurfaceRequest>,
+    actions: ui::ActionHost,
+    shared_library: crate::shared::SharedLibrary,
+    shot_shared: bool,
     current_source_id: Option<String>,
     source_generation: u64,
     search_cache: RefCell<Option<SearchCache>>,
@@ -529,14 +575,19 @@ impl PlayerApp {
             player,
             title: "No media".to_string(),
             rect: Rect::ZERO,
+            text_scale: 1.0,
             open_button_rect: Rect::ZERO,
             library_button_rect: Rect::ZERO,
             library_panel_rect: Rect::ZERO,
             library_queue_tab_rect: Rect::ZERO,
             library_recent_tab_rect: Rect::ZERO,
+            library_shared_tab_rect: Rect::ZERO,
             library_close_rect: Rect::ZERO,
             library_row_hits: Vec::new(),
             library_clear_rect: Rect::ZERO,
+            shared_watch_later_rect: Rect::ZERO,
+            shared_bookmark_rect: Rect::ZERO,
+            shared_row_hits: Vec::new(),
             library_visible: false,
             library_tab: LibraryTab::Queue,
             queue: Vec::new(),
@@ -556,6 +607,11 @@ impl PlayerApp {
             manager: None,
             preferences,
             shot_metadata: None,
+            shot_loading: false,
+            pending_pip: None,
+            actions: ui::ActionHost::new(),
+            shared_library: crate::shared::SharedLibrary::default(),
+            shot_shared: false,
             current_source_id: None,
             source_generation: 0,
             search_cache: RefCell::new(None),
@@ -583,6 +639,7 @@ impl PlayerApp {
     /// `scenario` selects an optional demo overlay for the capture:
     ///   * `"empty"` — the first-run state before a source is chosen.
     ///   * `"error"` — a decoder/open failure before a picture arrives.
+    ///   * `"loading"` — a source admitted while its first frame is pending.
     ///   * `"native-error"` — use `--open` with a bad source to capture the
     ///     decoder's actual error event rather than fixture copy.
     ///   * `"playing"` / `"paused"` — explicit transport states (the
@@ -593,48 +650,63 @@ impl PlayerApp {
     ///   * `"metadata"` — open the controls menu with deterministic embedded
     ///     audio/subtitle/chapter metadata.
     ///   * `"library"` / `"recent"` — populated device-local queue/history.
+    ///   * `"shared"` — shared playlist and timestamp-annotation management.
     ///   * `"library-focus"` — the same queue with a keyboard-visible Play
     ///     focus ring, for accessibility visual review.
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
         let mut app = Self::new();
+        app.stage_shot_source(open, scenario);
+        app.stage_shot_scenario(scenario);
+        if !matches!(scenario, Some("empty" | "error")) {
+            app.player.reveal_controls();
+        }
+        app
+    }
+
+    fn stage_shot_source(&mut self, open: Option<PathBuf>, scenario: Option<&str>) {
         if !matches!(scenario, Some("empty" | "error")) {
             if let Some(path) = open {
-                let _ = app.open_path(&path);
+                let _ = self.open_path(&path);
             } else {
                 // The demo shot must stay hermetic: pin the deterministic
                 // synthesized-frame engine so no real GStreamer pipeline is
                 // built and the placeholder `demo.local` host is never
                 // contacted — even though `decode` compiles the real backend in
                 // by default. `--shots --open <file>` is the real-decode path.
-                app.player.set_engine(media::MediaEngine::new_synthesized());
+                self.player
+                    .set_engine(media::MediaEngine::new_synthesized());
                 let source = media::Source::Remote {
                     url: "https://demo.local/clip.mp4".into(),
                 };
-                let queue_id = app.ensure_queued(source.clone(), "Demo clip".into());
-                let _ = app.set_current_source(&source);
-                app.player.open(source);
-                app.title = "Demo clip".to_string();
-                app.current_queue_id = Some(queue_id);
+                let queue_id = self.ensure_queued(source.clone(), "Demo clip".into());
+                let _ = self.set_current_source(&source);
+                self.player.open(source);
+                self.title = "Demo clip".to_string();
+                self.current_queue_id = Some(queue_id);
                 // Park at a fixed position for a stable reference frame. The
                 // explicit `playing` fixture starts the real engine below;
                 // default/`paused` deliberately stay deterministic.
-                app.player.seek_to_ms(8_000);
-                app.player.pause();
+                self.player.seek_to_ms(8_000);
+                self.player.pause();
             }
         }
+    }
+
+    fn stage_shot_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
             Some("error") => {
-                app.open_error = Some(
+                self.open_error = Some(
                     "The local decoder could not read this video. Check the file and try again."
                         .into(),
                 );
             }
-            Some("playing") => app.player.play(),
-            Some("paused") => app.player.pause(),
-            Some("settings") => app.player.open_settings_menu(None),
+            Some("loading") => self.shot_loading = true,
+            Some("playing") => self.player.play(),
+            Some("paused") => self.player.pause(),
+            Some("settings") => self.player.open_settings_menu(None),
             Some("metadata") => {
-                app.shot_metadata = Some(DecoderMetadata {
+                self.shot_metadata = Some(DecoderMetadata {
                     audio_tracks: vec![
                         crate::actions::TrackState {
                             stream_id: "fixture-audio-en".into(),
@@ -668,34 +740,56 @@ impl PlayerApp {
                         },
                     ],
                 });
-                app.sync_decoder_settings();
-                app.player.open_settings_menu(None);
+                self.sync_decoder_settings();
+                self.player.open_settings_menu(None);
             }
             Some("library" | "recent" | "library-focus") => {
                 for (url, title) in [
                     ("https://demo.local/next.mp4", "Second act"),
                     ("https://demo.local/finale.mp4", "Closing scene"),
                 ] {
-                    app.ensure_queued(media::Source::Remote { url: url.into() }, title.into());
+                    self.ensure_queued(media::Source::Remote { url: url.into() }, title.into());
                 }
-                app.recent = app.queue.iter().rev().cloned().collect();
-                app.library_visible = true;
-                app.library_tab = if scenario == Some("recent") {
+                self.recent = self.queue.iter().rev().cloned().collect();
+                self.library_visible = true;
+                self.library_tab = if scenario == Some("recent") {
                     LibraryTab::Recent
                 } else {
                     LibraryTab::Queue
                 };
                 if scenario == Some("library-focus") {
-                    app.library_focus_id = app.queue.get(1).map(|entry| entry.id.clone());
+                    self.library_focus_id = self.queue.get(1).map(|entry| entry.id.clone());
                 }
             }
-            Some("fullscreen") => app.player.toggle_fullscreen(),
+            Some("shared") => {
+                self.library_visible = true;
+                self.library_tab = LibraryTab::Shared;
+                self.shared_library = crate::shared::SharedLibrary {
+                    playlists: vec![crate::shared::Playlist {
+                        id: "watch-later".into(),
+                        name: "Watch later".into(),
+                    }],
+                    items: Vec::new(),
+                    annotations: vec![
+                        crate::shared::TimestampAnnotation {
+                            id: "opening".into(),
+                            media_ref: self.current_source_id.clone().unwrap_or_default(),
+                            time_ms: 8_000,
+                            text: "Opening detail".into(),
+                        },
+                        crate::shared::TimestampAnnotation {
+                            id: "bookmark".into(),
+                            media_ref: self.current_source_id.clone().unwrap_or_default(),
+                            time_ms: 45_000,
+                            text: String::new(),
+                        },
+                    ],
+                };
+                self.shot_shared = true;
+            }
+            Some("fullscreen") => self.player.toggle_fullscreen(),
             _ => {}
         }
-        if !matches!(scenario, Some("empty" | "error")) {
-            app.player.reveal_controls();
-        }
-        app
     }
 
     /// Attach collaborative playback: a live collab socket plus the host/
@@ -943,6 +1037,30 @@ impl PlayerApp {
         self.dirty = true;
     }
 
+    fn request_picture_in_picture(&mut self) {
+        if !self.player.has_media() || self.player.get_rect().width() < 1.0 {
+            return;
+        }
+        let region = self.player.get_rect();
+        let aspect = (region.width() / region.height().max(1.0)).clamp(0.4, 2.8);
+        self.pending_pip = Some(ui::floating_surface::FloatingSurfaceRequest {
+            id: "video-player.current-video".into(),
+            title: self.title.clone(),
+            role: ui::floating_surface::FloatingRole::PictureInPicture,
+            source: ui::floating_surface::FloatingSource::AppElement {
+                app_id: "dev.qos.video-player".into(),
+                element_id: "video_surface".into(),
+                region,
+            },
+            preferred_size: vello::kurbo::Size::new(360.0, 360.0 / aspect),
+            aspect_ratio: Some(aspect),
+            initial_rect: None,
+            presentation_rect: None,
+            tracking_source: None,
+        });
+        self.dirty = true;
+    }
+
     fn request_open_action(&mut self) {
         if let Some(action) = &mut self.open_action {
             let _ = action.emit(());
@@ -964,6 +1082,89 @@ impl PlayerApp {
 
     fn request_library_clear(&mut self) {
         self.request_library_action("video-player.history.local", "clear");
+    }
+
+    fn dispatch_shared(&mut self, doc: &mut AutoCommit, action: &crate::shared::SharedAction) {
+        let context = crate::shared::history_context(action);
+        self.actions
+            .dispatch_with_context(doc, crate::shared::ACTION_TYPE, action, context);
+        self.shared_library = crate::shared::read(doc);
+        self.invalidate_search_cache();
+        self.dirty = true;
+    }
+
+    fn add_current_to_watch_later(&mut self, doc: &mut AutoCommit) {
+        let Some(media_ref) = self.current_source_id.clone() else {
+            return;
+        };
+        let playlist_id = "watch-later".to_string();
+        if !self
+            .shared_library
+            .playlists
+            .iter()
+            .any(|playlist| playlist.id == playlist_id)
+        {
+            self.dispatch_shared(
+                doc,
+                &crate::shared::SharedAction::CreatePlaylist {
+                    id: playlist_id.clone(),
+                    name: "Watch later".into(),
+                },
+            );
+        }
+        if self
+            .shared_library
+            .items
+            .iter()
+            .any(|item| item.playlist_id == playlist_id && item.media_ref == media_ref)
+        {
+            return;
+        }
+        let position = self
+            .shared_library
+            .items
+            .iter()
+            .filter(|item| item.playlist_id == playlist_id)
+            .map(|item| item.position)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1024);
+        let id = format!(
+            "item-{}-{}",
+            crate::actions::identity_token_for_action(&media_ref),
+            media::now_ms()
+        );
+        self.dispatch_shared(
+            doc,
+            &crate::shared::SharedAction::AddPlaylistItem {
+                id,
+                playlist_id,
+                media_ref,
+                title: self.title.clone(),
+                position,
+            },
+        );
+    }
+
+    fn bookmark_current_time(&mut self, doc: &mut AutoCommit) {
+        let Some(media_ref) = self.current_source_id.clone() else {
+            return;
+        };
+        let time_ms = self.player.position_ms();
+        let id = format!(
+            "annotation-{}-{}-{time_ms}",
+            crate::actions::identity_token_for_action(&media_ref),
+            media::now_ms()
+        );
+        self.dispatch_shared(
+            doc,
+            &crate::shared::SharedAction::CreateAnnotation {
+                id,
+                media_ref,
+                time_ms,
+                text: String::new(),
+            },
+        );
     }
 
     fn request_library_action(&mut self, resource_id: &str, action_id: &str) {
@@ -1138,6 +1339,11 @@ impl PlayerApp {
                 self.library_visible = true;
                 self.player.reveal_controls();
             }
+            PlayerOperation::RevealSharedLibrary => {
+                self.library_visible = true;
+                self.library_tab = LibraryTab::Shared;
+                self.player.reveal_controls();
+            }
             PlayerOperation::Close => self.close_media(),
             PlayerOperation::TogglePlayback => self.player.toggle_play(),
             PlayerOperation::ToggleMute => self.player.toggle_mute(),
@@ -1189,6 +1395,7 @@ impl PlayerApp {
                     self.player.set_choice_selection("playback-rate", selected);
                 }
             }
+            PlayerOperation::OpenPictureInPicture => self.request_picture_in_picture(),
             PlayerOperation::SelectAudioTrack { index, .. } => {
                 if !self
                     .player
@@ -1495,6 +1702,9 @@ impl PlayerApp {
                         });
                     }
                 }
+                PlayerSettingEvent::Activated { id } if id == "picture-in-picture" => {
+                    self.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
+                }
                 PlayerSettingEvent::Toggled { .. }
                 | PlayerSettingEvent::Chose { .. }
                 | PlayerSettingEvent::Activated { .. } => {}
@@ -1598,7 +1808,12 @@ impl PlayerApp {
         );
         // A soft translucent scrim behind the title so it stays legible over
         // bright frames, without a hard opaque bar.
-        let scrim_h = 44.0;
+        let compact = self.text_scale > 1.25 && self.rect.width() < 720.0;
+        let scrim_h = if compact {
+            self.open_button_rect.height() + 56.0
+        } else {
+            self.open_button_rect.height() + 12.0
+        };
         let scrim = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -1617,16 +1832,28 @@ impl PlayerApp {
         // theme — `text_primary` would flip to near-black on light and vanish
         // against the dark scrim.
         let title_size = 15.0f32;
-        let ty = self.rect.y0 + (scrim_h - f64::from(title_size)) * 0.5;
+        let scaled_title_h = f64::from(title_size) * self.text_scale;
+        let ty = if compact {
+            self.open_button_rect.y1 + 8.0
+        } else {
+            self.rect.y0 + (scrim_h - scaled_title_h) * 0.5
+        };
         let display_title = if self.player.has_media() {
             self.title.as_str()
         } else {
             "Video Player"
         };
-        let title_x = self.library_button_rect.x1 + 12.0;
-        let title_budget = (self.open_button_rect.x0 - title_x - OVERLAY_MARGIN)
-            .max(0.0)
-            .min(f64::from(f32::MAX)) as f32;
+        let title_x = if compact {
+            self.rect.x0 + OVERLAY_MARGIN
+        } else {
+            self.library_button_rect.x1 + 12.0
+        };
+        let title_right = if compact {
+            self.rect.x1 - OVERLAY_MARGIN
+        } else {
+            self.open_button_rect.x0 - OVERLAY_MARGIN
+        };
+        let title_budget = (title_right - title_x).max(0.0).min(f64::from(f32::MAX)) as f32;
         let display_title = text_renderer.elide_to_width(display_title, title_size, title_budget);
         text_renderer.draw_text(
             scene,
@@ -1676,39 +1903,67 @@ impl PlayerApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.player.latest_frame().is_some() || self.rect.height() < 180.0 {
+        if (!self.shot_loading && self.player.latest_frame().is_some())
+            || self.rect.height() < 180.0
+        {
             return;
         }
         let center = self.rect.center();
+        let compact_copy = self.text_scale > 1.25 && self.rect.width() < 520.0;
         let (title, subtitle) = if let Some(error) = &self.open_error {
-            ("Couldn't open video", error.as_str())
+            if compact_copy {
+                ("Couldn't open\nvideo", "Check the file, then\ntry again.")
+            } else {
+                ("Couldn't open video", error.as_str())
+            }
         } else if self.player.has_media() {
             ("Loading video…", "Preparing the first frame")
+        } else if compact_copy {
+            ("Open a video\nto start", "MP4, WebM, MKV,\nMOV and AVI")
         } else {
             ("Open a video to start", "MP4, WebM, MKV, MOV and AVI")
         };
+        let scale = self.text_scale;
         let copy_width = (self.rect.width() - 32.0).max(0.0) as f32;
-        let title = text_renderer.elide_to_width(title, 20.0, copy_width);
-        let subtitle = text_renderer.elide_to_width(subtitle, 13.0, copy_width);
-        let (title_w, _) = text_renderer.measure(&title, 20.0, None);
-        let (subtitle_w, _) = text_renderer.measure(&subtitle, 13.0, None);
-        text_renderer.draw_text(
-            scene,
-            &title,
-            20.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((center.x - f64::from(title_w) * 0.5, center.y + 55.0)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &subtitle,
-            13.0,
-            theme.tokens.colors.text_dim,
-            transform
-                * Affine::translate((center.x - f64::from(subtitle_w) * 0.5, center.y + 85.0)),
-            None,
-        );
+        let title_lines: Vec<_> = title.lines().collect();
+        let subtitle_lines: Vec<_> = subtitle.lines().collect();
+        let title_step = 24.0 * scale;
+        let subtitle_step = 18.0 * scale;
+        let block_h = title_step * title_lines.len() as f64
+            + 10.0 * scale
+            + subtitle_step * subtitle_lines.len() as f64;
+        let mut baseline = if compact_copy && !self.shot_loading {
+            center.y + 92.0
+        } else {
+            center.y - block_h * 0.5 + 20.0 * scale
+        };
+        for line in title_lines {
+            let line = text_renderer.elide_to_width(line, 20.0, copy_width);
+            let (width, _) = text_renderer.measure(&line, 20.0, None);
+            text_renderer.draw_text(
+                scene,
+                &line,
+                20.0,
+                theme.tokens.colors.text_primary,
+                transform * Affine::translate((center.x - f64::from(width) * 0.5, baseline)),
+                None,
+            );
+            baseline += title_step;
+        }
+        baseline += 10.0 * scale;
+        for line in subtitle_lines {
+            let line = text_renderer.elide_to_width(line, 13.0, copy_width);
+            let (width, _) = text_renderer.measure(&line, 13.0, None);
+            text_renderer.draw_text(
+                scene,
+                &line,
+                13.0,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((center.x - f64::from(width) * 0.5, baseline)),
+                None,
+            );
+            baseline += subtitle_step;
+        }
     }
 
     #[allow(
@@ -1727,6 +1982,7 @@ impl PlayerApp {
         }
         let colors = &theme.tokens.colors;
         let panel = self.library_panel_rect;
+        let large_text = self.text_scale > 1.25;
         fill_rect(scene, transform, panel, colors.surfaces.raised);
         fill_rect(
             scene,
@@ -1742,28 +1998,44 @@ impl PlayerApp {
                 panel.x0 + 16.0,
                 panel.y0 + 10.0,
                 panel.x1 - 48.0,
-                panel.y0 + 34.0,
+                panel.y0 + if large_text { 50.0 } else { 34.0 },
             ),
             "Library",
             18.0,
             colors.text_primary,
             TextWeight::Semibold,
         );
-        panel_text(
-            scene,
-            text_renderer,
-            transform,
-            Rect::new(
-                panel.x0 + 16.0,
-                panel.y0 + 34.0,
-                panel.x1 - 12.0,
-                panel.y0 + 54.0,
-            ),
-            "Local to this device · paths never shared",
-            12.0,
-            colors.text_dim,
-            TextWeight::Regular,
-        );
+        let privacy_lines: &[&str] =
+            if self.library_tab == LibraryTab::Shared && large_text && panel.width() < 520.0 {
+                &["Shared metadata", "Media stays private"]
+            } else if self.library_tab == LibraryTab::Shared && large_text {
+                &[
+                    "Shared with collaborators",
+                    "Media access stays on each device",
+                ]
+            } else if self.library_tab == LibraryTab::Shared {
+                &["Shared metadata · media access stays on each device"]
+            } else if large_text && panel.width() < 520.0 {
+                &["On this device", "Paths stay private"]
+            } else {
+                &["Local to this device · paths never shared"]
+            };
+        let (privacy_top, _, rows_top) =
+            library_vertical_metrics(self.text_scale, privacy_lines.len());
+        for (line, index) in privacy_lines.iter().zip(0_u32..) {
+            let y =
+                panel.y0 + privacy_top + f64::from(index) * if large_text { 25.0 } else { 18.0 };
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(panel.x0 + 16.0, y, panel.x1 - 12.0, y + 26.0),
+                line,
+                12.0,
+                colors.text_dim,
+                TextWeight::Regular,
+            );
+        }
         Button::paint(
             scene,
             transform,
@@ -1775,10 +2047,10 @@ impl PlayerApp {
                 .hovered(self.library_close_rect.contains(self.last_cursor)),
         );
         self.library_clear_rect = Rect::new(
-            panel.x1 - 124.0,
+            panel.x1 - if large_text { 206.0 } else { 124.0 },
             panel.y0 + 10.0,
-            panel.x1 - 74.0,
-            panel.y0 + 38.0,
+            panel.x1 - if large_text { 112.0 } else { 74.0 },
+            panel.y0 + if large_text { 58.0 } else { 38.0 },
         );
         if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
             Button::paint(
@@ -1796,7 +2068,16 @@ impl PlayerApp {
         let queue_active = self.library_tab == LibraryTab::Queue;
         for (label, rect, active) in [
             ("Queue", self.library_queue_tab_rect, queue_active),
-            ("Recent", self.library_recent_tab_rect, !queue_active),
+            (
+                "Recent",
+                self.library_recent_tab_rect,
+                self.library_tab == LibraryTab::Recent,
+            ),
+            (
+                "Shared",
+                self.library_shared_tab_rect,
+                self.library_tab == LibraryTab::Shared,
+            ),
         ] {
             let mut face = ButtonFace::new(rect, label).ghost().text_size(13.0);
             if active {
@@ -1811,12 +2092,23 @@ impl PlayerApp {
             );
         }
         self.library_row_hits.clear();
+        if self.library_tab == LibraryTab::Shared {
+            self.paint_shared_library(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                (panel, large_text, panel.y0 + rows_top),
+            );
+            return;
+        }
         let entries: Vec<LocalMediaEntry> = match self.library_tab {
             LibraryTab::Queue => self.queue.clone(),
             LibraryTab::Recent => self.recent.iter().cloned().collect(),
+            LibraryTab::Shared => Vec::new(),
         };
-        let mut y = panel.y0 + 108.0;
-        let row_h = 62.0;
+        let mut y = panel.y0 + rows_top;
+        let row_h = if large_text { 100.0 } else { 62.0 };
         if entries.is_empty() {
             panel_text(
                 scene,
@@ -1842,19 +2134,30 @@ impl PlayerApp {
                 break;
             }
             let rect = Rect::new(panel.x0 + 12.0, y, panel.x1 - 12.0, y + row_h - 4.0);
+            let action_w = if large_text { 86.0 } else { 50.0 };
+            let action_h = if large_text { 64.0 } else { 44.0 };
+            let action_y = rect.y0 + (rect.height() - action_h) * 0.5;
             let remove = (self.library_tab == LibraryTab::Queue).then_some(Rect::new(
-                rect.x1 - 106.0,
-                rect.y0 + 7.0,
-                rect.x1 - 56.0,
-                rect.y0 + 51.0,
+                rect.x1 - action_w * 2.0 - 10.0,
+                action_y,
+                rect.x1 - action_w - 8.0,
+                action_y + action_h,
             ));
-            let play = Rect::new(rect.x1 - 50.0, rect.y0 + 7.0, rect.x1 - 2.0, rect.y0 + 51.0);
+            let play = Rect::new(
+                rect.x1 - action_w,
+                action_y,
+                rect.x1 - 2.0,
+                action_y + action_h,
+            );
             if rect.contains(self.last_cursor) {
                 fill_rect(scene, transform, rect, colors.neutral[2]);
             }
             let active = self.current_queue_id.as_deref() == Some(entry.id.as_str());
-            let label =
-                text_renderer.elide_to_width(&entry.title, 14.0, (rect.width() - 120.0) as f32);
+            let label = text_renderer.elide_to_width(
+                &entry.title,
+                14.0,
+                (rect.width() - if large_text { 202.0 } else { 120.0 }) as f32,
+            );
             panel_text(
                 scene,
                 text_renderer,
@@ -1863,7 +2166,7 @@ impl PlayerApp {
                     rect.x0 + 12.0,
                     rect.y0 + 8.0,
                     remove.map_or(play.x0, |remove| remove.x0) - 8.0,
-                    rect.y0 + 29.0,
+                    rect.y0 + if large_text { 44.0 } else { 29.0 },
                 ),
                 &label,
                 14.0,
@@ -1880,7 +2183,7 @@ impl PlayerApp {
                 transform,
                 Rect::new(
                     rect.x0 + 12.0,
-                    rect.y0 + 29.0,
+                    rect.y0 + if large_text { 48.0 } else { 29.0 },
                     remove.map_or(play.x0, |remove| remove.x0) - 8.0,
                     rect.y1 - 4.0,
                 ),
@@ -1936,6 +2239,386 @@ impl PlayerApp {
             y += row_h;
         }
     }
+
+    fn paint_shared_library(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: (Rect, bool, f64),
+    ) {
+        let (panel, large_text, y) = layout;
+        let colors = &theme.tokens.colors;
+        let gap = 8.0;
+        let action_h = if large_text { 56.0 } else { 38.0 };
+        let action_w = (panel.width() - 24.0 - gap) * 0.5;
+        self.shared_watch_later_rect =
+            Rect::new(panel.x0 + 12.0, y, panel.x0 + 12.0 + action_w, y + action_h);
+        self.shared_bookmark_rect = Rect::new(
+            self.shared_watch_later_rect.x1 + gap,
+            y,
+            panel.x1 - 12.0,
+            y + action_h,
+        );
+        for (rect, label) in [
+            (self.shared_watch_later_rect, "Watch later"),
+            (self.shared_bookmark_rect, "Bookmark time"),
+        ] {
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(rect, label)
+                    .text_size(11.0)
+                    .primary()
+                    .hovered(rect.contains(self.last_cursor)),
+            );
+        }
+        self.shared_row_hits.clear();
+        let mut row_y = y + action_h + 16.0;
+        let row_h = if large_text { 72.0 } else { 48.0 };
+        let remove_w = if large_text { 92.0 } else { 64.0 };
+        for playlist in self
+            .shared_library
+            .playlists
+            .iter()
+            .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
+        {
+            if row_y + row_h > panel.y1 - 12.0 {
+                break;
+            }
+            let remove = Rect::new(
+                panel.x1 - 12.0 - remove_w,
+                row_y + 4.0,
+                panel.x1 - 12.0,
+                row_y + row_h - 4.0,
+            );
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(
+                    panel.x0 + 18.0,
+                    row_y + 4.0,
+                    remove.x0 - 8.0,
+                    row_y + row_h - 4.0,
+                ),
+                &playlist.name,
+                13.0,
+                colors.text_primary,
+                TextWeight::Regular,
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(remove, "Delete")
+                    .ghost()
+                    .text_size(11.0)
+                    .hovered(remove.contains(self.last_cursor)),
+            );
+            self.shared_row_hits.push(SharedRowHit {
+                id: playlist.id.clone(),
+                remove,
+                annotation: false,
+            });
+            row_y += row_h;
+        }
+        self.paint_shared_annotations(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            (panel, row_h, remove_w, &mut row_y),
+        );
+        if self.shared_library.playlists.is_empty() && self.shared_library.annotations.is_empty() {
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(panel.x0 + 20.0, row_y, panel.x1 - 20.0, row_y + row_h),
+                "Shared playlists and timestamp notes appear here.",
+                12.0,
+                colors.text_dim,
+                TextWeight::Regular,
+            );
+        }
+    }
+
+    fn paint_shared_annotations(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: (Rect, f64, f64, &mut f64),
+    ) {
+        let (panel, row_h, remove_w, row_y) = layout;
+        for annotation in self
+            .shared_library
+            .annotations
+            .iter()
+            .take(crate::actions::CONTEXTUAL_CHILD_LIMIT)
+        {
+            if *row_y + row_h > panel.y1 - 12.0 {
+                break;
+            }
+            let remove = Rect::new(
+                panel.x1 - 12.0 - remove_w,
+                *row_y + 4.0,
+                panel.x1 - 12.0,
+                *row_y + row_h - 4.0,
+            );
+            let text = if annotation.text.is_empty() {
+                format!("Bookmark · {:.1}s", annotation.time_ms as f64 / 1000.0)
+            } else {
+                format!(
+                    "{} · {:.1}s",
+                    annotation.text,
+                    annotation.time_ms as f64 / 1000.0
+                )
+            };
+            panel_text(
+                scene,
+                text_renderer,
+                transform,
+                Rect::new(
+                    panel.x0 + 18.0,
+                    *row_y + 4.0,
+                    remove.x0 - 8.0,
+                    *row_y + row_h - 4.0,
+                ),
+                &text,
+                12.0,
+                theme.tokens.colors.text_primary,
+                TextWeight::Regular,
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(remove, "Delete")
+                    .ghost()
+                    .text_size(11.0)
+                    .hovered(remove.contains(self.last_cursor)),
+            );
+            self.shared_row_hits.push(SharedRowHit {
+                id: annotation.id.clone(),
+                remove,
+                annotation: true,
+            });
+            *row_y += row_h;
+        }
+    }
+
+    fn handle_app_pointer(&mut self, state: &mut AutoCommit) -> bool {
+        if self.library_visible && self.library_panel_rect.contains(self.last_cursor) {
+            if self.library_close_rect.contains(self.last_cursor) {
+                self.library_visible = false;
+            } else if self.library_queue_tab_rect.contains(self.last_cursor) {
+                self.library_tab = LibraryTab::Queue;
+            } else if self.library_recent_tab_rect.contains(self.last_cursor) {
+                self.library_tab = LibraryTab::Recent;
+            } else if self.library_shared_tab_rect.contains(self.last_cursor) {
+                self.library_tab = LibraryTab::Shared;
+            } else if self.library_tab == LibraryTab::Shared
+                && self.shared_watch_later_rect.contains(self.last_cursor)
+            {
+                self.add_current_to_watch_later(state);
+            } else if self.library_tab == LibraryTab::Shared
+                && self.shared_bookmark_rect.contains(self.last_cursor)
+            {
+                self.bookmark_current_time(state);
+            } else if self.library_tab == LibraryTab::Shared
+                && let Some(row) = self
+                    .shared_row_hits
+                    .iter()
+                    .find(|row| row.remove.contains(self.last_cursor))
+                    .cloned()
+            {
+                let action = if row.annotation {
+                    crate::shared::SharedAction::DeleteAnnotation { id: row.id }
+                } else {
+                    crate::shared::SharedAction::DeletePlaylist {
+                        observed_item_ids: self
+                            .shared_library
+                            .items
+                            .iter()
+                            .filter(|item| item.playlist_id == row.id)
+                            .map(|item| item.id.clone())
+                            .collect(),
+                        id: row.id,
+                    }
+                };
+                self.dispatch_shared(state, &action);
+            } else if self.library_tab == LibraryTab::Recent
+                && self.library_clear_rect.contains(self.last_cursor)
+            {
+                self.request_library_clear();
+            } else if let Some(row) = self
+                .library_row_hits
+                .iter()
+                .find(|row| row.row.contains(self.last_cursor))
+                .cloned()
+            {
+                if row
+                    .remove
+                    .is_some_and(|rect| rect.contains(self.last_cursor))
+                {
+                    self.request_library_remove(&row.id);
+                } else {
+                    self.request_library_play(&row.id);
+                }
+            }
+            self.dirty = true;
+            return true;
+        }
+        if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
+            self.request_open_action();
+            return true;
+        }
+        if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
+            self.library_visible = !self.library_visible;
+            self.player.reveal_controls();
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
+    fn handle_app_shortcut(
+        &mut self,
+        event: &winit::event::KeyEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        if event.state != ElementState::Pressed {
+            return false;
+        }
+        let winit::keyboard::Key::Character(key) = &event.logical_key else {
+            return false;
+        };
+        if modifiers.state().control_key() && key.eq_ignore_ascii_case("o") {
+            self.request_open_action();
+        } else if key.eq_ignore_ascii_case("l") {
+            self.library_visible = !self.library_visible;
+            self.player.reveal_controls();
+            self.dirty = true;
+        } else if key.eq_ignore_ascii_case("p") && self.player.has_media() {
+            self.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
+        } else {
+            return false;
+        }
+        true
+    }
+}
+
+fn shared_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
+    use ui::a11y::{AccessNode, AccessState, Role};
+    let mut nodes = vec![
+        AccessNode::new(Role::Button)
+            .with_name("Add current video to Watch later")
+            .with_action_target("video-player.shared.watch-later")
+            .with_bounds(app.shared_watch_later_rect)
+            .with_state(AccessState {
+                focusable: true,
+                focused: app.library_focus_id.as_deref() == Some("shared-watch-later"),
+                disabled: !app.player.has_media(),
+                ..Default::default()
+            }),
+        AccessNode::new(Role::Button)
+            .with_name("Bookmark current timestamp")
+            .with_action_target("video-player.shared.bookmark")
+            .with_bounds(app.shared_bookmark_rect)
+            .with_state(AccessState {
+                focusable: true,
+                focused: app.library_focus_id.as_deref() == Some("shared-bookmark"),
+                disabled: !app.player.has_media(),
+                ..Default::default()
+            }),
+    ];
+    nodes.extend(app.shared_row_hits.iter().map(|row| {
+        let kind = if row.annotation {
+            "annotation"
+        } else {
+            "playlist"
+        };
+        AccessNode::new(Role::Button)
+            .with_name(if row.annotation {
+                "Delete timestamp annotation"
+            } else {
+                "Delete shared playlist"
+            })
+            .with_action_target(format!("video-player.shared.delete.{kind}.{}", row.id))
+            .with_bounds(row.remove)
+            .with_state(AccessState {
+                focusable: true,
+                focused: app.library_focus_id.as_deref()
+                    == Some(format!("shared-delete-{}", row.id).as_str()),
+                ..Default::default()
+            })
+    }));
+    nodes
+}
+
+fn local_library_accessibility_nodes(app: &PlayerApp) -> Vec<ui::a11y::AccessNode> {
+    use ui::a11y::{AccessNode, AccessState, Role};
+    let mut nodes: Vec<_> = app
+        .library_row_hits
+        .iter()
+        .map(|row| {
+            let id = &row.id;
+            let title = app
+                .queue
+                .iter()
+                .chain(app.recent.iter())
+                .find(|entry| entry.id == *id)
+                .map_or("Local video", |entry| entry.title.as_str());
+            AccessNode::new(Role::Button)
+                .with_name(format!("Play {title}"))
+                .with_description("Opens this device-local video")
+                .with_action_target(format!("video-player.library.play.{id}"))
+                .with_bounds(row.play)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: app.library_focus_id.as_deref() == Some(id.as_str()),
+                    ..Default::default()
+                })
+        })
+        .collect();
+    if app.library_tab == LibraryTab::Recent && !app.recent.is_empty() {
+        nodes.push(
+            AccessNode::new(Role::Button)
+                .with_name("Clear recent videos")
+                .with_description("Removes recent-history entries from this device")
+                .with_action_target("video-player.library.clear")
+                .with_bounds(app.library_clear_rect)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: app.library_focus_id.as_deref() == Some("library-clear"),
+                    ..Default::default()
+                }),
+        );
+    }
+    nodes.extend(app.library_row_hits.iter().filter_map(|row| {
+        row.remove.map(|remove| {
+            AccessNode::new(Role::Button)
+                .with_name("Remove from queue")
+                .with_description("Removes this item from the session-only queue")
+                .with_action_target(format!("video-player.library.remove.{}", row.id))
+                .with_bounds(remove)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: app.library_focus_id.as_deref()
+                        == Some(format!("library-remove-{}", row.id).as_str()),
+                    ..Default::default()
+                })
+        })
+    }));
+    nodes
 }
 
 impl Default for PlayerApp {
@@ -1957,10 +2640,11 @@ impl Widget for PlayerApp {
         )
     }
 
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
         crate::actions::resource(
             &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            doc,
             id,
         )
     }
@@ -1973,11 +2657,14 @@ impl Widget for PlayerApp {
             .as_ref()
             .is_some_and(|cached| cached.source_id == source_id && cached.revision == revision);
         if !reusable {
-            let provider = crate::search::VideoPlayerSearchProvider::new(&self.action_context(
-                &self.search_metadata.audio_tracks,
-                &self.search_metadata.subtitle_tracks,
-                &self.search_metadata.chapters,
-            ));
+            let provider = crate::search::VideoPlayerSearchProvider::new(
+                &self.action_context(
+                    &self.search_metadata.audio_tracks,
+                    &self.search_metadata.subtitle_tracks,
+                    &self.search_metadata.chapters,
+                ),
+                &self.shared_library,
+            );
             *cache = Some(SearchCache {
                 source_id,
                 revision,
@@ -2126,6 +2813,12 @@ impl Widget for PlayerApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        let shared = crate::shared::read(state);
+        if !self.shot_shared && shared != self.shared_library {
+            self.shared_library = shared;
+            self.invalidate_search_cache();
+            self.dirty = true;
+        }
         self.drain_portal();
         self.tick_collab();
         self.player.sync(state, path);
@@ -2141,6 +2834,7 @@ impl Widget for PlayerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         // Edge-to-edge: the player fills the whole surface. The app keeps itself
         // in the node map (so it can intercept the floating Open pill) by owning
         // a single-child root that stretches the player to 100%×100%.
@@ -2182,20 +2876,32 @@ impl Widget for PlayerApp {
         };
         self.player.apply_layout(taffy, player_node, new_origin);
         // Floating Open pill: top-right corner, over the video.
+        let scale = self.text_scale;
+        let button_h = if scale > 1.25 {
+            OPEN_BTN_H * (0.5 + scale * 0.5)
+        } else {
+            OPEN_BTN_H
+        };
+        let button_w = if scale > 1.25 {
+            OPEN_BTN_W * (0.7 + scale * 0.3)
+        } else {
+            OPEN_BTN_W
+        };
         let by0 = self.rect.y0 + OVERLAY_MARGIN;
         let bx1 = self.rect.x1 - OVERLAY_MARGIN;
-        let bx0 = (bx1 - OPEN_BTN_W).max(self.rect.x0);
-        self.open_button_rect = Rect::new(bx0, by0, bx1, by0 + OPEN_BTN_H);
+        let bx0 = (bx1 - button_w).max(self.rect.x0);
+        self.open_button_rect = Rect::new(bx0, by0, bx1, by0 + button_h);
         self.library_button_rect = Rect::new(
             self.rect.x0 + OVERLAY_MARGIN,
             by0,
-            (self.rect.x0 + OVERLAY_MARGIN + 88.0).min(bx0 - OVERLAY_MARGIN),
-            by0 + OPEN_BTN_H,
+            (self.rect.x0 + OVERLAY_MARGIN + 88.0 * (button_w / OPEN_BTN_W))
+                .min(bx0 - OVERLAY_MARGIN),
+            by0 + button_h,
         );
         let panel_width = if self.rect.width() < 640.0 {
             self.rect.width()
         } else {
-            360.0_f64.min(self.rect.width())
+            (if scale > 1.25 { 520.0_f64 } else { 360.0_f64 }).min(self.rect.width())
         };
         self.library_panel_rect = Rect::new(
             self.rect.x1 - panel_width,
@@ -2203,23 +2909,41 @@ impl Widget for PlayerApp {
             self.rect.x1,
             self.rect.y1,
         );
+        let large_text = scale > 1.25;
+        let close_w = if large_text { 96.0 } else { 56.0 };
+        let header_button_h = if large_text { 48.0 } else { 28.0 };
         self.library_close_rect = Rect::new(
-            self.library_panel_rect.x1 - 68.0,
+            self.library_panel_rect.x1 - 12.0 - close_w,
             self.library_panel_rect.y0 + 10.0,
             self.library_panel_rect.x1 - 12.0,
-            self.library_panel_rect.y0 + 38.0,
+            self.library_panel_rect.y0 + 10.0 + header_button_h,
         );
+        let description_lines = usize::from(
+            large_text
+                && (self.library_tab == LibraryTab::Shared
+                    || self.library_panel_rect.width() < 520.0),
+        ) + 1;
+        let (_, tabs_top, _) = library_vertical_metrics(scale, description_lines);
+        let tabs_y = self.library_panel_rect.y0 + tabs_top;
+        let tab_h = if large_text { 50.0 } else { 30.0 };
+        let tab_w = if large_text { 112.0 } else { 86.0 };
         self.library_queue_tab_rect = Rect::new(
             self.library_panel_rect.x0 + 12.0,
-            self.library_panel_rect.y0 + 66.0,
-            self.library_panel_rect.x0 + 98.0,
-            self.library_panel_rect.y0 + 96.0,
+            tabs_y,
+            self.library_panel_rect.x0 + 12.0 + tab_w,
+            tabs_y + tab_h,
         );
         self.library_recent_tab_rect = Rect::new(
-            self.library_panel_rect.x0 + 104.0,
-            self.library_panel_rect.y0 + 66.0,
-            self.library_panel_rect.x0 + 196.0,
-            self.library_panel_rect.y0 + 96.0,
+            self.library_queue_tab_rect.x1 + 6.0,
+            tabs_y,
+            self.library_queue_tab_rect.x1 + 6.0 + tab_w,
+            tabs_y + tab_h,
+        );
+        self.library_shared_tab_rect = Rect::new(
+            self.library_recent_tab_rect.x1 + 6.0,
+            tabs_y,
+            (self.library_recent_tab_rect.x1 + 6.0 + tab_w).min(self.library_panel_rect.x1 - 12.0),
+            tabs_y + tab_h,
         );
     }
 
@@ -2233,6 +2957,14 @@ impl Widget for PlayerApp {
     ) {
         self.player
             .draw(scene, transform, text_renderer, theme, presence);
+        if self.shot_loading {
+            fill_rect(
+                scene,
+                transform,
+                self.rect,
+                theme.tokens.colors.surfaces.base,
+            );
+        }
         self.paint_media_status_copy(scene, transform, text_renderer, theme);
         if self.overlay_visible() {
             self.paint_overlay(scene, transform, text_renderer, theme);
@@ -2260,68 +2992,14 @@ impl Widget for PlayerApp {
             button: MouseButton::Left,
             ..
         } = event
+            && self.handle_app_pointer(state)
         {
-            if self.library_visible && self.library_panel_rect.contains(self.last_cursor) {
-                if self.library_close_rect.contains(self.last_cursor) {
-                    self.library_visible = false;
-                } else if self.library_queue_tab_rect.contains(self.last_cursor) {
-                    self.library_tab = LibraryTab::Queue;
-                } else if self.library_recent_tab_rect.contains(self.last_cursor) {
-                    self.library_tab = LibraryTab::Recent;
-                } else if self.library_tab == LibraryTab::Recent
-                    && self.library_clear_rect.contains(self.last_cursor)
-                {
-                    self.request_library_clear();
-                } else if let Some(row) = self
-                    .library_row_hits
-                    .iter()
-                    .find(|row| row.row.contains(self.last_cursor))
-                    .cloned()
-                {
-                    if row
-                        .remove
-                        .is_some_and(|rect| rect.contains(self.last_cursor))
-                    {
-                        self.request_library_remove(&row.id);
-                    } else {
-                        self.request_library_play(&row.id);
-                    }
-                }
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
-            // Only intercept the Open pill while the overlay is actually shown;
-            // during immersive playback that corner is just video.
-            if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
-                self.request_open_action();
-                *handled = true;
-                return;
-            }
-            if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-                self.library_visible = !self.library_visible;
-                self.player.reveal_controls();
-                self.dirty = true;
-                *handled = true;
-                return;
-            }
-        }
-        if let WindowEvent::KeyboardInput { event, .. } = event
-            && event.state == ElementState::Pressed
-            && modifiers.state().control_key()
-            && matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("o"))
-        {
-            self.request_open_action();
             *handled = true;
             return;
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
-            && event.state == ElementState::Pressed
-            && matches!(&event.logical_key, winit::keyboard::Key::Character(c) if c.eq_ignore_ascii_case("l"))
+            && self.handle_app_shortcut(event, *modifiers)
         {
-            self.library_visible = !self.library_visible;
-            self.player.reveal_controls();
-            self.dirty = true;
             *handled = true;
             return;
         }
@@ -2359,6 +3037,16 @@ impl Widget for PlayerApp {
             .or_else(|| self.library_control_invocations.pop_front())
     }
 
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
+    fn take_floating_surface_request(
+        &mut self,
+    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
+        self.pending_pip.take()
+    }
+
     fn refresh_control_action_availability(
         &mut self,
         allowed: &std::collections::HashSet<qos_actions::ActionAddress>,
@@ -2369,9 +3057,15 @@ impl Widget for PlayerApp {
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.open_action.as_ref().map_or_else(Vec::new, |action| {
-            vec![action.metadata("video-player.open")]
-        })
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        if let Some(action) = &self.open_action
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "video-player.open")
+        {
+            *binding = action.metadata("video-player.open");
+        }
+        bindings
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -2407,54 +3101,51 @@ impl Widget for PlayerApp {
                 }),
         ];
         if self.library_visible {
-            children.extend(self.library_row_hits.iter().map(|row| {
-                let id = &row.id;
-                let title = self
-                    .queue
-                    .iter()
-                    .chain(self.recent.iter())
-                    .find(|entry| entry.id == *id)
-                    .map_or("Local video", |entry| entry.title.as_str());
+            children.extend([
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Play {title}"))
-                    .with_description("Opens this device-local video")
-                    .with_action_target(format!("video-player.library.play.{id}"))
-                    .with_bounds(row.play)
+                    .with_name("Close library")
+                    .with_action_target("video-player.library.close")
+                    .with_bounds(self.library_close_rect)
                     .with_state(AccessState {
                         focusable: true,
-                        focused: self.library_focus_id.as_deref() == Some(id.as_str()),
+                        focused: self.library_focus_id.as_deref() == Some("library-close"),
                         ..Default::default()
-                    })
-            }));
-            if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
-                children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name("Clear recent videos")
-                        .with_description("Removes recent-history entries from this device")
-                        .with_action_target("video-player.library.clear")
-                        .with_bounds(self.library_clear_rect)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.library_focus_id.as_deref() == Some("library-clear"),
-                            ..Default::default()
-                        }),
-                );
+                    }),
+                AccessNode::new(Role::Tab)
+                    .with_name("Queue")
+                    .with_action_target("video-player.library.tab.queue")
+                    .with_bounds(self.library_queue_tab_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.library_focus_id.as_deref() == Some("library-tab-queue"),
+                        selected: self.library_tab == LibraryTab::Queue,
+                        ..Default::default()
+                    }),
+                AccessNode::new(Role::Tab)
+                    .with_name("Recent")
+                    .with_action_target("video-player.library.tab.recent")
+                    .with_bounds(self.library_recent_tab_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.library_focus_id.as_deref() == Some("library-tab-recent"),
+                        selected: self.library_tab == LibraryTab::Recent,
+                        ..Default::default()
+                    }),
+                AccessNode::new(Role::Tab)
+                    .with_name("Shared")
+                    .with_action_target("video-player.library.tab.shared")
+                    .with_bounds(self.library_shared_tab_rect)
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.library_focus_id.as_deref() == Some("library-tab-shared"),
+                        selected: self.library_tab == LibraryTab::Shared,
+                        ..Default::default()
+                    }),
+            ]);
+            if self.library_tab == LibraryTab::Shared {
+                children.extend(shared_accessibility_nodes(self));
             }
-            children.extend(self.library_row_hits.iter().filter_map(|row| {
-                row.remove.map(|remove| {
-                    AccessNode::new(Role::Button)
-                        .with_name("Remove from queue")
-                        .with_description("Removes this item from the session-only queue")
-                        .with_action_target(format!("video-player.library.remove.{}", row.id))
-                        .with_bounds(remove)
-                        .with_state(AccessState {
-                            focusable: true,
-                            focused: self.library_focus_id.as_deref()
-                                == Some(format!("library-remove-{}", row.id).as_str()),
-                            ..Default::default()
-                        })
-                })
-            }));
+            children.extend(local_library_accessibility_nodes(self));
         }
         Some(
             AccessNode::new(Role::Group)
@@ -2471,8 +3162,22 @@ impl Widget for PlayerApp {
         match path {
             [0] => Some(self.open_button_rect),
             [1] => Some(self.library_button_rect),
+            [2] if self.library_visible => Some(self.library_close_rect),
+            [3] if self.library_visible => Some(self.library_queue_tab_rect),
+            [4] if self.library_visible => Some(self.library_recent_tab_rect),
+            [5] if self.library_visible => Some(self.library_shared_tab_rect),
+            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                Some(self.shared_watch_later_rect)
+            }
+            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                Some(self.shared_bookmark_rect)
+            }
+            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => self
+                .shared_row_hits
+                .get(index.saturating_sub(8))
+                .map(|row| row.remove),
             [index] => {
-                let library_index = index.saturating_sub(2);
+                let library_index = index.saturating_sub(6);
                 let play_count = self.library_row_hits.len();
                 if let Some(row) = self.library_row_hits.get(library_index) {
                     Some(row.play)
@@ -2514,8 +3219,54 @@ impl Widget for PlayerApp {
                 self.dirty = true;
                 true
             }
+            [2] if self.library_visible => {
+                self.library_focus_id = Some("library-close".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [3] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-queue".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [4] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-recent".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [5] if self.library_visible => {
+                self.library_focus_id = Some("library-tab-shared".into());
+                self.open_focused = false;
+                self.library_focused = false;
+                self.dirty = true;
+                true
+            }
+            [6] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-watch-later".into());
+                self.dirty = true;
+                true
+            }
+            [7] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                self.library_focus_id = Some("shared-bookmark".into());
+                self.dirty = true;
+                true
+            }
+            [index] if self.library_visible && self.library_tab == LibraryTab::Shared => {
+                let Some(row) = self.shared_row_hits.get(index.saturating_sub(8)) else {
+                    return false;
+                };
+                self.library_focus_id = Some(format!("shared-delete-{}", row.id));
+                self.dirty = true;
+                true
+            }
             [index] => {
-                let library_index = index.saturating_sub(2);
+                let library_index = index.saturating_sub(6);
                 let play_count = self.library_row_hits.len();
                 self.library_focus_id = if let Some(row) = self.library_row_hits.get(library_index)
                 {
@@ -2554,7 +3305,7 @@ impl Widget for PlayerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
+        state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
         if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
@@ -2569,6 +3320,66 @@ impl Widget for PlayerApp {
             && matches!(action, ui::a11y::Action::Activate)
         {
             self.request_library_play(item_id);
+            true
+        } else if target == "video-player.library.close"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.library_visible = false;
+            self.library_focus_id = None;
+            self.dirty = true;
+            true
+        } else if target == "video-player.library.tab.queue"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.library_tab = LibraryTab::Queue;
+            self.dirty = true;
+            true
+        } else if target == "video-player.library.tab.recent"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.library_tab = LibraryTab::Recent;
+            self.dirty = true;
+            true
+        } else if target == "video-player.library.tab.shared"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.library_tab = LibraryTab::Shared;
+            self.dirty = true;
+            true
+        } else if target == "video-player.shared.watch-later"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.add_current_to_watch_later(state);
+            true
+        } else if target == "video-player.shared.bookmark"
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.bookmark_current_time(state);
+            true
+        } else if let Some(rest) = target.strip_prefix("video-player.shared.delete.annotation.")
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.dispatch_shared(
+                state,
+                &crate::shared::SharedAction::DeleteAnnotation { id: rest.into() },
+            );
+            true
+        } else if let Some(rest) = target.strip_prefix("video-player.shared.delete.playlist.")
+            && matches!(action, ui::a11y::Action::Activate)
+        {
+            self.dispatch_shared(
+                state,
+                &crate::shared::SharedAction::DeletePlaylist {
+                    observed_item_ids: self
+                        .shared_library
+                        .items
+                        .iter()
+                        .filter(|item| item.playlist_id == rest)
+                        .map(|item| item.id.clone())
+                        .collect(),
+                    id: rest.into(),
+                },
+            );
             true
         } else if target == "video-player.library.clear"
             && matches!(action, ui::a11y::Action::Activate)
@@ -2915,11 +3726,82 @@ mod tests {
                 remove: Some(Rect::new(44.0, 44.0, 88.0, 88.0)),
             },
         ];
-        assert!(Widget::focus_synthetic_accessibility(&mut app, &[3]));
+        assert!(Widget::focus_synthetic_accessibility(&mut app, &[7]));
         assert_eq!(app.library_focus_id.as_deref(), Some(focused_id.as_str()));
         assert_eq!(
-            Widget::synthetic_accessibility_rect(&app, &[3]),
+            Widget::synthetic_accessibility_rect(&app, &[7]),
             Some(Rect::new(0.0, 44.0, 44.0, 88.0))
+        );
+    }
+
+    #[test]
+    fn library_close_and_tabs_are_reachable_accessibility_controls() {
+        let mut app = PlayerApp::for_shot(None, Some("library"));
+        app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
+        app.library_queue_tab_rect = Rect::new(44.0, 0.0, 132.0, 44.0);
+        app.library_recent_tab_rect = Rect::new(132.0, 0.0, 220.0, 44.0);
+        app.library_shared_tab_rect = Rect::new(220.0, 0.0, 308.0, 44.0);
+
+        let tree = Widget::accessibility(&app).expect("application accessibility tree");
+        assert_eq!(tree.children[2].name.as_deref(), Some("Close library"));
+        assert_eq!(tree.children[3].name.as_deref(), Some("Queue"));
+        assert!(tree.children[3].state.selected);
+        assert_eq!(tree.children[4].name.as_deref(), Some("Recent"));
+        assert!(!tree.children[4].state.selected);
+        assert_eq!(tree.children[5].name.as_deref(), Some("Shared"));
+        assert!(!tree.children[5].state.selected);
+
+        assert!(Widget::focus_synthetic_accessibility(&mut app, &[4]));
+        assert_eq!(app.library_focus_id.as_deref(), Some("library-tab-recent"));
+        let mut doc = AutoCommit::new();
+        let path = root();
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "video-player.library.tab.recent",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &path,
+        ));
+        assert!(app.library_tab == LibraryTab::Recent);
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "video-player.library.close",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &path,
+        ));
+        assert!(!app.library_visible);
+    }
+
+    #[test]
+    fn picture_in_picture_uses_the_shell_owned_floating_surface_contract() {
+        let mut app = synth_app();
+        app.open_path(Path::new("/tmp/Clip.mp4"))
+            .expect("source identity available");
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let root = app.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout(
+                root,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(1280.0),
+                    height: taffy::AvailableSpace::Definite(720.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, root, Point::ZERO);
+        app.perform_resource_operation(PlayerOperation::OpenPictureInPicture);
+        let request = Widget::take_floating_surface_request(&mut app).expect("PiP request");
+        assert_eq!(request.id, "video-player.current-video");
+        assert_eq!(
+            request.role,
+            ui::floating_surface::FloatingRole::PictureInPicture
+        );
+        assert_eq!(request.aspect_ratio, Some(16.0 / 9.0));
+        assert!(
+            matches!(request.source, ui::floating_surface::FloatingSource::AppElement { ref app_id, ref element_id, .. } if app_id == "dev.qos.video-player" && element_id == "video_surface")
         );
     }
 
