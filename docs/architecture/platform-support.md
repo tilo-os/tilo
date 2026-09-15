@@ -38,11 +38,11 @@ support. A completed compile check alone is not a claim of hardware support.
 | --- | --- | --- |
 | Rust workspace | Native ARM64 `cargo check --workspace --all-targets --locked` passed | Native runtime/integration coverage in CI; external optional-feature builds |
 | Compiler configuration | Linux hardening separated from Windows/macOS linker flags | Keep both native target configurations covered |
-| Kernel | Native boot-image/RPM selection and ARM64 DTB payloads; shared hardening checks; verified two-architecture publication gate | Complete native kernel build and release-run acceptance |
+| Kernel | Native boot-image/RPM selection and ARM64 DTB payloads; shared hardening checks; verified two-architecture publication gate | Native recovered RPM payload verified; signed release and boot acceptance remain |
 | Hardware profiles | Declarative definitions, optional DTBs, exact firmware mappings, immutable UKI validation | Live acceptance per board and exact artifact |
 | Build contexts | Actual offline Podman asset-stage builds pass for OS, RPM and CI-builder Containerfiles | Full native builds using the same contexts |
 | Dependency snapshots | Base index has ARM64; native RPM/kernel publication verifies both signed children and their source revision | Produce complete ARM64 dependencies and update existing x86-only pins |
-| Browser | WPE has native-architecture buildroot selection | Produce and validate an ARM64 WPE buildroot |
+| Browser | Native ARM64 WPE buildroot built; library probes and pinned source hashes pass; compilation job budget is explicit | Complete the native WPE engine build and runtime acceptance |
 | Windows compatibility | Service crates compile on ARM64 | Fedora ARM64 lacks Wine/DXVK RPMs; pinned Proton and VM hardware definitions need an explicit ARM64 implementation |
 | Imager | Native Windows ARM64 executable builds, loads, and renders an offscreen fixture; library tests pass (138); file identity comes from the open native handle; ARM64 packaging checks PE architecture; both Windows release lanes and combined WinGet manifests required | Signed installer and live UI acceptance; investigate host Vulkan loader warnings separately from the successful offscreen render |
 | Desktop packaging | Build scripts contain ARM64 targets | Enable and validate native release lanes and architecture-specific assets |
@@ -61,6 +61,28 @@ the required `cargo check -p shell --tests --locked` passed again. The Windows
 Imager executable also passed its package-loading smoke probe. The offscreen
 render uses fixture data and does not establish that an ARM64 OS image is
 available or that live installation works.
+
+### Native build evidence and compatibility gaps
+
+A native ARM64 kernel build produced 5,826 AArch64 modules and the Lenovo
+Yoga Slim7x DTB. After host disk exhaustion during build-layer export, the
+preserved stage was packaged offline using the existing packaging tools image.
+All 7,485 regular RPM files match the preserved archive, including their modes;
+RPM owners are root, package digests and repository metadata checksums pass.
+This recovery artifact is local and unsigned. Module signature trailers were
+checked; independent cryptographic verification and boot tests remain pending.
+The kernel build now removes compiler intermediates after staging and validation,
+before the container builder exports its layer.
+
+ARM64 Windows VMs also require an explicit protected UEFI variable-store path.
+[QEMU's UEFI variable service](https://www.qemu.org/docs/master/devel/uefi-vars.html)
+provides this on ARM through `uefi-vars-sysbus`.
+[Libvirt's `varstore` configuration](https://libvirt.org/formatdomain.html)
+supports it starting with libvirt 12.1.0. The queried Fedora ARM64 repository
+provides libvirt 12.0.0, while its edk2 package already contains qemuvars firmware
+and enrolled Secure Boot variable templates. A maintained newer libvirt package,
+architecture-specific domain configuration and native VM acceptance are still
+required; compilation of the service crates does not satisfy this requirement.
 
 ## Acceptance sequence
 
