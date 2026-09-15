@@ -1,12 +1,17 @@
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
 fn shot(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
-    let mode = match args.value("--screen").unwrap_or("vault") {
+    let screen = args.value("--screen").unwrap_or("vault");
+    if screen == "long-list" {
+        return Ok(passwords::app_root_long_list_showcase());
+    }
+    let mode = match screen {
         "vault" | "desktop" | "narrow" => passwords::ShowcaseMode::Vault,
         "editor" => passwords::ShowcaseMode::Editor,
         "health" => passwords::ShowcaseMode::Health,
         "import" => passwords::ShowcaseMode::Import,
         "export" => passwords::ShowcaseMode::Export,
+        "delete-confirm" => passwords::ShowcaseMode::DeleteConfirm,
         value => {
             return Err(LaunchError::Scenario(format!(
                 "unknown Passwords screen {value:?}"

@@ -1577,12 +1577,24 @@ impl BrowserWidget {
                 .with_message(error)
                 .with_action("Try again")
                 .with_action_id("browser.retry");
-            Box::new(match self.unit_binding("browser.page", "reload") {
-                Some(binding) => recovery.on_action(binding),
-                // Retain the no-registry fallback for standalone widget
-                // previews; hosted Browser always supplies the action above.
-                None => recovery,
-            })
+            let recovery: Box<dyn Widget> =
+                Box::new(match self.unit_binding("browser.page", "reload") {
+                    Some(binding) => recovery.on_action(binding),
+                    // Retain the no-registry fallback for standalone widget
+                    // previews; hosted Browser always supplies the action above.
+                    None => recovery,
+                });
+            // EmptyState grows into the space it is offered. Give recovery a
+            // remaining-height pane rather than letting the outer chrome
+            // column size it at its compact intrinsic height, which otherwise
+            // makes large text shed the explanatory copy even on a tall phone.
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_gap(0.0)
+                    .with_fill_remaining_height()
+                    .push(recovery),
+            )
         } else {
             Box::new(WebView::new(self.engine.clone()).with_test_id("browser.surface"))
         };
@@ -2067,6 +2079,16 @@ impl BrowserWidget {
                             .primary(),
                         ),
                     };
+                    // `Row` fills its parent by design. Without a fixed
+                    // action slot, this nested action row claims the full
+                    // card width and leaves the flex-growing metadata column
+                    // only a word wide. Keep the desktop actions compact and
+                    // let the detail column own the remaining readable width.
+                    let action_width = match entry.status {
+                        DownloadStatus::AwaitingDestination | DownloadStatus::Downloading => 92.0,
+                        DownloadStatus::Completed => 126.0 + 84.0 + theme.gap_standard,
+                        DownloadStatus::Failed | DownloadStatus::Cancelled => 88.0,
+                    };
                     let content: Box<dyn Widget> = if large_text {
                         Box::new(
                             Column::new()
@@ -2088,7 +2110,12 @@ impl BrowserWidget {
                                         .with_flex_grow()
                                         .with_child(details),
                                 ))
-                                .push(actions),
+                                .push(Box::new(
+                                    Container::new()
+                                        .with_no_padding()
+                                        .with_width(action_width)
+                                        .with_child(actions),
+                                )),
                         )
                     };
                     rows = rows
@@ -2215,7 +2242,13 @@ impl BrowserWidget {
                 ))
                 .push(body),
         );
-        let content = if compact_layout {
+        // Large text changes the *inside* of Library rows to keep their
+        // controls readable and reachable, but it is not a phone-width
+        // layout.  Keeping a desktop window's content measure at 200% avoids
+        // turning three short history rows into edge-to-edge slabs with vast
+        // empty space.  Only an actually compact viewport needs the fluid
+        // full-width presentation.
+        let content = if self.compact_chrome {
             content
         } else {
             Box::new(
@@ -4197,14 +4230,17 @@ mod tests {
     }
 
     fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
+        layout_with_theme(widget, width, height, &Theme::dark());
+    }
+
+    fn layout_with_theme(widget: &mut BrowserWidget, width: f32, height: f32, theme: &Theme) {
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
-        let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut tree = TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
         widget.sync(&mut state, &root);
-        let child = widget.build_layout(&mut tree, &theme, &mut nodes);
+        let child = widget.build_layout(&mut tree, theme, &mut nodes);
         widget.sync(&mut state, &root);
         let layout_root = tree
             .new_with_children(
@@ -4491,6 +4527,35 @@ mod tests {
         assert!(
             downloads_tab.y0 > history_tab.y0,
             "compact Library uses a deliberate two-row section grid"
+        );
+    }
+
+    #[test]
+    fn large_text_desktop_library_keeps_a_centered_reading_measure() {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_library("history");
+        widget.debug_set_viewport_width(1_200);
+        layout_with_theme(
+            &mut widget,
+            1_200.0,
+            800.0,
+            &Theme::dark().with_text_scale(2.0),
+        );
+
+        let history_tab = widget.find_rect("browser.library.history").unwrap();
+        let open = widget
+            .find_rect(&format!(
+                "{}.open",
+                history_resource_id("https://www.rust-lang.org/learn")
+            ))
+            .unwrap();
+        assert!(
+            (120.0..=160.0).contains(&history_tab.x0),
+            "large text retains the desktop Library measure instead of becoming edge-to-edge"
+        );
+        assert!(
+            open.x1 < 1_080.0,
+            "large-text row actions stay inside the centered Library measure"
         );
     }
 

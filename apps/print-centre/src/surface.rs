@@ -40,6 +40,7 @@ pub enum DemoScenario {
     ScanResult,
     History,
     Diagnostics,
+    ServiceError,
 }
 pub struct PrintCentre {
     inner: El,
@@ -264,6 +265,52 @@ fn notice_banner(notice: &OperationNotice) -> El {
         Banner::error(&notice.title)
     };
     Box::new(banner.with_message(&notice.message).dismissible())
+}
+
+fn unavailable_card(areas: &[&str], tx: &mpsc::Sender<UiCommand>) -> Option<El> {
+    if areas.is_empty() {
+        return None;
+    }
+    let subject = match areas {
+        ["printers"] => "Printers couldn't be checked",
+        ["documents"] => "Print jobs couldn't be checked",
+        ["scanners"] => "Scanners couldn't be checked",
+        _ => "Some device information couldn't be checked",
+    };
+    let detail = format!(
+        "Print Centre couldn't get {} right now. Your saved devices and documents have not been removed.",
+        areas.join(" or ")
+    );
+    Some(Box::new(Card::titled_with_action(
+        subject,
+        icon_command_action(
+            "print-centre.service.retry",
+            "Try again",
+            Icon::Refresh,
+            tx,
+            UiCommand::Refresh,
+        ),
+        copy(&detail),
+    )))
+}
+
+fn failed_areas(
+    snapshot: &Snapshot,
+    queues: bool,
+    jobs: bool,
+    scanners: bool,
+) -> Vec<&'static str> {
+    let mut areas = Vec::new();
+    if queues && snapshot.queues.is_err() {
+        areas.push("printers");
+    }
+    if jobs && snapshot.jobs.is_err() {
+        areas.push("documents");
+    }
+    if scanners && snapshot.scanners.is_err() {
+        areas.push("scanners");
+    }
+    areas
 }
 fn gap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_height(px))
@@ -577,9 +624,9 @@ fn live_view(
     tx: &mpsc::Sender<UiCommand>,
     notice: Option<&OperationNotice>,
 ) -> El {
-    let queues = snapshot.queues.clone().unwrap_or_default();
-    let jobs = snapshot.jobs.clone().unwrap_or_default();
-    let scanners = snapshot.scanners.clone().unwrap_or_default();
+    let queues = snapshot.queues.as_deref().unwrap_or(&[]);
+    let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
+    let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
     let active: Vec<_> = jobs
         .iter()
         .filter(|job| {
@@ -594,17 +641,25 @@ fn live_view(
             )
         })
         .collect();
-    let subtitle = match active.len() {
-        0 => "Everything is ready".to_string(),
-        1 => "One document is active".to_string(),
-        n => format!("{n} documents are active"),
-    };
+    let subtitle =
+        if snapshot.queues.is_err() || snapshot.jobs.is_err() || snapshot.scanners.is_err() {
+            "Some information needs refreshing".to_string()
+        } else {
+            match active.len() {
+                0 => "Everything is ready".to_string(),
+                1 => "One document is active".to_string(),
+                n => format!("{n} documents are active"),
+            }
+        };
     let mut body = Column::new()
         .with_intrinsic_height()
         .push(live_header(&subtitle, tx))
         .push(gap(20.0));
     if let Some(notice) = notice {
         body = body.push(notice_banner(notice)).push(gap(14.0));
+    }
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, true, true), tx) {
+        body = body.push(issue).push(gap(14.0));
     }
     if let Some(job) = active.first() {
         body = body.push(live_job_card(job, tx)).push(gap(18.0));
@@ -649,40 +704,39 @@ fn live_view(
             )) as El
         })
         .collect();
-    body = body
-        .push(Box::new(
-            Row::new()
-                .push(title("Your printers", 19.0))
-                .push(icon_command_action(
-                    "print-centre.refresh",
-                    "Refresh",
-                    Icon::Refresh,
+    if snapshot.queues.is_ok() {
+        body = body
+            .push(Box::new(
+                Row::new()
+                    .push(title("Your printers", 19.0))
+                    .push(icon_command_action(
+                        "print-centre.refresh",
+                        "Refresh",
+                        Icon::Refresh,
+                        tx,
+                        UiCommand::Refresh,
+                    )),
+            ))
+            .push(gap(10.0));
+        if queues.is_empty() {
+            body = body.push(Box::new(Card::titled_with_action(
+                "No printers added",
+                icon_command_action(
+                    "print-centre.discover.empty",
+                    "Find a printer",
+                    Icon::Search,
                     tx,
-                    UiCommand::Refresh,
-                )),
-        ))
-        .push(gap(10.0));
-    if queues.is_empty() {
-        body = body.push(Box::new(Card::titled_with_action(
-            "No printers added",
-            icon_command_action(
-                "print-centre.discover.empty",
-                "Find a printer",
-                Icon::Search,
-                tx,
-                UiCommand::Discover,
-            ),
-            copy("You can still scan documents below. Add a printer whenever you need one."),
-        )));
-    } else {
-        body = body.push(Box::new(
-            CardGrid::new(cards)
-                .with_min_card_width(420.0)
-                // Room for icon, status, a labelled supply gauge and the
-                // availability footer at enlarged text sizes. A shorter
-                // fixed grid row lets card contents paint into the next card.
-                .with_card_height(230.0),
-        ));
+                    UiCommand::Discover,
+                ),
+                copy("You can still scan documents below. Add a printer whenever you need one."),
+            )));
+        } else {
+            body = body.push(Box::new(
+                CardGrid::new(cards)
+                    .with_min_card_width(420.0)
+                    .with_card_height(230.0),
+            ));
+        }
     }
     if let Some(scanner) = scanners.first() {
         body = body.push(gap(18.0)).push(Box::new(Card::titled_with_action(
@@ -702,54 +756,52 @@ fn live_view(
             ),
         )));
     }
-    body = body.push(gap(18.0)).push(Box::new(
-        Row::new()
-            .align_start()
-            .push(Box::new(
-                Container::new()
-                    .with_min_width(280.0)
-                    .with_flex_grow()
-                    .with_no_padding()
-                    .with_child(Box::new(Card::titled_with_action(
-                        "Recent documents",
-                        icon_command_action(
-                            "print-centre.history.open",
-                            "See all",
-                            Icon::History,
-                            tx,
-                            UiCommand::History,
-                        ),
-                        copy(
-                            if jobs.iter().any(|job| {
-                                matches!(job.state, Some(os_actions::printing::JobState::Completed))
-                            }) {
-                                "Review what printed and quickly print a retained job again."
-                            } else {
-                                "Completed documents will appear here."
-                            },
-                        ),
-                    ))),
-            ))
-            .push(Box::new(
-                Container::new()
-                    .with_min_width(280.0)
-                    .with_flex_grow()
-                    .with_no_padding()
-                    .with_child(Box::new(Card::titled_with_action(
-                        "Device help",
-                        icon_command_action(
-                            "print-centre.diagnostics.open",
-                            "Check devices",
-                            Icon::Info,
-                            tx,
-                            UiCommand::Diagnostics,
-                        ),
-                        copy(
-                            "Plain-language checks for connections, paper, supplies, and scanners.",
-                        ),
-                    ))),
-            )),
+    let mut utility_cards = Row::new().align_start();
+    if snapshot.jobs.is_ok() {
+        utility_cards = utility_cards.push(Box::new(
+            Container::new()
+                .with_min_width(280.0)
+                .with_flex_grow()
+                .with_no_padding()
+                .with_child(Box::new(Card::titled_with_action(
+                    "Recent documents",
+                    icon_command_action(
+                        "print-centre.history.open",
+                        "See all",
+                        Icon::History,
+                        tx,
+                        UiCommand::History,
+                    ),
+                    copy(
+                        if jobs.iter().any(|job| {
+                            matches!(job.state, Some(os_actions::printing::JobState::Completed))
+                        }) {
+                            "Review what printed and quickly print a retained job again."
+                        } else {
+                            "Completed documents will appear here."
+                        },
+                    ),
+                ))),
+        ));
+    }
+    utility_cards = utility_cards.push(Box::new(
+        Container::new()
+            .with_min_width(280.0)
+            .with_flex_grow()
+            .with_no_padding()
+            .with_child(Box::new(Card::titled_with_action(
+                "Device help",
+                icon_command_action(
+                    "print-centre.diagnostics.open",
+                    "Check devices",
+                    Icon::Info,
+                    tx,
+                    UiCommand::Diagnostics,
+                ),
+                copy("Plain-language checks for connections, paper, supplies, and scanners."),
+            ))),
     ));
+    body = body.push(gap(18.0)).push(Box::new(utility_cards));
     centered_page(
         Box::new(Scrollable::new(ScrollAxis::Vertical).with_child(Box::new(body))),
         1120.0,
@@ -757,7 +809,7 @@ fn live_view(
 }
 
 fn history_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
-    let jobs = snapshot.jobs.clone().unwrap_or_default();
+    let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let terminal: Vec<_> = jobs
         .iter()
         .filter(|job| {
@@ -779,6 +831,9 @@ fn history_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
             tx,
         ))
         .push(gap(20.0));
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, false, true, false), tx) {
+        body = body.push(issue).push(gap(14.0));
+    }
     if terminal.is_empty() {
         body = body.push(Box::new(Card::titled(
             "No completed documents yet",
@@ -862,8 +917,8 @@ fn friendly_reason(reason: &str) -> &'static str {
     reason = "diagnostic cards are a linear translation of queue, supply, and scanner state into people-facing checks"
 )]
 fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
-    let queues = snapshot.queues.clone().unwrap_or_default();
-    let scanners = snapshot.scanners.clone().unwrap_or_default();
+    let queues = snapshot.queues.as_deref().unwrap_or(&[]);
+    let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
     let responding = queues
         .iter()
         .filter(|queue| queue.telemetry.available)
@@ -884,7 +939,7 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
     } else {
         "scanners"
     };
-    let summary = Column::new()
+    let mut summary = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .push(copy(&format!(
@@ -902,6 +957,9 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
             "{} {scanner_word} available",
             scanners.len()
         )));
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, false, true), tx) {
+        summary = summary.push(gap(14.0)).push(issue);
+    }
     let mut body = Column::new()
         .with_intrinsic_height()
         .push(subpage_header(
@@ -921,7 +979,7 @@ fn diagnostics_view(snapshot: &Snapshot, tx: &mpsc::Sender<UiCommand>) -> El {
             Box::new(summary),
         )))
         .push(gap(16.0));
-    for queue in &queues {
+    for queue in queues {
         let mut checks = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -1011,7 +1069,7 @@ fn queue_view(
     pending_cancel: Option<&str>,
     notice: Option<&OperationNotice>,
 ) -> El {
-    let jobs = snapshot.jobs.clone().unwrap_or_default();
+    let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let mut body = Column::new()
         .with_intrinsic_height()
         .push(subpage_header(
@@ -1022,6 +1080,9 @@ fn queue_view(
         .push(gap(20.0));
     if let Some(notice) = notice {
         body = body.push(notice_banner(notice)).push(gap(14.0));
+    }
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, false, true, false), tx) {
+        body = body.push(issue).push(gap(14.0));
     }
     if pending_cancel.is_some() {
         body = body
@@ -1283,13 +1344,13 @@ fn print_setup_view(
         .unwrap_or("Selected document");
     let printer_options = snapshot
         .queues
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
         .map(|queue| {
             let status = friendly_queue_state(&queue);
             let label = format!("{} ({status})", display_name(&queue.name));
-            (queue.name, label)
+            (queue.name.clone(), label)
         })
         .collect::<Vec<_>>();
     let mut printer_picker = Dropdown::new(Vec::new(), "")
@@ -1425,11 +1486,11 @@ fn print_setup_view(
                 .with_no_padding()
                 .with_child(printer_card),
         ));
-    let review = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(cards))
-        .push(gap(12.0));
+    let mut review = Column::new().with_no_padding().with_intrinsic_height();
+    if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, false, false), tx) {
+        review = review.push(issue).push(gap(12.0));
+    }
+    let review = review.push(Box::new(cards)).push(gap(12.0));
     let body = Column::new()
         .with_vertical_padding(24.0)
         .with_horizontal_padding(24.0, 24.0)
@@ -1496,23 +1557,6 @@ fn scan_setup_view(
                     .push(Box::new(Card::titled("Recognized text", copy(&snippet))));
             }
         }
-        let cards = Row::new()
-            .align_start()
-            .push(Box::new(
-                Container::new()
-                    .with_min_width(280.0)
-                    .with_flex_grow()
-                    .with_no_padding()
-                    .with_height(360.0)
-                    .with_child(Box::new(preview)),
-            ))
-            .push(Box::new(
-                Container::new()
-                    .with_min_width(280.0)
-                    .with_flex_grow()
-                    .with_no_padding()
-                    .with_child(Box::new(Card::new(Box::new(details)))),
-            ));
         let primary_actions = Row::new()
             .push(primary_command_action(
                 "print-centre.scan.save-document",
@@ -1562,6 +1606,29 @@ fn scan_setup_view(
             ));
         }
 
+        details = details
+            .push(gap(16.0))
+            .push(title("Page tools", 16.0))
+            .push(gap(8.0))
+            .push(Box::new(edit_actions));
+        let cards = Row::new()
+            .align_start()
+            .push(Box::new(
+                Container::new()
+                    .with_min_width(280.0)
+                    .with_flex_grow()
+                    .with_no_padding()
+                    .with_height(360.0)
+                    .with_child(Box::new(preview)),
+            ))
+            .push(Box::new(
+                Container::new()
+                    .with_min_width(280.0)
+                    .with_flex_grow()
+                    .with_no_padding()
+                    .with_child(Box::new(Card::new(Box::new(details)))),
+            ));
+
         let mut page_actions = Row::new();
         if selected_page > 0 {
             page_actions = page_actions.push(command_action(
@@ -1605,13 +1672,13 @@ fn scan_setup_view(
         let finish_actions = Row::new()
             .push(command_action(
                 "print-centre.scan.save-page",
-                "Save this page",
+                "Export this page",
                 tx,
                 UiCommand::SaveScannedPage,
             ))
             .push(command_action(
                 "print-centre.scan.done",
-                "Done",
+                "Back to Print Centre",
                 tx,
                 UiCommand::Dashboard,
             ));
@@ -1627,30 +1694,35 @@ fn scan_setup_view(
             body = body.push(notice_banner(notice)).push(gap(14.0));
         }
         body = body
-            .push(Box::new(cards))
-            .push(gap(16.0))
             .push(Box::new(primary_actions))
             .push(gap(16.0))
-            .push(Box::new(Card::titled(
-                "Improve this page",
-                Box::new(edit_actions),
-            )))
+            .push(Box::new(cards))
             .push(gap(12.0))
             .push(Box::new(Card::titled(
                 "Pages in this document",
-                Box::new(page_actions),
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(copy(&format!(
+                            "Page {} selected · {page_count} {} total",
+                            selected_page.saturating_add(1),
+                            if page_count == 1 { "page" } else { "pages" }
+                        )))
+                        .push(gap(10.0))
+                        .push(Box::new(page_actions)),
+                ),
             )))
             .push(gap(12.0))
             .push(Box::new(finish_actions));
         return Box::new(Scrollable::new_vertical().with_child(Box::new(body)));
     }
 
-    let scanners = snapshot.scanners.as_ref().ok();
     let mut devices = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(8.0);
-    if let Some(scanners) = scanners {
+    if let Ok(scanners) = &snapshot.scanners {
         for scanner in scanners {
             let active = selected == Some(scanner.device.as_str());
             let label = if active {
@@ -1665,11 +1737,13 @@ fn scan_setup_view(
                 UiCommand::SelectScanner(scanner.device.clone()),
             ));
         }
-    }
-    if scanners.is_none_or(Vec::is_empty) {
-        devices = devices.push(copy(
-            "No scanner is available. Check its cable or network connection, then refresh Print Centre.",
-        ));
+        if scanners.is_empty() {
+            devices = devices.push(copy(
+                "No scanner is available. Check its cable or network connection, then refresh Print Centre.",
+            ));
+        }
+    } else if let Some(issue) = unavailable_card(&["scanners"], tx) {
+        devices = devices.push(issue);
     }
     let resolution_state = resolution.clone();
     let resolution_control = ToggleGroup::new(
@@ -2043,7 +2117,11 @@ fn demo_view(scenario: DemoScenario) -> El {
         return empty_view();
     }
     let mut snapshot = demo_snapshot();
-    if scenario == DemoScenario::Dashboard {
+    if scenario == DemoScenario::ServiceError {
+        snapshot.queues = Err("service unavailable".into());
+        snapshot.jobs = Err("service unavailable".into());
+        snapshot.scanners = Err("service unavailable".into());
+    } else if scenario == DemoScenario::Dashboard {
         if let Ok(queues) = &mut snapshot.queues
             && let Some(queue) = queues.first_mut()
         {
@@ -3068,9 +3146,33 @@ mod tests {
             DemoScenario::ScanResult,
             DemoScenario::History,
             DemoScenario::Diagnostics,
+            DemoScenario::ServiceError,
         ] {
             assert_eq!(PrintCentre::demo(s).name(), "PrintCentre");
         }
+    }
+
+    #[test]
+    fn backend_failures_remain_distinct_from_legitimate_empty_results() {
+        let unavailable = Snapshot {
+            queues: Err("cups socket closed".into()),
+            jobs: Err("jobs timed out".into()),
+            scanners: Err("scanner service missing".into()),
+        };
+        assert_eq!(
+            failed_areas(&unavailable, true, true, true),
+            vec!["printers", "documents", "scanners"]
+        );
+
+        let empty = Snapshot {
+            queues: Ok(Vec::new()),
+            jobs: Ok(Vec::new()),
+            scanners: Ok(Vec::new()),
+        };
+        assert!(failed_areas(&empty, true, true, true).is_empty());
+        let (tx, _rx) = mpsc::channel();
+        assert!(unavailable_card(&failed_areas(&unavailable, true, true, true), &tx).is_some());
+        assert!(unavailable_card(&failed_areas(&empty, true, true, true), &tx).is_none());
     }
 
     #[test]
