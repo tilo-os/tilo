@@ -10,7 +10,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Banner, BarGauge, Button, Card, CardGrid, Column, Container, CropSelection, Dropdown,
+    Banner, BarGauge, Button, Card, CardGrid, Column, Container, CropSelection, Divider, Dropdown,
     IconWidget, Image, ImageCropEditor, NumberInput, PagePreview, ProgressBar, Row, ScrollAxis,
     Scrollable, Spacer, Text, Toggle, ToggleGroup, Widget,
 };
@@ -1359,7 +1359,7 @@ fn print_setup_view(
         .unwrap_or(&[])
         .iter()
         .map(|queue| {
-            let status = friendly_queue_state(&queue);
+            let status = friendly_queue_state(queue);
             let label = format!("{} ({status})", display_name(&queue.name));
             (queue.name.clone(), label)
         })
@@ -1377,12 +1377,14 @@ fn print_setup_view(
         let _ = select_tx.send(UiCommand::SelectPrinter(name.to_owned()));
     });
     let can_print = selected.is_some();
-    let mut actions = Row::new().push(command_action(
-        "print-centre.print.cancel",
-        "Cancel",
-        tx,
-        UiCommand::CancelPrintSetup,
-    ));
+    let mut actions = Row::new()
+        .push(Box::new(Spacer::new()))
+        .push(command_action(
+            "print-centre.print.cancel",
+            "Cancel",
+            tx,
+            UiCommand::CancelPrintSetup,
+        ));
     if can_print {
         actions = actions.push(primary_command_action(
             "print-centre.print.submit",
@@ -1478,21 +1480,21 @@ fn print_setup_view(
         .align_start()
         .push(Box::new(
             Container::new()
-                .with_min_width(300.0)
+                .with_min_width(260.0)
                 .with_flex_grow()
                 .with_no_padding()
                 .with_child(document_card),
         ))
         .push(Box::new(
             Container::new()
-                .with_min_width(300.0)
+                .with_min_width(260.0)
                 .with_flex_grow()
                 .with_no_padding()
                 .with_child(options_card),
         ))
         .push(Box::new(
             Container::new()
-                .with_min_width(300.0)
+                .with_min_width(260.0)
                 .with_flex_grow()
                 .with_no_padding()
                 .with_child(printer_card),
@@ -1501,9 +1503,24 @@ fn print_setup_view(
     if let Some(issue) = unavailable_card(&failed_areas(snapshot, true, false, false), tx) {
         review = review.push(issue).push(gap(12.0));
     }
-    let review = review.push(Box::new(cards)).push(gap(12.0));
+    let review = review.push(Box::new(cards)).push(gap(24.0));
+    // This is deliberately a real surface rather than two loose buttons at
+    // the bottom of the viewport. It visually closes the scrolling review,
+    // keeps the primary action in a predictable trailing position, and gives
+    // compact/touch layouts a forgiving inset around both actions.
+    let action_footer: El = Box::new(
+        Container::new().with_background().with_child(Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(Divider::horizontal()))
+                .push(gap(12.0))
+                .push(Box::new(actions)),
+        )),
+    );
     let body = Column::new()
-        .with_vertical_padding(24.0)
+        .with_fill_remaining_height()
+        .with_vertical_padding(20.0)
         .with_horizontal_padding(24.0, 24.0)
         .push(subpage_header(
             "Print a document",
@@ -1516,8 +1533,8 @@ fn print_setup_view(
                 .fill_parent_height()
                 .with_child(Box::new(review)),
         ))
-        .push(gap(12.0))
-        .push(Box::new(actions));
+        .push(gap(8.0))
+        .push(action_footer);
     centered_page(Box::new(body), 1120.0)
 }
 
@@ -1959,9 +1976,9 @@ fn demo_print_preview() -> PrintPreview {
         }
     }
     for (index, line_width) in [238, 260, 214, 248, 176, 226].into_iter().enumerate() {
-        let y = 126 + u32::try_from(index).unwrap_or(0) * 38;
-        for row in y..y + 7 {
-            for x in 28..28 + line_width {
+        let y = 126_u32.saturating_add(u32::try_from(index).unwrap_or(0).saturating_mul(38));
+        for row in y..y.saturating_add(7) {
+            for x in 28..28_u32.saturating_add(line_width) {
                 page.put_pixel(x, row, image::Rgba([54, 59, 68, 255]));
             }
         }
@@ -1973,6 +1990,10 @@ fn demo_print_preview() -> PrintPreview {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the deterministic demo catalogue keeps each workflow fixture visible in one dispatcher"
+)]
 fn workflow_demo(scenario: DemoScenario) -> Option<El> {
     let (tx, _rx) = mpsc::channel();
     if scenario == DemoScenario::Queue {
@@ -3222,6 +3243,65 @@ mod tests {
             let mut buttons = 0;
             inspect(&centre, width, &mut buttons);
             assert!(buttons >= 8, "expected the complete scan-review action set");
+        }
+    }
+
+    #[test]
+    fn print_setup_footer_stays_visible_and_touch_sized_on_phones() {
+        fn collect_buttons(widget: &dyn Widget, buttons: &mut Vec<Rect>) {
+            let rect = widget.get_rect();
+            if widget.name() == "Button" && rect.area() > 0.0 {
+                buttons.push(rect);
+            }
+            for child in widget.children() {
+                collect_buttons(child, buttons);
+            }
+        }
+
+        for width in [360.0_f32, 520.0_f32] {
+            let height = 820.0_f32;
+            let mut centre = PrintCentre::demo(DemoScenario::PrintSetup);
+            let mut tree = TaffyTree::new();
+            let mut map = HashMap::new();
+            let node = centre.build_layout(&mut tree, &Theme::dark(), &mut map);
+            tree.compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+            )
+            .unwrap();
+            centre.apply_layout(&tree, node, Point::ZERO);
+
+            let mut buttons = Vec::new();
+            collect_buttons(&centre, &mut buttons);
+            buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
+            let footer_buttons = buttons.iter().skip(1).collect::<Vec<_>>();
+            assert_eq!(
+                footer_buttons.len(),
+                2,
+                "Cancel and Print must stay visible; buttons were {buttons:?}"
+            );
+            let root_bottom = centre.get_rect().y1;
+            for rect in footer_buttons {
+                assert!(
+                    rect.width() >= 44.0,
+                    "footer button is too narrow: {rect:?}"
+                );
+                assert!(
+                    rect.height() >= 44.0,
+                    "footer button is too short: {rect:?}"
+                );
+                assert!(
+                    rect.x0 >= 0.0 && rect.x1 <= f64::from(width),
+                    "button escaped viewport: {rect:?}"
+                );
+                assert!(
+                    rect.y1 <= root_bottom,
+                    "button fell below compact layout: {rect:?}"
+                );
+            }
         }
     }
 
