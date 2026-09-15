@@ -91,6 +91,10 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
     "$repo/apps/imager/packaging/Acquire-ReleaseCredentials.ps1" \
   && grep -Fq 'and -not $TrustedPrincipal' \
     "$repo/apps/imager/packaging/Acquire-ReleaseCredentials.ps1" \
+  && grep -Fq "'S-1-5-32-544'" \
+    "$repo/apps/imager/packaging/Acquire-ReleaseCredentials.ps1" \
+  && ! grep -Fq '(?i)(SYSTEM|Administrators' \
+    "$repo/apps/imager/packaging/Acquire-ReleaseCredentials.ps1" \
   && [ "$(grep -Fc 'if: always()' "$workflow")" -ge 2 ] \
   && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
   || bad 'release credential outputs or signing identities are insufficiently constrained'

@@ -36,6 +36,8 @@ has "$script" 'Assert-qOSPrivateMetadataFile $UuidFile' \
   && has "$script" 'if (Test-Path -LiteralPath $Path) { $CleanupFailures += $Path }' \
   && has "$script" "'^[0-9a-fA-F]{40}$'" \
   && has "$script" '$ParentAcl.AreAccessRulesProtected' \
+  && has "$script" "'S-1-5-32-544'" \
+  && has "$script" '.GetAccessRules(' \
   && [ "$safe_line" -lt "$try_line" ] \
   && [ "$try_line" -lt "$url_line" ] \
   && [ "$url_line" -lt "$runner_line" ] \
@@ -44,6 +46,7 @@ has "$script" 'Assert-qOSPrivateMetadataFile $UuidFile' \
   && [ "$finally_line" -lt "$finally_kill_line" ] \
   && [ "$finally_kill_line" -lt "$remove_line" ] \
   && [ "$finally_line" -lt "$remove_line" ] \
+  && ! grep -Fq '(?i)(SYSTEM|Administrators' "$script" \
   && ! grep -Eq 'Invoke-Expression|iex[[:space:]]' "$script" \
   || { printf 'Windows ephemeral runner launcher lost its fail-closed contract\n' >&2; exit 1; }
 
