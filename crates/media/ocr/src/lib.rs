@@ -3,6 +3,15 @@
 //! The service owns preprocessing and the external-engine boundary. Callers get
 //! structured words with confidence and geometry, not an irreversible text blob.
 
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "deskew math operates on validated, capped image coordinates and finite ±5° angles"
+)]
+
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
@@ -10,7 +19,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use image::{DynamicImage, ImageFormat, imageops};
+use image::{DynamicImage, GrayImage, ImageFormat, Luma, imageops};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -21,6 +30,9 @@ const MAX_WORDS: usize = 250_000;
 const MAX_WORD_BYTES: usize = 4096;
 const MAX_ENGINE_STDERR_BYTES: usize = 4096;
 const ENGINE_TIMEOUT: Duration = Duration::from_secs(120);
+const DESKEW_STEP_DEGREES: f64 = 0.5;
+const DESKEW_STEPS: i32 = 10;
+const DESKEW_PREVIEW_EDGE: u32 = 1200;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bounds {
@@ -114,7 +126,7 @@ impl Error {
     }
 }
 
-/// Contrast-normalise and orient an image before recognition. The returned
+/// Contrast-normalise and deskew an image before recognition. The returned
 /// image remains available to the UI for an honest before/after preview.
 ///
 /// # Errors
@@ -124,7 +136,141 @@ pub fn preprocess(image: &DynamicImage) -> Result<DynamicImage, Error> {
     validate_dimensions(width, height)?;
     let gray = image.to_luma8();
     let contrasted = imageops::contrast(&gray, 22.0);
-    Ok(DynamicImage::ImageLuma8(contrasted))
+    let corrected = estimate_skew_degrees(&contrasted)
+        .filter(|angle| angle.abs() >= 0.4)
+        .map_or_else(
+            || contrasted.clone(),
+            |angle| rotate_luma(&contrasted, angle),
+        );
+    Ok(DynamicImage::ImageLuma8(corrected))
+}
+
+/// Estimate the small corrective rotation needed to make text baselines
+/// horizontal. A capped preview keeps work bounded for full-resolution scans;
+/// blank pages, photographs, and weak/ambiguous evidence return `None` rather
+/// than rotating content speculatively.
+#[must_use]
+pub fn estimate_skew_degrees(image: &GrayImage) -> Option<f64> {
+    if image.width() < 32 || image.height() < 32 {
+        return None;
+    }
+    let preview = if image.width().max(image.height()) > DESKEW_PREVIEW_EDGE {
+        imageops::resize(
+            image,
+            image.width().saturating_mul(DESKEW_PREVIEW_EDGE) / image.width().max(image.height()),
+            image.height().saturating_mul(DESKEW_PREVIEW_EDGE) / image.width().max(image.height()),
+            imageops::FilterType::Triangle,
+        )
+    } else {
+        image.clone()
+    };
+    let threshold = otsu_threshold(&preview);
+    let dark = preview
+        .pixels()
+        .filter(|pixel| pixel[0] <= threshold)
+        .count();
+    let total = usize::try_from(preview.width())
+        .unwrap_or(usize::MAX)
+        .saturating_mul(usize::try_from(preview.height()).unwrap_or(usize::MAX));
+    if dark < total / 1_000 || dark > total.saturating_mul(2) / 5 {
+        return None;
+    }
+
+    let baseline = projection_score(&preview, threshold, 0.0);
+    let mut best = (0.0, baseline);
+    for step in -DESKEW_STEPS..=DESKEW_STEPS {
+        let angle = f64::from(step) * DESKEW_STEP_DEGREES;
+        let score = projection_score(&preview, threshold, angle);
+        if score > best.1 {
+            best = (angle, score);
+        }
+    }
+    (best.0.abs() >= 0.4 && best.1 > baseline.saturating_mul(108) / 100).then_some(best.0)
+}
+
+fn otsu_threshold(image: &GrayImage) -> u8 {
+    let mut histogram = [0_u64; 256];
+    for pixel in image.pixels() {
+        if let Some(count) = histogram.get_mut(usize::from(pixel[0])) {
+            *count = count.saturating_add(1);
+        }
+    }
+    let total = u64::from(image.width()) * u64::from(image.height());
+    let sum = histogram
+        .iter()
+        .enumerate()
+        .fold(0_u64, |acc, (value, count)| {
+            acc.saturating_add(u64::try_from(value).unwrap_or(255).saturating_mul(*count))
+        });
+    let mut background_count = 0_u64;
+    let mut background_sum = 0_u64;
+    let mut best_variance = 0.0;
+    let mut best = 127_u8;
+    for (value, count) in histogram.iter().enumerate() {
+        background_count = background_count.saturating_add(*count);
+        if background_count == 0 || background_count == total {
+            continue;
+        }
+        background_sum = background_sum
+            .saturating_add(u64::try_from(value).unwrap_or(255).saturating_mul(*count));
+        let foreground_count = total - background_count;
+        let background_mean = background_sum as f64 / background_count as f64;
+        let foreground_mean = (sum - background_sum) as f64 / foreground_count as f64;
+        let delta = background_mean - foreground_mean;
+        let variance = background_count as f64 * foreground_count as f64 * delta * delta;
+        if variance > best_variance {
+            best_variance = variance;
+            best = u8::try_from(value).unwrap_or(255);
+        }
+    }
+    best
+}
+
+fn projection_score(image: &GrayImage, threshold: u8, correction_degrees: f64) -> u64 {
+    let angle = correction_degrees.to_radians();
+    let (sin, cos) = angle.sin_cos();
+    let cx = (f64::from(image.width()) - 1.0) / 2.0;
+    let cy = (f64::from(image.height()) - 1.0) / 2.0;
+    let padding = ((f64::from(image.width()) * sin.abs()).ceil() as usize).saturating_add(2);
+    let mut rows = vec![0_u32; usize::try_from(image.height()).unwrap_or(0) + padding * 2];
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[0] > threshold {
+            continue;
+        }
+        let projected = sin * (f64::from(x) - cx) + cos * (f64::from(y) - cy) + cy;
+        let row = (projected.round() as isize).saturating_add(padding as isize);
+        if let Ok(row) = usize::try_from(row)
+            && let Some(value) = rows.get_mut(row)
+        {
+            *value = value.saturating_add(1);
+        }
+    }
+    rows.into_iter().fold(0_u64, |score, count| {
+        score.saturating_add(u64::from(count).saturating_mul(u64::from(count)))
+    })
+}
+
+fn rotate_luma(image: &GrayImage, degrees: f64) -> GrayImage {
+    let angle = degrees.to_radians();
+    let (sin, cos) = angle.sin_cos();
+    let cx = (f64::from(image.width()) - 1.0) / 2.0;
+    let cy = (f64::from(image.height()) - 1.0) / 2.0;
+    GrayImage::from_fn(image.width(), image.height(), |x, y| {
+        let dx = f64::from(x) - cx;
+        let dy = f64::from(y) - cy;
+        let source_x = cos * dx + sin * dy + cx;
+        let source_y = -sin * dx + cos * dy + cy;
+        if source_x < 0.0
+            || source_y < 0.0
+            || source_x >= f64::from(image.width())
+            || source_y >= f64::from(image.height())
+        {
+            return Luma([255]);
+        }
+        let source_x = (source_x.round() as u32).min(image.width().saturating_sub(1));
+        let source_y = (source_y.round() as u32).min(image.height().saturating_sub(1));
+        *image.get_pixel(source_x, source_y)
+    })
 }
 
 fn validate_dimensions(width: u32, height: u32) -> Result<(), Error> {
@@ -474,6 +620,55 @@ mod tests {
         assert!(first.get_pixel(2, 0)[0] > 192);
     }
 
+    fn ruled_document() -> GrayImage {
+        GrayImage::from_fn(420, 280, |x, y| {
+            let on_text_line = [48_u32, 92, 136, 180, 224]
+                .iter()
+                .any(|line| y >= *line && y < line + 4 && (28..390).contains(&x));
+            if on_text_line && (x / 34) % 5 != 4 {
+                Luma([24])
+            } else {
+                Luma([244])
+            }
+        })
+    }
+
+    #[test]
+    fn deskew_recovers_small_camera_rotation_without_changing_canvas() {
+        let clean = ruled_document();
+        for skew in [-4.5, -2.0, 1.5, 3.0, 4.5] {
+            let skewed = rotate_luma(&clean, skew);
+            let correction = estimate_skew_degrees(&skewed).expect("clear text baselines");
+            assert!(
+                (correction + skew).abs() <= DESKEW_STEP_DEGREES,
+                "skew {skew}° produced correction {correction}°"
+            );
+
+            let before_threshold = otsu_threshold(&skewed);
+            let before_score = projection_score(&skewed, before_threshold, 0.0);
+            let corrected = preprocess(&DynamicImage::ImageLuma8(skewed))
+                .unwrap()
+                .to_luma8();
+            assert_eq!(corrected.dimensions(), clean.dimensions());
+            let threshold = otsu_threshold(&corrected);
+            assert!(projection_score(&corrected, threshold, 0.0) > before_score);
+        }
+    }
+
+    #[test]
+    fn deskew_declines_blank_tiny_and_photo_like_inputs() {
+        assert!(estimate_skew_degrees(&GrayImage::from_pixel(400, 300, Luma([255]))).is_none());
+        assert!(estimate_skew_degrees(&GrayImage::from_pixel(16, 16, Luma([0]))).is_none());
+        let checker = GrayImage::from_fn(320, 240, |x, y| {
+            if (x + y) % 2 == 0 {
+                Luma([0])
+            } else {
+                Luma([255])
+            }
+        });
+        assert!(estimate_skew_degrees(&checker).is_none());
+    }
+
     #[test]
     fn exact_pixel_limit_is_accepted_but_one_pixel_over_is_rejected() {
         assert!(validate_dimensions(10_000, 6_000).is_ok());
@@ -672,6 +867,10 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[allow(
+        clippy::needless_collect,
+        reason = "collecting starts every OCR worker before joining, which is the concurrency property under test"
+    )]
     fn concurrent_engine_requests_keep_results_isolated() {
         let workers: Vec<_> = (0..8)
             .map(|index| {
