@@ -273,6 +273,10 @@ Two details matter at the release boundary:
   signature is missing or wrong. Development/custom media keeps the strong
   passphrase fallback. Measurement itself does not depend on PE signing:
   `systemd-stub` extends PCR 11 with the command line in either case.
+  The build helpers ignore a merely present signer path: CI must set
+  `QOS_REQUIRE_PCR_PREDICTION=1`. A developer who intentionally exercises a
+  root-owned local broker can instead set `QOS_ALLOW_LOCAL_PCR_SIGNING=1`; this
+  explicit opt-in is never set by CI rehearsals.
 - **It does not get the digest right first time.** `bootc container ukify` and
   `bootc install` compute different composefs digests for the same image, so
   install refuses the UKI:

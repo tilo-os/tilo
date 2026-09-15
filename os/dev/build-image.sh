@@ -292,13 +292,19 @@ fi
 # media. This runs only after the composefs seal converges; adding files under
 # /boot cannot move that digest. A final image pass proves that invariant and
 # ensures future bootc upgrades receive a prediction for their exact UKI.
-if [ -n "${QOS_PCR_PREDICTION_SIGNER:-}" ]; then
+require_prediction="${QOS_REQUIRE_PCR_PREDICTION:-0}"
+allow_local_prediction="${QOS_ALLOW_LOCAL_PCR_SIGNING:-0}"
+case "$require_prediction:$allow_local_prediction" in
+  0:0|0:1|1:0|1:1) ;;
+  *) die "QOS_REQUIRE_PCR_PREDICTION and QOS_ALLOW_LOCAL_PCR_SIGNING must be 0 or 1" ;;
+esac
+if [ "$require_prediction" = 1 ] || [ "$allow_local_prediction" = 1 ]; then
+  [ -n "${QOS_PCR_PREDICTION_SIGNER:-}" ] \
+    || die "PCR prediction signing was requested but no QOS_PCR_PREDICTION_SIGNER is configured"
   "$QOS_OS_DIR/dev/sign-target-prediction.sh" "$QOS_IMAGE" "$QOS_PCR_PREDICTION_SIGNER"
   rm -rf "$QOS_OUTPUT/qcow2" "$QOS_OUTPUT"/manifest* 2>/dev/null || true
   "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" "${disk_args[@]}" \
     || die "adding /boot-only signed PCR prediction sidecars changed or invalidated the converged qOS image"
-elif [ "${QOS_REQUIRE_PCR_PREDICTION:-0}" = 1 ]; then
-  die "QOS_REQUIRE_PCR_PREDICTION=1 but no protected QOS_PCR_PREDICTION_SIGNER is configured"
 fi
 
 msg "DONE: $QOS_DISK (generation $QOS_GENERATION)"
