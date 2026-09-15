@@ -177,7 +177,6 @@ impl MailState {
             .or_else(|| threads.first());
         if let Some(&newest) = pick.and_then(|t| t.message_ids.last()) {
             s.selected = Some(newest);
-            s.mailbox.mark_read(newest, true);
         }
         s
     }
@@ -593,7 +592,7 @@ impl MailState {
         }
     }
 
-    pub fn move_selection(&mut self, doc: &mut AutoCommit, delta: i32) {
+    pub fn move_selection(&mut self, _doc: &mut AutoCommit, delta: i32) {
         let rows = self.list_rows();
         if rows.is_empty() {
             return;
@@ -621,13 +620,11 @@ impl MailState {
             return;
         };
         let id = row.0;
-        // Browsing the list with the arrows updates the reader but does not
-        // push the narrow detail (that's a tap).
-        let was_unread = self.mailbox.get(id).is_some_and(|m| !m.read);
+        // Browsing the list with the arrows is presentation-only: it previews
+        // the candidate in the reader without claiming that the user opened
+        // it. Enter / list activation goes through `open_message` and emits
+        // the explicit collaborative `SetRead(true)` action instead.
         self.selected = Some(id);
-        if was_unread {
-            self.set_read(doc, id, true);
-        }
         self.dirty = true;
     }
 }
@@ -650,6 +647,44 @@ mod tests {
 
     fn first_inbox_id(st: &MailState) -> Option<MessageId> {
         st.mailbox.messages_in(Folder::Inbox).first().map(|m| m.id)
+    }
+
+    #[test]
+    fn initial_reader_selection_is_read_state_neutral() {
+        let st = state();
+        let selected = st
+            .selected
+            .expect("sample selects an initial reader message");
+        assert!(
+            st.mailbox
+                .get(selected)
+                .is_some_and(|message| !message.read),
+            "the sample's initially-rendered unread message must stay unread until a deliberate Open"
+        );
+    }
+
+    #[test]
+    fn arrow_browsing_previews_an_unread_message_without_a_read_action() {
+        let mut st = state();
+        let rows = st.list_rows();
+        let unread_index = rows
+            .iter()
+            .position(|(id, _)| st.mailbox.get(*id).is_some_and(|message| !message.read))
+            .expect("sample contains an unread row");
+        if unread_index > 0 {
+            st.selected = Some(rows[unread_index - 1].0);
+        } else {
+            st.selected = Some(rows[1].0);
+        }
+        let target = rows[unread_index].0;
+        let delta = if unread_index > 0 { 1 } else { -1 };
+        let mut doc = AutoCommit::new();
+        let heads_before = doc.get_heads();
+        st.move_selection(&mut doc, delta);
+        assert_eq!(st.selected, Some(target));
+        assert!(st.mailbox.get(target).is_some_and(|message| !message.read));
+        assert_eq!(doc.get_heads(), heads_before);
+        assert!(st.actions.last_dispatched().is_none());
     }
 
     #[test]
