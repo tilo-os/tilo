@@ -5,6 +5,7 @@ use crate::{
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::{cell::Cell, rc::Rc};
+use ui::widget::scrollbar::{ScrollMetrics, Scrollbar};
 use ui::{
     a11y::{AccessNode, AccessState, Role},
     graph_editor::{ConnectionTarget, GraphEditor},
@@ -80,6 +81,9 @@ pub struct ImageEditorApp {
     graph_connection_touch: Option<u64>,
     graph_keyboard_target: Option<ConnectionTarget>,
     step_rects: Vec<(String, Rect)>,
+    stack_scroll: f64,
+    stack_touch: Option<u64>,
+    stack_touch_y: f64,
     advanced_graph: bool,
     compare_original: bool,
     zoom: f64,
@@ -178,6 +182,9 @@ impl ImageEditorApp {
             graph_connection_touch: None,
             graph_keyboard_target: None,
             step_rects: Vec::new(),
+            stack_scroll: 0.0,
+            stack_touch: None,
+            stack_touch_y: 0.0,
             advanced_graph: false,
             compare_original: false,
             zoom: 1.0,
@@ -232,6 +239,24 @@ impl ImageEditorApp {
     }
     pub fn open_more_for_shot(&mut self) {
         self.more_open = true;
+    }
+    pub fn seed_long_stack_for_shot(&mut self, doc: &mut AutoCommit) {
+        for index in 0..9 {
+            let id = format!("review-{index}");
+            let title = if index % 2 == 0 {
+                "Exposure"
+            } else {
+                "Contrast"
+            };
+            let operation = if index % 2 == 0 {
+                Operation::Exposure { stops: 0.1 }
+            } else {
+                Operation::Contrast { amount: 0.1 }
+            };
+            let _ = self.project.insert_before_output(&id, title, operation);
+        }
+        ProjectDoc::write(doc, &self.project);
+        self.rendered_project = None;
     }
     fn node_rect(&self, id: &str) -> Option<Rect> {
         let n = self.project.graph.nodes.get(id)?;
@@ -727,6 +752,33 @@ impl ImageEditorApp {
             .filter(|id| id != "source" && id != "output")
             .collect()
     }
+
+    fn stack_row_geometry(&self) -> (f64, f64) {
+        if self.rect.width() < 820.0 {
+            (52.0, 46.0)
+        } else {
+            (50.0, 42.0)
+        }
+    }
+
+    fn stack_viewport(&self) -> Rect {
+        Rect::new(
+            self.stack_rect.x0,
+            self.stack_rect.y0 + 58.0,
+            self.stack_rect.x1,
+            self.inspector_rect.y0 - 6.0,
+        )
+    }
+
+    fn max_stack_scroll(&self) -> f64 {
+        let (row_step, row_height) = self.stack_row_geometry();
+        let content = self.steps().len().saturating_sub(1) as f64 * row_step + row_height;
+        (content - self.stack_viewport().height().max(0.0)).max(0.0)
+    }
+
+    fn scroll_stack_by(&mut self, delta: f64) {
+        self.stack_scroll = (self.stack_scroll + delta).clamp(0.0, self.max_stack_scroll());
+    }
     fn inspector_controls(&self) -> (Rect, Rect) {
         (
             Rect::new(
@@ -1168,20 +1220,14 @@ impl Widget for ImageEditorApp {
             );
             self.step_rects.clear();
             let steps = self.steps();
+            self.stack_scroll = self.stack_scroll.clamp(0.0, self.max_stack_scroll());
+            let viewport = self.stack_viewport();
+            s.push_clip_layer(Fill::NonZero, a, &viewport);
             for (index, id) in steps.iter().rev().enumerate() {
-                let row_step = if self.rect.width() < 820.0 {
-                    52.0
-                } else {
-                    50.0
-                };
-                let row_height = if self.rect.width() < 820.0 {
-                    46.0
-                } else {
-                    42.0
-                };
-                let y = self.stack_rect.y0 + 62.0 + index as f64 * row_step;
-                if y + row_height > self.inspector_rect.y0 - 6.0 {
-                    break;
+                let (row_step, row_height) = self.stack_row_geometry();
+                let y = self.stack_rect.y0 + 62.0 + index as f64 * row_step - self.stack_scroll;
+                if y + row_height < viewport.y0 || y > viewport.y1 {
+                    continue;
                 }
                 let r = Rect::new(
                     self.stack_rect.x0 + 10.0,
@@ -1248,6 +1294,25 @@ impl Widget for ImageEditorApp {
                         &RoundedRect::from_rect(thumb, 4.0),
                     );
                 }
+            }
+            s.pop_layer();
+            let track = Rect::new(
+                viewport.x1 - 5.0,
+                viewport.y0 + 4.0,
+                viewport.x1 - 2.0,
+                viewport.y1 - 4.0,
+            );
+            let (row_step, row_height) = self.stack_row_geometry();
+            let content = steps.len().saturating_sub(1) as f64 * row_step + row_height;
+            let metrics = ScrollMetrics::new(content, viewport.height(), self.stack_scroll);
+            if let Some(thumb) = Scrollbar::vertical().thumb_rect(track, metrics) {
+                s.fill(
+                    Fill::NonZero,
+                    a,
+                    c.border_standard,
+                    None,
+                    &RoundedRect::from_rect(thumb, 2.0),
+                );
             }
             s.fill(
                 Fill::NonZero,
@@ -1702,6 +1767,16 @@ impl Widget for ImageEditorApp {
                 );
                 *handled = true;
             }
+            WindowEvent::MouseWheel { delta, .. }
+                if self.stack_viewport().contains(self.cursor) && self.max_stack_scroll() > 0.0 =>
+            {
+                let amount = match delta {
+                    ui::winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 44.0,
+                    ui::winit::event::MouseScrollDelta::PixelDelta(point) => -point.y,
+                };
+                self.scroll_stack_by(amount);
+                *handled = true;
+            }
             WindowEvent::MouseWheel { delta, .. } if self.canvas_rect.contains(self.cursor) => {
                 let amount = match delta {
                     ui::winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
@@ -1897,6 +1972,10 @@ impl Widget for ImageEditorApp {
                             return;
                         }
                         self.touches.insert(touch.id, point);
+                        if self.stack_viewport().contains(point) {
+                            self.stack_touch = Some(touch.id);
+                            self.stack_touch_y = point.y;
+                        }
                         {
                             let (minus, plus) = self.inspector_controls();
                             let slider = self.inspector_slider_rect();
@@ -1953,7 +2032,11 @@ impl Widget for ImageEditorApp {
                             return;
                         }
                         self.touches.insert(touch.id, point);
-                        if self.graph_touch == Some(touch.id) {
+                        if self.stack_touch == Some(touch.id) {
+                            let delta = self.stack_touch_y - point.y;
+                            self.stack_touch_y = point.y;
+                            self.scroll_stack_by(delta);
+                        } else if self.graph_touch == Some(touch.id) {
                             let graph_point = ui::graph_editor::GraphPoint {
                                 x: point.x - self.graph_rect.x0,
                                 y: point.y - self.graph_rect.y0,
@@ -2023,6 +2106,9 @@ impl Widget for ImageEditorApp {
                             if self.editor.end_node_drag().is_some() {
                                 ProjectDoc::write(state, &self.project);
                             }
+                        }
+                        if self.stack_touch == Some(touch.id) {
+                            self.stack_touch = None;
                         }
                         if self.inspector_touch == Some(touch.id) {
                             self.inspector_touch = None;
@@ -2849,6 +2935,28 @@ mod portal_tests {
         assert!(app.editor.selection.contains("first"));
         app.select_relative_step(-1);
         assert!(app.editor.selection.contains("latest"));
+    }
+
+    #[test]
+    fn long_adjustment_stacks_scroll_to_every_step_and_clamp() {
+        let mut app = ImageEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 390.0, 760.0);
+        app.stack_rect = Rect::new(0.0, 410.0, 390.0, 712.0);
+        app.inspector_rect = Rect::new(12.0, 644.0, 378.0, 704.0);
+        for index in 0..12 {
+            assert!(app.project.insert_before_output(
+                &format!("exposure-{index}"),
+                "Exposure",
+                Operation::Exposure { stops: 0.0 },
+            ));
+        }
+
+        let maximum = app.max_stack_scroll();
+        assert!(maximum > 0.0);
+        app.scroll_stack_by(f64::MAX);
+        assert_eq!(app.stack_scroll, maximum);
+        app.scroll_stack_by(-f64::MAX);
+        assert_eq!(app.stack_scroll, 0.0);
     }
 
     #[test]
