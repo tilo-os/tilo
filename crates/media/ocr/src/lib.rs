@@ -606,6 +606,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn noisy_successful_engine_cannot_deadlock_the_bounded_stderr_reader() {
+        let result = fake_engine(
+            "(yes diagnostic | head -c 100000 >&2) || :; printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t0\\t0\\t12\\t8\\t99\\tDone\\n'",
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        assert_eq!(result.plain_text(), "Done");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_engine_requests_keep_results_isolated() {
+        let workers: Vec<_> = (0..8)
+            .map(|index| {
+                std::thread::spawn(move || {
+                    let body = format!(
+                        "printf 'level\\tpage_num\\tblock_num\\tpar_num\\tline_num\\tword_num\\tleft\\ttop\\twidth\\theight\\tconf\\ttext\\n5\\t1\\t1\\t1\\t1\\t1\\t{index}\\t0\\t10\\t10\\t90\\tword-{index}\\n'"
+                    );
+                    fake_engine(&body, Duration::from_secs(2)).unwrap()
+                })
+            })
+            .collect();
+        for (index, worker) in workers.into_iter().enumerate() {
+            let document = worker.join().expect("OCR worker must not panic");
+            assert_eq!(document.plain_text(), format!("word-{index}"));
+            assert_eq!(document.words[0].bounds.x, index as u32);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn runaway_engine_is_killed_at_the_output_limit() {
         let error = fake_engine("yes x", Duration::from_secs(2)).unwrap_err();
         assert!(matches!(error, Error::Engine(message) if message.contains("safety limit")));
