@@ -43,9 +43,18 @@ struct CatalogRelease {
 /// # Errors
 ///
 /// Returns an error when the embedded catalog is malformed or contains an
-/// unsupported schema, untrusted URL, invalid digest, or invalid size.
+/// unsupported schema, untrusted URL, invalid digest, or invalid size, or when
+/// the native host architecture cannot be detected.
 pub fn bundled_releases() -> Result<Vec<QosRelease>, String> {
-    let catalog: Catalog = serde_json::from_str(BUNDLED_CATALOG)
+    releases_for_host(BUNDLED_CATALOG, crate::host::architecture())
+}
+
+fn releases_for_host(
+    catalog_json: &str,
+    host_arch: Result<Option<&str>, String>,
+) -> Result<Vec<QosRelease>, String> {
+    let host_arch = host_arch?;
+    let catalog: Catalog = serde_json::from_str(catalog_json)
         .map_err(|error| format!("The bundled release catalog is invalid: {error}"))?;
     if catalog.schema != 1 {
         return Err("The bundled release catalog uses an unsupported schema.".into());
@@ -56,10 +65,8 @@ pub fn bundled_releases() -> Result<Vec<QosRelease>, String> {
     if !catalog.tag.starts_with("imager-v") {
         return Err("The bundled release catalog has an invalid release tag.".into());
     }
-    let host_arch = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        _ => return Ok(Vec::new()),
+    let Some(host_arch) = host_arch else {
+        return Ok(Vec::new());
     };
     catalog
         .releases
@@ -456,6 +463,83 @@ mod tests {
     #[test]
     fn development_catalog_is_well_formed() {
         assert!(bundled_releases().is_ok());
+    }
+
+    fn catalog_with_both_architectures() -> String {
+        let releases = ["x86_64", "aarch64"].map(|arch| {
+            serde_json::json!({
+                "name": format!("qOS {arch}"),
+                "version": "1.0.0",
+                "channel": "stable",
+                "arch": arch,
+                "url": format!("https://code.sandbox.example/qos/qos/releases/download/imager-v1.0.0/qos-{arch}.img.zst"),
+                "archive_sha256": "a".repeat(64),
+                "archive_size": 32,
+                "image_sha256": "b".repeat(64),
+                "image_size": 64,
+            })
+        });
+        serde_json::json!({
+            "schema": 1,
+            "tag": "imager-v1.0.0",
+            "releases": releases,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn native_arm64_host_selects_only_arm64_media_regardless_of_imager_build() {
+        let releases =
+            releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].name, "qOS aarch64");
+        assert!(releases[0].url.ends_with("qos-aarch64.img.zst"));
+        assert_eq!(releases[0].image_sha256, "b".repeat(64));
+    }
+
+    #[test]
+    fn native_x86_64_host_selects_only_x86_64_media() {
+        let releases =
+            releases_for_host(&catalog_with_both_architectures(), Ok(Some("x86_64"))).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].name, "qOS x86_64");
+    }
+
+    #[test]
+    fn native_arm64_host_does_not_fall_back_when_only_x86_media_is_published() {
+        let mut catalog: serde_json::Value =
+            serde_json::from_str(&catalog_with_both_architectures()).unwrap();
+        catalog["releases"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|release| release["arch"] == "x86_64");
+        assert!(
+            releases_for_host(&catalog.to_string(), Ok(Some("aarch64")))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn unknown_or_failed_native_detection_never_offers_media() {
+        let catalog = catalog_with_both_architectures();
+        assert!(releases_for_host(&catalog, Ok(None)).unwrap().is_empty());
+        assert_eq!(
+            releases_for_host(&catalog, Err("host detection failed".into())).unwrap_err(),
+            "host detection failed"
+        );
+    }
+
+    #[test]
+    fn arm64_selection_preserves_catalog_metadata_validation() {
+        let catalog = catalog_with_both_architectures();
+        for invalid in [
+            catalog.replace("code.sandbox.example", "untrusted.example"),
+            catalog.replace(&"a".repeat(64), "invalid-digest"),
+            catalog.replace("\"image_size\":64", "\"image_size\":0"),
+        ] {
+            assert!(releases_for_host(&invalid, Ok(Some("aarch64"))).is_err());
+        }
     }
 
     #[test]
