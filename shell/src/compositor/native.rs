@@ -3131,6 +3131,43 @@ fn spawn_session_collab_broker(
     }
 }
 
+fn install_device_fabric_bridge(
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
+    fabric_net: Arc<crate::shell::network::ShellNetwork>,
+) {
+    let fabric_cache = std::rc::Rc::new(std::cell::RefCell::new(
+        None::<(Instant, crate::shell::overlay_host::DeviceFabricView)>,
+    ));
+    host.set_device_fabric_bridge({
+        let fabric_cache = std::rc::Rc::clone(&fabric_cache);
+        std::rc::Rc::new(move |action| {
+            use crate::shell::overlay_host::DeviceFabricUiAction;
+            if matches!(action, DeviceFabricUiAction::Snapshot)
+                && let Some((updated, view)) = fabric_cache.borrow().as_ref()
+                && updated.elapsed() < Duration::from_millis(750)
+            {
+                return Ok(view.clone());
+            }
+            match action {
+                DeviceFabricUiAction::Snapshot => {}
+                DeviceFabricUiAction::HandoffMedia { session_id, target } => {
+                    let _ = crate::shell::device_fabric_runtime::request_media_handoff(
+                        &fabric_net,
+                        &session_id,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::RouteLocalAudio { node_id } => {
+                    crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
+                }
+            }
+            let view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
+            *fabric_cache.borrow_mut() = Some((Instant::now(), view.clone()));
+            Ok(view)
+        })
+    });
+}
+
 /// Start the authenticated peer transport and install the chrome commands
 /// that use it. Kept as one operation so first-login can call the exact same
 /// path after the identity ceremony releases the desktop.
@@ -3160,6 +3197,7 @@ fn spawn_session_peer_sync(
                             .map(|()| None)
                     }
                 }));
+            install_device_fabric_bridge(frame_builder.host_mut(), Arc::clone(&net));
             let stream_net = Arc::clone(&net);
             state.set_legacy_stream_publisher(Arc::new(move |message| {
                 stream_net.publish_legacy_active(message)
