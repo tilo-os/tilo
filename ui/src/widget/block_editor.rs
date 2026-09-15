@@ -335,6 +335,8 @@ pub struct BlockEditor {
     visual_formula_focus: Option<usize>,
     preferred_formula_mode: crate::math::FormulaMode,
     action_interception: bool,
+    /// An empty canonical list has a local paragraph until the first effective edit.
+    canonical_empty: bool,
     interception_before: Option<Vec<BlockSnapshot>>,
     /// Operations initiated by a synthetic accessibility control. Unlike
     /// pointer/key input there is no enclosing window event for `MainPanel` to
@@ -387,6 +389,7 @@ impl BlockEditor {
             visual_formula_focus: None,
             preferred_formula_mode: crate::math::FormulaMode::Visual,
             action_interception: false,
+            canonical_empty: false,
             interception_before: None,
             pending_semantic_ops: Vec::new(),
         };
@@ -431,7 +434,13 @@ impl BlockEditor {
         let Some(before) = self.interception_before.take() else {
             return Vec::new();
         };
-        semantic_block_ops(&before, &self.block_snapshot())
+        let after = self.block_snapshot();
+        if self.canonical_empty && before != after {
+            self.canonical_empty = false;
+            semantic_block_ops(&[], &after)
+        } else {
+            semantic_block_ops(&before, &after)
+        }
     }
 
     /// Drain UUID-addressed edits requested through synthetic AT controls.
@@ -607,6 +616,14 @@ impl BlockEditor {
 
     pub fn set_focus(&mut self, focused: bool) {
         if focused == self.is_focused {
+            // The host may transfer focus from the registered line to this
+            // aggregate editor, blurring that line before calling us.
+            if let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index))
+                && block.line.is_focused() != focused
+            {
+                block.line.set_focus(focused);
+                self.dirty = true;
+            }
             return;
         }
         self.is_focused = focused;
@@ -697,6 +714,20 @@ impl BlockEditor {
         self.blocks_list = Some(list);
     }
 
+    /// Bind a canonical existing list without initializing its durable contents.
+    pub fn bind_existing_blocks(&mut self, state: &mut AutoCommit, list: ObjId) {
+        self.set_action_interception(true);
+        let len = state.length(&list);
+        self.canonical_empty = len == 0;
+        if len == 0 {
+            self.set_blocks(vec![Block::paragraph("")]);
+        } else {
+            self.rebuild_from_doc(state, &list, len);
+        }
+        self.doc_structure_dirty = false;
+        self.blocks_list = Some(list);
+    }
+
     /// Preserves each existing block's `Text` object by identity
     /// (Automerge list insert/delete keeps other elements' object ids
     /// stable); text drifted by a local split/merge is reconciled with
@@ -765,6 +796,7 @@ impl BlockEditor {
             let mut b = block_for_kind(&kind);
             b.id = read_or_migrate_block_id(state, list, i, &kind, !self.action_interception);
             b.line.set_local_author(self.local_author.clone());
+            b.line.set_direct_crdt_writes(!self.action_interception);
             if let Some(t) = doc_text_obj(state, list, i) {
                 b.line.bind_text(t);
                 b.line.sync(state, list);
@@ -845,8 +877,11 @@ impl BlockEditor {
         let split = split_at.min(text.len());
         let split = clamp_char_boundary(&text, split);
         let (prefix, suffix) = text.split_at(split);
+        let prefix_marks = marks_before(block.line.marks(), split);
+        let suffix_marks = marks_after(block.line.marks(), split);
         block.line.set_text(prefix);
-        let suffix_block = match cur_kind {
+        block.line.set_marks(prefix_marks);
+        let mut suffix_block = match cur_kind {
             BlockKind::Bullet { indent } => Block::bullet(indent, suffix),
             BlockKind::Numbered { indent } => Block::numbered(indent, suffix),
             BlockKind::Checklist { indent, .. } => {
@@ -856,6 +891,7 @@ impl BlockEditor {
             BlockKind::CodeBlock { ref lang } => Block::code_block(lang.clone(), suffix),
             _ => Block::paragraph(suffix),
         };
+        suffix_block.line.set_marks(suffix_marks);
         let next_idx = idx.saturating_add(1);
         self.blocks.insert(next_idx, suffix_block);
         self.structure_dirty = true;
@@ -1222,12 +1258,14 @@ impl BlockEditor {
     /// panel deliberately leaves a 32px gutter, so this never narrows text or
     /// steals list/checkbox clicks.
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
-        let line = self.blocks.get(index)?.line.get_rect();
+        let block = self.blocks.get(index)?;
+        let line = block.line.get_rect();
+        let leading_edge = line.x0 - prefix_gutter_for(&block.kind) * self.text_scale;
         let center_y = line.center().y;
         Some(Rect::new(
-            line.x0 - 22.0,
+            leading_edge - 22.0,
             center_y - 10.0,
-            line.x0 - 6.0,
+            leading_edge - 6.0,
             center_y + 10.0,
         ))
     }
@@ -3454,6 +3492,10 @@ impl Widget for BlockEditor {
         // objects and adopt remote structural changes here.
         if self.action_interception {
             let doc_len = state.length(&list);
+            if self.canonical_empty && doc_len == 0 {
+                return;
+            }
+            self.canonical_empty = false;
             if doc_len != self.blocks.len() {
                 self.rebuild_from_doc(state, &list, doc_len);
                 return;
@@ -5937,6 +5979,164 @@ mod tests {
         let (l, rest) = parse_list_indent("no indent");
         assert_eq!(l, 0);
         assert_eq!(rest, "no indent");
+    }
+
+    // Catch writes/replacement of the presentation paragraph on an empty read-only bind.
+    #[test]
+    fn canonical_existing_list_empty_noop_retains_caret_and_heads() {
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(automerge::ROOT, "blocks", ObjType::List)
+            .unwrap();
+        doc.commit();
+        let heads = (doc.base_heads(), doc.pending_ops());
+        let mut editor = BlockEditor::new();
+        editor.bind_existing_blocks(&mut doc, list.clone());
+        editor.set_focus(true);
+        editor.focus_block(0, CursorPlacement::Start);
+        let id = editor.blocks()[0].id.clone();
+        for _ in 0..3 {
+            editor.begin_action_intercept();
+            assert!(editor.take_intercepted_ops().is_empty());
+            editor.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(editor.blocks()[0].id, id);
+            assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
+            assert_eq!(editor.focused_index(), Some(0));
+            assert_eq!(doc.length(&list), 0);
+            assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
+        }
+    }
+
+    #[test]
+    fn canonical_existing_list_first_typing_inserts_once() {
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(automerge::ROOT, "blocks", ObjType::List)
+            .unwrap();
+        doc.commit();
+        let heads = (doc.base_heads(), doc.pending_ops());
+        let mut editor = BlockEditor::new();
+        editor.bind_existing_blocks(&mut doc, list);
+        let id = editor.blocks()[0].id.clone();
+        editor.begin_action_intercept();
+        editor.blocks_mut()[0].line.set_text("first é");
+        assert_eq!(
+            editor.take_intercepted_ops(),
+            vec![BlockEditOp::Insert {
+                block_id: id,
+                after: None,
+                kind: "paragraph".into(),
+                text: "first é".into()
+            }]
+        );
+        assert!(editor.take_intercepted_ops().is_empty());
+        assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
+    }
+
+    #[test]
+    fn canonical_existing_list_first_split_preserves_every_insert() {
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(automerge::ROOT, "blocks", ObjType::List)
+            .unwrap();
+        doc.commit();
+        let heads = (doc.base_heads(), doc.pending_ops());
+        let mut editor = BlockEditor::new();
+        editor.bind_existing_blocks(&mut doc, list);
+        editor.begin_action_intercept();
+        editor.split_at_cursor(0, 0);
+        let ids = editor
+            .blocks()
+            .iter()
+            .map(|b| b.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            editor.take_intercepted_ops(),
+            vec![
+                BlockEditOp::Insert {
+                    block_id: ids[0].clone(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: String::new()
+                },
+                BlockEditOp::Insert {
+                    block_id: ids[1].clone(),
+                    after: Some(ids[0].clone()),
+                    kind: "paragraph".into(),
+                    text: String::new()
+                },
+            ]
+        );
+        assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
+    }
+
+    #[test]
+    fn canonical_existing_list_first_multiblock_edit_keeps_nonempty_content() {
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(automerge::ROOT, "blocks", ObjType::List)
+            .unwrap();
+        doc.commit();
+        let before = (doc.base_heads(), doc.pending_ops());
+        let mut editor = BlockEditor::new();
+        editor.bind_existing_blocks(&mut doc, list);
+        editor.begin_action_intercept();
+        editor.blocks_mut()[0].line.set_text("first ésecond");
+        editor.blocks_mut()[0]
+            .line
+            .set_marks(vec![MarkSpan::new(0.."first ésecond".len(), Mark::Bold)]);
+        editor.split_at_cursor(0, "first é".len());
+        assert_eq!(
+            editor.blocks()[0].line.marks(),
+            &[MarkSpan::new(0.."first é".len(), Mark::Bold)]
+        );
+        assert_eq!(
+            editor.blocks()[1].line.marks(),
+            &[MarkSpan::new(0.."second".len(), Mark::Bold)]
+        );
+        let ids = editor
+            .blocks()
+            .iter()
+            .map(|block| block.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            editor.take_intercepted_ops(),
+            vec![
+                BlockEditOp::Insert {
+                    block_id: ids[0].clone(),
+                    after: None,
+                    kind: "paragraph".into(),
+                    text: "first é".into()
+                },
+                BlockEditOp::Insert {
+                    block_id: ids[1].clone(),
+                    after: Some(ids[0].clone()),
+                    kind: "paragraph".into(),
+                    text: "second".into()
+                },
+            ]
+        );
+        assert!(editor.take_intercepted_ops().is_empty());
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+    }
+
+    #[test]
+    fn canonical_existing_list_nonempty_adoption_is_readonly_and_legacy_still_seeds() {
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(automerge::ROOT, "blocks", ObjType::List)
+            .unwrap();
+        let mut legacy = BlockEditor::new();
+        legacy.set_blocks(vec![Block::paragraph("retained")]);
+        legacy.bind_blocks(&mut doc, list.clone());
+        assert_eq!(doc.length(&list), 1);
+        doc.commit();
+        let heads = (doc.base_heads(), doc.pending_ops());
+        let mut canonical = BlockEditor::new();
+        canonical.bind_existing_blocks(&mut doc, list);
+        canonical.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(canonical.blocks()[0].text(), "retained");
+        assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
     }
 
     #[test]

@@ -55,3 +55,11 @@ mod workspace_persistence;
 
 #[path = "canonical_import.rs"]
 mod canonical_import;
+
+#[path = "canonical_component.rs"]
+mod canonical_component;
+#[path = "support/component.rs"]
+mod component_support;
+
+#[path = "canonical_actions.rs"]
+mod canonical_actions;

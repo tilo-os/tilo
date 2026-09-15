@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc};
+use automerge::{AutoCommit, ChangeHash, ObjId, ReadDoc, transaction::Transactable};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -104,12 +104,14 @@ pub struct NotesApp {
     /// rect we never need outside of layout. Tracked locally for
     /// completeness.
     content_node: Option<NodeId>,
-    root: PathBuf,
-    saver: Option<Saver>,
-    /// Debounced background saver for per-page bodies. Receives a
-    /// new snapshot whenever the main panel's `BlockEditor` reports
-    /// a dirty edit; coalesces multiple edits in `SAVE_DEBOUNCE`.
-    page_saver: Option<PageSaver>,
+    /// Present only for the legacy standalone/fixture adapter until its host cutover.
+    legacy_fixture_storage: Option<LegacyFixtureStorage>,
+    /// Last framework-owned durability projection; querying it never touches the record.
+    record_save_status: ui::record::RecordSaveStatus,
+    /// View/legacy callback intents that must wait for a mutable bound record admission.
+    pending_events: Vec<OutEvent>,
+    /// Last hydrated local spans distinguish input edits from stale projection.
+    canonical_marks: Vec<(String, Vec<actions::InlineMarkSpan>)>,
     /// Cmd-K / Ctrl-K page jump palette. Always present; visibility
     /// is toggled by the keystroke handler below.
     palette: PageJumpPalette,
@@ -205,6 +207,14 @@ pub struct NotesApp {
     text_scale: f64,
 }
 
+/// Compatibility storage for the old standalone entry point and disk fixtures.
+/// Canonical components never construct this adapter or start either worker.
+struct LegacyFixtureStorage {
+    root: PathBuf,
+    saver: Saver,
+    page_saver: PageSaver,
+}
+
 impl NotesApp {
     /// Load the workspace under `root` and wire up the debounced background
     /// saver. Returns a fully-initialised widget ready to be handed to
@@ -277,6 +287,74 @@ impl NotesApp {
         let saver = Saver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
         let page_saver =
             PageSaver::spawn(root.clone(), SAVE_DEBOUNCE).map_err(|e| e.to_string())?;
+        Ok(Self::build_widget(
+            workspace,
+            sidebar,
+            main,
+            Some(LegacyFixtureStorage {
+                root,
+                saver,
+                page_saver,
+            }),
+        ))
+    }
+
+    /// Construct the real notebook presentation from an existing canonical document.
+    /// This does not initialize schema, read Markdown, or own persistence workers.
+    ///
+    /// # Errors
+    /// Rejects an invalid canonical notebook or a missing selected page's block list.
+    pub fn from_document(
+        doc: &AutoCommit,
+        author: &ui::permissions::UserId,
+    ) -> Result<Self, String> {
+        let workspace = Self::project_workspace(doc, None)?;
+        let mut sidebar = NoteTreeView::new();
+        sidebar.sync_from_workspace(&workspace);
+        let mut main = MainPanel::new();
+        main.set_local_author(Some(author.0.clone()));
+        let mut app = Self::build_widget(workspace, sidebar, main, None);
+        // The editor's binding signature is mutable for legacy consumers, but
+        // canonical binding only reads. Never borrow/commit the owner's transaction.
+        if let Some(page) = app.workspace.selected() {
+            let title = app
+                .workspace
+                .get(page)
+                .ok_or("selected page is missing")?
+                .title
+                .clone();
+            let blocks = NotesDoc::page_blocks_list(doc, page)
+                .ok_or("selected page block list is missing")?;
+            app.main
+                .bind_canonical_page(&mut doc.clone(), page, &title, blocks)?;
+            app.bound_page = Some(page);
+        }
+        app.refresh_link_pages();
+        app.canonical_marks = app.main.inline_marks();
+        Ok(app)
+    }
+
+    fn project_workspace(doc: &AutoCommit, selected: Option<PageId>) -> Result<Workspace, String> {
+        let mut workspace = crate::notebook::project(doc, selected)?;
+        if workspace.selected().is_none() {
+            let first = workspace
+                .pages()
+                .iter()
+                .filter(|page| page.parent.is_none())
+                .min_by_key(|page| (page.order, page.id))
+                .map(|page| page.id);
+            workspace.set_selected(first);
+        }
+        Ok(workspace)
+    }
+
+    fn build_widget(
+        workspace: Workspace,
+        sidebar: NoteTreeView,
+        main: MainPanel,
+        legacy_fixture_storage: Option<LegacyFixtureStorage>,
+    ) -> Self {
+        let canonical = legacy_fixture_storage.is_none();
         let search_provider = crate::search_provider::NoteSearchProvider::new(&workspace);
 
         let mut app = Self {
@@ -292,15 +370,16 @@ impl NotesApp {
             sidebar_node: None,
             main_node: None,
             content_node: None,
-            root,
-            saver: Some(saver),
-            page_saver: Some(page_saver),
+            legacy_fixture_storage,
+            record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
+            pending_events: Vec::new(),
+            canonical_marks: Vec::new(),
             palette: PageJumpPalette::new(),
             last_mouse: Point::ZERO,
             started: std::time::Instant::now(),
             synced_once: false,
-            adopted: false,
-            seeded: false,
+            adopted: canonical,
+            seeded: canonical,
             pending_doc_removals: Vec::new(),
             bound_page: None,
             want_narrow: false,
@@ -340,7 +419,7 @@ impl NotesApp {
             .unwrap_or_default();
         app.main.set_tags(visible_tags);
         app.refresh_status();
-        Ok(app)
+        app
     }
 
     /// Recompute the status bar snapshot from the workspace + savers.
@@ -369,17 +448,18 @@ impl NotesApp {
         // Combined save status: worst-of(workspace, page bodies). If
         // either is in-flight the user sees "Saving…"; either failure
         // surfaces "Save failed".
-        let workspace_status = self
-            .saver
-            .as_ref()
-            .map_or(SaveStatus::Saved, super::storage::Saver::status);
-        let page_status = self
-            .page_saver
-            .as_ref()
-            .map_or(SaveStatus::Saved, super::storage::PageSaver::status);
-        let save_status = self
-            .shots_save_status
-            .unwrap_or_else(|| combine_save_status(workspace_status, page_status));
+        let save_status = self.shots_save_status.unwrap_or_else(|| {
+            if let Some(legacy) = &self.legacy_fixture_storage {
+                combine_save_status(legacy.saver.status(), legacy.page_saver.status())
+            } else {
+                match self.record_save_status {
+                    ui::record::RecordSaveStatus::Saved => SaveStatus::Saved,
+                    ui::record::RecordSaveStatus::Saving => SaveStatus::Saving,
+                    ui::record::RecordSaveStatus::Failed(_) => SaveStatus::Failed,
+                    ui::record::RecordSaveStatus::MemoryOnly => SaveStatus::SessionOnly,
+                }
+            }
+        });
         let changed = self.status.set_state(StatusBarState {
             save_status,
             page_path: path,
@@ -841,6 +921,7 @@ impl NotesApp {
             if self.bound_page.is_some() {
                 self.main.clear();
                 self.bound_page = None;
+                self.canonical_marks.clear();
             }
             return;
         };
@@ -862,7 +943,21 @@ impl NotesApp {
             .get(sel)
             .map(|m| m.title.clone())
             .unwrap_or_default();
-        let body = storage::read_page_body(&self.root, sel).unwrap_or_default();
+        if self.legacy_fixture_storage.is_none() {
+            match self.main.bind_canonical_page(state, sel, &title, list) {
+                Ok(()) => {
+                    self.bound_page = Some(sel);
+                    self.refresh_link_pages();
+                    self.canonical_marks = self.main.inline_marks();
+                }
+                Err(error) => tracing::warn!(%error, "notes: canonical page bind refused"),
+            }
+            return;
+        }
+        let Some(legacy) = &self.legacy_fixture_storage else {
+            return;
+        };
+        let body = storage::read_page_body(&legacy.root, sel).unwrap_or_default();
         // A page's first blocks are a durable mutation too. Seed them through
         // the same action host that owns every subsequent editor delta; the
         // panel only ever binds/adopts an already-action-owned list.
@@ -878,7 +973,57 @@ impl NotesApp {
                 return;
             }
         }
+        // Initial legacy seeding can happen after local typing. A same-page
+        // bind must not move its caret when the adopted content is identical.
+        let local_position = (self.main.page_id() == Some(sel)).then(|| {
+            let editor = self.main.editor();
+            let content = editor
+                .blocks()
+                .iter()
+                .map(|block| (block.kind.clone(), block.text().to_owned()))
+                .collect::<Vec<_>>();
+            let caret = editor.focused_index().and_then(|index| {
+                editor.blocks().get(index).map(|block| {
+                    (
+                        index,
+                        block.line.inner().caret_position(),
+                        block.line.selection_range(),
+                    )
+                })
+            });
+            (
+                content,
+                editor.is_focused(),
+                caret,
+                editor.document_selection(),
+            )
+        });
         self.main.bind_page(state, sel, &title, list, &body);
+        if let Some((content, focused, caret, selection)) = local_position {
+            let editor = self.main.editor_mut();
+            if content.len() == editor.blocks().len()
+                && content
+                    .iter()
+                    .zip(editor.blocks())
+                    .all(|((kind, text), block)| *kind == block.kind && text == block.text())
+            {
+                if let Some(selection) = selection {
+                    editor.select_document_range(selection.anchor, selection.cursor);
+                } else if let Some((index, position, selection)) = caret {
+                    editor.focus_block(index, ui::widget::CursorPlacement::Byte(position.byte));
+                    if let Some(block) = editor.blocks_mut().get_mut(index) {
+                        let input = block.line.inner_mut();
+                        if let Some((start, end)) = selection {
+                            let anchor = if position.byte == start { end } else { start };
+                            input.set_selection(anchor, position.byte);
+                        } else {
+                            input.set_caret_position(position);
+                        }
+                    }
+                }
+                editor.set_focus(focused);
+            }
+        }
         self.bound_page = Some(sel);
     }
 
@@ -952,9 +1097,32 @@ impl NotesApp {
         }
     }
 
-    fn refresh_search_blocks(&mut self, doc: &mut AutoCommit) {
-        let heads = doc.get_heads();
-        if self.search_heads.as_ref() == Some(&heads) {
+    pub(crate) fn notes_resource_ctx_for(
+        &self,
+        doc: &AutoCommit,
+    ) -> Option<crate::actions::NotesResourceCtx> {
+        if self.legacy_fixture_storage.is_some() {
+            return Some(self.notes_resource_ctx());
+        }
+        let workspace = crate::notebook::project(doc, None).ok()?;
+        Some(crate::actions::NotesResourceCtx {
+            pages: workspace.pages().to_vec(),
+            blocks: HashMap::new(),
+            tags: workspace.tags().to_vec(),
+            tag_assignments: workspace
+                .data
+                .tag_assignments
+                .iter()
+                .map(|edge| (edge.page, edge.tag))
+                .collect(),
+        })
+    }
+
+    fn refresh_search_blocks(&mut self, doc: &AutoCommit) {
+        let heads = doc.base_heads();
+        if automerge::transaction::Transactable::pending_ops(doc) == 0
+            && self.search_heads.as_ref() == Some(&heads)
+        {
             return;
         }
         self.search_blocks = self
@@ -984,10 +1152,160 @@ impl NotesApp {
             .collect()
     }
 
+    /// Canonical synchronization is a projection, never an attempt to replay
+    /// local rows that are absent from the document.
+    fn reconcile_canonical(&mut self, doc: &AutoCommit) -> Result<(), String> {
+        self.workspace = Self::project_workspace(doc, self.workspace.selected())?;
+        if self
+            .active_tag_filter
+            .is_some_and(|tag| self.workspace.get_tag(tag).is_none())
+        {
+            self.active_tag_filter = None;
+        }
+        self.sidebar.sync_from_workspace(&self.workspace);
+        if let Some(page) = self
+            .workspace
+            .selected()
+            .and_then(|id| self.workspace.get(id))
+        {
+            self.main.set_title(Some(page.title.clone()));
+        }
+        self.refresh_link_pages();
+        Ok(())
+    }
+
+    fn drain_canonical_editor(&mut self, doc: &mut AutoCommit) {
+        self.drain_block_ops(doc);
+        if self.main.editor_is_dirty() && self.bound_page.is_some() {
+            self.drain_inline_marks(doc);
+        }
+    }
+
+    fn dispatch_canonical_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &NotesAction,
+    ) -> Result<(), String> {
+        self.actions
+            .try_dispatch_with_context(
+                doc,
+                actions::NOTES_ACTION_TYPE,
+                action,
+                actions::history_context(action),
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    fn apply_canonical_event(
+        &mut self,
+        doc: &mut AutoCommit,
+        event: OutEvent,
+    ) -> Result<(), String> {
+        self.drain_canonical_editor(doc);
+        self.reconcile_canonical(doc)?;
+        let before = self.meta_map();
+        let tree_move = matches!(event, OutEvent::Move { .. } | OutEvent::Reparent { .. });
+        match event {
+            OutEvent::Select(id) => {
+                if self.workspace.get(id).is_none() {
+                    return Err("page no longer exists".into());
+                }
+                self.workspace.set_selected(Some(id));
+            }
+            OutEvent::CreateChild { parent } => {
+                if parent.is_some_and(|id| self.workspace.get(id).is_none()) {
+                    return Err("parent page no longer exists".into());
+                }
+                let id = self.workspace.create_page(parent);
+                self.workspace.set_selected(Some(id));
+            }
+            OutEvent::Rename { id, new_title } => {
+                if self.workspace.get(id).is_none() {
+                    return Err("page no longer exists".into());
+                }
+                self.workspace.rename(id, &new_title);
+            }
+            OutEvent::Delete(id) => {
+                if self.workspace.get(id).is_none() {
+                    return Err("page no longer exists".into());
+                }
+                let action = actions::delete_page_action(id);
+                self.dispatch_canonical_action(doc, &action)?;
+                self.reconcile_canonical(doc)?;
+                return Ok(());
+            }
+            OutEvent::Move { id, delta } => {
+                if self.workspace.get(id).is_none() {
+                    return Err("page no longer exists".into());
+                }
+                self.workspace.move_sibling(id, delta);
+            }
+            OutEvent::Reparent {
+                id,
+                new_parent,
+                before,
+            } => {
+                if self.workspace.get(id).is_none()
+                    || new_parent.is_some_and(|id| self.workspace.get(id).is_none())
+                {
+                    return Err("page no longer exists".into());
+                }
+                self.workspace.move_to(id, new_parent, before);
+            }
+            OutEvent::Duplicate(source) => {
+                let action = actions::duplicate_subtree_action(doc, source)?;
+                let NotesAction::DuplicateSubtree { pages, .. } = &action else {
+                    return Err("invalid duplicate action".into());
+                };
+                let destination = pages
+                    .iter()
+                    .find(|page| page.source == source.to_string())
+                    .ok_or("duplicate root is missing")?
+                    .destination
+                    .parse::<PageId>()
+                    .map_err(|e| e.to_string())?;
+                self.dispatch_canonical_action(doc, &action)?;
+                self.workspace.set_selected(Some(destination));
+                self.reconcile_canonical(doc)?;
+                return Ok(());
+            }
+        }
+        let after = self.meta_map();
+        if tree_move && before != after {
+            let mut before = before
+                .values()
+                .map(actions::PageData::from_meta)
+                .collect::<Vec<_>>();
+            let mut after = after
+                .values()
+                .map(actions::PageData::from_meta)
+                .collect::<Vec<_>>();
+            before.sort_by(|a, b| a.id.cmp(&b.id));
+            after.sort_by(|a, b| a.id.cmp(&b.id));
+            let action = NotesAction::UpdatePageTree { before, after };
+            self.dispatch_canonical_action(doc, &action)?;
+        } else {
+            self.dispatch_tree_diff(doc, &before, &after);
+        }
+        // Rejected optimistic metadata is always discarded, including New.
+        self.reconcile_canonical(doc)?;
+        self.refresh_status();
+        Ok(())
+    }
+
     /// Apply one sidebar [`OutEvent`] to the workspace, then dispatch the
     /// matching [`NotesAction`](crate::actions) so the change lands in the shared
     /// document on the same replayable path the Ctrl+K palette uses.
     fn apply_and_dispatch(&mut self, doc: &mut AutoCommit, ev: OutEvent) {
+        if self.legacy_fixture_storage.is_none() {
+            if let Err(error) = self.apply_canonical_event(doc, ev) {
+                tracing::warn!(%error, "notes: rejected page action; reconciling");
+                let _ = self.reconcile_canonical(doc);
+                self.self_dirty = true;
+            }
+            return;
+        }
         let before = self.meta_map();
         self.apply_event(ev);
         let after = self.meta_map();
@@ -1011,7 +1329,9 @@ impl NotesApp {
         // DeletePage per *deletion root* (a removed page whose parent wasn't
         // also removed) — `apply` deletes the whole subtree, so descendants need
         // no separate action.
-        for (id, meta) in before {
+        let mut previous = before.iter().collect::<Vec<_>>();
+        previous.sort_by_key(|(id, _)| **id);
+        for (id, meta) in previous {
             if after.contains_key(id) {
                 continue;
             }
@@ -1024,7 +1344,9 @@ impl NotesApp {
         }
         // Creates + edits: a page new in `after`, or one whose metadata changed
         // (title / parent / order). Each is a whole-page upsert.
-        for (id, meta) in after {
+        let mut next = after.iter().collect::<Vec<_>>();
+        next.sort_by_key(|(id, _)| **id);
+        for (id, meta) in next {
             match before.get(id) {
                 Some(old) if old == meta => {}
                 _ => self.perform_action(doc, &actions::upsert_page_action(meta)),
@@ -1034,6 +1356,18 @@ impl NotesApp {
 
     /// Apply one [`OutEvent`] from the sidebar to the workspace + disk.
     fn apply_event(&mut self, ev: OutEvent) {
+        if self.legacy_fixture_storage.is_none() {
+            self.pending_events.push(ev);
+            return;
+        }
+        self.apply_legacy_event(ev);
+    }
+
+    fn apply_legacy_event(&mut self, ev: OutEvent) {
+        let Some(legacy) = &self.legacy_fixture_storage else {
+            return;
+        };
+        let root = legacy.root.clone();
         match ev {
             OutEvent::Select(id) => {
                 // Flush any pending edits to the previously-selected
@@ -1044,7 +1378,7 @@ impl NotesApp {
                 self.workspace.set_selected(Some(id));
                 if let Some(meta) = self.workspace.get(id) {
                     let title = meta.title.clone();
-                    let body = storage::read_page_body(&self.root, id).unwrap_or_default();
+                    let body = storage::read_page_body(&root, id).unwrap_or_default();
                     self.load_page_with_resolver(id, &title, body);
                 }
             }
@@ -1060,7 +1394,7 @@ impl NotesApp {
                 // which has CRDT access) so it isn't resurrected next frame.
                 self.pending_doc_removals.extend(removed.iter().copied());
                 for rid in &removed {
-                    if let Err(e) = storage::delete_page_file(&self.root, *rid) {
+                    if let Err(e) = storage::delete_page_file(&root, *rid) {
                         tracing::error!(error = %e, page = %rid, "notes: delete page file failed");
                     }
                 }
@@ -1073,7 +1407,7 @@ impl NotesApp {
                         .map(|p| (p.id, p.title.clone()));
                     if let Some((id, title)) = first {
                         self.workspace.set_selected(Some(id));
-                        let body = storage::read_page_body(&self.root, id).unwrap_or_default();
+                        let body = storage::read_page_body(&root, id).unwrap_or_default();
                         self.main.load_page(id, &title, body);
                     } else {
                         self.main.clear();
@@ -1084,7 +1418,7 @@ impl NotesApp {
                 self.flush_main_panel_edit();
                 let id = self.workspace.create_page(parent);
                 self.workspace.set_selected(Some(id));
-                if let Err(e) = storage::write_page_body(&self.root, id, "") {
+                if let Err(e) = storage::write_page_body(&root, id, "") {
                     tracing::error!(error = %e, page = %id, "notes: write empty page failed");
                 }
                 self.main.load_page(id, "Untitled", String::new());
@@ -1111,16 +1445,15 @@ impl NotesApp {
                     // Copy each source page's body onto its fresh copy id so
                     // the duplicated subtree has independent content on disk.
                     for (old, new) in &mapping {
-                        let body = storage::read_page_body(&self.root, *old).unwrap_or_default();
-                        if let Err(e) = storage::write_page_body(&self.root, *new, &body) {
+                        let body = storage::read_page_body(&root, *old).unwrap_or_default();
+                        if let Err(e) = storage::write_page_body(&root, *new, &body) {
                             tracing::error!(error = %e, page = %new, "notes: duplicate body write failed");
                         }
                     }
                     self.workspace.set_selected(Some(new_root));
                     if let Some(meta) = self.workspace.get(new_root) {
                         let title = meta.title.clone();
-                        let body =
-                            storage::read_page_body(&self.root, new_root).unwrap_or_default();
+                        let body = storage::read_page_body(&root, new_root).unwrap_or_default();
                         self.load_page_with_resolver(new_root, &title, body);
                     }
                 }
@@ -1151,10 +1484,18 @@ impl NotesApp {
     /// Navigate to `id`: select + load the page. Used both by the
     /// Cmd-K palette and by click-on-link events.
     pub fn navigate_to(&mut self, id: PageId) {
+        if self.legacy_fixture_storage.is_none() {
+            self.pending_events.push(OutEvent::Select(id));
+            return;
+        }
+        let Some(legacy) = &self.legacy_fixture_storage else {
+            return;
+        };
+        let root = legacy.root.clone();
         self.flush_main_panel_edit();
         if let Some(meta) = self.workspace.get(id) {
             let title = meta.title.clone();
-            let body = storage::read_page_body(&self.root, id).unwrap_or_default();
+            let body = storage::read_page_body(&root, id).unwrap_or_default();
             self.workspace.set_selected(Some(id));
             self.load_page_with_resolver(id, &title, body);
             // `load_page_with_resolver` creates a fresh, unbound editor. This
@@ -1180,7 +1521,7 @@ impl NotesApp {
     ) -> Result<(), String> {
         match operation {
             actions::NotesOperation::OpenPage { page, block_id } => {
-                if self.workspace.get(page).is_none() {
+                if NotesDoc::page_blocks_list(doc, page).is_none() {
                     return Err("page no longer exists".into());
                 }
                 if let Some(block_id) = block_id.as_ref()
@@ -1197,7 +1538,10 @@ impl NotesApp {
                 Ok(())
             }
             actions::NotesOperation::OpenTag { tag } => {
-                if self.workspace.get_tag(tag).is_none() {
+                if !NotesDoc::list_tags(doc)
+                    .iter()
+                    .any(|candidate| candidate.id == tag)
+                {
                     return Err("tag no longer exists".into());
                 }
                 self.active_tag_filter = Some(tag);
@@ -1222,9 +1566,13 @@ impl NotesApp {
     /// If the editor has pending edits for the current page, snapshot
     /// the body and request a save before swapping pages.
     fn flush_main_panel_edit(&mut self) {
+        if self.legacy_fixture_storage.is_none() {
+            return;
+        }
         if let (Some(id), true) = (self.main.page_id(), self.main.editor_is_dirty()) {
             let body = self.main.take_body_snapshot();
-            if let Some(saver) = &self.page_saver {
+            if let Some(legacy) = &self.legacy_fixture_storage {
+                let saver = &legacy.page_saver;
                 saver.request(id, body);
                 // Force the worker to flush immediately so the next
                 // load_page (for a different page) doesn't race with
@@ -1250,11 +1598,15 @@ impl NotesApp {
     /// dispatch rich marks, then perform exactly one Markdown snapshot for the
     /// save worker without scanning a long note again on pointer-only events.
     fn save_current_editor_snapshot(&mut self) {
+        if self.legacy_fixture_storage.is_none() {
+            return;
+        }
         let Some(id) = self.main.page_id() else {
             return;
         };
         let body = self.main.take_body_snapshot();
-        if let Some(saver) = &self.page_saver {
+        if let Some(legacy) = &self.legacy_fixture_storage {
+            let saver = &legacy.page_saver;
             saver.request(id, body);
         }
     }
@@ -1290,6 +1642,13 @@ impl NotesApp {
     /// action for ordinary typing: Automerge carries its native mark anchors
     /// forward with the text splice.
     fn drain_inline_marks(&mut self, state: &mut AutoCommit) {
+        if self.legacy_fixture_storage.is_none() && self.bound_page != self.main.page_id() {
+            return;
+        }
+        let local = self.main.inline_marks();
+        if self.legacy_fixture_storage.is_none() && local == self.canonical_marks {
+            return;
+        }
         // Before the late-join handshake, the visible Markdown editor is a
         // local preview and its page has deliberately not been created in the
         // shared doc yet. Waiting for seed/adoption avoids a noisy stale-page
@@ -1302,8 +1661,14 @@ impl NotesApp {
         };
         let in_doc = NotesDoc::page_block_marks(state, page)
             .into_iter()
+            .map(|(id, mut marks)| {
+                // RichTextLine retains spans in start order; native marks
+                // arrive grouped by mark name. Ordering is not an edit.
+                marks.sort_by_key(|mark| mark.start);
+                (id, marks)
+            })
             .collect::<HashMap<_, _>>();
-        for (block_id, marks) in self.main.inline_marks() {
+        for (block_id, marks) in local.iter().cloned() {
             if in_doc
                 .get(&block_id)
                 .is_some_and(|current| current == &marks)
@@ -1323,6 +1688,9 @@ impl NotesApp {
                 return;
             }
         }
+        if self.legacy_fixture_storage.is_none() {
+            self.canonical_marks = local;
+        }
     }
 
     /// Rehydrate the rich spans the shared widget intentionally does not own.
@@ -1333,13 +1701,17 @@ impl NotesApp {
         let Some(page) = self.main.page_id() else {
             return;
         };
-        if !NotesDoc::page_marks_are_canonical(state, page) {
+        if self.legacy_fixture_storage.is_some() && !NotesDoc::page_marks_are_canonical(state, page)
+        {
             return;
         }
         let marks = NotesDoc::page_block_marks(state, page)
             .into_iter()
             .collect::<HashMap<_, _>>();
         self.main.set_inline_marks(&marks);
+        if self.legacy_fixture_storage.is_none() {
+            self.canonical_marks = self.main.inline_marks();
+        }
     }
 
     /// Complete a first-note request from the empty-state button. This runs
@@ -1385,8 +1757,8 @@ impl NotesApp {
 
     /// Schedule a debounced save of the current workspace.
     fn persist(&self) {
-        if let Some(s) = &self.saver {
-            s.request(self.workspace.clone());
+        if let Some(legacy) = &self.legacy_fixture_storage {
+            legacy.saver.request(self.workspace.clone());
         }
     }
 
@@ -1419,11 +1791,11 @@ impl NotesApp {
     pub fn flush_saves(&mut self) {
         // Drain any pending body before we ask the savers to flush.
         self.flush_main_panel_edit();
-        if let Some(s) = &self.saver {
-            s.flush();
+        if let Some(legacy) = &self.legacy_fixture_storage {
+            legacy.saver.flush();
         }
-        if let Some(s) = &self.page_saver {
-            s.flush();
+        if let Some(legacy) = &self.legacy_fixture_storage {
+            legacy.page_saver.flush();
         }
     }
 
@@ -1714,6 +2086,25 @@ fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
     }
 }
 
+impl ui::widget::AppWidget for NotesApp {
+    fn app_kind(&self) -> ui::widget::AppKind {
+        ui::widget::AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Notes"
+    }
+    fn app_icon(&self) -> ui::widget::IconDescriptor {
+        ui::widget::IconDescriptor::Named("notes".into())
+    }
+    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
+        None
+    }
+    fn record_save_status(&mut self, status: ui::record::RecordSaveStatus) {
+        self.record_save_status = status;
+        self.refresh_status();
+    }
+}
+
 impl Widget for NotesApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::NOTES_OPERATION_TYPE]
@@ -1738,13 +2129,27 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.drain_empty_note_request(state);
-        // Bridge the in-memory workspace to the shared CRDT document:
-        // seed/adopt the page tree, then bind the editor to the selected
-        // page so its text syncs between instances.
-        self.sync_workspace_tree(state);
-        self.sync_tags(state);
-        self.drain_title_rename(state);
+        if self.legacy_fixture_storage.is_none() {
+            self.drain_canonical_editor(state);
+            self.drain_title_rename(state);
+            for event in std::mem::take(&mut self.pending_events) {
+                self.apply_and_dispatch(state, event);
+            }
+            self.drain_sidebar_events(state);
+            self.drain_empty_note_request(state);
+            if let Err(error) = self.reconcile_canonical(state) {
+                tracing::warn!(%error, "notes: canonical projection refused");
+                return;
+            }
+        } else {
+            self.drain_empty_note_request(state);
+            // Bridge the in-memory workspace to the shared CRDT document:
+            // seed/adopt the page tree, then bind the editor to the selected
+            // page so its text syncs between instances.
+            self.sync_workspace_tree(state);
+            self.sync_tags(state);
+            self.drain_title_rename(state);
+        }
         self.ensure_editor_bound(state);
         let visible_tags = self
             .workspace
@@ -1765,7 +2170,9 @@ impl Widget for NotesApp {
         // host/history path as pointer and keyboard edits.
         self.drain_block_ops(state);
         self.hydrate_inline_marks(state);
-        self.drain_inline_marks(state);
+        if self.legacy_fixture_storage.is_some() {
+            self.drain_inline_marks(state);
+        }
         self.refresh_search_blocks(state);
         if let Some((page, block_id)) = self.pending_block_reveal.as_ref()
             && self.bound_page == Some(*page)
@@ -2876,7 +3283,7 @@ mod tests {
         // list: a matching durable revision leaves the retained snapshot as-is.
         app.search_blocks.clear();
         app.search_heads = Some(state.doc.get_heads());
-        app.refresh_search_blocks(&mut state.doc);
+        app.refresh_search_blocks(&state.doc);
         assert!(app.search_blocks.is_empty());
     }
 

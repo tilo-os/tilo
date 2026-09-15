@@ -72,6 +72,9 @@ pub trait AppWidget: Widget {
         vec![]
     }
 
+    /// Framework-owned durability, delivered only after the record loan ends.
+    fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
+
     /// Drain a one-shot request for shell-owned chrome.
     fn take_host_intent(&mut self) -> Option<AppHostIntent> {
         None
@@ -232,6 +235,7 @@ mod component_adapter {
                     let _ = binding.drain_owned_tree(root, document);
                 })
                 .unwrap_or(());
+            self.component.project_record_save_status();
         }
         fn continuation_metadata(
             &self,
