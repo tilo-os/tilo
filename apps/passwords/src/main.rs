@@ -9,6 +9,7 @@ fn shot(args: &LaunchArgs) -> Result<Box<dyn ui::widget::Widget>, LaunchError> {
         "vault" | "desktop" | "narrow" => passwords::ShowcaseMode::Vault,
         "editor" => passwords::ShowcaseMode::Editor,
         "health" => passwords::ShowcaseMode::Health,
+        "app-access" => passwords::ShowcaseMode::AppAccess,
         "import" => passwords::ShowcaseMode::Import,
         "export" => passwords::ShowcaseMode::Export,
         "delete-confirm" => passwords::ShowcaseMode::DeleteConfirm,
