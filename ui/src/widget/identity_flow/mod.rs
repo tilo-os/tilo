@@ -549,6 +549,7 @@ enum PairingBackend {
     /// A private broker spool. Each frame is published with `create_new` and
     /// consumed by an atomic rename, so independent processes never observe
     /// the same DKG packet twice. The shell owns this directory.
+    #[cfg(unix)]
     Durable(Arc<DurablePairingBackend>),
     Remote {
         endpoint: Arc<str>,
@@ -591,6 +592,7 @@ impl PairingMac {
 }
 
 #[derive(Debug)]
+#[cfg(unix)]
 struct DurablePairingBackend {
     root: PathBuf,
     expires_unix: u64,
@@ -623,6 +625,7 @@ impl PairingHandshake {
     pub fn is_accepting(&self) -> bool {
         match &self.backend {
             PairingBackend::Memory(_) => true,
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 let now = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
@@ -712,6 +715,7 @@ impl PairingHandshake {
     ///
     /// Returns an error if the spool cannot be created securely or its durable
     /// expiry metadata is invalid or cannot be persisted.
+    #[cfg(unix)]
     pub fn durable(
         root: impl Into<PathBuf>,
         expires_at: SystemTime,
@@ -760,12 +764,14 @@ impl PairingHandshake {
         })
     }
 
+    #[cfg(unix)]
     fn durable_path(backend: &DurablePairingBackend, nonce: &[u8; 16]) -> PathBuf {
         backend
             .root
             .join(format!("{}.postcard", hex::encode(nonce)))
     }
 
+    #[cfg(unix)]
     fn durable_read(
         backend: &DurablePairingBackend,
         nonce: &[u8; 16],
@@ -783,6 +789,7 @@ impl PairingHandshake {
         postcard::from_bytes(&bytes).ok()
     }
 
+    #[cfg(unix)]
     fn durable_update(
         backend: &DurablePairingBackend,
         nonce: &[u8; 16],
@@ -863,6 +870,7 @@ impl PairingHandshake {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clear(),
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 use std::os::unix::fs::OpenOptionsExt;
                 if let Ok(file) = std::fs::OpenOptions::new()
@@ -892,6 +900,7 @@ impl PairingHandshake {
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.entry(key).or_default().pairer_round1 = Some(round1);
             }
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 let _ = Self::durable_update(backend, nonce, |state| {
                     if state.pairer_round1.is_none() {
@@ -921,6 +930,7 @@ impl PairingHandshake {
                 .get_mut(&key)?
                 .pairer_round1
                 .take(),
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 let mut out = None;
                 Self::durable_update(backend, nonce, |state| out = state.pairer_round1.take())
@@ -944,6 +954,7 @@ impl PairingHandshake {
                     .or_default()
                     .reply = Some((reply, PairingMac::from_bytes(mac)));
             }
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 let _ = Self::durable_update(backend, nonce, |state| {
                     if state.reply.is_none() {
@@ -991,6 +1002,7 @@ impl PairingHandshake {
                 drop(guard);
                 true
             }
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => Self::durable_update(backend, nonce, |state| {
                 state.pairer_round1 = Some(round1);
                 state.reply = Some((round2, PairingMac::from_bytes(mac)));
@@ -1026,6 +1038,7 @@ impl PairingHandshake {
                     .take()?;
                 Some((reply, mac.into_bytes()?))
             }
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 let mut out = None;
                 Self::durable_update(backend, nonce, |state| out = state.reply.take())
@@ -1060,6 +1073,7 @@ impl PairingHandshake {
                 };
                 Some((round1, round2, mac.into_bytes()?))
             }
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 let mut out = None;
                 Self::durable_update(backend, nonce, |state| {
@@ -1100,6 +1114,7 @@ impl PairingHandshake {
                     .or_default()
                     .host_round2 = Some((reply, PairingMac::from_bytes(mac)));
             }
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 let _ = Self::durable_update(backend, nonce, |state| {
                     if state.host_round2.is_none() {
@@ -1136,6 +1151,7 @@ impl PairingHandshake {
                     .take()?;
                 Some((reply, mac.into_bytes()?))
             }
+            #[cfg(unix)]
             PairingBackend::Durable(backend) => {
                 let mut out = None;
                 Self::durable_update(backend, nonce, |state| out = state.host_round2.take())
@@ -1395,6 +1411,7 @@ impl InviteEnvelope {
 }
 
 pub struct InviteRedemptionAuthority {
+    #[cfg(unix)]
     root: PathBuf,
 }
 
@@ -1439,6 +1456,7 @@ pub fn configure_invite_broker(
         .map_err(|_| IdentityFlowError::DecodeFailed("invite broker is already configured".into()))
 }
 
+#[cfg(unix)]
 impl InviteRedemptionAuthority {
     /// Open the authority explicitly configured by the trusted shell.
     ///
@@ -1784,6 +1802,75 @@ impl InviteRedemptionAuthority {
                 IdentityFlowError::DecodeFailed("redemption record authentication failed".into())
             })?;
         Ok(zeroize::Zeroizing::new(plaintext))
+    }
+}
+
+// Hosted applications can use the certificate-pinned remote broker on every
+// host. Local authority storage is a qOS shell service with Unix ownership and
+// permission requirements; never substitute permissive files on other hosts.
+#[cfg(not(unix))]
+fn local_authority_unavailable() -> IdentityFlowError {
+    IdentityFlowError::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "local identity authority requires the qOS Unix broker; use a remote broker on this host",
+    ))
+}
+
+#[cfg(not(unix))]
+impl InviteRedemptionAuthority {
+    /// Open the local qOS authority.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` on hosts without the Unix authority storage backend.
+    pub fn open() -> Result<Self, IdentityFlowError> {
+        Err(local_authority_unavailable())
+    }
+
+    /// Open a local authority at a private root.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` without creating or changing files on this host.
+    pub fn at(_root: impl Into<PathBuf>) -> Result<Self, IdentityFlowError> {
+        Err(local_authority_unavailable())
+    }
+
+    /// Issue a capability through the local authority.
+    ///
+    /// # Errors
+    /// Returns `Unsupported`; hosted clients must use their remote broker.
+    pub fn issue(
+        &self,
+        _capability: [u8; 32],
+        _secret: [u8; 32],
+        _expires_unix: u64,
+    ) -> Result<(), IdentityFlowError> {
+        Err(local_authority_unavailable())
+    }
+
+    /// Redeem a capability through the local authority.
+    ///
+    /// # Errors
+    /// Returns `Unsupported`; hosted clients must use their remote broker.
+    pub fn redeem(
+        &self,
+        _capability: &[u8],
+        _now_unix: u64,
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, IdentityFlowError> {
+        Err(local_authority_unavailable())
+    }
+}
+
+#[cfg(not(unix))]
+impl PairingHandshake {
+    /// Open a durable local pairing spool.
+    ///
+    /// # Errors
+    /// Returns `Unsupported`; certificate-pinned remote pairing remains available.
+    pub fn durable(
+        _root: impl Into<PathBuf>,
+        _expires_at: SystemTime,
+    ) -> Result<Self, IdentityFlowError> {
+        Err(local_authority_unavailable())
     }
 }
 
