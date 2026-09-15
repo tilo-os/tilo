@@ -296,19 +296,19 @@ const ORGANISE_CARDS: &[(&str, &str)] = &[
 const START_CARDS: &[(&str, &str)] = &[
     (
         "1  Name the workspace",
-        "Open Workspace Settings from the title in the top bar. Use the project name everyone will recognise.",
+        "Open Workspace Settings from the title in the top bar, then use the project name everyone will recognise.",
     ),
     (
         "2  Open a shared starting point",
-        "Choose Notes for ideas, Calendar for tasks, or Chat for a discussion or meeting. Add more apps beside it whenever you need them.",
+        "Choose Notes, Calendar, or Chat. Add more apps beside it whenever you need them.",
     ),
     (
         "3  Invite the right people",
-        "In Workspace Settings, choose Invite people. Review each person's role before sending; nothing else on your desktop is shared.",
+        "Choose Invite people in Workspace Settings and review each role. Nothing else on your desktop is shared.",
     ),
     (
         "4  Check work and recover mistakes",
-        "Open Activity from the top bar to catch up, inspect who changed what, compare versions, or undo only the change that went wrong.",
+        "Open Activity to catch up, compare versions, or undo only the change that went wrong.",
     ),
 ];
 
@@ -1133,18 +1133,52 @@ impl OnboardingView {
             ),
             TourPage::Start => (
                 "Your first five minutes",
-                "Start with one shared outcome, then let the workspace grow with the project. This checklist remains available from Search as Desktop tour.",
+                "Start with one outcome, then let the workspace grow with the project. Find this again from Search as Desktop tour.",
                 START_CARDS,
             ),
         };
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s6)
+            // The final page is an actionable checklist, not four unrelated
+            // ideas. A single grouped checklist preserves the hierarchy and
+            // keeps every first-session task above the sticky navigation on a
+            // laptop-height display.
+            .with_gap(if page == TourPage::Start {
+                theme.tokens.spacing.s4
+            } else {
+                theme.tokens.spacing.s6
+            })
             .push(heading(title, theme))
             .push(paragraph(intro, theme));
-        for (card_title, copy) in cards {
-            body = body.push(Box::new(Card::titled(*card_title, paragraph(copy, theme))));
+        if page == TourPage::Start {
+            let mut checklist = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_gap(theme.tokens.spacing.s2);
+            for (card_title, copy) in cards {
+                checklist = checklist.push(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(theme.tokens.spacing.s1)
+                        .push(Box::new(
+                            Text::new(card_title)
+                                .with_role(ui::tokens::typography::TextRole::Label)
+                                .with_color(theme.text_primary),
+                        ))
+                        .push(paragraph(copy, theme)),
+                ));
+            }
+            // The numbered labels already provide the grouping and order. A
+            // second titled/padded card spent nearly a full row of a laptop
+            // viewport on decoration and pushed the last action below the
+            // sticky footer.
+            body = body.push(Box::new(checklist));
+        } else {
+            for (card_title, copy) in cards {
+                body = body.push(Box::new(Card::titled(*card_title, paragraph(copy, theme))));
+            }
         }
         Box::new(body)
     }
@@ -1429,7 +1463,7 @@ impl OnboardingView {
                 .push(actions(vec![Box::new(backup_button)])),
         ));
 
-        let mut page = Column::new()
+        let page = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(if compact {
@@ -4205,6 +4239,68 @@ mod tests {
         let panel = view.composed.as_ref().expect("composition").get_rect();
         assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
         assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
+    }
+
+    #[test]
+    fn first_frames_do_not_hide_backup_recovery_or_final_tour_tasks() {
+        fn initial_scroll_offset(view: &mut OnboardingView) -> f32 {
+            let theme = Theme::dark();
+            let mut text = ui::text_render::TextRenderer::new();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
+            let measure_map = node_map.clone();
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(1280.0),
+                        height: taffy::AvailableSpace::Definite(800.0),
+                    },
+                    |known, available, node_id, _, _| {
+                        measure_map
+                            .get(&node_id)
+                            .map_or(taffy::Size::ZERO, |&pointer| unsafe {
+                                (*pointer).measure(known, available, &mut text)
+                            })
+                    },
+                )
+                .expect("laptop-height onboarding layout");
+            view.apply_layout(&taffy, node, Point::ZERO);
+            let scroll_pointer = node_map
+                .values()
+                .copied()
+                .find(|&pointer| unsafe { (*pointer).name() == "Scrollable" })
+                .expect("onboarding body scroll viewport");
+            unsafe {
+                (*scroll_pointer)
+                    .as_any_mut()
+                    .and_then(|widget| widget.downcast_mut::<Scrollable>())
+                    .expect("onboarding scroll geometry")
+                    .max_offset_y()
+            }
+        }
+
+        let mut backup = OnboardingView::with_minter_for_host_desktop(Box::new(|| {
+            Ok(MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: PathBuf::from("/identity/primary.json"),
+            })
+        }));
+        backup.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
+        assert_eq!(
+            initial_scroll_offset(&mut backup),
+            0.0,
+            "the recovery explanation belongs with the backup form, not half-clipped beneath it"
+        );
+
+        let mut final_tour = OnboardingView::new_tour();
+        final_tour.tour_page = Some(TourPage::Start);
+        assert_eq!(
+            initial_scroll_offset(&mut final_tour),
+            0.0,
+            "every first-five-minutes task must be visible before a person discovers scrolling"
+        );
     }
 
     #[test]
