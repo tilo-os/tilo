@@ -4928,6 +4928,67 @@ mod tests {
         );
     }
 
+    /// A collaborator can publish the annotation-set name before this device
+    /// has ever opened its local replica.  On launch, the durable room index
+    /// must make that exact deterministic PDF record discoverable without
+    /// allocating it; opening the same file then checks out the discovered
+    /// record rather than inventing a differently-addressed annotation set.
+    #[test]
+    #[serial(pdfium)]
+    fn imported_room_index_discovers_pdf_markup_before_checkout() {
+        let (_dir, a, _b) = two_documents();
+        let markup = PdfApp::markup_record_for(&a);
+        let mut collaborator_room = AutoCommit::new();
+        assert!(ui::record::room::reference(
+            &mut collaborator_room,
+            &markup.id,
+            &markup.kind
+        ));
+        for (target, _) in &markup.references {
+            assert!(ui::record::room::reference(
+                &mut collaborator_room,
+                &target.id,
+                &target.kind
+            ));
+        }
+        let imported_room = AutoCommit::load(&collaborator_room.save())
+            .expect("a collaborator room index transfers as an Automerge document");
+
+        let mut records = ui::RecordSet::in_memory().with_home("shared-pdf-room");
+        let discovered = records.discover_room(&imported_room);
+        assert!(
+            discovered
+                .iter()
+                .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
+        );
+        assert!(
+            records
+                .known_records()
+                .iter()
+                .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
+        );
+        assert!(
+            records.open_records().is_empty(),
+            "room discovery only admits identities; it must not materialize a local record"
+        );
+
+        let app = PdfApp::open(&a);
+        let mut state = ui::State::new();
+        let mut launch_room = imported_room;
+        ui::record::tick(&mut records, &mut state, Some(&mut launch_room), &app);
+        assert_eq!(records.active(), Some(&markup.id));
+        assert!(
+            records
+                .open_records()
+                .iter()
+                .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
+        );
+        assert!(
+            ui::record::room::holds(&launch_room, &markup.id),
+            "checkout retains the imported annotation-set room grant"
+        );
+    }
+
     fn app_with_state() -> (PdfApp, ui::State) {
         let mut app = PdfApp::sample();
         let mut st = ui::State::new();
@@ -5005,6 +5066,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "this lifecycle test intentionally verifies canonical page, bookmark, markup, reply, and find-result addresses together"
+    )]
     fn global_search_pages_canonically_and_stale_page_hits_fail_closed() {
         let (mut app, mut state) = app_with_state();
         let provider = Widget::search_providers(&app)
@@ -5038,6 +5103,21 @@ mod tests {
                     .any(|action| action.id == address.action)
             );
         }
+        let bookmark_address = provider
+            .search("security model")
+            .into_iter()
+            .filter_map(|result| result.action_address())
+            .find(|address| address.resource.starts_with("pdf.outline:"))
+            .expect("PDF bookmarks are globally searchable by their canonical action");
+        let bookmark_resource =
+            qos_actions::ResourceProvider::resource(&app, &state.doc, &bookmark_address.resource)
+                .expect("bookmark search result resolves to the current outline resource");
+        assert!(
+            bookmark_resource
+                .actions
+                .iter()
+                .any(|action| action.id == bookmark_address.action)
+        );
         let reply_address = provider
             .search("folded it")
             .into_iter()
@@ -5524,6 +5604,24 @@ mod tests {
         assert!(
             (w200 - 2.0 * w100).abs() < 1.0,
             "200% page must be twice the 100% page"
+        );
+        // A deliberate page-top view makes the high-zoom crop reviewable:
+        // zoom retains the reader's focal scroll position, while page
+        // navigation remains an immediate, keyboard-equivalent way to return
+        // to the start of readable content.
+        app.go_to_page(1);
+        app.viewport.set_scroll(0.0, app.scroll_y());
+        full_frame(
+            &mut app,
+            &mut st,
+            1280.0,
+            800.0,
+            Some("/tmp/pdf_repro/zoom_200_page_top.png"),
+        );
+        assert_eq!(app.nearest_page(), 1, "page-top zoom view remains usable");
+        assert!(
+            app.scroll_x().abs() < f64::EPSILON,
+            "review frame starts at the leading column"
         );
 
         // --- Ctrl+wheel zoom changes scale (the wheel handler's reducer). ---

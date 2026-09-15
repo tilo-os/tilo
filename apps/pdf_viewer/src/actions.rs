@@ -74,6 +74,42 @@ pub fn search_result_token(query: &str, whole_word: bool, case_sensitive: bool) 
     format!("{hash:016x}")
 }
 
+/// Return the stable resource id for one source-PDF outline entry.
+///
+/// Outline order is presentation state: changing an earlier bookmark must not
+/// make a saved action for a later bookmark open a different section.  The
+/// identity therefore covers the immutable entry value plus its occurrence
+/// among identical entries (PDFs may legitimately repeat a title/page/level).
+/// A changed or removed entry fails closed during resolution instead of being
+/// rebound to a new ordinal.
+pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String> {
+    let (title, page, level) = ctx.outline.get(index)?;
+    let occurrence = ctx
+        .outline
+        .get(..index)?
+        .iter()
+        .filter(|(prior_title, prior_page, prior_level)| {
+            prior_title == title && prior_page == page && prior_level == level
+        })
+        .count();
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in title
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain([0])
+        .chain(page.to_string().bytes())
+        .chain([0])
+        .chain(level.to_string().bytes())
+        .chain([0])
+        .chain(occurrence.to_string().bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(format!("pdf.outline:{}:{hash:016x}", ctx.doc_id))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PdfOperation {
     PreviousPage,
@@ -910,18 +946,17 @@ fn page_resource(ctx: &PdfResourceCtx, page: usize, page_id: &str) -> Resource {
     page_resource
 }
 
-fn outline_resource(ctx: &PdfResourceCtx, index: usize, title: &str, page: usize) -> Resource {
-    Resource::new(
-        format!("pdf.outline:{}:{index}", ctx.doc_id),
-        "pdf.outline-item",
-        title,
+fn outline_resource(ctx: &PdfResourceCtx, index: usize) -> Option<Resource> {
+    let (title, page, _) = ctx.outline.get(index)?;
+    let id = outline_resource_id(ctx, index)?;
+    Some(
+        Resource::new(id, "pdf.outline-item", title.as_str()).with_action(operation(
+            "open",
+            &format!("Go to page {page}"),
+            OperationKind::View,
+            PdfOperation::GoToPage { page: *page },
+        )),
     )
-    .with_action(operation(
-        "open",
-        &format!("Go to page {page}"),
-        OperationKind::View,
-        PdfOperation::GoToPage { page },
-    ))
 }
 
 fn search_result_resource(ctx: &PdfResourceCtx, index: usize, page: usize) -> Resource {
@@ -1058,10 +1093,10 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
         root = root.with_child(page_resource(ctx, page, page_id));
     }
 
-    for (index, (title, page, _level)) in
-        ctx.outline.iter().take(CONTEXTUAL_CHILD_LIMIT).enumerate()
-    {
-        root = root.with_child(outline_resource(ctx, index, title, *page));
+    for index in 0..ctx.outline.len().min(CONTEXTUAL_CHILD_LIMIT) {
+        if let Some(resource) = outline_resource(ctx, index) {
+            root = root.with_child(resource);
+        }
     }
     if !ctx.search_query.trim().is_empty() {
         let mut search = Resource::new(
@@ -1339,13 +1374,12 @@ pub fn resolve_resource(ctx: &PdfResourceCtx, doc: &AutoCommit, id: &str) -> Opt
             });
     }
     let outline_prefix = format!("pdf.outline:{}:", ctx.doc_id);
-    if let Some(raw) = id.strip_prefix(&outline_prefix)
-        && let Ok(index) = raw.parse::<usize>()
-    {
-        return ctx
-            .outline
-            .get(index)
-            .map(|(title, page, _)| outline_resource(ctx, index, title, *page));
+    if id.strip_prefix(&outline_prefix).is_some() {
+        return ctx.outline.iter().enumerate().find_map(|(index, _)| {
+            (outline_resource_id(ctx, index).as_deref() == Some(id))
+                .then(|| outline_resource(ctx, index))
+                .flatten()
+        });
     }
     let search_prefix = format!("pdf.search-result:{}:", ctx.doc_id);
     if let Some(raw) = id.strip_prefix(&search_prefix) {
@@ -1891,9 +1925,83 @@ mod tests {
         assert_eq!(resolved.id.as_str(), omitted);
         assert_eq!(resolved.label, format!("Page {page_count}"));
 
+        let mut find = ctx.clone();
+        find.search_query = "fixture".into();
+        find.search_token = search_result_token("fixture", false, false);
+        find.search_pages = (1..=SEARCH_RESULT_RESOURCE_LIMIT + 9).collect();
+        let find_snapshot = provide_resources(&find, &doc);
+        let find_resource = find_snapshot[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "pdf.search")
+            .expect("non-empty find query has a result resource");
+        assert_eq!(find_resource.children.len(), SEARCH_RESULT_RESOURCE_LIMIT);
+        let omitted_find = format!(
+            "pdf.search-result:{}:{}:{}:{}",
+            find.doc_id,
+            find.search_token,
+            SEARCH_RESULT_RESOURCE_LIMIT,
+            SEARCH_RESULT_RESOURCE_LIMIT + 1
+        );
+        assert!(
+            resolve_resource(&find, &doc, &omitted_find).is_some(),
+            "an omitted find hit remains addressable by its stable query/result id"
+        );
+
         let mut stale = ctx;
         stale.page_ids.pop();
         stale.page_count -= 1;
         assert!(resolve_resource(&stale, &doc, &omitted).is_none());
+    }
+
+    #[test]
+    fn outline_resource_ids_survive_reordering_but_fail_closed_when_changed() {
+        let mut ctx = PdfResourceCtx {
+            doc_id: "fixture-document".into(),
+            title: "Outline fixture".into(),
+            page: 1,
+            page_count: 3,
+            page_ids: vec!["p-1".into(), "p-2".into(), "p-3".into()],
+            page_sources: vec![1, 2, 3],
+            page_imports: vec![None; 3],
+            author: "Ada".into(),
+            signature_date: "2026-09-06".into(),
+            created_seed: 0,
+            search_query: String::new(),
+            search_whole_word: false,
+            search_case_sensitive: false,
+            search_token: search_result_token("", false, false),
+            search_pages: Vec::new(),
+            outline: vec![
+                ("Introduction".into(), 1, 0),
+                ("Security model".into(), 2, 0),
+                ("Security model".into(), 2, 0),
+            ],
+        };
+        let doc = AutoCommit::new();
+        let introduction = outline_resource_id(&ctx, 0).expect("valid outline entry");
+        let first_security = outline_resource_id(&ctx, 1).expect("valid outline entry");
+        let duplicate_security = outline_resource_id(&ctx, 2).expect("valid duplicate entry");
+        assert_ne!(
+            first_security, duplicate_security,
+            "duplicates retain identities"
+        );
+        assert!(resolve_resource(&ctx, &doc, &introduction).is_some());
+        assert!(resolve_resource(&ctx, &doc, &first_security).is_some());
+        assert!(resolve_resource(&ctx, &doc, &duplicate_security).is_some());
+
+        ctx.outline.insert(0, ("Preface".into(), 1, 0));
+        assert!(
+            resolve_resource(&ctx, &doc, &first_security).is_some(),
+            "inserting another bookmark does not rebind the saved action"
+        );
+        assert!(resolve_resource(&ctx, &doc, &introduction).is_some());
+        assert!(resolve_resource(&ctx, &doc, &duplicate_security).is_some());
+
+        ctx.outline[1].1 = 3;
+        assert!(
+            resolve_resource(&ctx, &doc, &introduction).is_none(),
+            "a changed bookmark fails closed rather than opening another section"
+        );
     }
 }
