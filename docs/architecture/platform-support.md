@@ -87,7 +87,16 @@ and enrolled Secure Boot variable templates. A maintained newer libvirt package 
 native VM acceptance are still required. Domain rendering now selects ARM64 `virt`, GICv3 and TPM TIS with
 protected variable storage and explicitly enrolled Secure Boot keys; x86 keeps
 its q35/SMM configuration. Both domain variants are covered by native ARM64
-unit tests, but XML rendering alone does not establish guest boot support.
+unit tests, but XML rendering alone does not establish guest boot support. Both
+rendered definitions also pass the libvirt 12.7.0 Relax NG schema using
+`os/tests/windows_vm_schema.sh`. That source archive has SHA-256
+`7ec1a04e7e4f4069353d4daac117bbe869287f5b202695de61fe1b079efb6cb6`;
+its detached release signature verifies against the key obtained from the
+[official download server](https://download.libvirt.org/gpg_key.asc), fingerprint
+`453B65310595562855471199CA68BE8010084C9C`. This records upstream HTTPS key
+provenance, not independent certification of that key. Native RPM construction
+from the upstream spec has started; it is not yet a verified replacement for
+the existing package snapshot.
 
 The pinned `virtio-win-0.1.302-1.noarch.rpm` was downloaded and verified against
 its manifest SHA-256. Inspection found 76 ARM64 PE driver files, including
