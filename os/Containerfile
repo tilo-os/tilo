@@ -1040,6 +1040,7 @@ COPY os/usr/share/dbus-1/system.d/zz-qos-projector-wifi-direct.conf \
 COPY \
     os/usr/lib/systemd/user/qos-ush.service \
     os/usr/lib/systemd/user/qos-fs-recipient.service \
+    os/usr/lib/systemd/user/qos-graphical-session.target \
     /usr/lib/systemd/user/
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter \
@@ -1177,7 +1178,6 @@ COPY \
     os/usr/share/wayland-sessions/shell-peer-sync.desktop \
     /usr/share/wayland-sessions/
 COPY --chmod=0755 os/usr/libexec/qos-session /usr/libexec/qos-session
-COPY os/usr/lib/systemd/user/qos-graphical-session.target /usr/lib/systemd/user/qos-graphical-session.target
 
 # Default compositor config
 COPY os/etc/qos/desktop.toml /etc/qos/desktop.toml
@@ -1830,8 +1830,11 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 # initramfs generation — hence the explicit dracut call below. The base's
 # dracut drop-ins (/usr/lib/dracut/dracut.conf.d/*bootc*) already add the
 # crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
+ARG QOS_HARDWARE_PROFILE=generic
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
+    --mount=type=bind,source=os/hardware/firmware,target=/run/qos-hardware-firmware \
+    --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/qos-prepare-hardware-profile.py \
     set -eux; \
     mkdir -p /etc/qos-swap.d; \
     printf '[frozen]\nname=frozen\nbaseurl=file:///frozen-repo\ngpgcheck=0\nenabled=1\n' \
@@ -1890,6 +1893,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     for d in /usr/lib/modules/*; do \
       [ "$d" = "/usr/lib/modules/$kver" ] || rm -rf "$d"; \
     done; \
+    # Stage model firmware and the hashed device-tree profile before dracut and
+    # the rootfs split. The UKI builder then embeds that exact device tree.
+    python3 /run/qos-prepare-hardware-profile.py \
+        --profile "$QOS_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
+        --firmware-dir "/run/qos-hardware-firmware/$QOS_HARDWARE_PROFILE"; \
     # --add rather than trusting the base's drop-ins to pull these in: the same
     # invocation produced an initramfs WITH the crypt modules locally and WITHOUT
     # them under the CI builder, silently, and a missing module here is a root
@@ -2031,8 +2039,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         systemd-boot-unsigned \
         binutils \
     && dnf clean all
-COPY os/dev/uki.sh /usr/local/bin/uki.sh
-COPY os/dev/make-boot-splash.py /usr/local/bin/make-boot-splash.py
+COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/make-boot-splash.py /usr/local/bin/
 
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`

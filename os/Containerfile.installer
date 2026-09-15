@@ -7,7 +7,8 @@
 # before this existed and has been removed.
 #
 # build-custom-installer.sh assembles an exact rootfs overlay as the context.
-FROM localhost/qos:latest
+ARG QOS_BASE_IMAGE=localhost/qos:latest
+FROM ${QOS_BASE_IMAGE}
 
 ARG QOS_INSTALLER_DEV_SSH=0
 

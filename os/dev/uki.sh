@@ -51,6 +51,17 @@ ukify_args=(
   --json pretty
 )
 
+# A device-specific image carries a trusted profile in its measured rootfs.
+# Embed its pinned DTB before either ukify path measures the UKI. systemd-stub
+# supplies .dtb to the kernel and measures it into PCR 11. The installer derives
+# both its live and target UKIs from this image, retaining the same section;
+# sign-target-prediction.sh already measures .dtb from the final resealed UKI.
+# Never add an editable loader-entry DTB or a target-side path override here.
+profile_dtb="$(python3 /usr/local/bin/uki-hardware-profile.py "$target" "$kver" "$(uname -m)")"
+if [ -n "$profile_dtb" ]; then
+  ukify_args+=(--devicetree "$profile_dtb")
+fi
+
 if [ -n "${CFS_DIGEST:-}" ]; then
   cfs_digest="${CFS_DIGEST#sha512:}"
   [[ "$cfs_digest" =~ ^[0-9a-f]{128}$ ]] || {
