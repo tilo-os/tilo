@@ -8328,6 +8328,7 @@ name = "media"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",
