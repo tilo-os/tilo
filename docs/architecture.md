@@ -10,6 +10,7 @@ A Wayland compositor responsible for the desktop environment. It handles window 
 **Window Management Paradigm:**
 - **Spatial model:** Windows cannot overlap. Apps are organized as `Workspace → Strip → WindowGroup → Tab`: tabs tile within a group, groups scroll horizontally within a strip (Niri-inspired), strips stack within a workspace, and workspaces are switched via a wheel disc.
 - **Per-workspace sandboxing:** Each workspace runs in an isolated Bubblewrap sandbox with its own file-access allowlist. When an app requests a path outside it, the compositor prompts the user, who can grant access temporarily or permanently to the workspace.
+- **Wayland client attribution:** Sandboxed apps see only the public compositor socket. At accept time the compositor resolves kernel `SO_PEERCRED` through its live, start-time-checked launcher registry and stores the authenticated package and durable workspace room on the Wayland client. Toplevels are admitted only to that room and may not substitute another package's `app_id`. An orphaned or otherwise unknown client outside the compositor's user/mount namespaces is denied, so losing launcher ancestry cannot silently downgrade a sandboxed client to host trust. Direct same-namespace host clients are intentionally unconfined and remain compatible; privileged clipboard/session-lock and OSK protocols use separate private sockets.
 - **Collaboration:** Users can invite peers to a specific workspace, sharing its context via Wayland buffer streaming and remote input injection.
 
 ### 2. FUSE Filesystem (`fs`)

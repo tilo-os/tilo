@@ -69,6 +69,27 @@ pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<
     tab
 }
 
+/// Adopt a launcher-attributed toplevel into its durable workspace room even
+/// when the person switched workspaces while the process was starting.
+/// Unknown rooms are denied rather than falling back to the active workspace.
+pub fn adopt_toplevel_in_room(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    app_id: Option<String>,
+    room: crate::shell::state::RoomId,
+) -> Option<TabId> {
+    let target = tree
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .map(|workspace| workspace.id)?;
+    let previous = tree.active;
+    tree.active = target;
+    let tab = adopt_toplevel(tree, surface_id, app_id);
+    tree.active = previous;
+    Some(tab)
+}
+
 /// [`adopt_toplevel`] with the placement supplied explicitly, so the placement rule is assertable without staging a launch.
 pub fn adopt_toplevel_at(
     tree: &mut WorkspaceTree,
@@ -1795,6 +1816,74 @@ mod tests {
             }
             other => panic!("expected Foreign tile, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn attributed_toplevel_lands_in_its_room_without_switching_the_desktop() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        assert!(
+            tree.workspaces.len() >= 2,
+            "fixture needs distinct workspaces"
+        );
+        let active = tree.active;
+        let target_room = tree.workspaces[1].room;
+        let target_id = tree.workspaces[1].id;
+
+        let tab =
+            adopt_toplevel_in_room(&mut tree, 8_888, Some("dev.qos.notes".into()), target_room)
+                .expect("known room is accepted");
+
+        assert_eq!(
+            tree.active, active,
+            "a background launch cannot switch workspaces"
+        );
+        let target = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == target_id)
+            .unwrap();
+        assert!(
+            target
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .any(|candidate| candidate.id == tab)
+        );
+        assert!(
+            tree.workspaces
+                .iter()
+                .filter(|workspace| workspace.id != target_id)
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .all(|candidate| !matches!(
+                    candidate.tile,
+                    TileContent::Foreign {
+                        surface_id: 8_888,
+                        ..
+                    }
+                ))
+        );
+    }
+
+    #[test]
+    fn attributed_toplevel_refuses_a_stale_room() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let active = tree.active;
+        assert_eq!(
+            adopt_toplevel_in_room(
+                &mut tree,
+                9_999,
+                Some("dev.qos.notes".into()),
+                crate::shell::state::RoomId::new()
+            ),
+            None
+        );
+        assert_eq!(tree.active, active);
+        assert!(group_id_for_surface(&tree, 9_999).is_none());
     }
 
     #[test]
