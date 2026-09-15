@@ -9,7 +9,11 @@ qpkg_dir=${TILO_APP_QPKG_DIR:?directory containing the complete qpkg set is requ
 runtime_dir=${TILO_APP_RUNTIME_DIR:?matching signed runtime bundle is required}
 out=${TILO_APP_COLLECTION_OUT:?collection output directory is required}
 source=${GITHUB_SHA:-${TILO_APP_SOURCE:-unknown}}
-source_epoch=${SOURCE_DATE_EPOCH:-$(git -C "$repo_root" log -1 --format=%ct)}
+source_epoch=${SOURCE_DATE_EPOCH:-0}
+[[ $source_epoch =~ ^[0-9]+$ ]] || {
+    printf 'SOURCE_DATE_EPOCH must be a non-negative integer\n' >&2
+    exit 2
+}
 
 case "$architecture" in x86_64|aarch64) ;; *) exit 2 ;; esac
 plan=$(realpath "$plan")
