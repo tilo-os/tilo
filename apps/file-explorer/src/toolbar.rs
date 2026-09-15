@@ -254,18 +254,22 @@ impl FileToolbar {
             out.push(Box::new(button));
         }
 
-        // Overflow: the labelled View-options menu (new folder/file, show
-        // hidden, terminal). The trigger is the conventional ⋯ affordance; every
-        // action it reveals is spelled out in words.
-        let sink = self.sink.clone();
-        out.push(Box::new(
-            Button::new("files.view_menu", "", None)
-                .with_icon(Icon::MoreHorizontal)
-                .with_size(NAV_W, NAV_H)
-                .with_accessible_name(&t("files-view-options"))
-                .tooltip(t("files-view-options"))
-                .on_effect(move || push(&sink, FileCommand::OpenViewMenu)),
-        ));
+        // Archive browsing is read-only and already has a direct Extract
+        // control. Its overflow would contain only a duplicate Extract row,
+        // so omit the no-choice menu entirely.
+        if !self.archive_read_only {
+            // Overflow: the labelled View-options menu (new folder/file, show
+            // hidden, terminal). Every action it reveals is spelled out.
+            let sink = self.sink.clone();
+            out.push(Box::new(
+                Button::new("files.view_menu", "", None)
+                    .with_icon(Icon::MoreHorizontal)
+                    .with_size(NAV_W, NAV_H)
+                    .with_accessible_name(&t("files-view-options"))
+                    .tooltip(t("files-view-options"))
+                    .on_effect(move || push(&sink, FileCommand::OpenViewMenu)),
+            ));
+        }
         out
     }
 
@@ -283,7 +287,9 @@ impl FileToolbar {
     /// flip a tall menu above the trigger when a constrained viewport cannot
     /// fit the normal below-trigger placement.
     pub fn view_menu_rect(&self) -> Option<Rect> {
-        self.right.last().map(|button| button.get_rect())
+        (!self.archive_read_only)
+            .then(|| self.right.last().map(|button| button.get_rect()))
+            .flatten()
     }
 
     /// Bottom-right anchor of the "Sort by" button (present only in grid mode,
