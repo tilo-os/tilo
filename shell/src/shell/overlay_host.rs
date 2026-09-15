@@ -151,6 +151,101 @@ mod clipboard_manager_tests {
     }
 }
 
+#[cfg(test)]
+mod device_fabric_ui_tests {
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::device_fabric::DeviceKind;
+    use crate::shell::personal_continuity::DeviceId;
+    use crate::shell::state::WorkspaceTree;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use ui::widget::Container;
+
+    fn fixture() -> (DeviceFabricView, DeviceId) {
+        let remote = DeviceId::new("certified-laptop").unwrap();
+        (
+            DeviceFabricView {
+                devices: vec![FabricDeviceView {
+                    id: remote.clone(),
+                    label: "Travel laptop".into(),
+                    kind: DeviceKind::Laptop,
+                    is_local: false,
+                    online: true,
+                    audio_output: true,
+                    video_output: true,
+                    display: true,
+                }],
+                local_media: vec![FabricMediaView {
+                    session_id: "dev.qos.video:7".into(),
+                    title: "Shared film".into(),
+                    playing: true,
+                    has_video: true,
+                    targets: vec![remote.clone()],
+                }],
+                local_outputs: vec![LocalMediaOutputView {
+                    node_id: 41,
+                    label: "Bluetooth headphones".into(),
+                    is_default: false,
+                    bluetooth_codec: Some("AAC".into()),
+                }],
+            },
+            remote,
+        )
+    }
+
+    #[test]
+    fn device_pane_routes_local_audio_and_exact_remote_media() {
+        let (view, remote) = fixture();
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let bridge_view = view;
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(bridge_view.clone())
+        }));
+        host.apply_quick_settings_root_action(RootAction::OpenDevices, &chrome);
+        assert_eq!(
+            chrome.borrow().quick_settings.current_level(),
+            &crate::shell::quick_settings::QsLevel::Devices
+        );
+
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+        let actions = actions.borrow();
+        assert!(actions.contains(&DeviceFabricUiAction::RouteLocalAudio { node_id: 41 }));
+        assert!(actions.contains(&DeviceFabricUiAction::HandoffMedia {
+            session_id: "dev.qos.video:7".into(),
+            target: remote,
+        }));
+    }
+
+    #[test]
+    fn incompatible_device_row_does_not_emit_a_handoff() {
+        let (mut view, _) = fixture();
+        view.local_media[0].targets.clear();
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let host_view = view.clone();
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(host_view.clone())
+        }));
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+        assert!(
+            !actions
+                .borrow()
+                .iter()
+                .any(|action| matches!(action, DeviceFabricUiAction::HandoffMedia { .. }))
+        );
+    }
+}
+
 fn notification_history_relative_time(notification: &Notification, now: Instant) -> String {
     let seconds = now
         .saturating_duration_since(notification.created_at)
@@ -296,6 +391,91 @@ pub enum ClipboardManagerAction {
 pub type ClipboardManagerBridge = std::rc::Rc<
     dyn Fn(ClipboardManagerAction) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot>,
 >;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "presence and independently negotiated output/display capabilities are orthogonal facts"
+)]
+pub struct FabricDeviceView {
+    pub id: crate::shell::personal_continuity::DeviceId,
+    pub label: String,
+    pub kind: crate::shell::device_fabric::DeviceKind,
+    pub is_local: bool,
+    pub online: bool,
+    pub audio_output: bool,
+    pub video_output: bool,
+    pub display: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FabricMediaView {
+    pub session_id: String,
+    pub title: String,
+    pub playing: bool,
+    pub has_video: bool,
+    pub targets: Vec<crate::shell::personal_continuity::DeviceId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalMediaOutputView {
+    pub node_id: u32,
+    pub label: String,
+    pub is_default: bool,
+    pub bluetooth_codec: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceFabricView {
+    pub devices: Vec<FabricDeviceView>,
+    pub local_media: Vec<FabricMediaView>,
+    pub local_outputs: Vec<LocalMediaOutputView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceFabricUiAction {
+    Snapshot,
+    HandoffMedia {
+        session_id: String,
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    RouteLocalAudio {
+        node_id: u32,
+    },
+}
+
+pub type DeviceFabricBridge =
+    std::rc::Rc<dyn Fn(DeviceFabricUiAction) -> Result<DeviceFabricView, String>>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DeviceFabricPaneRow {
+    Media(FabricMediaView),
+    LocalOutput(LocalMediaOutputView),
+    Device(FabricDeviceView),
+}
+
+fn device_fabric_pane_rows(view: &DeviceFabricView) -> Vec<DeviceFabricPaneRow> {
+    view.local_media
+        .iter()
+        .take(2)
+        .cloned()
+        .map(DeviceFabricPaneRow::Media)
+        .chain(
+            view.local_outputs
+                .iter()
+                .take(2)
+                .cloned()
+                .map(DeviceFabricPaneRow::LocalOutput),
+        )
+        .chain(
+            view.devices
+                .iter()
+                .take(3)
+                .cloned()
+                .map(DeviceFabricPaneRow::Device),
+        )
+        .collect()
+}
 
 /// Secret operations stay behind a narrow bridge to the certified personal
 /// fabric. This enum intentionally has no `Debug` implementation so a future
@@ -871,6 +1051,9 @@ pub struct ShellOverlayHost {
     /// them.
     qs_clipboard_history_start: usize,
     qs_clipboard_wheel_remainder: f64,
+    /// The local session selected as the source for a certified-device route.
+    /// This is private view state, never convergent fabric state.
+    qs_selected_media: Option<String>,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -956,6 +1139,9 @@ pub struct ShellOverlayHost {
     /// Privileged in-process access to the compositor's bounded clipboard
     /// history. Absent in screenshots and embedders.
     clipboard_manager_bridge: Option<ClipboardManagerBridge>,
+    /// Certified peer and media-output actions. Remote actions stay on the
+    /// exact-target personal lane; local sinks stay inside `PipeWire`.
+    device_fabric_bridge: Option<DeviceFabricBridge>,
     wifi_secret_bridge: Option<WifiSecretBridge>,
     /// Session-local control path into the typed app broker. Follow never
     /// enters the replicated workspace document or crosses the network.
@@ -1741,6 +1927,7 @@ impl ShellOverlayHost {
                     crate::shell::quick_settings::QsLevel::Root
                         | crate::shell::quick_settings::QsLevel::Notifications
                         | crate::shell::quick_settings::QsLevel::Clipboard
+                        | crate::shell::quick_settings::QsLevel::Devices
                 )
             })
         {
@@ -1867,6 +2054,7 @@ impl ShellOverlayHost {
             qs_notification_wheel_remainder: 0.0,
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
+            qs_selected_media: None,
             power_menu: PowerMenu::default(),
             session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -1890,6 +2078,7 @@ impl ShellOverlayHost {
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
             clipboard_manager_bridge: None,
+            device_fabric_bridge: None,
             wifi_secret_bridge: None,
             follow_bridge: None,
             follow_presence_bridge: None,
@@ -2777,6 +2966,19 @@ impl ShellOverlayHost {
     /// Attach the compositor-owned clipboard history to trusted shell chrome.
     pub fn set_clipboard_manager_bridge(&mut self, bridge: ClipboardManagerBridge) {
         self.clipboard_manager_bridge = Some(bridge);
+    }
+
+    /// Attach the authenticated personal-device and local-output control
+    /// surface. An absent bridge renders an honest unprovisioned state.
+    pub fn set_device_fabric_bridge(&mut self, bridge: DeviceFabricBridge) {
+        self.device_fabric_bridge = Some(bridge);
+    }
+
+    fn device_fabric_call(&self, action: DeviceFabricUiAction) -> Result<DeviceFabricView, String> {
+        self.device_fabric_bridge.as_ref().map_or_else(
+            || Err("Personal device fabric is not available in this session".into()),
+            |bridge| bridge(action),
+        )
     }
 
     /// Attach the encrypted same-person credential store. Sessions without a
@@ -6562,6 +6764,13 @@ impl ShellOverlayHost {
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
                     .clamp(160.0, 552.0)
             }
+            QsLevel::Devices => self
+                .device_fabric_call(DeviceFabricUiAction::Snapshot)
+                .map_or(190.0, |view| {
+                    let rows = device_fabric_pane_rows(&view).len();
+                    (82.0 + 58.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                        .clamp(190.0, 552.0)
+                }),
         }
     }
 
@@ -9726,6 +9935,11 @@ impl ShellOverlayHost {
             self.handle_qs_clipboard_click(p);
         } else if matches!(
             current_level,
+            crate::shell::quick_settings::QsLevel::Devices
+        ) {
+            self.handle_qs_device_fabric_click(p);
+        } else if matches!(
+            current_level,
             crate::shell::quick_settings::QsLevel::Notifications
         ) && self.qs_notification_clear_rect().contains(p)
             && let Some(chrome) = self.chrome.clone()
@@ -9733,6 +9947,67 @@ impl ShellOverlayHost {
             chrome.borrow_mut().clear_notification_history();
             self.qs_notification_history_start = 0;
             self.qs_notification_wheel_remainder = 0.0;
+        }
+    }
+
+    fn handle_qs_device_fabric_click(&mut self, point: Point) {
+        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+            return;
+        };
+        self.normalise_qs_selected_media(&view);
+        let rows = device_fabric_pane_rows(&view);
+        let Some(item) = rows
+            .iter()
+            .enumerate()
+            .find(|(index, _)| self.qs_device_row_rect(*index).contains(point))
+            .map(|(_, item)| item.clone())
+        else {
+            return;
+        };
+        let action = match item {
+            DeviceFabricPaneRow::Media(media) => {
+                self.qs_selected_media = Some(media.session_id);
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                return;
+            }
+            DeviceFabricPaneRow::LocalOutput(output) if !output.is_default => Some((
+                DeviceFabricUiAction::RouteLocalAudio {
+                    node_id: output.node_id,
+                },
+                format!("Audio is now routed to {}", output.label),
+            )),
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local && device.online && self.qs_selected_media.is_some() =>
+            {
+                let session_id = self.qs_selected_media.clone().unwrap_or_default();
+                let compatible = view.local_media.iter().any(|media| {
+                    media.session_id == session_id && media.targets.contains(&device.id)
+                });
+                compatible.then(|| {
+                    (
+                        DeviceFabricUiAction::HandoffMedia {
+                            session_id,
+                            target: device.id,
+                        },
+                        format!("Opening media on {}", device.label),
+                    )
+                })
+            }
+            _ => None,
+        };
+        let Some((action, success)) = action else {
+            return;
+        };
+        let result = self.device_fabric_call(action);
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            match result {
+                Ok(_) => state.push_notification("Devices & media", success),
+                Err(error) => state.push_notification("Could not route media", error),
+            };
+            state.bump();
         }
     }
 
@@ -9968,6 +10243,14 @@ impl ShellOverlayHost {
                 drop(st);
                 self.qs_clipboard_history_start = 0;
                 self.qs_clipboard_wheel_remainder = 0.0;
+            }
+            RootAction::OpenDevices => {
+                let mut st = chrome.borrow_mut();
+                st.quick_settings
+                    .push_level(crate::shell::quick_settings::QsLevel::Devices);
+                st.bump();
+                drop(st);
+                self.qs_selected_media = None;
             }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
@@ -11955,6 +12238,72 @@ impl Widget for ShellOverlayHost {
                                     .with_children(vec![
                                         AccessNode::new(Role::List)
                                             .with_name("Retained clipboard items")
+                                            .with_children(items),
+                                    ]),
+                            );
+                        } else if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Devices
+                        ) {
+                            let view = self
+                                .device_fabric_call(DeviceFabricUiAction::Snapshot)
+                                .unwrap_or_default();
+                            let selected_id = self.qs_selected_media.as_ref().or_else(|| {
+                                view.local_media
+                                    .iter()
+                                    .find(|media| media.playing)
+                                    .or_else(|| view.local_media.first())
+                                    .map(|media| &media.session_id)
+                            });
+                            let selected = selected_id.and_then(|id| {
+                                view.local_media.iter().find(|media| &media.session_id == id)
+                            });
+                            let rows = device_fabric_pane_rows(&view);
+                            let total = rows.len();
+                            let items = rows
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, item)| {
+                                    let (name, description) = match item {
+                                        DeviceFabricPaneRow::Media(media) => (
+                                            media.title,
+                                            if media.playing {
+                                                "Playing now; choose this media for routing"
+                                            } else {
+                                                "Paused; choose this media for routing"
+                                            }
+                                            .to_string(),
+                                        ),
+                                        DeviceFabricPaneRow::LocalOutput(output) => (
+                                            output.label,
+                                            if output.is_default {
+                                                "Current local audio output".into()
+                                            } else {
+                                                "Route current and future local audio here".into()
+                                            },
+                                        ),
+                                        DeviceFabricPaneRow::Device(device) => (
+                                            device.label.clone(),
+                                            Self::fabric_device_detail(&device, selected),
+                                        ),
+                                    };
+                                    AccessNode::new(Role::Button)
+                                        .with_name(name)
+                                        .with_description(description)
+                                        .with_position(index.saturating_add(1), total)
+                                        .with_state(AccessState::new().focusable(true))
+                                })
+                                .collect();
+                            root.children.push(
+                                AccessNode::new(Role::Dialog)
+                                    .with_name("Devices and media")
+                                    .with_description(
+                                        "Local audio outputs and identity-certified qOS devices. Remote handoffs are direct and encrypted when reachable.",
+                                    )
+                                    .with_state(AccessState::new().modal(true))
+                                    .with_children(vec![
+                                        AccessNode::new(Role::List)
+                                            .with_name("Media destinations")
                                             .with_children(items),
                                     ]),
                             );
@@ -15724,6 +16073,10 @@ impl ShellOverlayHost {
                 self.draw_qs_clipboard_history(scene, transform, text_renderer, theme);
                 true
             }
+            crate::shell::quick_settings::QsLevel::Devices => {
+                self.draw_qs_device_fabric(scene, transform, text_renderer, theme);
+                true
+            }
             crate::shell::quick_settings::QsLevel::Root => false,
         }
     }
@@ -16032,6 +16385,196 @@ impl ShellOverlayHost {
     fn qs_clipboard_clear_rect(&self) -> Rect {
         let r = self.quick_settings_rect();
         Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
+    }
+
+    fn qs_device_row_rect(&self, index: usize) -> Rect {
+        let panel = self.quick_settings_rect();
+        let y0 = panel.y0 + 78.0 + usize_to_f64_lossy(index) * 58.0;
+        Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 52.0)
+    }
+
+    fn normalise_qs_selected_media(&mut self, view: &DeviceFabricView) {
+        if self.qs_selected_media.as_ref().is_some_and(|selected| {
+            view.local_media
+                .iter()
+                .any(|media| &media.session_id == selected)
+        }) {
+            return;
+        }
+        self.qs_selected_media = view
+            .local_media
+            .iter()
+            .find(|media| media.playing)
+            .or_else(|| view.local_media.first())
+            .map(|media| media.session_id.clone());
+    }
+
+    fn fabric_device_detail(
+        device: &FabricDeviceView,
+        selected: Option<&FabricMediaView>,
+    ) -> String {
+        if device.is_local {
+            return "This device · identity-certified".into();
+        }
+        if !device.online {
+            return "Offline · identity-certified".into();
+        }
+        match selected {
+            Some(media) if media.targets.contains(&device.id) => {
+                format!("Play {} here · direct encrypted handoff", media.title)
+            }
+            Some(media) if media.has_video && !device.video_output => {
+                "Online · audio only for this video".into()
+            }
+            Some(_) if !device.audio_output => "Online · no media output".into(),
+            Some(_) => "Online · unavailable for this media".into(),
+            None => "Online · identity-certified".into(),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded device rows share paint geometry with their capability and transport status"
+    )]
+    fn draw_qs_device_fabric(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Devices & media");
+        let panel = self.quick_settings_rect();
+        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Set up your personal identity to connect devices",
+            );
+            return;
+        };
+        self.normalise_qs_selected_media(&view);
+        let selected = self.qs_selected_media.as_ref().and_then(|id| {
+            view.local_media
+                .iter()
+                .find(|media| &media.session_id == id)
+        });
+        text_renderer.draw_text(
+            scene,
+            "Direct when reachable · no vendor cloud · certified devices only",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 24.0)),
+        );
+        let rows = device_fabric_pane_rows(&view);
+        if rows.is_empty() {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Connected outputs and enrolled devices appear here",
+            );
+            return;
+        }
+        for (index, item) in rows.iter().enumerate() {
+            let row = self.qs_device_row_rect(index);
+            let (title, detail, icon, selected_row, enabled) = match item {
+                DeviceFabricPaneRow::Media(media) => (
+                    media.title.clone(),
+                    if media.playing {
+                        "Playing now · select a destination below".to_string()
+                    } else {
+                        "Paused · select a destination below".to_string()
+                    },
+                    if media.has_video {
+                        ui::icons::Icon::Film
+                    } else {
+                        ui::icons::Icon::Music
+                    },
+                    self.qs_selected_media.as_ref() == Some(&media.session_id),
+                    true,
+                ),
+                DeviceFabricPaneRow::LocalOutput(output) => (
+                    output.label.clone(),
+                    output.bluetooth_codec.as_ref().map_or_else(
+                        || {
+                            if output.is_default {
+                                "Local output · current default".into()
+                            } else {
+                                "Local output · route current audio here".into()
+                            }
+                        },
+                        |codec| format!("Bluetooth {codec} · route current audio here"),
+                    ),
+                    ui::icons::Icon::Volume2,
+                    output.is_default,
+                    !output.is_default,
+                ),
+                DeviceFabricPaneRow::Device(device) => {
+                    let enabled = !device.is_local
+                        && device.online
+                        && selected.is_some_and(|media| media.targets.contains(&device.id));
+                    (
+                        device.label.clone(),
+                        Self::fabric_device_detail(device, selected),
+                        ui::icons::Icon::Monitor,
+                        false,
+                        enabled,
+                    )
+                }
+            };
+            let accessible = format!("{title}. {detail}");
+            let mut face = ButtonFace::new(row, "")
+                .hovered(enabled && self.last_cursor.is_some_and(|point| row.contains(point)))
+                .disabled(!enabled)
+                .accessible_name(&accessible);
+            if selected_row {
+                face = face.primary();
+            }
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
+                icon,
+                if selected_row {
+                    theme.tokens.colors.on_accent(4.5)
+                } else {
+                    theme.tokens.colors.text_primary
+                },
+                1.5,
+            );
+            let text_color = if selected_row {
+                theme.tokens.colors.on_accent(4.5)
+            } else {
+                theme.tokens.colors.text_primary
+            };
+            text_renderer.draw_text_weighted(
+                scene,
+                &title,
+                theme.tokens.typography.scale.sm,
+                text_color,
+                transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
+                Some(f64_to_f32_lossy(row.width() - 54.0)),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                theme.tokens.typography.scale.xs,
+                if selected_row {
+                    theme.tokens.colors.on_accent(4.5)
+                } else {
+                    theme.tokens.colors.text_dim
+                },
+                transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
+                Some(f64_to_f32_lossy(row.width() - 54.0)),
+            );
+        }
     }
 
     fn qs_clipboard_row_rect(&self, visible_index: usize) -> Rect {
