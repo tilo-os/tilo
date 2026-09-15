@@ -1084,3 +1084,332 @@ fn prepared_headless_flush_failure_is_durability_exit_with_original_bytes() {
         ui::record::RecordSaveStatus::Saved
     );
 }
+
+// Real AppWidget callbacks sample the same store during sync and after release.
+#[test]
+fn record_save_status_is_delivered_after_document_loan() {
+    let mut fixture = save_status_fixture::Fixture::new();
+    fixture.pending_and_visible_checkpoint();
+    fixture.sticky_failure_and_recovery();
+    fixture.close();
+}
+
+mod save_status_fixture {
+    use super::*;
+    use std::cell::RefCell;
+    use ui::{
+        Widget,
+        record::{RecordCheckout, RecordOpenError, RecordSaveStatus, RecordStore},
+        widget::{AppKind, AppWidget, IconDescriptor, TileHost},
+    };
+    thread_local! {
+        static STORE: RefCell<Option<RecordStore>> = const { RefCell::new(None) };
+        static DELIVERED: RefCell<Vec<RecordSaveStatus>> = const { RefCell::new(Vec::new()) };
+        static TYPE_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    struct StatusRoot {
+        records: RecordStore,
+        checkout: RecordCheckout,
+        edits: u64,
+    }
+    impl Widget for StatusRoot {
+        fn build_layout(
+            &mut self,
+            tree: &mut taffy::TaffyTree<()>,
+            _: &ui::Theme,
+            _: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            tree.new_leaf(taffy::Style::default()).unwrap()
+        }
+        fn apply_layout(
+            &mut self,
+            _: &taffy::TaffyTree<()>,
+            _: taffy::NodeId,
+            _: vello::kurbo::Point,
+        ) {
+        }
+        fn draw(
+            &mut self,
+            _: &mut vello::Scene,
+            _: vello::kurbo::Affine,
+            _: &mut ui::TextRenderer,
+            _: &ui::Theme,
+            _: &ui::presence::PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _: &winit::event::WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut automerge::AutoCommit,
+            _: &automerge::ObjId,
+            _: &mut bool,
+            _: &mut Option<taffy::NodeId>,
+            _: taffy::NodeId,
+            _: &taffy::TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "Status"
+        }
+        fn get_rect(&self) -> vello::kurbo::Rect {
+            vello::kurbo::Rect::ZERO
+        }
+        fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+            assert!(matches!(
+                self.records.save_status(&self.checkout.id),
+                Err(RecordOpenError::Busy)
+            ));
+            if TYPE_PENDING.replace(false) {
+                self.edits = self.edits.checked_add(1).unwrap();
+                doc.put(ROOT, "pending", self.edits).unwrap();
+            }
+        }
+    }
+    impl AppWidget for StatusRoot {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Status"
+        }
+        fn app_icon(&self) -> IconDescriptor {
+            IconDescriptor::Named("status".into())
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+        fn record_save_status(&mut self, status: RecordSaveStatus) {
+            assert_eq!(self.records.save_status(&self.checkout.id).unwrap(), status);
+            DELIVERED.with(|seen| seen.borrow_mut().push(status));
+        }
+    }
+    fn factory(
+        mut context: HostContext,
+        target: &LaunchTarget,
+        _: RestoreInput,
+    ) -> Result<ui::application::AppComponent, LaunchError> {
+        if matches!(target, LaunchTarget::New) {
+            context
+                .initialize_new_record(|_| Ok(()))
+                .map_err(LaunchError::Record)?;
+        }
+        let root = StatusRoot {
+            records: STORE.with(|store| store.borrow().as_ref().unwrap().clone()),
+            checkout: context.record().clone(),
+            edits: 0,
+        };
+        Ok(ui::application::AppComponent::new(
+            context,
+            Box::new(root),
+            qos_actions::ActionRegistry::new(),
+        ))
+    }
+    struct ClearStatusFixture;
+    impl Drop for ClearStatusFixture {
+        fn drop(&mut self) {
+            STORE.with(|store| *store.borrow_mut() = None);
+            DELIVERED.with(|seen| seen.borrow_mut().clear());
+            TYPE_PENDING.set(false);
+        }
+    }
+    struct Obstruction {
+        path: std::path::PathBuf,
+        retained: std::path::PathBuf,
+        active: bool,
+    }
+    impl Obstruction {
+        fn restore(&mut self) {
+            std::fs::remove_dir(&self.path).unwrap();
+            std::fs::rename(&self.retained, &self.path).unwrap();
+            self.active = false;
+        }
+    }
+    impl Drop for Obstruction {
+        fn drop(&mut self) {
+            if self.active {
+                let _ = std::fs::remove_dir(&self.path);
+                let _ = std::fs::rename(&self.retained, &self.path);
+            }
+        }
+    }
+    pub(super) struct Fixture {
+        tile: TileHost,
+        outer: automerge::AutoCommit,
+        checkout: RecordCheckout,
+        _clear: ClearStatusFixture,
+        host: ProbeHost,
+    }
+    impl Fixture {
+        pub(super) fn new() -> Self {
+            let host = ProbeHost::new();
+            let clear = ClearStatusFixture;
+            STORE.with(|store| *store.borrow_mut() = Some(host.records.clone()));
+            let definition =
+                definition(|context, target, restore| factory(context, &target, restore));
+            let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
+            let component = definition
+                .instantiate(context, LaunchTarget::New, RestoreInput::None)
+                .unwrap();
+            let checkout = component.record().clone();
+            host.records.try_flush().unwrap();
+            let mut tile = TileHost::from_component(component);
+            let mut outer = automerge::AutoCommit::new();
+            tile.sync(&mut outer, &ROOT);
+            assert_eq!(
+                DELIVERED.with(|seen| seen.borrow().clone()),
+                vec![RecordSaveStatus::Saved]
+            );
+            Self {
+                tile,
+                outer,
+                checkout,
+                _clear: clear,
+                host,
+            }
+        }
+        fn path(&self) -> std::path::PathBuf {
+            app_state::DocStore::room_record_dir_at(
+                &self.host.root(),
+                APP,
+                ROOM,
+                &self.checkout.id.storage_key(),
+            )
+            .unwrap()
+            .join(app_state::DOCUMENT_FILE)
+        }
+        pub(super) fn pending_and_visible_checkpoint(&mut self) {
+            TYPE_PENDING.set(true);
+            self.tile.sync(&mut self.outer, &ROOT);
+            let before = self
+                .host
+                .records
+                .read(&self.checkout.id, |doc| {
+                    (doc.base_heads(), doc.pending_ops())
+                })
+                .unwrap();
+            for _ in 0..3 {
+                self.tile.sync(&mut self.outer, &ROOT);
+            }
+            assert_eq!(
+                self.host
+                    .records
+                    .read(&self.checkout.id, |doc| (
+                        doc.base_heads(),
+                        doc.pending_ops()
+                    ))
+                    .unwrap(),
+                before
+            );
+            assert_eq!(
+                DELIVERED.with(|seen| seen.borrow().last().cloned()),
+                Some(RecordSaveStatus::Saving)
+            );
+            // Queue the older revision, then leave a newer transaction open while the
+            // real writer makes that older checkpoint visible. The private RecordStore
+            // predicate test separately observes the producer acknowledgement.
+            self.host.records.tick();
+            let older = self
+                .host
+                .records
+                .read(&self.checkout.id, Transactable::base_heads)
+                .unwrap();
+            TYPE_PENDING.set(true);
+            self.tile.sync(&mut self.outer, &ROOT);
+            let pending = self
+                .host
+                .records
+                .read(&self.checkout.id, |doc| {
+                    (doc.base_heads(), doc.pending_ops())
+                })
+                .unwrap();
+            assert!(pending.1 > 0);
+            let path = self.path();
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(3))
+                .unwrap();
+            loop {
+                let visible = std::fs::read(&path)
+                    .ok()
+                    .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
+                    .is_some_and(|mut doc| doc.get_heads() == older);
+                if visible {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "older checkpoint was not visible"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            self.tile.sync(&mut self.outer, &ROOT);
+            assert_eq!(
+                DELIVERED.with(|seen| seen.borrow().last().cloned()),
+                Some(RecordSaveStatus::Saving)
+            );
+            assert_eq!(
+                self.host
+                    .records
+                    .read(&self.checkout.id, |doc| (
+                        doc.base_heads(),
+                        doc.pending_ops()
+                    ))
+                    .unwrap(),
+                pending
+            );
+            self.host.records.try_flush().unwrap();
+            self.tile.sync(&mut self.outer, &ROOT);
+            assert_eq!(
+                DELIVERED.with(|seen| seen.borrow().last().cloned()),
+                Some(RecordSaveStatus::Saved)
+            );
+        }
+        pub(super) fn sticky_failure_and_recovery(&mut self) {
+            let path = self.path();
+            let original = std::fs::read(&path).unwrap();
+            let retained = path.with_extension("retained-status");
+            std::fs::rename(&path, &retained).unwrap();
+            let mut obstruction = Obstruction {
+                path,
+                retained,
+                active: true,
+            };
+            std::fs::create_dir(&obstruction.path).unwrap();
+            TYPE_PENDING.set(true);
+            self.tile.sync(&mut self.outer, &ROOT);
+            assert!(self.host.records.try_flush().is_err());
+            for _ in 0..3 {
+                self.tile.sync(&mut self.outer, &ROOT);
+                assert!(matches!(
+                    DELIVERED.with(|seen| seen.borrow().last().cloned()),
+                    Some(RecordSaveStatus::Failed(_))
+                ));
+            }
+            assert_eq!(std::fs::read(&obstruction.retained).unwrap(), original);
+            obstruction.restore();
+            self.tile.sync(&mut self.outer, &ROOT);
+            assert!(matches!(
+                DELIVERED.with(|seen| seen.borrow().last().cloned()),
+                Some(RecordSaveStatus::Failed(_))
+            ));
+            self.host.records.try_flush().unwrap();
+            self.tile.sync(&mut self.outer, &ROOT);
+            assert_eq!(
+                DELIVERED.with(|seen| seen.borrow().last().cloned()),
+                Some(RecordSaveStatus::Saved)
+            );
+        }
+        pub(super) fn close(&mut self) {
+            let reports = self.tile.close_components();
+            assert!(!reports.is_empty());
+            assert!(reports.iter().all(|report| report.record_error.is_none()
+                && report.view_error.is_none()
+                && report.teardown_error.is_none()));
+            let delivered = DELIVERED.with(|seen| seen.borrow().len());
+            self.tile.sync(&mut self.outer, &ROOT);
+            assert_eq!(DELIVERED.with(|seen| seen.borrow().len()), delivered);
+            STORE.with(|store| *store.borrow_mut() = None);
+        }
+    }
+}
