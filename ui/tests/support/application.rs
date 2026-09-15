@@ -264,10 +264,11 @@ pub fn runner_permissions() -> Rc<RefCell<PermissionContext>> {
     ))
 }
 pub struct ProbeHost {
-    pub temp: tempfile::TempDir,
     pub owners: RecordOwners,
     pub records: RecordStore,
     pub views: Rc<InstanceViewStore>,
+    // Keep the filesystem alive until stores flush and join their owned workers.
+    pub temp: tempfile::TempDir,
 }
 impl ProbeHost {
     pub fn new() -> Self {
@@ -284,10 +285,10 @@ impl ProbeHost {
         let records = owners.open(APP, ROOM).unwrap();
         let views = Rc::new(InstanceViewStore::new(root, DEVICE, ROOM).unwrap());
         Self {
-            temp,
             owners,
             records,
             views,
+            temp,
         }
     }
     pub fn root(&self) -> std::path::PathBuf {
