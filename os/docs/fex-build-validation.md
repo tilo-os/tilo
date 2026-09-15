@@ -181,3 +181,13 @@ The upstream suite passing by itself did not expose this application startup
 failure. Keep the additional regression and real-program checks when updating
 FEX. A successful `ldconfig -p` check also does not replace validation of an
 entire RPM transaction through FEX, graphics thunks, or Wine/Proton integration.
+
+The subsequent diagnostic SDK build explicitly invoked the fixed native FEX
+executable as the OCI `RUN` command and completed the 21-package transaction,
+including both x86 C++ development header sets and normal RPM scriptlets.
+The resulting local image is
+`localhost/qos-fex-x86-sdk:fedora44-fex-validated`, image ID
+`864eb1cb6f5f1cf6132681aae58f34489a8518c1dab6286f73c6208ac713c9ab`.
+Unlike the earlier ignored `SHELL` recipe, this build did not rely on OCI shell
+selection to launch FEX. This remains a diagnostic SDK assembled from live
+Fedora repositories, not the frozen production runtime or a release artifact.
