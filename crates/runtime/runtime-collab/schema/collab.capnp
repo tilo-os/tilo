@@ -274,6 +274,11 @@ interface ChannelHandle {
   resolvePublishedAction @35 (peerId :UInt64, revision :Text,
                               resource :Text, action :Text)
       -> (resolution :ActionDirectoryResolution);
+
+  # Level-triggered private media handoff descriptors. The broker binds appId,
+  # workspace and process instance to this channel and keeps source locators
+  # session-local; only sanitized now-playing metadata enters device sync.
+  reportPlayback @36 (appId :Text, reportsJson :Data) -> ();
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
