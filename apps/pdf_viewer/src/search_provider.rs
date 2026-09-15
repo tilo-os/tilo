@@ -8,7 +8,7 @@ use ui::search::{
     SearchProvider, SearchResult,
 };
 
-use crate::actions::{PdfResourceCtx, SEARCH_RESULT_RESOURCE_LIMIT};
+use crate::actions::{PdfResourceCtx, SEARCH_RESULT_RESOURCE_LIMIT, outline_resource_id};
 use crate::model::{Annotation, Comment, Page, Signature};
 
 pub const PDF_SEARCH_KIND: &str = "PDF Viewer";
@@ -78,6 +78,30 @@ impl PdfSearchProvider {
                     ActionAddress::new(&resource, "open"),
                 )
                 .with_subtitle(text.chars().take(120).collect::<String>()),
+            )?;
+            ids.insert(resource);
+        }
+        // Imported PDF bookmarks / outline entries are first-class navigation
+        // resources too.  Keep their search address identical to the resource
+        // tree, so a global-search result continues to open the intended
+        // section rather than merely matching the page text that happens to
+        // contain the same title.
+        for (index, (title, page, level)) in ctx.outline.iter().enumerate() {
+            let Some(resource) = outline_resource_id(ctx, index) else {
+                continue;
+            };
+            catalog.upsert(
+                resource.clone(),
+                format!(
+                    "bookmark\0outline\0contents\0{title}\0page {page}\0level {}\0open",
+                    usize::from(*level) + 1
+                ),
+                SearchResult::for_action(
+                    PDF_SEARCH_KIND,
+                    format!("Bookmark — {title}"),
+                    ActionAddress::new(&resource, "open"),
+                )
+                .with_subtitle(format!("Contents · page {page}")),
             )?;
             ids.insert(resource);
         }
