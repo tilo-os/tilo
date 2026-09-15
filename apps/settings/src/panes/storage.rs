@@ -92,6 +92,10 @@ impl StoragePane {
         self
     }
 
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers construct the exact typed request whose token is completed"
+    )]
     fn finish_local_operation(
         &self,
         operation: crate::actions::StorageOperation,
@@ -472,9 +476,7 @@ impl Widget for StoragePane {
             });
             self.finish_local_operation(
                 crate::actions::StorageOperation::OpenDisks,
-                result
-                    .map(|()| "Opened Disks.".into())
-                    .map_err(|error| error.to_string()),
+                result.map(|()| "Opened Disks.".into()),
             );
         }
         if Self::pressed(state, root, BACKUPS_KEY) {
@@ -484,9 +486,7 @@ impl Widget for StoragePane {
             });
             self.finish_local_operation(
                 crate::actions::StorageOperation::OpenBackups,
-                result
-                    .map(|()| "Opened Backups.".into())
-                    .map_err(|error| error.to_string()),
+                result.map(|()| "Opened Backups.".into()),
             );
         }
         if let Some(c) = &mut self.composed {
