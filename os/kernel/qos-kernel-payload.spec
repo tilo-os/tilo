@@ -11,7 +11,8 @@ Version:        %{kver}
 Release:        1
 Summary:        qOS custom kernel (initramfs-less boot, tuned for interactive use)
 License:        GPL-2.0
-BuildArch:      x86_64
+# Use the native RPM target, matching the kernel compiled by this builder.
+ExclusiveArch:  x86_64 aarch64
 # Satisfy Fedora's `Requires: kernel-core` in the base OS + let
 # `dnf swap kernel-core qos-kernel-core` resolve by both name and
 # virtual provides.
