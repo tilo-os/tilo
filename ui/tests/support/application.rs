@@ -35,6 +35,8 @@ pub struct PresentationObservations {
     pub layouts: Vec<ui::Theme>,
     pub draws: Vec<(ui::Theme, f32)>,
     pub motion: Vec<bool>,
+    pub local_draws: Vec<String>,
+    pub local_resource_reads: Vec<String>,
 }
 pub fn observe_presentation() -> Rc<RefCell<PresentationObservations>> {
     let observations = Rc::new(RefCell::new(PresentationObservations::default()));
@@ -440,6 +442,7 @@ fn build_probe(
             operational,
             operations,
             local,
+            local_snapshot: String::new(),
             scroll: vec![],
             caret: String::new(),
             focused: false,
@@ -477,6 +480,7 @@ pub fn omit_initialization(
             operational: false,
             operations: Rc::default(),
             local: LocalState::new(String::new()),
+            local_snapshot: String::new(),
             scroll: vec![],
             caret: String::new(),
             focused: false,
@@ -498,6 +502,7 @@ struct ProbeRoot {
     operational: bool,
     operations: Rc<RefCell<Vec<String>>>,
     local: LocalState<String>,
+    local_snapshot: String,
     scroll: Vec<f64>,
     caret: String,
     focused: bool,
@@ -533,6 +538,14 @@ impl Widget for ProbeRoot {
         reason = "one shared resource declares the runner action matrix"
     )]
     fn resources(&self, _: &AutoCommit) -> Vec<qos_actions::Resource> {
+        PRESENTATION.with_borrow(|slot| {
+            if let Some(observations) = slot {
+                observations
+                    .borrow_mut()
+                    .local_resource_reads
+                    .push(self.local_snapshot.clone());
+            }
+        });
         if !self.operational {
             return vec![];
         }
@@ -546,6 +559,7 @@ impl Widget for ProbeRoot {
                         &ProbeAction("edited".into()),
                     )
                     .unwrap()
+                    .with_description(self.local_snapshot.clone())
                     .requiring(qos_actions::PermissionRequirement::Write),
                 )
                 .with_action(
@@ -701,6 +715,7 @@ impl Widget for ProbeRoot {
     }
     fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {
         assert!(self.operational, "construction must project read-only");
+        self.local_snapshot = self.local.with(Clone::clone);
     }
     fn build_layout(
         &mut self,
@@ -750,10 +765,9 @@ impl Widget for ProbeRoot {
     ) {
         PRESENTATION.with_borrow(|slot| {
             if let Some(observations) = slot {
-                observations
-                    .borrow_mut()
-                    .draws
-                    .push((theme.clone(), text.text_scale()));
+                let mut observations = observations.borrow_mut();
+                observations.draws.push((theme.clone(), text.text_scale()));
+                observations.local_draws.push(self.local_snapshot.clone());
             }
         });
     }
@@ -852,6 +866,7 @@ pub fn invalid_contribution(
             operational: false,
             operations: Rc::default(),
             local: LocalState::new(String::new()),
+            local_snapshot: String::new(),
             scroll: vec![f64::INFINITY],
             caret: String::new(),
             focused: false,
@@ -887,6 +902,7 @@ pub fn restore_breaks_contribution(
             operational: false,
             operations: Rc::default(),
             local: LocalState::new(String::new()),
+            local_snapshot: String::new(),
             scroll: vec![],
             caret: String::new(),
             focused: false,
