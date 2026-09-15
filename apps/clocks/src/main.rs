@@ -21,10 +21,12 @@ fn main() {
                 "world",
                 "alarms",
                 "stopwatch",
+                "timers",
                 "running-narrow",
                 "world-narrow",
                 "alarms-narrow",
                 "stopwatch-narrow",
+                "timers-narrow",
             ])
             .shot_viewport(|args| {
                 if args
