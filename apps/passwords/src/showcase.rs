@@ -698,7 +698,7 @@ impl PasswordsSurface {
             (
                 self.editing
                     .is_some()
-                    .then(|| Rect::new(panel.x0 + 36.0, y, cancel.x0 - 6.0, y + 44.0)),
+                    .then(|| Rect::new(panel.x0 + 36.0, y, panel.x0 + 124.0, y + 44.0)),
                 cancel,
                 save,
             )
@@ -3936,6 +3936,10 @@ mod tests {
         let (delete, cancel, save) = app.editor_footer_rects(panel);
         let delete = delete.expect("editing exposes delete");
         assert!(delete.width() >= 44.0 && cancel.width() >= 44.0 && save.width() >= 44.0);
+        assert!(
+            delete.width() <= 96.0,
+            "delete must remain a secondary action"
+        );
         assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
     }
 
