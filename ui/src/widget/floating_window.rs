@@ -87,6 +87,7 @@ pub struct FloatingWindow<C: Widget> {
     /// Close is activated on release-inside, matching ordinary touch buttons
     /// and allowing a person to slide away to cancel an accidental press.
     touch_close_id: Option<u64>,
+    focused: bool,
     last_cursor: Point,
     /// Retained so `handle_event` can forward events into the content
     /// with a live node.
@@ -144,6 +145,7 @@ impl<C: Widget> FloatingWindow<C> {
             drag: None,
             touch_drag_id: None,
             touch_close_id: None,
+            focused: false,
             last_cursor: Point::ZERO,
             content_taffy: None,
             content_node: None,
@@ -740,6 +742,23 @@ impl<C: Widget> FloatingWindow<C> {
             _ => false,
         }
     }
+
+    fn nudge_with_keyboard(&mut self, key: NamedKey, coarse: bool) -> bool {
+        let step = if coarse { 32.0 } else { 8.0 };
+        let mut origin = self.rect.origin();
+        match key {
+            NamedKey::ArrowLeft => origin.x -= step,
+            NamedKey::ArrowRight => origin.x += step,
+            NamedKey::ArrowUp => origin.y -= step,
+            NamedKey::ArrowDown => origin.y += step,
+            _ => return false,
+        }
+        self.rect = Rect::from_origin_size(origin, self.rect.size());
+        self.clamp_into_bounds();
+        let theme = self.layout_theme.clone();
+        self.place_content(&theme, &mut TextRenderer::new());
+        true
+    }
 }
 
 impl<C: Widget + 'static> Widget for FloatingWindow<C> {
@@ -1150,6 +1169,17 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 self.set_open(false);
                 *handled = true;
             }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(key),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if self.focused && modifiers.state().alt_key() => {
+                *handled = self.nudge_with_keyboard(*key, modifiers.state().shift_key());
+            }
             WindowEvent::KeyboardInput { .. } => {
                 self.forward_to_content(event, scale_factor, *modifiers, state, path, focus_target);
                 *handled = true;
@@ -1234,6 +1264,66 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 ),
             ),
         ]
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.open
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        if !self.open {
+            return None;
+        }
+        let role = if self.modal {
+            Role::Dialog
+        } else {
+            Role::Group
+        };
+        let mut children = Vec::new();
+        if self.closable {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Close {}", self.title))
+                    .with_action_target("floating-window.close")
+                    .with_bounds(self.close_rect()),
+            );
+        }
+        Some(
+            AccessNode::new(role)
+                .with_name(&self.title)
+                .with_description(
+                    "Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.",
+                )
+                .with_bounds(self.rect)
+                .with_state(AccessState::new().focusable(true).focused(self.focused))
+                .with_children(children),
+        )
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if target == "floating-window.close"
+            && matches!(action, crate::a11y::Action::Activate)
+            && self.closable
+        {
+            self.set_open(false);
+            return true;
+        }
+        false
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1672,6 +1762,50 @@ mod tests {
         );
         assert!(w.window_rect().width() > start.width() + 45.0);
         assert!(w.window_rect().height() > start.height() + 25.0);
+    }
+
+    #[test]
+    fn keyboard_nudge_moves_in_precise_and_coarse_steps_and_clamps() {
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+        assert!(w.nudge_with_keyboard(NamedKey::ArrowRight, false));
+        assert!((w.window_rect().x0 - start.x0 - 8.0).abs() < 0.1);
+        assert!(w.nudge_with_keyboard(NamedKey::ArrowDown, true));
+        assert!((w.window_rect().y0 - start.y0 - 32.0).abs() < 0.1);
+        w.rect = Rect::from_origin_size(
+            Point::new(w.bounds.x0 + 1.0, w.bounds.y0 + 1.0),
+            w.rect.size(),
+        );
+        w.nudge_with_keyboard(NamedKey::ArrowLeft, true);
+        w.nudge_with_keyboard(NamedKey::ArrowUp, true);
+        assert!(w.window_rect().x0 >= w.bounds.x0);
+        assert!(w.window_rect().y0 >= w.bounds.y0);
+    }
+
+    #[test]
+    fn accessibility_exposes_surface_and_operable_close_button() {
+        use crate::a11y::{Action, Role};
+        let (mut w, _e) = laid_out(true);
+        w.closable = true;
+        Widget::set_focus(&mut w, true);
+        let node = Widget::accessibility(&w).expect("open surface has semantics");
+        assert_eq!(node.role, Role::Dialog);
+        assert_eq!(node.name.as_deref(), Some("Compose"));
+        assert!(node.state.focusable && node.state.focused);
+        assert_eq!(node.children.len(), 1);
+        assert_eq!(node.children[0].role, Role::Button);
+        assert_eq!(node.children[0].name.as_deref(), Some("Close Compose"));
+
+        let mut state = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut w,
+            "floating-window.close",
+            &Action::Activate,
+            &mut state,
+            &automerge::ROOT,
+        ));
+        assert!(!w.is_open());
+        assert!(Widget::accessibility(&w).is_none());
     }
 
     #[test]
