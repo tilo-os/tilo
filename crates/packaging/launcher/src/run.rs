@@ -1,7 +1,8 @@
 //! Top-level `run` orchestration, matching the CLI sequence: read the
 //! manifest; resolve service sockets (per `--no-services`); stage the
 //! seccomp blob to a tempfile; build the bwrap argv; spawn `bwrap` with
-//! `pre_exec` installing Landlock (best-effort) and the seccomp fd; wait
+//! `pre_exec` wiring the mandatory seccomp fd; the in-namespace shim installs
+//! mandatory Landlock when requested, failing the launch if it cannot; wait
 //! and relay the exit code.
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
@@ -1613,9 +1614,9 @@ pub fn run_with(
     // 2. Seccomp baseline → tmpfile → fd.
     let seccomp_fd: OwnedFd = stage_seccomp(manifest)?;
 
-    // 2b. D-Bus proxy / direct-bind decision: try xdg-dbus-proxy, fall back
-    // to a raw-path bind on failure. `_dbus_guard` stays alive until bwrap
-    // is waited on so Drop can SIGTERM the proxy.
+    // 2b. D-Bus proxy decision. Failure leaves the bus unavailable; there is
+    // no raw-session-bus fallback. `_dbus_guard` stays alive until bwrap is
+    // waited on so Drop can SIGTERM the proxy.
     let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
 
     // 3. Argv. Runtime bundle resolution: a resolved bundle wins over

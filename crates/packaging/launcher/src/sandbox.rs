@@ -61,9 +61,10 @@ pub const CANONICAL_LOADER_PATHS: &[&str] = &[
     "/lib/aarch64-linux-gnu/libutil.so.1",
 ];
 
-/// Plan for exposing D-Bus into the sandbox. *Proxy*: `xdg-dbus-proxy`
-/// with an allowlist. *Direct*: raw session bus (path-only). `kind` is
-/// for logging/tests.
+/// Plan for exposing D-Bus into the sandbox. Production uses only the filtered
+/// `xdg-dbus-proxy` form and leaves D-Bus unavailable if the proxy cannot
+/// start. `Direct` remains solely for legacy pure-planner compatibility tests;
+/// it is never selected by the production runner. `kind` is logging metadata.
 #[derive(Debug, Clone)]
 pub struct DBusBindPlan {
     pub host_socket: PathBuf,
@@ -78,7 +79,7 @@ pub struct DBusBindPlan {
 pub enum DBusBindKind {
     /// Filtered via `xdg-dbus-proxy` — the preferred path.
     Proxy,
-    /// Raw session-bus socket bind — fallback when `xdg-dbus-proxy` isn't installed.
+    /// Legacy raw session-bus bind shape; never a production fallback.
     Direct,
 }
 
