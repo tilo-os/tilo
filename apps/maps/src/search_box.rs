@@ -101,6 +101,10 @@ impl SearchBox {
         self.results.get(index).map(|place| place.id.as_str())
     }
 
+    pub(crate) fn result_name(&self, index: usize) -> Option<&str> {
+        self.results.get(index).map(|place| place.name.as_str())
+    }
+
     #[cfg(test)]
     pub(crate) fn results(&self) -> &[Place] {
         &self.results
