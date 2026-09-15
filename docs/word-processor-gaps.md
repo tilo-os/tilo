@@ -12,9 +12,10 @@ false.
   spacing, page breaks, headers/footers, page-number fields, columns, zoom and
   horizontal/vertical scrolling.
 - Rich content: nested ordered/unordered lists, tables and table editing, images
-  with persisted blobs, sizing/flipping/alt text, coarse left/right wrapping,
-  footnotes/endnotes, bookmarks/cross-references, comments, tracked changes,
-  highlights, super/subscript, TOC generation and named paragraph styles.
+  with persisted blobs, sizing/flipping/cropping/alt text, coarse left/right
+  wrapping and draggable page-relative placement, footnotes/endnotes,
+  bookmarks/cross-references, comments, tracked changes, highlights,
+  super/subscript, TOC generation and named paragraph styles.
 - Daily editing: system Open/Save/Save As and image pickers, drag/drop, autosave
   and recovery, undo/redo, find/replace modes, spell checking and correction,
   rich clipboard, context menus, outline navigation, templates, status/readout,
@@ -39,8 +40,7 @@ false.
 - There is no legacy binary `.doc` importer, equation editor, character-style
   authoring, style inheritance/theme designer, format painter, multi-cursor edit,
   split view, minimap, grammar engine, or print-dialog integration.
-- Image wrapping is paragraph-granular rather than a per-line exclusion shape;
-  crop and freeform float placement are not implemented.
+- Image wrapping is paragraph-granular rather than a per-line exclusion shape.
 - Large documents reuse shaped layouts incrementally, but the materialized block
   snapshot and pagination walk still cover the whole document each frame. True
   viewport-only layout and streaming import remain performance work.
