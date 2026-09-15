@@ -631,6 +631,27 @@ impl PlayerApp {
         self
     }
 
+    /// Open a broker-validated handoff source before the first frame.
+    #[must_use]
+    pub fn with_open_source(mut self, source: media::Source, title: String) -> Self {
+        let _ = self.open_local_source(source, title, None);
+        self
+    }
+
+    /// Land on the acknowledged source playhead and preserve whether the
+    /// source was playing. This runs after open so local autoplay preferences
+    /// cannot override the handoff transaction.
+    #[must_use]
+    pub fn with_handoff_transport(mut self, position_ms: u64, resume_playing: bool) -> Self {
+        self.player.seek_to_ms(position_ms);
+        if resume_playing {
+            self.player.play();
+        } else {
+            self.player.pause();
+        }
+        self
+    }
+
     /// Build a player staged for a headless `--shots` capture: a source opened
     /// with its real engine state and the controls revealed. Opens
     /// `open` when given, else a synthesized demo clip. Never attaches a collab

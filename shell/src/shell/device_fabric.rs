@@ -161,6 +161,7 @@ pub enum PersonalFabricAction {
     ResumeMedia {
         session_id: String,
         app_id: String,
+        workspace_id: String,
         title: String,
         locator: MediaSourceLocator,
         position_ms: u64,
@@ -209,12 +210,14 @@ impl PersonalFabricActionEnvelope {
             PersonalFabricAction::ResumeMedia {
                 session_id,
                 app_id,
+                workspace_id,
                 title,
                 locator,
                 ..
             } => {
                 if !valid_identifier(session_id, 256)
                     || !valid_identifier(app_id, 256)
+                    || !valid_identifier(workspace_id, 64)
                     || title.len() > 512
                     || title.chars().any(char::is_control)
                     || !valid_media_locator(locator)
@@ -1225,6 +1228,7 @@ mod tests {
             action: PersonalFabricAction::ResumeMedia {
                 session_id: "player:one".into(),
                 app_id: "dev.qos.music".into(),
+                workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                 title: "Track".into(),
                 locator: MediaSourceLocator::Workspace {
                     path: "Music/track.flac".into(),
@@ -1269,6 +1273,7 @@ mod tests {
                 action: PersonalFabricAction::ResumeMedia {
                     session_id: "player:one".into(),
                     app_id: "dev.qos.music".into(),
+                    workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                     title: "Track".into(),
                     locator,
                     position_ms: 0,

@@ -8332,6 +8332,8 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",
+ "hex",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
