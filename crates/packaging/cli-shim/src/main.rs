@@ -47,7 +47,7 @@ pub const SIDECAR_SUFFIX: &str = ".tilo-shim";
 
 /// System install path for the launcher; overridable by the sidecar's
 /// `launcher = ...` field so tests can point at a target/debug/tilo-launcher without root-installing.
-const DEFAULT_LAUNCHER_PATH: &str = "/usr/libexec/tilo-launcher";
+const DEFAULT_LAUNCHER_PATH: &str = "/usr/bin/tilo-launcher";
 
 /// Wire form of the sidecar TOML.
 #[derive(Debug, Deserialize)]
@@ -193,5 +193,19 @@ launcher   = "/tmp/target/debug/tilo-launcher"
             s.launcher.as_deref(),
             Some(Path::new("/tmp/target/debug/tilo-launcher"))
         );
+    }
+
+    #[test]
+    fn user_installed_shim_defaults_to_rpm_launcher_path() {
+        let text = r#"
+package_id = "dev.tilo.notes-cli"
+command    = "notes"
+"#;
+        let sidecar: Sidecar = toml::from_str(text).expect("decode");
+        let launcher = sidecar
+            .launcher
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_LAUNCHER_PATH));
+
+        assert_eq!(launcher, PathBuf::from("/usr/bin/tilo-launcher"));
     }
 }

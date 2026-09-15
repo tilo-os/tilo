@@ -88,6 +88,7 @@ fn render_lock_screen_matrix() {
             (1600, 900, 1.0, ""),
             (1366, 768, 1.0, ""),
             (1280, 720, 1.0, ""),
+            (1280, 800, 1.0, ""),
             // Scale is presentation density, not a second layout multiplier.
             (1600, 900, 2.0, "-hidpi"),
             // Compact but supported laptop/tablet viewport.
