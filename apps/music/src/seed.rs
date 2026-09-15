@@ -427,6 +427,7 @@ fn seed_playlists(lib: &mut Library) {
                 "tk_n2".into(),
                 "tk_g3".into(),
             ],
+            track_ranks: std::collections::BTreeMap::new(),
             cover: String::new(),
         },
         Playlist {
@@ -441,6 +442,7 @@ fn seed_playlists(lib: &mut Library) {
                 "tk_h4".into(),
                 "tk_a2".into(),
             ],
+            track_ranks: std::collections::BTreeMap::new(),
             cover: String::new(),
         },
         Playlist {
@@ -453,6 +455,7 @@ fn seed_playlists(lib: &mut Library) {
                 "tk_g2".into(),
                 "tk_r3".into(),
             ],
+            track_ranks: std::collections::BTreeMap::new(),
             cover: String::new(),
         },
     ];
