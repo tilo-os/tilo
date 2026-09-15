@@ -32,6 +32,7 @@ pub enum RootAction {
     OpenSettings,
     Privacy,
     OpenNotifications,
+    OpenClipboard,
     OpenPowerMenu,
     Enter(QsLevel),
     Changed(PendingRootActions),
@@ -442,7 +443,7 @@ impl QuickSettingsRoot {
     fn action(&self, i: usize) -> Rect {
         let pad = self.scaled(Self::PAD);
         let gap = self.scaled(Self::GAP);
-        let w = (self.panel.width() - 2.0 * pad - 3.0 * gap) / 4.0;
+        let w = (self.panel.width() - 2.0 * pad - 4.0 * gap) / 5.0;
         let x = self.panel.x0 + pad + n(i) * (w + gap);
         let y = self.panel.y0 + pad + self.scaled(Self::HEADER);
         Rect::new(x, y, x + w, y + self.scaled(Self::ACTIONS))
@@ -592,7 +593,7 @@ impl QuickSettingsRoot {
             self.edit_controls(state).len().saturating_add(2)
         } else {
             // Edit, labeled destinations, Brightness, Volume, controls, power.
-            8_usize.saturating_add(self.visible_controls(state).len())
+            9_usize.saturating_add(self.visible_controls(state).len())
         };
         if count == 0 {
             return false;
@@ -649,24 +650,25 @@ impl QuickSettingsRoot {
             1 => Some(RootAction::OpenSettings),
             2 => Some(RootAction::Privacy),
             3 => Some(RootAction::OpenNotifications),
-            4 => Some(RootAction::OpenPowerMenu),
+            4 => Some(RootAction::OpenClipboard),
+            5 => Some(RootAction::OpenPowerMenu),
             _ => None,
         } {
             return action;
         }
         let controls = self.visible_controls(state);
-        if matches!(i, 5 | 6) {
+        if matches!(i, 6 | 7) {
             return RootAction::None;
         }
         if let Some(c) = i
-            .checked_sub(7)
+            .checked_sub(8)
             .and_then(|index| controls.get(index))
             .copied()
         {
             let mut p = PendingRootActions::default();
             return Self::toggle(c, state, &mut p).unwrap_or(RootAction::Changed(p));
         }
-        let base = 7_usize.saturating_add(controls.len());
+        let base = 8_usize.saturating_add(controls.len());
         if i == base {
             return Self::cycle_power(state);
         }
@@ -722,12 +724,12 @@ impl QuickSettingsRoot {
         direction: f32,
     ) -> Option<SliderCommit> {
         let value = match self.keyboard_focus? {
-            5 => &mut state.brightness,
-            6 => &mut state.volume,
+            6 => &mut state.brightness,
+            7 => &mut state.volume,
             _ => return None,
         };
         *value = (*value + direction * 0.05).clamp(0., 1.);
-        Some(if self.keyboard_focus == Some(5) {
+        Some(if self.keyboard_focus == Some(6) {
             SliderCommit::Brightness(*value * 100.)
         } else {
             SliderCommit::Volume(*value * 100.)
@@ -760,12 +762,13 @@ impl QuickSettingsRoot {
         if self.edit_mode {
             return self.edit_click(point, state);
         }
-        for i in 0..4 {
+        for i in 0..5 {
             if self.action(i).contains(point) {
                 return match i {
                     0 => RootAction::OpenSettings,
                     1 => RootAction::Privacy,
                     2 => RootAction::OpenNotifications,
+                    3 => RootAction::OpenClipboard,
                     _ => RootAction::OpenPowerMenu,
                 };
             }
@@ -1054,13 +1057,18 @@ impl QuickSettingsRoot {
             (ui::icons::Icon::Settings2, "Open Settings", "Settings"),
             (ui::icons::Icon::Shield, "Privacy controls", "Privacy"),
             (ui::icons::Icon::History, "Notification history", "History"),
+            (
+                ui::icons::Icon::ClipboardPaste,
+                "Clipboard history",
+                "Clipboard",
+            ),
             (ui::icons::Icon::Power, "Power menu", "Power"),
         ]
         .into_iter()
         .enumerate()
         {
             let r = self.action(i);
-            let power = i == 3;
+            let power = i == 4;
             let hovered = cursor.is_some_and(|p| r.contains(p));
             Button::paint(
                 scene,
@@ -1069,7 +1077,7 @@ impl QuickSettingsRoot {
                 theme,
                 &ButtonFace::new(r, "")
                     .hovered(hovered)
-                    .focused(self.keyboard_focus == Some(i))
+                    .focused(self.keyboard_focus == Some(i.saturating_add(1)))
                     .accessible_name(accessible),
             );
             let color = if power {
@@ -1090,7 +1098,7 @@ impl QuickSettingsRoot {
                 color,
                 1.5,
             );
-            // These four labels are fixed, high-value shell destinations.
+            // These labels are fixed, high-value shell destinations.
             // Keep every word intact; at an unusually large text scale we
             // reduce this one caption before we truncate its meaning.
             let max_label_width = (r.width() - self.scaled(8.)).max(1.);
@@ -1182,7 +1190,7 @@ impl QuickSettingsRoot {
                     }),
                 )
                 .hovered(cursor.is_some_and(|p| face.contains(p)))
-                .focused(self.keyboard_focus == Some(5_usize.saturating_add(i)))
+                .focused(self.keyboard_focus == Some(6_usize.saturating_add(i)))
                 .dragging(self.slider_drag == Some(i)),
             );
         }
@@ -1201,7 +1209,7 @@ impl QuickSettingsRoot {
             );
         }
         let r = self.power_geometry(self.panel, state);
-        let power_focus = 7_usize.saturating_add(self.visible_controls(state).len());
+        let power_focus = 8_usize.saturating_add(self.visible_controls(state).len());
         Button::paint(
             scene,
             transform,
@@ -1287,7 +1295,7 @@ impl QuickSettingsRoot {
             theme,
             &ButtonFace::new(r, "")
                 .hovered(cursor.is_some_and(|p| r.contains(p)))
-                .focused(self.keyboard_focus == Some(7_usize.saturating_add(i)))
+                .focused(self.keyboard_focus == Some(8_usize.saturating_add(i)))
                 .accessible_name(Self::rendered_label(c, s)),
         );
         ui::icons::draw_icon(
@@ -1722,7 +1730,7 @@ impl QuickSettingsRoot {
             );
         }
         if !self.edit_mode {
-            for name in ["Settings", "Privacy", "History", "Power"] {
+            for name in ["Settings", "Privacy", "History", "Clipboard", "Power"] {
                 root.children.push(
                     AccessNode::new(Role::Button)
                         .with_name(name)
@@ -1970,7 +1978,7 @@ mod tests {
     fn labelled_top_utilities_keep_independent_touch_targets() {
         let mut root = QuickSettingsRoot::default();
         root.panel = Rect::new(0., 48., 400., 520.);
-        let actions: Vec<_> = (0..4).map(|index| root.action(index)).collect();
+        let actions: Vec<_> = (0..5).map(|index| root.action(index)).collect();
         for action in &actions {
             assert!(action.width() >= 44. && action.height() >= 44.);
         }
