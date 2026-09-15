@@ -323,8 +323,8 @@ impl RoamingSetting {
     }
 }
 
-/// Ciphertext sealed to the person's root-derived secret-sync key. Plaintext
-/// credentials are intentionally impossible to represent in fabric state.
+/// Versioned per-recipient ciphertext envelopes. Plaintext credentials are
+/// intentionally impossible to represent in fabric state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WifiCredential {
     pub network_id: [u8; 32],
@@ -351,6 +351,8 @@ impl WifiCredential {
         {
             return Err(FabricError::InvalidWifiCredential);
         }
+        crate::shell::device_fabric_secrets::validate_wifi_envelopes(&self.sealed_secret)
+            .map_err(|_| FabricError::InvalidWifiCredential)?;
         Ok(())
     }
 }
@@ -492,6 +494,22 @@ pub struct DeviceFabric {
 impl DeviceFabric {
     pub fn snapshots(&self) -> &BTreeMap<DeviceId, DeviceFabricSnapshot> {
         &self.snapshots
+    }
+
+    /// Highest logical counter observed in any authenticated record.
+    pub fn max_counter(&self) -> u64 {
+        self.snapshots
+            .values()
+            .flat_map(|snapshot| {
+                std::iter::once(snapshot.presence.stamp.counter)
+                    .chain(snapshot.media.iter().map(|item| item.stamp.counter))
+                    .chain(snapshot.clipboard.iter().map(|item| item.stamp.counter))
+                    .chain(snapshot.settings.iter().map(|item| item.stamp.counter))
+                    .chain(snapshot.wifi.iter().map(|item| item.stamp.counter))
+                    .chain(snapshot.display.iter().map(|item| item.stamp.counter))
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Encode a validated, bounded aggregate for durable local storage.
