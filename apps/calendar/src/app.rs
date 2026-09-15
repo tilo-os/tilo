@@ -19,6 +19,7 @@
 //!   shortcuts, and forward to the editor when notes are active.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -29,7 +30,7 @@ use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
@@ -102,7 +103,6 @@ const MODAL_BODY_W: f64 = MODAL_W - 2.0 * DETAIL_PAD;
 /// Minimum gap kept between the modal card and the window edges.
 const MODAL_MARGIN: f64 = 40.0;
 /// Cap on the modal card height so it stays a card, not a full-height column.
-const MODAL_MAX_H: f64 = 720.0;
 /// Above this theme scale, an editor needs a wider canvas for its real labels
 /// and controls instead of squeezing 2× glyphs into the normal modal grid.
 const LARGE_TEXT_SCALE: f32 = 1.35;
@@ -151,6 +151,8 @@ enum Action {
     MiniMonth(MiniMonthOutcome),
     CycleColor,
     CycleRecurrence,
+    CycleRecurrenceInterval,
+    CycleTimezone,
     CycleReminder,
     ToggleSelectedTask,
     OpenTaskPopover(TaskPopover),
@@ -198,6 +200,7 @@ enum Action {
 enum FormField {
     Title,
     Location,
+    Invite,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -230,9 +233,30 @@ struct FormRects {
     end_time: Rect,
     location: Rect,
     calendar: Rect,
+    invite: Rect,
     chips_y: f64,
     /// Y offset (from the detail rect top) at which the NOTES section starts.
     notes_top: f64,
+}
+
+impl FormRects {
+    fn offset_y(&mut self, offset: f64) {
+        for rect in [
+            &mut self.title,
+            &mut self.allday,
+            &mut self.start_date,
+            &mut self.start_time,
+            &mut self.end_date,
+            &mut self.end_time,
+            &mut self.location,
+            &mut self.calendar,
+            &mut self.invite,
+        ] {
+            *rect = Rect::new(rect.x0, rect.y0 + offset, rect.x1, rect.y1 + offset);
+        }
+        self.chips_y += offset;
+        self.notes_top += offset;
+    }
 }
 
 /// Payload delivered by a finished background `CalDAV` sync worker: the pull
@@ -301,6 +325,7 @@ pub struct CalendarApp {
     title_input: TextInput,
     /// Editable location field.
     location_input: TextInput,
+    invite_input: TextInput,
     /// Which event the form widgets are currently seeded from — so a new
     /// selection reseeds the inputs and edits land on the right event.
     form_event: Option<Id>,
@@ -369,6 +394,9 @@ pub struct CalendarApp {
     detail_rect: Rect,
     notes_origin: Point,
     notes_w: f64,
+    detail_scroll_y: f64,
+    detail_scroll_max: f64,
+    shots_detail_scroll_to_end: bool,
     editor_node: Option<NodeId>,
     /// Notes-column width the editor node was last built with. When the current
     /// width (from `detail_body_w`) diverges — i.e. a resize crossed the
@@ -517,6 +545,9 @@ impl CalendarApp {
             location_input: TextInput::local()
                 .with_placeholder("Add location")
                 .with_id("event_location"),
+            invite_input: TextInput::local()
+                .with_placeholder("Invite by email — press Enter")
+                .with_id("event_invite"),
             form_event: None,
             event_popovers: EventPopovers::new(today),
             task_popover: None,
@@ -554,6 +585,9 @@ impl CalendarApp {
             detail_rect: Rect::ZERO,
             notes_origin: Point::new(-10000.0, -10000.0),
             notes_w: MODAL_BODY_W,
+            detail_scroll_y: 0.0,
+            detail_scroll_max: 0.0,
+            shots_detail_scroll_to_end: false,
             editor_node: None,
             built_notes_w: -1.0,
             hits: Vec::new(),
@@ -677,6 +711,13 @@ impl CalendarApp {
     pub fn shots_open_calendar_popover(&mut self) {
         self.shots_pending_new_event = true;
         self.shots_pending_popover = Some(FormPopover::Calendar);
+        self.dirty = true;
+    }
+
+    /// Scroll the event sheet to its lower bound after layout, for a truthful
+    /// visual proof that large-text content below the fold remains reachable.
+    pub fn shots_scroll_detail_to_end(&mut self) {
+        self.shots_detail_scroll_to_end = true;
         self.dirty = true;
     }
 
@@ -1145,7 +1186,9 @@ impl CalendarApp {
     }
 
     fn new_notes_editor() -> BlockEditor {
-        let mut editor = BlockEditor::new().with_empty_hint(NOTES_PLACEHOLDER);
+        let mut editor = BlockEditor::new()
+            .with_empty_hint(NOTES_PLACEHOLDER)
+            .with_wrap_lines(true);
         editor.set_action_interception(true);
         editor
     }
@@ -1335,10 +1378,18 @@ impl CalendarApp {
             if let Some(e) = self.model.event(id) {
                 self.title_input.set_text(&e.title);
                 self.location_input.set_text(&e.location);
+                self.invite_input.set_text("");
+                self.invite_input
+                    .set_placeholder(if e.attendees.is_empty() {
+                        "Invite by email — press Enter"
+                    } else {
+                        "Invite another person by email"
+                    });
             }
         } else {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
+            self.invite_input.set_focus(false);
         }
         self.dirty = true;
     }
@@ -1376,6 +1427,58 @@ impl CalendarApp {
             self.force_persist = true;
             self.dirty = true;
         }
+    }
+
+    fn submit_invite(&mut self, doc: &mut AutoCommit) {
+        if !self.invite_input.take_submit() {
+            return;
+        }
+        let Some(Sel::Event(event_id)) = self.selection else {
+            return;
+        };
+        let email = self.invite_input.value().trim().to_string();
+        let valid = email
+            .split_once('@')
+            .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'));
+        if !valid {
+            self.status = Some("Enter a complete email address, such as name@example.com".into());
+            return;
+        }
+        if self
+            .model
+            .event(event_id)
+            .is_some_and(|event| event.attendees.iter().any(|item| item.email == email))
+        {
+            self.status = Some(format!("{email} is already invited"));
+            return;
+        }
+        let attendee = crate::model::Attendee {
+            id: Uuid::new_v4(),
+            name: String::new(),
+            email: email.clone(),
+            status: crate::model::InviteStatus::NeedsAction,
+        };
+        self.perform_action(
+            doc,
+            &crate::actions::CalendarAction::UpsertAttendee {
+                event_id: event_id.to_string(),
+                attendee: crate::actions::AttendeeData {
+                    id: attendee.id.to_string(),
+                    name: attendee.name.clone(),
+                    email: attendee.email.clone(),
+                    status: attendee.status.as_ical().into(),
+                },
+            },
+        );
+        if let Some(event) = self.model.event_mut(event_id) {
+            event.attendees.push(attendee);
+        }
+        self.invite_input.set_text("");
+        self.status = Some(format!(
+            "Added {email} — prepare the invitation in Mail to send it"
+        ));
+        self.force_persist = true;
+        self.dirty = true;
     }
 
     /// Drop the current selection if the item it points at is no longer in the
@@ -1488,6 +1591,14 @@ impl CalendarApp {
             location: String::new(),
             color: self.model.next_event_order_color(),
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(10),
             calendar_id: None,
             project: None,
@@ -1595,6 +1706,14 @@ impl CalendarApp {
             location: String::new(),
             color: self.model.next_event_order_color(),
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(10),
             calendar_id: None,
             project: None,
@@ -1674,6 +1793,8 @@ impl CalendarApp {
 
     fn select_event(&mut self, id: Id) {
         self.selection = Some(Sel::Event(id));
+        self.detail_scroll_y = 0.0;
+        self.shots_detail_scroll_to_end = false;
         self.open_detail();
     }
 
@@ -1688,6 +1809,8 @@ impl CalendarApp {
 
     fn select_task(&mut self, id: Id) {
         self.selection = Some(Sel::Task(id));
+        self.detail_scroll_y = 0.0;
+        self.shots_detail_scroll_to_end = false;
         self.open_detail();
     }
 
@@ -1769,13 +1892,14 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Release keyboard focus from every editor field (title, location, notes)
+    /// Release keyboard focus from every editor field.
     /// and drop any open popover. Called whenever the editor leaves the screen
     /// so keystrokes meant for the calendar can't leak into a hidden field.
     fn blur_editor(&mut self) {
         self.notes_editor.set_focus(false);
         self.title_input.set_focus(false);
         self.location_input.set_focus(false);
+        self.invite_input.set_focus(false);
         self.event_popovers.close();
     }
 
@@ -2005,6 +2129,14 @@ impl CalendarApp {
             location: String::new(),
             color: self.model.next_event_order_color(),
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(10),
             // Filed on the local (on-device) calendar by default; the form's
             // calendar selector can retarget it to a configured account.
@@ -2028,6 +2160,7 @@ impl CalendarApp {
         self.select_event(id);
         self.title_input.set_text("");
         self.location_input.set_text("");
+        self.invite_input.set_text("");
         self.focus_field(FormField::Title);
         self.status = Some("New event".into());
     }
@@ -2081,6 +2214,14 @@ impl CalendarApp {
             location: String::new(),
             color: self.model.next_event_order_color(),
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: Some(10),
             calendar_id: None,
             project: None,
@@ -2408,6 +2549,7 @@ impl CalendarApp {
         let Some(e) = ev else { return };
         self.title_input.set_focus(false);
         self.location_input.set_focus(false);
+        self.invite_input.set_focus(false);
         self.event_popovers.open(which, &e);
         self.dirty = true;
     }
@@ -2420,10 +2562,17 @@ impl CalendarApp {
             FormField::Title => {
                 self.title_input.set_focus(true);
                 self.location_input.set_focus(false);
+                self.invite_input.set_focus(false);
             }
             FormField::Location => {
                 self.title_input.set_focus(false);
                 self.location_input.set_focus(true);
+                self.invite_input.set_focus(false);
+            }
+            FormField::Invite => {
+                self.title_input.set_focus(false);
+                self.location_input.set_focus(false);
+                self.invite_input.set_focus(true);
             }
         }
         self.dirty = true;
@@ -2447,12 +2596,14 @@ impl CalendarApp {
             0
         } else if self.location_input.is_focused() {
             1
-        } else if self.notes_editor.is_focused() {
+        } else if self.invite_input.is_focused() {
             2
+        } else if self.notes_editor.is_focused() {
+            3
         } else {
             -1
         };
-        let n = 3;
+        let n = 4;
         let next = if cur < 0 {
             if backwards { n - 1 } else { 0 }
         } else {
@@ -2461,10 +2612,12 @@ impl CalendarApp {
         self.event_popovers.close();
         self.title_input.set_focus(false);
         self.location_input.set_focus(false);
+        self.invite_input.set_focus(false);
         self.notes_editor.set_focus(false);
         match next {
             0 => self.title_input.set_focus(true),
             1 => self.location_input.set_focus(true),
+            2 => self.invite_input.set_focus(true),
             _ => self.notes_editor.set_focus(true),
         }
         self.dirty = true;
@@ -2666,6 +2819,10 @@ impl CalendarApp {
     ///   calendar at/above [`EDITOR_OVERLAY_MIN`]; a full-screen page that
     ///   replaces the calendar below it (only one of {calendar, detail} is laid
     ///   out at a time in that mode).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one responsive layout pass keeps sidebar, editor, embedded fields, and scroll geometry synchronized"
+    )]
     fn relayout(&mut self) {
         let r = self.rect;
         // Two independent responsive axes, each re-derived from the current
@@ -2741,6 +2898,23 @@ impl CalendarApp {
         // the narrow single-pane screen fills its width instead of leaving a
         // fixed-width column stranded against a wide empty margin.
         self.notes_w = self.detail_body_w();
+        if matches!(self.selection, Some(Sel::Event(_))) {
+            let compact_invite = self.text_scale >= LARGE_TEXT_SCALE && self.notes_w < 440.0;
+            let has_guests = self
+                .selection
+                .and_then(|selection| match selection {
+                    Sel::Event(id) => self.model.event(id),
+                    Sel::Task(_) => None,
+                })
+                .is_some_and(|event| !event.attendees.is_empty());
+            self.invite_input.set_placeholder(if compact_invite {
+                "Invite email · Enter"
+            } else if has_guests {
+                "Invite another person by email"
+            } else {
+                "Invite by email — press Enter"
+            });
+        }
         // Compute the editable event-form geometry (fields + pickers) for the
         // current detail, then position the embedded inputs. The notes section
         // begins below the form when an event is being edited; a task detail
@@ -2748,6 +2922,9 @@ impl CalendarApp {
         self.form = self.form_layout();
         let editing_event =
             matches!(self.selection, Some(Sel::Event(_))) && self.detail_rect.area() > 0.0;
+        if editing_event {
+            self.form.offset_y(-self.detail_scroll_y);
+        }
         let notes_top = if editing_event {
             self.form.notes_top
         } else {
@@ -2766,11 +2943,14 @@ impl CalendarApp {
             self.title_input.apply_layout_external(self.form.title);
             self.location_input
                 .apply_layout_external(self.form.location);
+            self.invite_input.apply_layout_external(self.form.invite);
         } else {
             // Park the inputs off-screen so a stale click can't hit them.
             self.title_input
                 .apply_layout_external(Rect::new(-10000.0, -10000.0, -9900.0, -9900.0));
             self.location_input
+                .apply_layout_external(Rect::new(-10000.0, -10000.0, -9900.0, -9900.0));
+            self.invite_input
                 .apply_layout_external(Rect::new(-10000.0, -10000.0, -9900.0, -9900.0));
         }
     }
@@ -2797,7 +2977,21 @@ impl CalendarApp {
         let content_w = (r.x1 - content_x0).max(0.0);
         let w = (self.modal_body_width() + 2.0 * DETAIL_PAD)
             .min((content_w - 2.0 * MODAL_MARGIN).max(240.0));
-        let h = (r.height() - 2.0 * MODAL_MARGIN).clamp(360.0, MODAL_MAX_H);
+        let desired_h = match self.selection {
+            Some(Sel::Task(id)) => {
+                let subtask_rows = self.model.subtasks_of(id).len().min(8) as f64;
+                430.0 + subtask_rows * 24.0
+            }
+            // At large text, use the available vertical space: the form grows
+            // substantially and the notes editor must remain meaningfully
+            // visible rather than being clipped into a token strip.
+            Some(Sel::Event(_)) if self.text_scale >= LARGE_TEXT_SCALE => {
+                (r.height() - 2.0 * MODAL_MARGIN).max(360.0)
+            }
+            Some(Sel::Event(_)) => 680.0,
+            None => 440.0,
+        };
+        let h = desired_h.min((r.height() - 2.0 * MODAL_MARGIN).max(360.0));
         let cx = content_x0 + content_w / 2.0;
         let cy = r.y0 + r.height() / 2.0;
         Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
@@ -2813,6 +3007,103 @@ impl CalendarApp {
             self.detail_rect.x1,
             self.detail_rect.y1,
         )
+    }
+
+    fn draw_detail_scrollbar(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        viewport: Rect,
+    ) {
+        let track = Rect::new(
+            self.detail_rect.x1 - 7.0,
+            viewport.y0 + 6.0,
+            self.detail_rect.x1 - 3.0,
+            viewport.y1 - 6.0,
+        );
+        let content_height = viewport.height() + self.detail_scroll_max;
+        let thumb_height =
+            (viewport.height() / content_height * track.height()).clamp(36.0, track.height());
+        let travel = (track.height() - thumb_height).max(0.0);
+        let progress = (self.detail_scroll_y / self.detail_scroll_max).clamp(0.0, 1.0);
+        let thumb_y = track.y0 + travel * progress;
+        fill_round(scene, transform, theme.tokens.colors.neutral[3], track, 2.0);
+        fill_round(
+            scene,
+            transform,
+            theme.tokens.colors.neutral[7],
+            Rect::new(track.x0, thumb_y, track.x1, thumb_y + thumb_height),
+            2.0,
+        );
+    }
+
+    fn redraw_narrow_sticky_header(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !matches!(self.detail_mode, DetailMode::FullScreen) {
+            return;
+        }
+        let header = Rect::new(
+            self.detail_rect.x0,
+            self.detail_rect.y0,
+            self.detail_rect.x1,
+            self.detail_rect.y0 + 80.0,
+        );
+        fill_rect(
+            scene,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            header,
+        );
+        let mut ignored_hits = Vec::new();
+        let _ = self.draw_detail_back_button(
+            scene,
+            transform,
+            text,
+            theme,
+            self.detail_rect,
+            &mut ignored_hits,
+        );
+        self.draw_detail_header_controls(
+            scene,
+            transform,
+            theme,
+            self.detail_rect,
+            false,
+            &mut ignored_hits,
+        );
+        // Once content has moved under the sticky bar, keep the bar to the
+        // actual navigation controls. At 200% text the event eyebrow's ascent
+        // otherwise reaches into the Back label even though the body itself is
+        // clipped correctly. The eyebrow remains visible at the top of the
+        // sheet, where it provides useful context without competing with Back.
+        if self.detail_scroll_y <= f64::EPSILON
+            && let Some(Sel::Event(id)) = self.selection
+            && let Some(event) = self.model.event(id)
+        {
+            let x = self.detail_rect.x0 + DETAIL_PAD;
+            let y = self.detail_rect.y0 + 52.0;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                event.color.color(theme),
+                None,
+                &Circle::new(Point::new(x + 6.0, y + 8.0), 6.0),
+            );
+            text.draw_text(
+                scene,
+                "EVENT · SAVES AUTOMATICALLY",
+                11.0,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((x + 20.0, y + 2.0)),
+                None,
+            );
+        }
     }
 
     /// Compute the event-form field rects from the current detail panel. Pure
@@ -2885,12 +3176,21 @@ impl CalendarApp {
         y += field_h + 14.0;
 
         f.calendar = Rect::new(x, y, x + w, y + field_h);
-        y += field_h + 18.0;
+        y += field_h + 12.0;
+
+        f.invite = Rect::new(x, y, x + w, y + field_h);
+        y += field_h + 16.0;
 
         f.chips_y = y;
-        // Chip row (28px) plus a comfortable gap before the NOTES divider so
-        // the section header doesn't hug the chips.
-        y += 34.0 + 36.0;
+        // Metadata chips flow to additional rows on a narrow sheet. Reserve
+        // those rows in the same breakpoint domain as the painter so NOTES
+        // never collides with a wrapped reminder/colour/timezone control.
+        let chip_rows = if w < 440.0 {
+            if large_text { 4.0 } else { 3.0 }
+        } else {
+            2.0
+        };
+        y += chip_rows * 34.0 + 36.0;
 
         f.notes_top = y - r.y0;
         f
@@ -3013,6 +3313,27 @@ impl CalendarApp {
             }
             Action::CycleRecurrence => {
                 self.cycle_event(doc, |e| e.recurrence = e.recurrence.cycle());
+            }
+            Action::CycleRecurrenceInterval => {
+                self.cycle_event(doc, |e| {
+                    e.recurrence_interval = match e.recurrence_interval {
+                        1 => 2,
+                        2 => 4,
+                        _ => 1,
+                    };
+                });
+            }
+            Action::CycleTimezone => {
+                self.cycle_event(doc, |e| {
+                    e.timezone = match e.timezone.as_str() {
+                        "floating" => "UTC",
+                        "UTC" => "Europe/Berlin",
+                        "Europe/Berlin" => "America/New_York",
+                        "America/New_York" => "Asia/Tokyo",
+                        _ => "floating",
+                    }
+                    .into();
+                });
             }
             Action::CycleReminder => {
                 self.cycle_event(doc, |e| {
@@ -3240,6 +3561,42 @@ impl CalendarApp {
             Action::FocusField(FormField::Location) => (
                 "calendar.event:location".into(),
                 "Edit event location".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::FocusField(FormField::Invite) => (
+                "calendar.event:invite".into(),
+                "Invite attendee by email".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::CycleRecurrence => (
+                "calendar.event:repeat".into(),
+                "Change repeat frequency".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::CycleRecurrenceInterval => (
+                "calendar.event:repeat-interval".into(),
+                "Change repeat interval".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::CycleTimezone => (
+                "calendar.event:timezone".into(),
+                "Change event time zone".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::CycleReminder => (
+                "calendar.event:reminder".into(),
+                "Change event reminder".into(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Action::CycleColor => (
+                "calendar.event:color".into(),
+                "Change event color".into(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),
@@ -4560,6 +4917,8 @@ impl CalendarApp {
         hits.push((f.location, Action::FocusField(FormField::Location)));
 
         self.draw_event_form_calendar(scene, t, tr, theme, &f, &e, mouse, &mut hits);
+        self.invite_input.draw(scene, t, tr, theme, presence);
+        hits.push((f.invite, Action::FocusField(FormField::Invite)));
         Self::draw_event_form_chips(scene, t, tr, theme, &f, &e, label_x, &mut hits);
 
         hits
@@ -4721,8 +5080,8 @@ impl CalendarApp {
         reason = "internal draw-step split of an over-length function"
     )]
     #[allow(
-        clippy::similar_names,
-        reason = "rem_label and rem_chip serve distinct purposes"
+        clippy::many_single_char_names,
+        reason = "t/f/e and x/y are conventional paint, form, event, and flow geometry names"
     )]
     fn draw_event_form_chips(
         scene: &mut Scene,
@@ -4734,56 +5093,66 @@ impl CalendarApp {
         label_x: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let rec_label = if e.recurrence == Recurrence::None {
+        let mut recurrence_label = if e.recurrence == Recurrence::None {
             "No repeat".to_string()
         } else {
             e.recurrence.short().to_string()
         };
-        let rec_chip = chip(
-            scene,
-            t,
-            tr,
-            theme,
-            label_x,
-            f.chips_y,
-            &format!("↻ {rec_label}"),
-            false,
-        );
-        hits.push((rec_chip, Action::CycleRecurrence));
-        let rem_label = match e.reminder_min {
+        if let Some(count) = e.recurrence_count {
+            let _ = write!(recurrence_label, " · {count} times");
+        } else if let Some(until) = e.recurrence_until {
+            let _ = write!(recurrence_label, " · to {}", date::fmt_day_short(until));
+        }
+        let reminder_label = match e.reminder_min {
             None => "No reminder".to_string(),
             Some(m) if m >= 60 => format!("⏰ {}h before", m / 60),
             Some(m) => format!("⏰ {m}m before"),
         };
-        let rem_chip = chip(
-            scene,
-            t,
-            tr,
-            theme,
-            rec_chip.x1 + 8.0,
-            f.chips_y,
-            &rem_label,
-            false,
-        );
-        hits.push((rem_chip, Action::CycleReminder));
-        let col_chip = chip(
-            scene,
-            t,
-            tr,
-            theme,
-            rem_chip.x1 + 8.0,
-            f.chips_y,
-            &format!("● {}", e.color.name()),
-            false,
-        );
-        scene.fill(
-            Fill::NonZero,
-            t,
-            e.color.color(theme),
-            None,
-            &Circle::new(Point::new(col_chip.x0 + 12.0, col_chip.center().y), 4.0),
-        );
-        hits.push((col_chip, Action::CycleColor));
+        let guest_label = match e.attendees.len() {
+            0 => "No guests yet".to_string(),
+            1 => "1 guest".to_string(),
+            count => format!("{count} guests"),
+        };
+        let specs = [
+            (format!("↻ {recurrence_label}"), Action::CycleRecurrence),
+            (
+                format!("Every {}×", e.recurrence_interval.max(1)),
+                Action::CycleRecurrenceInterval,
+            ),
+            (reminder_label, Action::CycleReminder),
+            (format!("● {}", e.color.name()), Action::CycleColor),
+            (format!("◷ {}", e.timezone), Action::CycleTimezone),
+            (guest_label, Action::FocusField(FormField::Invite)),
+        ];
+        let max_x = f.title.x1;
+        let gap = if theme.text_scale >= LARGE_TEXT_SCALE {
+            12.0
+        } else {
+            8.0
+        };
+        let mut x = label_x;
+        let mut y = f.chips_y;
+        let mut rects = Vec::with_capacity(specs.len());
+        for (label, action) in specs {
+            let width = f64::from(tr.measure(&label, 12.0, None).0) + 24.0;
+            if x > label_x && x + width > max_x {
+                x = label_x;
+                y += 34.0;
+            }
+            let rect = chip(scene, t, tr, theme, x, y, &label, false);
+            x = rect.x1 + gap;
+            hits.push((rect, action));
+            rects.push(rect);
+        }
+        if let Some(color_rect) = rects.get(3) {
+            scene.fill(
+                Fill::NonZero,
+                t,
+                e.color.color(theme),
+                None,
+                &Circle::new(Point::new(color_rect.x0 + 12.0, color_rect.center().y), 4.0),
+            );
+        }
     }
 
     /// Paint the open form popover (date grid / time spinners / calendar list)
@@ -5031,6 +5400,7 @@ impl CalendarApp {
     /// [`Widget::handle_event`]).
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "internal event-handling split of an over-length function"
     )]
     fn handle_popover_priority(
@@ -5100,7 +5470,9 @@ impl CalendarApp {
 
         let editor_active = self.detail_open && self.detail_rect.area() > 0.0;
         let form_active = editor_active && matches!(self.selection, Some(Sel::Event(_)));
-        let field_focused = self.title_input.is_focused() || self.location_input.is_focused();
+        let field_focused = self.title_input.is_focused()
+            || self.location_input.is_focused()
+            || self.invite_input.is_focused();
         let notes_focused = editor_active && self.notes_editor.is_focused();
 
         if matches!(logical_key, Key::Named(NamedKey::Escape))
@@ -5138,6 +5510,37 @@ impl CalendarApp {
         false
     }
 
+    fn handle_detail_scroll(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let WindowEvent::MouseWheel { delta, .. } = event else {
+            return false;
+        };
+        if self.detail_scroll_max <= 0.0 || !self.detail_rect.contains(self.last_mouse) {
+            return false;
+        }
+        let delta = match delta {
+            MouseScrollDelta::LineDelta(_, y) => f64::from(-y * 48.0),
+            MouseScrollDelta::PixelDelta(point) => -point.y / scale_factor,
+        };
+        let before = self.detail_scroll_y;
+        self.detail_scroll_y = (before + delta).clamp(0.0, self.detail_scroll_max);
+        if (before - self.detail_scroll_y).abs() <= f64::EPSILON {
+            return false;
+        }
+        self.shots_detail_scroll_to_end = false;
+        self.relayout();
+        if let Some(node) = self.editor_node {
+            self.notes_editor
+                .apply_layout(taffy, node, self.notes_origin);
+        }
+        self.dirty = true;
+        true
+    }
+
     /// Escape: cancel a live timeline drag first (it commits nothing), then
     /// blur a focused text control, then dismiss the overlay flap, then pop the
     /// narrow detail screen, then close the detail. Split out of
@@ -5157,6 +5560,7 @@ impl CalendarApp {
         if field_focused || notes_focused {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
+            self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             *handled = true;
             self.dirty = true;
@@ -5272,6 +5676,7 @@ impl CalendarApp {
     /// Returns `true` if the event was consumed.
     #[allow(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "internal event-handling split of an over-length function"
     )]
     fn handle_mouse_click(
@@ -5300,6 +5705,7 @@ impl CalendarApp {
         // A click inside a form text field focuses it and lands the caret.
         if form_active && self.form.title.contains(p) {
             self.location_input.set_focus(false);
+            self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.title_input.set_focus(true);
             self.title_input.handle_event(
@@ -5319,9 +5725,30 @@ impl CalendarApp {
         }
         if form_active && self.form.location.contains(p) {
             self.title_input.set_focus(false);
+            self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.location_input.set_focus(true);
             self.location_input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            *handled = true;
+            self.dirty = true;
+            return true;
+        }
+        if form_active && self.form.invite.contains(p) {
+            self.title_input.set_focus(false);
+            self.location_input.set_focus(false);
+            self.notes_editor.set_focus(false);
+            self.invite_input.set_focus(true);
+            self.invite_input.handle_event(
                 event,
                 scale_factor,
                 &modifiers,
@@ -5340,6 +5767,7 @@ impl CalendarApp {
         if in_notes {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
+            self.invite_input.set_focus(false);
             if let Some(n) = self.editor_node {
                 self.notes_editor.begin_action_intercept();
                 self.notes_editor.handle_event(
@@ -5363,6 +5791,7 @@ impl CalendarApp {
         if let Some(a) = self.hit_action_at(p) {
             self.title_input.set_focus(false);
             self.location_input.set_focus(false);
+            self.invite_input.set_focus(false);
             self.notes_editor.set_focus(false);
             self.apply_action(a, state);
             *handled = true;
@@ -5419,6 +5848,21 @@ impl CalendarApp {
                 taffy,
             );
             self.flush_form_edits(state);
+            self.dirty = true;
+            return *handled;
+        } else if self.invite_input.is_focused() {
+            self.invite_input.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            self.submit_invite(state);
             self.dirty = true;
             return *handled;
         }
@@ -5481,6 +5925,74 @@ impl Widget for CalendarApp {
         <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
     }
 
+    fn invoke_resource_operation_v2(
+        &mut self,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<qos_actions::ActionOutput>, String> {
+        if kind == qos_actions::OperationKind::Effect
+            && type_id == crate::actions::CALENDAR_OPERATION_TYPE
+        {
+            let operation: crate::actions::CalendarOperation =
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+            if let crate::actions::CalendarOperation::PrepareInvitationInMail {
+                event_id,
+                attendee_id,
+            } = operation
+            {
+                let event_id = event_id
+                    .parse::<Id>()
+                    .map_err(|_| "invalid event id".to_string())?;
+                let attendee_id = attendee_id
+                    .parse::<Id>()
+                    .map_err(|_| "invalid attendee id".to_string())?;
+                let event = self
+                    .model
+                    .event(event_id)
+                    .ok_or_else(|| "event no longer exists".to_string())?;
+                let attendee = event
+                    .attendees
+                    .iter()
+                    .find(|attendee| attendee.id == attendee_id)
+                    .ok_or_else(|| "attendee no longer exists".to_string())?;
+                let subject = format!("Invitation: {}", event.display_title());
+                let body = format!(
+                    "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
+                    event.display_title(),
+                    event.start.format("%A, %d %B %Y"),
+                    event.start.format("%H:%M"),
+                    event.timezone
+                );
+                let calendar_ics = crate::ics::invitation_request(event);
+                self.status =
+                    Some("Invitation prepared for Mail — review it there before sending".into());
+                self.dirty = true;
+                return Ok(Some(qos_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "delivery": "not_sent",
+                        "target": {
+                            "resource": "mail.mailbox",
+                            "action": "prepare-calendar-invitation"
+                        },
+                        "arguments": {
+                            "to": attendee.email,
+                            "subject": subject,
+                            "body": body,
+                            "calendar_ics": calendar_ics
+                        },
+                        "next": "Invoke the target through the action broker; Mail may refuse with account_offline or invite permission denied."
+                    })),
+                    resources: Vec::new(),
+                }));
+            }
+        }
+        self.invoke_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| handled.then(qos_actions::ActionOutput::default))
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its calendar action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
@@ -5518,6 +6030,30 @@ impl Widget for CalendarApp {
                     .event(id)
                     .ok_or_else(|| "event no longer exists".to_string())?;
                 self.anchor = event.start.date();
+                self.select_event(id);
+            }
+            (
+                qos_actions::OperationKind::View,
+                crate::actions::CalendarOperation::OpenOccurrence {
+                    event_id,
+                    original_date,
+                },
+            ) => {
+                let id = event_id
+                    .parse::<Id>()
+                    .map_err(|_| "invalid event id".to_string())?;
+                let original_date = NaiveDate::parse_from_str(&original_date, "%Y-%m-%d")
+                    .map_err(|_| "invalid occurrence date".to_string())?;
+                let event = self
+                    .model
+                    .event(id)
+                    .ok_or_else(|| "event no longer exists".to_string())?;
+                self.anchor = event
+                    .occurrence_overrides
+                    .iter()
+                    .find(|edit| edit.original_date == original_date)
+                    .and_then(|edit| edit.start)
+                    .map_or(original_date, |start| start.date());
                 self.select_event(id);
             }
             (
@@ -5868,6 +6404,24 @@ impl Widget for CalendarApp {
         // from the new allocated size, then place the notes editor.
         self.relayout();
         if let Some(n) = self.editor_node {
+            let content_height = taffy
+                .layout(n)
+                .map_or(0.0, |layout| f64::from(layout.size.height));
+            let content_bottom = self.notes_origin.y + self.detail_scroll_y + content_height + 12.0;
+            self.detail_scroll_max = if matches!(self.selection, Some(Sel::Event(_))) {
+                (content_bottom - self.detail_rect.y1).max(0.0)
+            } else {
+                0.0
+            };
+            let next_scroll = if self.shots_detail_scroll_to_end {
+                self.detail_scroll_max
+            } else {
+                self.detail_scroll_y.clamp(0.0, self.detail_scroll_max)
+            };
+            if (next_scroll - self.detail_scroll_y).abs() > f64::EPSILON {
+                self.detail_scroll_y = next_scroll;
+                self.relayout();
+            }
             self.notes_editor.apply_layout(taffy, n, self.notes_origin);
         }
     }
@@ -5997,17 +6551,15 @@ impl Widget for CalendarApp {
             // The editable event form (title/location inputs, date/time/
             // calendar fields, chips) draws over the event detail body.
             let editing_event = matches!(self.selection, Some(Sel::Event(_)));
-            if editing_event {
-                hits.extend(self.draw_event_form(scene, t, text_renderer, theme, presence));
-            }
-            // Notes editor — clipped to the notes region below the header.
-            // Clip to the editor's own column (not the whole panel) so a
-            // long single-line note block scrolls/cuts at the notes
-            // padding rather than bleeding to the window edge.
-            let clip = Rect::new(
+            let sticky_header_height = if matches!(self.detail_mode, DetailMode::Overlay) {
+                46.0
+            } else {
+                80.0
+            };
+            let body_clip = Rect::new(
                 self.detail_rect.x0,
-                self.notes_origin.y - 4.0,
-                self.notes_origin.x + self.notes_w + 4.0,
+                self.detail_rect.y0 + sticky_header_height,
+                self.detail_rect.x1,
                 self.detail_rect.y1 - 12.0,
             );
             scene.push_layer(
@@ -6015,13 +6567,26 @@ impl Widget for CalendarApp {
                 vello::peniko::BlendMode::default(),
                 1.0,
                 t,
-                &clip,
+                &body_clip,
             );
+            if editing_event {
+                hits.extend(
+                    self.draw_event_form(scene, t, text_renderer, theme, presence)
+                        .into_iter()
+                        .filter(|(rect, _)| rect.y1 > body_clip.y0 && rect.y0 < body_clip.y1),
+                );
+            }
             self.notes_editor
                 .draw(scene, t, text_renderer, theme, presence);
             scene.pop_layer();
+            if editing_event && self.detail_scroll_max > 0.0 {
+                self.draw_detail_scrollbar(scene, t, theme, body_clip);
+            }
             self.notes_editor
                 .draw_overlay(scene, t, text_renderer, theme);
+            if editing_event {
+                self.redraw_narrow_sticky_header(scene, t, text_renderer, theme);
+            }
             // Transient date/time/calendar popovers paint on top of the form
             // and the notes, with a dismiss scrim beneath them.
             if editing_event {
@@ -6143,6 +6708,11 @@ impl Widget for CalendarApp {
                 self.dirty = true;
                 return;
             }
+        }
+
+        if editor_active && self.handle_detail_scroll(event, scale_factor, taffy) {
+            *handled = true;
+            return;
         }
 
         // --- Week/day timeline + agenda: scroll and drag ------------------
@@ -6298,6 +6868,7 @@ impl Widget for CalendarApp {
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
+            || self.invite_input.needs_redraw()
             || self.timeline.needs_redraw()
             || self.agenda.needs_redraw()
     }
@@ -6307,6 +6878,7 @@ impl Widget for CalendarApp {
         self.notes_editor.mark_drawn();
         self.title_input.mark_drawn();
         self.location_input.mark_drawn();
+        self.invite_input.mark_drawn();
         self.timeline.mark_drawn();
         self.agenda.mark_drawn();
     }
@@ -6334,6 +6906,7 @@ impl Widget for CalendarApp {
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
+            || self.invite_input.needs_redraw()
             || self.timeline.is_layout_dirty()
             || self.agenda.is_layout_dirty()
     }
@@ -7443,6 +8016,7 @@ mod tests {
             app.form.end_time,
             app.form.location,
             app.form.calendar,
+            app.form.invite,
         ];
         for (index, rect) in controls.iter().enumerate() {
             assert!(
@@ -7477,6 +8051,125 @@ mod tests {
                 "painted form target escaped the modal: {rect:?}"
             );
         }
+    }
+
+    #[test]
+    fn phone_large_text_wraps_every_metadata_chip_inside_the_sheet() {
+        let mut app = CalendarApp::new_demo();
+        app.detail_open = true;
+        app.text_scale = 2.0;
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        app.relayout();
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::dark().with_text_scale(2.0);
+        text.set_text_scale(theme.text_scale);
+        let painted = app.draw_event_form(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        for (rect, _) in &painted {
+            assert!(
+                rect.x0 >= app.detail_rect.x0 && rect.x1 <= app.detail_rect.x1,
+                "event-form target escaped the phone sheet: {rect:?}"
+            );
+        }
+        let chip_rects: Vec<_> = painted
+            .iter()
+            .filter(|(_, action)| {
+                matches!(
+                    action,
+                    Action::CycleRecurrence
+                        | Action::CycleRecurrenceInterval
+                        | Action::CycleReminder
+                        | Action::CycleColor
+                        | Action::CycleTimezone
+                )
+            })
+            .map(|(rect, _)| *rect)
+            .collect();
+        assert_eq!(chip_rects.len(), 5);
+        for rect in &chip_rects {
+            assert!(
+                rect.x0 >= app.detail_rect.x0 && rect.x1 <= app.detail_rect.x1,
+                "wrapped metadata chip escaped the phone sheet: {rect:?}"
+            );
+        }
+        let last_bottom = chip_rects.iter().map(|rect| rect.y1).fold(0.0, f64::max);
+        assert!(
+            app.detail_rect.y0 + app.form.notes_top > last_bottom,
+            "notes must begin below the final wrapped metadata row"
+        );
+    }
+
+    #[test]
+    fn invitation_handoff_is_the_exact_mail_resource_action_and_never_claims_send() {
+        let mut app = CalendarApp::new_demo();
+        let doc = AutoCommit::new();
+        let event = app
+            .selection
+            .and_then(|selection| match selection {
+                Sel::Event(id) => app.model.event(id),
+                Sel::Task(_) => None,
+            })
+            .expect("demo selects an event with a guest");
+        let attendee = event.attendees.first().expect("demo event has a guest");
+        let event_id = event.id;
+        let attendee_id = attendee.id;
+        let attendee_email = attendee.email.clone();
+        let payload = serde_json::to_vec(
+            &crate::actions::CalendarOperation::PrepareInvitationInMail {
+                event_id: event_id.to_string(),
+                attendee_id: attendee_id.to_string(),
+            },
+        )
+        .unwrap();
+        let output = Widget::invoke_resource_operation_v2(
+            &mut app,
+            qos_actions::OperationKind::Effect,
+            crate::actions::CALENDAR_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap()
+        .expect("Calendar handles its invitation effect");
+        let value = output.value.expect("typed handoff result");
+        assert_eq!(value["delivery"], "not_sent");
+        assert_eq!(value["target"]["resource"], "mail.mailbox");
+        assert_eq!(value["target"]["action"], "prepare-calendar-invitation");
+        let arguments = value["arguments"].as_object().unwrap().clone();
+
+        let mail_root = mail::actions::mailbox_root(&mail::actions::MailResourceCtx {
+            mailbox_label: "Mail".into(),
+            current_folder: mail::model::Folder::Inbox,
+            accounts: vec![("account".into(), "Account".into(), true)],
+            messages: Vec::new(),
+            custom_folders: Vec::new(),
+            has_draft: false,
+            can_sync: true,
+        });
+        let encoded = qos_actions::door::encode_json(
+            &[mail_root],
+            &qos_actions::ActionAddress::new("mail.mailbox", "prepare-calendar-invitation"),
+            &arguments,
+        )
+        .expect("Mail accepts Calendar's exact typed arguments");
+        let operation = mail::actions::decode_operation(&encoded.type_id, &encoded.payload)
+            .unwrap()
+            .expect("Mail decodes the handoff");
+        assert!(matches!(
+            operation,
+            mail::actions::MailOperation::PrepareCalendarInvitation {
+                to,
+                calendar_ics,
+                ..
+            } if to == attendee_email && calendar_ics.contains("METHOD:REQUEST")
+        ));
     }
 
     #[test]
@@ -8118,6 +8811,14 @@ mod tests {
             location: "Remote".into(),
             color: Palette::Blue,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             calendar_id: None,
             project: None,
@@ -8913,6 +9614,14 @@ mod tests {
             location: String::new(),
             color: Palette::Blue,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             project: None,
             calendar_id: Some("work/default".into()),
@@ -9077,6 +9786,14 @@ mod tests {
             location: String::new(),
             color: Palette::Red,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             project: None,
             calendar_id: Some("work/oncall".into()),
@@ -9455,8 +10172,8 @@ mod tests {
 
     #[test]
     fn location_is_editable_and_tab_traverses_the_fields() {
-        // Tab / Shift-nothing here, but Tab moves focus title → location →
-        // notes → title on the real key path (App leaves Tab to the root
+        // Tab moves focus title → location → invite → notes → title on the
+        // real key path (App leaves Tab to the root
         // widget because the calendar exposes no focusable children).
         let mut h = Harness::new(1280, 800);
         let p = h
@@ -9475,7 +10192,9 @@ mod tests {
             "location is editable"
         );
         h.press_named(winit::keyboard::NamedKey::Tab);
-        assert!(h.app.notes_editor.is_focused(), "Tab: location → notes");
+        assert!(h.app.invite_input.is_focused(), "Tab: location → invite");
+        h.press_named(winit::keyboard::NamedKey::Tab);
+        assert!(h.app.notes_editor.is_focused(), "Tab: invite → notes");
         h.press_named(winit::keyboard::NamedKey::Tab);
         assert!(h.app.title_input.is_focused(), "Tab wraps notes → title");
     }
@@ -9495,9 +10214,11 @@ mod tests {
             "Shift+Tab: title → notes (wrap)"
         );
         h.app.cycle_form_focus(true);
+        assert!(h.app.invite_input.is_focused(), "Shift+Tab: notes → invite");
+        h.app.cycle_form_focus(true);
         assert!(
             h.app.location_input.is_focused(),
-            "Shift+Tab: notes → location"
+            "Shift+Tab: invite → location"
         );
         h.app.cycle_form_focus(true);
         assert!(
@@ -10055,6 +10776,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "end-to-end CalDAV reconciliation scenario documents the full lifecycle"
+    )]
     fn caldav_reconciliation_updates_and_deletes_by_href_without_uuid_churn() {
         let mut app = CalendarApp::new_demo();
         let mut doc = AutoCommit::new();
@@ -10071,6 +10796,14 @@ mod tests {
             location: String::new(),
             color: Palette::Blue,
             recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
             reminder_min: None,
             project: None,
             calendar_id: Some("work/default".into()),

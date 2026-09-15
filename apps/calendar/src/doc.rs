@@ -10,8 +10,12 @@
 //! ├── "events"   (Map keyed by EventId)
 //! │     └── <id> (Map) {
 //! │           title(Str), start(Str RFC3339-ish), end(Str), all_day(Bool),
-//! │           location(Str), color(Int), rrule(Str), reminder(Int|absent),
-//! │           project(Str|""), notes(List of {kind,text})
+//! │           location(Str), color(Int), rrule(Str), interval/until/count,
+//! │           timezone(Str), organizer(AttendeeId|""), reminder(Int|absent),
+//! │           attendees(Map keyed by stable AttendeeId),
+//! │           exdates(Map keyed by original date),
+//! │           overrides(Map keyed by original date), project(Str|""),
+//! │           notes(List of {kind,text})
 //! │         }
 //! ├── "tasks"    (Map keyed by TaskId)
 //! │     └── <id> (Map) {
@@ -34,10 +38,13 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use ui::widget::{BlockEditOp, legacy_block_id};
 
-use crate::model::{Event, Id, Model, Palette, Priority, Project, Recurrence, Task};
+use crate::model::{
+    Attendee, Event, Id, InviteStatus, Model, OccurrenceOverride, Palette, Priority, Project,
+    Recurrence, Task,
+};
 
 const DT_FMT: &str = "%Y-%m-%dT%H:%M";
 
@@ -146,6 +153,20 @@ impl CalDoc {
         let _ = doc.put(m, "location", e.location.as_str());
         let _ = doc.put(m, "color", e.color.index() as i64);
         let _ = doc.put(m, "rrule", e.recurrence.to_rrule());
+        let _ = doc.put(m, "rrule_interval", i64::from(e.recurrence_interval.max(1)));
+        let _ = doc.put(
+            m,
+            "rrule_until",
+            e.recurrence_until
+                .map_or_else(String::new, |date| date.to_string()),
+        );
+        let _ = doc.put(m, "rrule_count", i64::from(e.recurrence_count.unwrap_or(0)));
+        let _ = doc.put(m, "timezone", e.timezone.as_str());
+        let _ = doc.put(
+            m,
+            "organizer",
+            e.organizer.map_or_else(String::new, |id| id.to_string()),
+        );
         let _ = doc.put(m, "reminder", e.reminder_min.unwrap_or(-1));
         let _ = doc.put(
             m,
@@ -153,6 +174,59 @@ impl CalDoc {
             e.project.map(|p| p.to_string()).unwrap_or_default(),
         );
         let _ = doc.put(m, "cal", e.calendar_id.clone().unwrap_or_default());
+        Self::write_event_relations(doc, m, e);
+    }
+
+    fn write_event_relations(doc: &mut AutoCommit, event: &ObjId, value: &Event) {
+        let attendees = Self::ensure_child(doc, event, "attendees");
+        // Full snapshots are creation/import boundaries, not authority to
+        // delete nested collaborative entities. Missing attendees/exceptions
+        // remain untouched; explicit remove actions create tombstones.
+        for attendee in &value.attendees {
+            let item = Self::ensure_child(doc, &attendees, &attendee.id.to_string());
+            let _ = doc.put(&item, "name", attendee.name.as_str());
+            let _ = doc.put(&item, "email", attendee.email.as_str());
+            let _ = doc.put(&item, "status", attendee.status.as_ical());
+        }
+
+        let exdates = Self::ensure_child(doc, event, "exdates");
+        for date in &value.recurrence_exdates {
+            let _ = doc.put(&exdates, date.to_string(), true);
+        }
+
+        let overrides = Self::ensure_child(doc, event, "overrides");
+        for edit in &value.occurrence_overrides {
+            let item = Self::ensure_child(doc, &overrides, &edit.original_date.to_string());
+            Self::write_occurrence_override(doc, &item, edit);
+        }
+    }
+
+    fn write_occurrence_override(doc: &mut AutoCommit, item: &ObjId, edit: &OccurrenceOverride) {
+        let _ = doc.put(item, "cancelled", edit.cancelled);
+        let _ = doc.put(
+            item,
+            "original_time",
+            edit.original_time
+                .map_or_else(String::new, |value| value.format("%H:%M:%S").to_string()),
+        );
+        let _ = doc.put(
+            item,
+            "start",
+            edit.start
+                .map_or_else(String::new, |value| value.format(DT_FMT).to_string()),
+        );
+        let _ = doc.put(
+            item,
+            "end",
+            edit.end
+                .map_or_else(String::new, |value| value.format(DT_FMT).to_string()),
+        );
+        let _ = doc.put(item, "title", edit.title.as_deref().unwrap_or_default());
+        let _ = doc.put(
+            item,
+            "location",
+            edit.location.as_deref().unwrap_or_default(),
+        );
     }
 
     fn write_project_fields(doc: &mut AutoCommit, m: &ObjId, project: &Project) {
@@ -318,6 +392,25 @@ impl CalDoc {
                 let _ = doc.put(&item, "rrule", value.as_str());
             }
         }
+        if let Some(value) = patch.recurrence_interval
+            && value > 0
+        {
+            let _ = doc.put(&item, "rrule_interval", i64::from(value));
+        }
+        if let Some(value) = &patch.recurrence_until
+            && (value.is_empty() || NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok())
+        {
+            let _ = doc.put(&item, "rrule_until", value.as_str());
+        }
+        if let Some(value) = patch.recurrence_count {
+            let _ = doc.put(&item, "rrule_count", i64::from(value));
+        }
+        if let Some(value) = &patch.timezone {
+            let _ = doc.put(&item, "timezone", value.as_str());
+        }
+        if let Some(value) = &patch.organizer {
+            let _ = doc.put(&item, "organizer", value.as_str());
+        }
         if let Some(value) = patch.reminder
             && matches!(value, -1 | 10 | 30 | 60)
         {
@@ -334,6 +427,134 @@ impl CalDoc {
                     .is_some_and(|project| Self::project_exists(doc, Some(project))))
         {
             let _ = doc.put(&item, "project", value.as_str());
+        }
+    }
+
+    pub fn upsert_attendee(doc: &mut AutoCommit, event_id: Id, attendee: &Attendee) {
+        if Self::event_tombstoned(doc, event_id) {
+            return;
+        }
+        let events = Self::map_at(doc, "events");
+        let Ok(Some((Value::Object(ObjType::Map), event))) =
+            doc.get(&events, event_id.to_string().as_str())
+        else {
+            return;
+        };
+        let attendees = Self::ensure_child(doc, &event, "attendees");
+        let tombstones = Self::ensure_child(doc, &event, "attendee_tombstones");
+        if get_bool(doc, &tombstones, &attendee.id.to_string()) {
+            return;
+        }
+        let item = Self::ensure_child(doc, &attendees, &attendee.id.to_string());
+        let _ = doc.put(&item, "name", attendee.name.as_str());
+        let _ = doc.put(&item, "email", attendee.email.as_str());
+        let _ = doc.put(&item, "status", attendee.status.as_ical());
+    }
+
+    pub fn patch_attendee(
+        doc: &mut AutoCommit,
+        event_id: Id,
+        attendee_id: Id,
+        patch: &crate::actions::AttendeePatch,
+    ) {
+        let events = Self::map_at(doc, "events");
+        let Ok(Some((Value::Object(ObjType::Map), event))) =
+            doc.get(&events, event_id.to_string().as_str())
+        else {
+            return;
+        };
+        let attendees = Self::ensure_child(doc, &event, "attendees");
+        let Ok(Some((Value::Object(ObjType::Map), item))) =
+            doc.get(&attendees, attendee_id.to_string().as_str())
+        else {
+            return;
+        };
+        if let Some(value) = &patch.name {
+            let _ = doc.put(&item, "name", value.as_str());
+        }
+        if let Some(value) = &patch.email {
+            let _ = doc.put(&item, "email", value.as_str());
+        }
+        if let Some(value) = &patch.status {
+            let _ = doc.put(&item, "status", value.as_str());
+        }
+    }
+
+    pub fn delete_attendee(doc: &mut AutoCommit, event_id: Id, attendee_id: Id) {
+        let events = Self::map_at(doc, "events");
+        let Ok(Some((Value::Object(ObjType::Map), event))) =
+            doc.get(&events, event_id.to_string().as_str())
+        else {
+            return;
+        };
+        let attendees = Self::ensure_child(doc, &event, "attendees");
+        let _ = doc.delete(&attendees, attendee_id.to_string().as_str());
+        let tombstones = Self::ensure_child(doc, &event, "attendee_tombstones");
+        let _ = doc.put(&tombstones, attendee_id.to_string(), true);
+        if get_str(doc, &event, "organizer") == attendee_id.to_string() {
+            let _ = doc.put(&event, "organizer", "");
+        }
+    }
+
+    pub fn set_exception(doc: &mut AutoCommit, event_id: Id, date: NaiveDate, excluded: bool) {
+        let events = Self::map_at(doc, "events");
+        let Ok(Some((Value::Object(ObjType::Map), event))) =
+            doc.get(&events, event_id.to_string().as_str())
+        else {
+            return;
+        };
+        let exdates = Self::ensure_child(doc, &event, "exdates");
+        if excluded {
+            let _ = doc.put(&exdates, date.to_string(), true);
+        } else {
+            let _ = doc.delete(&exdates, date.to_string().as_str());
+        }
+    }
+
+    pub fn upsert_occurrence_override(
+        doc: &mut AutoCommit,
+        event_id: Id,
+        edit: &OccurrenceOverride,
+    ) {
+        let events = Self::map_at(doc, "events");
+        let Ok(Some((Value::Object(ObjType::Map), event))) =
+            doc.get(&events, event_id.to_string().as_str())
+        else {
+            return;
+        };
+        let overrides = Self::ensure_child(doc, &event, "overrides");
+        let item = Self::ensure_child(doc, &overrides, &edit.original_date.to_string());
+        Self::write_occurrence_override(doc, &item, edit);
+    }
+
+    pub fn patch_occurrence_override(
+        doc: &mut AutoCommit,
+        event_id: Id,
+        original_date: NaiveDate,
+        patch: &crate::actions::OccurrencePatch,
+    ) {
+        let events = Self::map_at(doc, "events");
+        let Ok(Some((Value::Object(ObjType::Map), event))) =
+            doc.get(&events, event_id.to_string().as_str())
+        else {
+            return;
+        };
+        let overrides = Self::ensure_child(doc, &event, "overrides");
+        let item = Self::ensure_child(doc, &overrides, &original_date.to_string());
+        if let Some(value) = patch.cancelled {
+            let _ = doc.put(&item, "cancelled", value);
+        }
+        if let Some(value) = &patch.start {
+            let _ = doc.put(&item, "start", value.as_str());
+        }
+        if let Some(value) = &patch.end {
+            let _ = doc.put(&item, "end", value.as_str());
+        }
+        if let Some(value) = &patch.title {
+            let _ = doc.put(&item, "title", value.as_str());
+        }
+        if let Some(value) = &patch.location {
+            let _ = doc.put(&item, "location", value.as_str());
         }
     }
 
@@ -878,6 +1099,11 @@ impl CalDoc {
                 let start = parse_dt(&get_str(doc, &m, "start"));
                 let end = parse_dt(&get_str(doc, &m, "end"));
                 let reminder = get_int(doc, &m, "reminder");
+                let attendees = read_attendees(doc, &m);
+                let recurrence_exdates = read_exdates(doc, &m);
+                let occurrence_overrides = read_occurrence_overrides(doc, &m);
+                let organizer = parse_opt_id(&get_str(doc, &m, "organizer"))
+                    .filter(|id| attendees.iter().any(|attendee| attendee.id == *id));
                 model.events.push(Event {
                     id,
                     title: get_str(doc, &m, "title"),
@@ -887,6 +1113,23 @@ impl CalDoc {
                     location: get_str(doc, &m, "location"),
                     color: Palette::from_index(get_int(doc, &m, "color") as usize),
                     recurrence: Recurrence::from_rrule(&get_str(doc, &m, "rrule")),
+                    recurrence_interval: u32::try_from(get_int(doc, &m, "rrule_interval"))
+                        .unwrap_or(1)
+                        .max(1),
+                    recurrence_until: NaiveDate::parse_from_str(
+                        &get_str(doc, &m, "rrule_until"),
+                        "%Y-%m-%d",
+                    )
+                    .ok(),
+                    recurrence_count: u32::try_from(get_int(doc, &m, "rrule_count"))
+                        .ok()
+                        .filter(|count| *count > 0),
+                    recurrence_exdates,
+                    occurrence_overrides,
+                    timezone: nonempty(get_str(doc, &m, "timezone"))
+                        .unwrap_or_else(|| "floating".into()),
+                    organizer,
+                    attendees,
                     reminder_min: if reminder < 0 { None } else { Some(reminder) },
                     project: parse_opt_id(&get_str(doc, &m, "project"))
                         .filter(|project| model.project(*project).is_some()),
@@ -1136,6 +1379,89 @@ fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn nonempty(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+#[allow(
+    clippy::option_option,
+    reason = "outer option rejects malformed storage; inner option represents an absent override"
+)]
+fn parse_optional_dt(value: &str) -> Option<Option<NaiveDateTime>> {
+    if value.is_empty() {
+        Some(None)
+    } else {
+        NaiveDateTime::parse_from_str(value, DT_FMT).ok().map(Some)
+    }
+}
+
+fn read_attendees(doc: &AutoCommit, event: &ObjId) -> Vec<Attendee> {
+    let Ok(Some((Value::Object(ObjType::Map), attendees))) = doc.get(event, "attendees") else {
+        return Vec::new();
+    };
+    let tombstones = match doc.get(event, "attendee_tombstones") {
+        Ok(Some((Value::Object(ObjType::Map), value))) => Some(value),
+        _ => None,
+    };
+    doc.keys(&attendees)
+        .filter_map(|key| {
+            let id = key.parse::<Id>().ok()?;
+            if tombstones
+                .as_ref()
+                .is_some_and(|map| get_bool(doc, map, &key))
+            {
+                return None;
+            }
+            let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&attendees, key.as_str())
+            else {
+                return None;
+            };
+            let email = get_str(doc, &item, "email");
+            (!email.is_empty()).then_some(Attendee {
+                id,
+                name: get_str(doc, &item, "name"),
+                email,
+                status: InviteStatus::from_ical(&get_str(doc, &item, "status")),
+            })
+        })
+        .collect()
+}
+
+fn read_exdates(doc: &AutoCommit, event: &ObjId) -> Vec<NaiveDate> {
+    let Ok(Some((Value::Object(ObjType::Map), values))) = doc.get(event, "exdates") else {
+        return Vec::new();
+    };
+    doc.keys(&values)
+        .filter(|date| get_bool(doc, &values, date))
+        .filter_map(|date| NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok())
+        .collect()
+}
+
+fn read_occurrence_overrides(doc: &AutoCommit, event: &ObjId) -> Vec<OccurrenceOverride> {
+    let Ok(Some((Value::Object(ObjType::Map), values))) = doc.get(event, "overrides") else {
+        return Vec::new();
+    };
+    doc.keys(&values)
+        .filter_map(|date| {
+            let original_date = NaiveDate::parse_from_str(&date, "%Y-%m-%d").ok()?;
+            let Ok(Some((Value::Object(ObjType::Map), item))) = doc.get(&values, date.as_str())
+            else {
+                return None;
+            };
+            Some(OccurrenceOverride {
+                original_date,
+                original_time: nonempty(get_str(doc, &item, "original_time"))
+                    .and_then(|value| NaiveTime::parse_from_str(&value, "%H:%M:%S").ok()),
+                cancelled: get_bool(doc, &item, "cancelled"),
+                start: parse_optional_dt(&get_str(doc, &item, "start"))?,
+                end: parse_optional_dt(&get_str(doc, &item, "end"))?,
+                title: nonempty(get_str(doc, &item, "title")),
+                location: nonempty(get_str(doc, &item, "location")),
+            })
+        })
+        .collect()
 }
 
 fn parse_dt(s: &str) -> NaiveDateTime {

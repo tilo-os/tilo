@@ -84,6 +84,7 @@ pub struct RichTextLine {
     /// At most one signal in flight per frame; new signals overwrite the slot.
     signal: Option<LineSignal>,
     font_size: f32,
+    wrap: bool,
     /// Kept sorted by `range.start`.
     marks: Vec<MarkSpan>,
     /// Drained once `handle_event` observes a text-input edit.
@@ -109,6 +110,7 @@ impl RichTextLine {
             inner,
             signal: None,
             font_size: DEFAULT_FONT_SIZE,
+            wrap: false,
             marks: Vec::new(),
             pending_marks: Vec::new(),
             prev_text: String::new(),
@@ -142,6 +144,11 @@ impl RichTextLine {
 
     pub fn set_mono(&mut self, mono: bool) {
         self.inner.set_mono(mono);
+    }
+
+    pub fn set_wrap(&mut self, wrap: bool) {
+        self.wrap = wrap;
+        self.inner.set_multiline(wrap);
     }
 
     pub fn value(&self) -> &str {
@@ -421,17 +428,26 @@ impl Widget for RichTextLine {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The inner input owns the shaped document text (which bypasses
-        // `TextRenderer`'s global scale), so hand it the effective size here.
-        // Keeping its row height on the same scale prevents large-text lines
-        // from painting into their neighbours.
+        // `TextInput` applies the theme scale while shaping. Keep its stored
+        // size in logical units; pre-scaling here would multiply large text a
+        // second time (`font_size * scale * scale`). The row itself still
+        // reserves the once-scaled physical height below.
         let scale = theme.text_scale;
-        self.inner.set_font_size(self.font_size * scale);
+        self.inner.set_font_size(self.font_size);
+        self.inner.set_multiline(self.wrap);
         // font_size * 1.5 so headings end up taller than paragraph rows without a measure pass.
         let height = (self.font_size * scale * 1.5).max(20.0 * scale);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
+                height: if self.wrap {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(height)
+                },
+            },
+            min_size: Size {
+                width: Dimension::auto(),
                 height: Dimension::length(height),
             },
             ..Default::default()
@@ -449,6 +465,26 @@ impl Widget for RichTextLine {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         self.inner.apply_layout_external(rect);
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        if !self.wrap {
+            return Size::ZERO;
+        }
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            _ => 400.0,
+        });
+        let (_, height) = text_renderer.measure(self.value(), self.font_size, Some(width.max(1.0)));
+        Size {
+            width,
+            height: height + 12.0,
+        }
     }
 
     fn draw(
@@ -969,6 +1005,48 @@ mod tests {
             &mut focus_target,
             fake_node,
             &taffy,
+        );
+    }
+
+    fn rendered_advance_at_scale(scale: f32) -> f64 {
+        let mut line = RichTextLine::new().with_text("Calendar").with_size(16.0);
+        let theme = Theme::dark().with_text_scale(scale);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(scale);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let node = line.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("line layout");
+        line.apply_layout(&taffy, node, Point::ZERO);
+        line.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut renderer,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        line.inner()
+            .char_x_positions()
+            .last()
+            .copied()
+            .expect("terminal caret advance")
+    }
+
+    #[test]
+    fn large_text_shapes_once_not_geometry_scale_squared() {
+        let normal = rendered_advance_at_scale(1.0);
+        let doubled = rendered_advance_at_scale(2.0);
+        assert!(
+            (doubled - normal * 2.0).abs() < 0.5,
+            "2× text must have 2× advance, not 4×: {normal} -> {doubled}"
         );
     }
 

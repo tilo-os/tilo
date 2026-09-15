@@ -590,6 +590,10 @@ pub struct Draft {
     /// `text/html` part alongside `body` as the `text/plain` alternative.
     #[serde(default)]
     pub html_body: Option<String>,
+    /// Bounded RFC 5545 METHOD:REQUEST payload for a calendar invitation.
+    /// Stored inline so a collaborative draft never grants a host-path read.
+    #[serde(default)]
+    pub calendar_ics: Option<String>,
     /// Filesystem paths of files staged as attachments for this draft. The
     /// bytes are read from these paths when the message is built (see
     /// `transport::build_mime`), so what is sent is the real file — no
