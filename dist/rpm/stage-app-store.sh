@@ -35,7 +35,7 @@ cleanup() { rm -rf -- "$work"; }
 trap cleanup EXIT
 
 tar -xzf "$collection" -C "$work"
-[[ -f $work/index.json && -f $work/SHA256SUMS && -d $work/qpkg && -d $work/runtime ]] || {
+[[ -f $work/index.json && -f $work/SHA256SUMS && -d $work/qpkg && -d $work/tilo-runtime ]] || {
     echo "app collection has an unexpected layout" >&2
     exit 1
 }
@@ -54,14 +54,14 @@ if not runtime.startswith(prefix) or not runtime[len(prefix):]:
 print(runtime[len(prefix):])
 PY
 )
-[[ -f $work/runtime/$runtime_version/bundle.toml ]] || {
+[[ -f $work/tilo-runtime/$runtime_version/bundle.toml ]] || {
     echo "collection runtime tilo-runtime/$runtime_version is missing bundle.toml" >&2
     exit 1
 }
-"$bin_dir/tilo-runtime-bundle" verify "$work/runtime/$runtime_version" >/dev/null
+"$bin_dir/tilo-runtime-bundle" verify "$work/tilo-runtime/$runtime_version" >/dev/null
 
 mkdir -p "$stage/usr/share" "$stage/usr/lib" "$stage/etc/tilo"
-cp -a "$work/runtime" "$stage/usr/lib/tilo-runtime"
+cp -a "$work/tilo-runtime" "$stage/usr/lib/tilo-runtime"
 store="$stage/usr/share/tilo-apps"
 mkdir -p "$store"
 
