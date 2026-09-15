@@ -2380,6 +2380,7 @@ mod tests {
         request.source.size = data.len() as u64;
         request.source.identity = SourceIdentity::from_metadata(&metadata);
         request.source.installable = true;
+        request.source.expected_sha256 = None;
         request.target.size = target_size;
 
         let mut phases = Vec::new();

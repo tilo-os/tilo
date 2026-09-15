@@ -514,33 +514,20 @@ pub fn inspect_source(path: &Path) -> Option<Source> {
                 .to_string()
         });
 
-    // A qOS image (by name or volume label) can drive a full pre-configured
-    // install; anything else is written as-is.
-    let hay = format!(
-        "{} {}",
-        name.to_ascii_lowercase(),
-        label.to_ascii_lowercase()
-    );
-    let is_qos = hay.contains("qos");
-    let kind = if is_qos {
-        SourceKind::QosImage
-    } else {
-        SourceKind::IsoFile
-    };
-
-    // Only bless real disk-image extensions; a stray `.txt` is not an image.
-    let looks_like_image = matches!(ext.as_str(), "iso" | "img" | "raw" | "bin" | "dd") || is_qos;
+    // Local files have no authenticated release-catalog provenance. Even a
+    // qOS-looking filename or volume label is therefore write-only.
+    let looks_like_image = matches!(ext.as_str(), "iso" | "img" | "raw" | "bin" | "dd");
     if !looks_like_image {
         return None;
     }
 
     Some(Source {
-        kind,
+        kind: SourceKind::IsoFile,
         path: path.to_string_lossy().to_string(),
         name,
         size,
         label,
-        installable: is_qos,
+        installable: false,
         identity: SourceIdentity::from_metadata(&meta),
         expected_sha256: None,
     })
@@ -750,11 +737,12 @@ mod tests {
     }
 
     #[test]
-    fn inspect_source_uses_volume_label_and_marks_qos_installable() {
+    fn qos_looking_local_source_remains_unverified_and_write_only() {
         let iso = iso_with_label("QOS_1_0");
         let src = inspect_source(iso.path()).expect("inspect");
-        assert_eq!(src.kind, SourceKind::QosImage);
-        assert!(src.installable, "a qOS image can be pre-configured");
+        assert_eq!(src.kind, SourceKind::IsoFile);
+        assert!(!src.installable);
+        assert!(src.expected_sha256.is_none());
         assert_eq!(src.label, "QOS_1_0");
         assert!(src.size > 0);
         assert!(
@@ -779,6 +767,16 @@ mod tests {
         let f = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
         assert!(inspect_source(f.path()).is_none());
         assert!(inspect_source(std::path::Path::new("/no/such/file.iso")).is_none());
+    }
+
+    #[test]
+    fn qos_filename_does_not_turn_non_image_into_official_media() {
+        let f = tempfile::Builder::new()
+            .prefix("qos-official-")
+            .suffix(".txt")
+            .tempfile()
+            .unwrap();
+        assert!(inspect_source(f.path()).is_none());
     }
 
     #[test]

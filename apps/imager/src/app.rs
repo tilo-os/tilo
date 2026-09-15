@@ -282,9 +282,25 @@ impl ImagerApp {
         }
     }
 
-    /// Only qOS images can be pre-configured; a plain ISO is written as-is.
+    /// Only a qOS image authenticated by the bundled release catalog can be
+    /// pre-configured; every arbitrary local image is written as-is.
     fn customizable(&self) -> bool {
-        self.source.as_ref().is_some_and(|s| s.installable)
+        self.source
+            .as_ref()
+            .is_some_and(|source| self.source_is_official(source))
+    }
+
+    fn source_is_official(&self, source: &Source) -> bool {
+        source.kind == SourceKind::QosImage
+            && source.installable
+            && source.expected_sha256.as_deref().is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            && self.releases().iter().any(|release| {
+                release.image_sha256 == source.expected_sha256.as_deref().unwrap_or_default()
+                    && release.size == source.size
+                    && format!("{} {}", release.name, release.version) == source.name
+            })
     }
 
     /// Read-only projections used to build the searchable resource hierarchy.
@@ -794,7 +810,16 @@ impl ImagerApp {
                     children.push(
                         AccessNode::new(Role::StaticText)
                             .with_name("Selected image")
-                            .with_value(format!("{}, {}", source.name, fmt_size(source.size)))
+                            .with_value(format!(
+                                "{}, {}, {}",
+                                source.name,
+                                fmt_size(source.size),
+                                if self.source_is_official(source) {
+                                    "Official qOS release — catalog verified"
+                                } else {
+                                    "Local image — unverified, written as-is"
+                                }
+                            ))
                             .with_hashed_key("selected-image"),
                     );
                 }
@@ -1200,7 +1225,13 @@ impl ImagerApp {
                         + self.visible_targets().len() as f64 * 124.0
                 }
             }
-            Step::Customize => 462.0,
+            Step::Customize => {
+                if compact {
+                    540.0
+                } else {
+                    462.0
+                }
+            }
             Step::Confirm => {
                 if compact {
                     440.0
@@ -1953,11 +1984,11 @@ impl ImagerApp {
             Some((card.x1 - detail_x - 16.0).max(0.0) as f32),
             TextWeight::Regular,
         );
-        if src.installable {
+        if self.source_is_official(src) {
             Self::txt(
                 scene,
                 tr,
-                "● Can be pre-configured",
+                "● Official qOS release · catalog verified",
                 11.5,
                 c.semantic.success,
                 detail_x,
@@ -1969,7 +2000,7 @@ impl ImagerApp {
             Self::txt(
                 scene,
                 tr,
-                "Written as-is",
+                "Local image · unverified · written as-is",
                 11.5,
                 c.text_dim,
                 detail_x,
@@ -2142,7 +2173,7 @@ impl ImagerApp {
         Self::txt_right(
             scene,
             tr,
-            "installable",
+            "official · verified",
             11.0,
             c.semantic.success,
             r.x1 - 16.0,
@@ -2687,7 +2718,18 @@ impl ImagerApp {
             };
         let src_v = self.source.as_ref().map_or_else(
             || "—".into(),
-            |s| format!("{}   ({})", s.name, fmt_size(s.size)),
+            |s| {
+                format!(
+                    "{} ({}) · {}",
+                    s.name,
+                    fmt_size(s.size),
+                    if self.source_is_official(s) {
+                        "Official verified"
+                    } else {
+                        "Local unverified"
+                    }
+                )
+            },
         );
         row(
             scene,
@@ -3453,8 +3495,8 @@ impl ImagerApp {
             .filter(|previous| !previous.path.is_empty())
             .cloned()
             .map(Box::new);
-        // A non-installable source cannot carry a pre-config profile.
-        if !src.installable {
+        // A source outside the authenticated catalog cannot carry a profile.
+        if !self.source_is_official(src) {
             self.action = Action::Flash;
         }
         let action = crate::actions::ImagerAction::SelectSource {
@@ -3469,7 +3511,18 @@ impl ImagerApp {
             qos_actions::ActionContext::for_action("org.qos.Imager", "Imager", &action),
         );
         self.source = Some(src.clone());
-        self.set_status(state, &format!("Selected {}", src.name));
+        self.set_status(
+            state,
+            &format!(
+                "Selected {} — {}",
+                src.name,
+                if self.source_is_official(src) {
+                    "official release verified"
+                } else {
+                    "local image, written as-is"
+                }
+            ),
+        );
         self.dirty = true;
     }
 
@@ -3695,9 +3748,16 @@ impl ImagerApp {
                 }
             };
         };
-        let (Some(src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
+        let (Some(mut src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
             return Err("Select a source and drive first.".into());
         };
+        // Treat the collaborative source record as a claim, never as trust.
+        // Only an exact bundled-catalog match may transport a setup profile.
+        src.installable = self.source_is_official(&src);
+        if !src.installable {
+            src.kind = SourceKind::IsoFile;
+            src.expected_sha256 = None;
+        }
         if src.installable {
             self.profile.validate_media_profile()?;
         }
@@ -4414,7 +4474,7 @@ impl Widget for ImagerApp {
             if field_key == "preview" {
                 return match action {
                     AccessAction::Focus => {
-                        self.focus_accessible_profile_slot(6);
+                        self.focus_accessible_profile_slot(7);
                         true
                     }
                     AccessAction::Activate => {
@@ -4434,6 +4494,7 @@ impl Widget for ImagerApp {
                 CzField::Locale,
                 CzField::Timezone,
                 CzField::Keyboard,
+                CzField::Filesystem,
             ]
             .iter()
             .position(|candidate| *candidate == field) else {
@@ -5011,6 +5072,7 @@ mod tests {
             "Language and locale",
             "Time zone",
             "Keyboard layout",
+            "Filesystem",
             "Preview embedded setup",
         ];
         let positions = profile_order.map(|name| {
@@ -5020,7 +5082,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing accessible profile control {name}"))
         });
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
-        for name in ["Language and locale", "Time zone", "Keyboard layout"] {
+        for name in [
+            "Language and locale",
+            "Time zone",
+            "Keyboard layout",
+            "Filesystem",
+        ] {
             assert_eq!(
                 accessible_named(&tree, name).expect("profile chooser").role,
                 ui::a11y::Role::ComboBox,
@@ -5541,6 +5608,22 @@ mod tests {
         app.advance(&mut doc); // installable == false → straight to Confirm
         assert_eq!(app.step, Step::Confirm);
         assert!(!app.customizable());
+    }
+
+    #[test]
+    fn local_qos_claim_cannot_unlock_preconfiguration() {
+        let (mut app, mut doc) = seeded_app();
+        let official = crate::model::sample_source();
+        let mut local = official.clone();
+        local.kind = SourceKind::IsoFile;
+        local.path = "/tmp/qos-official-looking.iso".into();
+        local.identity = None;
+        app.select_source(&mut doc, &local);
+        assert!(!app.customizable());
+        assert_eq!(app.action, Action::Flash);
+
+        app.source = Some(official);
+        assert!(app.customizable());
     }
 
     #[test]
