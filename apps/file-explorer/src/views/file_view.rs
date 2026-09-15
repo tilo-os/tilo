@@ -157,6 +157,10 @@ pub struct FileView {
     selection: SelectionModel,
     mode: ViewMode,
     scale: f64,
+    /// Accessibility type scale is separate from the user's item zoom. It
+    /// widens/hides metadata columns without magnifying icons and labels a
+    /// second time (the theme already owns type enlargement).
+    text_scale: f64,
     sort_by: SortBy,
     sort_order: SortOrder,
     sink: CommandSink,
@@ -201,6 +205,7 @@ impl FileView {
             selection: selection.clone(),
             mode: ViewMode::List,
             scale: 1.0,
+            text_scale: 1.0,
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
             sink: sink.clone(),
@@ -255,6 +260,11 @@ impl FileView {
         self.scale = scale.clamp(0.5, 3.0);
         self
     }
+    #[must_use]
+    pub fn with_text_scale(mut self, scale: f32) -> Self {
+        self.text_scale = f64::from(scale.clamp(0.5, 4.0));
+        self
+    }
 
     /// Seed the pointer position the host last saw. The host rebuilds this view
     /// from scratch every frame, so without this a fresh view starts with the
@@ -287,8 +297,13 @@ impl FileView {
     /// fit two fully zoomed desktop tiles; use that compact geometry instead
     /// of falling all the way back to one column.
     fn grid_cell_size_for_width(&self, width: f64) -> (f64, f64) {
-        let desired_w = GRID_CELL_W * self.scale;
-        let desired_h = GRID_CELL_H * self.scale;
+        // Enlarged labels need their own readable measure. Growing only the
+        // glyph left neighbouring names visually concatenated at 200% text;
+        // let the grid reflow to fewer cards instead. Height grows more gently
+        // because a grid label is deliberately one truncated line.
+        let desired_w = GRID_CELL_W * self.scale * self.text_scale;
+        let desired_h =
+            GRID_CELL_H * self.scale + 36.0 * self.scale * (self.text_scale - 1.0).max(0.0);
         let gap = self.grid_gap();
         let inner = (width - 2.0 * self.pad_x()).max(0.0);
         let compact_w = ((inner - gap) / 2.0).max(0.0);
@@ -311,7 +326,7 @@ impl FileView {
         self.grid_cell_size_for_width(self.rect.width()).1
     }
     fn grid_gap(&self) -> f64 {
-        GRID_GAP * self.scale
+        GRID_GAP * self.scale * self.text_scale.sqrt()
     }
     fn pad_x(&self) -> f64 {
         CONTENT_PAD_X * self.scale
@@ -500,10 +515,10 @@ impl FileView {
     /// cutoff made a 390 px window waste most of a large-text row on a `—`
     /// size placeholder and truncate the filename.
     fn show_size(&self) -> bool {
-        self.rect.width() > 340.0 * self.scale
+        self.rect.width() > 340.0 * self.scale * self.text_scale
     }
     fn show_modified(&self) -> bool {
-        self.rect.width() > 560.0 * self.scale
+        self.rect.width() > 560.0 * self.scale * self.text_scale
     }
     /// Whether list column `i` (0 name, 1 size, 2 modified) is currently shown.
     fn col_visible(&self, i: usize) -> bool {
@@ -541,8 +556,8 @@ impl FileView {
     fn header_col_rect(&self, i: usize) -> Rect {
         let x0 = self.rect.x0 + self.pad_x();
         let x1 = self.rect.x1 - self.pad_x();
-        let size_w = SIZE_COL_W * self.scale;
-        let mod_w = MOD_COL_W * self.scale;
+        let size_w = SIZE_COL_W * self.scale * self.text_scale;
+        let mod_w = MOD_COL_W * self.scale * self.text_scale;
         let gap = COL_GAP * self.scale;
         let show_mod = self.show_modified();
         let show_size = self.show_size();
@@ -2279,6 +2294,29 @@ mod tests {
             name.width() >= v.rect.width() - 2.0 * v.pad_x() - 1.0,
             "the name column owns the usable row width at large zoom"
         );
+    }
+
+    #[test]
+    fn accessibility_text_scale_reserves_metadata_width_without_double_zooming_items() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut v = FileView::new(&items(4), &sel, &sink).with_text_scale(2.0);
+        v.rect = Rect::new(0.0, 0.0, 1_200.0, 400.0);
+
+        assert!(
+            v.show_size(),
+            "size still fits in a wide enlarged-text pane"
+        );
+        assert!(v.show_modified(), "modified still fits at desktop width");
+        assert_eq!(v.row_h(), LIST_ROW_H, "text scale is not item zoom");
+        assert_eq!(
+            v.header_col_rect(2).width(),
+            MOD_COL_W * 2.0,
+            "the date column grows with its text"
+        );
+
+        v.rect = Rect::new(0.0, 0.0, 900.0, 400.0);
+        assert!(!v.show_modified(), "metadata yields to the primary name");
     }
 
     #[test]

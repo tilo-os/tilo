@@ -118,6 +118,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_size_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let scenario = parse_scenario_arg(&args);
+        let text_scale = parse_text_scale_arg(&args).unwrap_or(1.0);
         // Some scenarios seed a demo directory that must exist BEFORE the widget
         // is built (so the sidebar / workspace roots pick it up), so seed here.
         let demo_dir = match scenario.as_deref() {
@@ -127,7 +128,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("history") => Some(seed_history_demo()),
             _ => None,
         };
-        let mut widget = FileExplorerWidget::new();
+        // Audits must not inherit a developer's persisted item zoom or custom
+        // Places ordering. Use the real home only as fixture content, with no
+        // persistence directory, so every viewport/theme comparison starts
+        // from the same default presentation state.
+        let mut widget = FileExplorerWidget::with_persistence(None, dirs::home_dir());
         // Optional `--path <dir>` starts the shot in a specific directory
         // (e.g. to capture a deep breadcrumb trail), else the default
         // cold-start location is used.
@@ -180,7 +185,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("error") => widget.debug_show_error_state(),
             _ => {}
         }
-        render_shot_to_png(widget, viewport, scenario.as_deref(), &out)?;
+        render_shot_to_png(widget, viewport, text_scale, scenario.as_deref(), &out)?;
         return Ok(());
     }
 
@@ -657,6 +662,25 @@ fn parse_size_arg(args: &[String]) -> Option<(u32, u32)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
+/// Returns the bounded text scale requested by the shared launch contract.
+/// Keeping the offscreen seam in lock-step with live launch makes 200% text a
+/// real release audit instead of a normal-scale screenshot with a suggestive
+/// filename.
+fn parse_text_scale_arg(args: &[String]) -> Option<f32> {
+    let mut iter = args.iter().skip(1);
+    let value: &str = loop {
+        let arg = iter.next()?;
+        if arg == "--text-scale" {
+            break iter.next()?.as_str();
+        }
+        if let Some(value) = arg.strip_prefix("--text-scale=") {
+            break value;
+        }
+    };
+    let scale: f32 = value.parse().ok()?;
+    (scale.is_finite() && (0.5..=4.0).contains(&scale)).then_some(scale)
+}
+
 /// Returns `Some(name)` if `--scenario <name>` (or `--scenario=<name>`) appears
 /// in `args`. Drives headless demo shots (`grid`, `menu`, `reorder`).
 fn parse_scenario_arg(args: &[String]) -> Option<String> {
@@ -779,6 +803,7 @@ fn apply_post_layout_scenario(
 fn render_shot_to_png(
     mut widget: FileExplorerWidget,
     viewport: (u32, u32),
+    text_scale: f32,
     scenario: Option<&str>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -797,7 +822,8 @@ fn render_shot_to_png(
         .with_reduce_motion(matches!(
             std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
             Ok("1" | "true" | "TRUE")
-        ));
+        ))
+        .with_text_scale(text_scale);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -939,7 +965,19 @@ fn render_shot_to_png(
 
 #[cfg(test)]
 mod actor_tests {
-    use super::distinct_actor;
+    use super::{distinct_actor, parse_text_scale_arg};
+
+    #[test]
+    fn screenshot_text_scale_matches_the_bounded_launch_contract() {
+        let split = vec!["files".into(), "--text-scale".into(), "2".into()];
+        let equals = vec!["files".into(), "--text-scale=1.75".into()];
+        assert_eq!(parse_text_scale_arg(&split), Some(2.0));
+        assert_eq!(parse_text_scale_arg(&equals), Some(1.75));
+        for value in ["0", "4.1", "NaN", "infinite", "not-a-number"] {
+            let args = vec!["files".into(), format!("--text-scale={value}")];
+            assert_eq!(parse_text_scale_arg(&args), None, "accepted {value}");
+        }
+    }
 
     /// The regression, stated as the property it broke.
     ///
