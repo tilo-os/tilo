@@ -79,7 +79,8 @@ Controller ratified the common bound-node extension in principle. Task 2 now pro
 | shell/src/main.rs; new shell/src/linux_main.rs | Tiny target dispatch; existing Linux orchestration moved without behavioral rewrite. |
 | new shell/src/native_window/{mod,presentation}.rs | Mac-gated main-thread callbacks and retained-target presentation; callbacks use the shared WindowLifecycle owner below. |
 | new shell/src/shell/window_lifecycle.rs | Platform-neutral WindowLifecycle actually owned by the Mac ApplicationHandler; geometry/occlusion/retry/serial/close state and admission decisions, with colocated library tests. |
-| shell/src/shell/frame.rs; new shell/src/shell/frame_viewport.rs | Same retained producer with explicit logical layout/physical scene mapping; existing compatibility wrappers. |
+| shell/src/shell/frame.rs; new shell/src/shell/frame_viewport.rs | Same retained producer with explicit logical layout/physical scene mapping; both paint entrypoints return physical-target scenes for a supplied viewport; existing compatibility wrappers. |
+| ui/src/widget/{scrollable,file_picker,activity_timeline}.rs; apps/terminal/src/{main_body,tests}.rs; shell/src/shell/{overlay_host,sidebar_wheel_disc,topbar_chrome}.rs | Task 1 converts the eight reachable magnitude-sensitive physical `PixelDelta` sites in seven implementation files once at their existing consumer boundaries; terminal's existing mock-only test module covers its helper. Preserve line values, the physical WebView sink, and sign-only paths. |
 | ui/src/{gpu,app,lib}.rs; new ui/src/ime.rs | Surface-only GPU resource, shared finite logical IME state. Preserve ui worker and old GPU APIs. |
 | ui/src/bound_dispatch.rs; shell/src/shell/frame.rs | Existing component-bound callbacks made usable by FrameBuilder's raw pointer paths. |
 | new shell/src/shell/native_host.rs | Task 5 shared PreparedShellHost and retained close recovery, consuming Files Task 6 FilesServiceOwner; Task 6 adds strict preparation, no RPC protocol. |
@@ -92,8 +93,8 @@ Controller ratified the common bound-node extension in principle. Task 2 now pro
 
 ## Task 1: Give the retained producer an exact output geometry contract
 
-**Consumes:** Existing FrameBuilder/FramePaint; physical winit size and scale.
-**Produces:** FrameViewport and explicit construction/geometry APIs below. Existing FrameBuilder methods and Linux re-exports remain usable.
+**Consumes:** Existing FrameBuilder/FramePaint; physical winit size and scale; the raw-event plus scale contract of current shell/retained-widget dispatch.
+**Produces:** FrameViewport, explicit construction/geometry APIs below, and one physical-to-logical conversion in each currently reachable magnitude-sensitive pixel-scroll consumer. Existing FrameBuilder methods and Linux re-exports remain usable.
 
 ~~~rust
 // shell::shell::frame_viewport
@@ -126,7 +127,7 @@ impl FrameBuilder {
 }
 ~~~
 
-- [ ] Add tests directly against FrameViewport, including a fractional logical right/bottom edge, negative/offscreen damage, nonfinite scale/rect, zero extent, very large extent and 1×/2× equivalents.
+- [ ] Add tests directly against FrameViewport, including a fractional logical right/bottom edge, negative/offscreen damage, nonfinite scale/rect, zero extent, very large extent and 1×/2× equivalents. Validate scale before testing zero physical extent: invalid/nonfinite/nonpositive scale is `InvalidScale` even when either dimension is zero; only valid-scale zero extent is `Ok(None)`.
 
 Register them in the shared library, not shell/tests/it.rs:
 
@@ -146,17 +147,27 @@ assert_eq!(viewport.logical(), (400.5, 300.5));
 let edge = viewport.damage(vello::kurbo::Rect::new(400.0, 300.0, 400.5, 300.5)).unwrap();
 assert_eq!((edge.x, edge.y, edge.width, edge.height), (800, 600, 1, 1));
 assert!(FrameViewport::new((0, 601), 2.0).unwrap().is_none());
+assert!(matches!(
+    FrameViewport::new((0, 0), f64::NAN),
+    Err(FrameGeometryError::InvalidScale)
+));
 assert!(FrameViewport::new((801, 601), f64::NAN).is_err());
 ~~~
 
+- [ ] Before any runtime command, write and review the complete first fixture source closure. Prepare a controlled `FontCatalog`/`TextRenderer`, theme, fixture `Chrome`, and `ShellOverlayHost::with_fixture_content` containing only a tall real `Scrollable` before arming `DenyAmbientStarts`; then exercise only `FrameBuilder::from_host`, layout, scaled dispatch, and paint under the guard. Do not construct the default demo workspace, Terminal, WebView engine, system-font renderer, StatusBridge, or ambient host inputs inside the measured region.
 - [ ] Run the new shell native_viewport selection and observe failure before adding the implementation.
-- [ ] Store output viewport in FrameBuilder with scale 1 for legacy constructors. Reject nonfinite/nonpositive scale and logical dimensions not representable as finite f32 layout values. Zero physical dimensions return None: a runner retains its last valid layout and does no allocation/acquire/render until nonzero.
+- [ ] Store output viewport in FrameBuilder with scale 1 for legacy constructors. Reject nonfinite/nonpositive scale before examining zero physical extent, then reject logical dimensions not representable as finite f32 layout values. Zero physical dimensions with a valid scale return None: a runner retains its last valid layout and does no allocation/acquire/render until nonzero.
 - [ ] Perform layout in physical/scale logical f64, narrowing only at Taffy. Update wrapper style/available size when geometry changes, preserving actual widget boxes. Equal geometry is a no-op. Retain current structural dirty/focus reconciliation for actual structure changes.
 - [ ] Calculate damage from the original logical Rect inside native_damage_rect, multiplying by scale BEFORE floor/ceil/clamp. Reject nonfinite coordinates; floor min, ceil max, clip against exact physical extent, then narrow to u32. Do not first round to integer logical pixels: current fractional viewport edge would lose pixels.
-- [ ] Keep produced section comparisons in logical scene space. Append the final composed logical scene once using Affine::scale(scale) into the returned FramePaint scene. FramePaint.damage_regions thereafter always means physical target pixels. Geometry changes clear last_produced_sections so the next paint is dense. Scale-1 existing snapshots and sparse admission remain unchanged.
-- [ ] Implement dispatch_event_scaled by passing raw WindowEvent and actual scale to existing host.handle_event. Existing dispatch_event remains the exact scale-1 wrapper used by Linux/synthetic a11y/shots. Reject invalid scales. Keep line scroll units unchanged; existing widget pixel scroll and touch paths do their one conversion. Test pointer hit and pixel scroll equivalence at 1× and 2× on actual FrameBuilder widgets.
-- [ ] from_host consumes prepared parts and explicit theme/text renderer without StatusBridge, environment reads, factory recreation or default fixture setup. Legacy constructors retain their old options. Propagate PlatformConventions through the existing Widget hook before layout.
+- [ ] Keep produced section comparisons in logical scene space. For every supplied `FrameViewport`, both `paint()` and `paint_with_damage().scene` return physical-target coordinates: compose the logical scene once and append it once using `Affine::scale(scale)`. `FramePaint.damage_regions` thereafter always means physical target pixels. Geometry changes clear `last_produced_sections` so the next paint is dense. Scale-1 existing snapshots and sparse admission remain unchanged.
+- [ ] Implement `dispatch_event_scaled` by passing the raw `WindowEvent` and actual scale to existing `host.handle_event`; never pre-divide or rewrite `PixelDelta`. Existing `dispatch_event` remains the exact scale-1 wrapper used by Linux/synthetic a11y/shots. Reject invalid scales. Preserve line scroll values, WebView's intentional physical-pixel sink, and sign-only Files zoom/StripView/peer-sync paths. At the existing private consumer boundaries divide pixel magnitude by scale exactly once in these eight sites: `Scrollable`, Terminal wheel, portal `FilePicker`, room `ActivityTimeline`, `SidebarWheelDisc`, TopBar center carousel, overview vertical scroll, and unclaimed horizontal strip stepping.
+- [ ] Prove actual retained dispatch equivalence with the prepared `FrameBuilder`/`Scrollable` fixture: `(400,300) @ 1×` receives cursor `(20,20)` plus `PixelDelta(0,-40)`; `(800,600) @ 2×` receives cursor `(40,40)` plus raw `PixelDelta(0,-80)`; both must handle the event and persist the exact same 40-logical-pixel offset.
+- [ ] Extend focused consumer regressions without changing line-delta constants: `wheel_still_scrolls_with_scrollbar_present`, `scrolling_windows_the_visible_rows`, `the_disc_is_never_empty_under_sustained_scrolling`, `scrolling_into_an_end_pulls_against_it_and_lets_go`, `scrolling_mid_list_still_takes_three_clicks_per_workspace`, and the already-correct controls `notification_history_wheel_reaches_older_retained_errors_on_compact_layouts` and `wheel_scrolls_in_physical_pixels`; add 1×/2× private-helper pairs for Terminal, ActivityTimeline, TopBar, overview, and horizontal fallback. Terminal tests use the existing `build_test_widget` mock channels and never spawn a PTY/process; the existing WebView control uses in-memory `TestEngine`, never WPE.
+- [ ] `from_host` consumes prepared parts and explicit theme/text renderer without StatusBridge, environment reads, factory recreation or default fixture setup. Legacy constructors retain their old options. Propagate PlatformConventions through the existing Widget hook before layout.
 - [ ] Add actual FrameBuilder sparse/dense target comparisons for logical damage at 1, 1.25 and 2 scales, right/bottom clipping, unchanged logical size with changed physical extent, and scale-only change. Require no sparse reuse across geometry changes. Use controlled font source for cross-host comparisons; scene assertions remain available before that producer lands.
+
+This bounded correction covers the current six in-process app choices plus current shell overlays reachable from `ShellOverlayHost`. It does not qualify pixel-scroll behavior for future 47-app native support; each later app enablement must inspect and test its own magnitude-sensitive consumers.
+
 - [ ] Run Task 1 gates below and commit: feat(shell): add logical viewport and physical retained damage.
 
 ## Task 2: Bind FrameBuilder's direct callbacks and expose shared IME state
@@ -569,7 +580,7 @@ Source-backed early gate limit: shell/src/main.rs still imports Linux-gated host
 
 | Task | Focused nextest payload on both hosts unless labeled Mac | Mac check/lint payloads | Fedora check/lint payloads |
 | --- | --- | --- | --- |
-| 1 | cargo nextest run --locked --profile ci -p shell --lib -E 'test(native_viewport_tests)'; existing shared frame retained/dense library selections | cargo check --locked -p shell --lib; cargo clippy --locked -p shell --lib -- -D warnings | cargo check --locked -p shell --all-targets; cargo clippy --locked -p shell --all-targets -- -D warnings |
+| 1 | cargo nextest run --locked --profile ci -p shell --lib -E 'test(native_viewport_tests)'; cargo nextest run --locked --profile ci -p shell --lib -E 'test(pixel_wheel_uses_logical_distance_at_1x_and_2x) or test(the_disc_is_never_empty_under_sustained_scrolling) or test(scrolling_into_an_end_pulls_against_it_and_lets_go) or test(scrolling_mid_list_still_takes_three_clicks_per_workspace) or test(notification_history_wheel_reaches_older_retained_errors_on_compact_layouts)'; cargo nextest run --locked --profile ci -p ui --lib -E 'test(pixel_wheel_uses_logical_distance_at_1x_and_2x) or test(wheel_still_scrolls_with_scrollbar_present) or test(scrolling_windows_the_visible_rows) or test(wheel_scrolls_in_physical_pixels)'; cargo nextest run --locked --profile ci -p terminal --lib -E 'test(pixel_wheel_uses_logical_distance_at_1x_and_2x)'; existing shared frame retained/dense library selections | cargo check --locked -p shell -p ui -p terminal --lib; cargo clippy --locked -p shell -p ui -p terminal --lib -- -D warnings | cargo check --locked -p shell -p ui -p terminal --all-targets; cargo clippy --locked -p shell -p ui -p terminal --all-targets -- -D warnings |
 | 2 | cargo nextest run --locked --profile ci -p shell --lib -E 'test(native_component_dispatch_tests)'; cargo nextest run --locked --profile ci -p ui --test it -E 'test(bound_component_dispatch)' plus existing UI IME/resource/undo selections | cargo check --locked -p shell --lib; cargo clippy --locked -p shell --lib -- -D warnings; cargo check --locked -p ui --all-targets; cargo clippy --locked -p ui --all-targets -- -D warnings | cargo check --locked -p ui -p shell --all-targets; cargo clippy --locked -p ui -p shell --all-targets -- -D warnings |
 | 3 | cargo nextest run --locked --profile ci -p ui --lib -E 'test(gpu::) or test(render_thread::)' | cargo check --locked -p ui --all-targets; cargo clippy --locked -p ui --all-targets -- -D warnings | Same ui all-target payloads |
 | 4 | cargo nextest run --locked --profile ci -p shell --lib -E 'test(window_lifecycle::tests)'; GPU producer's actual library selections; Mac additionally cargo nextest run --locked --profile ci -p shell --lib -E 'test(native_window::presentation::tests)' | cargo check --locked -p shell --lib; cargo clippy --locked -p shell --lib -- -D warnings | cargo check --locked -p shell --all-targets; cargo clippy --locked -p shell --all-targets -- -D warnings |

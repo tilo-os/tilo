@@ -70,6 +70,7 @@ Files to create or modify during **later execution**:
 - `crates/runtime/runtime-fs/src/observe.rs`: descriptor-backed change observation and bounded invalidations.
 - `crates/runtime/runtime-fs/src/transfer.rs`: host-owned clipboard/drop resources and delegated leases.
 - `crates/runtime/runtime-fs/src/lib.rs`, `Cargo.toml`: exports and direct locked dependencies. No changes to existing fs.capnp ordinals or ambient compatibility client in these tasks.
+- Root `Cargo.toml` and `apps/file-explorer/Cargo.toml`: Task 3 only normalizes the already locked `trash = "5.2.6"` into workspace dependencies with both consumers using `trash.workspace = true`; no lockfile upgrade.
 - `crates/runtime/runtime-fs/tests/{native_grants,native_operations,native_trash,native_observe_transfer}.rs`: real isolated filesystem integration tests; `tests/support/mod.rs` holds shared test setup only.
 - `ui/src/application_files.rs`: narrow Files context/open interfaces below shell; `ui/src/application.rs`, `ui/src/lib.rs`, `crates/app/qos-app/src/lib.rs`: typed context/target extension and reexports. These paths are additions to the pending common-framework plan, not assertions of existing files.
 - `ui/src/record_index.rs`, `ui/src/record.rs`: authorized paged app-record metadata index produced by canonical record owners; no Files writer. Add `ui/tests/record_index.rs` and register it in `ui/tests/it.rs`.
@@ -282,13 +283,70 @@ Persist an Admitted receipt before the first effect and persist each transition 
 
 ## Task 3: Recoverable trash, change observation and host-owned transfers
 
-**Files:** runtime-fs `trash.rs`, `observe.rs`, `transfer.rs`, tests `native_trash.rs`, `native_observe_transfer.rs`, exports/dependencies.
+**Files:** runtime-fs `trash.rs`, `observe.rs`, `transfer.rs`; `operations.rs` and `recovery.rs` only for the Task 3 trash variants, root admission bindings and durable trash membership receipts; tests `native_trash.rs`, `native_observe_transfer.rs`, exports/dependencies; root `Cargo.toml` and Files `Cargo.toml` for the mechanical shared-`trash` dependency normalization only.
 
 **Consumes:** Task 1 authority and Task 2 worker/outcome/anchored publication.
 
 **Produces:** Concrete trash availability, directory invalidations and clipboard/drop ownership. No automatic native dialog or external-app launch.
 
 ```rust
+// runtime_fs::trash. IDs and live leases have private fields. TrashRootId is
+// durable identity, not authority; TrashScope/TrashItemId are not deserializable.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrashRootId(uuid::Uuid);
+#[derive(Clone, Debug)] pub struct TrashRootAdmission { lease: TrashRootAdmissionLease }
+#[derive(Clone, Debug)] pub struct TrashScope { lease: TrashScopeLease }
+#[derive(Clone, Debug, Eq, PartialEq)] pub struct TrashItemId { lease: TrashItemLease }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrashCapability { Available, Denied, Unsupported(&'static str) }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TrashCapabilities {
+    pub trash: TrashCapability, pub list: TrashCapability,
+    pub restore: TrashCapability, pub purge: TrashCapability,
+}
+pub struct TrashItem {
+    pub id: TrashItemId, pub original_name: EntryName,
+    pub metadata: crate::Metadata, pub trashed_unix_seconds: Option<i64>,
+}
+pub struct TrashPageCursor { scope_generation: u64, revision: u64, offset: usize }
+pub struct TrashPage {
+    pub items: Vec<TrashItem>, pub next: Option<TrashPageCursor>, pub revision: u64,
+}
+pub struct TrashRestore {
+    pub scope: TrashScope, pub item: TrashItemId,
+    pub into: DirectoryGrant, pub name: EntryName,
+}
+pub struct TrashPurge { pub scope: TrashScope, pub item: TrashItemId }
+pub trait NativeLocationResolver: Send + Sync {
+    fn current_directory_path(&self, opened_directory: &std::fs::File)
+        -> Result<std::path::PathBuf, FsError>;
+}
+impl OperationOwner {
+    pub fn admit_trash_root(&self, current: &FsSession, root: &DirectoryGrant)
+        -> Result<TrashRootAdmission, FsError>;
+    pub fn reauthorize_trash_root(&self, id: &TrashRootId,
+        current: &FsSession, root: &DirectoryGrant)
+        -> Result<TrashRootAdmission, FsError>;
+}
+impl TrashRootAdmission { pub fn id(&self) -> &TrashRootId; }
+impl NativeGrantAuthority {
+    pub fn trash_scope(&self, session: &FsSession, root: &DirectoryGrant,
+        admission: &TrashRootAdmission) -> Result<TrashScope, FsError>;
+}
+impl FsSession {
+    // Table validation only; FilesContext uses this without filesystem I/O.
+    pub fn check_trash_scope(&self, scope: &TrashScope, root: &DirectoryGrant)
+        -> Result<(), FsError>;
+    // Blocking provider calls: execute on the bounded read workers.
+    pub fn trash_capabilities(&self, scope: &TrashScope)
+        -> Result<TrashCapabilities, FsError>;
+    pub fn list_trash(&self, scope: &TrashScope, cursor: Option<TrashPageCursor>)
+        -> Result<TrashPage, FsError>;
+}
+// Task 3 adds these exact variants to Task 2's FsOperation:
+// RestoreTrash { items: Vec<TrashRestore> },
+// PurgeTrash { items: Vec<TrashPurge> },
+
 pub enum ObservationMode { Polling { interval_ms: u64 }, RefreshOnActivation }
 pub enum DirectoryChange { Invalidated { generation: u64 }, Revoked, Unavailable }
 pub struct DirectorySubscription { /* private bounded coalescing channel */ }
@@ -334,7 +392,10 @@ impl FileTransferClient {
 // Opaque IDs are derived from native fstat in this authority session, not caller strings.
 #[derive(Clone, Debug, Eq, PartialEq)] pub struct NativeVolumeId { /* session + native device identity */ }
 pub enum TrashConfiguration {
-    Freedesktop { files: std::fs::File, info: std::fs::File, staging: std::fs::File },
+    Freedesktop {
+        files: std::fs::File, info: std::fs::File, staging: std::fs::File,
+        locations: std::sync::Arc<dyn NativeLocationResolver>,
+    },
     MacNative { staging: std::fs::File, trusted_staging_url: std::path::PathBuf },
 }
 impl NativeGrantAuthority {
@@ -344,9 +405,21 @@ impl NativeGrantAuthority {
 }
 ```
 
+`TrashRootId` is minted and durably stored only by the existing per-`FsOwner` `OperationOwner`; it identifies the host's explicit root admission but grants nothing. First use calls `admit_trash_root` with a live session/root, persists that ID plus owner and native/provenance evidence before trash effects, and returns a live non-serializable admission token. The trusted host retains the opaque ID beside its configured-root record. On restart it must reopen/re-admit that configured resource through the ordinary host flow and explicitly call `reauthorize_trash_root(id, current, root)`. That call records the host's deliberate mapping, rechecks owner/current session/root descriptor/provenance, and returns a new live token. No scan or automatic match by path, device/inode/object identity, owner string or a reused native identity can recover historical trash visibility. If the old root disappeared or was replaced, a newly admitted descriptor remains unrelated unless the trusted host explicitly reauthorizes that exact prior ID; merely reproducing the old path or injected native identity is denied. This uses Task 2's restart rule: receipt identity plus freshly authorized descriptors, stored by the existing per-owner OperationOwner. `reauthorize_trash_root` rejects an unknown prior ID or an OperationOwner other than the exact owner attached to the current authority/session. Root admission metadata counts toward that owner's existing metadata bounds.
+
+`admit_trash_root` and `reauthorize_trash_root` register their live binding in that same OperationOwner for the exact authority/session and admitted-root grant slot/generation. One such binding may name only one TrashRootId; an attempt to map that live root to a different prior ID returns Denied. Repeating the same binding may return its existing live admission. Task 3 keeps Task 2's `FsOperation::Trash { entries }` signature: before persisting Admitted or staging, trace each entry's grant lineage to its allowed admitted root and require the unique registered live TrashRootAdmission. Do not choose by path, native identity, owner text, or whichever scope was most recently listed. Missing or ambiguous admission returns Denied before effects; a closed/revoked/stale binding returns its typed error. Every trash receipt records that binding's TrashRootId before the first effect, and each item/chunk/commit repeats the live binding check. This association is local to the existing operation owner and does not introduce a global root registry.
+
+`trash_scope` requires the live `TrashRootAdmission` and binds one authority, owner, mount, current root grant/generation, durable TrashRootId, native volume and configuration generation. A root outside the session allow-set, a token from another mount/root/owner, or stale/revoked admission fails. An unconfigured volume still receives a scope so capability query can return stable Unsupported facts; operations fail before admission/staging. Reopen, configuration change or root revocation requires a fresh admission/scope. A completed item is visible only when its receipt carries the same TrashRootId and the current root token remains valid; native identity is revalidated but is never sufficient.
+
+`TrashItemId` is freshly minted by a bounded list from a completed receipt under one live scope. It binds scope generation and durable item/object identity, contains no path, is not deserializable and cannot cross a scope/session. Listing returns at most 256 items/page and returns StalePage on revision change; removed/replaced IDs return StaleEntry. Rows expose original native leaf name and display metadata, never original paths or authority handles. Keep completed trash membership receipts while their items remain in Trash, independently of operation-report acknowledgement or seven-day pruning. Remove membership only after its corresponding restore/purge outcome is durably settled; uncertain outcomes retain their membership/recovery evidence for explicit host reconciliation. Charge this receipt metadata to the existing OperationOwner bounds and refuse new effects before staging when capacity is unavailable.
+
+For Freedesktop, capability query combines adapter support and current rights: trash requires Trash; list requires Enumerate+Trash; restore requires Read+Trash and rechecks Create on each explicit destination; purge requires Purge. Missing rights are Denied; revocation/close/staleness are typed errors. Query grants nothing. Effects recheck admission/scope, rights, item identity and destination before every item/chunk/commit. For MacNative, trash may be Available while list/restore/purge are stable Unsupported facts and calls fail before job admission/effects.
+
+Task 3 adds `FsOperation::RestoreTrash { items: Vec<TrashRestore> }` and `FsOperation::PurgeTrash { items: Vec<TrashPurge> }`. They reuse Task 2's 256-item bound, one-active-job rule, cancellation, progress, ItemOutcome, OperationOwner reports and recovery checkpoints. Restore always receives an explicit destination DirectoryGrant/EntryName, publishes with `RenameFlags::NOREPLACE` and returns Conflict without changing the destination or trash item; `.trashinfo` never reconstructs authority. A completed restore reports its actual destination grant in ItemOutcome. A published destination whose trash source remains is CopiedSourceRetained. Purge begins only after Files' existing confirmation and live Purge check, persists its irreversible checkpoint, never replays an uncertain delete, and reports OutcomeUnknown with RecoveryKind::UnknownNativeCommit; only AcknowledgeUnknown applies. Cancellation preserves and reports completed items.
+
 The trusted host opens/adopts descriptors and chooses one configuration for each actual native volume. Derive the configuration descriptors' volume from fstat and reject mismatch or a duplicate registration. Volume IDs are rederived/revalidated each host startup, never trusted from persisted numeric device IDs. Missing configuration is Unsupported before staging. Reject non-directory/unsafe staging roots and require private host ownership. App FsSession clients cannot configure adapters; capabilities distinguish trash/list/restore/purge. A Freedesktop configuration is an actual directory-trash provider used on Linux; exercising it on Mac with temporary files is a **test adapter**, not native Mac Trash qualification.
-- [ ] Allocate a private mode-0700 `staging/<operation-id>/` parent on the source volume. Keep the selected entry's exact native leaf name inside it (`staging/<operation-id>/original-name`), including extension/non-UTF8 bytes; never send an opaque operation UUID as the leaf name to native Trash. Obtain parent descriptors, persist the Admitted receipt containing original parent identity/name, grant generation, source object identity, volume and private staging locator, and fsync it before rename. Perform anchored no-replace rename into the private parent; verify staged identity; persist/fsync Staged. Then persist/fsync NativeTrashSubmitted before the native call, and Completed only after native success. Paths in receipts are private locators, not authority. If a rename/call/checkpoint fails, use the Task 2 OperationOwner RecoveryId and no-replace restore; a restoration conflict retains KnownStaged and its bytes. On restart a matching present stage is KnownStaged; an absent stage after NativeTrashSubmitted with no Completed acknowledgement is UnknownNativeCommit. Never infer native success from source absence or resubmit the uncertain call.
-- [ ] The Freedesktop adapter writes real `.trashinfo` and publishes actual files under the explicitly injected files/info directories; record original location and time. Do not infer HOME. Advertise native Linux trash only for each volume that has a validated registered configuration; unconfigured volumes fail before staging. Restore needs a reauthorized original parent; purge needs separate host authorization and existing irreversible-confirmation flow. “Empty Trash” is limited to the host's explicitly granted trash scope, never an implicit purge of all user trash.
+- [ ] Allocate a private mode-0700 `staging/<operation-id>/` parent on the source volume. Keep the selected entry's exact native leaf name inside it (`staging/<operation-id>/original-name`), including extension/non-UTF8 bytes; never send an opaque operation UUID as the leaf name to native Trash. Obtain parent descriptors, persist the Admitted receipt containing the live root admission's TrashRootId, original parent identity/name, grant generation, source object identity, volume and private staging locator, and fsync it before rename. Perform anchored no-replace rename into the private parent; verify staged identity; persist/fsync Staged. Then persist/fsync NativeTrashSubmitted before the native call, and Completed only after native success. Paths in receipts are private locators, not authority. If a rename/call/checkpoint fails, use the Task 2 OperationOwner RecoveryId and no-replace restore; a restoration conflict retains KnownStaged and its bytes. On restart a matching present stage is KnownStaged; an absent stage after NativeTrashSubmitted with no Completed acknowledgement is UnknownNativeCommit. Never infer native success from source absence or resubmit the uncertain call.
+- [ ] The Freedesktop adapter writes real `.trashinfo` and publishes actual files under the explicitly injected files/info directories; record original location and time. Do not infer HOME. Advertise native Linux trash only for each volume that has a validated registered configuration; unconfigured volumes fail before staging. Restore requires the caller's explicit currently authorized destination parent and EntryName, which may differ from the original parent/name; the original parent and `.trashinfo` path are provenance metadata only. Purge needs separate host authorization and the existing irreversible-confirmation flow. “Empty Trash” is limited to the host's explicitly granted trash scope, never an implicit purge of all user trash.
 - [ ] The Mac adapter explicitly selects `trash::macos::DeleteMethod::NsFileManager` on a `TrashContext`, then deletes one staged item per reported outcome. Do not invoke Finder/osascript, claim an automation permission was granted, or equate a queue acceptance with completion. The pinned adapter does not expose a recoverable resulting URL/Put Back contract: mark native list/restore/purge unavailable and surface explanatory disabled actions. Keep native trash separate from permanent deletion. A crash after native success but before receipt completion is `outcome unknown`, retained for host recovery; never report source deletion failure as successful rollback.
 - [ ] Implement an anchored polling observer (no native-event claim): every two seconds, one bounded page per worker turn computes directory membership and metadata signatures; after a complete cycle emit one revision invalidation. Subscribe to the currently viewed directory grant; navigation changes the subscription. No recursive walk through links. Revocation closes the subscription; unreadable roots emit Unavailable and move to explicit refresh-on-activation mode. User Refresh and host activation both re-enumerate. Tag replies with grant generation, navigation generation and mount UUID; discard stale pages and old callbacks before touching UI.
 - [ ] FileTransfers retains its own host-owned transfer leases, independent of source mount closure and dependent on the underlying grants. Each host broker stores at most 32 payloads, at most 256 entries per payload, with a 120-second monotonic TTL; capture over quota returns Busy, oversized input returns LimitExceeded. Replacing/expiring a clipboard releases that payload, never moves/deletes a source. In-flight leases stay owned for report completion but no new chunk/commit may proceed after TTL/revocation; cancellation reports partial outcomes.
@@ -354,6 +427,9 @@ The trusted host opens/adopts descriptors and chooses one configuration for each
 - [ ] Task 6's in-process authorizer reads the trusted shell's current workspace membership and app/root transfer policy through an Arc-backed policy owner updated by the shell; it returns Denied when a concrete delegation is absent. The future standalone route must adapt its accepted authenticated session decision door, and remains blocked until that producer exists. For isolated tests, install an explicit exact-request allow-set controlled by the test host (initially empty), then revoke it between copy and commit; do not use a production allow-all fallback.
 - [ ] Keep outcome consumption inside the host-owned operation observer: remove each cut item only after its ItemState::Completed is durably reported. CopiedSourceRetained/error/cancel retain that item. The widget's polling cannot be required to update the host clipboard. Add `cross_workspace_needs_live_host_decision`, `delegation_cannot_change_destination_or_intent`, `delegation_revoked_before_commit_keeps_source`, `transfer_expiry_after_source_close`, and exact payload/TTL boundary tests. Native source mount closure is not grant revocation, while explicit underlying grant revocation still denies paste.
 - [ ] Native URL drops must pass through trusted grant admission before capture; internal drag payloads use TransferId. Export to an external application remains an explicit host capability; unavailable export fails visibly and does not mark the internal move completed.
+- [ ] Immediately before Freedesktop Admitted/staging, call the injected NativeLocationResolver with the retained exact source-parent descriptor. Require an absolute result, open it without following a final symlink, and compare its current device/object identity with the retained descriptor. Append the exact EntryName and percent-encode native bytes only for `.trashinfo` metadata. No resolver, stale/replaced path, volume mismatch or unverifiable location returns Unsupported before staging. A renamed root succeeds only when the resolver supplies its new path and identity matches. Authorization/effects stay descriptor-backed; this path never enters a grant/item ID or reconstructs authority.
+- [ ] Add `freedesktop_root_rename_records_current_location`, `freedesktop_stale_location_fails_before_staging`, `freedesktop_location_replacement_is_not_authority`, `reused_native_identity_without_host_reauthorization_is_denied`, `replaced_root_without_host_reauthorization_is_denied`, `explicit_host_reauthorization_reopens_same_trash_root`, `trash_requires_live_root_admission_before_staging`, `trash_receipt_uses_exact_root_admission`, `trash_membership_survives_report_acknowledgement`, `trash_scope_cannot_cross_root_or_mount`, `trash_capability_query_does_not_survive_revocation`, `trash_pages_reject_stale_cursor`, `restore_requires_explicit_destination`, `restore_to_authorized_nonoriginal_parent`, `restore_conflict_retains_trash_and_destination`, `purge_requires_live_purge_right`, `purge_cancellation_reports_committed_items`, and `mac_native_management_capabilities_are_unsupported`. For replacement denial, trash a real file, retain its prior TrashRootId, close/drop the old session/root descriptors, remove the empty original root, and create a new directory at the same pathname. Admit/bind it and call admit_trash_root to obtain a fresh admission; its scope must not list, restore or purge the old receipt. Repeat with module-private native identity injection matching the original device/object identity while using real directories/descriptors; the result remains denied without explicit reauthorization. For legitimate reopen, retain the same OperationOwner storage and TrashRootId, close/drop the original session/authority/owner, reopen OperationOwner with that storage and owner, explicitly reopen/re-admit the same configured root, attach the owner, bind a fresh mount/session, call reauthorize_trash_root with the retained ID and new root, mint a fresh scope, and list the original receipt; the old live tokens still fail. Omit admission and assert ordinary Trash returns Denied with unchanged bytes and no Admitted/staging receipt; attempt a second distinct prior ID for one live root and assert Denied. Trash entries from two distinct admitted roots and assert each durable receipt carries its own exact TrashRootId. Acknowledge/prune the completed operation report and assert the still-present item remains listable. Restore to a different explicit authorized parent/name and assert the exact destination bytes while the original location stays untouched; a conflicting restore changes neither side.
+- [ ] Mechanical dependency normalization only: add `trash = "5.2.6"` to root workspace dependencies, change Files to `trash.workspace = true`, and add `trash.workspace = true` to runtime-fs. The accepted lock already contains 5.2.6; do not update Cargo.lock or dependencies incidentally.
 - [ ] Run Task 3 gates, commit `feat(runtime-fs): add scoped trash observation and file transfers`; controller exact-SHA Fedora verification. Actual Mac native-trash and real cross-volume checks remain named native qualification gates, not replaced by injected-backend success.
 
 ## Task 4: Wire the real Files widget through explicit typed inputs
@@ -414,7 +490,11 @@ Only the completed snapshot+directory acknowledgement yields Durable. Queued or 
 
 ```rust
 // ui::application_files, Task 4. Task 5 adds optional record/open clients.
-#[derive(Clone)] pub struct GrantedPlace { pub label: String, pub directory: runtime_fs::DirectoryGrant }
+#[derive(Clone)] pub struct GrantedPlace {
+    pub label: String,
+    pub directory: runtime_fs::DirectoryGrant,
+    pub trash: runtime_fs::TrashScope,
+}
 #[derive(Clone)] pub struct FilesContext { /* private validated local provider/client fields */ }
 impl FilesContext {
     pub fn new(session: runtime_fs::FsSession, initial: runtime_fs::DirectoryGrant,
@@ -438,12 +518,14 @@ Consume authoritative `HostContext::prepare(definition, records, Rc<InstanceView
 
 - [ ] Add `files_preparer_local_view_store_survives_close`, `files_failed_view_retry_uses_original_namespace`, and `close_retains_both_view_and_file_operation_failures`. Drop preparer-local store handles before close, fail save, drop the component and retry through ComponentCloseReport. Assert only the originally supplied namespace changes and a replacement mount receives no stale wake.
 - [ ] Implement the typed context/SDK reexports and add `LaunchTarget::Directory(DirectoryGrant)` / `LaunchTarget::File(FileGrant)` with no PathBuf variant. Files' framework record binding is separate from its directory and opened Notes record. Until Task 5, open/catalogue requests return RequiredProvider before effects; no thread-local or external fallback.
+- [ ] `FilesContext::new` calls `check_trash_scope` for every GrantedPlace and rejects an authority, owner, mount, root, TrashRootId or generation mismatch without filesystem I/O. The host creates each scope from the matching live TrashRootAdmission; neither FilesContext nor the widget receives OperationOwner or can admit/reauthorize a historical root.
 - [ ] Define app-local `HostedFilesInputs { files: ui::application_files::FilesContext, wake: ui::WakeHandle, presentation: StartupInputs }`; construct presentation labels from grants/host snapshots. Keep StartupInputs fields as display/migration data. Do not use presentation.initial_dir/record_roots to issue I/O on the hosted route. Add explicit injected remote-service state `Unavailable(reason)` or an existing connected typed client; a vector of account labels/health is not permission to read credentials or connect.
 - [ ] Add failing tests constructing two actual widgets with different temporary grants, different state clients and different mount scopes; prove listing/rename/paste cannot cross owners, initial read errors remain visible, navigation cannot escape via pathbar/breadcrumb/favorite payloads, closing one does not change the other's service owner, and future activation refreshes external edits. Add a real headless resource invocation test verifying files.rename changes disk, emits one effect result and changes no Automerge domain fields.
 - [ ] Run `cargo nextest run --locked --profile ci -p file-explorer --test it -E 'test(hosted_provider)'`; require nonzero tests and expected failing assertions.
 - [ ] Refactor the existing constructor's common field initialization once. Hosted construction starts with pending/empty/error state from a provider job, not `read_dir_sync(...).unwrap_or_default()`. Legacy `new/with_persistence_dirs/with_startup_inputs` remain compatibility adapters until standalone and shell migrate; they do not prove production grants. Keep `NavShell`, toolbar, row/grid widgets, selection, locale formatting, sorting and status UI intact.
 - [ ] Retain display `Entry` fields, adding a separate runtime mapping from resource identity to GrantedEntry. Resolve each selected entry again at dispatch; raw action payload paths never mint grants. Directory navigation/history stores granted directory references plus display paths; Up stops at the grant root. Config/favorites use AppLocalStateClient fixed-key snapshots and save IDs; templates create new files through granted Copy/CreateFile and explicit conflicts; thumbnail generation consumes provider-read bytes or an explicitly granted private cache staging resource. Until a thumbnail path adapter is complete, show the existing honest badge, not ambient reads of the display path.
 - [ ] Route toolbar, inline rename, keyboard, context menus, pointer drag/drop and semantic actions into the same provider operation helper. New-folder/rename/copy/move/trash/template-save and downloaded-byte publication all use this helper. Preserve existing confirmation for purge/empty-trash. Disable unsupported capabilities with a reason and recheck on execution. Do not advertise unavailable DAV/history/share controls as working; keep existing Linux service route only when explicitly bound to its real authority.
+- [ ] Build the Trash view only from scopes supplied on GrantedPlace, page each scope off the UI thread and retain opaque TrashItemId values. Restore submits explicit destination grants/names. After existing confirmation, purge/empty-trash submits only explicitly listed IDs in bounded FsJobs and aggregates per-item outcomes. Never enumerate ambient user Trash. Keep unconfigured-volume operations and Mac native list/restore/purge disabled with provider reasons and recheck on invocation.
 - [ ] Keep preference/config/template save status pending until the actual asynchronous atomic-write/durable acknowledgement arrives. A queued request or absence of a cached error is not Saved. Retain dirty state and typed failure for retry, including a failure received after the widget closes; retry without a new edit attempts the exact retained desired snapshot and acknowledges actual durable success; an intervening revision remains Conflict until an explicit recovery choice. Use the common record owner's actual durable status for record-backed state, never a second Files writer. Add `save_failure_remains_dirty_and_retry_acknowledges` against an isolated real invalid destination.
 - [ ] Replace hosted clipboard vectors and global drag calls with FileTransferClient. Remove hosted thread-local DocumentOpener fallback; until Task 5 provides OpenTargetClient, opening returns explicit RequiredProvider. Retain the compatibility exports temporarily for unmigrated Linux package callers; production Files never falls through to thread-local routing, `open::that`, subprocess terminal launch, accounts::load/find, DAV credential discovery or FUSE xattr discovery.
 - [ ] Bridge FsJob updates into existing `ResourceOperationStart::Accepted` and `qos_actions::InvocationUpdate`: Progress retains phases/counters; Item serializes per-item state/resources; Finished yields Succeeded only when every requested effect completed, otherwise Failed with structured summary or Cancelled after all item outcomes. Surface copied-source-retained and recovery-required distinctly. Handle `_cancellation_requested` and retain operation owner/recovery reports after mount close; closed WakeHandle cannot publish UI updates into a replacement tile.
