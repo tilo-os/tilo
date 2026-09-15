@@ -63,3 +63,6 @@ mod component_support;
 
 #[path = "canonical_actions.rs"]
 mod canonical_actions;
+
+#[path = "canonical_views.rs"]
+mod canonical_views;

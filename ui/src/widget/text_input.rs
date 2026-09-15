@@ -448,8 +448,28 @@ impl TextInput {
         self.bound_text.as_ref()
     }
 
-    /// Keep an existing document binding readable while preventing this input
-    /// from directly splicing the backing `Text` object on user input.
+    /// Adopt only the bound Text and align presentation/edit-notification baselines.
+    pub(super) fn adopt_bound_text(
+        &mut self,
+        state: &AutoCommit,
+    ) -> Result<(), crate::view::ThawError> {
+        let obj = self
+            .bound_text
+            .as_ref()
+            .ok_or_else(|| crate::view::ThawError::State("text is not bound".into()))?;
+        let text = state
+            .text(obj)
+            .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
+        if self.text != text {
+            self.text = text;
+            self.dirty = true;
+        }
+        self.clamp_to_text();
+        self.last_notified_text.clone_from(&self.text);
+        Ok(())
+    }
+
+    /// Keep the binding readable while an owning action bridge handles user writes.
     pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
         self.direct_crdt_writes = enabled;
     }
@@ -3448,12 +3468,8 @@ impl Widget for TextInput {
             value.push_str(&self.text);
         }
         // Directly-bound Text wins over the string-path mode entirely.
-        if let Some(obj_id) = self.bound_text.clone() {
-            if let Ok(text) = state.text(&obj_id) {
-                self.text = text;
-            }
-            self.clamp_to_text();
-            self.last_notified_text.clone_from(&self.text);
+        if self.bound_text.is_some() {
+            let _ = self.adopt_bound_text(state);
             return;
         }
         if !self.crdt_bound {
