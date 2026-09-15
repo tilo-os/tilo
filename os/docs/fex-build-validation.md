@@ -117,7 +117,8 @@ The local SDK is a diagnostic input assembled from Fedora RPMs using the host's
 pre-existing QEMU binfmt handler. An earlier container recipe's `SHELL` setting
 was ignored for OCI output; its successful package transaction therefore did
 not prove execution through FEX. Explicit FEX execution subsequently exposed a
-crash in Fedora's static PIE `ldconfig`, which remains unresolved. Preserve
+crash in Fedora's static PIE `ldconfig`, resolved by the upstream revision
+validated below. Preserve
 normal RPM scriptlets and distinguish SDK construction from translator runtime
 acceptance. Release SDK production still requires a pinned, reproducible build
 and its own acceptance evidence.
@@ -169,7 +170,14 @@ The emitted IR reuses the original syscall-number constant after the first
 syscall overwrites its allocated register. Upstream
 [commit 91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20](https://github.com/FEX-Emu/FEX/commit/91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20)
 fixes Linux syscall block boundaries and advances the saved instruction
-pointer, including cache format invalidation. Validate that exact revision
-against the regression, actual `ldconfig`, and the complete suite before
-promoting its source pin. The upstream suite passing by itself did not expose
-this application startup failure.
+pointer, including cache format invalidation. That exact, unmodified revision
+passed the regression and actual Fedora `ldconfig -p` with normal JIT settings.
+Its complete native ARM suite then passed in 480.47 seconds: 11,616 passes,
+458 upstream skips, and zero failures across 12,074 cases. The source manifest
+now pins this revision and its recursive gitlinks. No downstream FEX patch or
+production block-size override is required.
+
+The upstream suite passing by itself did not expose this application startup
+failure. Keep the additional regression and real-program checks when updating
+FEX. A successful `ldconfig -p` check also does not replace validation of an
+entire RPM transaction through FEX, graphics thunks, or Wine/Proton integration.
