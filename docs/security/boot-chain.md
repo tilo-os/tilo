@@ -263,15 +263,16 @@ and `qos.generation=` reach the sealed command line through the same mechanism
 that already existed for the unsealed one. `os/dev/uki.sh` is the script it runs,
 and it fails the build if the generation did not make it into the seal.
 
-Two things the build does *not* do:
+Two details matter at the release boundary:
 
-- **It does not sign the UKI.** There is no key at image-build time that a target
-  machine's firmware would accept — the root of trust is a Platform Key that
-  machine generates for itself. `qos-secureboot` signs the UKI on the installed
-  system, and `qos-secureboot-sign.path` watches `/boot/EFI/Linux` so a staged
-  update gets signed before the reboot that would otherwise be refused.
-  Measurement does not wait for any of that: `systemd-stub` extends PCR 11 with
-  the command line whether or not anyone signed the PE.
+- **An ordinary development build does not sign the UKI.** Tagged release media
+  instead requires the protected `QOS_PCR_PREDICTION_SIGNER`: it appends an
+  industry/OEM-trusted EFI signature to both the live and deterministic target
+  UKIs and signs the target's PCR 11 prediction without exporting either private
+  key. The release fails closed if the signer, certificate pin, or returned
+  signature is missing or wrong. Development/custom media keeps the strong
+  passphrase fallback. Measurement itself does not depend on PE signing:
+  `systemd-stub` extends PCR 11 with the command line in either case.
 - **It does not get the digest right first time.** `bootc container ukify` and
   `bootc install` compute different composefs digests for the same image, so
   install refuses the UKI:
@@ -295,8 +296,9 @@ Two things the build does *not* do:
 layout supplies all four.
 
 **PCR 7.** The firmware measures the Secure Boot policy into it on every boot,
-UKI or not. A future TPM policy must combine it with the artifact/generation
-binding below; the current release deliberately enrolls no TPM slot.
+UKI or not. A verified tagged release combines that device-specific platform
+state directly with the authorized artifact/generation binding below. Media
+without the complete release chain deliberately enrolls no TPM slot.
 
 **PCR 11.** Extended by `systemd-stub`, which runs because the firmware loads a
 UKI. It carries the command line, so it distinguishes one generation from another
@@ -334,40 +336,20 @@ the LUKS header actually contains a `qos-rollback` token. A cancelled or failed
 unseal removes partial key material and returns control to the independent
 recovery-key, passphrase, or FIDO2 prompt instead of making boot an emergency.
 
-The rollback crate, early-unlock consumer, and late-boot confirmation services
-are now shipped, but the generation-bound unlock path is deliberately **not
-enrolled by the installer**. The remaining target-prediction prerequisites have
-to land as one tested change before that is safe:
+The rollback crate, early-unlock consumer, late-boot confirmation services, and
+target-independent installer integration ship together. The graphical installer
+offers the short PIN only after `qos-verified-boot-install-preflight` verifies the
+exact deterministic target UKI, its EFI certificate, its generation-bound PCR 11
+prediction, and the prediction authority. The privileged backend repeats that
+proof immediately before enrollment. Otherwise it requires the strong
+passphrase, mandatory recovery key, and optional FIDO2 slot; TPM presence alone
+never enables the PIN.
 
-1. The installer rewrites the installed UKI's measured `.cmdline` with the new
-   root filesystem UUID, LUKS UUID, token-discovery options, and live-media marker
-   removal. Consequently PCR 11 is unique to that installed UKI. A prediction
-   made for the release UKI before those rewrites does not describe the target.
-2. The production image intentionally contains only the prediction authority's
-   public key and an empty `/usr/share/qos/pcr-predictions`. Its private key must
-   not be copied to installation media. There is therefore no authority present
-   that can sign the target-specific PCR 11 prediction during an offline install.
-Calling `qos-rollback enroll` despite those facts would not add rollback
-protection: sealing against the live installer's PCRs produces an unusable target,
-while omitting PCR 11 silently reduces the policy to the rejected PCR 7-only
-boundary. The current release therefore retains the strong passphrase, mandatory
-recovery key, and optional FIDO2 slot and offers no short-PIN TPM path.
+### Target-independent enrollment
 
-A complete enrollment integration must either make the installed UKI independent of
-per-device command-line values, so a release-signed prediction remains valid, or
-introduce a machine authority whose public half and predictions are available at
-enrollment and whose update-time custody is no weaker than the owner Secure Boot
-key. It must enroll every staged generation before reboot. The installer
-invariant test rejects a lone rollback enrollment call until those prerequisites
-exist; this prevents an apparently enabled but non-bootable partial deployment.
-
-### Target-independent enrollment: required atomic change
-
-The preferred completion does not put a prediction private key on the machine.
-It makes the target measurement a release artefact while keeping the platform
-measurement device-bound. All of the following pieces have to land together;
-landing only the installer call is an unbootable or weaker-than-advertised
-configuration.
+The implementation does not put a prediction private key on the machine. It
+makes the target measurement a release artefact while keeping the platform
+measurement device-bound. These pieces form one atomic security boundary:
 
 1. **Discover the target without a UUID in the UKI.** Give the qOS root an
    architecture-neutral, qOS-owned GPT type GUID. An initramfs generator must
@@ -451,7 +433,8 @@ of it:
 
 | Machine | Slots after install | Boot experience |
 |---|---|---|
-| TPM (current release) | recovery key, passphrase | type the passphrase |
+| Verified release chain + TPM2 | recovery key, TPM2+PIN generation slots | type the short PIN |
+| TPM without verified release chain | recovery key, passphrase | type the passphrase |
 | No TPM | recovery key, passphrase | type the passphrase |
 
 An optional FIDO2 security key adds another slot to any row. Selecting it is a
@@ -462,19 +445,21 @@ per-volume `rd.luks.options=` token. LUKS2 metadata tells systemd-cryptsetup
 which of those handlers has enrolled material; without the FIDO2 boot option a
 security key could be successfully enrolled yet never tried by the initramfs.
 
-The installer and privileged backend both require a startup secret. This
-release always uses a strong passphrase. The former target preflight verified
-signatures and UKI contents, but its LUKS token was sealed only to PCR 7. PCR 7
-authenticates the firmware Secure Boot policy/database; it does not bind unlock
-to the selected qOS UKI or initramfs. That is not sufficient evidence for a
-short-PIN boundary, so the preflight and TPM enrollment are not shipped.
+The installer and privileged backend both require a startup secret. Verified
+tagged release media uses a nontrivial short PIN only after proving the exact
+signed target UKI and its authorized PCR 11 prediction, then binds that policy
+to the machine's current PCR 7 and rollback floor. Development/custom media, or
+any failed prerequisite, uses the strong-passphrase path. The removed older TPM
+design sealed only to PCR 7; it is not shipped because PCR 7 authenticates the
+firmware Secure Boot policy/database but does not bind unlock to the selected qOS
+UKI or initramfs.
 
 This means a stock machine that has not completed owner/OEM Secure Boot
 enrollment uses the strong-passphrase path even when it has a TPM. Software
 cannot truthfully manufacture firmware trust without the owner's physical
 ceremony. Even an OEM-provisioned machine remains on the strong-passphrase path
-until qOS additionally ships signed measured-artifact policies and update-safe
-prediction consumption.
+unless the media also carries the signed measured-artifact policy for its exact
+target UKI.
 
 The privileged installer enforces the same startup-secret policy shown by the
 graphical installer. It requires at least fifteen characters (the NIST
