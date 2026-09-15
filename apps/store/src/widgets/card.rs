@@ -19,19 +19,21 @@ use ui::widget::{Button, Column, Container, Row, Spacer, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
-/// Logical px the caller can use to reserve card row height in a
-/// virtualised list (currently we render everything up-front —
-/// virtualisation is a follow-up).
+/// Logical px a future list virtualizer can use to reserve a card row.
+///
+/// The catalogue already bounds every page to [`crate::app::PAGE_SIZE`]; the
+/// widget tree for that bounded page is deliberately composed up-front so
+/// keyboard traversal and screen-reader order stay exact.
 pub const CARD_HEIGHT: f32 = 96.0;
 
 /// Build a single card widget.
 ///
-/// * `select_key`         — CRDT key the whole card body writes on
-///   click to open the detail sheet.
-/// * `action_click_key`   — CRDT key the action button writes on
-///   click. The app's `sync` reads it,
-///   dispatches the action, and clears the
-///   bit so it's a one-shot edge.
+/// * `select_key`         — stable widget identifier for the Details control.
+/// * `action_click_key`   — stable widget identifier for the primary action.
+///
+/// Both controls receive typed resource-action bindings from the caller.
+/// These identifiers are only for local widget identity and accessibility;
+/// they are never written to the collaboration document.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -60,20 +62,15 @@ pub fn store_card(
     let identity = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(5.0)
+        .with_gap(4.0)
         .push(Box::new(
             Text::new(&item.name)
                 .with_scaled_size(18.0)
                 .with_weight(TextWeight::Semibold),
         ))
         .push(Box::new(
-            Text::new(&badge_line(item))
+            Text::new(&format!("{} · {category}", badge_line(item)))
                 .with_scaled_size(13.0)
-                .with_color(theme.text_dim),
-        ))
-        .push(Box::new(
-            Text::new(&category)
-                .with_scaled_size(12.0)
                 .with_color(theme.text_dim),
         ));
 
@@ -87,7 +84,7 @@ pub fn store_card(
     } else {
         action.label().to_string()
     };
-    let mut action_btn = Button::new(action_click_key, &action_label, Some(action_click_key));
+    let mut action_btn = Button::new(action_click_key, &action_label, None);
     if let Some(binding) = action_binding {
         action_btn = action_btn.on_action(binding);
     }
@@ -106,7 +103,7 @@ pub fn store_card(
         format!("{} {}", action.label(), item.name)
     });
 
-    let mut details = Button::new(&format!("{select_key}.button"), "Details", Some(select_key));
+    let mut details = Button::new(&format!("{select_key}.button"), "Details", None);
     if let Some(binding) = detail_binding {
         details = details.on_action(binding);
     }
@@ -132,6 +129,14 @@ pub fn store_card(
                                 .with_child(Box::new(identity)),
                         )),
                 ))
+                // The custom artwork leaf paints at the device-scale-aware
+                // size negotiated by the inner grid. Give the following
+                // copy an explicit breathing band so a tall fallback mark
+                // cannot appear to sit on its first baseline on narrow
+                // displays.
+                .push(Box::new(
+                    Container::new().with_no_padding().with_height(10.0),
+                ))
                 .push(Box::new(
                     Text::new(&item.description)
                         .with_scaled_size(14.0)
@@ -149,7 +154,7 @@ pub fn store_card(
         Box::new(
             Column::new()
                 .with_no_padding()
-                .with_gap(12.0)
+                .with_gap(10.0)
                 .push(Box::new(
                     Row::new()
                         .no_wrap()
@@ -182,7 +187,24 @@ pub fn store_card(
                 )),
         )
     };
-    let card = Container::new().with_background().with_child(content);
+    // A very low-tint surface gives source metadata, artwork and the primary
+    // action a coherent visual field instead of the old generic list-row
+    // treatment. The colour is derived from the active system theme rather
+    // than a hard-coded brand wash, so custom and high-contrast themes retain
+    // their contrast guarantees.
+    let tint = match &item.source {
+        StoreSource::Qos { .. } => theme.tokens.colors.semantic.success,
+        StoreSource::Flathub => theme.tokens.colors.semantic.info,
+    };
+    let card_fill = theme.tokens.colors.tinted_chip_on(
+        theme.bg_app,
+        tint,
+        0.08,
+        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    );
+    let card = Container::new()
+        .with_fill(card_fill.fill)
+        .with_child(content);
     if compact {
         Box::new(card)
     } else {
@@ -199,8 +221,12 @@ fn icon_artwork(item: &StoreItem, images: Option<ui::ImageStore>) -> Box<dyn Wid
         images,
         item.icon_url.as_deref(),
         &item.name,
-        36.0,
-        36.0,
+        // Keep the compact card's identity row at least as tall as its
+        // artwork.  A 36px tile looked fine with a one-line title but let
+        // taller fallback marks visually run into the following description
+        // once metadata wrapped on narrow screens.
+        56.0,
+        56.0,
     ))
 }
 

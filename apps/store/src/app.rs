@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::qos_actions::{
@@ -72,31 +72,12 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     taffy.new_with_children(style, children).unwrap()
 }
 
-/// One-shot CRDT keys the sub-widgets write on click. The names are
-/// prefixed with `store.` so the toplevel `state.doc` root object
-/// can hold them without colliding with sibling widgets when the
-/// app is hosted inside a tiled shell.
-const REFRESH_KEY: &str = "store.refresh_pressed";
-const ACTION_CLICK_KEY_PREFIX: &str = "store.action_click.";
-/// Secondary "mark installed" (pin) toggle, one per item id.
-const PIN_CLICK_KEY_PREFIX: &str = "store.pin_click.";
-/// Secondary "remove" affordance on a cached qOS card, one per item id.
-const REMOVE_CLICK_KEY_PREFIX: &str = "store.remove_click.";
-const DETAIL_SELECT_KEY_PREFIX: &str = "store.detail_select.";
-const DETAIL_BACK_KEY: &str = "store.detail_back";
-const REMOTES_OPEN_KEY: &str = "store.remotes_open";
-const REMOTES_BACK_KEY: &str = "store.remotes_back";
-const REMOTES_REFRESH_KEY: &str = "store.remotes_refresh";
-const REMOTES_ADD_KEY: &str = "store.remotes_add";
-const REMOTES_REMOVE_KEY_PREFIX: &str = "store.remotes_remove.";
-const SAFETY_OPEN_KEY: &str = "store.safety_open";
-const SAFETY_BACK_KEY: &str = "store.safety_back";
-const REPORT_DRAFT_KEY_PREFIX: &str = "store.report_draft.";
+/// The sole document-backed Store keys are collaborative moderation records.
+/// Browse focus, filters, pagination and all control activation stay local;
+/// package, remote and moderation mutations enter through typed actions.
 const REPORT_RESOURCE_KEY_PREFIX: &str = crate::doc_actions::REPORT_RESOURCE_KEY_PREFIX;
 const REPORT_CASE_KEY_PREFIX: &str = "store.report_case.";
 const REPORT_NOTE_KEY: &str = "store.report_note";
-const PAGE_PREVIOUS_KEY: &str = "store.page_previous";
-const PAGE_NEXT_KEY: &str = "store.page_next";
 const PAGE_SIZE: usize = 48;
 /// Bound CRDT-supplied configuration before it is rendered, serialized, or
 /// forwarded to the Flatpak worker. These are deliberately generous relative
@@ -652,6 +633,89 @@ fn open_surface_binding(
     ActionBinding::unit_for(&resource, action_id).ok()
 }
 
+/// A local route change is still a first-class, discoverable action.  Keeping
+/// this out of Automerge is intentional: opening a detail page, returning to
+/// the catalogue, and paging a result set are presentation choices for this
+/// window, not events collaborators should receive in their history.
+fn navigation_binding(
+    action_id: &str,
+    action_label: &str,
+    target: &str,
+) -> Option<ActionBinding<()>> {
+    let spec = ActionSpec::operation(
+        action_id,
+        action_label,
+        OperationKind::View,
+        "store.navigation",
+        &target,
+    )
+    .ok()?;
+    let resource =
+        Resource::new("store:navigation", "store.navigation", "Store navigation").with_action(spec);
+    ActionBinding::unit_for(&resource, action_id).ok()
+}
+
+/// Stage the values currently held in the device-local remote form through a
+/// view action.  The handler validates them and emits the canonical typed
+/// `store.remote/add` effect; the editable fields themselves never become
+/// collaboration-document click state.
+fn remote_form_binding() -> Option<ActionBinding<()>> {
+    let spec = ActionSpec::operation(
+        "stage-add",
+        "Add Flatpak remote",
+        OperationKind::View,
+        "store.remote-form",
+        &(),
+    )
+    .ok()?;
+    let resource =
+        Resource::new("store:remotes", "store.remote-list", "Flatpak remotes").with_action(spec);
+    ActionBinding::unit_for(&resource, "stage-add").ok()
+}
+
+fn remote_refresh_binding() -> Option<ActionBinding<()>> {
+    let spec = ActionSpec::operation(
+        "refresh",
+        "Refresh remotes",
+        OperationKind::Effect,
+        "store.remote",
+        &vec!["refresh".to_string()],
+    )
+    .ok()?;
+    let resource =
+        Resource::new("store:remotes", "store.remote-list", "Flatpak remotes").with_action(spec);
+    ActionBinding::unit_for(&resource, "refresh").ok()
+}
+
+fn remote_remove_binding(remote: &crate::flathub_client::Remote) -> Option<ActionBinding<()>> {
+    let spec = ActionSpec::operation(
+        "remove",
+        "Remove remote",
+        OperationKind::Effect,
+        "store.remote",
+        &vec!["remove".to_string(), remote.name.clone()],
+    )
+    .ok()?;
+    let resource = Resource::new(
+        format!("remote:{}", remote.name),
+        "store.remote",
+        remote.title.clone(),
+    )
+    .with_action(spec);
+    ActionBinding::unit_for(&resource, "remove").ok()
+}
+
+fn safety_back_button() -> ui::widget::Button {
+    let mut button = ui::widget::Button::new("store.safety.back", "Back", None);
+    if let Some(binding) = navigation_binding("show-catalogue", "Back to apps", "catalogue") {
+        button = button.on_action(binding);
+    }
+    button
+        .with_icon(Icon::ArrowLeft)
+        .fit_content(40.0)
+        .tooltip("Return to the app catalogue")
+}
+
 /// Root widget.
 #[allow(
     clippy::struct_excessive_bools,
@@ -713,11 +777,6 @@ pub struct StoreApp {
     /// Root of the built layout so events can be routed to the
     /// composed sub-tree.
     root: Option<Box<dyn Widget>>,
-    /// Actions the user has clicked this frame that a worker still
-    /// needs to execute (download / install / run / pin / remove).
-    /// Drained by the host each frame via [`take_pending_actions`].
-    pending_actions: Vec<(String, ActionKind)>,
-    pending_refresh: bool,
     pending_lifecycle_actions: Vec<(String, ActionKind, qos_actions::InvocationId)>,
     pending_lifecycle_refresh: Option<qos_actions::InvocationId>,
     pending_lifecycle_remote: Vec<(RemoteIntent, qos_actions::InvocationId)>,
@@ -733,7 +792,6 @@ pub struct StoreApp {
     /// mistaken for a collaborator deleting every draft from a fresh doc.
     reports_hydrated: bool,
     report_note: String,
-    pending_remote_intents: Vec<RemoteIntent>,
     pending_control_invocation: Option<ControlInvocation>,
     report_export: Option<(
         qos_actions::InvocationId,
@@ -798,8 +856,6 @@ impl StoreApp {
             structure_dirty: true,
             rect: Rect::ZERO,
             root: None,
-            pending_actions: Vec::new(),
-            pending_refresh: false,
             pending_lifecycle_actions: Vec::new(),
             pending_lifecycle_refresh: None,
             pending_lifecycle_remote: Vec::new(),
@@ -812,7 +868,6 @@ impl StoreApp {
             reports: Vec::new(),
             reports_hydrated: false,
             report_note: String::new(),
-            pending_remote_intents: Vec::new(),
             pending_control_invocation: None,
             report_export: None,
             pending_moderation: Vec::new(),
@@ -833,20 +888,6 @@ impl StoreApp {
     pub fn with_image_store(mut self, images: ui::ImageStore) -> Self {
         self.images = Some(images);
         self
-    }
-
-    /// Drain the actions clicked since the last frame. The host's
-    /// worker executes each one (off the UI thread) and streams a
-    /// fresh catalog + status back.
-    pub fn take_pending_actions(&mut self) -> Vec<(String, ActionKind)> {
-        std::mem::take(&mut self.pending_actions)
-    }
-
-    /// Consume the edge produced by the refresh affordance. The host sends
-    /// it to the same serialized worker as mutations, so refreshes cannot
-    /// race an install/remove or fan out into duplicate network work.
-    pub fn take_refresh_requested(&mut self) -> bool {
-        std::mem::take(&mut self.pending_refresh)
     }
 
     pub fn take_lifecycle_actions(
@@ -891,10 +932,6 @@ impl StoreApp {
 
     pub fn take_detail_requested(&mut self) -> Option<String> {
         self.pending_detail.take()
-    }
-
-    pub fn take_remote_intents(&mut self) -> Vec<RemoteIntent> {
-        std::mem::take(&mut self.pending_remote_intents)
     }
 
     pub fn reports(&self) -> &[ReportRecord] {
@@ -1216,53 +1253,12 @@ impl StoreApp {
             .with_horizontal_padding(0.0, 0.0)
             .with_gap(0.0);
         if !self.remotes_open && !self.safety_open && self.focused_detail.is_none() {
-            // One compact browse bar keeps the filters close to the results.
-            // The old labelled band spent a third of a laptop viewport before
-            // users saw a single app.
-            let mut catalogue_controls = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(8.0)
-                .push(header);
-            if self.stacked_catalogue_layout() {
-                catalogue_controls = catalogue_controls.push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(self.build_filter_row(theme))
-                        .push(self.build_category_row(theme)),
-                ));
-            } else {
-                // The native picker names remain explicit for assistive
-                // technology; their visible values carry the context in this
-                // compact, scan-friendly row.
-                catalogue_controls = catalogue_controls.push(Box::new(
-                    Column::new()
-                        .with_intrinsic_height()
-                        .with_horizontal_padding(16.0, 16.0)
-                        .push(Box::new(
-                            Row::new()
-                                .no_wrap()
-                                .push(self.build_filter_row(theme))
-                                .push(self.build_category_row(theme))
-                                .push(Box::new(
-                                    Container::new()
-                                        .with_no_padding()
-                                        .with_flex_grow()
-                                        .with_child(Box::new(
-                                            Text::new(&self.catalogue_source_summary())
-                                                .with_scaled_size(13.0)
-                                                .with_color(theme.text_dim),
-                                        )),
-                                )),
-                        )),
-                ));
-            }
             column = column.push(
-                self.centered_content(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_child(Box::new(catalogue_controls)),
-                )),
+                // Search, source/category scope, source health and the
+                // management actions belong to one catalogue surface.  This
+                // prevents the browse screen from reading like several
+                // disconnected settings bars before a person reaches an app.
+                self.centered_content(header),
             );
         }
         column = column.push(content);
@@ -1288,6 +1284,22 @@ impl StoreApp {
         // pages simply use the available canvas.
         if self.compact_layout() || (width > 0.0 && width < 1_180.0) {
             child
+        } else if self.readable_type_layout() {
+            // Enlarged type does not turn a wide monitor into an invitation
+            // for 1400px one-column cards.  Keep the same calm editorial
+            // measure used by detail pages while retaining every desktop
+            // control and full touch target.
+            Box::new(
+                Row::new()
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        Container::new()
+                            .with_width(760.0)
+                            .with_no_padding()
+                            .with_child(child),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            )
         } else {
             Box::new(
                 Row::new()
@@ -1422,8 +1434,11 @@ impl StoreApp {
             // colliding with the first action at larger text metrics.
             .with_gap(12.0);
         let action = item.action_kind(self.flatpak_available);
-        let primary_key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
-        let mut primary = ui::widget::Button::new(&primary_key, action.label(), Some(&primary_key));
+        let mut primary = ui::widget::Button::new(
+            &format!("store.app.{}.{}", item.id, action_code(action)),
+            action.label(),
+            None,
+        );
         if let Some(binding) = item_action_binding(item, action) {
             primary = primary.on_action(binding);
         }
@@ -1433,8 +1448,11 @@ impl StoreApp {
                 .tooltip(format!("{} {}", action.label(), item.name)),
         )];
         if let Some(pin_action) = item.pin_action() {
-            let pin_key = format!("{}{}", PIN_CLICK_KEY_PREFIX, item.id);
-            let mut button = ui::widget::Button::new(&pin_key, pin_action.label(), Some(&pin_key));
+            let mut button = ui::widget::Button::new(
+                &format!("store.app.{}.{}", item.id, action_code(pin_action)),
+                pin_action.label(),
+                None,
+            );
             if let Some(binding) = item_action_binding(item, pin_action) {
                 button = button.on_action(binding);
             }
@@ -1445,8 +1463,8 @@ impl StoreApp {
             ))));
         }
         if let Some(remove_action) = item.remove_action() {
-            let remove_key = format!("{}{}", REMOVE_CLICK_KEY_PREFIX, item.id);
-            let mut button = ui::widget::Button::new(&remove_key, "Remove", Some(&remove_key));
+            let mut button =
+                ui::widget::Button::new(&format!("store.app.{}.remove", item.id), "Remove", None);
             if let Some(binding) = item_action_binding(item, remove_action) {
                 button = button.on_action(binding);
             }
@@ -1454,9 +1472,11 @@ impl StoreApp {
                 button.ghost().tooltip(format!("Remove {}", item.name)),
             ));
         }
-        let report_key = format!("{REPORT_DRAFT_KEY_PREFIX}{}", item.id);
-        let mut report_button =
-            ui::widget::Button::new(&report_key, "Create report draft", Some(&report_key));
+        let mut report_button = ui::widget::Button::new(
+            &format!("store.report.create.{}", item.id),
+            "Create report draft",
+            None,
+        );
         if let Some(binding) = report_binding(item) {
             report_button = report_button.on_action(binding);
         }
@@ -1482,9 +1502,12 @@ impl StoreApp {
             }
             Box::new(row)
         };
+        let mut back = ui::widget::Button::new("store.detail.back", "Back to apps", None);
+        if let Some(binding) = navigation_binding("show-catalogue", "Back to apps", "catalogue") {
+            back = back.on_action(binding);
+        }
         let back = Box::new(
-            ui::widget::Button::new("store.detail.back", "Back to apps", Some(DETAIL_BACK_KEY))
-                .with_icon(Icon::ArrowLeft)
+            back.with_icon(Icon::ArrowLeft)
                 .fit_content(40.0)
                 .tooltip("Return to the catalogue"),
         );
@@ -1495,6 +1518,10 @@ impl StoreApp {
             if self.compact_layout() { 56.0 } else { 88.0 },
             if self.compact_layout() { 56.0 } else { 88.0 },
         ));
+        let trust_label = match item.trust {
+            crate::StoreTrust::PublisherSigned => "Publisher verified",
+            crate::StoreTrust::Flathub => "Flathub distribution",
+        };
         let summary: Box<dyn Widget> = if self.compact_layout() {
             // Keep the compact identity stack intrinsic and separate from the
             // artwork. The previous wrapped row could underreport its height
@@ -1508,6 +1535,11 @@ impl StoreApp {
                         Text::new(&source)
                             .with_scaled_size(12.0)
                             .with_color(theme.text_dim),
+                    ))
+                    .push(Box::new(
+                        Text::new(trust_label)
+                            .with_scaled_size(12.0)
+                            .with_color(theme.text_tertiary),
                     )),
             )
         } else {
@@ -1524,6 +1556,11 @@ impl StoreApp {
                         Text::new(&source)
                             .with_scaled_size(12.0)
                             .with_color(theme.text_dim),
+                    ))
+                    .push(Box::new(
+                        Text::new(trust_label)
+                            .with_scaled_size(12.0)
+                            .with_color(theme.text_tertiary),
                     )),
             )
         };
@@ -1600,19 +1637,7 @@ impl StoreApp {
                                             .with_no_padding()
                                             .with_intrinsic_height()
                                             .with_gap(8.0)
-                                            .push(actions)
-                                            .push(Box::new(
-                                                Text::new(match item.trust {
-                                                    crate::StoreTrust::PublisherSigned => {
-                                                        "Publisher verified"
-                                                    }
-                                                    crate::StoreTrust::Flathub => {
-                                                        "Flathub distribution"
-                                                    }
-                                                })
-                                                .with_scaled_size(12.0)
-                                                .with_color(theme.text_dim),
-                                            )),
+                                            .push(actions),
                                     )),
                             )),
                     )),
@@ -1777,14 +1802,22 @@ impl StoreApp {
                 .primary()
                 .tooltip("Create a local, collaborative report draft"),
         );
+        let mut moderation_button =
+            ui::widget::Button::new("store.safety.detail", "Moderation details", None);
+        if let Some(binding) = open_surface_binding(
+            "store:moderation",
+            "store.moderation",
+            "Trust & moderation",
+            "show",
+            "Show trust and moderation",
+            "store.view-trust",
+        ) {
+            moderation_button = moderation_button.on_action(binding);
+        }
         let moderation_button: Box<dyn Widget> = Box::new(
-            ui::widget::Button::new(
-                "store.safety.detail",
-                "Moderation details",
-                Some(SAFETY_OPEN_KEY),
-            )
-            .fit_content(40.0)
-            .tooltip("Review the Store trust and moderation model"),
+            moderation_button
+                .fit_content(40.0)
+                .tooltip("Review the Store trust and moderation model"),
         );
         // Keep supporting safety actions in the same bounded surface system
         // as the decision content.  Previously this utility pair sat outside
@@ -1853,12 +1886,7 @@ impl StoreApp {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(10.0)
-            .push(Box::new(
-                ui::widget::Button::new("store.safety.back", "Back", Some(SAFETY_BACK_KEY))
-                    .with_icon(Icon::ArrowLeft)
-                    .fit_content(40.0)
-                    .tooltip("Return to the previous Store view"),
-            ))
+            .push(Box::new(safety_back_button()))
             .push(Box::new(
                 Container::new().with_no_padding().with_height(6.0),
             ))
@@ -2024,9 +2052,12 @@ impl StoreApp {
         reason = "the machine-scoped remote editor and its canonical remove controls are deliberately composed together so their responsive layouts cannot diverge"
     )]
     fn build_remotes(&self, theme: &Theme) -> Box<dyn Widget> {
+        let mut back = ui::widget::Button::new("store.remotes.back", "Back to apps", None);
+        if let Some(binding) = navigation_binding("show-catalogue", "Back to apps", "catalogue") {
+            back = back.on_action(binding);
+        }
         let back = Box::new(
-            ui::widget::Button::new("store.remotes.back", "Back to apps", Some(REMOTES_BACK_KEY))
-                .with_icon(Icon::ArrowLeft)
+            back.with_icon(Icon::ArrowLeft)
                 .fit_content(40.0)
                 .tooltip("Return to the app catalogue"),
         );
@@ -2052,9 +2083,16 @@ impl StoreApp {
             ));
         let mut remote_rows: Vec<Box<dyn Widget>> = Vec::new();
         for remote in &self.remotes {
-            let key = format!("{}{}", REMOTES_REMOVE_KEY_PREFIX, remote.name);
+            let mut remove = ui::widget::Button::new(
+                &format!("store.remote.{}.remove", remote.name),
+                "Remove remote",
+                None,
+            );
+            if let Some(binding) = remote_remove_binding(remote) {
+                remove = remove.on_action(binding);
+            }
             let remove = Box::new(
-                ui::widget::Button::new(&key, "Remove remote", Some(&key))
+                remove
                     .danger()
                     .fit_content(40.0)
                     .tooltip(format!("Remove {} from this machine", remote.title)),
@@ -2133,15 +2171,16 @@ impl StoreApp {
                 .with_kind(ui::widget::TextInputKind::Url)
                 .with_placeholder("Repository URL"),
         );
-        let add: Box<dyn Widget> = Box::new(
-            ui::widget::Button::new("store.remote.add", "Add remote", Some(REMOTES_ADD_KEY))
-                .primary(),
-        );
-        let refresh: Box<dyn Widget> = Box::new(ui::widget::Button::new(
-            "store.remote.refresh",
-            "Refresh",
-            Some(REMOTES_REFRESH_KEY),
-        ));
+        let mut add = ui::widget::Button::new("store.remote.add", "Add remote", None);
+        if let Some(binding) = remote_form_binding() {
+            add = add.on_action(binding);
+        }
+        let add: Box<dyn Widget> = Box::new(add.primary());
+        let mut refresh = ui::widget::Button::new("store.remote.refresh", "Refresh", None);
+        if let Some(binding) = remote_refresh_binding() {
+            refresh = refresh.on_action(binding);
+        }
+        let refresh: Box<dyn Widget> = Box::new(refresh);
         let actions: Box<dyn Widget> = if self.compact_layout() {
             Box::new(
                 Column::new()
@@ -2228,19 +2267,17 @@ impl StoreApp {
                 &self.category_labels(),
             ))
             .with_placeholder("Search apps, publishers, or categories…");
-        // Refresh button writes REFRESH_KEY; the outer host drives
-        // the real refetch when it sees the bit go high.
-        let mut refresh_btn =
-            ui::widget::Button::new("store.refresh", "Refresh", Some(REFRESH_KEY));
+        // Refresh is a lifecycle action; the outer host drives the real
+        // refetch only after the standard action door accepts it.
+        let mut refresh_btn = ui::widget::Button::new("store.refresh", "Refresh", None);
         if let Some(binding) = refresh_binding() {
             refresh_btn = refresh_btn.on_action(binding);
         }
         let refresh_btn = refresh_btn.tooltip("Refresh configured catalogues");
-        let mut remotes_btn =
-            ui::widget::Button::new("store.remotes", "Remotes", Some(REMOTES_OPEN_KEY))
-                .with_icon(Icon::Globe)
-                .fit_content(40.0)
-                .tooltip("Manage Flatpak remotes");
+        let mut remotes_btn = ui::widget::Button::new("store.remotes", "Remotes", None)
+            .with_icon(Icon::Globe)
+            .fit_content(40.0)
+            .tooltip("Manage Flatpak remotes");
         if let Some(binding) = open_surface_binding(
             "store:remotes",
             "store.remote-list",
@@ -2251,11 +2288,10 @@ impl StoreApp {
         ) {
             remotes_btn = remotes_btn.on_action(binding);
         }
-        let mut safety_btn =
-            ui::widget::Button::new("store.safety", "Trust", Some(SAFETY_OPEN_KEY))
-                .with_icon(Icon::Shield)
-                .fit_content(40.0)
-                .tooltip("Understand signatures, review, reports and appeals");
+        let mut safety_btn = ui::widget::Button::new("store.safety", "Trust", None)
+            .with_icon(Icon::Shield)
+            .fit_content(40.0)
+            .tooltip("Understand signatures, review, reports and appeals");
         if let Some(binding) = open_surface_binding(
             "store:moderation",
             "store.moderation",
@@ -2268,11 +2304,31 @@ impl StoreApp {
         }
         let refresh_btn = refresh_btn.with_icon(Icon::Refresh).fit_content(40.0);
         if compact_header {
+            // At 2× type on a narrow window, two 160px selectors no longer
+            // have a safe shared line. Keep their semantic relationship but
+            // stack them before either can leak through the header's rounded
+            // edge or create a horizontal-scroll trap.
+            let scope_controls: Box<dyn Widget> =
+                if self.compact_layout() && self.readable_type_layout() {
+                    Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_gap(8.0)
+                            .push(self.build_filter_row(theme))
+                            .push(self.build_category_row(theme)),
+                    )
+                } else {
+                    Box::new(
+                        Row::new()
+                            .no_wrap()
+                            .push(self.build_filter_row(theme))
+                            .push(self.build_category_row(theme)),
+                    )
+                };
             let mut header = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_horizontal_padding(16.0, 16.0)
-                .with_vertical_padding(22.0)
                 .with_gap(10.0)
                 .push(Box::new(
                     Text::new("Apps")
@@ -2281,10 +2337,7 @@ impl StoreApp {
                         .with_heading_level(1),
                 ))
                 .push(Box::new(
-                    Container::new().with_no_padding().with_height(8.0),
-                ))
-                .push(Box::new(
-                    Text::new("Useful software from sources you choose.")
+                    Text::new("A clear, trustworthy catalogue for your desktop.")
                         .with_scaled_size(13.0)
                         .with_color(theme.text_dim),
                 ))
@@ -2296,11 +2349,12 @@ impl StoreApp {
                         .push(Box::new(remotes_btn))
                         .push(Box::new(refresh_btn)),
                 ))
-                .push(Box::new(
-                    Text::new(&self.catalogue_source_summary())
-                        .with_scaled_size(13.0)
-                        .with_color(theme.text_tertiary),
-                ));
+                .push(scope_controls);
+            header = header.push(Box::new(
+                Text::new(&self.catalogue_source_summary())
+                    .with_scaled_size(13.0)
+                    .with_color(theme.text_tertiary),
+            ));
             if self.operation_error.is_some() && !self.items.is_empty() {
                 header = header.push(Box::new(
                     Container::new().with_background().with_child(Box::new(
@@ -2324,7 +2378,11 @@ impl StoreApp {
                     )),
                 ));
             }
-            return Box::new(header);
+            return Box::new(
+                Container::new()
+                    .with_background()
+                    .with_child(Box::new(header)),
+            );
         }
 
         let controls = Row::new()
@@ -2345,16 +2403,13 @@ impl StoreApp {
                                 .with_intrinsic_height()
                                 .with_gap(0.0)
                                 .push(Box::new(
-                                    Text::new("App Store")
+                                    Text::new("Apps")
                                         .with_scaled_size(29.0)
                                         .with_weight(TextWeight::Semibold)
                                         .with_heading_level(1),
                                 ))
                                 .push(Box::new(
-                                    Container::new().with_no_padding().with_height(10.0),
-                                ))
-                                .push(Box::new(
-                                    Text::new("Useful software, with source and trust details before you act.")
+                                    Text::new("A clear, trustworthy catalogue for your desktop.")
                                         .with_scaled_size(14.0)
                                         .with_color(theme.text_dim),
                                 )),
@@ -2370,11 +2425,29 @@ impl StoreApp {
         let mut header = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_horizontal_padding(16.0, 16.0)
             .with_gap(12.0);
-        header = header.with_vertical_padding(24.0).with_gap(14.0);
         header = header.push(title_row);
         header = header.push(Box::new(search));
+        // Scope controls stay visually and structurally coupled to search:
+        // keyboard, a11y and agent activation still use their existing
+        // typed `store.browse` actions, while desktop browsing gains a
+        // single obvious place to refine the catalogue.
+        header = header.push(Box::new(
+            Row::new()
+                .no_wrap()
+                .push(self.build_filter_row(theme))
+                .push(self.build_category_row(theme))
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_child(Box::new(
+                            Text::new(&self.catalogue_source_summary())
+                                .with_scaled_size(13.0)
+                                .with_color(theme.text_dim),
+                        )),
+                )),
+        ));
         if self.operation_error.is_some() && !self.items.is_empty() {
             header = header.push(Box::new(
                 Container::new().with_background().with_child(Box::new(
@@ -2398,7 +2471,11 @@ impl StoreApp {
                 )),
             ));
         }
-        Box::new(header)
+        Box::new(
+            Container::new()
+                .with_background()
+                .with_child(Box::new(header)),
+        )
     }
 
     fn build_filter_row(&self, _theme: &Theme) -> Box<dyn Widget> {
@@ -2420,7 +2497,11 @@ impl StoreApp {
         Box::new(
             Container::new()
                 .with_no_padding()
-                .with_width(176.0)
+                // Two scope pickers must fit within the catalogue surface on
+                // a 390px phone/narrow window without one spilling past the
+                // rounded header edge. Desktop retains the more relaxed
+                // reading measure.
+                .with_width(if self.compact_layout() { 160.0 } else { 176.0 })
                 .with_child(Box::new(dropdown)),
         )
     }
@@ -2446,7 +2527,7 @@ impl StoreApp {
                 // Match the source picker so both controls plus the row gap
                 // fit inside the compact viewport instead of clipping the
                 // category affordance at the trailing edge.
-                .with_width(176.0)
+                .with_width(if self.compact_layout() { 160.0 } else { 176.0 })
                 .with_child(Box::new(dropdown)),
         )
     }
@@ -2498,7 +2579,7 @@ impl StoreApp {
                     .with_action_id("store.empty.refresh");
                 Box::new(match refresh_binding() {
                     Some(binding) => empty.on_action(binding),
-                    None => empty.with_action_path(REFRESH_KEY),
+                    None => empty,
                 })
             } else {
                 Box::new(empty)
@@ -2562,8 +2643,8 @@ impl StoreApp {
                 .active_operation
                 .as_ref()
                 .is_some_and(|(id, active_action)| id == &item.id && *active_action == action);
-            let click_key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
-            let select_key = format!("store.detail_select.{}", item.id);
+            let click_key = format!("store.app.{}.{}", item.id, action_code(action));
+            let select_key = format!("store.detail.{}", item.id);
             let card = crate::widgets::store_card(
                 item,
                 action,
@@ -2743,21 +2824,22 @@ impl StoreApp {
         if page_count > 1 {
             let mut paging = Row::new();
             if page > 0 {
-                paging = paging.push(Box::new(
-                    ui::widget::Button::new(
-                        "store.page.previous",
-                        "Previous",
-                        Some(PAGE_PREVIOUS_KEY),
-                    )
-                    .tooltip("Previous catalogue page"),
-                ));
+                let mut previous = ui::widget::Button::new("store.page.previous", "Previous", None);
+                if let Some(binding) =
+                    navigation_binding("previous-page", "Previous catalogue page", "previous-page")
+                {
+                    previous = previous.on_action(binding);
+                }
+                paging = paging.push(Box::new(previous.tooltip("Previous catalogue page")));
             }
             if page + 1 < page_count {
-                paging = paging.push(Box::new(
-                    ui::widget::Button::new("store.page.next", "Next", Some(PAGE_NEXT_KEY))
-                        .primary()
-                        .tooltip("Next catalogue page"),
-                ));
+                let mut next = ui::widget::Button::new("store.page.next", "Next", None);
+                if let Some(binding) =
+                    navigation_binding("next-page", "Next catalogue page", "next-page")
+                {
+                    next = next.on_action(binding);
+                }
+                paging = paging.push(Box::new(next.primary().tooltip("Next catalogue page")));
             }
             column = column.push(Box::new(paging));
         }
@@ -2766,12 +2848,18 @@ impl StoreApp {
         column = column.push(Box::new(
             Container::new().with_no_padding().with_height(72.0),
         ));
+        let content: Box<dyn Widget> = if self.stacked_catalogue_layout() && !self.compact_layout()
+        {
+            self.bounded_page_content(Box::new(column))
+        } else {
+            Box::new(column)
+        };
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
                 .with_content_gutter(8.0)
                 .with_persisted_offset(self.scroll_offset.clone())
-                .with_child(Box::new(column)),
+                .with_child(content),
         )
     }
 
@@ -2794,8 +2882,9 @@ impl StoreApp {
         }
     }
 
-    /// `--shots`: force the status bubble fully visible so a single
-    /// headless frame captures the floating chip.
+    /// `--shots`: force the desktop status bubble fully visible so a single
+    /// headless frame captures the floating chip. Compact layouts keep the
+    /// same information in the catalogue surface and never overlay a card.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
         self.status_bubble.poke(std::time::Instant::now());
@@ -2813,7 +2902,13 @@ impl StoreApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        if self.worker_busy
+        // On a narrow window a bottom-right pill can visually cover the only
+        // primary action in the viewport. The catalogue masthead already
+        // carries app count, in-flight status and error feedback in document
+        // flow, so retaining an overlay there adds no information and harms
+        // touch/keyboard discoverability.
+        if self.compact_layout()
+            || self.worker_busy
             || self.operation_error.is_some()
             || self.items.is_empty()
             || self.focused_detail.is_some()
@@ -2864,138 +2959,6 @@ impl StoreApp {
         );
         ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
         scene.pop_layer();
-    }
-
-    // ---- CRDT sync helpers ----
-
-    /// Read the one-shot click keys the sub-widgets write and turn
-    /// them into filter / category / action mutations. Returns
-    /// `true` if anything changed (used by callers as a signal to
-    /// re-render).
-    fn drain_click_keys(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        let mut any = self.drain_primary_action_click(state, path);
-        any |= self.drain_secondary_clicks(state, path);
-        any |= self.drain_detail_back_click(state, path);
-        any |= self.drain_safety_clicks(state, path);
-        any |= self.drain_page_clicks(state, path);
-        any |= self.drain_remotes_clicks(state, path);
-        any |= self.drain_refresh_click(state, path);
-        any
-    }
-
-    /// Primary action click (the big button on each card).
-    fn drain_primary_action_click(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        let Some((id, action)) = self.take_action_click(state, path) else {
-            return false;
-        };
-        self.status_line = match action {
-            ActionKind::Open => format!("Opening {id}…"),
-            ActionKind::Update => format!("Updating {id}…"),
-            ActionKind::Remove => format!("Removing {id}…"),
-            ActionKind::MarkInstalled => format!("Marking {id} installed…"),
-            ActionKind::Unmark => format!("Unmarking {id}…"),
-            ActionKind::FlatpakInstall => format!("Installing Flatpak {id}…"),
-            ActionKind::FlatpakUpdate => format!("Updating Flatpak {id}…"),
-            // Named as unconfined in the status line, not only in
-            // the launcher's log: this is the moment the user
-            // chooses to start it.
-            ActionKind::FlatpakOpen => format!("Opening {id} (unconfined host app)…"),
-            ActionKind::FlatpakRemove => format!("Removing Flatpak {id}…"),
-            ActionKind::NeedsFlatpakHost => {
-                "Install flatpak on the host to use this action.".to_string()
-            }
-        };
-        if action != ActionKind::NeedsFlatpakHost {
-            self.pending_actions.push((id, action));
-        }
-        true
-    }
-
-    /// Secondary clicks: the pin ("mark installed") toggle, the Remove
-    /// affordance on cached qOS cards, and the detail-select tap.
-    /// Collect first so the item borrow ends before we mutate `self`.
-    fn drain_secondary_clicks(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        let mut any = false;
-        let mut secondary: Vec<(String, ActionKind)> = Vec::new();
-        for item in &self.items {
-            let pin_key = format!("{}{}", PIN_CLICK_KEY_PREFIX, item.id);
-            if take_bool_edge(state, path, &pin_key)
-                && let Some(action) = item.pin_action()
-            {
-                secondary.push((item.id.clone(), action));
-            }
-            let rm_key = format!("{}{}", REMOVE_CLICK_KEY_PREFIX, item.id);
-            if take_bool_edge(state, path, &rm_key) {
-                // The item decides *how* it is removed. A Flatpak
-                // removed with `qos-install uninstall` would report
-                // "no such package installed" and leave it there.
-                if let Some(action) = item.remove_action() {
-                    secondary.push((item.id.clone(), action));
-                }
-            }
-            let detail_key = format!("{}{}", DETAIL_SELECT_KEY_PREFIX, item.id);
-            if take_bool_edge(state, path, &detail_key) {
-                self.focused_detail = Some(item.id.clone());
-                self.pending_detail = Some(item.id.clone());
-                self.status_line = format!("Loading details for {}…", item.name);
-                self.structure_dirty = true;
-                any = true;
-            }
-        }
-        for (id, action) in secondary {
-            self.status_line = format!("{} {}…", action.label(), id);
-            self.pending_actions.push((id, action));
-            any = true;
-        }
-        any
-    }
-
-    fn drain_detail_back_click(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        if take_bool_edge(state, path, DETAIL_BACK_KEY) {
-            self.focused_detail = None;
-            self.structure_dirty = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn drain_safety_clicks(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        let mut any = false;
-        if take_bool_edge(state, path, SAFETY_OPEN_KEY) {
-            self.safety_open = true;
-            self.structure_dirty = true;
-            any = true;
-        }
-        if take_bool_edge(state, path, SAFETY_BACK_KEY) {
-            self.safety_open = false;
-            self.structure_dirty = true;
-            any = true;
-        }
-        let ids = self
-            .items
-            .iter()
-            .map(|item| item.id.clone())
-            .collect::<Vec<_>>();
-        for app_id in ids {
-            let key = format!("{REPORT_DRAFT_KEY_PREFIX}{app_id}");
-            if take_bool_edge(state, path, &key) {
-                let resource_key = format!("{REPORT_RESOURCE_KEY_PREFIX}{app_id}");
-                let _ = state.put(path, resource_key, "Draft · not submitted");
-                if !self.reports.iter().any(|report| report.app_id == app_id) {
-                    self.reports.push(ReportRecord {
-                        id: format!("report:{app_id}"),
-                        app_id: app_id.clone(),
-                        status: "Draft · not submitted".into(),
-                    });
-                }
-                self.status_line = format!("Created a local report draft for {app_id}.");
-                self.safety_open = true;
-                self.structure_dirty = true;
-                any = true;
-            }
-        }
-        any
     }
 
     fn sync_report_resources(&mut self, state: &AutoCommit, path: &ObjId) {
@@ -3085,109 +3048,6 @@ impl StoreApp {
         self.completed_invocations.push(update);
         self.structure_dirty = true;
     }
-
-    fn drain_page_clicks(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        if take_bool_edge(state, path, PAGE_PREVIOUS_KEY) {
-            self.catalog_page = self.catalog_page.saturating_sub(1);
-            self.scroll_offset.set((0.0, 0.0));
-            self.structure_dirty = true;
-            true
-        } else if take_bool_edge(state, path, PAGE_NEXT_KEY) {
-            let pages = self.visible_items().len().div_ceil(PAGE_SIZE).max(1);
-            self.catalog_page = (self.catalog_page + 1).min(pages.saturating_sub(1));
-            self.scroll_offset.set((0.0, 0.0));
-            self.structure_dirty = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Remotes view: open/back navigation, a refresh tap, per-remote
-    /// removal, and the add-remote form submit.
-    fn drain_remotes_clicks(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        let mut any = false;
-        if take_bool_edge(state, path, REMOTES_OPEN_KEY) {
-            self.remotes_open = true;
-            self.pending_control_invocation = Some(ControlInvocation {
-                address: ActionAddress::new("store:remotes", "refresh"),
-                arguments: serde_json::Map::new(),
-            });
-            self.structure_dirty = true;
-            any = true;
-        }
-        if take_bool_edge(state, path, REMOTES_BACK_KEY) {
-            self.remotes_open = false;
-            self.structure_dirty = true;
-            any = true;
-        }
-        if take_bool_edge(state, path, REMOTES_REFRESH_KEY) {
-            self.pending_control_invocation = Some(ControlInvocation {
-                address: ActionAddress::new("store:remotes", "refresh"),
-                arguments: serde_json::Map::new(),
-            });
-            any = true;
-        }
-        let remote_names: Vec<String> = self
-            .remotes
-            .iter()
-            .map(|remote| remote.name.clone())
-            .collect();
-        for name in remote_names {
-            let key = format!("{REMOTES_REMOVE_KEY_PREFIX}{name}");
-            if take_bool_edge(state, path, &key) {
-                self.pending_control_invocation = Some(ControlInvocation {
-                    address: ActionAddress::new(format!("remote:{name}"), "remove"),
-                    arguments: serde_json::Map::new(),
-                });
-                any = true;
-            }
-        }
-        if take_bool_edge(state, path, REMOTES_ADD_KEY) {
-            let name = self.remote_name_state.with(Clone::clone);
-            let url = self.remote_url_state.with(Clone::clone);
-            if validate_remote_name(&name).is_ok() && validate_remote_url(&url).is_ok() {
-                self.pending_control_invocation = Some(ControlInvocation {
-                    address: ActionAddress::new("store:remotes", "add"),
-                    arguments: serde_json::Map::from_iter([
-                        ("name".into(), serde_json::Value::String(name)),
-                        ("url".into(), serde_json::Value::String(url)),
-                    ]),
-                });
-            } else {
-                self.status_line =
-                    "A remote name and credential-free HTTPS repository URL are required.".into();
-            }
-            any = true;
-        }
-        any
-    }
-
-    fn drain_refresh_click(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        if take_bool_edge(state, path, REFRESH_KEY) {
-            self.status_line = "Refreshing…".to_string();
-            self.pending_refresh = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Look for a `store.action_click.<id> = true` key. Returns the
-    /// id + the action the item's action-kind resolved to.
-    fn take_action_click(
-        &self,
-        state: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Option<(String, ActionKind)> {
-        for item in &self.items {
-            let key = format!("{}{}", ACTION_CLICK_KEY_PREFIX, item.id);
-            if take_bool_edge(state, path, &key) {
-                return Some((item.id.clone(), item.action_kind(self.flatpak_available)));
-            }
-        }
-        None
-    }
 }
 
 /// Resolve (or lazily create) the `Text` object at `path`.`key`. The
@@ -3220,21 +3080,6 @@ fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Read a `path`.`key` boolean and clear it in one shot. `true`
-/// return means the key was true; the CRDT is left with the key
-/// false so the next frame sees a fresh edge.
-fn take_bool_edge(state: &mut AutoCommit, path: &ObjId, key: &str) -> bool {
-    let hit = matches!(
-        state.get(path, key),
-        Ok(Some((Value::Scalar(s), _)))
-            if matches!(s.as_ref(), ScalarValue::Boolean(true))
-    );
-    if hit {
-        let _ = state.put(path, key, ScalarValue::Boolean(false));
-    }
-    hit
-}
-
 impl Widget for StoreApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -3242,6 +3087,8 @@ impl Widget for StoreApp {
             "store.refresh",
             "store.app",
             "store.remote",
+            "store.remote-form",
+            "store.navigation",
             "store.view",
             "store.view-remotes",
             "store.view-trust",
@@ -3260,6 +3107,20 @@ impl Widget for StoreApp {
         let mut root = Resource::new("store", "store.catalog", "App Store");
         root.children
             .push(crate::browse_actions::resource(&self.category_labels()));
+        let mut navigation =
+            Resource::new("store:navigation", "store.navigation", "Store navigation");
+        for (id, label, target) in [
+            ("show-catalogue", "Back to apps", "catalogue"),
+            ("previous-page", "Previous catalogue page", "previous-page"),
+            ("next-page", "Next catalogue page", "next-page"),
+        ] {
+            if let Ok(action) =
+                ActionSpec::operation(id, label, OperationKind::View, "store.navigation", &target)
+            {
+                navigation.actions.push(action);
+            }
+        }
+        root.children.push(navigation);
         if let Ok(refresh) = ActionSpec::operation(
             "refresh",
             "Refresh catalog",
@@ -3323,6 +3184,15 @@ impl Widget for StoreApp {
             &(),
         ) {
             remotes.actions.push(show);
+        }
+        if let Ok(stage_add) = ActionSpec::operation(
+            "stage-add",
+            "Add Flatpak remote",
+            OperationKind::View,
+            "store.remote-form",
+            &(),
+        ) {
+            remotes.actions.push(stage_add);
         }
         if let Ok(refresh) = ActionSpec::operation(
             "refresh",
@@ -3543,6 +3413,10 @@ impl Widget for StoreApp {
         None
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the Store's synchronous action boundary keeps every local view route and typed operation refusal together so capability checks cannot split from resource dispatch"
+    )]
     fn invoke_resource_operation(
         &mut self,
         kind: OperationKind,
@@ -3551,6 +3425,47 @@ impl Widget for StoreApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
+        if kind == OperationKind::View && type_id == "store.navigation" {
+            let target: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            match target.as_str() {
+                "catalogue" => {
+                    self.focused_detail = None;
+                    self.remotes_open = false;
+                    self.safety_open = false;
+                }
+                "previous-page" => {
+                    self.catalog_page = self.catalog_page.saturating_sub(1);
+                    self.scroll_offset.set((0.0, 0.0));
+                }
+                "next-page" => {
+                    let pages = self.visible_items().len().div_ceil(PAGE_SIZE).max(1);
+                    self.catalog_page = (self.catalog_page + 1).min(pages.saturating_sub(1));
+                    self.scroll_offset.set((0.0, 0.0));
+                }
+                _ => return Err("unknown Store navigation target".into()),
+            }
+            self.structure_dirty = true;
+            return Ok(true);
+        }
+        if kind == OperationKind::View && type_id == "store.remote-form" {
+            let (): () = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            let name = self.remote_name_state.with(Clone::clone);
+            let url = self.remote_url_state.with(Clone::clone);
+            if validate_remote_name(&name).is_ok() && validate_remote_url(&url).is_ok() {
+                self.pending_control_invocation = Some(ControlInvocation {
+                    address: ActionAddress::new("store:remotes", "add"),
+                    arguments: serde_json::Map::from_iter([
+                        ("name".into(), serde_json::Value::String(name)),
+                        ("url".into(), serde_json::Value::String(url)),
+                    ]),
+                });
+            } else {
+                self.status_line =
+                    "A remote name and credential-free HTTPS repository URL are required.".into();
+                self.structure_dirty = true;
+            }
+            return Ok(true);
+        }
         if kind == OperationKind::View
             && let Some(operation) = crate::browse_actions::decode(type_id, payload)?
         {
@@ -3863,7 +3778,6 @@ impl Widget for StoreApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_report_export();
         let _ = ensure_text_obj(state, path, REPORT_NOTE_KEY);
-        let _ = self.drain_click_keys(state, path);
         self.sync_report_resources(state, path);
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
@@ -4075,7 +3989,9 @@ impl Widget for StoreApp {
         self.root
             .as_ref()
             .is_some_and(|r| r.needs_animation_frame())
-            || (!self.reduce_motion && self.status_bubble.needs_frame(std::time::Instant::now()))
+            || (!self.compact_layout()
+                && !self.reduce_motion
+                && self.status_bubble.needs_frame(std::time::Instant::now()))
             || self
                 .images
                 .as_ref()
@@ -4494,39 +4410,50 @@ mod tests {
     }
 
     #[test]
-    fn refresh_click_is_forwarded_once_to_the_backend_worker() {
-        use automerge::transaction::Transactable;
-
+    fn refresh_action_is_lifecycle_scoped_and_does_not_write_the_document() {
         let mut app = seeded_app();
         let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, REFRESH_KEY, true).unwrap();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(app.take_refresh_requested());
-        assert!(
-            !app.take_refresh_requested(),
-            "refresh is an edge, not a level"
+        let heads = doc.get_heads();
+        let invocation = qos_actions::InvocationId::new();
+        assert_eq!(
+            app.start_resource_operation(
+                invocation,
+                OperationKind::Effect,
+                "store.refresh",
+                &serde_json::to_vec(&"").unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Accepted)
         );
-        assert!(matches!(
-            doc.get(automerge::ROOT, REFRESH_KEY),
-            Ok(Some((Value::Scalar(value), _)))
-                if matches!(value.as_ref(), ScalarValue::Boolean(false))
-        ));
+        assert_eq!(app.take_lifecycle_refresh(), Some(invocation));
+        assert_eq!(doc.get_heads(), heads);
     }
 
     #[test]
-    fn detail_and_remote_controls_emit_serialized_worker_intents() {
-        use automerge::transaction::Transactable;
-
+    fn detail_and_remote_controls_use_typed_local_actions() {
         let mut app = seeded_app();
-        let mut doc = AutoCommit::new();
-        doc.put(automerge::ROOT, "store.detail_select.id.chess", true)
-            .unwrap();
-        app.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        app.invoke_resource_operation(
+            OperationKind::View,
+            "store.view",
+            &serde_json::to_vec(&"id.chess").unwrap(),
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap();
         assert_eq!(app.take_detail_requested().as_deref(), Some("id.chess"));
         assert!(app.take_detail_requested().is_none());
 
-        doc.put(automerge::ROOT, REMOTES_OPEN_KEY, true).unwrap();
-        app.sync(&mut doc, &automerge::ROOT);
+        app.invoke_resource_operation(
+            OperationKind::View,
+            "store.view-remotes",
+            &serde_json::to_vec(&()).unwrap(),
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap();
         let intent = app
             .take_control_invocation()
             .expect("refresh action intent");
