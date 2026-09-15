@@ -62,6 +62,17 @@ pub struct Document {
     pub language: String,
 }
 
+/// Structured recognition plus the visible preprocessing decision that led to
+/// it. Apps can explain a corrected scan and keep previews/export aligned
+/// instead of treating cleanup as an invisible engine side effect.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recognition {
+    pub document: Document,
+    /// Corrective clockwise rotation in degrees, when evidence was strong
+    /// enough to alter the image.
+    pub deskew_degrees: Option<f64>,
+}
+
 impl Document {
     #[must_use]
     pub fn plain_text(&self) -> String {
@@ -132,17 +143,20 @@ impl Error {
 /// # Errors
 /// Returns [`Error::TooLarge`] when dimensions exceed the processing bounds.
 pub fn preprocess(image: &DynamicImage) -> Result<DynamicImage, Error> {
+    prepare(image).map(|(image, _)| image)
+}
+
+fn prepare(image: &DynamicImage) -> Result<(DynamicImage, Option<f64>), Error> {
     let (width, height) = (image.width(), image.height());
     validate_dimensions(width, height)?;
     let gray = image.to_luma8();
     let contrasted = imageops::contrast(&gray, 22.0);
-    let corrected = estimate_skew_degrees(&contrasted)
-        .filter(|angle| angle.abs() >= 0.4)
-        .map_or_else(
-            || contrasted.clone(),
-            |angle| rotate_luma(&contrasted, angle),
-        );
-    Ok(DynamicImage::ImageLuma8(corrected))
+    let deskew_degrees = estimate_skew_degrees(&contrasted).filter(|angle| angle.abs() >= 0.4);
+    let corrected = deskew_degrees.map_or_else(
+        || contrasted.clone(),
+        |angle| rotate_luma(&contrasted, angle),
+    );
+    Ok((DynamicImage::ImageLuma8(corrected), deskew_degrees))
 }
 
 /// Estimate the small corrective rotation needed to make text baselines
@@ -303,11 +317,24 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), Error> {
 /// Returns a typed validation, image, I/O, availability, timeout, or bounded
 /// engine-output error. No partial OCR document is returned on failure.
 pub fn recognize(image: &DynamicImage, language: &str) -> Result<Document, Error> {
+    recognize_detailed(image, language).map(|result| result.document)
+}
+
+/// Recognise an image and report any automatic page straightening applied
+/// before the engine saw it.
+///
+/// # Errors
+/// Returns the same typed validation, image, I/O, availability, timeout, or
+/// bounded engine-output errors as [`recognize`].
+pub fn recognize_detailed(image: &DynamicImage, language: &str) -> Result<Recognition, Error> {
     validate_language(language)?;
-    let prepared = preprocess(image)?;
+    let (prepared, deskew_degrees) = prepare(image)?;
     let mut input = tempfile::Builder::new().suffix(".png").tempfile()?;
     prepared.write_to(&mut input, ImageFormat::Png)?;
-    recognize_path(input.path(), language)
+    recognize_path(input.path(), language).map(|document| Recognition {
+        document,
+        deskew_degrees,
+    })
 }
 
 /// Recognise an image path through the bounded OCR process boundary.
