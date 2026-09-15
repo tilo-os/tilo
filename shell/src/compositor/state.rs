@@ -1943,6 +1943,52 @@ impl State {
         }
     }
 
+    /// Inject one event that already passed the personal-fabric identity and
+    /// lease gate. Unlike an app portal session, cross-device control must
+    /// still yield to lock, the kill switch, and recent physical input on the
+    /// target device.
+    pub fn apply_personal_fabric_input(
+        &mut self,
+        event: crate::shell::device_fabric::FabricInputEvent,
+    ) -> bool {
+        if let Some(reason) = self
+            .remote_input_firewall
+            .host_override(std::time::Instant::now())
+        {
+            tracing::debug!(?reason, "personal-fabric input yielded to local control");
+            return false;
+        }
+        let action = match event {
+            crate::shell::device_fabric::FabricInputEvent::PointerMotion { x, y } => {
+                RemoteAction::PointerMotionAbsolute {
+                    stream: 0,
+                    x: f64::from(x),
+                    y: f64::from(y),
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
+                RemoteAction::PointerButton {
+                    button: i32::try_from(button).unwrap_or(i32::MAX),
+                    pressed,
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::Scroll {
+                horizontal,
+                vertical,
+            } => RemoteAction::PointerAxis {
+                dx: f64::from(horizontal),
+                dy: f64::from(vertical),
+            },
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode, pressed, ..
+            } => RemoteAction::KeyboardKeycode {
+                keycode: i32::try_from(keycode).unwrap_or(i32::MAX),
+                pressed,
+            },
+        };
+        self.apply_remote_desktop_action(action)
+    }
+
     fn remote_pointer_motion_absolute(
         &mut self,
         x: f64,

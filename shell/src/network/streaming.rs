@@ -740,6 +740,31 @@ mod tests {
         assert_eq!((loc2.x, loc2.y), (150.0, 175.0));
     }
 
+    #[test]
+    fn personal_fabric_motion_reaches_seat_but_yields_to_kill_switch() {
+        use crate::compositor::state::State;
+        use crate::shell::device_fabric::FabricInputEvent;
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        assert!(
+            state.apply_personal_fabric_input(FabricInputEvent::PointerMotion { x: 320, y: 180 })
+        );
+        let loc = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((loc.x, loc.y), (320.0, 180.0));
+
+        state.remote_input_firewall.engage_kill_switch();
+        assert!(
+            !state.apply_personal_fabric_input(FabricInputEvent::PointerMotion { x: 640, y: 360 })
+        );
+        let unchanged = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((unchanged.x, unchanged.y), (320.0, 180.0));
+    }
+
     /// A `RemoteDesktop` `NotifyKeyboardKeycode` reaches the seat keyboard, appearing in `pressed_keys()` after press and clearing on release.
     #[test]
     fn apply_remote_desktop_keycode_reaches_keyboard() {

@@ -4,9 +4,11 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use rand_core::{OsRng, RngCore};
 use serde_json::{Map, Value};
 
 use crate::compositor::selection::{
@@ -14,13 +16,32 @@ use crate::compositor::selection::{
 };
 use crate::shell::device_fabric::{
     ClipboardEntry, ClipboardPayload, DeviceFabricSnapshot, DeviceKind, DevicePresence,
-    DisplayPlacement, DisplayRect, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricStamp,
-    MediaSession, MediaSourceLocator, PersonalFabricAction, RoamingSetting,
+    DisplayPlacement, DisplayRect, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricInputEvent,
+    FabricStamp, InputLease, MAX_INPUT_LEASE_MS, MediaSession, MediaSourceLocator,
+    PersonalFabricAction, RoamingSetting,
 };
 use crate::shell::network::ShellNetwork;
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const PRESENCE_HEARTBEAT: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct SpatialInputState {
+    /// Permissions this device issued and must enforce on inbound input.
+    issued: BTreeMap<[u8; 16], InputLease>,
+    /// Permissions other devices issued to this controller.
+    received: BTreeMap<crate::shell::personal_continuity::DeviceId, InputLease>,
+    inbound: VecDeque<(
+        crate::shell::personal_continuity::DeviceId,
+        FabricInputEvent,
+    )>,
+    placement_override: Option<DisplayRect>,
+}
+
+fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
+    static STATE: OnceLock<Mutex<SpatialInputState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(SpatialInputState::default()))
+}
 
 /// Stable local facts supplied by the compositor without blocking discovery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +87,7 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
-        self.handle_media_actions(network);
+        self.handle_fabric_actions(network);
         self.acknowledge_opened_media(network);
         let now = Instant::now();
         if self
@@ -89,6 +110,12 @@ impl DeviceFabricRuntime {
             counter: self.counter.saturating_add(1).max(1),
             device: device.clone(),
         };
+        let mut local = local;
+        if let Ok(spatial) = spatial_input_state().lock()
+            && let Some(rect) = spatial.placement_override
+        {
+            local.display = Some(rect);
+        }
         let mut candidate = build_local_snapshot(
             &device,
             label,
@@ -179,7 +206,8 @@ impl DeviceFabricRuntime {
             .collect();
     }
 
-    fn handle_media_actions(&mut self, network: &ShellNetwork) {
+    fn handle_fabric_actions(&mut self, network: &ShellNetwork) {
+        prune_spatial_leases();
         for envelope in network.take_personal_fabric_actions() {
             match envelope.action {
                 PersonalFabricAction::ResumeMedia {
@@ -238,6 +266,7 @@ impl DeviceFabricRuntime {
                         let _ = crate::shell::mpris::pause_named(&controller);
                     }
                 }
+                action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
         }
     }
@@ -255,6 +284,59 @@ impl DeviceFabricRuntime {
                 },
             );
         }
+    }
+}
+
+fn prune_spatial_leases() {
+    if let Ok(mut spatial) = spatial_input_state().lock() {
+        let now = unix_ms();
+        spatial
+            .issued
+            .retain(|_, lease| lease.validate_at(now).is_ok());
+        spatial
+            .received
+            .retain(|_, lease| lease.validate_at(now).is_ok());
+    }
+}
+
+fn handle_spatial_action(
+    source: crate::shell::personal_continuity::DeviceId,
+    target: &crate::shell::personal_continuity::DeviceId,
+    action: PersonalFabricAction,
+) {
+    let Ok(mut spatial) = spatial_input_state().lock() else {
+        return;
+    };
+    match action {
+        PersonalFabricAction::SetDisplayPlacement { rect } => {
+            spatial.placement_override = Some(rect);
+        }
+        PersonalFabricAction::InputLeaseGranted { lease } => {
+            if lease.validate_at(unix_ms()).is_ok() {
+                spatial.received.insert(source, lease);
+            }
+        }
+        PersonalFabricAction::InputLeaseRevoked { nonce } => {
+            spatial
+                .received
+                .retain(|device, lease| device != &source || lease.nonce != nonce);
+        }
+        PersonalFabricAction::Input { lease_nonce, event } => {
+            let accepted = spatial.issued.get(&lease_nonce).is_some_and(|lease| {
+                lease.binds(&source, target)
+                    && lease.validate_at(unix_ms()).is_ok()
+                    && match event {
+                        FabricInputEvent::PointerMotion { .. }
+                        | FabricInputEvent::PointerButton { .. }
+                        | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
+                        FabricInputEvent::Key { .. } => lease.allow_keyboard,
+                    }
+            });
+            if accepted {
+                spatial.inbound.push_back((source, event));
+            }
+        }
+        PersonalFabricAction::ResumeMedia { .. } | PersonalFabricAction::MediaAccepted { .. } => {}
     }
 }
 
@@ -318,6 +400,26 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
     let local_id = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
+    let now = unix_ms();
+    let (issued_to, received_from) = spatial_input_state().lock().map_or_else(
+        |_| (Vec::new(), Vec::new()),
+        |spatial| {
+            (
+                spatial
+                    .issued
+                    .values()
+                    .filter(|lease| lease.validate_at(now).is_ok())
+                    .map(|lease| lease.controller.clone())
+                    .collect::<Vec<_>>(),
+                spatial
+                    .received
+                    .values()
+                    .filter(|lease| lease.validate_at(now).is_ok())
+                    .map(|lease| lease.target.clone())
+                    .collect::<Vec<_>>(),
+            )
+        },
+    );
     let mut devices = fabric
         .snapshots()
         .values()
@@ -332,6 +434,8 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
                 audio_output: caps.audio_output,
                 video_output: caps.video_output,
                 display: caps.display,
+                controls_local: issued_to.contains(&snapshot.owner),
+                local_can_control: received_from.contains(&snapshot.owner),
             }
         })
         .collect::<Vec<_>>();
@@ -411,6 +515,187 @@ pub fn route_local_audio(node_id: u32) -> Result<(), String> {
         control.route_stream(stream.id, target_serial)?;
     }
     Ok(())
+}
+
+/// Place a certified display immediately to the right of this device. The
+/// receiving device authors the resulting placement in its own next snapshot.
+///
+/// # Errors
+///
+/// Returns an error if either display is unavailable or the exact-target send
+/// fails.
+pub fn place_device_right(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    let (local, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+    let fabric = network.device_fabric();
+    let local_rect = fabric
+        .snapshots()
+        .get(&local)
+        .and_then(|snapshot| snapshot.display.as_ref())
+        .map(|display| display.rect)
+        .ok_or_else(|| "this device has no published display placement".to_string())?;
+    let target_rect = fabric
+        .snapshots()
+        .get(target)
+        .and_then(|snapshot| snapshot.display.as_ref())
+        .map(|display| display.rect)
+        .ok_or_else(|| "the target has no published display".to_string())?;
+    let rect = DisplayRect {
+        x: local_rect.x.saturating_add_unsigned(local_rect.width),
+        y: local_rect.y,
+        width: target_rect.width,
+        height: target_rect.height,
+    };
+    network
+        .send_personal_fabric_action(target, PersonalFabricAction::SetDisplayPlacement { rect })
+        .map(|_| ())
+}
+
+/// Explicitly allow one certified device to control this device until the
+/// short lease expires or is revoked.
+///
+/// # Errors
+///
+/// Returns an error when either identity/capability is unavailable, entropy
+/// fails, or the exact-target grant cannot be delivered.
+pub fn grant_input_control(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+) -> Result<InputLease, String> {
+    let (target, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+    let fabric = network.device_fabric();
+    let presence = fabric
+        .snapshots()
+        .get(controller)
+        .map(|snapshot| &snapshot.presence)
+        .ok_or_else(|| "the controller is not an enrolled device".to_string())?;
+    if !presence.online || !(presence.capabilities.pointer || presence.capabilities.keyboard) {
+        return Err("the controller has no online pointer or keyboard capability".into());
+    }
+    let mut nonce = [0_u8; 16];
+    OsRng
+        .try_fill_bytes(&mut nonce)
+        .map_err(|_| "secure randomness is unavailable".to_string())?;
+    if nonce == [0; 16] {
+        return Err("secure randomness returned an invalid lease nonce".into());
+    }
+    let now = unix_ms();
+    let lease = InputLease {
+        controller: controller.clone(),
+        target,
+        issued_unix_ms: now,
+        expires_unix_ms: now.saturating_add(MAX_INPUT_LEASE_MS),
+        nonce,
+        allow_keyboard: presence.capabilities.keyboard,
+        allow_pointer: presence.capabilities.pointer,
+    };
+    network.send_personal_fabric_action(
+        controller,
+        PersonalFabricAction::InputLeaseGranted {
+            lease: lease.clone(),
+        },
+    )?;
+    if let Ok(mut spatial) = spatial_input_state().lock() {
+        spatial
+            .issued
+            .retain(|_, current| current.controller != *controller);
+        spatial.issued.insert(nonce, lease.clone());
+    }
+    Ok(lease)
+}
+
+/// Revoke every active lease this device issued to `controller` and notify it
+/// so edge forwarding stops immediately on both sides.
+///
+/// # Errors
+///
+/// Returns an error if no lease exists or a revoke cannot be delivered.
+pub fn revoke_input_control(
+    network: &ShellNetwork,
+    controller: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    let leases = spatial_input_state()
+        .lock()
+        .map_err(|_| "spatial input state is unavailable".to_string())?
+        .issued
+        .values()
+        .filter(|lease| &lease.controller == controller)
+        .cloned()
+        .collect::<Vec<_>>();
+    if leases.is_empty() {
+        return Err("that device does not have an active control lease".into());
+    }
+    for lease in &leases {
+        network.send_personal_fabric_action(
+            controller,
+            PersonalFabricAction::InputLeaseRevoked { nonce: lease.nonce },
+        )?;
+    }
+    if let Ok(mut spatial) = spatial_input_state().lock() {
+        spatial
+            .issued
+            .retain(|_, lease| &lease.controller != controller);
+    }
+    Ok(())
+}
+
+/// Send one lease-bound input event to an adjacent certified target.
+///
+/// # Errors
+///
+/// Returns an error if the target has not granted control, the lease expired,
+/// its capability excludes the event, or transport delivery fails.
+pub fn send_spatial_input(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    event: FabricInputEvent,
+) -> Result<(), String> {
+    let lease = spatial_input_state()
+        .lock()
+        .map_err(|_| "spatial input state is unavailable".to_string())?
+        .received
+        .get(target)
+        .cloned()
+        .ok_or_else(|| "that device has not granted control".to_string())?;
+    lease
+        .validate_at(unix_ms())
+        .map_err(|error| error.to_string())?;
+    let allowed = match event {
+        FabricInputEvent::PointerMotion { .. }
+        | FabricInputEvent::PointerButton { .. }
+        | FabricInputEvent::Scroll { .. } => lease.allow_pointer,
+        FabricInputEvent::Key { .. } => lease.allow_keyboard,
+    };
+    if !allowed {
+        return Err("the active lease does not allow that input device".into());
+    }
+    network
+        .send_personal_fabric_action(
+            target,
+            PersonalFabricAction::Input {
+                lease_nonce: lease.nonce,
+                event,
+            },
+        )
+        .map(|_| ())
+}
+
+/// Drain input that already passed exact-route, lease, expiry, and capability
+/// validation. The native compositor is the sole consumer.
+pub fn take_spatial_input() -> Vec<(
+    crate::shell::personal_continuity::DeviceId,
+    FabricInputEvent,
+)> {
+    spatial_input_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut spatial| spatial.inbound.drain(..).collect(),
+    )
 }
 
 fn build_local_snapshot(
