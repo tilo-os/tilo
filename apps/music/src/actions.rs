@@ -256,17 +256,29 @@ pub enum MusicAction {
     DeletePlaylist { id: String },
     /// Append a track to a playlist (idempotent — a track already present is a
     /// no-op, matching the on-screen affordance).
+    /// Legacy positional append retained for decoding existing history only.
     AddTrackToPlaylist { playlist: String, track: String },
     /// Remove the first occurrence of a track from a playlist.
     RemoveTrackFromPlaylist { playlist: String, track: String },
-    /// Reorder a track within a playlist from `from` to `to` (clamped).
+    /// Legacy positional move retained for decoding existing history only.
     MoveTrackInPlaylist {
         playlist: String,
-        /// Identity of the membership expected at `from`. This prevents a
-        /// stale resource from moving whichever row later occupied its index.
         track: String,
         from: usize,
         to: usize,
+    },
+    /// Set a stable playlist membership to an absolute state and sparse rank.
+    SetPlaylistMembership {
+        playlist: String,
+        track: String,
+        present: bool,
+        rank: i64,
+    },
+    /// Set a stable playlist membership's absolute sparse order key.
+    SetTrackRank {
+        playlist: String,
+        track: String,
+        rank: i64,
     },
     /// Set (or clear, with an empty string) a playlist's portable cover value.
     /// The *pick* (the native file portal) is app-side, non-deterministic work;
@@ -288,19 +300,30 @@ pub fn history_context(action: &MusicAction) -> qos_actions::ActionContext {
         MusicAction::CreatePlaylist { id, name } => ("Create playlist", id, "music.playlist", name),
         MusicAction::RenamePlaylist { id, name } => ("Rename playlist", id, "music.playlist", name),
         MusicAction::DeletePlaylist { id } => ("Delete playlist", id, "music.playlist", id),
-        MusicAction::AddTrackToPlaylist { playlist, track: _ } => (
+        MusicAction::AddTrackToPlaylist { playlist, .. }
+        | MusicAction::SetPlaylistMembership {
+            playlist,
+            present: true,
+            ..
+        } => (
             "Add track to playlist",
             playlist,
             "music.playlist",
             playlist,
         ),
-        MusicAction::RemoveTrackFromPlaylist { playlist, track: _ } => (
+        MusicAction::RemoveTrackFromPlaylist { playlist, track: _ }
+        | MusicAction::SetPlaylistMembership {
+            playlist,
+            present: false,
+            ..
+        } => (
             "Remove track from playlist",
             playlist,
             "music.playlist",
             playlist,
         ),
-        MusicAction::MoveTrackInPlaylist { playlist, .. } => {
+        MusicAction::MoveTrackInPlaylist { playlist, .. }
+        | MusicAction::SetTrackRank { playlist, .. } => {
             ("Reorder playlist", playlist, "music.playlist", playlist)
         }
         MusicAction::SetPlaylistCover { playlist, .. } => (
@@ -378,7 +401,8 @@ impl Action for MusicAction {
                     mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
                     "playlist or track is no longer in the library",
                 )?;
-                mdoc::add_track_to_playlist(doc, playlist, track);
+                let rank = mdoc::playlist_append_rank(doc, playlist);
+                mdoc::add_track_to_playlist(doc, playlist, track, rank);
             }
             MusicAction::RemoveTrackFromPlaylist { playlist, track } => {
                 require(
@@ -398,14 +422,47 @@ impl Action for MusicAction {
                 to,
             } => {
                 require(
+                    mdoc::playlist_track_at(doc, playlist, *from).as_deref() == Some(track),
+                    "playlist membership moved or is no longer present",
+                )?;
+                let rank = mdoc::playlist_rank_for_move(doc, playlist, track, *to)
+                    .ok_or_else(|| ActionError::Refused("playlist membership is missing".into()))?;
+                mdoc::set_track_rank(doc, playlist, track, rank);
+            }
+            MusicAction::SetPlaylistMembership {
+                playlist,
+                track,
+                present,
+                rank,
+            } => {
+                require(
+                    mdoc::has_playlist(doc, playlist) && mdoc::has_track(doc, track),
+                    "playlist or track is no longer in the library",
+                )?;
+                if *present {
+                    mdoc::add_track_to_playlist(doc, playlist, track, *rank);
+                } else {
+                    require(
+                        mdoc::playlist_contains_track(doc, playlist, track),
+                        "playlist membership is no longer present",
+                    )?;
+                    mdoc::remove_track_from_playlist(doc, playlist, track);
+                }
+            }
+            MusicAction::SetTrackRank {
+                playlist,
+                track,
+                rank,
+            } => {
+                require(
                     mdoc::has_playlist(doc, playlist),
                     "playlist is no longer in the library",
                 )?;
                 require(
-                    mdoc::playlist_track_at(doc, playlist, *from).as_deref() == Some(track),
-                    "playlist membership moved or is no longer present",
+                    mdoc::playlist_contains_track(doc, playlist, track),
+                    "playlist membership is no longer present",
                 )?;
-                mdoc::move_track_in_playlist(doc, playlist, *from, *to);
+                mdoc::set_track_rank(doc, playlist, track, *rank);
             }
             MusicAction::SetPlaylistCover { playlist, cover } => {
                 require(
@@ -552,26 +609,29 @@ pub fn delete_playlist_action(id: &str) -> MusicAction {
     MusicAction::DeletePlaylist { id: id.to_string() }
 }
 
-pub fn add_track_action(playlist: &str, track: &str) -> MusicAction {
-    MusicAction::AddTrackToPlaylist {
+pub fn add_track_action(playlist: &str, track: &str, rank: i64) -> MusicAction {
+    MusicAction::SetPlaylistMembership {
         playlist: playlist.to_string(),
         track: track.to_string(),
+        present: true,
+        rank,
     }
 }
 
 pub fn remove_track_action(playlist: &str, track: &str) -> MusicAction {
-    MusicAction::RemoveTrackFromPlaylist {
+    MusicAction::SetPlaylistMembership {
         playlist: playlist.to_string(),
         track: track.to_string(),
+        present: false,
+        rank: 0,
     }
 }
 
-pub fn move_track_action(playlist: &str, track: &str, from: usize, to: usize) -> MusicAction {
-    MusicAction::MoveTrackInPlaylist {
+pub fn move_track_action(playlist: &str, track: &str, rank: i64) -> MusicAction {
+    MusicAction::SetTrackRank {
         playlist: playlist.to_string(),
         track: track.to_string(),
-        from,
-        to,
+        rank,
     }
 }
 
@@ -613,6 +673,7 @@ pub struct TrackRef {
     pub id: String,
     pub label: String,
     pub liked: bool,
+    pub rank: i64,
 }
 
 /// One playlist surfaced as a resource, with its ordered tracks.
@@ -621,6 +682,42 @@ pub struct PlaylistResource {
     pub id: String,
     pub name: String,
     pub tracks: Vec<TrackRef>,
+}
+
+impl PlaylistResource {
+    fn append_rank(&self) -> i64 {
+        self.tracks
+            .iter()
+            .map(|track| track.rank)
+            .max()
+            .unwrap_or(-1_048_576)
+            .saturating_add(1_048_576)
+    }
+
+    fn move_rank(&self, index: usize, to: usize) -> i64 {
+        let mut remaining = self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(candidate, _)| *candidate != index)
+            .map(|(_, track)| track.rank)
+            .collect::<Vec<_>>();
+        let insert = to.min(remaining.len());
+        let previous = insert
+            .checked_sub(1)
+            .and_then(|at| remaining.get(at))
+            .copied();
+        let next = remaining.get(insert).copied();
+        remaining.clear();
+        match (previous, next) {
+            (Some(previous), Some(next)) if next.saturating_sub(previous) > 1 => {
+                previous + (next - previous) / 2
+            }
+            (Some(previous), _) => previous.saturating_add(1),
+            (None, Some(next)) => next.saturating_sub(1_048_576),
+            (None, None) => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -659,6 +756,8 @@ pub struct PlaylistMembershipResource {
     pub track: TrackRef,
     pub index: usize,
     pub total: usize,
+    pub up_rank: i64,
+    pub down_rank: i64,
 }
 
 /// The presentation context Music hands [`provide_resources`]: the user's
@@ -1057,6 +1156,7 @@ fn playlist_resource(
         .destructive(),
     );
     let add_playlist = playlist.id.clone();
+    let add_rank = playlist.append_rank();
     let add_track_ids = known_tracks.clone();
     resource = resource.with_action(
         ActionSpec::typed(
@@ -1076,7 +1176,7 @@ fn playlist_resource(
                 if !add_track_ids.contains(track) {
                     return invalid_arguments("track is no longer in the library");
                 }
-                encode(&add_track_action(&add_playlist, track))
+                encode(&add_track_action(&add_playlist, track, add_rank))
             },
         )
         .requiring(PermissionRequirement::Write),
@@ -1100,6 +1200,8 @@ fn playlist_resource(
             track,
             index,
             playlist.tracks.len(),
+            playlist.move_rank(index, index.saturating_sub(1)),
+            playlist.move_rank(index, index.saturating_add(1)),
         ));
     }
     resource
@@ -1110,6 +1212,8 @@ fn playlist_track_resource(
     track: &TrackRef,
     index: usize,
     total: usize,
+    up_rank: i64,
+    down_rank: i64,
 ) -> Resource {
     Resource::new(
         playlist_track_resource_id(playlist, &track.id),
@@ -1143,14 +1247,14 @@ fn playlist_track_resource(
         immediate_spec(
             "move-up",
             "Move track up",
-            &move_track_action(playlist, &track.id, index, index - 1),
+            &move_track_action(playlist, &track.id, up_rank),
         )
         .reversible()
     } else {
         immediate_spec(
             "move-up",
             "Move track up",
-            &move_track_action(playlist, &track.id, index, index),
+            &move_track_action(playlist, &track.id, track.rank),
         )
         .unavailable("first_track", "This track is already first in the playlist")
     })
@@ -1158,14 +1262,14 @@ fn playlist_track_resource(
         immediate_spec(
             "move-down",
             "Move track down",
-            &move_track_action(playlist, &track.id, index, index + 1),
+            &move_track_action(playlist, &track.id, down_rank),
         )
         .reversible()
     } else {
         immediate_spec(
             "move-down",
             "Move track down",
-            &move_track_action(playlist, &track.id, index, index),
+            &move_track_action(playlist, &track.id, track.rank),
         )
         .unavailable("last_track", "This track is already last in the playlist")
     })
@@ -1397,6 +1501,8 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
             &membership.track,
             membership.index,
             membership.total,
+            membership.up_rank,
+            membership.down_rank,
         ));
     }
     let known_tracks = ctx
@@ -1694,7 +1800,7 @@ mod tests {
             .cloned()
             .expect("a track not already in the playlist");
         let pid = playlist.id.clone();
-        let action = add_track_action(&pid, &new_track);
+        let action = add_track_action(&pid, &new_track, playlist.append_rank());
         let encoded = encode(&action);
 
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
@@ -2172,6 +2278,7 @@ mod tests {
                     id: format!("track:{number}:🎧"),
                     label: format!("Track {number}"),
                     liked: false,
+                    rank: i64::try_from(number).unwrap_or(i64::MAX / 1_048_576) * 1_048_576,
                 })
                 .collect(),
         };
@@ -2184,6 +2291,8 @@ mod tests {
                 track: target.clone(),
                 index,
                 total: playlist.tracks.len(),
+                up_rank: playlist.move_rank(index, index.saturating_sub(1)),
+                down_rank: playlist.move_rank(index, index.saturating_add(1)),
             }),
             ..Default::default()
         };
@@ -2225,15 +2334,14 @@ mod tests {
             encode(&move_track_action(
                 &playlist.id,
                 &target.id,
-                index,
-                index - 1
+                ctx.membership.as_ref().unwrap().up_rank
             )),
             "the lazy resource preserves the original membership index"
         );
     }
 
     #[test]
-    fn stale_membership_remove_and_reorder_are_refused() {
+    fn stale_membership_remove_is_refused_and_absolute_reorder_is_idempotent() {
         let (_app, mut doc) = seeded();
         let playlist = crate::doc::load_library(&doc).playlists[0].clone();
         let track = playlist.track_ids[0].clone();
@@ -2246,11 +2354,85 @@ mod tests {
 
         let playlist = crate::doc::load_library(&doc).playlists[0].clone();
         let track = playlist.track_ids[0].clone();
-        let move_action = move_track_action(&playlist.id, &track, 0, 1);
+        let rank = playlist.rank_for_move(&track, 1).unwrap();
+        let move_action = move_track_action(&playlist.id, &track, rank);
         move_action.apply(&mut doc).expect("live membership moves");
-        assert!(matches!(
-            move_action.apply(&mut doc),
-            Err(ActionError::Refused(_))
+        move_action
+            .apply(&mut doc)
+            .expect("absolute membership move safely replays");
+    }
+
+    #[test]
+    fn encoded_divergent_playlist_edits_converge_by_stable_membership() {
+        let (_app, mut base) = seeded();
+        base.commit();
+        let bytes = base.save();
+        let mut a = AutoCommit::load(&bytes).unwrap();
+        let mut b = AutoCommit::load(&bytes).unwrap();
+        let playlist = crate::doc::load_library(&a).playlists[0].clone();
+        let moved = playlist.track_ids[0].clone();
+        let removed = playlist.track_ids[1].clone();
+        let rank = playlist
+            .rank_for_move(&moved, playlist.track_ids.len() - 1)
+            .unwrap();
+
+        let move_action = move_track_action(&playlist.id, &moved, rank);
+        let remove_action = remove_track_action(&playlist.id, &removed);
+        qos_actions::apply_local(&mut a, &move_action, encode(&move_action)).unwrap();
+        qos_actions::apply_local(&mut b, &remove_action, encode(&remove_action)).unwrap();
+
+        let a_bytes = a.save();
+        let b_bytes = b.save();
+        let mut left = AutoCommit::load(&a_bytes).unwrap();
+        let mut right_for_left = AutoCommit::load(&b_bytes).unwrap();
+        left.merge(&mut right_for_left).unwrap();
+        let mut right = AutoCommit::load(&b_bytes).unwrap();
+        let mut left_for_right = AutoCommit::load(&a_bytes).unwrap();
+        right.merge(&mut left_for_right).unwrap();
+
+        assert_eq!(left.get_heads(), right.get_heads());
+        let left_playlist = crate::doc::load_library(&left)
+            .playlist(&playlist.id)
+            .unwrap()
+            .clone();
+        let right_playlist = crate::doc::load_library(&right)
+            .playlist(&playlist.id)
+            .unwrap()
+            .clone();
+        assert_eq!(left_playlist.track_ids, right_playlist.track_ids);
+        assert!(!left_playlist.track_ids.contains(&removed));
+        assert_eq!(left_playlist.track_ids.last(), Some(&moved));
+    }
+
+    #[test]
+    fn legacy_positional_membership_actions_remain_decodable() {
+        let (_app, mut doc) = seeded();
+        let append: MusicAction = serde_json::from_value(serde_json::json!({
+            "AddTrackToPlaylist": {
+                "playlist": "pl_focus",
+                "track": "tk_g1"
+            }
+        }))
+        .unwrap();
+        append.apply(&mut doc).unwrap();
+        assert!(crate::doc::playlist_contains_track(
+            &doc, "pl_focus", "tk_g1"
         ));
+
+        let moved = crate::doc::playlist_track_at(&doc, "pl_focus", 0).unwrap();
+        let reorder: MusicAction = serde_json::from_value(serde_json::json!({
+            "MoveTrackInPlaylist": {
+                "playlist": "pl_focus",
+                "track": moved,
+                "from": 0,
+                "to": 1
+            }
+        }))
+        .unwrap();
+        reorder.apply(&mut doc).unwrap();
+        assert_eq!(
+            crate::doc::playlist_track_at(&doc, "pl_focus", 1),
+            Some(moved)
+        );
     }
 }
