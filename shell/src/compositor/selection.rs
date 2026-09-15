@@ -180,9 +180,24 @@ pub struct ClipboardHistorySnapshot {
 struct ClipboardHistoryItem {
     id: [u8; 32],
     generation: u64,
+    created_unix_ms: u64,
     values: BTreeMap<String, Vec<u8>>,
     mime_types: Vec<String>,
     pinned: bool,
+    /// Imported fabric entries remain selectable locally but are not
+    /// re-authored and rebroadcast as if they originated on this device.
+    fabric_imported: bool,
+}
+
+/// Payload-safe export used only by the encrypted same-person device lane.
+/// The primary selection and secret MIME type never reach this structure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShareableClipboardSnapshot {
+    pub id: [u8; 32],
+    pub mime: String,
+    pub bytes: Vec<u8>,
+    pub created_unix_ms: u64,
+    pub pinned: bool,
 }
 
 impl ClipboardHistoryItem {
@@ -290,6 +305,14 @@ fn history_id(values: &BTreeMap<String, Vec<u8>>) -> [u8; 32] {
     *hash.finalize().as_bytes()
 }
 
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 fn record_clipboard_history(store: &mut SelectionStore) {
     let slot = &store.clipboard;
     if slot.values.is_empty()
@@ -305,13 +328,19 @@ fn record_clipboard_history(store: &mut SelectionStore) {
         .is_some_and(|item| item.generation == slot.generation)
     {
         let pinned = store.history.front().is_some_and(|item| item.pinned);
+        let created_unix_ms = store
+            .history
+            .front()
+            .map_or_else(now_unix_ms, |item| item.created_unix_ms);
         store.history.pop_front();
         store.history.push_front(ClipboardHistoryItem {
             id,
             generation: slot.generation,
+            created_unix_ms,
             values: slot.values.clone(),
             mime_types: slot.mime_types.clone(),
             pinned,
+            fabric_imported: false,
         });
         return;
     }
@@ -330,10 +359,84 @@ fn record_clipboard_history(store: &mut SelectionStore) {
     store.history.push_front(ClipboardHistoryItem {
         id,
         generation: slot.generation,
+        created_unix_ms: now_unix_ms(),
         values: slot.values.clone(),
         mime_types: slot.mime_types.clone(),
         pinned,
+        fabric_imported: false,
     });
+}
+
+/// Export safe retained clipboard payloads for the encrypted personal fabric.
+/// Text is canonicalized to UTF-8; otherwise one exact binary MIME is used.
+pub fn shareable_clipboard_history(store: &SharedSelection) -> Vec<ShareableClipboardSnapshot> {
+    let Ok(store) = store.lock() else {
+        return Vec::new();
+    };
+    store
+        .history
+        .iter()
+        .filter(|item| !item.fabric_imported)
+        .filter_map(|item| {
+            let (mime, bytes) = text_mime_types()
+                .iter()
+                .find_map(|mime| item.values.get(mime).map(|bytes| (TEXT_MIME, bytes)))
+                .or_else(|| {
+                    item.values
+                        .iter()
+                        .find(|(mime, _)| mime.as_str() != SECRET_MIME)
+                        .map(|(mime, bytes)| (mime.as_str(), bytes))
+                })?;
+            Some(ShareableClipboardSnapshot {
+                id: item.id,
+                mime: mime.to_string(),
+                bytes: bytes.clone(),
+                created_unix_ms: item.created_unix_ms,
+                pinned: item.pinned,
+            })
+        })
+        .collect()
+}
+
+/// Merge authenticated personal-fabric items into history without exposing
+/// them as the active Wayland clipboard until the person chooses one.
+pub fn merge_shared_clipboard_history(
+    store: &SharedSelection,
+    entries: &[crate::shell::device_fabric::ClipboardEntry],
+) {
+    let Ok(mut store) = store.lock() else {
+        return;
+    };
+    for entry in entries.iter().rev() {
+        let (mime, bytes) = match &entry.payload {
+            crate::shell::device_fabric::ClipboardPayload::Text(text) => {
+                (TEXT_MIME.to_string(), text.as_bytes().to_vec())
+            }
+            crate::shell::device_fabric::ClipboardPayload::Binary { mime, bytes } => {
+                (mime.clone(), bytes.clone())
+            }
+        };
+        if store.history.iter().any(|item| item.id == entry.id) {
+            continue;
+        }
+        let mut values = BTreeMap::new();
+        values.insert(mime.clone(), bytes);
+        while store.history.len() >= MAX_CLIPBOARD_HISTORY_ITEMS {
+            let Some(index) = store.history.iter().rposition(|item| !item.pinned) else {
+                return;
+            };
+            store.history.remove(index);
+        }
+        store.history.push_front(ClipboardHistoryItem {
+            id: entry.id,
+            generation: 0,
+            created_unix_ms: entry.created_unix_ms,
+            values,
+            mime_types: normalized_mimes([mime]),
+            pinned: entry.pinned,
+            fabric_imported: true,
+        });
+    }
 }
 
 /// Clipboard-manager metadata, newest first. Primary selection is never
@@ -357,18 +460,22 @@ pub fn activate_history_item(store: &SharedSelection, id: [u8; 32]) -> bool {
     let Ok(mut store) = store.lock() else {
         return false;
     };
-    let Some(item) = store.history.iter().find(|item| item.id == id).cloned() else {
+    let Some(index) = store.history.iter().position(|item| item.id == id) else {
+        return false;
+    };
+    let Some(mut item) = store.history.remove(index) else {
         return false;
     };
     let slot = &mut store.clipboard;
-    slot.values = item.values;
-    slot.mime_types = item.mime_types;
+    slot.values.clone_from(&item.values);
+    slot.mime_types.clone_from(&item.mime_types);
     slot.generation = slot.generation.wrapping_add(1).max(1);
     slot.revision = slot.revision.wrapping_add(1).max(1);
     slot.compositor_owned = true;
     slot.publish_pending = true;
     slot.clear_pending = false;
-    record_clipboard_history(&mut store);
+    item.generation = slot.generation;
+    store.history.push_front(item);
     true
 }
 
@@ -1631,6 +1738,40 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].text_preview.as_deref(), Some("caption"));
         assert!(history[0].mime_types.iter().any(|mime| mime == "image/png"));
+    }
+
+    #[test]
+    fn fabric_clipboard_is_history_only_and_is_not_reauthored() {
+        use crate::shell::device_fabric::{ClipboardEntry, ClipboardPayload, FabricStamp};
+        use crate::shell::personal_continuity::DeviceId;
+
+        let s = store();
+        let origin = DeviceId::new("remote-device").unwrap();
+        let entry = ClipboardEntry::shareable(
+            ClipboardPayload::Text("from the other screen".into()),
+            origin.clone(),
+            42,
+            FabricStamp {
+                counter: 7,
+                device: origin,
+            },
+        )
+        .unwrap();
+        merge_shared_clipboard_history(&s, std::slice::from_ref(&entry));
+
+        assert_eq!(mirror_text(&s, Target::Clipboard), None);
+        assert_eq!(
+            clipboard_history(&s)[0].text_preview.as_deref(),
+            Some("from the other screen")
+        );
+        assert!(shareable_clipboard_history(&s).is_empty());
+
+        assert!(activate_history_item(&s, entry.id));
+        assert_eq!(
+            mirror_text(&s, Target::Clipboard).as_deref(),
+            Some("from the other screen")
+        );
+        assert!(shareable_clipboard_history(&s).is_empty());
     }
 
     #[test]
