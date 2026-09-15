@@ -210,6 +210,10 @@ impl BluetoothPane {
         self.operation_status = status.clone();
         self
     }
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "callers construct the exact typed request whose token is completed"
+    )]
     fn finish_local_operation(
         &self,
         operation: crate::actions::BluetoothOperation,
@@ -451,10 +455,7 @@ impl BluetoothPane {
                 )),
             };
             self.notice = Some(result.clone().unwrap_or_else(|error| error));
-            self.finish_local_operation(
-                crate::actions::BluetoothOperation::Pair { path: path.clone() },
-                result,
-            );
+            self.finish_local_operation(crate::actions::BluetoothOperation::Pair { path }, result);
             self.pending_pair = None;
             self.pair_result = None;
             self.refresh();
@@ -568,6 +569,10 @@ impl BluetoothPane {
             }
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the device snapshot loop keeps each live-ID command beside its revalidation"
+    )]
     fn sync_devices(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let snapshot = self.devices.clone();
         for d in &snapshot {

@@ -577,7 +577,7 @@ impl SettingsApp {
                         doc.put(path, panes::network::REFRESH_KEY, true)
                     }
                     crate::actions::NetworkOperation::SetWiredEnabled { enabled } => {
-                        let wired = os_actions::get_wired().map_err(|error| error.to_string())?;
+                        let wired = os_actions::get_wired()?;
                         if wired.device.is_none() {
                             return Err("wired networking is unavailable on this device".into());
                         }
@@ -623,8 +623,7 @@ impl SettingsApp {
                             crate::actions::BluetoothOperation::Forget { path } => (path, "forget"),
                             _ => return Err("unsupported Bluetooth operation".into()),
                         };
-                        let device = os_actions::bluez::devices()
-                            .map_err(|error| error.to_string())?
+                        let device = os_actions::bluez::devices()?
                             .into_iter()
                             .find(|device| device.path == device_path)
                             .ok_or_else(|| "Bluetooth device is no longer available".to_string())?;
