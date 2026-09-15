@@ -171,12 +171,29 @@ pub struct Span {
     pub end: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TocTarget {
+    pub heading: String,
+    pub level: i64,
+    pub text: String,
+    pub page: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TableEdit {
+    InsertRow { at: usize },
+    InsertColumn { at: usize },
+    DeleteRow { row: usize },
+    DeleteColumn { column: usize },
+    Delete,
+}
+
 /// Every collaborative, document-mutating operation the word processor exports.
 ///
 /// Deliberately positional: each variant names the exact block ids and offsets
-/// it touches, so [`Action::apply`] is a pure, replayable write. Live per-
-/// keystroke typing is *not* here (it splices directly into the CRDT `Text`); a
-/// discrete text edit (Find & Replace, a scripted splice) is [`Self::SpliceText`].
+/// it touches, so [`Action::apply`] is a pure, replayable write. Ordinary typing,
+/// deletion, paragraph splitting, Find & Replace, and agent-authored edits all
+/// enter through these same envelopes; caret and selection updates remain local.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WordProcessorAction {
     /// Replace `[at, at+del)` of `block` with `ins` (insert = `del` 0; delete =
@@ -243,6 +260,29 @@ pub enum WordProcessorAction {
         key: String,
         value: AttrVal,
     },
+    /// Replace all four page margins as one absolute page-setup operation.
+    /// Keeping the rectangle atomic avoids transient invalid page geometry while
+    /// still giving history and collaborators a single authored mutation.
+    SetPageMargins {
+        top: f64,
+        right: f64,
+        bottom: f64,
+        left: f64,
+    },
+    /// Set one scalar property of one stable named style. Keeping each field in
+    /// its own envelope lets replicas edit e.g. font and spacing concurrently
+    /// without replaying an entire stale stylesheet over either change.
+    SetStyleProperty {
+        style: String,
+        key: String,
+        value: AttrVal,
+    },
+    /// Delete one custom style and atomically move its addressed instances back
+    /// to the body default. The style id receives a grow-only tombstone.
+    DeleteStyle {
+        style: String,
+        fallback_blocks: Vec<String>,
+    },
     /// Set an image crop in ten-thousandths of its source rectangle.  Keeping
     /// all four edges in one action is important: a crop must never briefly
     /// become invalid while a collaborator/replay observes it.
@@ -278,6 +318,8 @@ pub enum WordProcessorAction {
         rows: usize,
         cols: usize,
     },
+    /// Mutate one stable table id using an absolute row/column boundary.
+    EditTable { table: String, edit: TableEdit },
     /// Insert an image (blob `bytes`, optional intrinsic `width`/`height`) at
     /// `(block, at)`: the caret block is split so the tail follows the image in a
     /// fresh paragraph beneath it.
@@ -290,7 +332,44 @@ pub enum WordProcessorAction {
     },
     /// Insert a manual page break at `(block, at)`: split the block like Enter and
     /// mark the new block to start on a fresh page.
-    InsertPageBreak { block: String, at: usize },
+    InsertPageBreak {
+        #[serde(default)]
+        region: RegionKind,
+        block: String,
+        at: usize,
+    },
+    /// Split one paragraph at an absolute character offset. The new block id is
+    /// minted by the pinned action actor, so origin and replay produce the same
+    /// stable child entity. Used by Enter in body/header/footer alike.
+    SplitBlock {
+        region: RegionKind,
+        block: String,
+        at: usize,
+        kind: String,
+        ordered: Option<bool>,
+    },
+    /// Insert one canonical field marker at an absolute text position.
+    InsertField {
+        region: RegionKind,
+        block: String,
+        at: usize,
+        field: String,
+    },
+    /// Replace the generated TOC using stable heading ids and authored page
+    /// labels captured from one pagination frame.
+    GenerateToc { entries: Vec<TocTarget> },
+    /// Paste a rich or plain multi-paragraph fragment at an absolute selection.
+    /// Paragraphs and marks are authored payload, while newly-created block ids
+    /// are minted under the pinned action actor.
+    PasteFragment {
+        region: RegionKind,
+        start_block: String,
+        start: usize,
+        end_block: String,
+        end: usize,
+        blocks: Vec<crate::word_processor::ClipBlock>,
+        adopt_first_style: bool,
+    },
     /// Insert a fresh paragraph carrying `text` directly after block `after`.
     /// The action-level way to add a line: Enter is a live-edit path, not an
     /// action, so a headless participant (an agent, a script) had no way to
@@ -381,11 +460,38 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
         }
         "page_break_before" | "flip_h" | "flip_v" => matches!(value, AttrVal::Bool(_)),
-        "indent" | "first_line_indent" | "line_spacing" => {
+        "indent" | "line_spacing" => {
             matches!(value, AttrVal::Float(v) if v.is_finite() && *v >= 0.0 && *v <= 10_000.0)
+        }
+        "first_line_indent" => {
+            matches!(value, AttrVal::Float(v) if v.is_finite() && (-10_000.0..=10_000.0).contains(v))
         }
         "tab_stops" | "style" => matches!(value, AttrVal::Str(v) if v.len() <= 4_096),
         "width" | "height" => matches!(value, AttrVal::Int(v) if *v > 0 && *v <= 100_000),
+        _ => false,
+    };
+    let valid_style_prop = |key: &str, value: &AttrVal| match key {
+        qdoc::schema::STYLE_NAME => matches!(value, AttrVal::Str(v) if v.chars().count() <= 256),
+        qdoc::schema::STYLE_FONT => {
+            matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "sans" | "serif" | "mono"))
+        }
+        qdoc::schema::STYLE_SIZE => {
+            matches!(value, AttrVal::Float(v) if v.is_finite() && (6.0..=200.0).contains(v))
+        }
+        qdoc::schema::STYLE_BOLD | qdoc::schema::STYLE_ITALIC => {
+            matches!(value, AttrVal::Bool(_))
+        }
+        qdoc::schema::STYLE_COLOR => {
+            matches!(value, AttrVal::Str(v) if v.len() == 7 && v.starts_with('#'))
+        }
+        qdoc::schema::STYLE_ALIGN => {
+            matches!(value, AttrVal::Str(v) if matches!(v.as_str(), "left" | "center" | "right" | "justify"))
+        }
+        qdoc::schema::STYLE_SPACE_BEFORE
+        | qdoc::schema::STYLE_SPACE_AFTER
+        | qdoc::schema::STYLE_INDENT => {
+            matches!(value, AttrVal::Float(v) if v.is_finite() && (0.0..=10_000.0).contains(v))
+        }
         _ => false,
     };
 
@@ -478,6 +584,28 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
             key,
             value,
         } => unique_existing(*region, blocks) && valid_attr(key, value),
+        WordProcessorAction::SetPageMargins { top, right, bottom, left } => [top, right, bottom, left]
+            .into_iter()
+            .all(|value| value.is_finite() && (4.0..=10_000.0).contains(value)),
+        WordProcessorAction::SetStyleProperty { style, key, value } => {
+            safe_name(style)
+                && !qdoc::model::style_is_tombstoned(doc, c, style)
+                && valid_style_prop(key, value)
+        }
+        WordProcessorAction::DeleteStyle {
+            style,
+            fallback_blocks,
+        } => {
+            safe_name(style)
+                && !crate::styles::StyleSheet::is_builtin(style)
+                && qdoc::model::style_ids(doc, c).contains(style)
+                && fallback_blocks.iter().all(|block| {
+                    snap.blocks.iter().any(|entry| {
+                        entry.id == *block
+                            && matches!(entry.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
+                    })
+                })
+        }
         WordProcessorAction::SetImageCrop {
             block,
             left,
@@ -536,6 +664,40 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
                 && *cols <= MAX_TABLE_DIMENSION
                 && rows.saturating_mul(*cols) <= MAX_TABLE_CELLS
         }
+        WordProcessorAction::EditTable { table, edit } => {
+            let cells: Vec<_> = snap
+                .blocks
+                .iter()
+                .filter(|block| {
+                    block.kind == "cell"
+                        && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table)
+                })
+                .collect();
+            let coord = |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
+                Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+                _ => 0,
+            };
+            let rows = cells
+                .iter()
+                .map(|block| coord(block, "row"))
+                .max()
+                .map_or(0, |value| value.saturating_add(1));
+            let cols = cells
+                .iter()
+                .map(|block| coord(block, "col"))
+                .max()
+                .map_or(0, |value| value.saturating_add(1));
+            !table.is_empty()
+                && !cells.is_empty()
+                && cells.len() == rows.saturating_mul(cols)
+                && match edit {
+                    TableEdit::InsertRow { at } => *at <= rows && rows < MAX_TABLE_DIMENSION,
+                    TableEdit::InsertColumn { at } => *at <= cols && cols < MAX_TABLE_DIMENSION,
+                    TableEdit::DeleteRow { row } => *row < rows,
+                    TableEdit::DeleteColumn { column } => *column < cols,
+                    TableEdit::Delete => true,
+                }
+        }
         WordProcessorAction::InsertImage {
             block,
             at,
@@ -549,8 +711,82 @@ fn action_is_valid(action: &WordProcessorAction, doc: &AutoCommit, c: &Container
                 && width.is_none_or(|value| (1..=100_000).contains(&value))
                 && height.is_none_or(|value| (1..=100_000).contains(&value))
         }
-        WordProcessorAction::InsertPageBreak { block, at } => {
-            block_len(RegionKind::Body, block).is_some_and(|len| *at <= len)
+        WordProcessorAction::InsertPageBreak { region, block, at } => {
+            block_len(*region, block).is_some_and(|len| *at <= len)
+        }
+        WordProcessorAction::SplitBlock {
+            region,
+            block,
+            at,
+            kind,
+            ..
+        } => {
+            block_len(*region, block).is_some_and(|len| *at <= len)
+                && matches!(kind.as_str(), "paragraph" | "list_item")
+        }
+        WordProcessorAction::InsertField {
+            region,
+            block,
+            at,
+            field,
+        } => {
+            block_len(*region, block).is_some_and(|len| *at <= len)
+                && field == qdoc::schema::FIELD_PAGE_NUMBER
+        }
+        WordProcessorAction::GenerateToc { entries } => {
+            !entries.is_empty()
+                && entries.len() <= 10_000
+                && entries
+                    .iter()
+                    .map(|entry| entry.heading.as_str())
+                    .collect::<HashSet<_>>()
+                    .len()
+                    == entries.len()
+                && entries.iter().all(|entry| {
+                    (1..=9).contains(&entry.level)
+                        && safe_text(&entry.text)
+                        && entry.page.is_none_or(|page| page <= 100_000)
+                        && snap.blocks.iter().any(|block| {
+                            block.id == entry.heading && block.kind == "heading"
+                        })
+                })
+        }
+        WordProcessorAction::PasteFragment {
+            region,
+            start_block,
+            start,
+            end_block,
+            end,
+            blocks,
+            ..
+        } => {
+            let region_blocks = blocks_for(*region);
+            let start_index = region_blocks.iter().position(|block| block.id == *start_block);
+            let end_index = region_blocks.iter().position(|block| block.id == *end_block);
+            let valid_range = match (
+                start_index,
+                end_index,
+                block_len(*region, start_block),
+                block_len(*region, end_block),
+            ) {
+                (Some(si), Some(ei), Some(sl), Some(el)) => {
+                    (si < ei || (si == ei && start <= end)) && *start <= sl && *end <= el
+                }
+                _ => false,
+            };
+            valid_range
+                && !blocks.is_empty()
+                && blocks.len() <= 10_000
+                && blocks.iter().all(|block| {
+                    safe_text(&block.text)
+                        && safe_name(&block.kind)
+                        && block.level.is_none_or(|level| (0..=9).contains(&level))
+                        && block.marks.iter().all(|mark| {
+                            safe_name(&mark.name)
+                                && mark.start < mark.end
+                                && mark.end <= block.text.chars().count()
+                        })
+                })
         }
         WordProcessorAction::InsertParagraph { after, text } => {
             block_len(RegionKind::Body, after).is_some() && safe_text(text)
@@ -708,11 +944,7 @@ fn apply_splice_text(
 }
 
 fn remove_block_in_region(dm: &mut DocMut, region: Region, block: &str) {
-    if region == Region::Body {
-        dm.remove_block(block);
-    } else if let Some(container) = region_container_obj(dm.doc, dm.c, region) {
-        let _ = dm.doc.delete(&container, block);
-    }
+    dm.tombstone_block_in(region, block);
 }
 
 fn apply_replace_selection(
@@ -890,6 +1122,157 @@ fn apply_insert_table(dm: &mut DocMut, after: &str, rows: usize, cols: usize) {
     }
 }
 
+type TableCells = Vec<(String, usize, usize)>;
+
+fn table_cells(dm: &DocMut<'_>, table: &str) -> TableCells {
+    qdoc::model::materialize(dm.doc, dm.c)
+        .blocks
+        .into_iter()
+        .filter(|block| {
+            block.kind == "cell"
+                && matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == table)
+        })
+        .map(|block| {
+            let coordinate = |key: &str| match block.attrs.get(key) {
+                Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+                _ => 0,
+            };
+            (block.id, coordinate("row"), coordinate("col"))
+        })
+        .collect()
+}
+
+fn table_head_anchor(dm: &DocMut<'_>, cells: &TableCells) -> Option<String> {
+    let order = qdoc::model::blocks_in_order(dm.doc, dm.c);
+    let first = cells
+        .iter()
+        .filter_map(|(id, _, _)| order.iter().position(|candidate| candidate == id))
+        .min()?;
+    first
+        .checked_sub(1)
+        .and_then(|index| order.get(index).cloned())
+}
+
+fn apply_insert_table_row(dm: &mut DocMut<'_>, table: &str, at: usize, cells: &TableCells) {
+    let columns = cells
+        .iter()
+        .map(|(_, _, column)| *column)
+        .max()
+        .map_or(0, |column| column.saturating_add(1));
+    let anchor = if at == 0 {
+        table_head_anchor(dm, cells)
+    } else {
+        cells
+            .iter()
+            .filter(|(_, row, _)| *row == at.saturating_sub(1))
+            .max_by_key(|(_, _, column)| *column)
+            .map(|(id, _, _)| id.clone())
+    };
+    let mut shifted: Vec<_> = cells.iter().filter(|(_, row, _)| *row >= at).collect();
+    shifted.sort_by_key(|(id, _, _)| id.as_str());
+    for (id, row, _) in shifted {
+        dm.set_attr(id, "row", num::i64_of_usize(row.saturating_add(1)));
+    }
+    let mut previous = anchor;
+    for column in 0..columns {
+        let id = dm.insert_block(previous.as_deref(), "cell");
+        dm.set_attr(&id, "table", table);
+        dm.set_attr(&id, "row", num::i64_of_usize(at));
+        dm.set_attr(&id, "col", num::i64_of_usize(column));
+        previous = Some(id);
+    }
+}
+
+fn apply_insert_table_column(dm: &mut DocMut<'_>, table: &str, at: usize, cells: &TableCells) {
+    let rows = cells
+        .iter()
+        .map(|(_, row, _)| *row)
+        .max()
+        .map_or(0, |row| row.saturating_add(1));
+    let mut shifted: Vec<_> = cells
+        .iter()
+        .filter(|(_, _, column)| *column >= at)
+        .collect();
+    shifted.sort_by_key(|(id, _, _)| id.as_str());
+    for (id, _, column) in shifted {
+        dm.set_attr(id, "col", num::i64_of_usize(column.saturating_add(1)));
+    }
+    for row in 0..rows {
+        let anchor = if at == 0 {
+            if row == 0 {
+                table_head_anchor(dm, cells)
+            } else {
+                cells
+                    .iter()
+                    .filter(|(_, candidate_row, _)| *candidate_row == row.saturating_sub(1))
+                    .max_by_key(|(_, _, column)| *column)
+                    .map(|(id, _, _)| id.clone())
+            }
+        } else {
+            cells
+                .iter()
+                .find(|(_, candidate_row, column)| {
+                    *candidate_row == row && *column == at.saturating_sub(1)
+                })
+                .map(|(id, _, _)| id.clone())
+        };
+        let id = dm.insert_block(anchor.as_deref(), "cell");
+        dm.set_attr(&id, "table", table);
+        dm.set_attr(&id, "row", num::i64_of_usize(row));
+        dm.set_attr(&id, "col", num::i64_of_usize(at));
+    }
+}
+
+fn apply_delete_table_axis(dm: &mut DocMut<'_>, cells: &TableCells, row_axis: bool, index: usize) {
+    let axis_value = |cell: &&(String, usize, usize)| if row_axis { cell.1 } else { cell.2 };
+    let extent = cells
+        .iter()
+        .map(|cell| axis_value(&cell))
+        .max()
+        .map_or(0, |value| value.saturating_add(1));
+    if extent <= 1 {
+        for (id, _, _) in cells {
+            dm.tombstone_block_in(Region::Body, id);
+        }
+        return;
+    }
+    let mut ordered = cells.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(id, _, _)| id.as_str());
+    for cell @ (id, row, column) in ordered {
+        let value = axis_value(&cell);
+        if value == index {
+            dm.tombstone_block_in(Region::Body, id);
+        } else if value > index {
+            dm.set_attr(
+                id,
+                if row_axis { "row" } else { "col" },
+                num::i64_of_usize(if row_axis {
+                    row.saturating_sub(1)
+                } else {
+                    column.saturating_sub(1)
+                }),
+            );
+        }
+    }
+}
+
+fn apply_table_edit(dm: &mut DocMut<'_>, table: &str, edit: TableEdit) {
+    let cells = table_cells(dm, table);
+    match edit {
+        TableEdit::InsertRow { at } => apply_insert_table_row(dm, table, at, &cells),
+        TableEdit::InsertColumn { at } => apply_insert_table_column(dm, table, at, &cells),
+        TableEdit::DeleteRow { row } => apply_delete_table_axis(dm, &cells, true, row),
+        TableEdit::DeleteColumn { column } => {
+            apply_delete_table_axis(dm, &cells, false, column);
+        }
+        TableEdit::Delete => {
+            for (id, _, _) in &cells {
+                dm.tombstone_block_in(Region::Body, id);
+            }
+        }
+    }
+}
+
 fn apply_insert_image(
     dm: &mut DocMut,
     block: &str,
@@ -924,20 +1307,154 @@ fn apply_insert_image(
     }
 }
 
-fn apply_insert_page_break(dm: &mut DocMut, block: &str, at: usize) {
+fn apply_insert_page_break(dm: &mut DocMut, region: Region, block: &str, at: usize) {
     // Split the block at the caret (like Enter): the tail moves into a fresh
     // paragraph that starts on a new page.
-    let text = qdoc::model::block_text(dm.doc, dm.c, block).unwrap_or_default();
+    let text = match region {
+        Region::Body => qdoc::model::block_text(dm.doc, dm.c, block),
+        other => qdoc::model::materialize_region(dm.doc, dm.c, other)
+            .into_iter()
+            .find(|entry| entry.id == block)
+            .map(|entry| entry.text),
+    }
+    .unwrap_or_default();
     let char_count = text.chars().count();
     let tail: String = text.chars().skip(at).collect();
     if let Some(tail) = char_count.checked_sub(at).filter(|n| *n > 0) {
-        dm.splice_text(block, at, num::isize_of_usize(tail), "");
+        dm.splice_text_in(region, block, at, num::isize_of_usize(tail), "");
     }
-    let new = dm.insert_block(Some(block), "paragraph");
+    let new = dm.insert_block_in(region, Some(block), "paragraph");
     if !tail.is_empty() {
-        dm.splice_text(&new, 0, 0, &tail);
+        dm.splice_text_in(region, &new, 0, 0, &tail);
     }
-    dm.set_attr(&new, "page_break_before", true);
+    dm.set_attr_in(region, &new, "page_break_before", true);
+}
+
+fn apply_split_block(
+    dm: &mut DocMut,
+    region: Region,
+    block: &str,
+    at: usize,
+    kind: &str,
+    ordered: Option<bool>,
+) {
+    let text = match region {
+        Region::Body => qdoc::model::block_text(dm.doc, dm.c, block),
+        other => qdoc::model::materialize_region(dm.doc, dm.c, other)
+            .into_iter()
+            .find(|entry| entry.id == block)
+            .map(|entry| entry.text),
+    }
+    .unwrap_or_default();
+    let tail: String = text.chars().skip(at).collect();
+    let remove = text.chars().count().saturating_sub(at);
+    if remove > 0 {
+        dm.splice_text_in(region, block, at, num::isize_of_usize(remove), "");
+    }
+    let new = dm.insert_block_in(region, Some(block), kind);
+    if let Some(value) = ordered {
+        dm.set_attr_in(region, &new, "ordered", value);
+    }
+    if !tail.is_empty() {
+        dm.splice_text_in(region, &new, 0, 0, &tail);
+    }
+}
+
+fn apply_generate_toc(dm: &mut DocMut, entries: &[TocTarget]) {
+    let snapshot = qdoc::model::materialize(dm.doc, dm.c);
+    for block in snapshot
+        .blocks
+        .iter()
+        .filter(|block| matches!(block.attrs.get("toc"), Some(qdoc::AttrVal::Bool(true))))
+    {
+        dm.tombstone_block_in(Region::Body, &block.id);
+    }
+    let mut previous = None;
+    for entry in entries {
+        let block = dm.insert_block(previous.as_deref(), "paragraph");
+        dm.set_attr(&block, "toc", true);
+        dm.set_attr(&block, "toc_level", entry.level);
+        dm.set_attr(&block, "toc_heading", entry.heading.as_str());
+        let indent = "  ".repeat(num::usize_of_i64(entry.level.saturating_sub(1)));
+        let title = entry.text.trim();
+        let line = entry.page.map_or_else(
+            || format!("{indent}{title}"),
+            |page| format!("{indent}{title} .......... {page}"),
+        );
+        dm.splice_text(&block, 0, 0, &line);
+        previous = Some(block);
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "paste applies one absolute selection target plus its authored fragment"
+)]
+fn apply_paste_fragment(
+    dm: &mut DocMut,
+    region: Region,
+    start_block: &str,
+    start: usize,
+    end_block: &str,
+    end: usize,
+    blocks: &[crate::word_processor::ClipBlock],
+    adopt_first_style: bool,
+) {
+    apply_replace_selection(dm, region, start_block, start, end_block, end, "");
+    let mut current = start_block.to_string();
+    let mut offset = start;
+    for (index, fragment) in blocks.iter().enumerate() {
+        if index > 0 {
+            let text = match region {
+                Region::Body => qdoc::model::block_text(dm.doc, dm.c, &current),
+                other => qdoc::model::materialize_region(dm.doc, dm.c, other)
+                    .into_iter()
+                    .find(|entry| entry.id == current)
+                    .map(|entry| entry.text),
+            }
+            .unwrap_or_default();
+            let tail: String = text.chars().skip(offset).collect();
+            let remove = text.chars().count().saturating_sub(offset);
+            if remove > 0 {
+                dm.splice_text_in(region, &current, offset, num::isize_of_usize(remove), "");
+            }
+            let next = dm.insert_block_in(region, Some(&current), "paragraph");
+            if !tail.is_empty() {
+                dm.splice_text_in(region, &next, 0, 0, &tail);
+            }
+            current = next;
+            offset = 0;
+        }
+        if !fragment.text.is_empty() {
+            dm.splice_text_in(region, &current, offset, 0, &fragment.text);
+        }
+        for mark in &fragment.marks {
+            let span = Span {
+                block: current.clone(),
+                start: offset.saturating_add(mark.start),
+                end: offset.saturating_add(mark.end),
+            };
+            let value = match &mark.value {
+                qdoc::document::MarkValue::Bool(value) => MarkVal::Bool(*value),
+                qdoc::document::MarkValue::Int(value) => MarkVal::Int(*value),
+                qdoc::document::MarkValue::Str(value) => MarkVal::Str(value.clone()),
+            };
+            add_mark_region(dm, region, &span, &mark.name, &value);
+        }
+        if index > 0 || adopt_first_style {
+            set_kind_region(dm, region, &current, &fragment.kind);
+            if let Some(level) = fragment.level {
+                set_attr_region(dm, region, &current, "level", &AttrVal::Int(level));
+            }
+            if let Some(ordered) = fragment.ordered {
+                set_attr_region(dm, region, &current, "ordered", &AttrVal::Bool(ordered));
+            }
+            if let Some(align) = &fragment.align {
+                set_attr_region(dm, region, &current, "align", &AttrVal::Str(align.clone()));
+            }
+        }
+        offset = offset.saturating_add(fragment.text.chars().count());
+    }
 }
 
 fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) {
@@ -951,7 +1468,7 @@ fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
     let mut sorted = blocks.to_vec();
     sorted.sort();
     for block in &sorted {
-        dm.remove_block(block);
+        dm.tombstone_block_in(Region::Body, block);
     }
 }
 
@@ -959,7 +1476,7 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     use qdoc::FormatProvider;
     let existing = qdoc::model::blocks_in_order(dm.doc, dm.c);
     for id in &existing {
-        dm.remove_block(id);
+        dm.tombstone_block_in(Region::Body, id);
     }
     // A malformed template can't wedge a replay: the body-clear stays in the
     // pinned change either way.
@@ -1005,6 +1522,10 @@ fn apply_review_changes(dm: &mut DocMut, id: Option<&str>, accept: bool) {
 }
 
 fn apply_resolve_comment(dm: &mut DocMut, id: &str) {
+    // Record the semantic delete independently from the current map entry.
+    // A reply authored on a divergent replica may merge after this deletion;
+    // the grow-only tombstone keeps that stale thread from reappearing.
+    dm.tombstone_comment(id);
     let range = qdoc::model::comment_range(dm.doc, dm.c, id);
     if let Some((block, start, end)) = range
         && start < end
@@ -1159,6 +1680,40 @@ impl Action for WordProcessorAction {
                 value,
             } => apply_set_block_attr(&mut dm, region.to_region(), blocks, key, value),
 
+            WordProcessorAction::SetPageMargins {
+                top,
+                right,
+                bottom,
+                left,
+            } => {
+                dm.set_meta_str("page_margin_top", &top.to_string());
+                dm.set_meta_str("page_margin_right", &right.to_string());
+                dm.set_meta_str("page_margin_bottom", &bottom.to_string());
+                dm.set_meta_str("page_margin_left", &left.to_string());
+            }
+
+            WordProcessorAction::SetStyleProperty { style, key, value } => {
+                let value = match value {
+                    AttrVal::Bool(value) => qdoc::AttrVal::Bool(*value),
+                    AttrVal::Int(value) => qdoc::AttrVal::Int(*value),
+                    AttrVal::Float(value) => qdoc::AttrVal::Float(*value),
+                    AttrVal::Str(value) => qdoc::AttrVal::Str(value.clone()),
+                };
+                dm.set_style(style, &[(key.clone(), value)].into_iter().collect());
+            }
+
+            WordProcessorAction::DeleteStyle {
+                style,
+                fallback_blocks,
+            } => {
+                let mut blocks = fallback_blocks.clone();
+                blocks.sort();
+                for block in &blocks {
+                    dm.set_attr(block, "style", "");
+                }
+                dm.tombstone_style(style);
+            }
+
             WordProcessorAction::SetImageCrop {
                 block,
                 left,
@@ -1200,6 +1755,10 @@ impl Action for WordProcessorAction {
                 apply_insert_table(&mut dm, after, *rows, *cols);
             }
 
+            WordProcessorAction::EditTable { table, edit } => {
+                apply_table_edit(&mut dm, table, *edit);
+            }
+
             WordProcessorAction::InsertImage {
                 block,
                 at,
@@ -1208,9 +1767,47 @@ impl Action for WordProcessorAction {
                 height,
             } => apply_insert_image(&mut dm, block, *at, bytes, *width, *height),
 
-            WordProcessorAction::InsertPageBreak { block, at } => {
-                apply_insert_page_break(&mut dm, block, *at);
+            WordProcessorAction::InsertPageBreak { region, block, at } => {
+                apply_insert_page_break(&mut dm, region.to_region(), block, *at);
             }
+
+            WordProcessorAction::SplitBlock {
+                region,
+                block,
+                at,
+                kind,
+                ordered,
+            } => apply_split_block(&mut dm, region.to_region(), block, *at, kind, *ordered),
+
+            WordProcessorAction::InsertField {
+                region,
+                block,
+                at,
+                field: _,
+            } => dm.insert_page_number_field(region.to_region(), block, *at),
+
+            WordProcessorAction::GenerateToc { entries } => {
+                apply_generate_toc(&mut dm, entries);
+            }
+
+            WordProcessorAction::PasteFragment {
+                region,
+                start_block,
+                start,
+                end_block,
+                end,
+                blocks,
+                adopt_first_style,
+            } => apply_paste_fragment(
+                &mut dm,
+                region.to_region(),
+                start_block,
+                *start,
+                end_block,
+                *end,
+                blocks,
+                *adopt_first_style,
+            ),
 
             WordProcessorAction::InsertParagraph { after, text } => {
                 apply_insert_paragraph(&mut dm, after, text);
@@ -1337,6 +1934,32 @@ pub fn set_block_attr_action(
     }
 }
 
+pub fn set_page_margins_action(margins: [f64; 4]) -> WordProcessorAction {
+    WordProcessorAction::SetPageMargins {
+        top: margins[0],
+        right: margins[1],
+        bottom: margins[2],
+        left: margins[3],
+    }
+}
+
+/// Set one field of a stable named style.
+pub fn set_style_property_action(style: &str, key: &str, value: AttrVal) -> WordProcessorAction {
+    WordProcessorAction::SetStyleProperty {
+        style: style.to_string(),
+        key: key.to_string(),
+        value,
+    }
+}
+
+/// Delete one custom style and reassign its exact current instances.
+pub fn delete_style_action(style: &str, fallback_blocks: Vec<String>) -> WordProcessorAction {
+    WordProcessorAction::DeleteStyle {
+        style: style.to_string(),
+        fallback_blocks,
+    }
+}
+
 /// Crop an image by source-relative edge insets (0..=9500 per edge).
 pub fn set_image_crop_action(
     block: &str,
@@ -1438,11 +2061,90 @@ pub fn insert_table_action(after: &str, rows: usize, cols: usize) -> WordProcess
     }
 }
 
+pub fn edit_table_action(table: &str, edit: TableEdit) -> WordProcessorAction {
+    WordProcessorAction::EditTable {
+        table: table.to_string(),
+        edit,
+    }
+}
+
 /// Insert a manual page break at `(block, at)`.
 pub fn insert_page_break_action(block: &str, at: usize) -> WordProcessorAction {
     WordProcessorAction::InsertPageBreak {
+        region: RegionKind::Body,
         block: block.to_string(),
         at,
+    }
+}
+
+/// Insert a manual page break in the addressed editing region.
+pub fn insert_page_break_in_action(
+    region: RegionKind,
+    block: &str,
+    at: usize,
+) -> WordProcessorAction {
+    WordProcessorAction::InsertPageBreak {
+        region,
+        block: block.to_string(),
+        at,
+    }
+}
+
+pub fn insert_page_number_action(
+    region: RegionKind,
+    block: &str,
+    at: usize,
+) -> WordProcessorAction {
+    WordProcessorAction::InsertField {
+        region,
+        block: block.to_string(),
+        at,
+        field: qdoc::schema::FIELD_PAGE_NUMBER.to_string(),
+    }
+}
+
+pub fn generate_toc_action(entries: Vec<TocTarget>) -> WordProcessorAction {
+    WordProcessorAction::GenerateToc { entries }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "builder mirrors the absolute selection target carried by PasteFragment"
+)]
+pub fn paste_fragment_action(
+    region: RegionKind,
+    start_block: &str,
+    start: usize,
+    end_block: &str,
+    end: usize,
+    blocks: Vec<crate::word_processor::ClipBlock>,
+    adopt_first_style: bool,
+) -> WordProcessorAction {
+    WordProcessorAction::PasteFragment {
+        region,
+        start_block: start_block.to_string(),
+        start,
+        end_block: end_block.to_string(),
+        end,
+        blocks,
+        adopt_first_style,
+    }
+}
+
+/// Split a body/header/footer block at one absolute character offset.
+pub fn split_block_action(
+    region: RegionKind,
+    block: &str,
+    at: usize,
+    kind: &str,
+    ordered: Option<bool>,
+) -> WordProcessorAction {
+    WordProcessorAction::SplitBlock {
+        region,
+        block: block.to_string(),
+        at,
+        kind: kind.to_string(),
+        ordered,
     }
 }
 
@@ -2236,12 +2938,37 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
             "word_processor.styles",
             "Paragraph styles",
         );
-        for style in snap.styles.keys() {
-            styles = styles.with_child(Resource::new(
+        for (style, properties) in &snap.styles {
+            let bold = matches!(
+                properties.get(qdoc::schema::STYLE_BOLD),
+                Some(qdoc::AttrVal::Bool(true))
+            );
+            let mut child = Resource::new(
                 format!("word-processor.style:{style}"),
                 "word_processor.style",
                 style.clone(),
+            )
+            .with_action(immediate_spec(
+                "toggle-bold",
+                if bold { "Remove bold" } else { "Make bold" },
+                &set_style_property_action(style, qdoc::schema::STYLE_BOLD, AttrVal::Bool(!bold)),
             ));
+            if !crate::styles::StyleSheet::is_builtin(style) {
+                let instances = snap
+                    .blocks
+                    .iter()
+                    .filter(|block| {
+                        matches!(block.attrs.get("style"), Some(qdoc::AttrVal::Str(id)) if id == style)
+                    })
+                    .map(|block| block.id.clone())
+                    .collect();
+                child = child.with_action(immediate_spec(
+                    "delete",
+                    "Delete style",
+                    &delete_style_action(style, instances),
+                ));
+            }
+            styles = styles.with_child(child);
         }
         root = root.with_child(styles);
     }
@@ -2316,25 +3043,84 @@ pub fn provide_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource>
         }
     }
     for tid in &table_ids {
-        let cells: Vec<String> = snap
+        let table_blocks: Vec<_> = snap
             .blocks
             .iter()
             .filter(|b| {
                 b.kind == "cell"
                     && matches!(b.attrs.get("table"), Some(qdoc::AttrVal::Str(s)) if s == tid)
             })
-            .map(|b| b.id.clone())
             .collect();
-        let child = Resource::new(
+        let coordinate = |block: &qdoc::snapshot::BlockView, key: &str| match block.attrs.get(key) {
+            Some(qdoc::AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+            _ => 0,
+        };
+        let rows = table_blocks
+            .iter()
+            .map(|block| coordinate(block, "row"))
+            .max()
+            .map_or(0, |value| value.saturating_add(1));
+        let columns = table_blocks
+            .iter()
+            .map(|block| coordinate(block, "col"))
+            .max()
+            .map_or(0, |value| value.saturating_add(1));
+        let mut child = Resource::new(
             format!("word-processor.table:{tid}"),
             "word_processor.table",
             "Table",
         )
         .with_action(immediate_spec(
+            "append-row",
+            "Add row",
+            &edit_table_action(tid, TableEdit::InsertRow { at: rows }),
+        ))
+        .with_action(immediate_spec(
+            "append-column",
+            "Add column",
+            &edit_table_action(tid, TableEdit::InsertColumn { at: columns }),
+        ))
+        .with_action(immediate_spec(
             "delete",
             "Delete table",
-            &remove_blocks_action(cells),
+            &edit_table_action(tid, TableEdit::Delete),
         ));
+        for cell in table_blocks {
+            let row = coordinate(cell, "row");
+            let column = coordinate(cell, "col");
+            let mut cell_resource = Resource::new(
+                format!("word-processor.cell:{}", cell.id),
+                "word_processor.table-cell",
+                format!(
+                    "Cell {}, {}",
+                    row.saturating_add(1),
+                    column.saturating_add(1)
+                ),
+            )
+            .with_action(immediate_spec(
+                "delete-row",
+                "Delete row",
+                &edit_table_action(tid, TableEdit::DeleteRow { row }),
+            ))
+            .with_action(immediate_spec(
+                "delete-column",
+                "Delete column",
+                &edit_table_action(tid, TableEdit::DeleteColumn { column }),
+            ));
+            if let Some(spec) = operation(
+                "go-to",
+                "Go to cell",
+                OperationKind::View,
+                &WordProcessorOperation::NavigateTo {
+                    block: cell.id.clone(),
+                    start: 0,
+                    end: cell.text.chars().count(),
+                },
+            ) {
+                cell_resource = cell_resource.with_action(spec);
+            }
+            child = child.with_child(cell_resource);
+        }
         root = root.with_child(child);
     }
 
@@ -2901,6 +3687,21 @@ mod tests {
         let ids_of = |kind: &str| root.children.iter().filter(|r| r.kind == kind).count();
         assert_eq!(ids_of("word_processor.image"), 1, "an image resource");
         assert_eq!(ids_of("word_processor.table"), 1, "a table resource");
+        let table = root
+            .children
+            .iter()
+            .find(|resource| resource.kind == "word_processor.table")
+            .unwrap();
+        assert_eq!(table.children.len(), 4, "every stable cell is navigable");
+        assert!(table.children.iter().all(|cell| {
+            cell.kind == "word_processor.table-cell"
+                && cell.actions.iter().any(|action| action.id == "go-to")
+                && cell.actions.iter().any(|action| action.id == "delete-row")
+                && cell
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "delete-column")
+        }));
         assert!(
             ids_of("word_processor.section") >= 1,
             "a heading section resource"
@@ -2927,6 +3728,14 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("Delete table")),
             "{labels:?}"
+        );
+        palette.set_query("Delete row");
+        assert!(
+            palette
+                .result_labels()
+                .iter()
+                .any(|label| label.contains("Delete row")),
+            "cell structural actions are searchable"
         );
         palette.set_query("Crop image");
         assert!(
@@ -3108,6 +3917,37 @@ mod tests {
     }
 
     #[test]
+    fn resolved_comment_tombstone_wins_over_divergent_reply() {
+        let (mut a, ids) = seeded("Review this paragraph\n");
+        let block = ids[0].clone();
+        let add = add_comment_action(&block, 0, 6, "Maya", "2026-09-07", "Please clarify");
+        dispatch(&mut a.doc, &add);
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let comment = qdoc::model::comment_ids(&a.doc, &c)
+            .into_iter()
+            .next()
+            .unwrap();
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).unwrap();
+        b.doc.set_actor(automerge::ActorId::random());
+
+        let resolve = WordProcessorAction::ResolveComment {
+            id: comment.clone(),
+        };
+        let reply = reply_to_comment_action(&comment, "Jonas", "2026-09-08", "Will do");
+        qos_actions::apply_local(&mut a.doc, &resolve, encode(&resolve)).unwrap();
+        qos_actions::apply_local(&mut b.doc, &reply, encode(&reply)).unwrap();
+        a.doc.merge(&mut b.doc).unwrap();
+
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        assert!(qdoc::model::comment_is_tombstoned(&a.doc, &c, &comment));
+        assert!(
+            qdoc::model::materialize_comments(&a.doc, &c).is_empty(),
+            "a reply from a divergent replica cannot resurrect a resolved thread"
+        );
+    }
+
+    #[test]
     fn resource_results_and_revisions_are_bounded_and_precisely_addressable() {
         let (state, ids) = seeded(&format!("{}\n", "x".repeat(MAX_RESOURCE_SEARCH_HITS + 16)));
         let block = ids[0].clone();
@@ -3216,5 +4056,193 @@ mod tests {
         let blocks = qdoc::model::materialize(&a.doc, &c).blocks;
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].text, "alXma");
+    }
+
+    #[test]
+    fn encoded_split_and_concurrent_splice_converge_on_divergent_replicas() {
+        let (mut a, ids) = seeded("alpha beta\n");
+        let bytes = a.save();
+        let mut b = ui::State::load(&bytes).unwrap();
+        b.doc.set_actor(automerge::ActorId::random());
+        let block = ids[0].clone();
+
+        let split = split_block_action(RegionKind::Body, &block, 5, "paragraph", None);
+        let encoded_split = encode(&split);
+        let decoded_split: WordProcessorAction =
+            serde_json::from_slice(&encoded_split.payload).unwrap();
+        qos_actions::apply_local(&mut a.doc, &decoded_split, encoded_split).unwrap();
+
+        let splice = splice_text_action(RegionKind::Body, &block, 0, 0, "Shared ");
+        let encoded_splice = encode(&splice);
+        let decoded_splice: WordProcessorAction =
+            serde_json::from_slice(&encoded_splice.payload).unwrap();
+        qos_actions::apply_local(&mut b.doc, &decoded_splice, encoded_splice).unwrap();
+
+        let mut merged_a = a.doc.clone();
+        let mut b_for_a = b.doc.clone();
+        merged_a.merge(&mut b_for_a).unwrap();
+        let mut merged_b = b.doc.clone();
+        let mut a_for_b = a.doc.clone();
+        merged_b.merge(&mut a_for_b).unwrap();
+        assert_eq!(
+            body_blocks(&merged_a),
+            body_blocks(&merged_b),
+            "encoded actions converge regardless of merge direction"
+        );
+    }
+
+    #[test]
+    fn style_fields_merge_granularly_and_style_tombstone_wins() {
+        let (mut base, ids) = seeded("Styled paragraph\n");
+        let create = set_style_property_action(
+            "custom1",
+            qdoc::schema::STYLE_NAME,
+            AttrVal::Str("Callout".into()),
+        );
+        dispatch(&mut base.doc, &create);
+        dispatch(
+            &mut base.doc,
+            &set_block_attr_action(
+                RegionKind::Body,
+                vec![ids[0].clone()],
+                "style",
+                AttrVal::Str("custom1".into()),
+            ),
+        );
+        let bytes = base.save();
+        let mut a = ui::State::load(&bytes).unwrap();
+        let mut b = ui::State::load(&bytes).unwrap();
+        b.doc.set_actor(automerge::ActorId::random());
+
+        let bold =
+            set_style_property_action("custom1", qdoc::schema::STYLE_BOLD, AttrVal::Bool(true));
+        let size =
+            set_style_property_action("custom1", qdoc::schema::STYLE_SIZE, AttrVal::Float(28.0));
+        qos_actions::apply_local(&mut a.doc, &bold, encode(&bold)).unwrap();
+        qos_actions::apply_local(&mut b.doc, &size, encode(&size)).unwrap();
+        a.doc.merge(&mut b.doc).unwrap();
+        let c = qdoc::model::open(&a.doc, &automerge::ROOT).unwrap();
+        let properties = qdoc::model::style_props(&a.doc, &c, "custom1");
+        assert_eq!(
+            properties.get(qdoc::schema::STYLE_BOLD),
+            Some(&qdoc::AttrVal::Bool(true))
+        );
+        assert_eq!(
+            properties.get(qdoc::schema::STYLE_SIZE),
+            Some(&qdoc::AttrVal::Float(28.0))
+        );
+
+        let bytes = a.save();
+        let mut deleted = ui::State::load(&bytes).unwrap();
+        let mut divergent = ui::State::load(&bytes).unwrap();
+        divergent.doc.set_actor(automerge::ActorId::random());
+        let remove = delete_style_action("custom1", vec![ids[0].clone()]);
+        let rename = set_style_property_action(
+            "custom1",
+            qdoc::schema::STYLE_NAME,
+            AttrVal::Str("Late rename".into()),
+        );
+        qos_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+        qos_actions::apply_local(&mut divergent.doc, &rename, encode(&rename)).unwrap();
+        deleted.doc.merge(&mut divergent.doc).unwrap();
+        let c = qdoc::model::open(&deleted.doc, &automerge::ROOT).unwrap();
+        assert!(qdoc::model::style_is_tombstoned(
+            &deleted.doc,
+            &c,
+            "custom1"
+        ));
+        assert!(!qdoc::model::style_ids(&deleted.doc, &c).contains(&"custom1".to_string()));
+    }
+
+    #[test]
+    fn toc_field_rich_paste_and_table_edits_encode_and_replay_identically() {
+        let (mut origin, ids) = seeded("# Heading\n\nBody\n");
+        let bytes = origin.save();
+        let mut replay = ui::State::load(&bytes).unwrap();
+        let heading = ids[0].clone();
+        let body = ids[1].clone();
+        let fragment = crate::word_processor::ClipBlock {
+            kind: "heading".into(),
+            text: "Pasted title".into(),
+            marks: vec![qdoc::document::MarkSpan {
+                name: "strong".into(),
+                start: 0,
+                end: 6,
+                value: qdoc::document::MarkValue::Bool(true),
+            }],
+            level: Some(2),
+            ordered: None,
+            align: Some("center".into()),
+        };
+        let actions = [
+            generate_toc_action(vec![TocTarget {
+                heading,
+                level: 1,
+                text: "Heading".into(),
+                page: Some(1),
+            }]),
+            insert_page_number_action(RegionKind::Body, &body, 0),
+            paste_fragment_action(RegionKind::Body, &body, 1, &body, 1, vec![fragment], false),
+            insert_table_action(&body, 2, 2),
+        ];
+        for action in actions {
+            let encoded = encode(&action);
+            let decoded: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
+            let envelope = qos_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+            qos_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+        }
+        let table = body_blocks(&origin.doc)
+            .iter()
+            .find_map(|block| match block.attrs.get("table") {
+                Some(qdoc::AttrVal::Str(id)) => Some(id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        for edit in [
+            TableEdit::InsertRow { at: 1 },
+            TableEdit::InsertColumn { at: 1 },
+            TableEdit::DeleteRow { row: 0 },
+            TableEdit::DeleteColumn { column: 0 },
+        ] {
+            let action = edit_table_action(&table, edit);
+            let encoded = encode(&action);
+            let decoded: WordProcessorAction = serde_json::from_slice(&encoded.payload).unwrap();
+            let envelope = qos_actions::apply_local(&mut origin.doc, &decoded, encoded).unwrap();
+            qos_actions::replay(&mut replay.doc, &envelope, &registry()).unwrap();
+        }
+        assert_eq!(origin.doc.get_heads(), replay.doc.get_heads());
+        assert_eq!(body_blocks(&origin.doc), body_blocks(&replay.doc));
+    }
+
+    #[test]
+    fn table_tombstone_wins_over_a_divergent_cell_edit() {
+        let (mut base, ids) = seeded("Anchor\n");
+        dispatch(&mut base.doc, &insert_table_action(&ids[0], 2, 2));
+        let blocks = body_blocks(&base.doc);
+        let cell = blocks.iter().find(|block| block.kind == "cell").unwrap();
+        let table = match cell.attrs.get("table") {
+            Some(qdoc::AttrVal::Str(id)) => id.clone(),
+            other => panic!("cell has stable table id: {other:?}"),
+        };
+        let bytes = base.save();
+        let mut deleted = ui::State::load(&bytes).unwrap();
+        let mut divergent = ui::State::load(&bytes).unwrap();
+        divergent.doc.set_actor(automerge::ActorId::random());
+
+        let remove = edit_table_action(&table, TableEdit::Delete);
+        let late_edit = splice_text_action(RegionKind::Body, &cell.id, 0, 0, "late");
+        qos_actions::apply_local(&mut deleted.doc, &remove, encode(&remove)).unwrap();
+        qos_actions::apply_local(&mut divergent.doc, &late_edit, encode(&late_edit)).unwrap();
+
+        let mut merged_a = deleted.doc.clone();
+        let mut divergent_for_a = divergent.doc.clone();
+        merged_a.merge(&mut divergent_for_a).unwrap();
+        let mut merged_b = divergent.doc.clone();
+        let mut deleted_for_b = deleted.doc.clone();
+        merged_b.merge(&mut deleted_for_b).unwrap();
+        assert_eq!(body_blocks(&merged_a), body_blocks(&merged_b));
+        assert!(body_blocks(&merged_a)
+            .iter()
+            .all(|block| !matches!(block.attrs.get("table"), Some(qdoc::AttrVal::Str(id)) if id == &table)));
     }
 }

@@ -25,7 +25,7 @@ pub struct Caret {
 
 /// One block of a copied rich fragment — text plus its formatting (marks +
 /// paragraph attributes), with mark offsets relative to the block's own text.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ClipBlock {
     pub kind: String,
     pub text: String,
@@ -1941,9 +1941,10 @@ impl WordProcessor {
     }
 
     /// Tab / Shift-Tab cell navigation. `forward` moves to the next cell in
-    /// row-major order (wrapping to the first cell of the next row); when the
-    /// caret is in the table's **last** cell, a fresh row is appended and the
-    /// caret lands in its first cell. `!forward` moves to the previous cell
+    /// row-major order (wrapping to the first cell of the next row). At the
+    /// table's **last** cell it stays put; the widget publishes a typed absolute
+    /// row-insertion action before calling this navigation helper. `!forward`
+    /// moves to the previous cell
     /// (staying put at the very first cell). Returns `true` when the caret was in
     /// a cell and was handled here (so the caller should not insert a tab).
     pub fn tab_cell(&mut self, state: &mut AutoCommit, forward: bool) -> bool {
@@ -1966,9 +1967,6 @@ impl WordProcessor {
                     offset: 0,
                 };
                 self.selection_anchor = None;
-            } else {
-                // Last cell: grow the table by a row and land in its first cell.
-                self.insert_row(state, true);
             }
         } else if let Some((prev, ..)) = pos.checked_sub(1).and_then(|i| ordered.get(i).cloned()) {
             // Land at the end of the previous cell's text (natural Shift-Tab feel).
@@ -2578,7 +2576,7 @@ impl WordProcessor {
             .collect()
     }
 
-    fn ordered_blocks(&self, state: &AutoCommit) -> Vec<String> {
+    pub(crate) fn ordered_blocks(&self, state: &AutoCommit) -> Vec<String> {
         self.region_blocks_in_order(state)
     }
 
@@ -3874,7 +3872,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_walks_cells_and_appends_row_at_end() {
+    fn tab_walks_cells_but_leaves_structural_append_to_the_action_host() {
         let (mut wp, mut state) = bound();
         wp.insert_table(&mut state, 2, 2); // caret in (0,0)
         // Tab forward through every cell: (0,0)->(0,1)->(1,0)->(1,1).
@@ -3885,14 +3883,16 @@ mod tests {
             );
             assert_eq!(wp.caret_rc(&wp.caret_table(&state).unwrap().1), expect);
         }
-        // One more Tab from the last cell appends a row and lands in (2,0).
+        // The editing core deliberately does not perform a hidden structural
+        // mutation at the edge. The widget detects this position and dispatches
+        // an absolute `EditTable::InsertRow` through the shared action host.
         assert!(wp.tab_cell(&mut state, true));
         let grid = table_grid(&wp, &state);
-        assert_rectangular(&grid, 3, 2);
+        assert_rectangular(&grid, 2, 2);
         assert_eq!(
             wp.caret_rc(&wp.caret_table(&state).unwrap().1),
-            (2, 0),
-            "caret in first cell of the appended row"
+            (1, 1),
+            "caret stays at the stable edge target for the action host"
         );
     }
 

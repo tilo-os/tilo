@@ -698,23 +698,16 @@ pub(crate) struct RemoteSelectionOverlay {
 /// `ToolbarItem`s), so the packer can't see them — it reserves this width as a
 /// trailing phantom item instead, keeping button rows from extending under the
 /// swatches. Mirrors the geometry in `draw_color_swatches` / `draw_highlight_swatches`.
-fn swatch_reserve_width() -> f64 {
-    let sw = 20.0;
-    let gap = 5.0;
+fn swatch_reserve_width(text_scale: f64) -> f64 {
+    let sw = 20.0 * text_scale;
+    let gap = 5.0 * text_scale;
     let n_color = num::f64_of_usize(STYLE_PALETTE.len() + 1); // +1 neutral/default swatch
     let n_hl = num::f64_of_usize(HIGHLIGHT_PALETTE.len() + 1); // +1 "no highlight" swatch
     let color = n_color * sw + (n_color - 1.0) * gap;
     let hl = n_hl * sw + (n_hl - 1.0) * gap;
     // right edge margin + colour strip + inter-strip gap + highlight strip
-    14.0 + color + 10.0 + hl
+    14.0 * text_scale + color + 10.0 * text_scale + hl
 }
-
-/// Left padding `chrome::toolbar::draw` applies before the first item.
-const TOOLBAR_PAD: f64 = 14.0;
-/// Gap `chrome::toolbar::draw` places after each item.
-const TOOLBAR_GAP: f64 = 6.0;
-/// Extra width a group separator inserts before a `group_start` item.
-const TOOLBAR_SEP: f64 = 14.0;
 /// Right margin reserved when packing rows (room for the colour-swatch strip /
 /// breathing space at the toolbar's right edge).
 const TOOLBAR_RIGHT_PAD: f64 = 18.0;
@@ -727,14 +720,20 @@ const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
 /// width model mirrors `chrome::toolbar::draw` exactly so a row that this packer
 /// admits is one that `draw` lays out without clipping. Every row holds at least
 /// one item (an over-wide single item simply occupies its own row).
-fn pack_toolbar_rows(widths: &[f64], group_starts: &[bool], avail_w: f64) -> Vec<(usize, usize)> {
+fn pack_toolbar_rows(
+    widths: &[f64],
+    group_starts: &[bool],
+    avail_w: f64,
+    text_scale: f64,
+) -> Vec<(usize, usize)> {
+    let metrics = ui::chrome::toolbar::metrics(text_scale as f32);
     let mut rows = Vec::new();
-    let usable = (avail_w - TOOLBAR_PAD - TOOLBAR_RIGHT_PAD).max(1.0);
+    let usable = (avail_w - metrics.left_padding - TOOLBAR_RIGHT_PAD * text_scale).max(1.0);
     let mut row_start = 0usize;
     let mut x = 0.0f64; // running width consumed within the current row (post-pad)
     for (i, (&w, &group_start)) in widths.iter().zip(group_starts.iter()).enumerate() {
-        let sep = if group_start { TOOLBAR_SEP } else { 0.0 };
-        let item_w = sep + w + TOOLBAR_GAP;
+        let sep = if group_start { metrics.group_gap } else { 0.0 };
+        let item_w = sep + w * text_scale + metrics.item_gap;
         // If this isn't the first item on the row and it would overflow, wrap.
         if i > row_start && x + item_w > usable {
             rows.push((row_start, i));
@@ -1607,8 +1606,14 @@ fn list_level(b: &BlockView) -> usize {
 
 /// Per-nesting-level extra indent (px) added on top of the list style's indent.
 const LIST_INDENT_STEP: f64 = 24.0;
-/// Horizontal offset from the text's left edge to the bullet / number glyph.
-const BULLET_GAP: f64 = 20.0;
+/// Minimum logical gap between a list marker's measured ink advance and text.
+const LIST_MARKER_TEXT_GAP: f64 = 8.0;
+
+/// Right-align a list marker in the hanging-indent gutter. Numbering grows to
+/// the left so crossing 9 → 10 never consumes paragraph text space.
+fn list_marker_x(text_x: f64, measured_width: f64) -> f64 {
+    text_x - LIST_MARKER_TEXT_GAP - measured_width
+}
 /// US-Letter page height in inches (width is 8.5in → `MAX_PAGE_W` px).
 const LETTER_RATIO: f64 = 11.0 / 8.5;
 /// Gap between a floated image's edge and the text column that wraps beside
@@ -1703,6 +1708,9 @@ pub struct WordProcessorWidget {
     dbg_layout_hits: usize,
     dbg_layout_misses: usize,
     toolbar: Vec<(ToolAction, Rect)>,
+    /// System text scale used to size shared toolbar geometry and its hit map.
+    /// Updated from the live theme before frame geometry is resolved.
+    text_scale: f64,
     /// Last rich copy: `(plain_text, blocks)`. Paste uses it when the system
     /// clipboard still holds this exact plain text.
     rich_clip: Option<(String, Vec<ClipBlock>)>,
@@ -1851,6 +1859,18 @@ impl Default for WordProcessorWidget {
 }
 
 impl WordProcessorWidget {
+    fn layout_bar_height(&self) -> f64 {
+        LAYOUT_BAR_H * self.text_scale
+    }
+
+    fn styles_panel_width(&self) -> f64 {
+        STYLES_PANEL_W * self.text_scale
+    }
+
+    fn outline_panel_width(&self) -> f64 {
+        OUTLINE_PANEL_W * self.text_scale
+    }
+
     pub fn new() -> Self {
         Self {
             inner: WordProcessor::new(),
@@ -1882,6 +1902,7 @@ impl WordProcessorWidget {
             dbg_layout_hits: 0,
             dbg_layout_misses: 0,
             toolbar: Vec::new(),
+            text_scale: 1.0,
             rich_clip: None,
             scroll_y: 0.0,
             max_scroll: 0.0,
@@ -1963,6 +1984,58 @@ impl WordProcessorWidget {
         );
     }
 
+    /// Persist only the changed fields of named styles through stable typed
+    /// actions. This avoids replaying a stale whole-sheet snapshot over a
+    /// collaborator's unrelated style edit and gives custom-style deletion an
+    /// explicit tombstone plus absolute instance fallback set.
+    fn persist_stylesheet_via_actions(&mut self, state: &mut AutoCommit) {
+        let before = self.inner.stylesheet(state);
+        let after = self.sheet.clone();
+        for (style, properties) in &after.styles {
+            let old = before.styles.get(style);
+            for (key, value) in properties.to_attrs() {
+                if old.is_some_and(|entry| entry.to_attrs().get(&key) == Some(&value)) {
+                    continue;
+                }
+                let value = match value {
+                    qdoc::AttrVal::Bool(value) => crate::actions::AttrVal::Bool(value),
+                    qdoc::AttrVal::Int(value) => crate::actions::AttrVal::Int(value),
+                    qdoc::AttrVal::Float(value) => crate::actions::AttrVal::Float(value),
+                    qdoc::AttrVal::Str(value) => crate::actions::AttrVal::Str(value),
+                };
+                self.perform_action(
+                    state,
+                    &crate::actions::set_style_property_action(style, &key, value),
+                );
+            }
+        }
+        let removed: Vec<String> = before
+            .styles
+            .keys()
+            .filter(|style| !after.styles.contains_key(*style))
+            .cloned()
+            .collect();
+        if !removed.is_empty()
+            && let Ok(containers) = qdoc::model::open(state, &automerge::ROOT)
+        {
+            let snapshot = qdoc::model::materialize(state, &containers);
+            for style in removed {
+                let instances = snapshot
+                    .blocks
+                    .iter()
+                    .filter(|block| {
+                        matches!(block.attrs.get("style"), Some(AttrVal::Str(id)) if id == &style)
+                    })
+                    .map(|block| block.id.clone())
+                    .collect();
+                self.perform_action(
+                    state,
+                    &crate::actions::delete_style_action(&style, instances),
+                );
+            }
+        }
+    }
+
     /// Replace one exact, already-resolved text range through the canonical
     /// action executor.  Find/replace, autocorrection, and ordinary typing all
     /// use this rather than opening a second CRDT write path in the widget.
@@ -2017,6 +2090,271 @@ impl WordProcessorWidget {
             block: caret.block,
             offset: caret.offset.saturating_add(text.chars().count()),
         });
+    }
+
+    /// Enter is a structural document edit, so split the addressed block through
+    /// the same typed action stream as typing and formatting. The newly-created
+    /// stable id is discovered from the synchronous before/after set solely to
+    /// update the local caret; it is minted by the action's pinned actor.
+    fn enter_via_action(&mut self, state: &mut AutoCommit) {
+        if self.inner.has_selection() {
+            self.insert_text_via_action(state, "");
+        }
+        let caret = self.inner.caret().clone();
+        let region = self.inner.region_kind();
+        let block = self.blocks.iter().find(|entry| entry.id == caret.block);
+        let kind = block.map_or("paragraph", |entry| entry.kind.as_str());
+        if kind == "list_item" && block.is_some_and(|entry| entry.text.is_empty()) {
+            self.perform_action(
+                state,
+                &crate::actions::set_paragraph_style_action(
+                    region,
+                    vec![caret.block],
+                    "paragraph",
+                    None,
+                    None,
+                ),
+            );
+            return;
+        }
+        let ordered = block.and_then(|entry| match entry.attrs.get("ordered") {
+            Some(AttrVal::Bool(value)) if kind == "list_item" => Some(*value),
+            _ => None,
+        });
+        let new_kind = if kind == "list_item" {
+            "list_item"
+        } else {
+            "paragraph"
+        };
+        let before: std::collections::HashSet<String> =
+            self.inner.ordered_blocks(state).into_iter().collect();
+        self.perform_action(
+            state,
+            &crate::actions::split_block_action(
+                region,
+                &caret.block,
+                caret.offset,
+                new_kind,
+                ordered,
+            ),
+        );
+        if let Some(new_block) = self
+            .inner
+            .ordered_blocks(state)
+            .into_iter()
+            .find(|id| !before.contains(id))
+        {
+            self.inner.set_caret(Caret {
+                block: new_block,
+                offset: 0,
+            });
+        }
+    }
+
+    fn page_break_via_action(&mut self, state: &mut AutoCommit) {
+        if self.inner.has_selection() {
+            self.insert_text_via_action(state, "");
+        }
+        let caret = self.inner.caret().clone();
+        let region = self.inner.region_kind();
+        let before: std::collections::HashSet<String> =
+            self.inner.ordered_blocks(state).into_iter().collect();
+        self.perform_action(
+            state,
+            &crate::actions::insert_page_break_in_action(region, &caret.block, caret.offset),
+        );
+        if let Some(new_block) = self
+            .inner
+            .ordered_blocks(state)
+            .into_iter()
+            .find(|id| !before.contains(id))
+        {
+            self.inner.set_caret(Caret {
+                block: new_block,
+                offset: 0,
+            });
+        }
+        self.inner.clear_anchor();
+    }
+
+    fn replace_body_via_action(&mut self, state: &mut AutoCommit, markdown: &str) {
+        self.perform_action(state, &crate::actions::replace_body_action(markdown));
+        if let Some(first) = self.inner.ordered_blocks(state).into_iter().next() {
+            self.inner.set_caret(Caret {
+                block: first,
+                offset: 0,
+            });
+        }
+        self.inner.clear_anchor();
+    }
+
+    fn insert_page_number_via_action(&mut self, state: &mut AutoCommit) {
+        if self.inner.has_selection() {
+            self.insert_text_via_action(state, "");
+        }
+        let caret = self.inner.caret().clone();
+        self.perform_action(
+            state,
+            &crate::actions::insert_page_number_action(
+                self.inner.region_kind(),
+                &caret.block,
+                caret.offset,
+            ),
+        );
+        self.inner.set_caret(Caret {
+            block: caret.block,
+            offset: caret.offset.saturating_add(1),
+        });
+        self.inner.clear_anchor();
+    }
+
+    fn paste_fragment_via_action(
+        &mut self,
+        state: &mut AutoCommit,
+        blocks: Vec<crate::word_processor::ClipBlock>,
+    ) {
+        let caret = self.inner.caret().clone();
+        let (start, end) = self
+            .inner
+            .selection_span(state)
+            .unwrap_or_else(|| (caret.clone(), caret));
+        let start_prefix_empty = start.offset == 0;
+        let end_len = self
+            .blocks
+            .iter()
+            .find(|block| block.id == end.block)
+            .map_or(end.offset, |block| block.text.chars().count());
+        let adopt_first_style = start_prefix_empty && end.offset == end_len;
+        let before: std::collections::HashSet<String> =
+            self.inner.ordered_blocks(state).into_iter().collect();
+        let final_offset = blocks.last().map_or(0, |block| block.text.chars().count());
+        let one_block = blocks.len() == 1;
+        self.perform_action(
+            state,
+            &crate::actions::paste_fragment_action(
+                self.inner.region_kind(),
+                &start.block,
+                start.offset,
+                &end.block,
+                end.offset,
+                blocks,
+                adopt_first_style,
+            ),
+        );
+        let new_last = self
+            .inner
+            .ordered_blocks(state)
+            .into_iter()
+            .rfind(|id| !before.contains(id));
+        self.inner.set_caret(Caret {
+            block: if one_block {
+                start.block
+            } else {
+                new_last.unwrap_or(start.block)
+            },
+            offset: if one_block {
+                start.offset.saturating_add(final_offset)
+            } else {
+                final_offset
+            },
+        });
+        self.inner.clear_anchor();
+    }
+
+    /// Backspace/Delete are expressed as absolute splices or one cross-block
+    /// replacement action. Selection/caret motion remains presentation-local.
+    fn delete_via_action(&mut self, state: &mut AutoCommit, backward: bool) {
+        if self.inner.has_selection() {
+            self.insert_text_via_action(state, "");
+            return;
+        }
+        let caret = self.inner.caret().clone();
+        let region = self.inner.region_kind();
+        let blocks = self.inner.ordered_blocks(state);
+        let Some(index) = blocks.iter().position(|id| id == &caret.block) else {
+            return;
+        };
+        let len = self
+            .blocks
+            .iter()
+            .find(|entry| entry.id == caret.block)
+            .map_or(0, |entry| entry.text.chars().count());
+        if backward
+            && caret.offset == 0
+            && self
+                .blocks
+                .iter()
+                .find(|entry| entry.id == caret.block)
+                .is_some_and(|entry| entry.kind == "list_item")
+        {
+            self.perform_action(
+                state,
+                &crate::actions::set_paragraph_style_action(
+                    region,
+                    vec![caret.block],
+                    "paragraph",
+                    None,
+                    None,
+                ),
+            );
+            return;
+        }
+        if backward && caret.offset > 0 {
+            self.splice_via_action(
+                state,
+                region,
+                &caret.block,
+                caret.offset - 1,
+                caret.offset,
+                "",
+            );
+            self.inner.set_caret(Caret {
+                block: caret.block,
+                offset: caret.offset - 1,
+            });
+        } else if !backward && caret.offset < len {
+            self.splice_via_action(
+                state,
+                region,
+                &caret.block,
+                caret.offset,
+                caret.offset + 1,
+                "",
+            );
+        } else if backward && index > 0 {
+            let Some(previous) = blocks.get(index.saturating_sub(1)).cloned() else {
+                return;
+            };
+            let previous_len = self
+                .blocks
+                .iter()
+                .find(|entry| entry.id == previous)
+                .map_or(0, |entry| entry.text.chars().count());
+            self.perform_action(
+                state,
+                &crate::actions::replace_selection_action(
+                    region,
+                    &previous,
+                    previous_len,
+                    &caret.block,
+                    0,
+                    "",
+                ),
+            );
+            self.inner.set_caret(Caret {
+                block: previous,
+                offset: previous_len,
+            });
+        } else if !backward && index + 1 < blocks.len() {
+            let Some(next) = blocks.get(index.saturating_add(1)) else {
+                return;
+            };
+            self.perform_action(
+                state,
+                &crate::actions::replace_selection_action(region, &caret.block, len, next, 0, ""),
+            );
+        }
+        self.inner.clear_anchor();
     }
 
     /// The context Ctrl+K needs to build the document's resource tree: the caret
@@ -2248,6 +2586,90 @@ impl WordProcessorWidget {
         }
     }
 
+    fn caret_table_target(&self) -> Option<(String, usize, usize, usize, usize)> {
+        let current = self
+            .blocks
+            .iter()
+            .find(|block| block.id == self.inner.caret.block)?;
+        let table = match current.attrs.get("table") {
+            Some(AttrVal::Str(table)) => table.clone(),
+            _ => return None,
+        };
+        let coordinate = |block: &BlockView, key: &str| match block.attrs.get(key) {
+            Some(AttrVal::Int(value)) if *value >= 0 => num::usize_of_i64(*value),
+            _ => 0,
+        };
+        let row = coordinate(current, "row");
+        let column = coordinate(current, "col");
+        let table_blocks: Vec<_> = self
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.kind == "cell"
+                    && matches!(block.attrs.get("table"), Some(AttrVal::Str(id)) if id == &table)
+            })
+            .collect();
+        let rows = table_blocks
+            .iter()
+            .map(|block| coordinate(block, "row"))
+            .max()?
+            .saturating_add(1);
+        let columns = table_blocks
+            .iter()
+            .map(|block| coordinate(block, "col"))
+            .max()?
+            .saturating_add(1);
+        Some((table, row, column, rows, columns))
+    }
+
+    fn edit_table_via_action(&mut self, state: &mut AutoCommit, edit: crate::actions::TableEdit) {
+        let Some((table, row, column, rows, columns)) = self.caret_table_target() else {
+            return;
+        };
+        let order = self.inner.ordered_blocks(state);
+        let before_table = self
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.kind == "cell"
+                    && matches!(block.attrs.get("table"), Some(AttrVal::Str(id)) if id == &table)
+            })
+            .filter_map(|block| order.iter().position(|id| id == &block.id))
+            .min()
+            .and_then(|index| index.checked_sub(1))
+            .and_then(|index| order.get(index).cloned());
+        self.perform_action(state, &crate::actions::edit_table_action(&table, edit));
+        self.refresh_blocks(state);
+        let desired = match edit {
+            crate::actions::TableEdit::InsertRow { at } => Some((at, 0)),
+            crate::actions::TableEdit::InsertColumn { at } => Some((row, at)),
+            crate::actions::TableEdit::DeleteRow { row: removed } => {
+                (rows > 1).then_some((removed.min(rows.saturating_sub(2)), column))
+            }
+            crate::actions::TableEdit::DeleteColumn { column: removed } => {
+                (columns > 1).then_some((row, removed.min(columns.saturating_sub(2))))
+            }
+            crate::actions::TableEdit::Delete => None,
+        };
+        let next = desired.and_then(|(target_row, target_column)| {
+            self.blocks
+                .iter()
+                .find(|block| {
+                    matches!(block.attrs.get("table"), Some(AttrVal::Str(id)) if id == &table)
+                        && matches!(block.attrs.get("row"), Some(AttrVal::Int(value)) if *value == num::i64_of_usize(target_row))
+                        && matches!(block.attrs.get("col"), Some(AttrVal::Int(value)) if *value == num::i64_of_usize(target_column))
+                })
+                .map(|block| block.id.clone())
+        });
+        if let Some(block) = next
+            .or(before_table)
+            .or_else(|| self.body_order.first().cloned())
+        {
+            self.inner.set_caret(Caret { block, offset: 0 });
+        }
+        self.inner.clear_anchor();
+    }
+
     /// The ids of every `cell` block currently in the body.
     fn body_cell_ids(&self, state: &AutoCommit) -> std::collections::HashSet<String> {
         match self.inner.containers.clone() {
@@ -2395,7 +2817,37 @@ impl WordProcessorWidget {
     fn insert_image_from_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
         match std::fs::read(path) {
             Ok(bytes) => {
-                self.inner.insert_image_bytes(state, &bytes);
+                if self.inner.has_selection() {
+                    self.insert_text_via_action(state, "");
+                }
+                let caret = self.inner.caret().clone();
+                let before: std::collections::HashSet<String> =
+                    self.inner.ordered_blocks(state).into_iter().collect();
+                let intrinsic = ui::widget::Image::from_encoded(&bytes)
+                    .ok()
+                    .map(|image| image.intrinsic_size());
+                self.perform_action(
+                    state,
+                    &crate::actions::insert_image_action(
+                        &caret.block,
+                        caret.offset,
+                        bytes.clone(),
+                        intrinsic.map(|(width, _)| i64::from(width)),
+                        intrinsic.map(|(_, height)| i64::from(height)),
+                    ),
+                );
+                if let Some(after) = self
+                    .inner
+                    .ordered_blocks(state)
+                    .into_iter()
+                    .rfind(|id| !before.contains(id))
+                {
+                    self.inner.set_caret(Caret {
+                        block: after,
+                        offset: 0,
+                    });
+                    self.inner.clear_anchor();
+                }
                 self.refresh_blocks(state);
                 self.modified = true;
                 self.needs_commit = true;
@@ -3123,14 +3575,14 @@ impl WordProcessorWidget {
     /// Persist the current page margins into the document (page setup lives in the
     /// document so it survives save/reopen). Called on margin-guide drag release.
     fn persist_margins(&mut self, state: &mut AutoCommit) {
-        self.inner.set_page_margins(
+        self.perform_action(
             state,
-            [
+            &crate::actions::set_page_margins_action([
                 self.margins.top,
                 self.margins.right,
                 self.margins.bottom,
                 self.margins.left,
-            ],
+            ]),
         );
     }
 
@@ -3543,7 +3995,26 @@ impl WordProcessorWidget {
     fn ruler_press(&mut self, state: &mut AutoCommit) {
         let model = self.current_ruler_model();
         if let Some(RulerEffect::AddTab(value)) = self.ruler.press(self.pointer, &model) {
-            self.inner.add_tab_stop(state, value);
+            let block = self.inner.caret.block.clone();
+            let mut stops = self.inner.block_tab_stops(state, &block);
+            if stops.iter().all(|stop| (*stop - value).abs() >= 2.0) {
+                stops.push(value.max(0.0));
+                stops.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let encoded = stops
+                    .iter()
+                    .map(|stop| format!("{stop:.1}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.perform_action(
+                    state,
+                    &crate::actions::set_block_attr_action(
+                        self.inner.region_kind(),
+                        vec![block],
+                        "tab_stops",
+                        crate::actions::AttrVal::Str(encoded),
+                    ),
+                );
+            }
             self.refresh_blocks(state);
             self.needs_commit = true;
             self.modified = true;
@@ -3567,12 +4038,28 @@ impl WordProcessorWidget {
             RulerEffect::CommitIndentLeft => {
                 let value = self.caret_block_indent();
                 let block = self.inner.caret.block.clone();
-                self.inner.set_block_indent(state, &block, value);
+                self.perform_action(
+                    state,
+                    &crate::actions::set_block_attr_action(
+                        self.inner.region_kind(),
+                        vec![block],
+                        "indent",
+                        crate::actions::AttrVal::Float(value),
+                    ),
+                );
             }
             RulerEffect::CommitIndentFirst => {
                 let value = self.caret_block_first_line_indent();
                 let block = self.inner.caret.block.clone();
-                self.inner.set_block_first_line_indent(state, &block, value);
+                self.perform_action(
+                    state,
+                    &crate::actions::set_block_attr_action(
+                        self.inner.region_kind(),
+                        vec![block],
+                        "first_line_indent",
+                        crate::actions::AttrVal::Float(value),
+                    ),
+                );
             }
             RulerEffect::CommitTabs { remove } => {
                 let mut stops = self.caret_block_tab_stops();
@@ -3580,7 +4067,20 @@ impl WordProcessorWidget {
                     stops.remove(index);
                 }
                 let block = self.inner.caret.block.clone();
-                self.inner.set_block_tab_stops(state, &block, &stops);
+                let encoded = stops
+                    .iter()
+                    .map(|stop| format!("{stop:.1}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.perform_action(
+                    state,
+                    &crate::actions::set_block_attr_action(
+                        self.inner.region_kind(),
+                        vec![block],
+                        "tab_stops",
+                        crate::actions::AttrVal::Str(encoded),
+                    ),
+                );
             }
             _ => return,
         }
@@ -3719,6 +4219,7 @@ impl WordProcessorWidget {
         _theme: &Theme,
         bar: Rect,
     ) {
+        let scale = f64::from(tr.text_scale());
         let cc = self.chrome;
         scene.fill(Fill::NonZero, transform, cc.bar, None, &bar);
         scene.fill(
@@ -3730,14 +4231,14 @@ impl WordProcessorWidget {
         );
 
         let cy = f64::midpoint(bar.y0, bar.y1);
-        let mut x = bar.x0 + 12.0;
+        let mut x = bar.x0 + 12.0 * scale;
         self.layout_chips.clear();
         for (mode, label) in [
             (LayoutMode::Margins, t("layout-margins")),
             (LayoutMode::Spacing, t("layout-spacing")),
         ] {
-            let w = 16.0 + num::f64_of_usize(label.chars().count()) * 7.6;
-            let r = Rect::new(x, bar.y0 + 5.0, x + w, bar.y1 - 5.0);
+            let w = (16.0 + num::f64_of_usize(label.chars().count()) * 7.6) * scale;
+            let r = Rect::new(x, bar.y0 + 5.0 * scale, x + w, bar.y1 - 5.0 * scale);
             let active = self.layout_mode == mode;
             let bg = if active { cc.accent } else { cc.chip };
             let fg = if active { cc.on_accent } else { cc.text_dim };
@@ -3746,18 +4247,18 @@ impl WordProcessorWidget {
                 transform,
                 bg,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(r, 6.0),
+                &vello::kurbo::RoundedRect::from_rect(r, 6.0 * scale),
             );
             tr.draw_text(
                 scene,
                 &label,
                 13.0,
                 fg,
-                transform * Affine::translate((x + 8.0, cy - 8.0)),
+                transform * Affine::translate((x + 8.0 * scale, cy - 8.0 * scale)),
                 None,
             );
             self.layout_chips.push((mode, r));
-            x += w + 8.0;
+            x += w + 8.0 * scale;
         }
 
         let readout = match self.layout_mode {
@@ -3790,19 +4291,28 @@ impl WordProcessorWidget {
         // lets long translations paint through the status label. Keep status
         // persistent, but omit the redundant hint when those two would collide.
         let status = self.status_count_label();
-        let status_rect = Self::layout_bar_status_rect(bar, x + 12.0, &status);
-        let readout_x = x + 12.0;
-        let readout_width = num::f64_of_usize(readout.chars().count()) * 7.0;
-        if status_rect
-            .as_ref()
-            .is_none_or(|rect| readout_x + readout_width + 12.0 <= rect.x0)
+        // On phone-sized effective viewports the two mode chips are the complete
+        // bounded control row. A trailing status string can technically fit by
+        // our character estimate while its real glyph ink still clips at 200%
+        // text (notably German "Seiten…"). Keep that information in the
+        // accessible document status and the wider layout bar instead of
+        // exposing a half-visible pseudo-control.
+        let status_rect = (bar.width() / scale >= 500.0)
+            .then(|| Self::layout_bar_status_rect(bar, x + 12.0 * scale, &status, scale))
+            .flatten();
+        let readout_x = x + 12.0 * scale;
+        let readout_width = num::f64_of_usize(readout.chars().count()) * 7.0 * scale;
+        if bar.width() / scale >= 500.0
+            && status_rect
+                .as_ref()
+                .is_none_or(|rect| readout_x + readout_width + 12.0 * scale <= rect.x0)
         {
             tr.draw_text(
                 scene,
                 &readout,
                 12.5,
                 cc.text_dim,
-                transform * Affine::translate((readout_x, cy - 8.0)),
+                transform * Affine::translate((readout_x, cy - 8.0 * scale)),
                 None,
             );
         }
@@ -3814,7 +4324,7 @@ impl WordProcessorWidget {
                 &status,
                 12.5,
                 cc.text_dim,
-                transform * Affine::translate((status_rect.x0, cy - 8.0)),
+                transform * Affine::translate((status_rect.x0, cy - 8.0 * scale)),
                 None,
             );
         }
@@ -3829,7 +4339,8 @@ impl WordProcessorWidget {
     /// wide windows reserve space for it. This keeps the document useful at
     /// phone/three-column widths without making advanced formatting unreachable.
     fn styles_panel_overlay(&self) -> bool {
-        self.styles_panel_open && self.rect.width() < STYLES_PANEL_W + MAX_PAGE_W + 48.0
+        self.styles_panel_open
+            && self.rect.width() < self.styles_panel_width() + MAX_PAGE_W + 48.0 * self.text_scale
     }
 
     /// The contextual paragraph panel, in two clearly-labelled sections: **This
@@ -3962,6 +4473,40 @@ impl WordProcessorWidget {
         }
 
         ctx.scene.pop_layer();
+    }
+
+    /// Scale the complete inspector as one coherent surface at large system
+    /// text. Its existing layout is expressed in 1× logical units; scaling the
+    /// vector scene and remapping its hit rectangles preserves that proven
+    /// internal rhythm while making both labels and controls genuinely 200%.
+    fn draw_styles_panel_responsive(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        panel: Rect,
+    ) {
+        if self.text_scale <= 1.01 {
+            self.draw_styles_panel(scene, transform, tr, panel);
+            return;
+        }
+        let scale = self.text_scale;
+        let logical = Rect::new(0.0, 0.0, panel.width() / scale, panel.height() / scale);
+        let scaled_transform =
+            transform * Affine::translate((panel.x0, panel.y0)) * Affine::scale(scale);
+        let previous_text_scale = tr.text_scale();
+        tr.set_text_scale(1.0);
+        self.draw_styles_panel(scene, scaled_transform, tr, logical);
+        tr.set_text_scale(previous_text_scale);
+        self.panel_rect = panel;
+        for (rect, _) in &mut self.panel_hits {
+            *rect = Rect::new(
+                panel.x0 + rect.x0 * scale,
+                panel.y0 + rect.y0 * scale,
+                panel.x0 + rect.x1 * scale,
+                panel.y0 + rect.y1 * scale,
+            );
+        }
     }
 
     /// "This paragraph" section: alignment (L/C/R/J) and line-spacing cycling
@@ -4693,12 +5238,13 @@ impl WordProcessorWidget {
             .iter()
             .map(|l| (l.id.as_str(), l.page + 1))
             .collect();
-        let entries: Vec<crate::word_processor::TocEntry> = self
+        let entries: Vec<crate::actions::TocTarget> = self
             .outline_entries()
             .into_iter()
             .map(|h| {
                 let page = page_of.get(h.id.as_str()).copied();
-                crate::word_processor::TocEntry {
+                crate::actions::TocTarget {
+                    heading: h.id,
                     level: h.level,
                     text: h.text,
                     page,
@@ -4712,7 +5258,7 @@ impl WordProcessorWidget {
             return;
         }
         let n = entries.len();
-        self.inner.generate_toc(state, &entries);
+        self.perform_action(state, &crate::actions::generate_toc_action(entries));
         self.refresh_blocks(state);
         self.needs_commit = true;
         self.dirty = true;
@@ -4742,7 +5288,7 @@ impl WordProcessorWidget {
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y1 - LAYOUT_BAR_H,
+            self.rect.y1 - self.layout_bar_height(),
         );
         paint_transient(
             scene,
@@ -5320,6 +5866,36 @@ fn page_content_bottom(fg: &FrameGeometry, i: usize) -> f64 {
     fg.page_top + num::f64_of_usize(i) * fg.page_pitch + fg.letter_h - fg.m.bottom
 }
 
+fn responsive_page_geometry(
+    canvas_left: f64,
+    canvas_right: f64,
+    text_scale: f64,
+    margins: Edges,
+    mobile: bool,
+    accessible: bool,
+) -> (f64, Edges) {
+    let page_w = if accessible {
+        ((canvas_right - canvas_left - 24.0) / text_scale).max(120.0)
+    } else if mobile {
+        (canvas_right - canvas_left - 24.0).max(240.0)
+    } else {
+        MAX_PAGE_W
+    };
+    if !mobile && !accessible {
+        return (page_w, margins);
+    }
+    let scale = (page_w / MAX_PAGE_W).min(1.0);
+    (
+        page_w,
+        Edges {
+            top: margins.top * scale,
+            right: margins.right * scale,
+            bottom: margins.bottom * scale,
+            left: margins.left * scale,
+        },
+    )
+}
+
 /// Per-frame accumulators [`WordProcessorWidget::draw_page_content`] collects
 /// while painting `laid`, rendered by the caller once the pass completes.
 struct Pass2Markers {
@@ -5349,15 +5925,26 @@ impl WordProcessorWidget {
         theme: &Theme,
         full: Rect,
     ) -> FrameGeometry {
+        let mut available = full.width();
+        if self.styles_panel_visible() && !self.styles_panel_overlay() {
+            available -= self.styles_panel_width();
+        }
+        if self.outline.is_open() {
+            available -= self.outline_panel_width();
+        }
+        let mobile_page = available < 600.0;
+        let accessible_page = self.text_scale > 1.01;
         if self.auto_fit_page {
-            let mut available = full.width();
-            if self.styles_panel_visible() && !self.styles_panel_overlay() {
-                available -= STYLES_PANEL_W;
-            }
-            if self.outline.is_open() {
-                available -= OUTLINE_PANEL_W;
-            }
-            let fit = ((available - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0);
+            // Phone-sized tiles use a responsive editing sheet instead of
+            // shrinking an entire Letter page until its body copy is 7 px.
+            // Wider canvases retain print-faithful page sizing and auto-fit.
+            let fit = if accessible_page {
+                self.text_scale
+            } else if mobile_page {
+                1.0
+            } else {
+                ((available - 32.0) / MAX_PAGE_W).clamp(ZOOM_MIN, 1.0)
+            };
             self.zoom.set(fit);
         }
         // The toolbar may wrap to several rows on a narrow window; reserve its
@@ -5372,7 +5959,7 @@ impl WordProcessorWidget {
         // so the content spans down to the layout bar and
         // reclaims the strip's height. The layout bar now sits at the very bottom.
         let content_bottom = full.y1.max(full.y0 + tb_h);
-        let layout_bar_top = (content_bottom - LAYOUT_BAR_H).max(full.y0 + tb_h);
+        let layout_bar_top = (content_bottom - self.layout_bar_height()).max(full.y0 + tb_h);
         // Version-history strip: a band between the canvas and the layout bar,
         // so the page shrinks rather than the history painting over the text.
         let history_h = self.history.band_height();
@@ -5380,7 +5967,7 @@ impl WordProcessorWidget {
         // Reserve the styles panel out of the canvas so the page re-centers in the
         // remaining width (and scrolled content never paints under the panel).
         let canvas_right = if self.styles_panel_visible() && !self.styles_panel_overlay() {
-            (full.x1 - STYLES_PANEL_W).max(full.x0 + 1.0)
+            (full.x1 - self.styles_panel_width()).max(full.x0 + 1.0)
         } else {
             full.x1
         };
@@ -5388,7 +5975,7 @@ impl WordProcessorWidget {
         // styles panel on the right) so the page re-centers and scrolled content
         // never paints under the pane.
         let canvas_left = if self.outline.is_open() {
-            (full.x0 + OUTLINE_PANEL_W).min(canvas_right - 1.0)
+            (full.x0 + self.outline_panel_width()).min(canvas_right - 1.0)
         } else {
             full.x0
         };
@@ -5428,8 +6015,14 @@ impl WordProcessorWidget {
         // Per-side page geometry — every margin is independently customizable.
         // The page is a FIXED size (it does not resize with the window); the
         // window just shows more or less of it and centers it.
-        let m = self.margins;
-        let page_w = MAX_PAGE_W;
+        let (page_w, m) = responsive_page_geometry(
+            canvas_left,
+            canvas_right,
+            self.text_scale,
+            self.margins,
+            mobile_page,
+            accessible_page,
+        );
         // Centre in *content* space even when the page is wider than the
         // unscaled canvas. Scaling about the canvas centre then keeps both page
         // edges visible in auto-fit mode instead of pinning the left edge and
@@ -6664,12 +7257,20 @@ impl WordProcessorWidget {
             }
 
             if let Some(bul) = &l.bullet {
+                // The marker column is right-aligned at the same gap for `9.`
+                // and `10.` alike. A fixed start point makes multi-digit
+                // counters grow into the paragraph and visibly collide at
+                // large text. Measure with the exact font/scale used below,
+                // then reserve the same perceived gap for every counter width.
+                let (marker_width, _) =
+                    text_renderer.measure(bul, l.size / text_renderer.text_scale(), None);
+                let marker_x = list_marker_x(l.text_x, f64::from(marker_width));
                 text_renderer.draw_text(
                     scene,
                     bul,
-                    l.size,
+                    l.size / text_renderer.text_scale(),
                     l.ink,
-                    fg.ctf * Affine::translate((l.text_x - BULLET_GAP, l.y_top)),
+                    fg.ctf * Affine::translate((marker_x, l.y_top)),
                     None,
                 );
             }
@@ -7488,7 +8089,7 @@ impl WordProcessorWidget {
         if self.rect.contains(self.pointer) {
             let tb_h = self.toolbar_height(self.rect.width());
             let over_body = self.pointer.y >= self.rect.y0 + tb_h
-                && self.pointer.y <= self.rect.y1 - LAYOUT_BAR_H
+                && self.pointer.y <= self.rect.y1 - self.layout_bar_height()
                 && !(self.styles_panel_open && self.panel_rect.contains(self.pointer))
                 && !self.outline.contains(self.pointer);
             if over_body {
@@ -7637,7 +8238,7 @@ impl WordProcessorWidget {
             return;
         }
         let in_chrome = self.pointer.y < self.rect.y0 + tb_h
-            || self.pointer.y > self.rect.y1 - LAYOUT_BAR_H
+            || self.pointer.y > self.rect.y1 - self.layout_bar_height()
             || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
             || self.outline.contains(self.pointer);
         if !in_chrome {
@@ -7740,9 +8341,8 @@ impl WordProcessorWidget {
         // Crash-recovery banner (just under the toolbar): a click on
         // Restore / Discard resolves the offer before any other hit-test.
         if let Some(decision) = self.recovery.handle_click(self.pointer) {
-            if let RecoveryDecision::Restore(markdown) = decision
-                && self.inner.replace_with_markdown(state, &markdown)
-            {
+            if let RecoveryDecision::Restore(markdown) = decision {
+                self.replace_body_via_action(state, &String::from_utf8_lossy(&markdown));
                 self.refresh_blocks(state);
                 self.layout_cache.clear();
                 self.spell_cache.clear();
@@ -7864,7 +8464,7 @@ impl WordProcessorWidget {
             return true;
         }
         // Bottom layout bar sits at the very bottom; document status floats above it.
-        let lbar_top = self.rect.y1 - LAYOUT_BAR_H;
+        let lbar_top = self.rect.y1 - self.layout_bar_height();
         if self.pointer.y >= lbar_top {
             if let Some(mode) = self
                 .layout_chips
@@ -8018,8 +8618,7 @@ impl WordProcessorWidget {
         if let Some(sc) = self.scrub.take() {
             if sc.moved {
                 // A scrub persists the style edit (every instance follows).
-                let sheet = self.sheet.clone();
-                self.inner.set_stylesheet(state, &sheet);
+                self.persist_stylesheet_via_actions(state);
                 self.needs_commit = true;
             } else {
                 // A plain click (no drag) focuses the field for typing.
@@ -8061,8 +8660,7 @@ impl WordProcessorWidget {
             // into the stylesheet, margins into the page-setup meta.
             match gd.mode {
                 LayoutMode::Spacing => {
-                    let sheet = self.sheet.clone();
-                    self.inner.set_stylesheet(state, &sheet);
+                    self.persist_stylesheet_via_actions(state);
                     self.needs_commit = true;
                 }
                 LayoutMode::Margins => {
@@ -8126,6 +8724,43 @@ impl WordProcessorWidget {
         })
     }
 
+    /// Apply markdown-style paragraph prefixes through typed absolute actions.
+    /// The two field-granular envelopes share the current input event's undo
+    /// boundary; caret movement remains presentation-local.
+    fn autoformat_on_space_via_actions(&mut self, state: &mut AutoCommit) -> bool {
+        let block = self.inner.caret.block.clone();
+        let offset = self.inner.caret.offset;
+        let Some(view) = self.blocks.iter().find(|entry| entry.id == block) else {
+            return false;
+        };
+        if view.kind != "paragraph" {
+            return false;
+        }
+        let prefix: String = view.text.chars().take(offset).collect();
+        let (kind, level, ordered) = match prefix.as_str() {
+            "-" | "*" | "+" => ("list_item", None, Some(false)),
+            "1." | "1)" => ("list_item", None, Some(true)),
+            "#" => ("heading", Some(1), None),
+            "##" => ("heading", Some(2), None),
+            "###" => ("heading", Some(3), None),
+            _ => return false,
+        };
+        let region = self.inner.region_kind();
+        self.splice_via_action(state, region, &block, 0, offset, "");
+        self.perform_action(
+            state,
+            &crate::actions::set_paragraph_style_action(
+                region,
+                vec![block.clone()],
+                kind,
+                level,
+                ordered,
+            ),
+        );
+        self.inner.set_caret(Caret { block, offset: 0 });
+        true
+    }
+
     fn undo_document_autocorrection(&mut self, state: &mut AutoCommit) -> bool {
         let Some(mut correction) = self.last_autocorrection.clone() else {
             return false;
@@ -8133,7 +8768,7 @@ impl WordProcessorWidget {
         // Enter commits a word by splitting the block. Immediate Backspace
         // first rejoins that empty/new block, then restores the spelling.
         if self.inner.caret.block != correction.block && self.inner.caret.offset == 0 {
-            self.inner.backspace(state);
+            self.delete_via_action(state, true);
             correction.boundary_end = self.inner.caret.offset;
         }
         if self.inner.caret.block != correction.block
@@ -8201,25 +8836,39 @@ impl WordProcessorWidget {
                 // last cell appends a row). Otherwise, when the paragraph has
                 // ruler tab stops, Tab advances to the next one (recording a
                 // tab char); with no stops it falls back to inserting spaces.
-                if self.inner.tab_cell(state, !shift) {
+                let append_row = !shift
+                    && self
+                        .caret_table_target()
+                        .is_some_and(|(_, row, column, rows, columns)| {
+                            row.saturating_add(1) == rows && column.saturating_add(1) == columns
+                        });
+                if append_row {
+                    if let Some((_, _, _, rows, _)) = self.caret_table_target() {
+                        self.edit_table_via_action(
+                            state,
+                            crate::actions::TableEdit::InsertRow { at: rows },
+                        );
+                    }
+                    motion = true;
+                } else if self.inner.tab_cell(state, !shift) {
                     motion = true; // tab_cell already cleared any selection
-                } else if self.inner.tab_advance(state) {
-                    // Caret advanced to the next tab stop.
+                } else if !self.inner.caret_tab_stops(state).is_empty() {
+                    self.insert_text_via_action(state, "\t");
                 } else {
                     self.insert_text_via_action(state, "    ");
                 }
             }
             Key::Named(NamedKey::Enter) => {
                 let correction = self.autocorrect_before_boundary(state);
-                self.inner.enter(state);
+                self.enter_via_action(state);
                 self.last_autocorrection = correction;
             }
             Key::Named(NamedKey::Backspace) => {
                 if !self.undo_document_autocorrection(state) {
-                    self.inner.backspace(state);
+                    self.delete_via_action(state, true);
                 }
             }
-            Key::Named(NamedKey::Delete) => self.inner.delete_forward(state),
+            Key::Named(NamedKey::Delete) => self.delete_via_action(state, false),
             Key::Named(NamedKey::ArrowLeft) => {
                 self.extend_or_clear(shift);
                 self.inner.move_left(state);
@@ -8258,7 +8907,7 @@ impl WordProcessorWidget {
             }
             Key::Named(NamedKey::Space) => {
                 let correction = self.autocorrect_before_boundary(state);
-                if !self.inner.autoformat_on_space(state) {
+                if !self.autoformat_on_space_via_actions(state) {
                     self.insert_text_via_action(state, " ");
                 }
                 self.last_autocorrection = correction.map(|mut correction| {
@@ -8386,7 +9035,7 @@ impl WordProcessorWidget {
         // and the new block is marked to start on a fresh page. (Handled
         // here because `NamedKey::Enter` is not a `Key::Character`.)
         if ctrl && matches!(logical_key, Key::Named(NamedKey::Enter)) {
-            self.inner.insert_page_break(state);
+            self.page_break_via_action(state);
             self.refresh_blocks(state);
             self.dirty = true;
             self.needs_commit = true;
@@ -8461,7 +9110,7 @@ impl WordProcessorWidget {
         // but works in the body too (the field renderer substitutes
         // the page number per page).
         if shift && s.eq_ignore_ascii_case("p") {
-            self.inner.insert_page_number(state);
+            self.insert_page_number_via_action(state);
             self.refresh_blocks(state);
             self.dirty = true;
             self.needs_commit = true;
@@ -8791,6 +9440,7 @@ impl Widget for WordProcessorWidget {
         // chrome helper below reads `self.chrome` so the whole editor follows
         // light/dark mode + the OS palette.
         self.chrome = ChromeColors::for_theme(theme);
+        self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0));
         let full = self.rect;
         let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
 
@@ -8877,7 +9527,7 @@ impl Widget for WordProcessorWidget {
             }
             let panel = Rect::new(
                 if overlay {
-                    (full.x1 - STYLES_PANEL_W).max(full.x0)
+                    (full.x1 - self.styles_panel_width()).max(full.x0)
                 } else {
                     fg.canvas_right
                 },
@@ -8885,7 +9535,7 @@ impl Widget for WordProcessorWidget {
                 full.x1,
                 fg.layout_bar_top,
             );
-            self.draw_styles_panel(scene, transform, text_renderer, panel);
+            self.draw_styles_panel_responsive(scene, transform, text_renderer, panel);
         } else {
             self.panel_rect = Rect::ZERO;
             self.panel_hits.clear();
@@ -9401,20 +10051,21 @@ impl WordProcessorWidget {
             self.close_comment_thread();
             return;
         };
+        let scale = f64::from(tr.text_scale());
         let cc = self.chrome;
-        let width = self.rect.width().clamp(260.0, 372.0);
-        let height = (self.rect.height() * 0.48).clamp(238.0, 360.0);
+        let width = (372.0 * scale).min((self.rect.width() - 24.0 * scale).max(260.0 * scale));
+        let height = (360.0 * scale).min((self.rect.height() - 76.0 * scale).max(238.0 * scale));
         let panel = Rect::new(
-            self.rect.x1 - width - 12.0,
-            self.rect.y1 - height - 38.0,
-            self.rect.x1 - 12.0,
-            self.rect.y1 - 38.0,
+            self.rect.x1 - width - 12.0 * scale,
+            self.rect.y1 - height - 38.0 * scale,
+            self.rect.x1 - 12.0 * scale,
+            self.rect.y1 - 38.0 * scale,
         );
         self.thread_panel = panel;
-        let rounded = vello::kurbo::RoundedRect::from_rect(panel, 8.0);
+        let rounded = vello::kurbo::RoundedRect::from_rect(panel, 8.0 * scale);
         scene.fill(Fill::NonZero, transform, cc.bar, None, &rounded);
         scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+            &vello::kurbo::Stroke::new(scale),
             transform,
             cc.border,
             None,
@@ -9425,7 +10076,7 @@ impl WordProcessorWidget {
             &t("review-thread"),
             14.0,
             cc.text,
-            transform * Affine::translate((panel.x0 + 12.0, panel.y0 + 12.0)),
+            transform * Affine::translate((panel.x0 + 12.0 * scale, panel.y0 + 12.0 * scale)),
             None,
         );
         let root = comment
@@ -9438,8 +10089,8 @@ impl WordProcessorWidget {
             &mut tr.font_system,
             &[RichSpan::new(format!("{}  {}", comment.author, root))],
             false,
-            12.0,
-            num::f32_of_f64(width - 24.0),
+            num::f32_of_f64(12.0 * scale),
+            num::f32_of_f64(width - 24.0 * scale),
             TextAlign::Left,
             FontFamily::Sans,
             vec![],
@@ -9449,10 +10100,10 @@ impl WordProcessorWidget {
         tr.draw_rich(
             scene,
             &root_layout,
-            transform * Affine::translate((panel.x0 + 12.0, panel.y0 + 39.0)),
+            transform * Affine::translate((panel.x0 + 12.0 * scale, panel.y0 + 39.0 * scale)),
             cc.text,
         );
-        let mut y = panel.y0 + 48.0 + f64::from(root_layout.height());
+        let mut y = panel.y0 + 48.0 * scale + f64::from(root_layout.height());
         for reply in comment.replies.iter().take(3) {
             let text = reply
                 .blocks
@@ -9464,39 +10115,39 @@ impl WordProcessorWidget {
                 &mut tr.font_system,
                 &[RichSpan::new(format!("{}  {}", reply.author, text))],
                 false,
-                11.0,
-                num::f32_of_f64(width - 36.0),
+                num::f32_of_f64(11.0 * scale),
+                num::f32_of_f64(width - 36.0 * scale),
                 TextAlign::Left,
                 FontFamily::Sans,
                 vec![],
                 vec![],
                 1.0,
             );
-            let h = f64::from(layout.height()) + 8.0;
-            if y + h > panel.y1 - 96.0 {
+            let h = f64::from(layout.height()) + 8.0 * scale;
+            if y + h > panel.y1 - 96.0 * scale {
                 break;
             }
-            let bubble = Rect::new(panel.x0 + 18.0, y, panel.x1 - 12.0, y + h);
+            let bubble = Rect::new(panel.x0 + 18.0 * scale, y, panel.x1 - 12.0 * scale, y + h);
             scene.fill(
                 Fill::NonZero,
                 transform,
                 cc.chip,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(bubble, 5.0),
+                &vello::kurbo::RoundedRect::from_rect(bubble, 5.0 * scale),
             );
             tr.draw_rich(
                 scene,
                 &layout,
-                transform * Affine::translate((bubble.x0 + 7.0, bubble.y0 + 4.0)),
+                transform * Affine::translate((bubble.x0 + 7.0 * scale, bubble.y0 + 4.0 * scale)),
                 cc.text,
             );
-            y += h + 5.0;
+            y += h + 5.0 * scale;
         }
         let field = Rect::new(
-            panel.x0 + 12.0,
-            panel.y1 - 82.0,
-            panel.x1 - 12.0,
-            panel.y1 - 52.0,
+            panel.x0 + 12.0 * scale,
+            panel.y1 - 82.0 * scale,
+            panel.x1 - 12.0 * scale,
+            panel.y1 - 52.0 * scale,
         );
         self.thread_reply
             .set_placeholder(&t("review-reply-placeholder"));
@@ -9510,16 +10161,16 @@ impl WordProcessorWidget {
             presence,
         );
         self.thread_cancel = Rect::new(
-            panel.x1 - 210.0,
-            panel.y1 - 40.0,
-            panel.x1 - 118.0,
-            panel.y1 - 12.0,
+            panel.x1 - 210.0 * scale,
+            panel.y1 - 40.0 * scale,
+            panel.x1 - 118.0 * scale,
+            panel.y1 - 12.0 * scale,
         );
         self.thread_submit = Rect::new(
-            panel.x1 - 110.0,
-            panel.y1 - 40.0,
-            panel.x1 - 12.0,
-            panel.y1 - 12.0,
+            panel.x1 - 110.0 * scale,
+            panel.y1 - 40.0 * scale,
+            panel.x1 - 12.0 * scale,
+            panel.y1 - 12.0 * scale,
         );
         draw_btn(
             scene,
@@ -9813,11 +10464,42 @@ impl WordProcessorWidget {
             }
             ToolAction::InsertImage => self.request_image_insert(state),
             ToolAction::InsertTable => self.insert_table_via_action(state, 2, 2),
-            ToolAction::TableRowAdd => self.inner.table_add_row(state),
-            ToolAction::TableRowDel => self.inner.table_del_row(state),
-            ToolAction::TableColAdd => self.inner.table_add_col(state),
-            ToolAction::TableColDel => self.inner.table_del_col(state),
-            ToolAction::TableDelete => self.inner.table_delete(state),
+            ToolAction::TableRowAdd => {
+                if let Some((_, row, _, _, _)) = self.caret_table_target() {
+                    self.edit_table_via_action(
+                        state,
+                        crate::actions::TableEdit::InsertRow {
+                            at: row.saturating_add(1),
+                        },
+                    );
+                }
+            }
+            ToolAction::TableRowDel => {
+                if let Some((_, row, _, _, _)) = self.caret_table_target() {
+                    self.edit_table_via_action(state, crate::actions::TableEdit::DeleteRow { row });
+                }
+            }
+            ToolAction::TableColAdd => {
+                if let Some((_, _, column, _, _)) = self.caret_table_target() {
+                    self.edit_table_via_action(
+                        state,
+                        crate::actions::TableEdit::InsertColumn {
+                            at: column.saturating_add(1),
+                        },
+                    );
+                }
+            }
+            ToolAction::TableColDel => {
+                if let Some((_, _, column, _, _)) = self.caret_table_target() {
+                    self.edit_table_via_action(
+                        state,
+                        crate::actions::TableEdit::DeleteColumn { column },
+                    );
+                }
+            }
+            ToolAction::TableDelete => {
+                self.edit_table_via_action(state, crate::actions::TableEdit::Delete);
+            }
             ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
             ToolAction::ToggleRuler => self.ruler_on = !self.ruler_on,
             ToolAction::ToggleOutline => self.outline.toggle(),
@@ -9849,7 +10531,18 @@ impl WordProcessorWidget {
             );
         let mut menu = ContextMenu::new();
         let mut actions = Vec::new();
-        for action in [
+        let minimal = self.rect.width() / self.text_scale < 260.0;
+        let mut overflow = Vec::new();
+        if minimal {
+            overflow.extend([
+                ToolAction::Bold,
+                ToolAction::Italic,
+                ToolAction::Underline,
+                ToolAction::FontCycle,
+                ToolAction::ToggleStyles,
+            ]);
+        }
+        overflow.extend([
             ToolAction::Strike,
             ToolAction::Super,
             ToolAction::Sub,
@@ -9861,7 +10554,8 @@ impl WordProcessorWidget {
             ToolAction::ToggleOutline,
             ToolAction::ToggleHistory,
             ToolAction::InsertToc,
-        ] {
+        ]);
+        for action in overflow {
             menu.push(MenuItem::action(tool_action_a11y_label(action), || {}));
             actions.push(Some(CtxAction::Tool(action)));
         }
@@ -9894,8 +10588,7 @@ impl WordProcessorWidget {
         }
         self.dirty = true;
         if persist {
-            let sheet = self.sheet.clone();
-            self.inner.set_stylesheet(state, &sheet);
+            self.persist_stylesheet_via_actions(state);
             self.needs_commit = true;
         }
     }
@@ -9931,8 +10624,7 @@ impl WordProcessorWidget {
             return;
         }
         self.apply_edit_buf_live();
-        let sheet = self.sheet.clone();
-        self.inner.set_stylesheet(state, &sheet);
+        self.persist_stylesheet_via_actions(state);
         self.needs_commit = true;
         self.editing_field = None;
         self.edit_buf.clear();
@@ -10052,9 +10744,8 @@ impl WordProcessorWidget {
         let mut props = base.clone();
         props.name = format!("{} copy", base.name);
         self.sheet.styles.insert(new_id.clone(), props);
-        let sheet = self.sheet.clone();
-        self.inner.set_stylesheet(state, &sheet);
-        self.inner.set_block_style(state, &new_id);
+        self.persist_stylesheet_via_actions(state);
+        self.dispatch_apply_named_style(state, &new_id);
         self.refresh_blocks(state);
         self.needs_commit = true;
         self.dirty = true;
@@ -10412,15 +11103,31 @@ impl WordProcessorWidget {
             .filter(|(plain, _)| plain == &sys)
             .map(|(_, blocks)| blocks.clone());
         match rich {
-            Some(blocks) => self.inner.insert_rich(state, &blocks),
-            None => self.inner.insert_multiline(state, &sys),
+            Some(blocks) => self.paste_fragment_via_action(state, blocks),
+            None => self.paste_plain_text_via_action(state, &sys),
         }
+    }
+
+    fn paste_plain_text_via_action(&mut self, state: &mut AutoCommit, text: &str) {
+        let blocks = text
+            .replace('\r', "")
+            .split('\n')
+            .map(|line| crate::word_processor::ClipBlock {
+                kind: "paragraph".to_string(),
+                text: line.to_string(),
+                marks: Vec::new(),
+                level: None,
+                ordered: None,
+                align: None,
+            })
+            .collect();
+        self.paste_fragment_via_action(state, blocks);
     }
 
     /// Paste plain text only (Ctrl+Shift+V), stripping all formatting.
     fn clipboard_paste_plain(&mut self, state: &mut AutoCommit) {
         if let Some(t) = clipboard_paste() {
-            self.inner.insert_multiline(state, &t);
+            self.paste_plain_text_via_action(state, &t);
         }
     }
 
@@ -10655,7 +11362,7 @@ impl WordProcessorWidget {
         match action {
             CtxAction::Cut => {
                 self.clipboard_copy(state);
-                self.inner.delete_selection(state);
+                self.insert_text_via_action(state, "");
                 self.needs_commit = true;
             }
             CtxAction::Copy => self.clipboard_copy(state),
@@ -10729,8 +11436,8 @@ impl WordProcessorWidget {
     fn dispatch_style_menu(&mut self, action: StyleMenuAction, state: &mut AutoCommit) {
         match action {
             StyleMenuAction::Delete(id) => {
-                if self.inner.delete_style(state, &id) {
-                    self.sheet = self.inner.stylesheet(state);
+                if self.sheet.remove(&id) {
+                    self.persist_stylesheet_via_actions(state);
                     self.refresh_blocks(state);
                     self.needs_commit = true;
                     self.modified = true;
@@ -10738,10 +11445,13 @@ impl WordProcessorWidget {
                 }
             }
             StyleMenuAction::Duplicate(id) => {
-                if let Some(new_id) = self.inner.duplicate_style(state, &id) {
+                if let Some(mut properties) = self.sheet.styles.get(&id).cloned() {
+                    let new_id = self.sheet.fresh_custom_id();
+                    properties.name = format!("{} copy", properties.name);
+                    self.sheet.styles.insert(new_id.clone(), properties);
+                    self.persist_stylesheet_via_actions(state);
                     // Apply the copy to the caret block so the panel focuses it.
-                    self.inner.set_block_style(state, &new_id);
-                    self.sheet = self.inner.stylesheet(state);
+                    self.dispatch_apply_named_style(state, &new_id);
                     self.refresh_blocks(state);
                     self.needs_commit = true;
                     self.modified = true;
@@ -10772,20 +11482,16 @@ impl WordProcessorWidget {
     /// undo point, and counts as a document-modifying edit (so autosave still
     /// protects the freshly-templated content).
     fn apply_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
-        if self
-            .inner
-            .replace_with_markdown(state, template.content().as_bytes())
-        {
-            self.refresh_blocks(state);
-            // The whole body changed; per-block caches keyed by id/text are stale.
-            self.layout_cache.clear();
-            self.spell_cache.clear();
-            self.modified = true;
-            self.needs_commit = true;
-            self.dirty = true;
-            // A wholesale content swap is a strong autosave trigger.
-            self.note_edit_for_autosave(state);
-        }
+        self.replace_body_via_action(state, template.content());
+        self.refresh_blocks(state);
+        // The whole body changed; per-block caches keyed by id/text are stale.
+        self.layout_cache.clear();
+        self.spell_cache.clear();
+        self.modified = true;
+        self.needs_commit = true;
+        self.dirty = true;
+        // A wholesale content swap is a strong autosave trigger.
+        self.note_edit_for_autosave(state);
     }
 
     // ---- autosave / crash-recovery ----------------------------------------
@@ -11040,9 +11746,14 @@ impl WordProcessorWidget {
     /// Allocate the docked document-status label wholly inside `bar`, after the
     /// layout chips and hint. Returning `None` at extremely narrow widths is
     /// preferable to either overlapping a control or painting over the page.
-    fn layout_bar_status_rect(bar: Rect, after_x: f64, label: &str) -> Option<Rect> {
-        let width = num::f64_of_usize(label.chars().count()) * 7.0;
-        let x0 = bar.x1 - 12.0 - width;
+    fn layout_bar_status_rect(
+        bar: Rect,
+        after_x: f64,
+        label: &str,
+        text_scale: f64,
+    ) -> Option<Rect> {
+        let width = num::f64_of_usize(label.chars().count()) * 7.0 * text_scale;
+        let x0 = bar.x1 - 12.0 * text_scale - width;
         (x0 >= after_x).then_some(Rect::new(x0, bar.y0, x0 + width, bar.y1))
     }
 
@@ -11211,7 +11922,7 @@ impl WordProcessorWidget {
         tb: Rect,
     ) {
         let compact = self.use_compact_toolbar(tb.width());
-        let specs = self.toolbar_button_specs(compact);
+        let specs = self.responsive_toolbar_specs(tb.width());
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
 
         // Responsive packing: when the controls don't fit `tb.width()`, wrap to
@@ -11228,15 +11939,15 @@ impl WordProcessorWidget {
         // in the toolbar at every width; only the two dense swatch strips move
         // into More on a compact surface.
         widths.push(
-            ZoomControl::WIDTH
+            ZoomControl::width(self.text_scale)
                 + if compact {
                     0.0
                 } else {
-                    swatch_reserve_width() + ZOOM_SWATCH_GAP
+                    swatch_reserve_width(self.text_scale) + ZOOM_SWATCH_GAP * self.text_scale
                 },
         );
         starts.push(true);
-        let rows = pack_toolbar_rows(&widths, &starts, tb.width());
+        let rows = pack_toolbar_rows(&widths, &starts, tb.width(), self.text_scale);
         self.toolbar_rows = rows.len();
 
         // Fill the whole toolbar background once (so inter-row gaps are toned
@@ -11249,7 +11960,7 @@ impl WordProcessorWidget {
             &tb,
         );
 
-        let row_h = TOOLBAR_H;
+        let row_h = ui::chrome::toolbar::metrics(self.text_scale as f32).row_height;
         let mut all_rects: Vec<Rect> = Vec::with_capacity(items.len());
         for (ri, (s, e)) in rows.iter().enumerate() {
             let ry0 = tb.y0 + num::f64_of_usize(ri) * row_h;
@@ -11275,7 +11986,7 @@ impl WordProcessorWidget {
             .iter()
             .find(|(a, _)| matches!(a, ToolAction::InsertImage))
         {
-            let s = 18.0;
+            let s = 18.0 * self.text_scale;
             let cx = f64::midpoint(r.x0, r.x1);
             let cy = f64::midpoint(r.y0, r.y1);
             let glyph = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0);
@@ -11294,14 +12005,16 @@ impl WordProcessorWidget {
         let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
         self.draw_zoom_control(scene, transform, tr, last_row);
         if !compact {
-            let swatch_x1 = (tb.x1 - ZoomControl::WIDTH - ZOOM_SWATCH_GAP).max(tb.x0);
+            let swatch_x1 =
+                (tb.x1 - ZoomControl::width(self.text_scale) - ZOOM_SWATCH_GAP * self.text_scale)
+                    .max(tb.x0);
             let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
             let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
             // Highlight swatch strip, packed just left of the text-colour strip.
             let hl_band = Rect::new(
                 tb.x0,
                 last_row_y,
-                (text_left - 10.0).max(tb.x0),
+                (text_left - 10.0 * self.text_scale).max(tb.x0),
                 last_row_y + row_h,
             );
             self.draw_highlight_swatches(scene, transform, tr, hl_band);
@@ -11328,20 +12041,21 @@ impl WordProcessorWidget {
     /// canvas top offset and the drawn rows always agree.
     fn toolbar_height(&self, width: f64) -> f64 {
         let compact = self.use_compact_toolbar(width);
-        let specs = self.toolbar_button_specs(compact);
+        let specs = self.responsive_toolbar_specs(width);
         let mut widths: Vec<f64> = specs.iter().map(|(_, item)| item.width).collect();
         let mut starts: Vec<bool> = specs.iter().map(|(_, item)| item.group_start).collect();
         widths.push(
-            ZoomControl::WIDTH
+            ZoomControl::width(self.text_scale)
                 + if compact {
                     0.0
                 } else {
-                    swatch_reserve_width() + ZOOM_SWATCH_GAP
+                    swatch_reserve_width(self.text_scale) + ZOOM_SWATCH_GAP * self.text_scale
                 },
         );
         starts.push(true);
-        let rows = pack_toolbar_rows(&widths, &starts, width);
-        num::f64_of_usize(rows.len()) * TOOLBAR_H
+        let rows = pack_toolbar_rows(&widths, &starts, width, self.text_scale);
+        num::f64_of_usize(rows.len())
+            * ui::chrome::toolbar::metrics(self.text_scale as f32).row_height
     }
 
     /// A medium canvas should never leave one low-frequency control stranded on
@@ -11355,9 +12069,28 @@ impl WordProcessorWidget {
         let full = self.toolbar_button_specs(false);
         let mut widths: Vec<f64> = full.iter().map(|(_, item)| item.width).collect();
         let mut starts: Vec<bool> = full.iter().map(|(_, item)| item.group_start).collect();
-        widths.push(swatch_reserve_width() + ZoomControl::WIDTH + ZOOM_SWATCH_GAP);
+        widths.push(
+            (swatch_reserve_width(self.text_scale) + ZoomControl::width(self.text_scale))
+                / self.text_scale
+                + ZOOM_SWATCH_GAP,
+        );
         starts.push(true);
-        pack_toolbar_rows(&widths, &starts, width).len() > 1
+        pack_toolbar_rows(&widths, &starts, width, self.text_scale).len() > 1
+    }
+
+    /// At very large system text on a phone-sized tile, expose one clear New
+    /// entry and one complete More entry. Keeping the normal compact row here
+    /// would consume most of the viewport as five single-item rows.
+    fn responsive_toolbar_specs(&self, width: f64) -> Vec<(ToolAction, ToolbarItem)> {
+        let compact = self.use_compact_toolbar(width);
+        let mut specs = self.toolbar_button_specs(compact);
+        if width / self.text_scale < 260.0 {
+            specs.retain(|(action, _)| matches!(action, ToolAction::NewMenu | ToolAction::More));
+            for (_, item) in &mut specs {
+                item.width = 58.0;
+            }
+        }
+        specs
     }
 
     /// Draw the text-colour swatch row at the right edge of the toolbar and
@@ -11372,14 +12105,15 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         tb: Rect,
     ) -> f64 {
+        let scale = f64::from(tr.text_scale());
         let cur = self.current_text_color();
         let cy = f64::midpoint(tb.y0, tb.y1);
-        let sw = 20.0;
-        let gap = 5.0;
+        let sw = 20.0 * scale;
+        let gap = 5.0 * scale;
         let n = STYLE_PALETTE.len() + 1; // +1 for the neutral default
         let total = num::f64_of_usize(n) * sw + (num::f64_of_usize(n) - 1.0) * gap;
         // Right-align the strip, leaving a small margin from the toolbar's edge.
-        let strip_left = (tb.x1 - 14.0 - total).max(tb.x0 + 14.0);
+        let strip_left = (tb.x1 - 14.0 * scale - total).max(tb.x0 + 14.0 * scale);
         let mut x = strip_left;
         let y0 = cy - sw / 2.0;
 
@@ -11390,15 +12124,15 @@ impl WordProcessorWidget {
             transform,
             self.chrome.chip,
             None,
-            &vello::kurbo::RoundedRect::from_rect(nr, 4.0),
+            &vello::kurbo::RoundedRect::from_rect(nr, 4.0 * scale),
         );
         if cur.is_none() {
             scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
+                &vello::kurbo::Stroke::new(2.0 * scale),
                 transform,
                 Color::WHITE,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(nr, 4.0),
+                &vello::kurbo::RoundedRect::from_rect(nr, 4.0 * scale),
             );
         }
         tr.draw_text(
@@ -11406,7 +12140,7 @@ impl WordProcessorWidget {
             "A",
             13.0,
             self.chrome.text,
-            transform * Affine::translate((x + 5.5, y0 + 2.0)),
+            transform * Affine::translate((x + 5.5 * scale, y0 + 2.0 * scale)),
             None,
         );
         self.toolbar.push((ToolAction::TextColor(None), nr));
@@ -11420,15 +12154,15 @@ impl WordProcessorWidget {
                 transform,
                 col,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(r, 4.0),
+                &vello::kurbo::RoundedRect::from_rect(r, 4.0 * scale),
             );
             if cur == Some(*c) {
                 scene.stroke(
-                    &vello::kurbo::Stroke::new(2.0),
+                    &vello::kurbo::Stroke::new(2.0 * scale),
                     transform,
                     Color::WHITE,
                     None,
-                    &vello::kurbo::RoundedRect::from_rect(r, 4.0),
+                    &vello::kurbo::RoundedRect::from_rect(r, 4.0 * scale),
                 );
             }
             self.toolbar.push((ToolAction::TextColor(Some(*c)), r));
@@ -11449,18 +12183,19 @@ impl WordProcessorWidget {
         tr: &mut TextRenderer,
         tb: Rect,
     ) {
+        let scale = f64::from(tr.text_scale());
         let cur = self.current_highlight_color();
         let cy = f64::midpoint(tb.y0, tb.y1);
-        let sw = 20.0;
-        let gap = 5.0;
+        let sw = 20.0 * scale;
+        let gap = 5.0 * scale;
         let n = HIGHLIGHT_PALETTE.len() + 1; // +1 for the neutral "no highlight"
         let total = num::f64_of_usize(n) * sw + (num::f64_of_usize(n) - 1.0) * gap;
         // Not enough room beside the text-colour strip: skip (the buttons + Styles
         // panel remain the path to highlight). Avoids overlapping the chrome.
-        if tb.width() < total + 14.0 {
+        if tb.width() < total + 14.0 * scale {
             return;
         }
-        let strip_left = (tb.x1 - total).max(tb.x0 + 4.0);
+        let strip_left = (tb.x1 - total).max(tb.x0 + 4.0 * scale);
         let mut x = strip_left;
         let y0 = cy - sw / 2.0;
 
@@ -11471,15 +12206,15 @@ impl WordProcessorWidget {
             transform,
             self.chrome.chip,
             None,
-            &vello::kurbo::RoundedRect::from_rect(nr, 4.0),
+            &vello::kurbo::RoundedRect::from_rect(nr, 4.0 * scale),
         );
         if cur.is_none() {
             scene.stroke(
-                &vello::kurbo::Stroke::new(2.0),
+                &vello::kurbo::Stroke::new(2.0 * scale),
                 transform,
                 Color::WHITE,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(nr, 4.0),
+                &vello::kurbo::RoundedRect::from_rect(nr, 4.0 * scale),
             );
         }
         tr.draw_text(
@@ -11487,7 +12222,7 @@ impl WordProcessorWidget {
             "▱",
             12.0,
             self.chrome.text,
-            transform * Affine::translate((x + 4.0, y0 + 2.5)),
+            transform * Affine::translate((x + 4.0 * scale, y0 + 2.5 * scale)),
             None,
         );
         self.toolbar.push((ToolAction::Highlight(None), nr));
@@ -11501,15 +12236,15 @@ impl WordProcessorWidget {
                 transform,
                 col,
                 None,
-                &vello::kurbo::RoundedRect::from_rect(r, 4.0),
+                &vello::kurbo::RoundedRect::from_rect(r, 4.0 * scale),
             );
             if cur == Some(*c) {
                 scene.stroke(
-                    &vello::kurbo::Stroke::new(2.0),
+                    &vello::kurbo::Stroke::new(2.0 * scale),
                     transform,
                     Color::WHITE,
                     None,
-                    &vello::kurbo::RoundedRect::from_rect(r, 4.0),
+                    &vello::kurbo::RoundedRect::from_rect(r, 4.0 * scale),
                 );
             }
             self.toolbar.push((ToolAction::Highlight(Some(*c)), r));
@@ -11629,6 +12364,7 @@ mod tests {
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -12789,6 +13525,16 @@ mod tests {
     }
 
     #[test]
+    fn multi_digit_list_markers_grow_away_from_paragraph_text() {
+        let text_x = 180.0;
+        let one = list_marker_x(text_x, 13.0);
+        let two = list_marker_x(text_x, 21.0);
+        assert!(two < one, "the extra digit is allocated to the left gutter");
+        assert_eq!(one + 13.0 + LIST_MARKER_TEXT_GAP, text_x);
+        assert_eq!(two + 21.0 + LIST_MARKER_TEXT_GAP, text_x);
+    }
+
+    #[test]
     fn long_document_paginates_across_discrete_pages() {
         // Geometry mirrors `draw`: a fresh widget keeps the default uniform 72px
         // margins, find bar closed (find_h = 0), so canvas top = the toolbar's
@@ -13853,7 +14599,7 @@ mod tests {
         // A generous width fits every control on a single row.
         let widths = vec![34.0, 30.0, 32.0, 30.0, 42.0, 42.0, 58.0];
         let starts = vec![false, false, false, false, true, false, false];
-        let rows = pack_toolbar_rows(&widths, &starts, 1400.0);
+        let rows = pack_toolbar_rows(&widths, &starts, 1400.0, 1.0);
         assert_eq!(rows.len(), 1, "all items fit one row at 1400px");
         assert_eq!(rows[0], (0, widths.len()));
     }
@@ -13863,7 +14609,7 @@ mod tests {
         // Items whose total far exceeds the available width must wrap.
         let widths = vec![100.0; 12]; // 12 × 100 = 1200px of buttons + gaps + pads
         let starts = vec![false; 12];
-        let rows = pack_toolbar_rows(&widths, &starts, 400.0);
+        let rows = pack_toolbar_rows(&widths, &starts, 400.0, 1.0);
         assert!(
             rows.len() > 1,
             "items exceeding the width wrap to >1 row (got {})",
@@ -13876,11 +14622,12 @@ mod tests {
             assert_eq!(w[0].1, w[1].0, "row ranges are contiguous");
         }
         // No row's packed width exceeds the usable width (mirrors `draw`).
-        let usable = 400.0 - TOOLBAR_PAD - TOOLBAR_RIGHT_PAD;
+        let metrics = ui::chrome::toolbar::metrics(1.0);
+        let usable = 400.0 - metrics.left_padding - TOOLBAR_RIGHT_PAD;
         for (s, e) in &rows {
             let mut x = 0.0;
             for i in *s..*e {
-                x += widths[i] + TOOLBAR_GAP + if starts[i] { TOOLBAR_SEP } else { 0.0 };
+                x += widths[i] + metrics.item_gap + if starts[i] { metrics.group_gap } else { 0.0 };
             }
             // A row is allowed to overflow only if it holds a single over-wide item.
             assert!(
@@ -13925,6 +14672,42 @@ mod tests {
     }
 
     #[test]
+    fn two_x_phone_keeps_toolbar_to_two_rows_and_document_readable() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut()
+            .insert_str(&mut state.doc, "A readable large-text document");
+        let theme = Theme::dark().with_text_scale(2.0);
+        pipeline_draw_themed(&mut wp, &mut state, 390, 844, &theme);
+
+        let row_height = ui::chrome::toolbar::metrics(2.0).row_height;
+        assert_eq!(
+            wp.toolbar_height(390.0),
+            row_height * 2.0,
+            "phone-sized 200% text reserves exactly one action row plus zoom"
+        );
+        assert_eq!(
+            wp.zoom.factor(),
+            2.0,
+            "the editing surface follows 200% text"
+        );
+        assert!(
+            wp.page_rect.width() * wp.zoom.factor() <= 390.0,
+            "the readable 200% paper still fits the viewport"
+        );
+        assert_eq!(
+            wp.layout_chips.len(),
+            2,
+            "the bounded bottom row exposes only complete layout controls"
+        );
+        assert!(
+            wp.layout_chips.iter().all(|(_, rect)| rect.x1 <= 390.0),
+            "no bottom action is half-visible at the right edge"
+        );
+    }
+
+    #[test]
     fn document_status_stays_in_bottom_chrome_at_narrow_and_wide_zoomed_widths() {
         let (mut state, mut wp) = populated();
         for (width, zoom) in [(700_u32, 0.81), (1100, 1.0)] {
@@ -13933,7 +14716,7 @@ mod tests {
             pipeline_draw(&mut wp, &mut state, width, 900);
             let bar = Rect::new(0.0, 868.0, f64::from(width), 900.0);
             let label = wp.status_count_label();
-            let rect = WordProcessorWidget::layout_bar_status_rect(bar, 210.0, &label)
+            let rect = WordProcessorWidget::layout_bar_status_rect(bar, 210.0, &label, 1.0)
                 .expect("the count fits after the layout controls");
             assert!(
                 rect.y0 >= bar.y0 && rect.y1 <= bar.y1 && rect.x1 <= bar.x1,
