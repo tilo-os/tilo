@@ -918,11 +918,11 @@ impl NotesApp {
             self.workspace.set_selected(Some(first));
         }
         let Some(sel) = self.workspace.selected() else {
-            if self.bound_page.is_some() {
+            if self.main.page_id().is_some() {
                 self.main.clear();
-                self.bound_page = None;
-                self.canonical_marks.clear();
             }
+            self.bound_page = None;
+            self.canonical_marks.clear();
             return;
         };
         if self.bound_page != Some(sel) {
@@ -1548,7 +1548,11 @@ impl NotesApp {
                 // A tag is a navigable collection. Preserve the current note
                 // when it already belongs to the collection; otherwise land
                 // on a deterministic first tagged note (page UUID order).
-                let pages = self.workspace.pages_for_tag(tag);
+                let pages = if self.legacy_fixture_storage.is_none() {
+                    crate::notebook::project(doc, self.workspace.selected())?.pages_for_tag(tag)
+                } else {
+                    self.workspace.pages_for_tag(tag)
+                };
                 if let Some(first) = pages.first().copied()
                     && !self
                         .workspace
