@@ -46,7 +46,24 @@ const BODY_BREAKPOINT_PX: f64 = 640.0;
 /// Preserve the recognisable tail here; the full location stays in the path bar
 /// and the root accessibility description.
 const STATE_SURFACE_LOCATION_CHARS: usize = 36;
+/// Keep small folders feeling live without repeatedly walking a large folder
+/// on the UI thread.  Rendering is virtualised, but the filesystem has no
+/// change subscription yet, so the metadata refresh still has to read a
+/// complete directory snapshot.  A fixed sub-second poll turned a 100k-item
+/// folder into a permanent metadata/xattr storm.  Back off deliberately as
+/// the observed directory grows; an explicit Refresh and every Files
+/// operation remain immediate, while collaborative metadata still converges
+/// at a bounded cadence.
 const LIVE_METADATA_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+const MEDIUM_DIRECTORY_METADATA_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(3);
+const LARGE_DIRECTORY_METADATA_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(12);
+const HUGE_DIRECTORY_METADATA_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(30);
+const MEDIUM_DIRECTORY_ENTRY_COUNT: usize = 512;
+const LARGE_DIRECTORY_ENTRY_COUNT: usize = 4_096;
+const HUGE_DIRECTORY_ENTRY_COUNT: usize = 20_000;
 /// The resource catalogue is shared with search, activity, automation, and
 /// assistive clients. Keep its eagerly enumerated current-folder projection
 /// deliberately small; an exact item is materialised from the live snapshot
@@ -95,6 +112,23 @@ fn format_duration(duration_ms: u64) -> String {
         format!("{hours}:{minutes:02}:{seconds:02}")
     } else {
         format!("{minutes}:{seconds:02}")
+    }
+}
+
+/// Choose the low-priority metadata refresh cadence from the last completed
+/// directory snapshot.  This is intentionally pure so the cost policy is
+/// regression-tested without making a real large directory or sleeping in a
+/// test.  It is a *poll* budget only: direct navigation, explicit refresh,
+/// and mutation paths never wait for this interval.
+const fn metadata_refresh_interval(entry_count: usize) -> std::time::Duration {
+    if entry_count >= HUGE_DIRECTORY_ENTRY_COUNT {
+        HUGE_DIRECTORY_METADATA_REFRESH_INTERVAL
+    } else if entry_count >= LARGE_DIRECTORY_ENTRY_COUNT {
+        LARGE_DIRECTORY_METADATA_REFRESH_INTERVAL
+    } else if entry_count >= MEDIUM_DIRECTORY_ENTRY_COUNT {
+        MEDIUM_DIRECTORY_METADATA_REFRESH_INTERVAL
+    } else {
+        LIVE_METADATA_REFRESH_INTERVAL
     }
 }
 
@@ -289,7 +323,12 @@ fn text_diff_lines(before: &str, after: &str) -> Vec<(char, String)> {
 
 #[cfg(test)]
 mod history_diff_tests {
-    use super::text_diff_lines;
+    use super::{
+        HUGE_DIRECTORY_ENTRY_COUNT, HUGE_DIRECTORY_METADATA_REFRESH_INTERVAL,
+        LARGE_DIRECTORY_ENTRY_COUNT, LARGE_DIRECTORY_METADATA_REFRESH_INTERVAL,
+        LIVE_METADATA_REFRESH_INTERVAL, MEDIUM_DIRECTORY_ENTRY_COUNT,
+        MEDIUM_DIRECTORY_METADATA_REFRESH_INTERVAL, metadata_refresh_interval, text_diff_lines,
+    };
 
     #[test]
     fn replacements_read_as_removed_then_added() {
@@ -299,6 +338,26 @@ mod history_diff_tests {
                 ('-', "Ship: Friday".to_string()),
                 ('+', "Ship: Monday".to_string())
             ]
+        );
+    }
+
+    #[test]
+    fn large_directory_metadata_polling_backs_off_without_losing_refreshes() {
+        assert_eq!(
+            metadata_refresh_interval(MEDIUM_DIRECTORY_ENTRY_COUNT - 1),
+            LIVE_METADATA_REFRESH_INTERVAL
+        );
+        assert_eq!(
+            metadata_refresh_interval(MEDIUM_DIRECTORY_ENTRY_COUNT),
+            MEDIUM_DIRECTORY_METADATA_REFRESH_INTERVAL
+        );
+        assert_eq!(
+            metadata_refresh_interval(LARGE_DIRECTORY_ENTRY_COUNT),
+            LARGE_DIRECTORY_METADATA_REFRESH_INTERVAL
+        );
+        assert_eq!(
+            metadata_refresh_interval(HUGE_DIRECTORY_ENTRY_COUNT),
+            HUGE_DIRECTORY_METADATA_REFRESH_INTERVAL
         );
     }
 }
@@ -1594,7 +1653,9 @@ impl FileExplorerWidget {
         if now < self.next_metadata_refresh {
             return false;
         }
-        self.next_metadata_refresh = now + LIVE_METADATA_REFRESH_INTERVAL;
+        // Set the next deadline before doing any I/O.  A transient read error
+        // must not accidentally turn a very large directory into a busy loop.
+        self.next_metadata_refresh = now + metadata_refresh_interval(self.entries.len());
         let catalog_changed = self
             .collaborative_record_pager
             .borrow_mut()
