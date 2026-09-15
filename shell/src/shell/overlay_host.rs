@@ -767,6 +767,8 @@ pub struct ShellOverlayHost {
     /// row. Keeping it here makes pixel scrolling work without a tiny motion
     /// either leaking into the desktop or jumping a full card at a time.
     qs_notification_wheel_remainder: f64,
+    /// Synthetic accessibility focus: false is Clear all, true is Undo.
+    qs_notification_action_focus: Option<bool>,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -1756,6 +1758,7 @@ impl ShellOverlayHost {
             qs_was_open: false,
             qs_notification_history_start: 0,
             qs_notification_wheel_remainder: 0.0,
+            qs_notification_action_focus: None,
             power_menu: PowerMenu::default(),
             session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -6535,6 +6538,32 @@ impl ShellOverlayHost {
             .map_or(0, |chrome| chrome.borrow().notification_history().len());
         let page = isize::try_from(self.qs_notification_visible_rows()).unwrap_or(isize::MAX);
         match logical_key {
+            Key::Named(NamedKey::Enter | NamedKey::Space)
+                if self.qs_notification_action_focus == Some(false) && history_len > 0 =>
+            {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().clear_notification_history();
+                }
+                self.qs_notification_action_focus = Some(true);
+                self.qs_notification_history_start = 0;
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space)
+                if self.chrome.as_ref().is_some_and(|chrome| {
+                    chrome.borrow().can_undo_notification_history_clear()
+                }) =>
+            {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().undo_notification_history_clear();
+                }
+                self.qs_notification_action_focus = None;
+            }
+            Key::Named(NamedKey::Delete) if history_len > 0 => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().clear_notification_history();
+                }
+                self.qs_notification_history_start = 0;
+                self.qs_notification_wheel_remainder = 0.0;
+            }
             Key::Named(NamedKey::ArrowDown) => {
                 let _ = self.scroll_qs_notification_history(1);
             }
@@ -9477,12 +9506,18 @@ impl ShellOverlayHost {
         } else if matches!(
             current_level,
             crate::shell::quick_settings::QsLevel::Notifications
-        ) && self.qs_notification_clear_rect().contains(p)
-            && let Some(chrome) = self.chrome.clone()
-        {
-            chrome.borrow_mut().clear_notification_history();
-            self.qs_notification_history_start = 0;
-            self.qs_notification_wheel_remainder = 0.0;
+        ) {
+            if let Some(chrome) = self.chrome.clone() {
+                if self.qs_notification_undo_rect().contains(p)
+                    && chrome.borrow().can_undo_notification_history_clear()
+                {
+                    chrome.borrow_mut().undo_notification_history_clear();
+                } else if self.qs_notification_clear_rect().contains(p) {
+                    chrome.borrow_mut().clear_notification_history();
+                    self.qs_notification_history_start = 0;
+                    self.qs_notification_wheel_remainder = 0.0;
+                }
+            }
         }
     }
     /// Routes a click through the root-page component, then applies the
@@ -10621,6 +10656,11 @@ impl Widget for ShellOverlayHost {
         }
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome
+                .borrow_mut()
+                .expire_notification_history_clear(Instant::now());
+        }
         let mut search_index_ready = false;
         // Retained search indexes are maintained on the compositor tick,
         // before palette input is routed.  Providers may do a source refresh
@@ -11583,12 +11623,32 @@ impl Widget for ShellOverlayHost {
                             let history = AccessNode::new(Role::List)
                                 .with_name("Retained notifications")
                                 .with_children(items);
+                            let mut children = vec![history];
+                            if total > 0 {
+                                children.push(
+                                    AccessNode::new(Role::Button)
+                                        .with_name("Clear all notifications")
+                                        .with_description("Delete this session's retained notification history. An Undo action remains available for eight seconds."),
+                                );
+                            }
+                            if state.can_undo_notification_history_clear() {
+                                children.push(
+                                    AccessNode::new(Role::Group)
+                                        .with_name("Notifications cleared")
+                                        .with_live(ui::a11y::Politeness::Polite),
+                                );
+                                children.push(
+                                    AccessNode::new(Role::Button)
+                                        .with_name("Undo clear notifications")
+                                        .with_description("Restore the cleared notifications in their original order. Press Enter or Space."),
+                                );
+                            }
                             root.children.push(
                                 AccessNode::new(Role::Dialog)
                                     .with_name("Notifications")
                                     .with_description(description)
                                     .with_state(AccessState::new().modal(true))
-                                    .with_children(vec![history]),
+                                    .with_children(children),
                             );
                         } else {
                             root.children.push(
@@ -11650,7 +11710,34 @@ impl Widget for ShellOverlayHost {
                 self.room_activity.accessibility_rect_for_path(&local_path)
             }
             AccessibleOverlay::QuickSettings => {
-                self.qs_root.accessibility_rect_for_path(child_path)
+                let notification_action = self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    if !matches!(
+                        state.quick_settings.current_level(),
+                        crate::shell::quick_settings::QsLevel::Notifications
+                    ) {
+                        return None;
+                    }
+                    match child_path {
+                        [0] => Some(self.quick_settings_rect()),
+                        [0, 1] if !state.notification_history().is_empty() => {
+                            Some(self.qs_notification_clear_rect())
+                        }
+                        [0, index]
+                            if state.can_undo_notification_history_clear()
+                                && *index
+                                    == if state.notification_history().is_empty() {
+                                        2
+                                    } else {
+                                        3
+                                    } =>
+                        {
+                            Some(self.qs_notification_undo_rect())
+                        }
+                        _ => None,
+                    }
+                });
+                notification_action.or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
             }
             AccessibleOverlay::WorkspaceSettings => match child_path {
                 [] => Some(self.workspace_settings_overlay.rect()),
@@ -11678,10 +11765,41 @@ impl Widget for ShellOverlayHost {
                 local_path.extend_from_slice(child_path);
                 self.room_activity.focus_accessibility_path(&local_path)
             }
-            AccessibleOverlay::QuickSettings => self.chrome.as_ref().is_some_and(|chrome| {
-                self.qs_root
-                    .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
-            }),
+            AccessibleOverlay::QuickSettings => {
+                let notification_focus = self.chrome.as_ref().and_then(|chrome| {
+                    let state = chrome.borrow();
+                    if !matches!(
+                        state.quick_settings.current_level(),
+                        crate::shell::quick_settings::QsLevel::Notifications
+                    ) {
+                        return None;
+                    }
+                    match child_path {
+                        [0, 1] if !state.notification_history().is_empty() => Some(false),
+                        [0, index]
+                            if state.can_undo_notification_history_clear()
+                                && *index
+                                    == if state.notification_history().is_empty() {
+                                        2
+                                    } else {
+                                        3
+                                    } =>
+                        {
+                            Some(true)
+                        }
+                        _ => return None,
+                    }
+                });
+                if let Some(undo) = notification_focus {
+                    self.qs_notification_action_focus = Some(undo);
+                    true
+                } else {
+                    self.chrome.as_ref().is_some_and(|chrome| {
+                        self.qs_root
+                            .focus_accessibility_path(child_path, &chrome.borrow().quick_settings)
+                    })
+                }
+            }
             AccessibleOverlay::WorkspaceSettings => {
                 matches!(child_path, [0])
                     && self
@@ -15405,6 +15523,11 @@ impl ShellOverlayHost {
         Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
     }
 
+    fn qs_notification_undo_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x1 - 84.0, r.y1 - 46.0, r.x1 - 12.0, r.y1 - 12.0)
+    }
+
     /// Notifications is a dense, scrollable history, so it uses a textual
     /// Back button instead of depending on a small icon surviving an enlarged
     /// text scale. The hit target intentionally matches the painted control.
@@ -15477,6 +15600,10 @@ impl ShellOverlayHost {
             .as_ref()
             .map(|chrome| chrome.borrow().notification_history().to_vec())
             .unwrap_or_default();
+        let can_undo = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().can_undo_notification_history_clear());
         if history.is_empty() {
             self.qs_notification_history_start = 0;
             self.draw_qs_drill_in_empty(
@@ -15486,6 +15613,53 @@ impl ShellOverlayHost {
                 theme,
                 "No recent notifications",
             );
+            if can_undo {
+                let status = Rect::new(
+                    rect.x0 + 12.0,
+                    rect.y1 - 50.0,
+                    rect.x1 - 12.0,
+                    rect.y1 - 8.0,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.lift(0.35),
+                    None,
+                    &RoundedRect::from_rect(status, 10.0),
+                );
+                text_renderer.draw_text(
+                    scene,
+                    "Notifications cleared",
+                    theme.tokens.typography.scale.xs,
+                    colors.text_primary,
+                    transform.pre_translate((status.x0 + 12.0, status.y0 + 12.0).into()),
+                    Some(f64_to_f32_lossy(status.width() - 96.0)),
+                );
+                let undo = self.qs_notification_undo_rect();
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                    None,
+                    &RoundedRect::from_rect(undo, 9.0),
+                );
+                let (undo_w, undo_h) =
+                    text_renderer.measure("Undo", theme.tokens.typography.scale.xs, None);
+                text_renderer.draw_text(
+                    scene,
+                    "Undo",
+                    theme.tokens.typography.scale.xs,
+                    colors.on_accent(4.5),
+                    transform.pre_translate(
+                        (
+                            undo.center().x - f64::from(undo_w) / 2.0,
+                            undo.center().y - f64::from(undo_h) / 2.0,
+                        )
+                            .into(),
+                    ),
+                    None,
+                );
+            }
             return;
         }
 
@@ -15503,10 +15677,10 @@ impl ShellOverlayHost {
             &RoundedRect::from_rect(clear, 10.0),
         );
         let (clear_w, clear_h) =
-            text_renderer.measure("Clear", theme.tokens.typography.scale.xs, None);
+            text_renderer.measure("Clear all", theme.tokens.typography.scale.xs, None);
         text_renderer.draw_text(
             scene,
-            "Clear",
+            "Clear all",
             theme.tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate(
@@ -15613,7 +15787,53 @@ impl ShellOverlayHost {
             }
         }
 
-        if history.len() > visible_rows {
+        if can_undo {
+            let status = Rect::new(
+                rect.x0 + 12.0,
+                rect.y1 - 50.0,
+                rect.x1 - 12.0,
+                rect.y1 - 8.0,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.lift(0.35),
+                None,
+                &RoundedRect::from_rect(status, 10.0),
+            );
+            text_renderer.draw_text(
+                scene,
+                "Notifications cleared",
+                theme.tokens.typography.scale.xs,
+                colors.text_primary,
+                transform.pre_translate((status.x0 + 12.0, status.y0 + 12.0).into()),
+                Some(f64_to_f32_lossy(status.width() - 96.0)),
+            );
+            let undo = self.qs_notification_undo_rect();
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+                None,
+                &RoundedRect::from_rect(undo, 9.0),
+            );
+            let (undo_w, undo_h) =
+                text_renderer.measure("Undo", theme.tokens.typography.scale.xs, None);
+            text_renderer.draw_text(
+                scene,
+                "Undo",
+                theme.tokens.typography.scale.xs,
+                colors.on_accent(4.5),
+                transform.pre_translate(
+                    (
+                        undo.center().x - f64::from(undo_w) / 2.0,
+                        undo.center().y - f64::from(undo_h) / 2.0,
+                    )
+                        .into(),
+                ),
+                None,
+            );
+        } else if history.len() > visible_rows {
             let newer = if start > 0 {
                 "\u{2191} Newer"
             } else {
@@ -19662,6 +19882,76 @@ mod overlay_event_absorb_tests {
         ));
     }
 
+    #[test]
+    fn notification_history_clear_all_is_recoverable_by_pointer_keyboard_and_accessibility() {
+        let (width, height) = (960.0, 540.0);
+        let mut h = build_harness_sized(width, height);
+        open_notification_history(&mut h, 18, width, height);
+        let original: Vec<_> = h
+            .chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+
+        assert!(h.host.focus_synthetic_accessibility(&[0, 0, 1]));
+        assert!(
+            h.host
+                .handle_qs_notification_keyboard(&Key::Named(NamedKey::Enter))
+        );
+        assert!(h.chrome.borrow().notification_history().is_empty());
+        assert!(h.chrome.borrow().can_undo_notification_history_clear());
+        let arrived = h
+            .chrome
+            .borrow_mut()
+            .push_notification("Arrived during undo", "Still visible");
+        h.chrome.borrow_mut().dismiss_notification(arrived);
+        assert_eq!(h.chrome.borrow().notification_history().len(), 1);
+        assert!(
+            h.host
+                .qs_notification_undo_rect()
+                .intersect(h.host.qs_notification_back_rect())
+                .area()
+                <= 0.0
+        );
+
+        let semantics = h.host.accessibility().expect("notification pane semantics");
+        let dialog = semantics
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Notifications"))
+            .expect("notification dialog");
+        assert!(dialog.children.iter().any(|node| {
+            node.name.as_deref() == Some("Notifications cleared") && node.live.is_some()
+        }));
+        assert!(
+            dialog
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Undo clear notifications"))
+        );
+
+        assert_eq!(
+            h.host.synthetic_accessibility_rect(&[0, 0, 3]),
+            Some(h.host.qs_notification_undo_rect())
+        );
+        assert!(h.host.focus_synthetic_accessibility(&[0, 0, 3]));
+        assert!(
+            h.host
+                .handle_qs_notification_keyboard(&Key::Named(NamedKey::Enter))
+        );
+        let restored: Vec<_> = h
+            .chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        assert_eq!(&restored[..original.len()], original);
+        assert_eq!(restored.last(), Some(&arrived));
+    }
+
     /// Keep visual review on the exact production draw path at 1:1 pixels.
     /// This is intentionally opt-in because it needs a wgpu adapter and
     /// creates review PNGs, but its fixture has more than the former
@@ -19729,6 +20019,14 @@ mod overlay_event_absorb_tests {
                     root.join(format!("{layout}-{position}.png")),
                 );
             }
+            h.chrome.borrow_mut().clear_notification_history();
+            let scene = paint_scene(&mut h, &theme);
+            let mut renderer = OffscreenRenderer::new(width, height);
+            renderer.render_png(
+                &scene,
+                Color::BLACK,
+                root.join(format!("{layout}-after-clear.png")),
+            );
         }
         println!("notification-history review PNGs: {}", root.display());
     }
