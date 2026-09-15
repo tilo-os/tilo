@@ -115,7 +115,6 @@ pub fn store_card(
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(if large_text { 6.0 } else { 10.0 })
             .push(Box::new(
                 Row::new()
                     .no_wrap()
@@ -129,12 +128,27 @@ pub fn store_card(
                     )),
             ));
         if !large_text {
+            // Intrinsic `Column`s deliberately use Taffy's block stack so a
+            // scroll body can grow beyond its viewport. Block does not apply
+            // flex `gap`, though, which previously made the description and
+            // action row paint on top of the identity row on a phone-sized
+            // Store window. These are real layout children rather than a
+            // cosmetic margin, so the measured card height and painted rhythm
+            // stay in agreement for every description length.
+            column = column.push(Box::new(
+                Container::new().with_no_padding().with_height(8.0),
+            ));
             column = column.push(Box::new(
                 Text::new(&item.description)
                     .with_scaled_size(14.0)
                     .with_color(theme.text_dim),
             ));
         }
+        column = column.push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_height(if large_text { 6.0 } else { 8.0 }),
+        ));
         column = column.push(Box::new(
             Row::new()
                 .no_wrap()
