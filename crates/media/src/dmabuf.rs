@@ -14,6 +14,7 @@
 //! long as the GPU still reads from it, and no longer. An importer that hands
 //! the fd to Vulkan must `dup` it: Vulkan takes ownership of what it is given.
 
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
 
 /// Linear (untiled) layout — the only modifier a plain
@@ -130,6 +131,7 @@ impl Default for Colorimetry {
 /// it and how wide a row is. Several planes may name the *same* buffer at
 /// different offsets (the usual single-fd NV12 export) or each carry its own.
 #[derive(Debug)]
+#[cfg(unix)]
 pub struct DmabufPlane {
     pub fd: OwnedFd,
     pub offset: u32,
@@ -138,6 +140,7 @@ pub struct DmabufPlane {
 
 /// A decoded picture living in GPU memory, described well enough to import.
 #[derive(Debug)]
+#[cfg(unix)]
 pub struct DmabufImage {
     pub planes: Vec<DmabufPlane>,
     pub fourcc: u32,
@@ -147,6 +150,7 @@ pub struct DmabufImage {
     pub colorimetry: Colorimetry,
 }
 
+#[cfg(unix)]
 impl DmabufImage {
     /// Whether the layout is one a plain external-memory import can read:
     /// linear, or a producer that declined to state a modifier.
@@ -190,62 +194,31 @@ impl DmabufImage {
 
 /// Whether two planes' fds refer to the same underlying file description.
 /// dmabufs are anonymous, so device+inode is the only identity available.
+#[cfg(unix)]
 fn same_file(a: &DmabufPlane, b: &DmabufPlane) -> bool {
-    use std::os::fd::AsRawFd;
-    let stat = |fd: i32| -> Option<(u64, u64)> {
-        // Safety: `fd` is a live, owned descriptor for the duration of the
-        // call; `stat` is zero-initialised POSIX plain-old-data.
-        unsafe {
-            let mut st: libc_stat = std::mem::zeroed();
-            if fstat_raw(fd, &raw mut st) == 0 {
-                Some((st.st_dev, st.st_ino))
-            } else {
-                None
-            }
-        }
+    use std::os::unix::fs::MetadataExt;
+    let stat = |fd: &OwnedFd| -> Option<(u64, u64)> {
+        // Let std select the target's actual stat ABI. The temporary File owns
+        // a duplicate, so metadata inspection cannot close the producer's fd.
+        let file = std::fs::File::from(fd.try_clone().ok()?);
+        let metadata = file.metadata().ok()?;
+        Some((metadata.dev(), metadata.ino()))
     };
-    match (stat(a.fd.as_raw_fd()), stat(b.fd.as_raw_fd())) {
+    match (stat(&a.fd), stat(&b.fd)) {
         (Some(x), Some(y)) => x == y,
         _ => false,
     }
-}
-
-// A minimal `struct stat` binding. `media` deliberately carries no `libc`
-// dependency (it is a pure-Rust crate outside the decode feature), and only
-// two fields are read, so the layout below covers x86_64/aarch64 Linux where
-// `st_dev` and `st_ino` are the first two 64-bit members.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct libc_stat {
-    st_dev: u64,
-    st_ino: u64,
-    _rest: [u64; 16],
-}
-
-unsafe extern "C" {
-    #[link_name = "fstat"]
-    fn fstat_raw(fd: i32, buf: *mut libc_stat) -> i32;
 }
 
 /// The number of bytes a dmabuf holds, from `lseek(fd, 0, SEEK_END)`. dmabufs
 /// implement seek precisely so an importer can size the allocation it needs
 /// when the producer only described plane offsets. `None` when the fd does
 /// not support seeking.
+#[cfg(unix)]
 pub fn dmabuf_size(fd: &OwnedFd) -> Option<u64> {
-    use std::os::fd::AsRawFd;
-    // Safety: `fd` is a live owned descriptor; `lseek` on it has no effect on
-    // any mapping and does not transfer ownership.
-    let end = unsafe { lseek_raw(fd.as_raw_fd(), 0, SEEK_END) };
-    // `lseek` reports failure as -1 and a size otherwise, so `try_from` is the
-    // error check: anything negative is the error path, not a huge buffer.
-    u64::try_from(end).ok()
-}
-
-const SEEK_END: i32 = 2;
-
-unsafe extern "C" {
-    #[link_name = "lseek64"]
-    fn lseek_raw(fd: i32, offset: i64, whence: i32) -> i64;
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::from(fd.try_clone().ok()?);
+    file.seek(SeekFrom::End(0)).ok()
 }
 
 #[cfg(test)]
@@ -264,6 +237,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn linearity_covers_the_unstated_modifier_but_not_a_tiled_one() {
         let img = |modifier| DmabufImage {
             planes: vec![],
@@ -284,6 +258,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn describe_names_the_format_and_layout() {
         let img = DmabufImage {
             planes: vec![],
@@ -297,6 +272,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn dmabuf_size_reads_the_end_offset_of_a_real_fd() {
         // A plain file stands in for a dmabuf here: both answer SEEK_END, and
         // this proves the binding returns the byte length rather than -1.
@@ -315,6 +291,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn planes_sharing_one_fd_are_detected_as_one_buffer() {
         let dir = std::env::temp_dir().join(format!("qos-dmabuf-share-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

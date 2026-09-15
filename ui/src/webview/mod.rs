@@ -245,6 +245,7 @@ pub struct MediaElementInfo {
 /// One plane of a [`DmabufFrame`]: its own fd + layout. A GPU-tiled RGBA
 /// buffer has 2 planes (pixels + compression metadata); a linear one, 1.
 #[derive(Debug)]
+#[cfg(unix)]
 pub struct DmabufPlane {
     pub fd: std::os::fd::OwnedFd,
     pub stride: u32,
@@ -256,6 +257,7 @@ pub struct DmabufPlane {
 /// engine produces one and only the wgpu import consumes it. `fourcc` +
 /// `modifier` describe the pixel format and tiling.
 #[derive(Debug)]
+#[cfg(unix)]
 pub struct DmabufFrame {
     pub planes: Vec<DmabufPlane>,
     pub fourcc: u32,
@@ -283,6 +285,7 @@ pub trait WebViewEngine: Send + Sync {
 
     /// The zero-copy path, if a GPU frame is pending. Default: none — SHM
     /// and test engines deliver pixels through [`frames`](Self::frames).
+    #[cfg(unix)]
     fn take_dmabuf(&self) -> Option<DmabufFrame> {
         None
     }
