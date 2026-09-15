@@ -121,6 +121,7 @@ jobs:
           context: .
           file: os/kernel/Containerfile
           platforms: ${{ matrix.platform }}
+          load: true
           push: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
           tags: code.sandbox.example/qos/qos-kernel:native-${{ github.sha }}-${{ matrix.arch }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -135,6 +136,44 @@ jobs:
           # compile.
           cache-to: type=registry,ref=code.sandbox.example/qos/qos-kernel-buildcache:${{ matrix.arch }},mode=min
           provenance: false
+
+      - name: Install native kernel acceptance tools
+        run: |
+          set -euo pipefail
+          case '${{ matrix.arch }}' in
+            aarch64) apt_qemu=qemu-system-arm; fedora_qemu=qemu-system-aarch64;;
+            x86_64) apt_qemu=qemu-system-x86; fedora_qemu=qemu-system-x86;;
+            *) exit 2;;
+          esac
+          if command -v apt-get >/dev/null; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends gcc libc6-dev binutils cpio gzip python3 rpm rpm2cpio "$apt_qemu"
+          else
+            sudo -n dnf install -y gcc glibc-devel binutils cpio gzip python3 rpm "$fedora_qemu"
+          fi
+
+      - name: Boot the packaged native kernel and verify module signatures
+        run: |
+          set -euo pipefail
+          mkdir kernel-repo
+          container=$(docker create 'code.sandbox.example/qos/qos-kernel:native-${{ github.sha }}-${{ matrix.arch }}' /bin/true)
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container":/repo/. kernel-repo/
+          shopt -s nullglob
+          packages=(kernel-repo/qos-kernel-core-*.rpm)
+          test "${#packages[@]}" -eq 1
+          bash os/kernel/tests/test-rpm.sh "${packages[0]}" kernel-acceptance
+
+      - name: Preserve kernel acceptance evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: kernel-acceptance-${{ matrix.arch }}
+          path: |
+            kernel-acceptance/serial.log
+            kernel-acceptance/inputs.json
+            kernel-acceptance/rpm.sha256
+          if-no-files-found: warn
 
       # Sign each immutable child before the promotion job verifies both.
       - name: Restore checksum-pinned Cosign
