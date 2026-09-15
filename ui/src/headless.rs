@@ -287,6 +287,8 @@ pub struct InspectionNode {
     pub focusable: bool,
     /// `[x, y, width, height]` in logical window coordinates.
     pub rect: [f64; 4],
+    /// Absolute logical clip applied to children, if the widget clips them.
+    pub child_clip: Option<[f64; 4]>,
     pub semantics: Option<AccessNode>,
     pub children: Vec<InspectionNode>,
 }
@@ -420,6 +422,7 @@ pub struct FrameHarness {
     dispatching_touch_pointer: bool,
     viewport: (u32, u32),
     last_layout_viewport: Option<(u32, u32)>,
+    input_scale: f64,
     /// Records this driver has open, when the app under test uses them —
     /// without this a record-aware app would be driven against its room
     /// index instead of the record it checked out, testing something the
@@ -676,6 +679,7 @@ impl FrameHarness {
             dispatching_touch_pointer: false,
             viewport,
             last_layout_viewport: None,
+            input_scale: 1.0,
             focused: None,
             author: author(),
             action_registry: qos_actions::ActionRegistry::new(),
@@ -894,13 +898,23 @@ impl FrameHarness {
     /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
     /// this never runs a separate screenshot-only widget pipeline.
     pub fn render_png(&self, out: &std::path::Path) {
+        self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
+    }
+
+    /// Capture the composited native-window appearance, including its theme
+    /// background. Use this for rendered contrast measurements.
+    pub fn render_window_png(&self, out: &std::path::Path) {
+        self.render_png_on(out, self.theme.bg_app);
+    }
+
+    fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
         self.drain_component_wakes();
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let (w, h) = self.viewport;
         let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
-        renderer.render_png(&self.scene, vello::peniko::Color::TRANSPARENT, out);
+        renderer.render_png(&self.scene, background, out);
     }
 
     /// Drive a record-aware app: the live document is a record's, and the
@@ -1960,7 +1974,7 @@ impl FrameHarness {
         let t_event = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.root.handle_event(
             event,
-            1.0,
+            self.input_scale,
             &self.modifiers,
             &mut self.state.doc,
             &self.state.root,
@@ -2281,7 +2295,7 @@ impl FrameHarness {
         self.pump_component_wakes();
         self.send(&WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(x, y),
+            position: winit::dpi::PhysicalPosition::new(x * self.input_scale, y * self.input_scale),
         });
         self.send(&WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
@@ -2323,7 +2337,7 @@ impl FrameHarness {
         self.send(&WindowEvent::Touch(winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
             phase,
-            location: winit::dpi::PhysicalPosition::new(x, y),
+            location: winit::dpi::PhysicalPosition::new(x * self.input_scale, y * self.input_scale),
             force: None,
             id: 0,
         }));
@@ -2412,9 +2426,19 @@ impl FrameHarness {
         }
     }
 
-    /// Send one vertical wheel scroll of `(dx, dy)` line-deltas through the
-    /// production event path. Content scrollables handle the wheel
-    /// regardless of pointer position, so no prior cursor move is needed.
+    /// Set the physical-to-logical input scale; layout and capture remain logical pixels.
+    /// # Errors
+    /// Rejects a non-finite or non-positive scale.
+    pub fn set_input_scale(&mut self, scale: f64) -> Result<(), String> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err("input scale must be finite and positive".into());
+        }
+        self.input_scale = scale;
+        Ok(())
+    }
+
+    /// Send wheel line-deltas at the last pointer position. Move the pointer
+    /// inside the intended content viewport first, as a live user would.
     pub fn scroll(&mut self, dx: f64, dy: f64) {
         self.pump_component_wakes();
         // Deltas are line counts chosen by the driver's own caller (test
@@ -2752,6 +2776,7 @@ fn collect_inspection(
             test_id: None,
             focusable: false,
             rect: [0.0; 4],
+            child_clip: None,
             semantics: None,
             children: vec![],
         };
@@ -2770,6 +2795,9 @@ fn collect_inspection(
         test_id: widget.test_id().map(str::to_owned),
         focusable: widget.is_focusable(),
         rect: [rect.x0, rect.y0, rect.width(), rect.height()],
+        child_clip: widget
+            .child_clip_rect()
+            .map(|r| [r.x0, r.y0, r.width(), r.height()]),
         semantics: widget.accessibility(),
         children,
     }

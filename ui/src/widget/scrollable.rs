@@ -901,13 +901,15 @@ impl Scrollable {
     /// plain wheel (a tilt wheel's own X delta passes through untouched).
     /// Returns `true` when the view actually moved, so an at-the-edge
     /// wheel can bubble to an outer/sibling scroll region.
-    fn on_wheel(&mut self, delta: &MouseScrollDelta, shift: bool) -> bool {
+    fn on_wheel(&mut self, delta: &MouseScrollDelta, shift: bool, scale_factor: f64) -> bool {
         // winit y-positive means "scroll up", but content is drawn at
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
         const LINE_PX: f32 = 60.0;
         let (mut dx, mut dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
-            MouseScrollDelta::PixelDelta(pp) => (-px(pp.x), -px(pp.y)),
+            MouseScrollDelta::PixelDelta(pp) => {
+                (-px(pp.x / scale_factor), -px(pp.y / scale_factor))
+            }
         };
         if shift && self.axis_has_horizontal() && dx == 0.0 {
             dx = dy;
@@ -923,6 +925,9 @@ impl Scrollable {
 /// edge when taffy's `content_size` under-reports.
 fn max_bottom_edge(w: &dyn Widget) -> f64 {
     let mut deepest = w.get_rect().y1;
+    if w.child_clip_rect().is_some() {
+        return deepest;
+    }
     for c in w.children() {
         deepest = deepest.max(max_bottom_edge(c));
     }
@@ -930,6 +935,9 @@ fn max_bottom_edge(w: &dyn Widget) -> f64 {
 }
 
 impl Widget for Scrollable {
+    fn child_clip_rect(&self) -> Option<Rect> {
+        Some(self.content_viewport_rect())
+    }
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         // Drives click-and-hold auto-repeat while the host pumps frames.
         if self.hold.is_some() {
@@ -1029,8 +1037,13 @@ impl Widget for Scrollable {
                     ),
                 );
                 let cl = taffy.layout(child_node).copied().unwrap_or_default();
-                self.content_w = cl.content_size.width.max(cl.size.width);
-                self.content_h = cl.content_size.height.max(cl.size.height);
+                if c.child_clip_rect().is_some() {
+                    self.content_w = cl.size.width;
+                    self.content_h = cl.size.height;
+                } else {
+                    self.content_w = cl.content_size.width.max(cl.size.width);
+                    self.content_h = cl.content_size.height.max(cl.size.height);
+                }
 
                 // taffy's content_size can still cap at the available block for
                 // a flex column shorter than the literal sum of its children.
@@ -1069,9 +1082,11 @@ impl Widget for Scrollable {
             transform,
             &self.content_viewport_rect(),
         );
+        let previous_viewport = presence.push_viewport(self.content_viewport_rect());
         if let Some(c) = &mut self.child {
             c.draw(scene, transform, tr, theme, presence);
         }
+        presence.pop_viewport(previous_viewport);
         scene.pop_layer();
         self.draw_scrollbars(scene, transform, theme);
     }
@@ -1108,6 +1123,10 @@ impl Widget for Scrollable {
         self.draw_scrollbars(scene, transform, theme);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered pointer capture, child-first wheel dispatch, and clip routing share one event boundary"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1173,12 +1192,32 @@ impl Widget for Scrollable {
             _ => {}
         }
         if let WindowEvent::MouseWheel { delta, .. } = event {
-            if !self.content_viewport_rect().contains(self.last_cursor) {
+            if *handled || !self.content_viewport_rect().contains(self.last_cursor) {
                 return;
+            }
+            // The deepest region under the pointer gets first refusal. At its
+            // boundary it leaves the event unhandled so this viewport can move.
+            if let Some(child) = &mut self.child
+                && let Some(child_node) = self.child_node
+            {
+                child.handle_event(
+                    event,
+                    scale_factor,
+                    mods,
+                    doc,
+                    obj,
+                    handled,
+                    focus_target,
+                    child_node,
+                    taffy,
+                );
+                if *handled {
+                    return;
+                }
             }
             // Only consume when it moved the view, so an at-the-edge wheel
             // bubbles to an outer/sibling scroll region.
-            *handled = self.on_wheel(delta, mods.state().shift_key());
+            *handled = self.on_wheel(delta, mods.state().shift_key(), scale_factor);
             return;
         }
 
@@ -1421,6 +1460,7 @@ mod tests {
     struct EventSpy {
         rect: Rect,
         pointer_events: Rc<Cell<u32>>,
+        draw_viewport: Rc<Cell<Option<Rect>>>,
         activations: Rc<Cell<u32>>,
     }
 
@@ -1460,8 +1500,9 @@ mod tests {
             _transform: Affine,
             _text_renderer: &mut TextRenderer,
             _theme: &Theme,
-            _presence: &PresenceCtx,
+            presence: &PresenceCtx,
         ) {
+            self.draw_viewport.set(presence.viewport.get());
         }
 
         fn handle_event(
@@ -1507,6 +1548,30 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_draw_publishes_and_restores_the_content_viewport() {
+        let observed = Rc::new(Cell::new(None));
+        let mut scroll = Scrollable::new_vertical().with_child(Box::new(EventSpy {
+            rect: Rect::ZERO,
+            pointer_events: Rc::default(),
+            activations: Rc::default(),
+            draw_viewport: observed.clone(),
+        }));
+        scroll.set_viewport_rect(Rect::new(20.0, 30.0, 420.0, 330.0));
+        let presence = PresenceCtx::default();
+        let outer = Rect::new(0.0, 0.0, 800.0, 600.0);
+        presence.viewport.set(Some(outer));
+        scroll.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &presence,
+        );
+        assert_eq!(observed.get(), Some(scroll.content_viewport_rect()));
+        assert_eq!(presence.viewport.get(), Some(outer));
+    }
+
+    #[test]
     fn bottom_content_inset_blocks_pointer_and_focus_from_invisible_content() {
         let pointer_events = Rc::new(Cell::new(0));
         let activations = Rc::new(Cell::new(0));
@@ -1514,6 +1579,7 @@ mod tests {
             .with_child(Box::new(EventSpy {
                 rect: Rect::ZERO,
                 pointer_events: Rc::clone(&pointer_events),
+                draw_viewport: Rc::default(),
                 activations: Rc::clone(&activations),
             }))
             .with_height(100.0)
