@@ -8229,11 +8229,13 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "async-imap",
+ "atomic-file",
  "automerge",
  "futures",
  "lettre",
  "mail-builder",
  "mail-parser",
+ "qdoc",
  "qos-actions",
  "qos-app",
  "rcgen 0.13.2",

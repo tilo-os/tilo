@@ -124,45 +124,6 @@ pub fn format_absolute(ts_min: i64) -> String {
     )
 }
 
-/// Resolve the directory attachments are saved into. Honors
-/// `QOS_MAIL_DOWNLOADS`, then `$HOME/Downloads`, then the system temp dir.
-pub fn downloads_dir() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("QOS_MAIL_DOWNLOADS")
-        && !dir.is_empty()
-    {
-        return std::path::PathBuf::from(dir);
-    }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        return std::path::Path::new(&home).join("Downloads");
-    }
-    std::env::temp_dir()
-}
-
-/// Write attachment `bytes` to the downloads directory under a sanitised
-/// `filename` (final path component only, never an absolute/parent path), and
-/// return the file it was written to. Real IO — this is the genuine "save
-/// attachment" action, not a stub.
-///
-/// # Errors
-///
-/// Returns `Err` if the downloads directory cannot be created or the file
-/// cannot be written.
-pub fn save_download(filename: &str, bytes: &[u8]) -> std::io::Result<std::path::PathBuf> {
-    let safe = filename.rsplit(['/', '\\']).next().unwrap_or("attachment");
-    let safe = if safe.trim().is_empty() {
-        "attachment"
-    } else {
-        safe
-    };
-    let dir = downloads_dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(safe);
-    std::fs::write(&path, bytes)?;
-    Ok(path)
-}
-
 fn weekday(day: i64) -> &'static str {
     // 1970-01-01 was a Thursday (index 4 if week starts Sun=0).
     const NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

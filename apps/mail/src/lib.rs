@@ -61,6 +61,7 @@
 pub mod account;
 pub mod actions;
 pub mod app;
+pub mod attachment_store;
 pub mod autoconfig;
 pub mod compose;
 pub mod doc;
