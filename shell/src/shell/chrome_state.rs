@@ -110,6 +110,10 @@ pub struct OverlayFlags {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "this is a backwards-compatible JSON snapshot produced by the Clocks app; active, stopwatch, paused, and overlay are independent wire fields, and replacing them with enums would change the external schema"
+)]
 pub struct ClockActivity {
     #[serde(default)]
     pub version: u8,
