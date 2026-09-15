@@ -180,7 +180,7 @@ fn render_onboarding_matrix() {
         ("large-text", Theme::dark().with_text_scale(1.3)),
         ("high-contrast", Theme::high_contrast().with_ui_scale(1.25)),
     ] {
-        for (width, height) in [(1280, 720), (960, 540)] {
+        for (width, height) in [(1280, 720), (1280, 800), (960, 540)] {
             for state in ["intro", "protect", "backup", "ready", "tour"] {
                 let mut view = state_view(state);
                 let mut renderer = OffscreenRenderer::new(width, height);
