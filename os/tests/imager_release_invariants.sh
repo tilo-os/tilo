@@ -19,6 +19,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
   "$repo/apps/imager/packaging/publish-winget.sh" \
+  "$repo/os/dev/use-published-image.sh" \
   "$repo/os/dev/test-installer-cycle.sh" \
   && ok 'imager release and promotion scripts parse' \
   || bad 'an imager release script does not parse'
@@ -299,6 +300,38 @@ grep -Fq 'key: github-assets-all-v1-' "$workflow" \
   && ok 'installer media restores pinned inputs and can authenticate/verify frozen images' \
   || bad 'installer-media release lane lacks immutable inputs or private-image prerequisites'
 
+published_image="$repo/os/dev/use-published-image.sh"
+if grep -Fq 'QOS_INSTALLER_OS_IMAGE' "$workflow" \
+   && grep -Fq 'published_os_image' "$workflow" \
+   && grep -Fq './os/dev/use-published-image.sh "$QOS_PUBLISHED_OS_IMAGE"' "$workflow" \
+   && ! grep -Fq './os/dev/build-image.sh' "$workflow" \
+   && grep -Fq 'code.podesta.ai/qos/qos@sha256:' "$published_image" \
+   && grep -Fq 'cosign verify --key "$verify_key" "$image"' "$published_image" \
+   && grep -Fq 'cosign verify-attestation --key "$verify_key"' "$published_image" \
+   && grep -Fq 'externalParameters.generation' "$published_image" \
+   && grep -Fq 'cp -- "$REGISTRY_AUTH_FILE" "$auth_dir/config.json"' "$published_image" \
+   && grep -Fq 'export DOCKER_CONFIG="$auth_dir"' "$published_image" \
+   && grep -Fq 'trap cleanup_auth EXIT' "$published_image" \
+   && grep -Fq 'podman manifest inspect "${manifest_args[@]}" "$image"' "$published_image" \
+   && grep -Fq 'externalParameters.children | sort_by(.architecture)' "$published_image" \
+   && grep -Fq 'generation_image="code.podesta.ai/qos/qos:gen$generation"' "$published_image" \
+   && grep -Fq 'generation_digest' "$published_image" \
+   && grep -Fq 'published generation tag gen$generation binds' "$published_image" \
+   && grep -Fq 'QOS_EXPECTED_OS_SOURCE_REVISION: ${{ github.sha }}' "$workflow" \
+   && grep -Fq 'resolvedDependencies[]?; .uri == $source' "$published_image" \
+   && grep -Fq 'podman tag "$image" "$QOS_IMAGE"' "$published_image"; then
+  ok 'installer media consume one verified, digest-pinned published OS generation'
+else
+  bad 'installer media can allocate an unpublished generation or consume an unverified OS source'
+fi
+
+if grep -Fq "QOS_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" "$workflow" \
+   && grep -Fq "QOS_EFI_SIGNING_CERT_SHA256: \${{ startsWith(github.ref, 'refs/tags/imager-v')" "$workflow"; then
+  ok 'production PCR signing interfaces are withheld from manual imager rehearsals'
+else
+  bad 'manual imager rehearsals can receive a production PCR signing interface'
+fi
+
 cycle="$repo/os/dev/test-installer-cycle.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
@@ -325,7 +358,7 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'embedded username did not reach the account screen' "$cycle" \
   && grep -Fq 'customization modified the released installer medium' "$cycle" \
   && grep -Fq 'install_mode=%s' "$cycle" \
-  && grep -Fq '"$install_mode" "$storage"' "$cycle" \
+  && grep -Fq '"$unlock" "$install_mode" "$storage"' "$cycle" \
   && grep -Fq 'cold_boot_to_greeter_seconds=' "$cycle" \
   && grep -Fq 'boot-timing.txt' "$cycle" \
   && grep -Fq 'Windows filesystem bytes changed during alongside install' "$cycle" \
@@ -353,12 +386,15 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && ! grep -Fq 'QOS_INSTALLER_CYCLE_STORAGE:-$out/storage' "$cycle" \
   && ! grep -Fq 'cp -f "$run/serial.log" "$out/installer-serial.log"' "$cycle" \
   && grep -Fq "wait_screen 08-oobe-intro" "$cycle" \
-  && grep -Fq "wait_screen 09-oobe-ready" "$cycle" \
+  && grep -Fq "wait_screen 09-oobe-backup" "$cycle" \
+  && grep -Fq '"$vm" keys tab tab tab spc tab ret' "$cycle" \
+  && grep -Fq "wait_screen 10-oobe-ready" "$cycle" \
   && grep -Fq '"$vm" keys tab tab ret' "$cycle" \
-  && grep -Fq "wait_screen 10-tour-move" "$cycle" \
-  && grep -Fq "wait_screen 11-tour-arrange" "$cycle" \
-  && grep -Fq "wait_screen 12-tour-share" "$cycle" \
-  && grep -Fq "wait_screen 13-desktop-config" "$cycle" \
+  && grep -Fq "wait_screen 11-tour-move" "$cycle" \
+  && grep -Fq "wait_screen 12-tour-arrange" "$cycle" \
+  && grep -Fq "wait_screen 13-tour-share" "$cycle" \
+  && grep -Fq "wait_screen 14-tour-start" "$cycle" \
+  && grep -Fq "wait_screen 15-desktop-config" "$cycle" \
   && ! grep -Eq '(^|[[:space:]])(ssh|journal)([[:space:]]|$)|--stub-ui|--shots' "$cycle"; then
   ok 'trusted main and tagged media must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
 else

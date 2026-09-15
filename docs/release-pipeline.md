@@ -125,6 +125,19 @@ A manual **Release / OS** dispatch is also build-only by default. Enable its
 This runs the same image, reproducibility, and VM gates as a safe integration
 rehearsal while the production signing key is unavailable.
 
+Publishing allocates both `imager-linux-x86_64` and
+`imager-linux-aarch64`. Each native lane independently rebuilds, reseals,
+boots, signs, generates an SBOM, and attests its child manifest with the same
+source revision and generation. Only after both descriptors agree does the
+generic promotion job construct an OCI index containing exactly those two
+digests, sign it, attest provenance which names both children, and move
+the immutable `genN`, source, and main-commit tags to that index. Every durable
+write is read back and an exact retry is accepted; a conflicting immutable tag
+fails closed. Only then does `latest` move as the release commit point.
+No architecture-specific child is promoted as an update channel. Non-publishing
+pull requests and rehearsals retain the single generic x86-64 lane, so absent
+native release capacity does not block ordinary integration feedback.
+
 ## Forgejo-specific rules
 
 - Do not add `permissions:`. Forgejo ignores it; repository capabilities belong

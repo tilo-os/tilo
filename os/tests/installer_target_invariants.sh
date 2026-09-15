@@ -232,10 +232,14 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq 'if [[ "$publish" == true ]]; then' "$os_image_workflow" \
    && grep -Fq "echo 'QOS_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq "echo 'QOS_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
-   && grep -Fq 'if [[ -n "$QOS_PCR_PREDICTION_SIGNER" ]]; then' "$os_image_workflow" \
+   && grep -Fq 'PROTECTED_PCR_PREDICTION_SIGNER:' "$os_image_workflow" \
+   && grep -Fq "github.event.inputs.publish == 'true'" "$os_image_workflow" \
+   && ! grep -Fq 'QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}' "$os_image_workflow" \
+   && grep -Fq 'QOS_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
+   && grep -Fq 'QOS_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
    && grep -Fq 'sign-target-prediction.sh "$repro_image"' "$os_image_workflow" \
    && grep -Fq 'enable-openid-connect: true' "$os_image_workflow" \
-   && grep -Fq 'QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}' \
+   && grep -Fq "QOS_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" \
       "$repo_root/.forgejo/workflows/release-imager.yml"; then
   ok "release prediction path uses systemd-measure and a broker signer without private-key custody"
 else

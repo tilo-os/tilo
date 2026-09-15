@@ -14,6 +14,11 @@ on:
         type: boolean
         required: false
         default: false
+      published_os_image:
+        description: "Optional signed qOS manifest-list digest; empty uses vars.QOS_INSTALLER_OS_IMAGE."
+        type: string
+        required: false
+        default: ""
 
 concurrency:
   # Tagged package promotion and the website manifest are mutable "latest"
@@ -51,8 +56,13 @@ jobs:
     env:
       REGISTRY_AUTH_FILE: /tmp/qos-registry-auth-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}.json
       QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
-      QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}
-      QOS_EFI_SIGNING_CERT_SHA256: ${{ vars.QOS_EFI_SIGNING_CERT_SHA256 }}
+      QOS_PUBLISHED_OS_IMAGE: ${{ github.event.inputs.published_os_image || vars.QOS_INSTALLER_OS_IMAGE }}
+      QOS_EXPECTED_OS_SOURCE_REVISION: ${{ github.sha }}
+      # A manual rehearsal receives no production signing interface. The
+      # protected-tag broker is exposed only for the release path that requires
+      # newly signed live/target UKIs in the installer overlay.
+      QOS_PCR_PREDICTION_SIGNER: ${{ startsWith(github.ref, 'refs/tags/imager-v') && vars.QOS_PCR_PREDICTION_SIGNER || '' }}
+      QOS_EFI_SIGNING_CERT_SHA256: ${{ startsWith(github.ref, 'refs/tags/imager-v') && vars.QOS_EFI_SIGNING_CERT_SHA256 || '' }}
       QOS_REQUIRE_PCR_PREDICTION: ${{ startsWith(github.ref, 'refs/tags/imager-v') && '1' || '0' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -88,12 +98,15 @@ jobs:
           printf '%s' "$QOS_REGISTRY_TOKEN" | podman login \
             --authfile "$REGISTRY_AUTH_FILE" code.podesta.ai \
             --username '${{ github.actor }}' --password-stdin
-      - name: Build the tested qOS live installer
+      - name: Build the tested qOS live installer from a published OS
         run: |
           set -euo pipefail
-          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
-          export QOS_REQUIRE_WPE_SIGNATURE=1
-          ./os/dev/build-image.sh
+          test -n "$QOS_PUBLISHED_OS_IMAGE" || {
+            echo '::error::set QOS_INSTALLER_OS_IMAGE to a signed, digest-pinned multi-architecture qOS release'
+            exit 1
+          }
+          generation="$(./os/dev/use-published-image.sh "$QOS_PUBLISHED_OS_IMAGE")"
+          echo "::notice::installer source is verified published generation $generation ($QOS_PUBLISHED_OS_IMAGE)"
           ./os/dev/build-custom-installer.sh
           package_args=(os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}")
           if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then

@@ -83,15 +83,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-push:
+  plan:
     runs-on: runner
+    outputs:
+      build-matrix: ${{ steps.matrix.outputs.build-matrix }}
+      publish: ${{ steps.matrix.outputs.publish }}
+    steps:
+      - name: Select validation or native publication lanes
+        id: matrix
+        env:
+          CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+        run: |
+          set -euo pipefail
+          publish=false
+          if [[ $GITHUB_REF == refs/tags/v* \
+                || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
+                     && ${REQUESTED_PUBLISH:-false} == true ) \
+                || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
+                     && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
+            publish=true
+          fi
+          if [[ $publish == true ]]; then
+            matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
+          else
+            matrix='{"include":[{"arch":"x86_64","runner":"runner"}]}'
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    needs: plan
+    strategy:
+      fail-fast: true
+      matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
+    runs-on: ${{ matrix.runner }}
     enable-openid-connect: true
-    env:
-      QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}
-      QOS_EFI_SIGNING_CERT_SHA256: ${{ vars.QOS_EFI_SIGNING_CERT_SHA256 }}
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Require the selected native OS architecture
+        run: ./os/dev/assert-native-arch.sh "${{ matrix.arch }}"
 
       - name: Restore checksum-verified GitHub build inputs
         id: github-assets-cache
@@ -388,6 +421,8 @@ jobs:
         env:
           CONTINUOUS_RELEASE: ${{ vars.QOS_CONTINUOUS_OS_RELEASE }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.QOS_CONTINUOUS_OS_RELEASE == '1')) && vars.QOS_PCR_PREDICTION_SIGNER || '' }}
+          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.publish == 'true') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.QOS_CONTINUOUS_OS_RELEASE == '1')) && vars.QOS_EFI_SIGNING_CERT_SHA256 || '' }}
         run: |
           publish=false
           validate=false
@@ -404,7 +439,17 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
           if [[ "$publish" == true ]]; then
+            test -n "$PROTECTED_PCR_PREDICTION_SIGNER" || {
+              echo '::error::publishing requires QOS_PCR_PREDICTION_SIGNER'
+              exit 1
+            }
+            test -n "$PROTECTED_EFI_SIGNING_CERT_SHA256" || {
+              echo '::error::publishing requires QOS_EFI_SIGNING_CERT_SHA256'
+              exit 1
+            }
             echo 'QOS_REQUIRE_PCR_PREDICTION=1' >> "$GITHUB_ENV"
+            echo "QOS_PCR_PREDICTION_SIGNER=$PROTECTED_PCR_PREDICTION_SIGNER" >> "$GITHUB_ENV"
+            echo "QOS_EFI_SIGNING_CERT_SHA256=$PROTECTED_EFI_SIGNING_CERT_SHA256" >> "$GITHUB_ENV"
           else
             echo 'QOS_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
           fi
@@ -555,8 +600,8 @@ jobs:
           # (~8 min). With it, only the layers past the fix rerun
           # (~1-2 min).  mode=max exports intermediate layer caches
           # too, not just the final image.
-          cache-from: type=registry,ref=code.podesta.ai/qos/qos-buildcache:latest
-          cache-to: type=registry,ref=code.podesta.ai/qos/qos-buildcache:latest,mode=max
+          cache-from: type=registry,ref=code.podesta.ai/qos/qos-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.podesta.ai/qos/qos-buildcache:${{ matrix.arch }},mode=max
 
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
@@ -604,8 +649,9 @@ jobs:
         timeout-minutes: 60
         env:
           QOS_IMAGE: localhost/qos:release-candidate
-          QOS_RUN: /var/tmp/qos-projection-vm
-          QOS_OUTPUT: /var/tmp/qos-projection-image
+          QOS_RUN: /var/tmp/qos-projection-vm-${{ matrix.arch }}
+          QOS_OUTPUT: /var/tmp/qos-projection-image-${{ matrix.arch }}
+          QOS_VM_ARCH: ${{ matrix.arch }}
           QOS_USER: quickuser
           QOS_PASS: quickdesktop
           QOS_SKIP_BUILD: "1"
@@ -629,13 +675,33 @@ jobs:
           # out of the general runner image and install it only for deliberate
           # release validation; --no-install-recommends bounds download and
           # unpack cost. The image build itself is not repeated.
-          export DEBIAN_FRONTEND=noninteractive
-          sudo -n apt-get update
-          sudo -n apt-get install -y --no-install-recommends \
-            binutils btrfs-progs dosfstools fuse-overlayfs openssh-client ovmf podman \
-            jq qemu-system-x86 qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
-            uidmap util-linux
-          command -v jq podman qemu-img qemu-system-x86_64 skopeo sshpass socat systemd-repart >/dev/null
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            if [[ '${{ matrix.arch }}' == x86_64 ]]; then
+              qemu_packages='ovmf qemu-system-x86'
+            else
+              qemu_packages='qemu-efi-aarch64 qemu-system-arm'
+            fi
+            sudo -n apt-get install -y --no-install-recommends \
+              binutils btrfs-progs dosfstools fuse-overlayfs openssh-client podman \
+              jq qemu-system-gui qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
+              uidmap util-linux $qemu_packages
+          elif command -v dnf >/dev/null; then
+            if [[ '${{ matrix.arch }}' == x86_64 ]]; then
+              qemu_packages='edk2-ovmf qemu-device-display-virtio-vga-gl qemu-system-x86-core'
+            else
+              qemu_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
+            fi
+            sudo -n dnf install -y binutils btrfs-progs dosfstools fuse-overlayfs \
+              jq openssh-clients podman qemu-img qemu-ui-egl-headless qemu-ui-opengl skopeo slirp4netns socat sshpass \
+              sudo systemd util-linux $qemu_packages
+          else
+            echo '::error::native OS runner must provide apt-get or dnf'
+            exit 1
+          fi
+          qemu_binary="qemu-system-${{ matrix.arch }}"
+          command -v jq podman qemu-img "$qemu_binary" skopeo sshpass socat systemd-repart >/dev/null
 
           first_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/qos-image.tar | sha256sum | awk '{print $1}')"
           second_manifest="$(skopeo inspect --raw oci-archive:/var/tmp/qos-image-repro.tar | sha256sum | awk '{print $1}')"
@@ -759,7 +825,7 @@ jobs:
             # verification, so update clients cannot observe a half-published
             # release through a channel tag.
             digest_file="$(mktemp /var/tmp/qos-push-digest.XXXXXX)"
-            candidate="code.podesta.ai/qos/qos:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+            candidate="code.podesta.ai/qos/qos:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${{ matrix.arch }}"
             podman tag "$QOS_IMAGE" "$candidate"
             podman push --digestfile "$digest_file" "$candidate"
             digest="$(tr -d '[:space:]' < "$digest_file")"
@@ -846,7 +912,7 @@ jobs:
             --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/qos@${{ steps.release.outputs.digest }}"
 
-      - name: Verify candidate and promote release channels
+      - name: Verify and describe the native release child
         if: steps.release-mode.outputs.publish == 'true'
         run: |
           set -euo pipefail
@@ -879,10 +945,250 @@ jobs:
               echo "::error::release freshness attestation is absent, expired, or does not bind this release"
               exit 1
             }
-          while IFS= read -r tag; do
-            test -n "$tag" || continue
-            skopeo copy --all "docker://$image" "docker://$tag"
-          done <<'TAGS'
-          ${{ steps.meta.outputs.tags }}
-          TAGS
-          echo "::notice::promoted signed, attested generation $QOS_GENERATION"
+          registry_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
+          case '${{ matrix.arch }}' in
+            x86_64) expected_registry_arch=amd64 ;;
+            aarch64) expected_registry_arch=arm64 ;;
+          esac
+          [[ "$registry_arch" == "$expected_registry_arch" ]] || {
+            echo "::error::${{ matrix.arch }} candidate reports registry architecture $registry_arch"
+            exit 1
+          }
+          install -d release-child
+          jq -n \
+            --arg arch '${{ matrix.arch }}' \
+            --arg digest '${{ steps.release.outputs.digest }}' \
+            --argjson generation "$QOS_GENERATION" \
+            --arg source "$GITHUB_SHA" \
+            '{architecture:$arch,digest:$digest,generation:$generation,sourceRevision:$source}' \
+            > "release-child/${{ matrix.arch }}.json"
+          echo "::notice::verified signed generation $QOS_GENERATION child $image"
+
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: steps.release-mode.outputs.publish == 'true'
+        with:
+          name: qos-os-child-${{ matrix.arch }}
+          path: release-child/${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  promote-multiarch:
+    needs: [plan, build-and-push]
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: runner
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release-children
+      - name: Restore checksum-verified release tools
+        id: release-tools-cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: os/external-assets/cache
+          key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          restore-keys: |
+            github-assets-all-v1-
+      - name: Materialize immutable release tools
+        run: |
+          ./os/dev/cache-github-assets.sh
+          ./os/dev/install-cached-cosign.sh
+      - name: Install OCI index tooling
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends jq podman skopeo
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf install -y jq podman skopeo
+          else
+            echo '::error::promotion runner must provide apt-get or dnf'
+            exit 1
+          fi
+      - name: Authenticate multi-architecture promotion
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.podesta.ai
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Assemble, sign, attest, and promote the OS index
+        env:
+          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
+        run: |
+          set -euo pipefail
+          case "$COSIGN_KEY_REF" in
+            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
+            *) echo '::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key'; exit 1 ;;
+          esac
+          mapfile -t descriptors < <(find release-children -type f -name '*.json' -print | LC_ALL=C sort)
+          [[ ${#descriptors[@]} -eq 2 ]] || {
+            echo "::error::expected exactly two native child descriptors, found ${#descriptors[@]}"
+            exit 1
+          }
+          children="$(jq -sc '
+            sort_by(.architecture)
+            | if map(.architecture) == ["aarch64","x86_64"]
+                 and (map(.digest) | unique | length) == 2
+                 and (map(.generation) | unique | length) == 1
+                 and (map(.sourceRevision) | unique) == [env.GITHUB_SHA]
+                 and all(.[]; (.digest | test("^sha256:[0-9a-f]{64}$"))
+                              and (.generation | type == "number" and floor == . and . >= 1))
+              then . else error("invalid or inconsistent native child descriptors") end
+          ' "${descriptors[@]}")"
+          generation="$(jq -er '.[0].generation' <<<"$children")"
+          child_dependencies='[]'
+          for arch in x86_64 aarch64; do
+            digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
+            image="code.podesta.ai/qos/qos@$digest"
+            case "$arch" in x86_64) expected_registry_arch=amd64 ;; aarch64) expected_registry_arch=arm64 ;; esac
+            actual_registry_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
+            [[ "$actual_registry_arch" == "$expected_registry_arch" ]] || {
+              echo "::error::$arch descriptor points to $actual_registry_arch content"
+              exit 1
+            }
+            cosign verify --key keys/cosign.pub "$image" >/dev/null
+            cosign verify-attestation --key keys/cosign.pub --type spdxjson "$image" >/dev/null
+            provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$image")"
+            printf '%s' "$provenance" | jq -e --arg digest "$digest" --arg source "$GITHUB_SHA" \
+              --argjson generation "$generation" '
+                [.[].payload | @base64d | fromjson | .predicate]
+                | any(.buildDefinition.externalParameters.generation == $generation
+                      and .buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                      and any(.buildDefinition.resolvedDependencies[]?; .uri == ("git+ssh://code.podesta.ai/qos/qos@" + $source)))
+              ' >/dev/null || {
+                echo "::error::$arch child provenance does not bind its digest, source, and generation"
+                exit 1
+              }
+            child_dependencies="$(jq -c --arg arch "$arch" --arg digest "$digest" \
+              '. + [{architecture:$arch,digest:$digest}]' <<<"$child_dependencies")"
+          done
+
+          candidate="code.podesta.ai/qos/qos:index-candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}"
+          manifest="qos-release-index-${GITHUB_RUN_ID}"
+          podman manifest create "$manifest"
+          for arch in x86_64 aarch64; do
+            digest="$(jq -er --arg arch "$arch" '.[] | select(.architecture == $arch) | .digest' <<<"$children")"
+            podman manifest add "$manifest" "docker://code.podesta.ai/qos/qos@$digest"
+          done
+          digest_file="$(mktemp /var/tmp/qos-index-digest.XXXXXX)"
+          podman manifest push --all --digestfile "$digest_file" "$manifest" "docker://$candidate"
+          index_digest="$(tr -d '[:space:]' < "$digest_file")"
+          [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          index_image="code.podesta.ai/qos/qos@$index_digest"
+          expected_index="$(jq -c 'sort_by(.architecture)' <<<"$child_dependencies")"
+          actual_index="$(skopeo inspect --raw "docker://$index_image" | jq -ce '
+            [.manifests[] | {
+              architecture: (if .platform.architecture == "amd64" then "x86_64"
+                             elif .platform.architecture == "arm64" then "aarch64"
+                             else error("unsupported index architecture") end),
+              digest: .digest
+            }] | sort_by(.architecture)
+          ')"
+          [[ "$actual_index" == "$expected_index" ]] || {
+            echo '::error::published OCI index does not contain exactly the verified native children'
+            exit 1
+          }
+
+          cosign sign --yes --key "$COSIGN_KEY_REF" "$index_image"
+          export RELEASE_DIGEST="$index_digest" QOS_GENERATION="$generation"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          export QOS_RELEASE_CHILDREN_JSON="$child_dependencies"
+          source <(grep '^BASE_REF=' os/base-snapshot.env)
+          source <(grep '^RPMS_REF=' os/rpms-snapshot.env)
+          source <(grep '^KERNEL_RPMS_REF=' os/kernel-snapshot.env)
+          export BASE_REF RPMS_REF KERNEL_RPMS_REF
+          ./os/dev/release-provenance.sh index-provenance.json
+          cosign attest --yes --predicate index-provenance.json --type slsaprovenance1 \
+            --key "$COSIGN_KEY_REF" "$index_image"
+          FRESHNESS_TTL_SECONDS=86400 ./os/dev/release-freshness.sh index-freshness.json
+          cosign attest --yes --predicate index-freshness.json \
+            --type https://qos.dev/security/release-freshness/v1 \
+            --key "$COSIGN_KEY_REF" "$index_image"
+
+          cosign verify --key keys/cosign.pub "$index_image" >/dev/null
+          index_provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$index_image")"
+          printf '%s' "$index_provenance" | jq -e --argjson generation "$generation" \
+            --argjson children "$child_dependencies" '
+              [.[].payload | @base64d | fromjson | .predicate]
+              | any(.buildDefinition.externalParameters.generation == $generation
+                    and .buildDefinition.externalParameters.children == $children)
+            ' >/dev/null
+          freshness="$(cosign verify-attestation --key keys/cosign.pub \
+            --type https://qos.dev/security/release-freshness/v1 "$index_image")"
+          now="$(date -u +%s)"
+          printf '%s' "$freshness" | jq -e --arg digest "$index_digest" \
+            --arg source "$GITHUB_SHA" --argjson generation "$generation" --argjson now "$now" '
+              [.[].payload | @base64d | fromjson | .predicate]
+              | any(.digest == $digest and .sourceRevision == $source
+                    and .generation == $generation and .issuedAt <= $now
+                    and .expiresAt > $now and (.expiresAt - .issuedAt) <= 604800)
+            ' >/dev/null
+
+          # Immutable tags are durable release records. Refuse to replace one
+          # with different bytes, tolerate an exact retry, and verify every
+          # registry write. `latest` is the sole mutable commit point and moves
+          # only after all durable names are present.
+          durable_tags=("code.podesta.ai/qos/qos:gen$generation")
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo '::error::OS release tag must be vMAJOR.MINOR.PATCH'
+              exit 1
+            }
+            durable_tags+=("code.podesta.ai/qos/qos:$version")
+          fi
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            durable_tags+=("code.podesta.ai/qos/qos:main-${GITHUB_SHA:0:7}")
+          fi
+
+          manifest_digest() {
+            skopeo inspect --raw "docker://$1" | sha256sum | awk '{print "sha256:" $1}'
+          }
+          promote_immutable() {
+            local tag="$1" existing=""
+            existing="$(manifest_digest "$tag" 2>/dev/null)" || true
+            if [[ -n "$existing" && "$existing" != "$index_digest" ]]; then
+              echo "::error::immutable release tag $tag already binds $existing"
+              return 1
+            fi
+            if [[ -z "$existing" ]]; then
+              skopeo copy --all "docker://$index_image" "docker://$tag"
+            else
+              echo "::notice::$tag already contains the exact release index"
+            fi
+            [[ "$(manifest_digest "$tag")" == "$index_digest" ]] || {
+              echo "::error::registry did not persist $tag as $index_digest"
+              return 1
+            }
+          }
+          # Detect every known immutable-name conflict before creating the first
+          # tag, so a bad semver/source name cannot strand a newly written genN.
+          for tag in "${durable_tags[@]}"; do
+            existing="$(manifest_digest "$tag" 2>/dev/null)" || true
+            if [[ -n "$existing" && "$existing" != "$index_digest" ]]; then
+              echo "::error::immutable release tag $tag already binds $existing"
+              exit 1
+            fi
+          done
+          for tag in "${durable_tags[@]}"; do
+            promote_immutable "$tag"
+          done
+          latest="code.podesta.ai/qos/qos:latest"
+          skopeo copy --all "docker://$index_image" "docker://$latest"
+          [[ "$(manifest_digest "$latest")" == "$index_digest" ]] || {
+            echo "::error::registry did not commit latest as $index_digest"
+            exit 1
+          }
+          jq -n --arg image "$index_image" --argjson generation "$generation" \
+            --argjson children "$child_dependencies" \
+            '{image:$image,generation:$generation,children:$children}' \
+            > qos-os-release-index.json
+          echo "::notice::promoted signed, attested multi-architecture generation $generation ($index_digest)"
+
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: qos-os-release-index
+          path: qos-os-release-index.json
+          if-no-files-found: error
