@@ -12,7 +12,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         Some("discovery") => print_centre::DemoScenario::Discovery,
         Some("print" | "print-narrow") => print_centre::DemoScenario::PrintSetup,
         Some("scan") => print_centre::DemoScenario::ScanSetup,
-        Some("scan-result") => print_centre::DemoScenario::ScanResult,
+        Some("scan-result" | "scan-result-narrow") => print_centre::DemoScenario::ScanResult,
         Some("history") => print_centre::DemoScenario::History,
         Some("diagnostics") => print_centre::DemoScenario::Diagnostics,
         _ => print_centre::DemoScenario::Dashboard,
@@ -39,11 +39,15 @@ fn main() {
                 "print-narrow",
                 "scan",
                 "scan-result",
+                "scan-result-narrow",
                 "history",
                 "diagnostics",
             ])
             .shot_viewport(|args| {
-                if matches!(args.scenario.as_deref(), Some("narrow" | "print-narrow")) {
+                if matches!(
+                    args.scenario.as_deref(),
+                    Some("narrow" | "print-narrow" | "scan-result-narrow")
+                ) {
                     (520, 820)
                 } else {
                     (1280, 800)
