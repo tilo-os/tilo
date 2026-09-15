@@ -14,9 +14,9 @@
 
 #[cfg(test)]
 use automerge::ActorId;
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
+use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use qos_actions::{
@@ -34,6 +34,12 @@ use crate::model::{
 /// Registry `type_id` for every Books action.
 pub const EBOOK_ACTION_TYPE: &str = "ebook.action";
 pub const EBOOK_OPERATION_TYPE: &str = "ebook.operation";
+
+const MAX_ID_BYTES: usize = 256;
+const MAX_LABEL_BYTES: usize = 4 * 1024;
+const MAX_EXCERPT_BYTES: usize = 16 * 1024;
+const MAX_NOTE_BYTES: usize = 64 * 1024;
+const MAX_ACTION_ITEMS: usize = 2_048;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EbookOperation {
@@ -216,8 +222,8 @@ pub struct HiPiece {
 ///
 /// Determinism contract: ids and timestamps are minted at *authoring* time and
 /// carried in the payload, never inside [`Action::apply`], which must not touch
-/// the RNG or the wall-clock. A malformed payload is a **no-op** rather than an
-/// error, so a bad replay can't wedge a peer.
+/// the RNG or the wall-clock. A malformed payload is refused before the first
+/// CRDT write, so it cannot partially mutate or wedge a peer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EbookAction {
     /// Add or explicitly restore one content-addressed library row. The path
@@ -370,6 +376,279 @@ impl EbookAction {
             .map_err(|_| Self::refused(format!("{target} id is invalid")))
     }
 
+    fn valid_id(id: &str) -> bool {
+        !id.is_empty()
+            && id.len() <= MAX_ID_BYTES
+            && !id.chars().any(char::is_control)
+            && !id.contains(['/', '\\'])
+    }
+
+    fn validate_book_id(id: &str) -> Result<(), ActionError> {
+        if Self::valid_id(id)
+            && id
+                .strip_prefix("book:")
+                .is_some_and(|tail| !tail.is_empty())
+        {
+            Ok(())
+        } else {
+            Err(Self::refused("book id is invalid"))
+        }
+    }
+
+    fn validate_text(value: &str, limit: usize, field: &str) -> Result<(), ActionError> {
+        if value.len() <= limit {
+            Ok(())
+        } else {
+            Err(Self::refused(format!("{field} exceeds its size limit")))
+        }
+    }
+
+    fn validate_anchor(
+        chapter: usize,
+        block: usize,
+        start: usize,
+        end: usize,
+        excerpt: &str,
+    ) -> Result<(), ActionError> {
+        if chapter > i64::MAX as usize
+            || block > i64::MAX as usize
+            || start > i64::MAX as usize
+            || end > i64::MAX as usize
+            || start > end
+        {
+            return Err(Self::refused("annotation anchor is invalid"));
+        }
+        Self::validate_text(excerpt, MAX_EXCERPT_BYTES, "annotation excerpt")
+    }
+
+    fn validate_color(color: &str) -> Result<(), ActionError> {
+        if HiColor::ALL.iter().any(|value| value.as_str() == color) {
+            Ok(())
+        } else {
+            Err(Self::refused("annotation colour is invalid"))
+        }
+    }
+
+    fn values_are_unique(values: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+        let mut seen = HashSet::new();
+        values
+            .into_iter()
+            .all(|value| seen.insert(value.as_ref().to_string()))
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn validate(&self) -> Result<(), ActionError> {
+        match self {
+            Self::RestoreLibraryBook {
+                book_id,
+                title,
+                author,
+                subject,
+                added,
+                ..
+            } => {
+                Self::validate_book_id(book_id)?;
+                Self::validate_text(title, MAX_LABEL_BYTES, "book title")?;
+                Self::validate_text(author, MAX_LABEL_BYTES, "book author")?;
+                Self::validate_text(subject, MAX_LABEL_BYTES, "book subject")?;
+                if *added > i64::MAX as u64 {
+                    return Err(Self::refused("book timestamp is invalid"));
+                }
+            }
+            Self::SetReadingSettings { before, settings } => {
+                for value in [before, settings] {
+                    if !value.font_scale.is_finite()
+                        || !(Settings::FONT_MIN..=Settings::FONT_MAX).contains(&value.font_scale)
+                        || !value.line_spacing.is_finite()
+                        || !(Settings::SPACING_MIN..=Settings::SPACING_MAX)
+                            .contains(&value.line_spacing)
+                        || (!value.font_id.is_empty() && !Self::valid_id(&value.font_id))
+                        || (!value.scheme_id.is_empty() && !Self::valid_id(&value.scheme_id))
+                    {
+                        return Err(Self::refused("reading settings are invalid"));
+                    }
+                }
+            }
+            Self::UpsertFont { font } => {
+                if !Self::valid_id(&font.id)
+                    || !font.size_mult.is_finite()
+                    || !(FontEntry::MULT_MIN..=FontEntry::MULT_MAX).contains(&font.size_mult)
+                {
+                    return Err(Self::refused("font is invalid"));
+                }
+                Self::validate_text(&font.name, MAX_LABEL_BYTES, "font name")?;
+                Self::validate_text(&font.kind.as_code(), MAX_LABEL_BYTES, "font family")?;
+            }
+            Self::DeleteFont { id } => {
+                if !Self::valid_id(id) {
+                    return Err(Self::refused("font id is invalid"));
+                }
+            }
+            Self::SetDefaultFont { id } => {
+                if !id.is_empty() && !Self::valid_id(id) {
+                    return Err(Self::refused("font id is invalid"));
+                }
+            }
+            Self::UpsertColorScheme { scheme } => {
+                if !Self::valid_id(&scheme.id) {
+                    return Err(Self::refused("colour scheme id is invalid"));
+                }
+                Self::validate_text(&scheme.name, MAX_LABEL_BYTES, "colour scheme name")?;
+            }
+            Self::DeleteColorScheme { id } => {
+                if !Self::valid_id(id) {
+                    return Err(Self::refused("colour scheme id is invalid"));
+                }
+            }
+            Self::SetLibraryPreferences { .. } | Self::ToggleBookmark { .. } => {}
+            Self::RemoveLibraryBook { book_id } => Self::validate_book_id(book_id)?,
+            Self::SetProgress {
+                book_id,
+                chapter,
+                page,
+                fraction,
+                opened,
+            } => {
+                Self::validate_book_id(book_id)?;
+                if *chapter > i64::MAX as usize
+                    || *page > i64::MAX as usize
+                    || !fraction.is_finite()
+                    || !(0.0..=1.0).contains(fraction)
+                    || *opened > i64::MAX as u64
+                {
+                    return Err(Self::refused("reading progress is invalid"));
+                }
+            }
+            Self::EditAnnotationNote { id, note } => {
+                Self::parse_uuid(id, "annotation")?;
+                Self::validate_text(note, MAX_NOTE_BYTES, "annotation note")?;
+            }
+            Self::FinalizeAnnotation { id, created } => {
+                Self::parse_uuid(id, "annotation")?;
+                if *created > i64::MAX as u64 {
+                    return Err(Self::refused("annotation timestamp is invalid"));
+                }
+            }
+            Self::DeleteAnnotation { id } => {
+                Self::parse_uuid(id, "annotation")?;
+            }
+            Self::AddNote {
+                book_id,
+                id,
+                chapter,
+                block,
+                start,
+                end,
+                excerpt,
+                color,
+                text,
+            } => {
+                Self::validate_book_id(book_id)?;
+                Self::parse_uuid(id, "annotation")?;
+                Self::validate_anchor(*chapter, *block, *start, *end, excerpt)?;
+                Self::validate_color(color)?;
+                Self::validate_text(text, MAX_NOTE_BYTES, "annotation note")?;
+            }
+            Self::SetBookmark {
+                book_id,
+                id,
+                chapter,
+                block,
+                excerpt,
+                remove_ids,
+                ..
+            } => {
+                Self::validate_book_id(book_id)?;
+                Self::parse_uuid(id, "bookmark")?;
+                Self::validate_anchor(*chapter, *block, 0, 0, excerpt)?;
+                if remove_ids.len() > MAX_ACTION_ITEMS {
+                    return Err(Self::refused("bookmark removal list is too large"));
+                }
+                if !Self::values_are_unique(remove_ids) {
+                    return Err(Self::refused("bookmark removal list contains duplicates"));
+                }
+                for id in remove_ids {
+                    Self::parse_uuid(id, "bookmark")?;
+                }
+            }
+            Self::HighlightSelection {
+                book_id,
+                group,
+                chapter,
+                color,
+                remove_groups,
+                pieces,
+            } => {
+                Self::validate_book_id(book_id)?;
+                Self::parse_uuid(group, "highlight")?;
+                Self::validate_color(color)?;
+                if remove_groups.len() > MAX_ACTION_ITEMS || pieces.len() > MAX_ACTION_ITEMS {
+                    return Err(Self::refused("highlight action has too many items"));
+                }
+                if !Self::values_are_unique(remove_groups)
+                    || !Self::values_are_unique(pieces.iter().map(|piece| piece.id.as_str()))
+                    // A pure toggle-off deliberately reuses the removed group
+                    // as its otherwise-unused stable `group` field. An add,
+                    // however, must never tombstone the group it is creating.
+                    || (!pieces.is_empty() && remove_groups.iter().any(|removed| removed == group))
+                {
+                    return Err(Self::refused("highlight action contains duplicate targets"));
+                }
+                for group in remove_groups {
+                    Self::parse_uuid(group, "highlight")?;
+                }
+                for piece in pieces {
+                    Self::parse_uuid(&piece.id, "highlight piece")?;
+                    Self::validate_anchor(
+                        *chapter,
+                        piece.block,
+                        piece.start,
+                        piece.end,
+                        &piece.excerpt,
+                    )?;
+                }
+            }
+            Self::ChangeHighlightColor { group, color } => {
+                Self::parse_uuid(group, "highlight")?;
+                Self::validate_color(color)?;
+            }
+            Self::DeleteHighlight { group } => {
+                Self::parse_uuid(group, "highlight")?;
+            }
+            Self::AddComment {
+                book_id,
+                group,
+                id,
+                chapter,
+                block,
+                start,
+                end,
+                excerpt,
+                color,
+                text,
+            } => {
+                Self::validate_book_id(book_id)?;
+                Self::parse_uuid(group, "highlight")?;
+                Self::parse_uuid(id, "comment")?;
+                Self::validate_anchor(*chapter, *block, *start, *end, excerpt)?;
+                Self::validate_color(color)?;
+                Self::validate_text(text, MAX_NOTE_BYTES, "comment")?;
+            }
+            Self::MoveAnnotation {
+                id,
+                chapter,
+                block,
+                start,
+                end,
+                excerpt,
+            } => {
+                Self::parse_uuid(id, "annotation")?;
+                Self::validate_anchor(*chapter, *block, *start, *end, excerpt)?;
+            }
+        }
+        Ok(())
+    }
+
     fn require_live_annotation(doc: &Doc, id: &str) -> Result<Uuid, ActionError> {
         let id = Self::parse_uuid(id, "annotation")?;
         if BooksDoc::annotation_is_live(doc, id) {
@@ -436,28 +715,17 @@ impl EbookAction {
     }
 
     fn apply_edit_note(doc: &mut Doc, id: &str, note: &str) -> Result<(), ActionError> {
-        Self::require_live_annotation(doc, id)?;
-        let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")? else {
-            return Err(Self::refused("annotation is no longer available"));
-        };
-        let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)? else {
-            return Err(Self::refused("annotation is no longer available"));
-        };
-        doc.put(&entry, "note", note)?;
-        Ok(())
+        let id = Self::require_live_annotation(doc, id)?;
+        BooksDoc::write_annotation_note(doc, id, note)
+            .then_some(())
+            .ok_or_else(|| Self::refused("annotation is no longer available"))
     }
 
     fn apply_finalize_annotation(doc: &mut Doc, id: &str, created: u64) -> Result<(), ActionError> {
-        Self::require_live_annotation(doc, id)?;
-        let Some((Value::Object(ObjType::Map), map)) = doc.get(&ROOT, "annotations")? else {
-            return Err(Self::refused("annotation is no longer available"));
-        };
-        let Some((Value::Object(ObjType::Map), entry)) = doc.get(&map, id)? else {
-            return Err(Self::refused("annotation is no longer available"));
-        };
-        let created = i64::try_from(created).unwrap_or(i64::MAX);
-        doc.put(&entry, "created", created)?;
-        Ok(())
+        let id = Self::require_live_annotation(doc, id)?;
+        BooksDoc::write_annotation_created(doc, id, created)
+            .then_some(())
+            .ok_or_else(|| Self::refused("annotation is no longer available"))
     }
 
     fn apply_delete_annotation(doc: &mut Doc, id: &str) {
@@ -620,13 +888,13 @@ impl EbookAction {
         let group_uuid = Self::parse_uuid(group, "highlight")?;
         Self::require_live_highlight(doc, group_uuid)?;
         let col = HiColor::from_str(color);
-        let rows: Vec<Annotation> = BooksDoc::list_annotations(doc)
+        let rows: Vec<Uuid> = BooksDoc::list_annotations(doc)
             .into_iter()
             .filter(|a| a.group == group_uuid)
+            .map(|annotation| annotation.id)
             .collect();
-        for mut a in rows {
-            a.color = col;
-            BooksDoc::upsert_annotation(doc, &a);
+        for id in rows {
+            let _ = BooksDoc::write_annotation_color(doc, id, col);
         }
         Ok(())
     }
@@ -685,19 +953,9 @@ impl EbookAction {
         excerpt: &str,
     ) -> Result<(), ActionError> {
         let uuid = Self::require_live_annotation(doc, id)?;
-        let Some(mut a) = BooksDoc::list_annotations(doc)
-            .into_iter()
-            .find(|a| a.id == uuid)
-        else {
-            return Err(Self::refused("annotation is no longer available"));
-        };
-        a.chapter = chapter;
-        a.block = block;
-        a.start = start;
-        a.end = end;
-        a.excerpt = excerpt.to_string();
-        BooksDoc::upsert_annotation(doc, &a);
-        Ok(())
+        BooksDoc::move_annotation(doc, uuid, chapter, block, start, end, excerpt)
+            .then_some(())
+            .ok_or_else(|| Self::refused("annotation is no longer available"))
     }
 }
 
@@ -707,6 +965,9 @@ impl Action for EbookAction {
         reason = "the action enum is the canonical replay boundary; keeping exhaustive dispatch adjacent to the per-variant helpers makes action coverage auditable"
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        // Validate the complete envelope before the first CRDT write so a
+        // malformed remote action is always an atomic refusal.
+        self.validate()?;
         match self {
             EbookAction::RestoreLibraryBook {
                 book_id,
@@ -716,9 +977,6 @@ impl Action for EbookAction {
                 subject,
                 added,
             } => {
-                if !book_id.starts_with("book:") {
-                    return Err(Self::refused("book id is invalid"));
-                }
                 BooksDoc::restore_library_entry(
                     doc,
                     &LibraryEntry {
@@ -1608,7 +1866,7 @@ fn library_preference_actions(mut library: Resource, doc: &AutoCommit) -> Resour
 /// Build the resource tree Books currently has open: the book being read, its
 /// highlights (each owning its comments), its bookmarks, and its standalone
 /// notes — every document-mutating operation exported as an action.
-fn book_resource(
+fn book_resource_shallow(
     book: &crate::model::Book,
     current: Option<&BookResourceCtx>,
     doc: &AutoCommit,
@@ -1647,22 +1905,6 @@ fn book_resource(
         _ => root,
     };
 
-    for (chapter, item) in book.chapters.iter().enumerate() {
-        let label = if item.title.trim().is_empty() {
-            format!("Chapter {}", chapter + 1)
-        } else {
-            item.title.clone()
-        };
-        root = root.with_child(
-            Resource::new(
-                format!("ebook.chapter:{}:{chapter}", book.id),
-                "ebook.chapter",
-                label,
-            )
-            .with_action(reveal_operation(&book.id, chapter, 0, None)),
-        );
-    }
-
     if current.is_some_and(|ctx| ctx.book_id == book.id) {
         for (id, label, kind, value) in [
             (
@@ -1698,6 +1940,31 @@ fn book_resource(
         ] {
             root = root.with_action(operation(id, label, kind, value));
         }
+    }
+    root
+}
+
+fn book_resource(
+    book: &crate::model::Book,
+    current: Option<&BookResourceCtx>,
+    doc: &AutoCommit,
+) -> Resource {
+    let mut root = book_resource_shallow(book, current, doc);
+
+    for (chapter, item) in book.chapters.iter().enumerate() {
+        let label = if item.title.trim().is_empty() {
+            format!("Chapter {}", chapter + 1)
+        } else {
+            item.title.clone()
+        };
+        root = root.with_child(
+            Resource::new(
+                format!("ebook.chapter:{}:{chapter}", book.id),
+                "ebook.chapter",
+                label,
+            )
+            .with_action(reveal_operation(&book.id, chapter, 0, None)),
+        );
     }
 
     let annos = BooksDoc::annotations_for(doc, &book.id);
@@ -1738,10 +2005,126 @@ pub fn provide_resources(
     vec![library_preference_actions(library, doc)]
 }
 
+fn annotation_resource(doc: &AutoCommit, id: &str) -> Option<Resource> {
+    let annotations = BooksDoc::list_annotations(doc);
+    if let Some(group) = id.strip_prefix("ebook.highlight:") {
+        let group = group.parse::<Uuid>().ok()?;
+        let first = annotations.iter().find(|annotation| {
+            annotation.kind == AnnoKind::Highlight && annotation.group == group
+        })?;
+        let book_annotations = annotations
+            .iter()
+            .filter(|annotation| annotation.doc_id == first.doc_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut resource = highlight_resource(group, &book_annotations, &first.doc_id)?;
+        resource.children.clear();
+        return Some(resource);
+    }
+    for (prefix, kind) in [
+        ("ebook.comment:", "ebook.comment"),
+        ("ebook.note:", "ebook.note"),
+        ("ebook.bookmark:", "ebook.bookmark"),
+    ] {
+        let Some(annotation_id) = id.strip_prefix(prefix) else {
+            continue;
+        };
+        let annotation_id = annotation_id.parse::<Uuid>().ok()?;
+        let annotation = annotations
+            .iter()
+            .find(|annotation| annotation.id == annotation_id)?;
+        let book_annotations = annotations
+            .iter()
+            .filter(|item| item.doc_id == annotation.doc_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        return match kind {
+            "ebook.bookmark" => bookmark_resources(&book_annotations, &annotation.doc_id)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id),
+            "ebook.note" => {
+                let (_, groups) = highlight_resources(&book_annotations, &annotation.doc_id);
+                standalone_note_resources(&book_annotations, &groups, &annotation.doc_id)
+                    .into_iter()
+                    .find(|resource| resource.id.as_str() == id)
+            }
+            _ => highlight_resource(annotation.group, &book_annotations, &annotation.doc_id)?
+                .children
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id),
+        };
+    }
+    None
+}
+
 impl ResourceProvider for crate::app::BooksApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let ctx = self.book_resource_ctx();
         provide_resources(self.library(), ctx.as_ref(), doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        let ctx = self.book_resource_ctx();
+        if id == "ebook.library" {
+            return Some(library_preference_actions(
+                Resource::new("ebook.library", "ebook.library", "Books library")
+                    .with_action(open_book_operation()),
+                doc,
+            ));
+        }
+        if id == "ebook.settings" {
+            let mut settings = settings_resource(doc);
+            settings.children.clear();
+            return Some(settings);
+        }
+
+        if let Some(book_id) = id.strip_prefix("ebook.book:") {
+            if let Some(book) = self.library().iter().find(|book| book.id == book_id) {
+                return Some(book_resource_shallow(book, ctx.as_ref(), doc));
+            }
+            let entry = BooksDoc::read_library_entries(doc)
+                .into_iter()
+                .find(|entry| entry.id == book_id)?;
+            let book = crate::model::Book {
+                id: entry.id,
+                title: entry.title,
+                author: entry.author,
+                subject: entry.subject,
+                ..crate::model::Book::default()
+            };
+            return Some(book_resource_shallow(&book, None, doc));
+        }
+
+        if let Some(rest) = id.strip_prefix("ebook.chapter:") {
+            let (book_id, chapter) = rest.rsplit_once(':')?;
+            let chapter = chapter.parse::<usize>().ok()?;
+            let book = self.library().iter().find(|book| book.id == book_id)?;
+            let item = book.chapters.get(chapter)?;
+            let label = if item.title.trim().is_empty() {
+                format!("Chapter {}", chapter + 1)
+            } else {
+                item.title.clone()
+            };
+            return Some(
+                Resource::new(id, "ebook.chapter", label)
+                    .with_action(reveal_operation(book_id, chapter, 0, None)),
+            );
+        }
+
+        if id.strip_prefix("ebook.font:").is_some() {
+            return settings_resource(doc)
+                .children
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
+        if id.strip_prefix("ebook.scheme:").is_some() {
+            return settings_resource(doc)
+                .children
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
+
+        annotation_resource(doc, id)
     }
 }
 
@@ -2561,6 +2944,153 @@ mod tests {
         assert_eq!(
             from_spec.payload, from_builder.payload,
             "edit is one source of truth"
+        );
+    }
+
+    #[test]
+    fn direct_resource_lookup_materialises_an_unhydrated_library_book() {
+        let app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        BooksDoc::upsert_library_entry(
+            &mut doc,
+            &LibraryEntry {
+                id: "book:remote-only".into(),
+                shared: true,
+                title: "Waiting for bytes".into(),
+                author: "Remote Reader".into(),
+                subject: String::new(),
+                added: 1,
+            },
+        );
+
+        let resource =
+            <BooksApp as ResourceProvider>::resource(&app, &doc, "ebook.book:book:remote-only")
+                .expect("metadata-backed book resource");
+        assert_eq!(resource.kind, "ebook.book");
+        assert!(resource.label.contains("Waiting for bytes"));
+        assert!(resource.children.is_empty(), "direct lookup stays bounded");
+        assert!(resource.actions.iter().any(|action| action.id == "open"));
+    }
+
+    #[test]
+    fn concurrent_note_edit_and_move_preserve_both_fields() {
+        let mut base = AutoCommit::new().with_actor(ActorId::random());
+        let note = Annotation::new("book:concurrency", AnnoKind::Note, 0, 1)
+            .with_excerpt("old anchor")
+            .with_note("old note");
+        BooksDoc::upsert_annotation(&mut base, &note);
+        let mut editing = base.fork().with_actor(ActorId::random());
+        let mut moving = base.fork().with_actor(ActorId::random());
+
+        edit_note_action(note.id, "edited concurrently")
+            .apply(&mut editing)
+            .unwrap();
+        move_annotation_action(note.id, 2, 7, 3, 12, "new anchor")
+            .apply(&mut moving)
+            .unwrap();
+        editing.merge(&mut moving).unwrap();
+        moving.merge(&mut editing).unwrap();
+
+        for peer in [&editing, &moving] {
+            let merged = BooksDoc::list_annotations(peer)
+                .into_iter()
+                .find(|annotation| annotation.id == note.id)
+                .unwrap();
+            assert_eq!(merged.note, "edited concurrently");
+            assert_eq!((merged.chapter, merged.block), (2, 7));
+            assert_eq!((merged.start, merged.end), (3, 12));
+            assert_eq!(merged.excerpt, "new anchor");
+        }
+    }
+
+    #[test]
+    fn concurrent_comment_edit_and_group_recolour_preserve_both_fields() {
+        let mut base = AutoCommit::new().with_actor(ActorId::random());
+        let group = Uuid::from_u128(0xABCD);
+        let highlight =
+            Annotation::new("book:concurrency", AnnoKind::Highlight, 0, 1).with_group(group);
+        let comment = Annotation::new("book:concurrency", AnnoKind::Note, 0, 1)
+            .with_group(group)
+            .with_note("old comment");
+        BooksDoc::upsert_annotation(&mut base, &highlight);
+        BooksDoc::upsert_annotation(&mut base, &comment);
+        let mut editing = base.fork().with_actor(ActorId::random());
+        let mut recolouring = base.fork().with_actor(ActorId::random());
+
+        edit_note_action(comment.id, "edited concurrently")
+            .apply(&mut editing)
+            .unwrap();
+        change_color_action(group, HiColor::Purple)
+            .apply(&mut recolouring)
+            .unwrap();
+        editing.merge(&mut recolouring).unwrap();
+        recolouring.merge(&mut editing).unwrap();
+
+        for peer in [&editing, &recolouring] {
+            let rows = BooksDoc::list_annotations(peer);
+            assert!(
+                rows.iter()
+                    .all(|annotation| annotation.color == HiColor::Purple)
+            );
+            assert_eq!(
+                rows.iter()
+                    .find(|annotation| annotation.id == comment.id)
+                    .unwrap()
+                    .note,
+                "edited concurrently"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_or_oversized_actions_are_atomic_refusals() {
+        let (_app, mut doc, book_id, group) = open_with_annotations();
+        let before = BooksDoc::annotations_for(&doc, &book_id);
+        let invalid = EbookAction::HighlightSelection {
+            book_id: book_id.clone(),
+            group: Uuid::new_v4().to_string(),
+            chapter: 0,
+            color: HiColor::Yellow.as_str().into(),
+            remove_groups: vec![group.to_string()],
+            pieces: vec![HiPiece {
+                id: Uuid::new_v4().to_string(),
+                block: 1,
+                start: 9,
+                end: 2,
+                excerpt: "backwards".into(),
+            }],
+        };
+        assert!(matches!(
+            invalid.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
+        assert_eq!(
+            BooksDoc::annotations_for(&doc, &book_id).len(),
+            before.len()
+        );
+        assert!(!BooksDoc::group_is_deleted(&doc, group));
+
+        let note_id = before
+            .iter()
+            .find(|annotation| annotation.kind == AnnoKind::Note)
+            .unwrap()
+            .id;
+        let oversized = edit_note_action(note_id, &"x".repeat(MAX_NOTE_BYTES + 1));
+        assert!(matches!(
+            oversized.apply(&mut doc),
+            Err(ActionError::Refused(_))
+        ));
+        assert_eq!(
+            BooksDoc::list_annotations(&doc)
+                .into_iter()
+                .find(|annotation| annotation.id == note_id)
+                .unwrap()
+                .note,
+            before
+                .iter()
+                .find(|annotation| annotation.id == note_id)
+                .unwrap()
+                .note
         );
     }
 }
