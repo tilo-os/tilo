@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "lenovo-83ed",
+  "architecture": "aarch64",
+  "devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb",
+  "firmware": {
+    "qcdxkmsuc8380.mbn": "qcom/x1e80100/LENOVO/83ED/qcdxkmsuc8380.mbn",
+    "qcvss8380.mbn": "qcom/x1e80100/LENOVO/83ED/qcvss8380.mbn",
+    "qcadsp8380.mbn": "qcom/x1e80100/LENOVO/83ED/qcadsp8380.mbn",
+    "adsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/adsp_dtbs.elf",
+    "qccdsp8380.mbn": "qcom/x1e80100/LENOVO/83ED/qccdsp8380.mbn",
+    "cdsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/cdsp_dtbs.elf"
+  }
+}
