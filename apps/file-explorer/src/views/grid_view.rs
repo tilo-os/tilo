@@ -30,6 +30,7 @@ pub fn build_grid(
     selection: &SelectionModel,
     sink: &CommandSink,
     scale: f64,
+    text_scale: f32,
     renaming: Option<usize>,
     rename_rect: Rc<Cell<Option<Rect>>>,
     cursor: Point,
@@ -40,6 +41,7 @@ pub fn build_grid(
         FileView::new(entries, selection, sink)
             .mode(ViewMode::Grid)
             .with_scale(scale)
+            .with_text_scale(text_scale)
             .with_rename(renaming, rename_rect)
             .with_cursor(cursor)
             .with_drop_targets(drop_targets)
