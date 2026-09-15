@@ -112,16 +112,15 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo set -eu; \
     rpmbuild -bp --nodeps --define "_topdir /work/rpmbuild" "$KERN_SPEC"
 
 # ---- Merge our config fragment on top of Fedora's --------------------------
-COPY os/kernel/config-fragments/qos.config /work/qos.config
+COPY os/kernel/config-fragments/ /work/kernel-config/
+COPY os/kernel/build-support.sh /work/kernel-build-support.sh
 
 # The prepared source lands at /work/rpmbuild/BUILD/kernel-<VER>/linux-<VER>-<ARCH>/
 # with a resolved .config in place.  Use the in-tree merge_config.sh (the
 # canonical kconfig fragment merger) to overlay our overrides, then
 # olddefconfig to resolve any newly-exposed symbols non-interactively.
-#
-# `-y` in merge_config makes it die on missing symbols (rather than silently
-# dropping them) — a Fedora rename that killed one of our knobs surfaces here
-# instead of at boot.
+# The post-merge check below rejects missing security requirements; the merger
+# itself does not reject symbols whose Kconfig dependencies cannot be met.
 RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
@@ -131,6 +130,7 @@ RUN set -eux; \
     # that inside %build. Copy the right config manually:
     # `kernel-<arch>-fedora.config` is Fedora's non-debug baseline.
     ARCH="$(uname -m)"; \
+    sh /work/kernel-build-support.sh validate-arch "$ARCH"; \
     CANDIDATES="kernel-${ARCH}-fedora.config kernel-${ARCH}.config"; \
     FOUND=""; \
     for c in $CANDIDATES; do \
@@ -143,7 +143,9 @@ RUN set -eux; \
     }; \
     cp "$FOUND" .config; \
     cp .config /work/fedora.config; \
-    scripts/kconfig/merge_config.sh -m .config /work/qos.config; \
+    scripts/kconfig/merge_config.sh -m .config \
+        /work/kernel-config/qos.config \
+        "/work/kernel-config/$ARCH.config"; \
     make olddefconfig; \
     diff -u /work/fedora.config .config | head -200 > /work/config.diff || true; \
     echo "----- effective config diff (top 200 lines) -----"; \
@@ -153,32 +155,7 @@ RUN set -eux; \
     # met.  Both are exactly how a security option goes missing without anyone
     # noticing until the running kernel is asked about it.  Assert the ones
     # that must be in the resolved .config, and fail the build if they aren't.
-    echo "----- required security options -----"; \
-    missing=""; \
-    for opt in \
-        CONFIG_MODULE_SIG=y \
-        CONFIG_MODULE_SIG_ALL=y \
-        CONFIG_MODULE_SIG_FORCE=y \
-        CONFIG_USER_NS=y \
-        CONFIG_SECCOMP_FILTER=y \
-        CONFIG_SECURITY_LANDLOCK=y \
-        CONFIG_SECURITY_YAMA=y \
-        CONFIG_SECURITY_LOCKDOWN_LSM=y \
-        CONFIG_X86_USER_SHADOW_STACK=y \
-        CONFIG_STRICT_KERNEL_RWX=y \
-        CONFIG_STACKPROTECTOR_STRONG=y \
-        CONFIG_FORTIFY_SOURCE=y \
-        CONFIG_HARDENED_USERCOPY=y \
-        CONFIG_VMAP_STACK=y \
-        CONFIG_SLAB_FREELIST_HARDENED=y \
-        CONFIG_RANDOMIZE_KSTACK_OFFSET=y \
-        CONFIG_LIST_HARDENED=y \
-        CONFIG_X86_KERNEL_IBT=y \
-    ; do \
-        if grep -qx "$opt" .config; then echo "  ok      $opt"; \
-        else echo "  MISSING $opt (resolved to: $(grep -E "^(# )?${opt%%=*}[ =]" .config || echo 'absent'))"; missing="$missing $opt"; fi; \
-    done; \
-    if [ -n "$missing" ]; then echo "kernel config lost required security options:$missing"; exit 1; fi
+    sh /work/kernel-build-support.sh check-config "$ARCH" .config
 
 # ---- Rebuild as qos-kernel-* -----------------------------------------------
 # `make binrpm-pkg` uses scripts/package/kernel.spec (upstream template) to
@@ -213,14 +190,7 @@ RUN set -eux; \
     STAGE=/work/stage; \
     rm -rf "$STAGE"; \
     mkdir -p "$STAGE/lib/modules/$KVER"; \
-    # bootc / ostree find the boot artifacts alongside the modules,
-    # NOT under /boot: `bootc install` fails "Failed to find kernel in
-    # /usr/lib/modules, /usr/lib/ostree-boot or /boot" if vmlinuz isn't
-    # co-located with the module tree. /boot itself is populated at
-    # deploy time from these files.
-    cp arch/x86/boot/bzImage "$STAGE/lib/modules/$KVER/vmlinuz"; \
-    cp System.map            "$STAGE/lib/modules/$KVER/System.map"; \
-    cp .config               "$STAGE/lib/modules/$KVER/config"; \
+    sh /work/kernel-build-support.sh stage-boot "$(uname -m)" "$KSRC" "$STAGE" "$KVER"; \
     # CONFIG_MODULE_SIG_ALL signs during this step. modules_install strips
     # first and signs last, so INSTALL_MOD_STRIP does not invalidate the
     # signature it just wrote.
