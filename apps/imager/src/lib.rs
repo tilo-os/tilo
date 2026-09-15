@@ -75,7 +75,7 @@ pub mod write;
 pub use app::ImagerApp;
 pub use customize::CustomizePanel;
 pub use model::{
-    Action, DiskLayout, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,
+    Action, Filesystem, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,
     TargetKind,
 };
 

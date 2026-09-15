@@ -14,22 +14,22 @@ use serde::{Deserialize, Serialize};
 /// Where the bytes to be written come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceKind {
-    /// An arbitrary `.iso` file picked from disk.
+    /// An arbitrary local disk image picked from disk.
     IsoFile,
-    /// A qOS installer/live image (local file or a known release).
+    /// A qOS installer/live image authenticated by the release catalog.
     QosImage,
 }
 
 impl SourceKind {
     pub fn tag(&self) -> &'static str {
         match self {
-            SourceKind::IsoFile => "ISO",
+            SourceKind::IsoFile => "LOCAL",
             SourceKind::QosImage => "qOS",
         }
     }
     pub fn long(&self) -> &'static str {
         match self {
-            SourceKind::IsoFile => "Disk image file",
+            SourceKind::IsoFile => "Local disk image (unverified)",
             SourceKind::QosImage => "qOS system image",
         }
     }
@@ -139,15 +139,24 @@ pub struct QosRelease {
 
 impl QosRelease {
     pub fn to_source(&self) -> Source {
+        let authenticated = self.image_sha256.len() == 64
+            && self
+                .image_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit());
         Source {
-            kind: SourceKind::QosImage,
+            kind: if authenticated {
+                SourceKind::QosImage
+            } else {
+                SourceKind::IsoFile
+            },
             path: self.local_path.clone(),
             name: format!("{} {}", self.name, self.version),
             size: self.size,
             label: format!("qOS {} ({})", self.version, self.channel),
-            installable: true,
+            installable: authenticated,
             identity: None,
-            expected_sha256: (!self.image_sha256.is_empty()).then(|| self.image_sha256.clone()),
+            expected_sha256: authenticated.then(|| self.image_sha256.clone()),
         }
     }
 }
@@ -523,45 +532,43 @@ impl InstallMode {
     }
 }
 
-/// Disk layout strategy for an install.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiskLayout {
-    /// Single root partition filling the device.
-    WholeDisk,
-    /// Separate /home for data that survives reinstalls.
-    SeparateHome,
-    /// Btrfs subvolumes (qOS default for snapshots).
-    BtrfsSubvols,
+/// Filesystem used for the installed system.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Filesystem {
+    #[serde(alias = "BtrfsSubvols")]
+    #[default]
+    Btrfs,
+    #[serde(alias = "WholeDisk", alias = "SeparateHome")]
+    Ext4,
+    Xfs,
 }
 
-impl DiskLayout {
+impl Filesystem {
     pub fn key(&self) -> &'static str {
         match self {
-            DiskLayout::WholeDisk => "whole",
-            DiskLayout::SeparateHome => "home",
-            DiskLayout::BtrfsSubvols => "btrfs",
+            Self::Btrfs => "btrfs",
+            Self::Ext4 => "ext4",
+            Self::Xfs => "xfs",
         }
     }
     pub fn label(&self) -> &'static str {
         match self {
-            DiskLayout::WholeDisk => "Whole disk (single root)",
-            DiskLayout::SeparateHome => "Separate /home",
-            DiskLayout::BtrfsSubvols => "Btrfs subvolumes",
+            Self::Btrfs => "Btrfs — recommended",
+            Self::Ext4 => "Ext4",
+            Self::Xfs => "XFS",
         }
     }
-    pub fn from_key(k: &str) -> DiskLayout {
+    pub fn from_key(k: &str) -> Option<Self> {
         match k {
-            "home" => DiskLayout::SeparateHome,
-            "btrfs" => DiskLayout::BtrfsSubvols,
-            _ => DiskLayout::WholeDisk,
+            "btrfs" => Some(Self::Btrfs),
+            "ext4" | "whole" | "home" => Some(Self::Ext4),
+            "xfs" => Some(Self::Xfs),
+            _ => None,
         }
     }
-    pub fn all() -> [DiskLayout; 3] {
-        [
-            DiskLayout::WholeDisk,
-            DiskLayout::SeparateHome,
-            DiskLayout::BtrfsSubvols,
-        ]
+    pub fn all() -> [Self; 3] {
+        [Self::Btrfs, Self::Ext4, Self::Xfs]
     }
 }
 
@@ -600,7 +607,8 @@ pub struct InstallProfile {
     pub locale: String,
     pub keyboard: String,
     pub timezone: String,
-    pub layout: DiskLayout,
+    #[serde(default, alias = "layout")]
+    pub filesystem: Filesystem,
     pub encrypt: bool,
     /// Passphrase for full-disk encryption (only meaningful when `encrypt`).
     pub encryption_passphrase: String,
@@ -617,7 +625,7 @@ impl Default for InstallProfile {
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
             timezone: "UTC".into(),
-            layout: DiskLayout::BtrfsSubvols,
+            filesystem: Filesystem::Btrfs,
             encrypt: false,
             encryption_passphrase: String::new(),
             persist_mb: 4096,
@@ -764,10 +772,6 @@ impl InstallProfile {
             filesystem: &'static str,
         }
 
-        let filesystem = match self.layout {
-            DiskLayout::BtrfsSubvols => "btrfs",
-            DiskLayout::SeparateHome | DiskLayout::WholeDisk => "ext4",
-        };
         serde_json::to_vec(&MediaProfile {
             schema: 1,
             hostname: self.hostname.trim(),
@@ -776,7 +780,7 @@ impl InstallProfile {
             locale: self.locale.trim(),
             keyboard: self.keyboard.trim(),
             timezone: self.timezone.trim(),
-            filesystem,
+            filesystem: self.filesystem.key(),
         })
     }
 
@@ -795,7 +799,7 @@ impl InstallProfile {
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
             timezone: "Europe/Amsterdam".into(),
-            layout: DiskLayout::BtrfsSubvols,
+            filesystem: Filesystem::Btrfs,
             encrypt: true,
             encryption_passphrase: "•••••••••".into(),
             persist_mb: 0,
@@ -1016,7 +1020,7 @@ pub fn sample_releases() -> Vec<QosRelease> {
             url: String::new(),
             archive_sha256: String::new(),
             archive_size: 0,
-            image_sha256: String::new(),
+            image_sha256: "1111111111111111111111111111111111111111111111111111111111111111".into(),
         },
         QosRelease {
             name: "qOS".into(),
@@ -1027,7 +1031,7 @@ pub fn sample_releases() -> Vec<QosRelease> {
             url: String::new(),
             archive_sha256: String::new(),
             archive_size: 0,
-            image_sha256: String::new(),
+            image_sha256: "2222222222222222222222222222222222222222222222222222222222222222".into(),
         },
     ]
 }
@@ -1136,6 +1140,16 @@ mod tests {
     }
 
     #[test]
+    fn release_without_authenticated_image_digest_fails_closed() {
+        let mut release = sample_releases().remove(0);
+        release.image_sha256.clear();
+        let source = release.to_source();
+        assert_eq!(source.kind, SourceKind::IsoFile);
+        assert!(!source.installable);
+        assert!(source.expected_sha256.is_none());
+    }
+
+    #[test]
     fn embedded_profile_contains_only_applied_non_secret_fields() {
         let prof = InstallProfile::sample_workstation();
         let src = sample_source();
@@ -1149,6 +1163,37 @@ mod tests {
         assert!(!cfg.contains("password"));
         assert!(!cfg.contains("passphrase"));
         assert!(!cfg.contains(&prof.user.password) || prof.user.password.contains('•'));
+    }
+
+    #[test]
+    fn every_filesystem_serializes_to_the_installer_contract() {
+        for filesystem in Filesystem::all() {
+            let profile = InstallProfile {
+                filesystem,
+                ..InstallProfile::default()
+            };
+            let value: serde_json::Value =
+                serde_json::from_slice(&profile.to_media_profile_json().unwrap()).unwrap();
+            assert_eq!(value["filesystem"], filesystem.key());
+        }
+    }
+
+    #[test]
+    fn legacy_layout_profile_migrates_to_typed_filesystem() {
+        let value = serde_json::json!({
+            "mode": "Live",
+            "hostname": "qos",
+            "user": UserAccount::default(),
+            "locale": "en_US.UTF-8",
+            "keyboard": "us",
+            "timezone": "UTC",
+            "layout": "WholeDisk",
+            "encrypt": false,
+            "encryption_passphrase": "",
+            "persist_mb": 4096
+        });
+        let profile: InstallProfile = serde_json::from_value(value).unwrap();
+        assert_eq!(profile.filesystem, Filesystem::Ext4);
     }
 
     #[test]
@@ -1210,7 +1255,7 @@ mod tests {
         let back: InstallProfile = serde_json::from_str(&json).unwrap();
         assert_eq!(back.hostname, prof.hostname);
         assert_eq!(back.encrypt, prof.encrypt);
-        assert_eq!(back.layout, prof.layout);
+        assert_eq!(back.filesystem, prof.filesystem);
     }
 
     #[test]
