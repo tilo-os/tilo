@@ -15,25 +15,17 @@ pub enum Screen {
     Camera,
     Scanner,
     Document,
-    Gallery,
     Settings,
 }
 
 impl Screen {
-    pub const ALL: [Screen; 5] = [
-        Screen::Camera,
-        Screen::Scanner,
-        Screen::Document,
-        Screen::Gallery,
-        Screen::Settings,
-    ];
+    pub const ALL: [Screen; 3] = [Screen::Camera, Screen::Scanner, Screen::Settings];
 
     pub fn label(self) -> &'static str {
         match self {
             Screen::Camera => "Camera",
-            Screen::Scanner => "Codes",
+            Screen::Scanner => "Scan",
             Screen::Document => "Documents",
-            Screen::Gallery => "Gallery",
             Screen::Settings => "Settings",
         }
     }
@@ -43,7 +35,6 @@ impl Screen {
             Screen::Camera => "camera",
             Screen::Scanner => "scanner",
             Screen::Document => "document",
-            Screen::Gallery => "gallery",
             Screen::Settings => "settings",
         }
     }
@@ -53,7 +44,9 @@ impl Screen {
             "camera" => Some(Screen::Camera),
             "scanner" => Some(Screen::Scanner),
             "document" | "documents" => Some(Screen::Document),
-            "gallery" => Some(Screen::Gallery),
+            // A persisted pre-Photos destination resolves safely to Camera;
+            // Camera no longer owns a library screen.
+            "gallery" => Some(Screen::Camera),
             "settings" => Some(Screen::Settings),
             _ => None,
         }
@@ -353,40 +346,6 @@ pub struct ScanEntry {
     pub ts: i64,
 }
 
-/// Gallery filter chip.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GalleryFilter {
-    All,
-    Photos,
-    Videos,
-    Favorites,
-}
-
-impl GalleryFilter {
-    pub const ALL: [GalleryFilter; 4] = [
-        GalleryFilter::All,
-        GalleryFilter::Photos,
-        GalleryFilter::Videos,
-        GalleryFilter::Favorites,
-    ];
-    pub fn label(self) -> &'static str {
-        match self {
-            GalleryFilter::All => "All",
-            GalleryFilter::Photos => "Photos",
-            GalleryFilter::Videos => "Videos",
-            GalleryFilter::Favorites => "Favorites",
-        }
-    }
-    pub fn matches(self, c: &Capture) -> bool {
-        match self {
-            GalleryFilter::All => true,
-            GalleryFilter::Photos => matches!(c.kind, CaptureKind::Photo),
-            GalleryFilter::Videos => matches!(c.kind, CaptureKind::Video),
-            GalleryFilter::Favorites => c.favorite,
-        }
-    }
-}
-
 /// Classified payload of a decoded code, used to surface contextual
 /// actions in the scanner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -657,28 +616,6 @@ mod tests {
             }
             other => panic!("expected contact, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn gallery_filter_matches() {
-        let photo = Capture {
-            id: "a".into(),
-            kind: CaptureKind::Photo,
-            ts: 0,
-            w: 4032,
-            h: 3024,
-            dur_ms: 0,
-            label: String::new(),
-            favorite: true,
-            facing: Facing::Back,
-            scene: 0,
-            path: None,
-            media_id: None,
-        };
-        assert!(GalleryFilter::All.matches(&photo));
-        assert!(GalleryFilter::Photos.matches(&photo));
-        assert!(!GalleryFilter::Videos.matches(&photo));
-        assert!(GalleryFilter::Favorites.matches(&photo));
     }
 
     #[test]

@@ -9,7 +9,7 @@
 //! ├── "settings"  (Map)   # scalar settings (see Settings)
 //! ├── "favorites" (Map)   # { <file name>: true } — starred library items
 //! ├── "scans"     (List)  # [ { raw, ts } ] newest-first scan history
-//! └── "captures"  (List)  # portable qdoc-backed gallery metadata
+//! └── "captures"  (List)  # portable qdoc-backed capture metadata
 //! ```
 //!
 //! The photo/video *pixels* travel as verified qdoc blobs (see
