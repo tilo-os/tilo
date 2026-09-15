@@ -55,6 +55,32 @@ const ACTION_DIRECTORY_MAX_WORK: usize = 512;
 const ACTION_DIRECTORY_MAX_BYTES: usize = 64 * 1024;
 const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
+const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
+
+/// Portable, declared launcher payload used by any app that hands verified
+/// qdoc media to another installed app. The broker stages the bytes and owns
+/// the target process; the source app never supplies a local path.
+#[derive(serde::Deserialize)]
+struct ApplicationLaunchPayload {
+    app_id: String,
+    content_hash: String,
+}
+
+impl ApplicationLaunchPayload {
+    fn valid(&self) -> bool {
+        !self.app_id.is_empty()
+            && self.app_id.len() <= 128
+            && self
+                .app_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+            && self.content_hash.len() == 64
+            && self
+                .content_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+}
 
 /// Host-owned generic continuation. Deliberately excludes widget `ephemeral`
 /// strings and `RecordId::for_file` values: both may contain local paths or
@@ -625,6 +651,9 @@ pub struct App {
         qos_actions::InvocationId,
         (qos_actions::ActionAddress, qos_actions::OperationKind),
     >,
+    /// A generic app-launch request finishes an already-admitted source
+    /// invocation only after the session reports the staging/launch result.
+    pending_application_launches: std::collections::HashMap<u64, qos_actions::InvocationId>,
     /// Correlates local requests routed through the authoritative session
     /// broker. `None` means this process has consumed the complete u64
     /// namespace and must refuse rather than alias an earlier request.
@@ -785,6 +814,7 @@ impl App {
             pending_continuation_view: None,
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
+            pending_application_launches: std::collections::HashMap::new(),
             next_broker_request_id: Some(0),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: crate::profiling::FrameProfiler::from_env(),
@@ -2291,6 +2321,25 @@ impl App {
         Ok(request_id)
     }
 
+    /// Retain exactly one broker request per admitted launcher invocation.
+    /// The fixed cap is a failure boundary: overflowing it must refuse the
+    /// invocation before it can be left Accepted without a terminal receipt.
+    fn admit_application_launch(
+        &mut self,
+        request_id: u64,
+        invocation: qos_actions::InvocationId,
+    ) -> Result<(), qos_actions::DoorError> {
+        if self.pending_application_launches.len() >= MAX_PENDING_APPLICATION_LAUNCHES {
+            return Err(qos_actions::DoorError::Unavailable {
+                code: "application_launch_queue_full".into(),
+                reason: "Too many application launches are awaiting broker receipts".into(),
+            });
+        }
+        self.pending_application_launches
+            .insert(request_id, invocation);
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "document dispatch needs the resolved action, arguments, actor, and ambient provenance"
@@ -2460,6 +2509,41 @@ impl App {
         }
         let encoded =
             Self::encode_resource_action(&resources, address, typed_arguments.as_ref(), argument)?;
+        // A launcher action has already passed the ordinary declaration,
+        // argument-binding, confirmation, and broker-admission door above.
+        // This branch runs only when the broker directs that admitted action
+        // back to its source app, preserving the normal receipt lifecycle.
+        if encoded.type_id == "qos.application.launch" {
+            let launch: ApplicationLaunchPayload = serde_json::from_slice(&encoded.payload)
+                .map_err(|_| {
+                    qos_actions::DoorError::Failed("invalid application launch payload".into())
+                })?;
+            if !launch.valid() {
+                return Err(qos_actions::DoorError::Failed(
+                    "application launch payload is out of bounds".into(),
+                ));
+            }
+            if !self.collab_manager.is_connected() {
+                return Err(qos_actions::DoorError::Unavailable {
+                    code: "authoritative_host_unavailable".into(),
+                    reason: "Opening staged media requires the workspace action broker".into(),
+                });
+            }
+            let request_id = self.take_broker_request_id()?;
+            let Some(invocation) = invocation else {
+                return Err(qos_actions::DoorError::Failed(
+                    "application launch was not admitted by the broker".into(),
+                ));
+            };
+            self.admit_application_launch(request_id, invocation)?;
+            self.collab_manager
+                .send(CollabRequest::LaunchPublishedApplication {
+                    request_id,
+                    app_id: launch.app_id,
+                    content_hash: Some(launch.content_hash),
+                });
+            return Ok(crate::widget::ResourceOperationStart::Accepted);
+        }
         let operation_invocation = invocation.unwrap_or_default();
         if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
             let semantic_result = self.invoke_semantic_operation_encoded(&encoded);
@@ -2685,17 +2769,48 @@ impl App {
         }
     }
 
+    fn fail_pending_application_launches_on_disconnect(&mut self) -> bool {
+        if self.collab_manager.is_connected() {
+            return false;
+        }
+
+        let launches = std::mem::take(&mut self.pending_application_launches);
+        let mut changed = false;
+        for (_request_id, invocation) in launches {
+            let Some(directed) = self.directed_invocations.remove(&invocation) else {
+                continue;
+            };
+            self.collab_manager.send(CollabRequest::UpdateInvocation {
+                id: directed.wire_id,
+                update: qos_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: qos_actions::ActionFailure {
+                        code: "application_launch_broker_disconnected".into(),
+                        message: "The launcher broker disconnected before confirming the application launch".into(),
+                        details: None,
+                        retryable: true,
+                    },
+                },
+            });
+            changed = true;
+        }
+        changed
+    }
+
     /// Give retained widgets a non-blocking lifecycle tick and forward every
     /// progress/item/terminal update to the broker. A terminal update removes
     /// the job before it is sent, making terminal delivery at-most-once even
     /// if a widget accidentally returns the same update again.
     fn poll_directed_invocations(&mut self) -> bool {
+        // A broker disconnect cannot leave an admitted launcher action
+        // Accepted forever. Draining the bounded table also makes late or
+        // duplicate receipts inert because their request ids are gone.
+        let mut changed = self.fail_pending_application_launches_on_disconnect();
         let invocations = self
             .directed_invocations
             .iter()
             .map(|(invocation, pending)| (*invocation, *pending))
             .collect::<Vec<_>>();
-        let mut changed = false;
         for (invocation, pending) in invocations {
             let Some(mut update) = self.root_widget.poll_resource_operation(
                 invocation,
@@ -3942,11 +4057,57 @@ impl App {
                 CollabEvent::InvocationCancellation { id } => {
                     self.request_invocation_cancellation(id);
                 }
+                CollabEvent::PublishedInvocationResult { request_id, result } => {
+                    let Some(invocation) = self.pending_application_launches.remove(&request_id)
+                    else {
+                        continue;
+                    };
+                    let Some(pending) = self.directed_invocations.remove(&invocation) else {
+                        continue;
+                    };
+                    let update = match result {
+                        Ok((_id, qos_actions::InvocationUpdate::Succeeded { output, .. })) => {
+                            qos_actions::InvocationUpdate::Succeeded { invocation, output }
+                        }
+                        Ok((_id, qos_actions::InvocationUpdate::Failed { error, .. })) => {
+                            qos_actions::InvocationUpdate::Failed { invocation, error }
+                        }
+                        Ok((_id, qos_actions::InvocationUpdate::Cancelled { message, .. })) => {
+                            qos_actions::InvocationUpdate::Cancelled {
+                                invocation,
+                                message,
+                            }
+                        }
+                        Ok((_id, other)) => qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "application_launch_invalid_receipt".into(),
+                                message: format!(
+                                    "application launch returned non-terminal {other:?}"
+                                ),
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                        Err(message) => qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: qos_actions::ActionFailure {
+                                code: "application_launch_failed".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        },
+                    };
+                    self.collab_manager.send(CollabRequest::UpdateInvocation {
+                        id: pending.wire_id,
+                        update,
+                    });
+                }
                 // The generic catalogue/client responses are consumed by
                 // widgets such as Agent through their collaboration event
                 // hook; an ordinary application has no local state to apply.
                 CollabEvent::ActionCatalogue { .. }
-                | CollabEvent::PublishedInvocationResult { .. }
                 | CollabEvent::TaskRun(_)
                 | CollabEvent::TaskActionInvocationResult { .. }
                 | CollabEvent::TaskRunCancellation { .. }
@@ -4022,6 +4183,9 @@ impl App {
     /// Bypasses the collab manager's socket/poll path — for tests using a
     /// `MemoryRelay`.
     #[doc(hidden)]
+    // This test adapter deliberately mirrors the complete collaboration event
+    // match so lifecycle tests exercise the same routing as the runtime loop.
+    #[allow(clippy::too_many_lines)]
     pub fn apply_collab_event_for_test(&mut self, event: CollabEvent) {
         self.root_widget.handle_collab_event(&event);
         match event {
@@ -4077,6 +4241,50 @@ impl App {
             ),
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
+            }
+            CollabEvent::PublishedInvocationResult { request_id, result } => {
+                let Some(invocation) = self.pending_application_launches.remove(&request_id) else {
+                    return;
+                };
+                let Some(pending) = self.directed_invocations.remove(&invocation) else {
+                    return;
+                };
+                let update = match result {
+                    Ok((_id, qos_actions::InvocationUpdate::Succeeded { output, .. })) => {
+                        qos_actions::InvocationUpdate::Succeeded { invocation, output }
+                    }
+                    Ok((_id, qos_actions::InvocationUpdate::Failed { error, .. })) => {
+                        qos_actions::InvocationUpdate::Failed { invocation, error }
+                    }
+                    Ok((_id, qos_actions::InvocationUpdate::Cancelled { message, .. })) => {
+                        qos_actions::InvocationUpdate::Cancelled {
+                            invocation,
+                            message,
+                        }
+                    }
+                    Ok((_id, other)) => qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "application_launch_invalid_receipt".into(),
+                            message: format!("application launch returned non-terminal {other:?}"),
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                    Err(message) => qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "application_launch_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                };
+                self.collab_manager.send(CollabRequest::UpdateInvocation {
+                    id: pending.wire_id,
+                    update,
+                });
             }
             _ => {}
         }
@@ -10544,6 +10752,101 @@ mod view_presence_tests {
         let mut app = App::new(State::new(), Box::new(root));
         app.init_layout();
         app
+    }
+
+    #[test]
+    fn application_launch_receipts_are_terminal_once_and_late_replies_are_inert() {
+        let mut app = app_with_root(ViewRoot::new());
+        for (request_id, update) in [
+            (
+                1,
+                qos_actions::InvocationUpdate::Succeeded {
+                    invocation: qos_actions::InvocationId::new(),
+                    output: qos_actions::ActionOutput::default(),
+                },
+            ),
+            (
+                2,
+                qos_actions::InvocationUpdate::Failed {
+                    invocation: qos_actions::InvocationId::new(),
+                    error: qos_actions::ActionFailure {
+                        code: "missing_hash".into(),
+                        message: "launch content is unavailable on this device".into(),
+                        details: None,
+                        retryable: false,
+                    },
+                },
+            ),
+            (
+                3,
+                qos_actions::InvocationUpdate::Cancelled {
+                    invocation: qos_actions::InvocationId::new(),
+                    message: Some("launcher refused".into()),
+                },
+            ),
+        ] {
+            let invocation = qos_actions::InvocationId::new();
+            app.pending_application_launches
+                .insert(request_id, invocation);
+            app.directed_invocations.insert(
+                invocation,
+                DirectedInvocation {
+                    wire_id: request_id + 100,
+                    cancellation_requested: false,
+                },
+            );
+            app.apply_collab_event_for_test(CollabEvent::PublishedInvocationResult {
+                request_id,
+                result: Ok((request_id + 10, update)),
+            });
+            assert!(!app.pending_application_launches.contains_key(&request_id));
+            assert!(!app.directed_invocations.contains_key(&invocation));
+            // A duplicate broker receipt cannot emit a second terminal update.
+            app.apply_collab_event_for_test(CollabEvent::PublishedInvocationResult {
+                request_id,
+                result: Err("late duplicate".into()),
+            });
+            assert!(!app.directed_invocations.contains_key(&invocation));
+        }
+    }
+
+    #[test]
+    fn disconnected_application_launches_are_bounded_and_failed_once() {
+        let mut app = app_with_root(ViewRoot::new());
+        let invocation = qos_actions::InvocationId::new();
+        app.pending_application_launches.insert(1, invocation);
+        app.directed_invocations.insert(
+            invocation,
+            DirectedInvocation {
+                wire_id: 9,
+                cancellation_requested: false,
+            },
+        );
+        assert!(app.poll_directed_invocations());
+        assert!(app.pending_application_launches.is_empty());
+        assert!(!app.directed_invocations.contains_key(&invocation));
+    }
+
+    #[test]
+    fn application_launch_admission_refuses_a_full_receipt_queue() {
+        let mut app = app_with_root(ViewRoot::new());
+        for request_id in 0..MAX_PENDING_APPLICATION_LAUNCHES as u64 {
+            app.pending_application_launches
+                .insert(request_id, qos_actions::InvocationId::new());
+        }
+
+        assert!(matches!(
+            app.admit_application_launch(
+                MAX_PENDING_APPLICATION_LAUNCHES as u64,
+                qos_actions::InvocationId::new(),
+            ),
+            Err(qos_actions::DoorError::Unavailable { code, .. })
+                if code == "application_launch_queue_full"
+        ));
+        assert_eq!(
+            app.pending_application_launches.len(),
+            MAX_PENDING_APPLICATION_LAUNCHES
+        );
     }
 
     #[test]
