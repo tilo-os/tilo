@@ -26,7 +26,7 @@ That prompt is a security feature, not data loss.
 ## Download and launch qOS Imager
 
 Download the signed qOS Imager from the landing page or qOS release page. The
-release matrix is Linux x86-64/ARM64 (AppImage, portable tar,
+release matrix is Linux x86-64/ARM64 (Flatpak, AppImage, portable tar,
 Homebrew), Windows x86-64 (setup EXE, standalone EXE, WinGet), and macOS
 x86-64/Apple silicon (DMG, app zip, Homebrew cask). Verify the published
 SHA-256 digest before launching it. Never use
