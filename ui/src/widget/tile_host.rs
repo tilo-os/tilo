@@ -286,6 +286,11 @@ struct Binding {
     established: bool,
 }
 
+struct PendingBinding {
+    store: RecordStore,
+    tab: RecordCheckout,
+}
+
 impl Binding {
     fn follow_checked(
         &mut self,
@@ -306,15 +311,32 @@ impl Binding {
         Ok(self.live.clone())
     }
 
-    fn follow(&mut self, want: Option<RecordCheckout>) -> RecordId {
+    fn follow(
+        &mut self,
+        want: Option<RecordCheckout>,
+    ) -> Result<RecordId, crate::record::RecordOpenError> {
         if let Some(want) = want
             && want.id != self.live
         {
-            self.store.open_record(&want);
+            admit_record(&self.store, &want)?;
             self.live = want.id;
             self.established = false;
         }
-        self.live.clone()
+        Ok(self.live.clone())
+    }
+}
+
+fn admit_record(
+    store: &RecordStore,
+    checkout: &RecordCheckout,
+) -> Result<(), crate::record::RecordOpenError> {
+    match store.open_record_checked(checkout) {
+        Ok(()) => Ok(()),
+        Err(crate::record::RecordOpenError::MissingRecord) => {
+            let mut reservation = store.reserve_record(checkout)?;
+            reservation.initialize(|_| Ok(()))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -325,6 +347,8 @@ pub struct TileHost {
     /// test exercising only paint. Unbound tiles edit whatever document
     /// the parent pass carries.
     binding: Option<Binding>,
+    pending_binding: Option<PendingBinding>,
+    record_error: Option<String>,
     announced: Option<RecordId>,
     /// Set by [`TileHost::replace_content`]; drained by
     /// [`Widget::take_structure_dirty`]. Tells the layout pass this
@@ -397,6 +421,8 @@ impl TileHost {
             content,
             close_reports: vec![],
             binding: None,
+            pending_binding: None,
+            record_error: None,
             announced: None,
             structure_dirty: false,
             was_presented: std::cell::Cell::new(false),
@@ -437,7 +463,14 @@ impl TileHost {
         {
             return;
         }
-        store.open_record(&tab);
+        if let Err(error) = admit_record(&store, &tab) {
+            self.binding = None;
+            self.pending_binding = Some(PendingBinding { store, tab });
+            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            return;
+        }
+        self.pending_binding = None;
+        self.record_error = None;
         let live = tab.id.clone();
         self.binding = Some(Binding {
             store,
@@ -448,14 +481,37 @@ impl TileHost {
         self.announce_scope();
     }
 
-    fn resolve_record(&mut self) -> Option<RecordId> {
+    fn resolve_record(&mut self) -> Result<Option<RecordId>, crate::record::RecordOpenError> {
+        if let Some(pending) = self.pending_binding.take() {
+            if let Err(error) = admit_record(&pending.store, &pending.tab) {
+                self.pending_binding = Some(pending);
+                self.record_error = Some(format!("Document storage unavailable: {error}"));
+                return Err(error);
+            }
+            self.binding = Some(Binding {
+                store: pending.store,
+                live: pending.tab.id.clone(),
+                tab: pending.tab,
+                established: false,
+            });
+        }
         let want = match &self.content {
             TileContent::App(w) => w.record_intent(),
             TileContent::Stub { .. } | TileContent::Notice { .. } => None,
         };
-        let live = self.binding.as_mut()?.follow(want);
+        let Some(binding) = self.binding.as_mut() else {
+            return Ok(None);
+        };
+        let live = match binding.follow(want) {
+            Ok(live) => live,
+            Err(error) => {
+                self.record_error = Some(format!("Document storage unavailable: {error}"));
+                return Err(error);
+            }
+        };
+        self.record_error = None;
         self.announce_scope();
-        Some(live)
+        Ok(Some(live))
     }
 
     fn announce_scope(&mut self) {
@@ -808,12 +864,18 @@ impl Widget for TileHost {
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {
+        if self.record_error.is_some() {
+            return Vec::new();
+        }
         match &self.content {
             TileContent::App(widget) => vec![widget.as_ref()],
             _ => vec![],
         }
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.record_error.is_some() {
+            return Vec::new();
+        }
         match &mut self.content {
             TileContent::App(widget) => vec![widget.as_mut()],
             _ => vec![],
@@ -821,7 +883,9 @@ impl Widget for TileHost {
     }
 
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
-        let live = self.resolve_record();
+        let Ok(live) = self.resolve_record() else {
+            return;
+        };
         let TileContent::App(w) = &mut self.content else {
             return;
         };
@@ -839,7 +903,9 @@ impl Widget for TileHost {
     }
 
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
-        let live = self.resolve_record();
+        let Ok(live) = self.resolve_record() else {
+            return false;
+        };
         let TileContent::App(w) = &mut self.content else {
             return false;
         };
@@ -985,7 +1051,13 @@ impl Widget for TileHost {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let live = self.resolve_record();
+        if *handled {
+            return;
+        }
+        let Ok(live) = self.resolve_record() else {
+            *handled = true;
+            return;
+        };
         let TileContent::App(app) = &mut self.content else {
             return;
         };
@@ -1057,6 +1129,25 @@ impl Widget for TileHost {
     }
     fn name(&self) -> &'static str {
         "TileHost"
+    }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        if let Some(detail) = &self.record_error {
+            return Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                    .with_name("Document unavailable")
+                    .with_description(detail.clone())
+                    .with_bounds(self.rect),
+            );
+        }
+        match &self.content {
+            TileContent::Notice { title, detail } => Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                    .with_name(title.clone())
+                    .with_description(detail.clone())
+                    .with_bounds(self.rect),
+            ),
+            TileContent::App(_) | TileContent::Stub { .. } => None,
+        }
     }
     /// Only an app can answer anything but `true` — a stub/notice is
     /// painted by this process and is on screen the moment the tile is.
@@ -1346,14 +1437,26 @@ impl TileHost {
             if self.opening_shown && self.handed_over_at.is_none() {
                 self.handed_over_at = Some(Instant::now());
             }
-            match &mut self.content {
-                TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
-                TileContent::Stub { kind, label } => {
-                    let detail = format!("{} coming soon", kind.as_str());
-                    draw_card_text(scene, transform, tr, theme, self.rect, label, &detail);
-                }
-                TileContent::Notice { title, detail } => {
-                    draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
+            if let Some(detail) = &self.record_error {
+                draw_card_text(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    self.rect,
+                    "Document unavailable",
+                    detail,
+                );
+            } else {
+                match &mut self.content {
+                    TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
+                    TileContent::Stub { kind, label } => {
+                        let detail = format!("{} coming soon", kind.as_str());
+                        draw_card_text(scene, transform, tr, theme, self.rect, label, &detail);
+                    }
+                    TileContent::Notice { title, detail } => {
+                        draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
+                    }
                 }
             }
             // Reduced motion takes the cut — the window just being there
@@ -1614,6 +1717,13 @@ mod tests {
         fn get_rect(&self) -> Rect {
             Rect::ZERO
         }
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Document)
+                    .with_name("Seeded hidden document")
+                    .with_value(self.text.clone()),
+            )
+        }
         fn record_intent(&self) -> Option<RecordCheckout> {
             self.opens.as_ref().map(|p| {
                 RecordCheckout::new(
@@ -1761,6 +1871,181 @@ mod tests {
 
     fn tab_checkout(id: u64) -> RecordCheckout {
         RecordCheckout::new(RecordId::for_tab(id), crate::record::RecordKind::new("tab"))
+    }
+
+    fn canonical_store(root: &std::path::Path) -> RecordStore {
+        let mut owners = crate::record::RecordOwners::new(root.to_path_buf());
+        owners.open("dev.qos.tile-host-test", "room").unwrap()
+    }
+
+    fn inspection_has_semantic(node: &crate::headless::InspectionNode, name: &str) -> bool {
+        fn access_has(node: &crate::a11y::AccessNode, name: &str) -> bool {
+            node.name.as_deref() == Some(name)
+                || node.children.iter().any(|child| access_has(child, name))
+        }
+        node.semantics
+            .as_ref()
+            .is_some_and(|access| access_has(access, name))
+            || node
+                .children
+                .iter()
+                .any(|child| inspection_has_semantic(child, name))
+    }
+
+    #[test]
+    fn incompatible_canonical_kind_keeps_the_scratch_binding_and_surfaces_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = canonical_store(&directory.path().join("records"));
+        let file = std::path::PathBuf::from("/work/report.txt");
+        let file_id = RecordId::for_file(&file);
+        let wrong = RecordCheckout::new(
+            file_id.clone(),
+            crate::record::RecordKind::new("different-kind"),
+        );
+        store
+            .reserve_record(&wrong)
+            .unwrap()
+            .initialize(|_| Ok(()))
+            .unwrap();
+        let scratch = tab_checkout(91);
+        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+            text: "must not write".into(),
+            opens: Some(file),
+        })));
+        host.bind_record(store.clone(), scratch.clone());
+        host.sync(&mut AutoCommit::new(), &ROOT);
+
+        assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
+        assert!(
+            host.record_error
+                .as_deref()
+                .is_some_and(|error| error.contains("identity does not match"))
+        );
+        assert_eq!(
+            host.accessibility().and_then(|node| node.name),
+            Some("Document unavailable".into())
+        );
+        assert_eq!(body_of(&store, &file_id), None);
+        let driver = crate::headless::Driver::new(crate::State::new(), Box::new(host), (400, 240));
+        let inspection = driver.inspection();
+        assert!(inspection_has_semantic(
+            &inspection.root,
+            "Document unavailable"
+        ));
+        assert!(
+            !inspection_has_semantic(&inspection.root, "Seeded hidden document"),
+            "the complete projected tree must omit the app hidden by the error card"
+        );
+    }
+
+    #[test]
+    fn unavailable_canonical_store_keeps_pending_binding_and_recovers_on_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("records");
+        let store = canonical_store(&root);
+        std::fs::write(&root, "temporarily not a directory").unwrap();
+        let scratch = tab_checkout(92);
+        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+            text: "recovered".into(),
+            opens: None,
+        })));
+        host.bind_record(store.clone(), scratch.clone());
+        assert!(host.binding.is_none());
+        assert!(host.pending_binding.is_some());
+        assert!(host.record_error.is_some());
+        assert_eq!(
+            host.accessibility().and_then(|node| node.name),
+            Some("Document unavailable".into())
+        );
+
+        std::fs::remove_file(&root).unwrap();
+        host.sync(&mut AutoCommit::new(), &ROOT);
+        assert!(host.pending_binding.is_none());
+        assert!(host.record_error.is_none());
+        assert_eq!(body_of(&store, &scratch.id).as_deref(), Some("recovered"));
+    }
+
+    struct EventProbe(std::rc::Rc<std::cell::Cell<usize>>);
+
+    impl Widget for EventProbe {
+        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style::default());
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            self.0.set(self.0.get() + 1);
+        }
+        fn name(&self) -> &'static str {
+            "EventProbe"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for EventProbe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &'static str {
+            "Event probe"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("E")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_prehandled_event_never_reaches_the_hosted_app() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut host = TileHost::new(TileContent::App(Box::new(EventProbe(calls.clone()))));
+        let mut taffy = TaffyTree::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
+        let mut handled = true;
+        host.handle_event(
+            &WindowEvent::Focused(true),
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut AutoCommit::new(),
+            &ROOT,
+            &mut handled,
+            &mut None,
+            node,
+            &taffy,
+        );
+        assert_eq!(calls.get(), 0);
     }
 
     /// A tab with no file is its own record; a tab whose app has a file

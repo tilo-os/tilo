@@ -1,0 +1,64 @@
+# Desktop UX testing bench
+
+Start with a user goal, describe the visible route, set an interaction budget, and assert the resulting product state. Input dispatch alone never means success.
+
+Latest measured closure: [48-run repaired matrix](superpowers/audits/2026-09-15-fixed-ux-bench-results.md).
+
+## Run
+
+On macOS, from the repository root:
+
+```sh
+cargo build --locked -p shell --bin ux-bench --no-default-features
+python3 scripts/ux-bench/run-suite.py --out target/ux-bench/my-review
+python3 scripts/ux-bench/run-suite.py --matrix --out target/ux-bench/my-matrix
+```
+
+Choose a new output directory for every run. Open its `index.html` to compare journeys; open each journey for screenshots, target highlights, measurements and input traces. Exit codes: 0 passes, 1 required UX checks fail or matrix coverage is incomplete, 2 executable/scenario errors in the native CLI. The suite distinguishes execution errors from UX failures and exits nonzero for either.
+
+Run one scenario:
+
+```sh
+target/debug/ux-bench --scenario scripts/ux-bench/files-scroll.json --out target/ux-bench/scroll-review
+```
+
+The runner creates an isolated HOME, profile and 81 fixture documents inside the output directory. It constructs the native shell tree and uses its real widget input, layout and rendering paths. `fixture: "files"` opens Files before measurement; this tests browsing independently of the separate launch journey. Do not interpret that fixture as proof that users can launch Files.
+
+## Measurements
+
+Scenario JSON has a `name`, user `goal`, `viewport`, `budget` for clicks and keys, and ordered `steps`. Optional fields select fixture, theme, input scale and text scale. See `scripts/ux-bench/*.json` for executable examples and `ui/src/ux_bench.rs` for the strict schema.
+
+- `input` reuses the existing headless action model: named pointer clicks, coordinates, keys, typing, modifiers and semantic actions. `semantic:` selectors resolve real pointer targets. Direct semantic invocations are counted separately and cannot pass a visible interaction-budget journey.
+- `wheel` injects line or physical-pixel input at a logical pointer position or the visible center of a unique semantic `target`, with gesture phase. Scale converts physical movement to logical distance.
+- `wait_state` waits for an adapter state outcome with a bounded timeout.
+- `checkpoint` captures pixels, the inspection tree, resource/action contracts and native workspace/tab state.
+- Checks cover visibility, absence, spacing, alignment, overlap, target size, explicit pixel contrast, target movement, image-region translation, stationary image regions, resources, semantic values/selection and native state.
+
+Every journey must end with an outcome assertion. Failures retain expected and observed values. A missing or ambiguous target fails measurements; missing geometry does not prove a control is absent. The Files scroll scenario checks both moving list pixels and a stationary workspace chip. Target-relative image regions use `{"target":"semantic:Files","inset":[12,32,12,32]}` (left/top/right/bottom logical-pixel insets). Both captures must have identical target bounds; the same screen region is sampled in both, so moving the whole container cannot pass. Blank stationary regions and unchanged scroll pixels fail.
+
+Click counts include taps. Key counts include each typed character and explicit key activation; modifier changes are not separately counted. These are route costs, not estimates of task duration or user comprehension.
+
+## Action-model evidence
+
+Each native run exports the permission-filtered shell catalogue to `initial.actions.json`. Each checkpoint exports `<name>.resources.json` with resource actions and `<name>.inspection.json` with semantic/layout evidence. `run.json` records the executable hash, exact scenario, fixture location and workspace names verified after shutdown persistence. The runner checks product state after visible actions rather than treating an available action as a successful user journey.
+
+## Matrix and limits
+
+`--matrix` executes all eight original journeys across baseline, compact (800×700), light, high-contrast, Retina input scale and 200% text: 48 runs. Click routes use the actual semantic control bounds. Files scrolling uses its real viewport and a target-relative stationary workspace chip. Settings also scrolls its General body to the summary and back before renaming, within the original click/key budget.
+
+Contrast remains two explicit rendered pixel pairs per variant at a minimum 4.5:1. `VARIANT_PIXEL_PROBES` in `run-suite.py` contains separately authored compact and large-text glyph interiors; other variants retain the original pairs. These probes deliberately sample the Home name and app shortcut hint, not icons or blank wallpaper. When typography/layout changes, inspect the rendered glyphs and re-author affected probes; do not lower the contrast threshold.
+
+Screenshots are logical-resolution captures composited onto the native window background. Retina verifies input scaling, not physical-pixel raster quality. Contrast checks sample authored rendered pixel pairs; they do not certify every glyph or the full screen. Visibility checks the window, declared clipping and hidden state, but not occlusion by sibling overlays. A missing semantic target remains a coverage defect, not evidence that the pixels are absent.
+
+The bench does not yet drive the macOS hardware event queue. Before accepting a scroll fix, run live checks with a wheel mouse and trackpad: pointer over inner/outer regions, nested boundaries, both directions, momentum/end/cancel, Retina and external displays, native three-finger workspace navigation, and keyboard alternatives. Review whether the route is understandable as well as whether its numeric budget passes.
+
+## Bench verification
+
+```sh
+cargo test --locked -p ui --lib ux_bench --no-default-features
+cargo test --locked -p ui --lib widget::scrollable::tests --no-default-features
+cargo test --locked -p shell --bin shell --no-default-features
+python3 scripts/ux-bench/test_suite.py
+```
+
+Negative controls verify that bad spacing, low contrast, excess clicks, clipped targets, static scroll regions, moving anchors, and missing evidence cannot produce a passing report. The suite is suitable for a macOS CI job after building the binary; any required failure makes it red. Keep original failing reports for comparison; never weaken checks to obtain green status.

@@ -37,6 +37,8 @@ pub mod idle;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod metrics;
 #[cfg(feature = "hdr-decode")]
 pub mod mp4_recording;
