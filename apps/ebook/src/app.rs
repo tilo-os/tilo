@@ -787,6 +787,9 @@ pub struct BooksApp {
     /// Effective host motion policy. Kept on the custom-painted root so its
     /// frame-demand query cannot accidentally bypass the toolkit preference.
     reduce_motion: bool,
+    /// Host accessibility text scale. Responsive breakpoints use effective
+    /// readable width so enlarged type receives uncrowded overlay rails.
+    text_scale: f32,
 
     // --- draggable annotation markers -------------------------------------
     /// Per-frame grab handles for each highlight group's margin marker:
@@ -1011,6 +1014,7 @@ impl BooksApp {
             pending_scroll_end: false,
             page_turn: None,
             reduce_motion: false,
+            text_scale: 1.0,
             hi_markers: Vec::new(),
             marker_drag: None,
             marker_group: None,
@@ -1089,11 +1093,27 @@ impl BooksApp {
     // the eased reveal + scrim; the app only resolves which mode applies.
 
     fn toc_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), TOC_BREAKPOINT)
+        SplitLayout::from_width(
+            self.rect.width() / f64::from(self.text_scale.max(1.0)),
+            TOC_BREAKPOINT,
+        )
     }
 
     fn notes_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), NOTES_BREAKPOINT)
+        SplitLayout::from_width(
+            self.rect.width() / f64::from(self.text_scale.max(1.0)),
+            NOTES_BREAKPOINT,
+        )
+    }
+
+    fn toc_width(&self) -> f64 {
+        (TOC_W * f64::from(self.text_scale.clamp(1.0, 1.6)))
+            .min((self.rect.width() * 0.90).max(TOC_W))
+    }
+
+    fn notes_width(&self) -> f64 {
+        (NOTES_W * f64::from(self.text_scale.clamp(1.0, 1.45)))
+            .min((self.rect.width() * 0.94).max(NOTES_W))
     }
 
     fn toc_open(&self) -> bool {
@@ -1112,11 +1132,12 @@ impl BooksApp {
             return None;
         }
         let r = self.rect;
+        let width = self.toc_width();
         let x0 = match self.toc_layout() {
             SplitLayout::Docked => r.x0,
-            SplitLayout::Overlay => r.x0 - TOC_W * (1.0 - self.toc_flap.slide()),
+            SplitLayout::Overlay => r.x0 - width * (1.0 - self.toc_flap.slide()),
         };
-        Some(Rect::new(x0, r.y0 + TOP_BAR, x0 + TOC_W, r.y1))
+        Some(Rect::new(x0, r.y0 + TOP_BAR, x0 + width, r.y1))
     }
 
     fn notes_panel_rect(&self) -> Option<Rect> {
@@ -1124,11 +1145,12 @@ impl BooksApp {
             return None;
         }
         let r = self.rect;
+        let width = self.notes_width();
         let x0 = match self.notes_layout() {
-            SplitLayout::Docked => r.x1 - NOTES_W,
-            SplitLayout::Overlay => r.x1 - NOTES_W * self.notes_flap.slide(),
+            SplitLayout::Docked => r.x1 - width,
+            SplitLayout::Overlay => r.x1 - width * self.notes_flap.slide(),
         };
-        Some(Rect::new(x0, r.y0 + TOP_BAR, x0 + NOTES_W, r.y1))
+        Some(Rect::new(x0, r.y0 + TOP_BAR, x0 + width, r.y1))
     }
 
     /// Scroll only the rail under the pointer.  Notes are considered first:
@@ -1342,6 +1364,8 @@ impl BooksApp {
             }
             "long-toc" => {
                 self.view = View::Reader;
+                self.toc_flap.snap(true);
+                self.notes_flap.snap(false);
                 let template = self
                     .library
                     .first()
@@ -2742,11 +2766,16 @@ impl BooksApp {
     fn on_toggle_scheme_enabled(&mut self, id: &str, doc: &mut AutoCommit) {
         let mut sc = self.schemes.clone();
         let mut now_disabled = false;
-        if let Some(s) = sc.iter_mut().find(|s| s.id == id) {
+        let changed = if let Some(s) = sc.iter_mut().find(|s| s.id == id) {
             s.enabled = !s.enabled;
             now_disabled = !s.enabled;
+            Some(s.clone())
+        } else {
+            None
+        };
+        if let Some(scheme) = changed {
+            self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
         }
-        BooksDoc::write_schemes(doc, &sc);
         if now_disabled && self.settings.scheme_id == id {
             self.bump_setting(doc, |st| st.scheme_id = String::new());
         }
@@ -2766,16 +2795,16 @@ impl BooksApp {
                 .iter()
                 .position(|s| s.id == id)
                 .map_or(sc.len(), |p| p + 1);
-            sc.insert(pos, dup);
-            BooksDoc::write_schemes(doc, &sc);
+            sc.insert(pos, dup.clone());
+            self.perform_action(doc, &crate::actions::upsert_color_scheme_action(dup));
             self.editing_scheme = Some(new_id);
         }
     }
 
     fn on_delete_scheme(&mut self, id: &str, doc: &mut AutoCommit) {
-        let mut sc = self.schemes.clone();
-        sc.retain(|s| s.builtin || s.id != id);
-        BooksDoc::write_schemes(doc, &sc);
+        if self.schemes.iter().any(|s| s.id == id && !s.builtin) {
+            self.perform_action(doc, &crate::actions::delete_color_scheme_action(id));
+        }
         if self.editing_scheme.as_deref() == Some(id) {
             self.editing_scheme = None;
         }
@@ -2838,27 +2867,24 @@ impl BooksApp {
     }
 
     fn on_set_default_font(&mut self, id: &str, doc: &mut AutoCommit) {
-        BooksDoc::write_default_font(doc, id);
+        self.perform_action(doc, &crate::actions::set_default_font_action(id));
         self.default_font_menu = false;
     }
 
-    fn on_toggle_font_shown(&self, id: &str, doc: &mut AutoCommit) {
-        let mut f = self.fonts.clone();
-        if let Some(e) = f.iter_mut().find(|e| e.id == id) {
-            e.shown = !e.shown;
+    fn on_toggle_font_shown(&mut self, id: &str, doc: &mut AutoCommit) {
+        if let Some(mut font) = self.fonts.iter().find(|entry| entry.id == id).cloned() {
+            font.shown = !font.shown;
+            self.perform_action(doc, &crate::actions::upsert_font_action(font));
         }
-        BooksDoc::write_fonts(doc, &f);
     }
 
     fn on_remove_font(&mut self, id: &str, doc: &mut AutoCommit) {
-        let mut f = self.fonts.clone();
-        f.retain(|e| e.id != id);
-        BooksDoc::write_fonts(doc, &f);
+        self.perform_action(doc, &crate::actions::delete_font_action(id));
         if self.settings.font_id == id {
             self.bump_setting(doc, |s| s.font_id = String::new());
         }
         if self.default_font_id == id {
-            BooksDoc::write_default_font(doc, "");
+            self.perform_action(doc, &crate::actions::set_default_font_action(""));
         }
     }
 
@@ -2868,21 +2894,15 @@ impl BooksApp {
     }
 
     fn on_add_system_font(&mut self, family: &str, doc: &mut AutoCommit) {
-        let mut f = self.fonts.clone();
+        let f = self.fonts.clone();
         let dup = f
             .iter()
             .any(|e| matches!(&e.kind, FontKind::Named(n) if n == family));
         if !dup {
             let ids: Vec<String> = f.iter().map(|e| e.id.clone()).collect();
             let id = Self::fresh_id("font", &ids);
-            f.push(FontEntry::new(
-                &id,
-                FontKind::Named(family.to_string()),
-                family,
-                1.0,
-                true,
-            ));
-            BooksDoc::write_fonts(doc, &f);
+            let font = FontEntry::new(&id, FontKind::Named(family.to_string()), family, 1.0, true);
+            self.perform_action(doc, &crate::actions::upsert_font_action(font));
         }
         self.font_picker = false;
     }
@@ -2905,18 +2925,26 @@ impl BooksApp {
     }
 
     fn on_set_sort(&mut self, sort: crate::model::LibrarySort, doc: &mut AutoCommit) {
-        let mut p = self.library_prefs;
+        let before = self.library_prefs;
+        let mut p = before;
         p.sort = sort;
         self.library_prefs = p;
-        BooksDoc::write_library_prefs(doc, &p);
+        self.perform_action(
+            doc,
+            &crate::actions::set_library_preferences_action(before, p),
+        );
         self.shelf_controls.close_sort_menu();
     }
 
     fn on_toggle_hide_read(&mut self, doc: &mut AutoCommit) {
-        let mut p = self.library_prefs;
+        let before = self.library_prefs;
+        let mut p = before;
         p.hide_read = !p.hide_read;
         self.library_prefs = p;
-        BooksDoc::write_library_prefs(doc, &p);
+        self.perform_action(
+            doc,
+            &crate::actions::set_library_preferences_action(before, p),
+        );
     }
 
     fn dispatch_shelf_control(&mut self, action: ShelfControlAction, doc: &mut AutoCommit) {
@@ -2943,12 +2971,13 @@ impl BooksApp {
     /// Apply the picker's live colour to its target (called on every drag). For
     /// a slot, this live-edits the scheme so the manager previews the change;
     /// for a new scheme, nothing is written until [`Self::commit_picker`].
-    fn apply_live_pick(&self, doc: &mut AutoCommit, edit: &ColorEdit) {
+    fn apply_live_pick(&mut self, doc: &mut AutoCommit, edit: &ColorEdit) {
         if let PickTarget::Slot(id, slot) = &edit.target {
             let mut sc = self.schemes.clone();
             if let Some(s) = sc.iter_mut().find(|s| &s.id == id && !s.builtin) {
                 s.set_slot(*slot, edit.rgb);
-                BooksDoc::write_schemes(doc, &sc);
+                let scheme = s.clone();
+                self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
             }
         }
     }
@@ -2961,16 +2990,12 @@ impl BooksApp {
         };
         match edit.target {
             PickTarget::NewScheme => {
-                let mut sc = self.schemes.clone();
+                let sc = self.schemes.clone();
                 let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
                 let new_id = Self::fresh_id("scheme", &ids);
                 let n = sc.iter().filter(|s| !s.builtin).count() + 1;
-                sc.push(ColorScheme::from_bg(
-                    &new_id,
-                    &format!("Scheme {n}"),
-                    edit.rgb,
-                ));
-                BooksDoc::write_schemes(doc, &sc);
+                let scheme = ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), edit.rgb);
+                self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 self.editing_scheme = Some(new_id.clone());
                 self.bump_setting(doc, |st| st.scheme_id = new_id);
             }
@@ -2978,8 +3003,9 @@ impl BooksApp {
                 let mut sc = self.schemes.clone();
                 if let Some(s) = sc.iter_mut().find(|s| s.id == id && !s.builtin) {
                     s.set_slot(slot, edit.rgb);
+                    let scheme = s.clone();
+                    self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 }
-                BooksDoc::write_schemes(doc, &sc);
             }
         }
     }
@@ -3016,7 +3042,7 @@ impl BooksApp {
 
     /// Write a committed rename to the CRDT. A blank name is ignored (keeps the
     /// old one).
-    fn apply_rename(&self, target: RenameTarget, name: &str, doc: &mut AutoCommit) {
+    fn apply_rename(&mut self, target: RenameTarget, name: &str, doc: &mut AutoCommit) {
         let name = name.trim();
         if name.is_empty() {
             return;
@@ -3026,15 +3052,17 @@ impl BooksApp {
                 let mut f = self.fonts.clone();
                 if let Some(e) = f.iter_mut().find(|e| e.id == id) {
                     e.name = name.to_string();
+                    let font = e.clone();
+                    self.perform_action(doc, &crate::actions::upsert_font_action(font));
                 }
-                BooksDoc::write_fonts(doc, &f);
             }
             RenameTarget::Scheme(id) => {
                 let mut sc = self.schemes.clone();
                 if let Some(s) = sc.iter_mut().find(|s| s.id == id) {
                     s.name = name.to_string();
+                    let scheme = s.clone();
+                    self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 }
-                BooksDoc::write_schemes(doc, &sc);
             }
         }
     }
@@ -3134,9 +3162,13 @@ impl BooksApp {
     }
 
     fn bump_setting(&mut self, doc: &mut AutoCommit, f: impl FnOnce(&mut Settings)) {
-        let mut s = BooksDoc::read_settings(doc);
+        let before = BooksDoc::read_settings(doc);
+        let mut s = before.clone();
         f(&mut s);
-        BooksDoc::write_settings(doc, &s);
+        self.perform_action(
+            doc,
+            &crate::actions::set_reading_settings_action(before, s.clone()),
+        );
         self.settings = s;
         self.layout = None;
     }
@@ -4571,10 +4603,8 @@ impl Widget for BooksApp {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        // The allocated width is now known — reconcile both rails so a
-        // breakpoint crossing adopts the new default (docked ⇒ open, overlay ⇒
-        // closed) before the next draw.
-        self.reconcile_flaps();
+        // Rail reconciliation happens at the start of `draw`, once both the
+        // allocated width and the host accessibility text scale are known.
     }
 
     fn draw(
@@ -4586,6 +4616,7 @@ impl Widget for BooksApp {
         _presence: &ui::presence::PresenceCtx,
     ) {
         self.hits.clear();
+        self.text_scale = theme.text_scale;
         self.comment_overlay.begin_frame();
         self.number_controls.begin_frame();
         self.reading_settings.begin_frame();
@@ -4994,8 +5025,9 @@ impl Widget for BooksApp {
                         let mut fonts = self.fonts.clone();
                         if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                             font.size_mult = value as f32;
+                            let font = font.clone();
+                            self.perform_action(doc, &crate::actions::upsert_font_action(font));
                         }
-                        BooksDoc::write_fonts(doc, &fonts);
                     }
                 }
             }
@@ -5191,8 +5223,9 @@ impl BooksApp {
                     let mut fonts = self.fonts.clone();
                     if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                         font.size_mult = value as f32;
+                        let font = font.clone();
+                        self.perform_action(doc, &crate::actions::upsert_font_action(font));
                     }
-                    BooksDoc::write_fonts(doc, &fonts);
                 }
             }
         }
@@ -7523,11 +7556,11 @@ impl BooksApp {
         // inset. The eased reveal makes the inset grow/shrink smoothly as a
         // docked rail is summoned or dismissed.
         let toc_w = match self.toc_layout() {
-            SplitLayout::Docked => TOC_W * self.toc_flap.reveal(),
+            SplitLayout::Docked => self.toc_width() * self.toc_flap.reveal(),
             SplitLayout::Overlay => 0.0,
         };
         let notes_w = match self.notes_layout() {
-            SplitLayout::Docked => NOTES_W * self.notes_flap.reveal(),
+            SplitLayout::Docked => self.notes_width() * self.notes_flap.reveal(),
             SplitLayout::Overlay => 0.0,
         };
         let center_x0 = r.x0 + toc_w;
@@ -7617,6 +7650,7 @@ impl BooksApp {
             geom.content_h,
             &self.settings,
             font_sig,
+            tr.text_scale(),
         );
         if self.layout.as_ref().map(|l| l.key) != Some(key)
             && let Some(book) = lib.get(self.book_idx)
@@ -8712,10 +8746,11 @@ impl BooksApp {
                 self.draw_toc(scene, t, tr, theme, lib, r.x0, body_y0, body_y1, c);
             }
         } else if toc_reveal > 0.001 {
-            let x0 = r.x0 - TOC_W * (1.0 - self.toc_flap.slide());
+            let toc_w = self.toc_width();
+            let x0 = r.x0 - toc_w * (1.0 - self.toc_flap.slide());
             // Swallow taps on the rail body so they don't reach the scrim;
             // pushed first so the chapter-row hits land on top of it.
-            self.push_hit(Rect::new(x0, body_y0, x0 + TOC_W, body_y1), Action::Swallow);
+            self.push_hit(Rect::new(x0, body_y0, x0 + toc_w, body_y1), Action::Swallow);
             self.draw_toc(scene, t, tr, theme, lib, x0, body_y0, body_y1, c);
         }
 
@@ -8723,12 +8758,22 @@ impl BooksApp {
         // slides in from the right.
         if notes_layout == SplitLayout::Docked {
             if notes_reveal > 0.001 {
-                self.draw_notes(scene, t, tr, theme, r.x1 - NOTES_W, body_y0, body_y1, c);
+                self.draw_notes(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    r.x1 - self.notes_width(),
+                    body_y0,
+                    body_y1,
+                    c,
+                );
             }
         } else if notes_reveal > 0.001 {
-            let x0 = r.x1 - NOTES_W * self.notes_flap.slide();
+            let notes_w = self.notes_width();
+            let x0 = r.x1 - notes_w * self.notes_flap.slide();
             self.push_hit(
-                Rect::new(x0, body_y0, x0 + NOTES_W, body_y1),
+                Rect::new(x0, body_y0, x0 + notes_w, body_y1),
                 Action::Swallow,
             );
             self.draw_notes(scene, t, tr, theme, x0, body_y0, body_y1, c);
@@ -8954,13 +8999,14 @@ impl BooksApp {
         y1: f64,
         c: &ui::tokens::colors::Colors,
     ) {
-        let panel = Rect::new(panel_x0, y0, panel_x0 + TOC_W, y1);
+        let panel_w = self.toc_width();
+        let panel = Rect::new(panel_x0, y0, panel_x0 + panel_w, y1);
         paint::fill_rect(scene, t, panel, c.surfaces.base);
         paint::line(
             scene,
             t,
-            Point::new(panel_x0 + TOC_W, y0),
-            Point::new(panel_x0 + TOC_W, y1),
+            Point::new(panel_x0 + panel_w, y0),
+            Point::new(panel_x0 + panel_w, y1),
             c.border_standard,
             1.0,
         );
@@ -8977,8 +9023,9 @@ impl BooksApp {
         let Some(book) = lib.get(self.book_idx) else {
             return;
         };
-        let list_y0 = y0 + 44.0;
-        let row_h = 44.0;
+        let scale = f64::from(theme.text_scale.max(1.0));
+        let list_y0 = y0 + 44.0 * scale;
+        let row_h = 44.0 * scale;
         let list_y1 = y1 - 8.0;
         let content_h = book.chapters.len() as f64 * row_h;
         let visible_h = (list_y1 - list_y0).max(0.0);
@@ -8994,14 +9041,19 @@ impl BooksApp {
         }
         self.toc_scroll = self.toc_scroll.clamp(0.0, self.toc_max_scroll);
 
-        let clip = Rect::new(panel_x0, list_y0, panel_x0 + TOC_W, list_y1);
+        let clip = Rect::new(panel_x0, list_y0, panel_x0 + panel_w, list_y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         for (i, ch) in book.chapters.iter().enumerate() {
             let y = list_y0 + i as f64 * row_h - self.toc_scroll;
             if y + row_h < list_y0 || y > list_y1 {
                 continue;
             }
-            let row = Rect::new(panel_x0 + 10.0, y, panel_x0 + TOC_W - 10.0, y + row_h - 6.0);
+            let row = Rect::new(
+                panel_x0 + 10.0,
+                y,
+                panel_x0 + panel_w - 10.0,
+                y + row_h - 6.0,
+            );
             let active = i == self.chapter;
             let hover = self.is_hover(row);
             if active {
@@ -9033,7 +9085,7 @@ impl BooksApp {
                 } else {
                     c.text_dim
                 },
-                t * Affine::translate((row.x0 + 14.0, y + 8.0)),
+                t * Affine::translate((row.x0 + 14.0 * scale, y + 8.0 * scale)),
                 None,
                 TextWeight::Bold,
             );
@@ -9042,8 +9094,8 @@ impl BooksApp {
                 &ch.title,
                 13.0,
                 if active { c.text_primary } else { c.text_dim },
-                t * Affine::translate((row.x0 + 42.0, y + 8.0)),
-                Some((TOC_W - 72.0) as f32),
+                t * Affine::translate((row.x0 + 42.0 * scale, y + 8.0 * scale)),
+                Some((panel_w - 72.0 * scale.min(1.5)) as f32),
                 if active {
                     TextWeight::Semibold
                 } else {
@@ -9057,7 +9109,7 @@ impl BooksApp {
             scene,
             t,
             c,
-            panel_x0 + TOC_W - 9.0,
+            panel_x0 + panel_w - 9.0,
             list_y0,
             list_y1,
             self.toc_scroll,
@@ -9117,7 +9169,7 @@ impl BooksApp {
     ) {
         let annos = self.annotations.clone();
         let x0 = panel_x0;
-        let panel_x1 = panel_x0 + NOTES_W;
+        let panel_x1 = panel_x0 + self.notes_width();
         let panel = Rect::new(x0, y0, panel_x1, y1);
         paint::fill_rect(scene, t, panel, c.surfaces.base);
         paint::line(
