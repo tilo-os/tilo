@@ -11,10 +11,9 @@
 //! dispatch and what the Ctrl+K palette dispatches — one source of truth, one
 //! replay path.
 //!
-//! This is the **mutation** side of Contacts. The **navigation** side —
-//! finding a contact — stays a [`SearchProvider`](crate::search_provider): a
-//! chosen search row selects a record (presentation), it does not mutate the
-//! document.
+//! This is the **mutation** side of Contacts. The **navigation** side is a
+//! typed view operation addressed by [`SearchProvider`](crate::search_provider)
+//! results; opening a search row is agent-capable without mutating the document.
 //!
 //! The resource tree mirrors the data model: the book owns its contacts, and
 //! each contact exports the [`ActionSpec`]s Ctrl+K offers (rename, add-to-group,
@@ -105,22 +104,12 @@ pub enum ContactsOperation {
 mod file_action_tests {
     use super::*;
     #[test]
-    fn path_argument_binds_into_background_import() {
+    fn file_operation_is_portal_mediated_and_has_no_host_path_argument() {
         let spec = file_operation("import-vcard", "Import vCard", false);
-        let encoded = spec
-            .build_json(
-                serde_json::json!({"path":"/tmp/a.vcf"})
-                    .as_object()
-                    .unwrap(),
-            )
-            .unwrap();
+        assert!(spec.params().is_empty());
+        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
         let decoded: ContactsOperation = serde_json::from_slice(&encoded.payload).unwrap();
-        assert_eq!(
-            decoded,
-            ContactsOperation::ImportVcard {
-                path: Some("/tmp/a.vcf".into())
-            }
-        );
+        assert_eq!(decoded, ContactsOperation::ImportVcard { path: None });
         assert!(matches!(
             spec.contract.execution,
             ExecutionMode::Background { .. }
@@ -155,23 +144,15 @@ fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
     ActionSpec::typed_operation(
         id,
         label,
-        "optional absolute path",
+        "system file picker",
         OperationKind::Effect,
         CONTACTS_OPERATION_TYPE,
-        vec![ActionParam::optional(
-            "path",
-            ParamType::Text,
-            "vCard path; omit to use the system picker",
-        )],
-        move |args: &ActionArgs| {
-            let path = args
-                .text("path")
-                .filter(|p| !p.trim().is_empty())
-                .map(str::to_string);
+        vec![],
+        move |_: &ActionArgs| {
             let operation = if export {
-                ContactsOperation::ExportAllVcard { path }
+                ContactsOperation::ExportAllVcard { path: None }
             } else {
-                ContactsOperation::ImportVcard { path }
+                ContactsOperation::ImportVcard { path: None }
             };
             EncodedAction::encode_operation(CONTACTS_OPERATION_TYPE, &operation).unwrap_or_else(
                 |error| EncodedAction {
