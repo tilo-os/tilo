@@ -11,6 +11,8 @@ userspace="$repo/os/usr/lib/systemd/system/tilo-system-extension-userspace.servi
 boot="$repo/os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service"
 model="$repo/os/usr/lib/systemd/system/tilo-local-model.service"
 user_model="$repo/os/usr/lib/systemd/user/tilo-models.service"
+model_storage="$repo/os/usr/lib/systemd/user/tilo-model-storage.service"
+gateway="$repo/os/usr/lib/systemd/user/tilo-model-gateway.service"
 socket="$repo/os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket"
 dispatcher="$repo/os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service"
 dispatch_helper="$repo/os/usr/libexec/tilo-system-extension-dispatch"
@@ -34,6 +36,7 @@ for source in \
     'os/usr/lib/systemd/system/tilo-system-extension-boot-stage.service /usr/lib/systemd/system/tilo-system-extension-boot-stage.service' \
     'os/usr/lib/systemd/system/tilo-local-model.service /usr/lib/systemd/system/tilo-local-model.service' \
     'os/usr/lib/systemd/user/tilo-models.service /usr/lib/systemd/user/tilo-models.service' \
+    'os/usr/lib/systemd/user/tilo-model-storage.service /usr/lib/systemd/user/tilo-model-storage.service' \
     'os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher.socket /usr/lib/systemd/system/tilo-system-extension-dispatcher.socket' \
     'os/usr/lib/systemd/system/tilo-system-extension-dispatcher@.service /usr/lib/systemd/system/tilo-system-extension-dispatcher@.service' \
@@ -97,11 +100,24 @@ need "$user_model" 'ProtectSystem=strict' 'per-user model manager can write the 
 need "$user_model" 'ProtectHome=read-only' 'per-user model manager has broad home access'
 need "$user_model" 'ReadWritePaths=%h/.local/share/tilo %h/.local/share/containers %t/tilo' 'per-user model manager lacks narrowly writable model/runtime state'
 need "$user_model" 'RuntimeDirectory=tilo' 'per-user model manager does not create its runtime parent'
-need "$user_model" 'ExecStartPre=/usr/bin/systemd-tmpfiles --user --create /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' 'per-user model manager does not provision fresh-user persistent state before startup'
+need "$user_model" 'Requires=tilo-model-storage.service' 'per-user model manager does not require storage preparation before sandbox setup'
+need "$user_model" 'After=tilo-model-storage.service' 'per-user model manager can build its namespace before storage preparation'
+need "$model_storage" 'ExecStart=/usr/bin/systemd-tmpfiles --user --create /usr/lib/user-tmpfiles.d/tilo-model-manager.conf' 'storage preparation does not provision fresh-user persistent state before sandbox setup'
+need "$gateway" 'Requires=tilo-model-storage.service' 'model gateway does not require storage preparation before sandbox setup'
+need "$gateway" 'After=tilo-model-storage.service' 'model gateway can build its namespace before storage preparation'
+need "$gateway" 'ProtectSystem=strict' 'model gateway can write the immutable root'
+need "$gateway" 'ProtectHome=read-only' 'model gateway has broad home access'
+need "$gateway" 'ReadWritePaths=%h/.config/tilo %t/tilo' 'model gateway lacks narrowly writable provider/runtime state'
+if sed '/^[[:space:]]*#/d' "$model_storage" | grep -Eq '^(ProtectHome|ReadWritePaths)='; then
+    bad 'storage preparation is sandboxed before it can create home paths'
+else
+    ok 'storage preparation runs before confined model namespaces are constructed'
+fi
 for line in \
     'd %h/.local/share/tilo            0700' \
     'd %h/.local/share/tilo/models     0700' \
     'd %h/.local/share/containers     0700' \
+    'd %h/.config/tilo                0700' \
     'd %t/tilo/services                0700'; do
     need "$user_tmpfiles" "$line" "fresh-user tmpfiles does not provision $line"
 done

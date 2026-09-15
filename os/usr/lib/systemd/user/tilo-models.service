@@ -4,6 +4,8 @@ Documentation=file:///usr/share/doc/tilo/system-extensions.md
 After=network-online.target
 Wants=network-online.target
 PartOf=tilo-graphical-session.target
+Requires=tilo-model-storage.service
+After=tilo-model-storage.service
 
 [Service]
 Type=simple
@@ -15,11 +17,6 @@ UMask=0077
 # tmpfiles creates the persistent model and rootless-Container directories.
 RuntimeDirectory=tilo
 RuntimeDirectoryMode=0700
-# User tmpfiles normally runs when the user manager starts. Run this narrowly
-# scoped definition here too, so a first Settings launch has writable model
-# and rootless-Podman state even before that normal timer has fired.
-ExecStartPre=/usr/bin/systemd-tmpfiles --user --create /usr/lib/user-tmpfiles.d/tilo-model-manager.conf
-
 # Settings receives only the connected models@1 descriptor. This service owns
 # network transfers, the content-addressed user store, and Podman supervision.
 ProtectSystem=strict
