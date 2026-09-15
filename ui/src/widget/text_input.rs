@@ -3693,49 +3693,7 @@ impl Widget for TextInput {
                 self.handle_middle_click(state, root, focus_target, node_id, handled);
             }
             WindowEvent::Touch(touch) => {
-                let point = Point::new(
-                    touch.location.x / scale_factor,
-                    touch.location.y / scale_factor,
-                );
-                match touch.phase {
-                    TouchPhase::Started
-                        if self.active_touch.is_none() && self.rect.contains(point) =>
-                    {
-                        self.active_touch = Some(touch.id);
-                        self.last_mouse_pos = point;
-                        self.is_hovered = true;
-                        self.handle_left_press(
-                            Modifiers::default(),
-                            focus_target,
-                            node_id,
-                            handled,
-                        );
-                    }
-                    TouchPhase::Moved if self.active_touch == Some(touch.id) => {
-                        self.handle_cursor_moved(touch.location, scale_factor, handled);
-                        // Pointer movement that leaves the field can retain
-                        // the same resolved cursor, but the owned gesture is
-                        // still consumed until release.
-                        *handled = true;
-                    }
-                    TouchPhase::Ended if self.active_touch == Some(touch.id) => {
-                        self.active_touch = None;
-                        self.is_dragging = false;
-                        self.is_hovered = self.rect.contains(point);
-                        *handled = true;
-                    }
-                    TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
-                        self.active_touch = None;
-                        self.is_dragging = false;
-                        *handled = true;
-                    }
-                    _ if self.active_touch.is_some() => {
-                        // Explicitly reject a secondary finger while another
-                        // owns selection; never leak it to a control below.
-                        *handled = true;
-                    }
-                    _ => {}
-                }
+                self.handle_touch_event(touch, scale_factor, focus_target, node_id, handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -4924,6 +4882,51 @@ impl TextInput {
             }
             "v" => {
                 self.do_paste(state, obj_id);
+                *handled = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_touch_event(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale_factor: f64,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        handled: &mut bool,
+    ) {
+        let point = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            TouchPhase::Started if self.active_touch.is_none() && self.rect.contains(point) => {
+                self.active_touch = Some(touch.id);
+                self.last_mouse_pos = point;
+                self.is_hovered = true;
+                self.handle_left_press(Modifiers::default(), focus_target, node_id, handled);
+            }
+            TouchPhase::Moved if self.active_touch == Some(touch.id) => {
+                self.handle_cursor_moved(touch.location, scale_factor, handled);
+                // Movement that leaves the field can retain the same resolved
+                // cursor, but the owned gesture is consumed until release.
+                *handled = true;
+            }
+            TouchPhase::Ended if self.active_touch == Some(touch.id) => {
+                self.active_touch = None;
+                self.is_dragging = false;
+                self.is_hovered = self.rect.contains(point);
+                *handled = true;
+            }
+            TouchPhase::Cancelled if self.active_touch == Some(touch.id) => {
+                self.active_touch = None;
+                self.is_dragging = false;
+                *handled = true;
+            }
+            _ if self.active_touch.is_some() => {
+                // A secondary finger cannot leak to a control below while
+                // this field owns the selection gesture.
                 *handled = true;
             }
             _ => {}
