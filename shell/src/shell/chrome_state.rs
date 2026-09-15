@@ -130,6 +130,12 @@ pub struct ClockActivity {
     pub generation: u64,
     #[serde(default)]
     pub producer_pid: u32,
+    #[serde(default)]
+    pub notification_id: Option<String>,
+    #[serde(default)]
+    pub notification_title: String,
+    #[serde(default)]
+    pub notification_body: String,
 }
 
 fn clock_activity_active_default() -> bool {
