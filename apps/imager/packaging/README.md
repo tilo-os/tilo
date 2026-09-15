@@ -52,6 +52,15 @@ cache. A manual release build must provide those tools plus
 builders need Inno Setup 6 and the WinGet client for manifest validation.
 macOS uses the platform `hdiutil`.
 
+Linux release validation executes the AppImage once through its extraction
+compatibility path and, on every FUSE-capable kernel, again through its normal
+embedded runtime. A FUSE-capable runner with a missing or inaccessible
+`/dev/fuse` fails instead of silently weakening the gate. Flatpak validation
+imports the emitted bundle into a private per-job user installation and runs
+that installed ref against the system `org.freedesktop.Platform//25.08`
+runtime; release runners therefore install both the SDK and Platform runtime
+system-wide.
+
 An `imager-v*` release tag sets `QOS_REQUIRE_SIGNING=1`, so packaging fails
 closed unless the platform release credentials are configured:
 
