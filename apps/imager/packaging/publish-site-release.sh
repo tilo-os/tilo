@@ -8,6 +8,11 @@ set -euo pipefail
 : "${QOS_SITE_GIT_TOKEN:?missing short-lived website token}"
 : "${QOS_LINUX_SIGNING_FINGERPRINT:?missing protected Linux signing fingerprint}"
 
+release_repository="${QOS_RELEASE_REPOSITORY:-qos/releases}"
+[[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
+release_root="${GITHUB_SERVER_URL%/}/${release_repository}/releases"
+
 version="${GITHUB_REF_NAME#imager-v}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
@@ -88,9 +93,11 @@ if [ "$winget_http" = 200 ] \
 fi
 
 jq --arg tag "$GITHUB_REF_NAME" --arg fingerprint "$fingerprint" \
+   --arg release_root "$release_root" \
    --arg winget_state "$winget_state" \
   '.tag = $tag
    | .published = true
+   | .releaseRoot = $release_root
    | .linuxSigningFingerprint = $fingerprint
    | .channels.homebrew = "available"
    | .channels.winget = $winget_state' \
@@ -101,6 +108,17 @@ cp docs/install-contract.json "$contract"
 npm --prefix "$work/site" ci
 npm --prefix "$work/site" run test:release
 npm --prefix "$work/site" run build
+
+# The manifest is the release-origin contract. Refuse to publish a manifest a
+# site build ignores: that would turn every attractive download action into an
+# authentication-gated or dead link even though its own tests passed.
+expected_download="$release_root/download/$GITHUB_REF_NAME/$(jq -r '.assets.windowsX64Setup' "$manifest")"
+grep -R -Fq -- "href=\"$expected_download\"" "$work/site/dist" \
+  || { printf 'landing page does not consume the public releaseRoot manifest field\n' >&2; exit 1; }
+if grep -R -Fq -- 'https://code.sandbox.example/qos/qos/releases/download/' "$work/site/dist"; then
+  printf 'landing page still contains private-source release downloads\n' >&2
+  exit 1
+fi
 
 git -C "$work/site" config user.name "qOS release automation"
 git -C "$work/site" config user.email "release-bot@qos.dev"

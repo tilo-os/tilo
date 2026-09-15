@@ -16,7 +16,7 @@
     </p>
   </description>
   <launchable type="desktop-id">org.qos.Imager.desktop</launchable>
-  <url type="homepage">https://code.sandbox.example/qos/qos</url>
+  <url type="homepage">https://code.sandbox.example/qos/releases</url>
   <provides>
     <binary>qos-imager</binary>
   </provides>

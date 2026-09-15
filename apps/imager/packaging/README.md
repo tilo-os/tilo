@@ -127,15 +127,20 @@ trust anchor: the full fingerprint must also be pinned on the qOS website or
 another independently authenticated channel before the first release.
 
 Publishing to Homebrew and WinGet is a separate credentialed promotion after
-the signed release exists. `publish-homebrew-tap.sh` creates/updates the
+the signed release exists. Signed binaries are published to the dedicated
+public `qos/releases` repository, never to the private source repository. The
+tag job obtains a 5–15 minute, target-only token from
+`IMAGER_RELEASE_CREDENTIAL_BROKER`; the source job token is not accepted for
+this step. `IMAGER_PUBLIC_RELEASE_REPOSITORY` can select another pre-created
+public `OWNER/REPOSITORY`. `publish-homebrew-tap.sh` creates/updates the
 first-party `qos/homebrew-qos` tap, replaces the version, immutable base URL and
 release SHA-256 values, and runs strict audits. `publish-winget.sh` submits the
 generated three-file manifest to Microsoft's public community index. See
 `docs/imager-release-operations.md` for runner labels, protected variables and
 the Forgejo OIDC design for short-lived signing access.
 
-The landing-page manifest records package-channel state separately from signed
-download availability. Homebrew is marked available only after its native
+The landing-page manifest records the public release root and package-channel
+state separately from signed download availability. Homebrew is marked available only after its native
 install matrix passes. A newly opened WinGet submission is marked `submitted`,
 so the site recommends the signed setup EXE instead of showing a command that
 cannot resolve yet. The scheduled acceptance monitor checks Microsoft's exact
@@ -144,7 +149,7 @@ Once accepted, it runs the same idempotent site verification/build and changes
 WinGet to `available`; transient GitHub failures remain fail-safe as
 `submitted`.
 
-Forgejo releases remain drafts while artifacts are uploaded. Publication reads
+Public Forgejo releases remain drafts while artifacts are uploaded. Publication reads
 every attachment back and compares its exact bytes, then makes the complete
 release public in one final API update. A failed upload therefore leaves a
 recoverable private draft; an already-public release is immutable and cannot be

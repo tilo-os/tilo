@@ -13,7 +13,11 @@ version="${GITHUB_REF_NAME#imager-v}"
 [ "$version" != "$GITHUB_REF_NAME" ] || { printf 'expected imager-v* tag\n' >&2; exit 2; }
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
   || { printf 'release tag must be imager-vMAJOR.MINOR.PATCH\n' >&2; exit 2; }
-base_url="${GITHUB_SERVER_URL}/qos/qos/releases/download/${GITHUB_REF_NAME}"
+release_repository="${QOS_RELEASE_REPOSITORY:-qos/releases}"
+[[ "$release_repository" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+  || { printf 'release repository must be OWNER/REPOSITORY\n' >&2; exit 2; }
+base_url="${GITHUB_SERVER_URL%/}/${release_repository}/releases/download/${GITHUB_REF_NAME}"
+release_page="${GITHUB_SERVER_URL%/}/${release_repository}"
 
 digest() {
   local name="$1" path
@@ -93,6 +97,7 @@ render() {
   sed \
     -e "s|@VERSION@|$version|g" \
     -e "s|@BASE_URL@|$base_url|g" \
+    -e "s|@RELEASE_PAGE@|$release_page|g" \
     -e "s|@LINUX_X86_64_SHA256@|$linux_x64|g" \
     -e "s|@LINUX_ARM64_SHA256@|$linux_arm|g" \
     -e "s|@MACOS_X86_64_SHA256@|$mac_x64|g" \
