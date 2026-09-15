@@ -335,6 +335,8 @@ pub struct BlockEditor {
     visual_formula_focus: Option<usize>,
     preferred_formula_mode: crate::math::FormulaMode,
     action_interception: bool,
+    /// Canonical binding stays read-only even after its last block is removed.
+    canonical_existing: bool,
     /// An empty canonical list has a local paragraph until the first effective edit.
     canonical_empty: bool,
     interception_before: Option<Vec<BlockSnapshot>>,
@@ -389,6 +391,7 @@ impl BlockEditor {
             visual_formula_focus: None,
             preferred_formula_mode: crate::math::FormulaMode::Visual,
             action_interception: false,
+            canonical_existing: false,
             canonical_empty: false,
             interception_before: None,
             pending_semantic_ops: Vec::new(),
@@ -703,6 +706,8 @@ impl BlockEditor {
     /// If the doc list already has blocks, adopts them (discarding the
     /// locally seeded ones); if empty, seeds it from the local blocks.
     pub fn bind_blocks(&mut self, state: &mut AutoCommit, list: ObjId) {
+        self.canonical_existing = false;
+        self.canonical_empty = false;
         let doc_len = state.length(&list);
         if doc_len == 0 {
             self.doc_structure_dirty = true;
@@ -717,6 +722,7 @@ impl BlockEditor {
     /// Bind a canonical existing list without initializing its durable contents.
     pub fn bind_existing_blocks(&mut self, state: &mut AutoCommit, list: ObjId) {
         self.set_action_interception(true);
+        self.canonical_existing = true;
         let len = state.length(&list);
         self.canonical_empty = len == 0;
         if len == 0 {
@@ -3492,7 +3498,11 @@ impl Widget for BlockEditor {
         // objects and adopt remote structural changes here.
         if self.action_interception {
             let doc_len = state.length(&list);
-            if self.canonical_empty && doc_len == 0 {
+            if self.canonical_existing && doc_len == 0 {
+                if !self.canonical_empty {
+                    self.rebuild_from_doc(state, &list, 0);
+                    self.canonical_empty = true;
+                }
                 return;
             }
             self.canonical_empty = false;
@@ -6005,6 +6015,53 @@ mod tests {
             assert_eq!(doc.length(&list), 0);
             assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
         }
+    }
+
+    #[test]
+    fn canonical_existing_list_returns_to_empty_baseline_after_removal() {
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(automerge::ROOT, "blocks", ObjType::List)
+            .unwrap();
+        let mut seed = BlockEditor::new();
+        seed.set_blocks(vec![Block::paragraph("old")]);
+        seed.bind_blocks(&mut doc, list.clone());
+        doc.commit();
+        let mut editor = BlockEditor::new();
+        editor.bind_existing_blocks(&mut doc, list.clone());
+        editor.set_focus(true);
+        editor.focus_block(0, CursorPlacement::End);
+        doc.delete(&list, 0).unwrap();
+        doc.commit();
+        let before = (doc.base_heads(), doc.pending_ops());
+        editor.sync(&mut doc, &automerge::ROOT);
+        let placeholder = editor.blocks()[0].id.clone();
+        for _ in 0..3 {
+            editor.begin_action_intercept();
+            assert!(editor.take_intercepted_ops().is_empty());
+            editor.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(editor.blocks()[0].id, placeholder);
+            assert_eq!(editor.focused_index(), Some(0));
+            assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
+            assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+        }
+        editor.begin_action_intercept();
+        editor.blocks_mut()[0].line.set_text("é");
+        assert_eq!(
+            editor.take_intercepted_ops(),
+            vec![BlockEditOp::Insert {
+                block_id: placeholder,
+                after: None,
+                kind: "paragraph".into(),
+                text: "é".into(),
+            }]
+        );
+        assert!(editor.take_intercepted_ops().is_empty());
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+        // Switching back to the legacy API still seeds its empty durable list.
+        editor.bind_blocks(&mut doc, list.clone());
+        assert_eq!(doc.length(&list), 1);
+        assert_eq!(editor.blocks()[0].text(), "é");
     }
 
     #[test]
