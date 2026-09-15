@@ -16926,6 +16926,8 @@ mod viewport_composition_tests {
         nodes: Vec<NodeId>,
         builds: Rc<Cell<usize>>,
         editing: bool,
+        trap: bool,
+        native_calls: Option<Rc<std::cell::RefCell<Vec<NativeCall>>>>,
         scroll: Rc<Cell<(f32, f32)>>,
         oscillate: Rc<Cell<bool>>,
         paints: Rc<Cell<usize>>,
@@ -16938,6 +16940,8 @@ mod viewport_composition_tests {
                 nodes: vec![],
                 builds,
                 editing: false,
+                trap: false,
+                native_calls: None,
                 scroll: Rc::new(Cell::new((0.0, 120.0))),
                 oscillate: Rc::default(),
                 paints: Rc::default(),
@@ -17015,6 +17019,15 @@ mod viewport_composition_tests {
                         )),
                 ));
             }
+            if let Some(calls) = &self.native_calls {
+                self.children = vec![Box::new(crate::widget::NativeView::new(
+                    "Native",
+                    CountingNativeBackend {
+                        generation: self.builds.get(),
+                        calls: calls.clone(),
+                    },
+                ))];
+            }
             self.nodes = self
                 .children
                 .iter_mut()
@@ -17079,6 +17092,9 @@ mod viewport_composition_tests {
                 .iter_mut()
                 .map(|child| child.as_mut() as &mut dyn Widget)
                 .collect()
+        }
+        fn traps_focus(&self) -> bool {
+            self.trap
         }
         fn layout_needs_measure(&self) -> bool {
             false
@@ -17333,5 +17349,173 @@ mod viewport_composition_tests {
         assert!(run_layout_pass(&mut app, root, 1200, 400, 1.0, false).is_none());
         assert!(builds.get() <= 8);
         assert!(app.last_layout_logical.is_none());
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    enum NativeCall {
+        Mount(usize),
+        Unmount(usize),
+        Geometry(usize, KurboRect),
+        Visible(usize, bool),
+    }
+    struct CountingNativeBackend {
+        generation: usize,
+        calls: Rc<std::cell::RefCell<Vec<NativeCall>>>,
+    }
+    impl crate::widget::NativeViewBackend for CountingNativeBackend {
+        fn mount(&mut self, _: &crate::widget::NativeViewHost<'_>) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(NativeCall::Mount(self.generation));
+            Ok(())
+        }
+        fn unmount(&mut self) {
+            self.calls
+                .borrow_mut()
+                .push(NativeCall::Unmount(self.generation));
+        }
+        fn set_geometry(&mut self, geometry: crate::widget::NativeViewGeometry) {
+            self.calls
+                .borrow_mut()
+                .push(NativeCall::Geometry(self.generation, geometry.logical));
+        }
+        fn set_visible(&mut self, visible: bool) {
+            self.calls
+                .borrow_mut()
+                .push(NativeCall::Visible(self.generation, visible));
+        }
+        fn set_focus(&mut self, _: bool) {}
+        fn set_enabled(&mut self, _: bool) {}
+    }
+
+    #[test]
+    fn review_failed_headless_resize_can_return_to_last_successful_size() {
+        let root = ResponsiveRoot::new(Rc::default());
+        let oscillate = root.oscillate.clone();
+        let mut driver = harness(State::new(), root, 1200);
+        oscillate.set(true);
+        assert!(driver.resize((920, 400)).is_err());
+        oscillate.set(false);
+        driver.resize((1200, 400)).unwrap();
+        assert_eq!(driver.inspection().viewport, [1200, 400]);
+        assert_eq!(driver.inspection().root.children.len(), 3);
+        assert_eq!(driver.inspection().root.rect[2], 1200.0);
+        driver.resize((920, 400)).unwrap();
+        assert_eq!(driver.inspection().root.children.len(), 2);
+    }
+
+    #[test]
+    fn review_active_trap_retains_keyed_selection_after_replacing_and_reordering_controls() {
+        let (state, mut root) = editing_fixture();
+        root.trap = true;
+        let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+        app.init_layout();
+        frame(&mut app, 1200);
+        let editor = app.focusable_order[0];
+        app.set_focused_node(Some(editor));
+        app.mutate_node(editor, |widget| widget.set_state("5:b:1"))
+            .unwrap();
+        for width in [920, 600, 1200] {
+            frame(&mut app, width);
+            assert!(app.focus_trap_active);
+            let focused = app.focused_node.expect("modal editor remains focused");
+            assert!(app.focusable_order.contains(&focused));
+            assert_eq!(
+                app.inspect_node(focused, |widget| widget
+                    .accessibility()
+                    .unwrap()
+                    .semantic_key)
+                    .unwrap()
+                    .as_deref(),
+                Some("editor")
+            );
+            assert!(
+                app.inspect_node(focused, |widget| widget.is_focused())
+                    .unwrap()
+            );
+            assert_eq!(
+                app.inspect_node(focused, |widget| widget.get_state())
+                    .unwrap()
+                    .as_deref(),
+                Some("5:b:1")
+            );
+        }
+    }
+
+    #[test]
+    fn review_native_views_mount_only_after_successful_final_composition() {
+        let mut root = ResponsiveRoot::new(Rc::default());
+        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        root.native_calls = Some(calls.clone());
+        let builds = root.builds.clone();
+        let oscillate = root.oscillate.clone();
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+        app.init_layout();
+        let host = crate::widget::NativeViewHost::headless(app.platform, 1.0);
+        app.root_widget.mount_native_views(&host);
+        for width in [1200, 920] {
+            let mounts = calls
+                .borrow()
+                .iter()
+                .filter(|call| matches!(call, NativeCall::Mount(_)))
+                .count();
+            app.layout_dirty = true;
+            let node = app.root_node.unwrap();
+            run_layout_pass(&mut app, node, width, 400, 1.0, false).unwrap();
+            let final_generation = builds.get();
+            assert_eq!(
+                calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| matches!(call, NativeCall::Mount(_)))
+                    .count(),
+                mounts + 1,
+                "mount final composition exactly once"
+            );
+            assert!(
+                calls
+                    .borrow()
+                    .contains(&NativeCall::Mount(final_generation))
+            );
+            assert!(calls.borrow().iter().any(|call| matches!(call, NativeCall::Geometry(generation, rect) if *generation == final_generation && rect.width() == f64::from(width))));
+            let mut scene = Scene::new();
+            app.root_widget.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut app.text_renderer,
+                &app.theme,
+                &PresenceCtx::default(),
+            );
+            assert!(
+                calls
+                    .borrow()
+                    .contains(&NativeCall::Visible(final_generation, true))
+            );
+        }
+        let mounts = calls
+            .borrow()
+            .iter()
+            .filter(|call| matches!(call, NativeCall::Mount(_)))
+            .count();
+        oscillate.set(true);
+        app.layout_dirty = true;
+        let node = app.root_node.unwrap();
+        assert!(run_layout_pass(&mut app, node, 600, 400, 1.0, false).is_none());
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .filter(|call| matches!(call, NativeCall::Mount(_)))
+                .count(),
+            mounts,
+            "failed intermediate compositions never attach"
+        );
+        oscillate.set(false);
+        let node = app.root_node.unwrap();
+        run_layout_pass(&mut app, node, 920, 400, 1.0, false).unwrap();
+        assert_eq!(
+            app.root_widget.get_rect().width(),
+            920.0,
+            "live recovery also invalidates failed geometry"
+        );
     }
 }

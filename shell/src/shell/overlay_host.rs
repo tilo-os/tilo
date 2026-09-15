@@ -3500,8 +3500,9 @@ impl ShellOverlayHost {
                                 && !window_is_still_starting(&tab.tile)
                                 && let Some(host) = live.host_for_tab_mut(tab.id)
                             {
-                                host.replace_content(crate::shell::to_ui_tile_with_inputs(
+                                host.replace_content(crate::shell::to_ui_tile_for_tab_with_inputs(
                                     &tab.tile,
+                                    tab.id,
                                     &chrome.borrow().hosted_inputs,
                                 ));
                                 tab_tiles.insert(tab.id, signature);
@@ -3516,11 +3517,13 @@ impl ShellOverlayHost {
                         };
                         // Gets its own document too, same as any tab
                         // present at boot.
-                        let mut host =
-                            ui::widget::TileHost::new(crate::shell::to_ui_tile_with_inputs(
+                        let mut host = ui::widget::TileHost::new(
+                            crate::shell::to_ui_tile_for_tab_with_inputs(
                                 &tab.tile,
+                                tab.id,
                                 &chrome.borrow().hosted_inputs,
-                            ));
+                            ),
+                        );
                         host.bind_record(
                             records.clone(),
                             crate::shell::tab_documents::scratch_tab_record(tab.id),
@@ -8532,10 +8535,15 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Super+Space remains an immutable, hardware-neutral global-search
-        // escape hatch. Alt+Space is configurable-free application input.
+        // macOS owns Command+Space for Spotlight; use Option+Space there.
+        // Other platforms retain the immutable Super+Space search alias.
         let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
-        if is_space && super_down {
+        let search_space_modifier = if cfg!(target_os = "macos") {
+            mstate.alt_key() && !super_down && !mstate.control_key() && !shift_down
+        } else {
+            super_down
+        };
+        if is_space && search_space_modifier {
             if !repeat {
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
                 self.refresh_search_results(state, path);
@@ -8903,6 +8911,7 @@ impl ShellOverlayHost {
     fn handle_shell_escape_chord(&mut self, handled: &mut bool) -> bool {
         if self.palette_visible {
             self.palette_visible = false;
+            self.palette.close();
             *handled = true;
             return true;
         }
@@ -10698,7 +10707,15 @@ fn shortcut_reference_rows(
         ("Duplicate tab", "Super+D".into()),
         ("Open terminal", "Super+Enter".into()),
         ("Global search", chord(ShortcutAction::Search)),
-        ("Global search", "Super+Space".into()),
+        (
+            "Global search",
+            if cfg!(target_os = "macos") {
+                "Option+Space"
+            } else {
+                "Super+Space"
+            }
+            .into(),
+        ),
         ("Overview", chord(ShortcutAction::WorkspaceOverview)),
         ("Lock", chord(ShortcutAction::Lock)),
         ("Quick Settings", chord(ShortcutAction::QuickSettings)),
@@ -11379,6 +11396,27 @@ impl Widget for ShellOverlayHost {
         // gate/stage fully resolved the event, stop here", exactly where
         // the original inline code hit a bare `return`.
         self.track_cursor_position(event, scale_factor);
+
+        #[cfg(target_os = "macos")]
+        if let WindowEvent::SwipeGesture { delta, .. } = event {
+            // Native macOS swipes are already recognized, one event per gesture.
+            // Do not feed their unit directions into the pixel scroll threshold.
+            if delta.x.is_finite() && delta.y.is_finite() {
+                if delta.x.abs() > delta.y.abs() {
+                    let _ = self.step_focus_along_strip(if delta.x < 0.0 { 1 } else { -1 });
+                } else if delta.y != 0.0
+                    && let Some(chrome) = self.chrome.as_ref()
+                {
+                    let _ =
+                        chrome
+                            .borrow_mut()
+                            .switch_workspace(if delta.y < 0.0 { -1 } else { 1 });
+                }
+            }
+            // Even at an edge, the shell owns the swipe, never the app below it.
+            *handled = true;
+            return;
+        }
 
         if let WindowEvent::Touch(touch) = event {
             let shell_owned_before = self.touch_gestures.shell_owns_current();
@@ -17431,7 +17469,11 @@ mod palette_dispatch_tests {
             "Duplicate tab:Super+D",
             "Open terminal:Super+Enter",
             "Global search:Super+K",
-            "Global search:Super+Space",
+            if cfg!(target_os = "macos") {
+                "Global search:Option+Space"
+            } else {
+                "Global search:Super+Space"
+            },
             "Overview:Super+Tab",
             "Lock:Super+L",
             "Quick Settings:Super+Q",
@@ -19155,6 +19197,51 @@ mod overlay_event_absorb_tests {
             force: None,
             id,
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn native_swipe(dx: f64, dy: f64) -> WindowEvent {
+        WindowEvent::SwipeGesture {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: PhysicalPosition::new(dx, dy),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_swipe_switches_one_workspace_in_each_vertical_direction() {
+        let mut h = build_harness();
+        h.chrome
+            .borrow_mut()
+            .tree_mut()
+            .append_empty_workspace("Second");
+        h.chrome
+            .borrow_mut()
+            .tree_mut()
+            .append_empty_workspace("Third");
+        let first = h.chrome.borrow().tree().workspaces[0].id;
+        let second = h.chrome.borrow().tree().workspaces[1].id;
+        h.chrome.borrow_mut().tree_mut().active = first;
+
+        assert!(pump(&mut h, &native_swipe(0.0, 1.0)));
+        assert_eq!(h.chrome.borrow().tree().active, second);
+        assert!(pump(&mut h, &native_swipe(0.0, -1.0)));
+        assert_eq!(h.chrome.borrow().tree().active, first);
+        assert!(
+            h.log.borrow().is_empty(),
+            "shell swipes must not reach app content"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_swipe_is_consumed_at_workspace_boundary() {
+        let mut h = build_harness();
+        let first = h.chrome.borrow().tree().workspaces[0].id;
+        h.chrome.borrow_mut().tree_mut().active = first;
+        assert!(pump(&mut h, &native_swipe(0.0, -1.0)));
+        assert_eq!(h.chrome.borrow().tree().active, first);
+        assert!(h.log.borrow().is_empty());
     }
 
     fn left_button_released() -> WindowEvent {
@@ -20968,6 +21055,32 @@ mod tests {
             })
             .map(|group| group.active_tab);
         assert_eq!(active_tab, Some(previous.2));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_swipe_steps_between_windows_in_the_active_strip() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
+        let notes = group.tabs[0].id;
+        let files = group.tabs[1].id;
+        let workspace = tree.active;
+        let (host, chrome) = crate::shell::build_nirios_overlay_host_with_chrome(&tree);
+        let mut h = build_harness_with_host(host, chrome);
+        for (dx, expected_tab) in [(-1.0, files), (1.0, notes)] {
+            let event = WindowEvent::SwipeGesture {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: PhysicalPosition::new(dx, 0.0),
+            };
+            assert!(pump(&mut h, &event, Modifiers::default()));
+            let chrome = h.chrome.borrow();
+            let tree = chrome.tree();
+            assert_eq!(tree.active, workspace);
+            assert_eq!(
+                tree.active_workspace().unwrap().strips[0].window_groups[0].active_tab,
+                expected_tab,
+            );
+        }
     }
 
     #[test]

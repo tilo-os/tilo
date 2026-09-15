@@ -458,3 +458,7 @@ proof that an external device, network service, or codec works.
 The `shots --mode offscreen` flow runs cleanly in CI (no display, no GPU forwarding) as long as the runner has a recent Mesa + a software wgpu fallback. The compositor's `--backend headless` does the same thing for live-binary tests.
 
 In distrobox locally: `distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p shell --test control_socket_test -- --ignored --test-threads 1'` — runs the full integration suite under `--ignored` (those tests spawn the binary themselves; opt-in via `--ignored` because they currently require a Wayland session for the legacy winit backend, but will work fully headless once the `--backend headless` worker lands).
+
+## Desktop UX journeys
+
+The [UX testing bench](ux-testing-bench.md) runs native macOS desktop journeys with interaction budgets, layout/contrast checks, scroll evidence and HTML reports.

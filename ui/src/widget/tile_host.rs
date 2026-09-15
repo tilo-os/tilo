@@ -286,6 +286,11 @@ struct Binding {
     established: bool,
 }
 
+struct PendingBinding {
+    store: RecordStore,
+    tab: RecordCheckout,
+}
+
 impl Binding {
     fn follow_checked(
         &mut self,
@@ -306,15 +311,32 @@ impl Binding {
         Ok(self.live.clone())
     }
 
-    fn follow(&mut self, want: Option<RecordCheckout>) -> RecordId {
+    fn follow(
+        &mut self,
+        want: Option<RecordCheckout>,
+    ) -> Result<RecordId, crate::record::RecordOpenError> {
         if let Some(want) = want
             && want.id != self.live
         {
-            self.store.open_record(&want);
+            admit_record(&self.store, &want)?;
             self.live = want.id;
             self.established = false;
         }
-        self.live.clone()
+        Ok(self.live.clone())
+    }
+}
+
+fn admit_record(
+    store: &RecordStore,
+    checkout: &RecordCheckout,
+) -> Result<(), crate::record::RecordOpenError> {
+    match store.open_record_checked(checkout) {
+        Ok(()) => Ok(()),
+        Err(crate::record::RecordOpenError::MissingRecord) => {
+            let mut reservation = store.reserve_record(checkout)?;
+            reservation.initialize(|_| Ok(()))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -325,6 +347,8 @@ pub struct TileHost {
     /// test exercising only paint. Unbound tiles edit whatever document
     /// the parent pass carries.
     binding: Option<Binding>,
+    pending_binding: Option<PendingBinding>,
+    record_error: Option<String>,
     announced: Option<RecordId>,
     /// Set by [`TileHost::replace_content`]; drained by
     /// [`Widget::take_structure_dirty`]. Tells the layout pass this
@@ -397,6 +421,8 @@ impl TileHost {
             content,
             close_reports: vec![],
             binding: None,
+            pending_binding: None,
+            record_error: None,
             announced: None,
             structure_dirty: false,
             was_presented: std::cell::Cell::new(false),
@@ -437,7 +463,14 @@ impl TileHost {
         {
             return;
         }
-        store.open_record(&tab);
+        if let Err(error) = admit_record(&store, &tab) {
+            self.binding = None;
+            self.pending_binding = Some(PendingBinding { store, tab });
+            self.record_error = Some(format!("Document storage unavailable: {error}"));
+            return;
+        }
+        self.pending_binding = None;
+        self.record_error = None;
         let live = tab.id.clone();
         self.binding = Some(Binding {
             store,
@@ -448,14 +481,37 @@ impl TileHost {
         self.announce_scope();
     }
 
-    fn resolve_record(&mut self) -> Option<RecordId> {
+    fn resolve_record(&mut self) -> Result<Option<RecordId>, crate::record::RecordOpenError> {
+        if let Some(pending) = self.pending_binding.take() {
+            if let Err(error) = admit_record(&pending.store, &pending.tab) {
+                self.pending_binding = Some(pending);
+                self.record_error = Some(format!("Document storage unavailable: {error}"));
+                return Err(error);
+            }
+            self.binding = Some(Binding {
+                store: pending.store,
+                live: pending.tab.id.clone(),
+                tab: pending.tab,
+                established: false,
+            });
+        }
         let want = match &self.content {
             TileContent::App(w) => w.record_intent(),
             TileContent::Stub { .. } | TileContent::Notice { .. } => None,
         };
-        let live = self.binding.as_mut()?.follow(want);
+        let Some(binding) = self.binding.as_mut() else {
+            return Ok(None);
+        };
+        let live = match binding.follow(want) {
+            Ok(live) => live,
+            Err(error) => {
+                self.record_error = Some(format!("Document storage unavailable: {error}"));
+                return Err(error);
+            }
+        };
+        self.record_error = None;
         self.announce_scope();
-        Some(live)
+        Ok(Some(live))
     }
 
     fn announce_scope(&mut self) {
@@ -821,7 +877,9 @@ impl Widget for TileHost {
     }
 
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
-        let live = self.resolve_record();
+        let Ok(live) = self.resolve_record() else {
+            return;
+        };
         let TileContent::App(w) = &mut self.content else {
             return;
         };
@@ -839,7 +897,9 @@ impl Widget for TileHost {
     }
 
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
-        let live = self.resolve_record();
+        let Ok(live) = self.resolve_record() else {
+            return false;
+        };
         let TileContent::App(w) = &mut self.content else {
             return false;
         };
@@ -985,7 +1045,10 @@ impl Widget for TileHost {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        let live = self.resolve_record();
+        let Ok(live) = self.resolve_record() else {
+            *handled = true;
+            return;
+        };
         let TileContent::App(app) = &mut self.content else {
             return;
         };
@@ -1057,6 +1120,25 @@ impl Widget for TileHost {
     }
     fn name(&self) -> &'static str {
         "TileHost"
+    }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        if let Some(detail) = &self.record_error {
+            return Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                    .with_name("Document unavailable")
+                    .with_description(detail.clone())
+                    .with_bounds(self.rect),
+            );
+        }
+        match &self.content {
+            TileContent::Notice { title, detail } => Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                    .with_name(title.clone())
+                    .with_description(detail.clone())
+                    .with_bounds(self.rect),
+            ),
+            TileContent::App(_) | TileContent::Stub { .. } => None,
+        }
     }
     /// Only an app can answer anything but `true` — a stub/notice is
     /// painted by this process and is on screen the moment the tile is.
@@ -1346,14 +1428,26 @@ impl TileHost {
             if self.opening_shown && self.handed_over_at.is_none() {
                 self.handed_over_at = Some(Instant::now());
             }
-            match &mut self.content {
-                TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
-                TileContent::Stub { kind, label } => {
-                    let detail = format!("{} coming soon", kind.as_str());
-                    draw_card_text(scene, transform, tr, theme, self.rect, label, &detail);
-                }
-                TileContent::Notice { title, detail } => {
-                    draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
+            if let Some(detail) = &self.record_error {
+                draw_card_text(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    self.rect,
+                    "Document unavailable",
+                    detail,
+                );
+            } else {
+                match &mut self.content {
+                    TileContent::App(w) => w.draw(scene, transform, tr, theme, presence),
+                    TileContent::Stub { kind, label } => {
+                        let detail = format!("{} coming soon", kind.as_str());
+                        draw_card_text(scene, transform, tr, theme, self.rect, label, &detail);
+                    }
+                    TileContent::Notice { title, detail } => {
+                        draw_card_text(scene, transform, tr, theme, self.rect, title, detail);
+                    }
                 }
             }
             // Reduced motion takes the cut — the window just being there

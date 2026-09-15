@@ -901,13 +901,15 @@ impl Scrollable {
     /// plain wheel (a tilt wheel's own X delta passes through untouched).
     /// Returns `true` when the view actually moved, so an at-the-edge
     /// wheel can bubble to an outer/sibling scroll region.
-    fn on_wheel(&mut self, delta: &MouseScrollDelta, shift: bool) -> bool {
+    fn on_wheel(&mut self, delta: &MouseScrollDelta, shift: bool, scale_factor: f64) -> bool {
         // winit y-positive means "scroll up", but content is drawn at
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
         const LINE_PX: f32 = 60.0;
         let (mut dx, mut dy) = match delta {
             MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
-            MouseScrollDelta::PixelDelta(pp) => (-px(pp.x), -px(pp.y)),
+            MouseScrollDelta::PixelDelta(pp) => {
+                (-px(pp.x / scale_factor), -px(pp.y / scale_factor))
+            }
         };
         if shift && self.axis_has_horizontal() && dx == 0.0 {
             dx = dy;
@@ -923,6 +925,9 @@ impl Scrollable {
 /// edge when taffy's `content_size` under-reports.
 fn max_bottom_edge(w: &dyn Widget) -> f64 {
     let mut deepest = w.get_rect().y1;
+    if w.child_clip_rect().is_some() {
+        return deepest;
+    }
     for c in w.children() {
         deepest = deepest.max(max_bottom_edge(c));
     }
@@ -930,6 +935,9 @@ fn max_bottom_edge(w: &dyn Widget) -> f64 {
 }
 
 impl Widget for Scrollable {
+    fn child_clip_rect(&self) -> Option<Rect> {
+        Some(self.content_viewport_rect())
+    }
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         // Drives click-and-hold auto-repeat while the host pumps frames.
         if self.hold.is_some() {
@@ -1029,8 +1037,13 @@ impl Widget for Scrollable {
                     ),
                 );
                 let cl = taffy.layout(child_node).copied().unwrap_or_default();
-                self.content_w = cl.content_size.width.max(cl.size.width);
-                self.content_h = cl.content_size.height.max(cl.size.height);
+                if c.child_clip_rect().is_some() {
+                    self.content_w = cl.size.width;
+                    self.content_h = cl.size.height;
+                } else {
+                    self.content_w = cl.content_size.width.max(cl.size.width);
+                    self.content_h = cl.content_size.height.max(cl.size.height);
+                }
 
                 // taffy's content_size can still cap at the available block for
                 // a flex column shorter than the literal sum of its children.
@@ -1108,6 +1121,10 @@ impl Widget for Scrollable {
         self.draw_scrollbars(scene, transform, theme);
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "ordered pointer capture, child-first wheel dispatch, and clip routing share one event boundary"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1173,12 +1190,32 @@ impl Widget for Scrollable {
             _ => {}
         }
         if let WindowEvent::MouseWheel { delta, .. } = event {
-            if !self.content_viewport_rect().contains(self.last_cursor) {
+            if *handled || !self.content_viewport_rect().contains(self.last_cursor) {
                 return;
+            }
+            // The deepest region under the pointer gets first refusal. At its
+            // boundary it leaves the event unhandled so this viewport can move.
+            if let Some(child) = &mut self.child
+                && let Some(child_node) = self.child_node
+            {
+                child.handle_event(
+                    event,
+                    scale_factor,
+                    mods,
+                    doc,
+                    obj,
+                    handled,
+                    focus_target,
+                    child_node,
+                    taffy,
+                );
+                if *handled {
+                    return;
+                }
             }
             // Only consume when it moved the view, so an at-the-edge wheel
             // bubbles to an outer/sibling scroll region.
-            *handled = self.on_wheel(delta, mods.state().shift_key());
+            *handled = self.on_wheel(delta, mods.state().shift_key(), scale_factor);
             return;
         }
 

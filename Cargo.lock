@@ -11416,6 +11416,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-scratchpad"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atomic-file",
+ "automerge",
+ "clap",
+ "dirs 6.0.0",
+ "fs",
+ "iroh-blobs",
+ "qos-actions",
+ "qos-app",
+ "serde",
+ "serde_json",
+ "taffy",
+ "tempfile",
+ "tokio",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "qos-startup-metrics"
 version = "0.1.0"
 dependencies = [
