@@ -37,11 +37,15 @@ function Invoke-qOSCodeSign([string] $Path) {
     }
 }
 
-cargo build --locked --release -p imager --features host-media-writer
+# Published Windows packages currently promise x86_64. Build that target
+# explicitly so a native ARM64 toolchain cannot produce a mislabeled package.
+$Target = "x86_64-pc-windows-msvc"
+cargo build --locked --release -p imager --features host-media-writer --target $Target
+if ($LASTEXITCODE -ne 0) { throw "qOS Imager build failed for $Target" }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 $Bundle = Join-Path $Out "qos-imager-windows-x86_64"
 New-Item -ItemType Directory -Force -Path $Bundle | Out-Null
-Copy-Item "target/release/imager.exe" (Join-Path $Bundle "qos-imager.exe")
+Copy-Item "target/$Target/release/imager.exe" (Join-Path $Bundle "qos-imager.exe")
 Copy-Item "docs/installer-walkthrough.md" (Join-Path $Bundle "README.md")
 Copy-Item "apps/imager/packaging/windows/Start-qOS-Imager.ps1" $Bundle
 $Exe = Join-Path $Bundle "qos-imager.exe"
