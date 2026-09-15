@@ -115,7 +115,7 @@ fn is_autocorrect_boundary(character: char) -> bool {
     character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
 }
 
-const FONT_SIZE: f32 = 16.0;
+pub(super) const FONT_SIZE: f32 = 16.0;
 /// Caret centres against this band, not `FONT_SIZE`, to line up with where
 /// cosmic-text actually draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
