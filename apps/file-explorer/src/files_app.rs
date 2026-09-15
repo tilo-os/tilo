@@ -12130,6 +12130,10 @@ mod responsive_body_tests {
             })
         };
         assert!(has_extract(&h.w.toolbar), "phone toolbar exposes Extract");
+        assert!(
+            h.w.toolbar.view_menu_rect().is_none(),
+            "archive toolbar must not expose a one-item duplicate menu"
+        );
         assert_eq!(h.w.footer_label(), t("files-archive-read-only"));
 
         h.lay_out(1200.0, 760.0);
@@ -12137,6 +12141,7 @@ mod responsive_body_tests {
             h.lay_out(1200.0, 760.0);
         }
         assert!(has_extract(&h.w.toolbar), "desktop toolbar exposes Extract");
+        assert!(h.w.toolbar.view_menu_rect().is_none());
     }
 
     /// The regression: at ~600 px the window showed the breadcrumb and the
