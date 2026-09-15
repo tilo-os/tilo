@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 pub const STORE_BROWSE_OPERATION_TYPE: &str = "store.browse";
 pub const BROWSE_RESOURCE_ID: &str = "store:filters";
-const SOURCE_FILTERS: [&str; 4] = ["All", "qOS", "Flatpak", "Installed"];
+const SOURCE_FILTERS: [&str; 4] = ["All", "qOS", "Flatpak", "On device"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BrowseOperation {
