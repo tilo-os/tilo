@@ -53,6 +53,25 @@ impl Parts {
 
 macro_rules! retained_parts {
     ($name:literal) => {
+        fn start_resource_operation_with_document(
+            &mut self,
+            invocation: qos_actions::InvocationId,
+            kind: qos_actions::OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &mut AutoCommit,
+            path: &ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            for child in &mut self.parts.children {
+                if let Some(started) = child.start_resource_operation_with_document(
+                    invocation, kind, type_id, payload, doc, path,
+                )? {
+                    return Ok(Some(started));
+                }
+            }
+            // A second read-only fallback would visit declining handlers twice.
+            Ok(None)
+        }
         fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
             let mut changed = false;
             for child in &mut self.parts.children {
@@ -155,3 +174,148 @@ macro_rules! retained_parts {
 }
 
 pub(super) use retained_parts;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::{Manual, ResourceOperationStart, Section};
+    use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
+    use qos_actions::{InvocationId, OperationKind};
+    use std::{cell::RefCell, rc::Rc};
+    use vello::kurbo::Point;
+
+    struct MutableAdmission {
+        calls: Rc<RefCell<Vec<(InvocationId, bool)>>>,
+        accepts: bool,
+    }
+    impl Widget for MutableAdmission {
+        fn name(&self) -> &str {
+            "MutableAdmission"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            _: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            tree.leaf_node(Style::default())
+        }
+        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _: &winit::event::WindowEvent,
+            _: f64,
+            _: &winit::event::Modifiers,
+            _: &mut AutoCommit,
+            _: &ObjId,
+            _: &mut bool,
+            _: &mut Option<NodeId>,
+            _: NodeId,
+            _: &TaffyTree<()>,
+        ) {
+        }
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &["mutable.effect"]
+        }
+        fn start_resource_operation(
+            &mut self,
+            invocation: InvocationId,
+            _: OperationKind,
+            _: &str,
+            _: &[u8],
+            _: &AutoCommit,
+            _: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            self.calls.borrow_mut().push((invocation, false));
+            Ok(None)
+        }
+        fn start_resource_operation_with_document(
+            &mut self,
+            invocation: InvocationId,
+            kind: OperationKind,
+            type_id: &str,
+            payload: &[u8],
+            doc: &mut AutoCommit,
+            path: &ObjId,
+        ) -> Result<Option<ResourceOperationStart>, String> {
+            assert_eq!(kind, OperationKind::Effect);
+            assert_eq!(type_id, "mutable.effect");
+            assert_eq!(payload, b"payload");
+            self.calls.borrow_mut().push((invocation, true));
+            if self.accepts {
+                doc.put(path, "admitted", "mutable follow-up").unwrap();
+                Ok(Some(ResourceOperationStart::Accepted))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    fn check_mutable_admission(nested: bool) {
+        for accepts in [true, false] {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            let child = Box::new(MutableAdmission {
+                calls: calls.clone(),
+                accepts,
+            });
+            let manual = Manual::new(|ctx| {
+                Ok(taffy::Size {
+                    width: ctx.available().width,
+                    height: 40.0,
+                })
+            })
+            .child(child);
+            let mut root: Element = if nested {
+                Box::new(Section::new("Nested").content(Box::new(manual)))
+            } else {
+                Box::new(manual)
+            };
+            let mut doc = AutoCommit::new();
+            let path = doc
+                .put_object(automerge::ROOT, "document", automerge::ObjType::Map)
+                .unwrap();
+            let invocation = InvocationId::new();
+            let result = root
+                .start_resource_operation_with_document(
+                    invocation,
+                    OperationKind::Effect,
+                    "mutable.effect",
+                    b"payload",
+                    &mut doc,
+                    &path,
+                )
+                .unwrap();
+            assert_eq!(
+                &*calls.borrow(),
+                &[(invocation, true)],
+                "mutable admission must be visited exactly once without read-only fallback"
+            );
+            assert_eq!(
+                matches!(result, Some(ResourceOperationStart::Accepted)),
+                accepts
+            );
+            assert_eq!(doc.get(&path, "admitted").unwrap().is_some(), accepts);
+        }
+    }
+    #[test]
+    fn manual_forwards_mutable_admission_exactly_once() {
+        check_mutable_admission(false);
+    }
+    #[test]
+    fn nested_composition_forwards_mutable_admission_exactly_once() {
+        check_mutable_admission(true);
+    }
+}
