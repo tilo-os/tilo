@@ -89,9 +89,21 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
-    args.value("--open")
-        .map(PathBuf::from)
-        .or_else(|| args.positionals().first().map(PathBuf::from))
+    args.value("--open").map(PathBuf::from).or_else(|| {
+        args.positionals()
+            .first()
+            .filter(|value| !value.starts_with("http://") && !value.starts_with("https://"))
+            .map(PathBuf::from)
+    })
+}
+
+fn requested_source(args: &LaunchArgs) -> Option<media::Source> {
+    if let Some(path) = requested_path(args) {
+        return Some(video_player::source_for_path(&path));
+    }
+    args.positionals()
+        .first()
+        .map(|url| media::Source::Remote { url: url.clone() })
 }
 
 #[allow(
@@ -99,7 +111,10 @@ fn requested_path(args: &LaunchArgs) -> Option<PathBuf> {
     reason = "signature is fixed by ui::launch::LaunchSpec::new_with_args"
 )]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(video_player::app_root(requested_path(args)))
+    Ok(video_player::app_root_source(
+        requested_source(args),
+        std::env::var("QOS_MEDIA_HANDOFF_TITLE").ok(),
+    ))
 }
 
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {

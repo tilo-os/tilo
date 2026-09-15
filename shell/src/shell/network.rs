@@ -4168,6 +4168,7 @@ mod tests {
                 crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
                     session_id: "player:one".into(),
                     app_id: "dev.qos.music".into(),
+                    workspace_id: "11111111-1111-1111-1111-111111111111".into(),
                     title: "Track".into(),
                     locator: crate::shell::device_fabric::MediaSourceLocator::Workspace {
                         path: "Music/track.flac".into(),

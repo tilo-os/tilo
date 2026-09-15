@@ -1590,7 +1590,7 @@ pub fn launch_with_document(
     room: RoomId,
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
-    launch_with_context(package_id, room, document, None, None)
+    launch_with_context(package_id, room, document, None, None, None)
 }
 
 /// Launch an installed GUI application with one opaque URI argument. The
@@ -1606,7 +1606,39 @@ pub fn launch_with_uri(
     room: RoomId,
     uri: &str,
 ) -> Result<InstalledApp, LaunchError> {
-    launch_with_context(package_id, room, None, Some(uri), None)
+    launch_with_context(package_id, room, None, Some(uri), None, None)
+}
+
+/// Launch a media application at an exact playhead after an authenticated
+/// destination device accepted a private handoff action.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_with_document`].
+pub fn launch_media_handoff(
+    package_id: &str,
+    room: RoomId,
+    locator: &crate::shell::device_fabric::MediaSourceLocator,
+    title: &str,
+    request_id: [u8; 16],
+    position_ms: u64,
+    resume_playing: bool,
+) -> Result<InstalledApp, LaunchError> {
+    let state = MediaHandoffLaunch {
+        title: title.to_string(),
+        request_id,
+        position_ms,
+        resume_playing,
+    };
+    match locator {
+        crate::shell::device_fabric::MediaSourceLocator::Workspace { path } => {
+            let document = media::Source::workspace_root().join(path);
+            launch_with_context(package_id, room, Some(&document), None, None, Some(state))
+        }
+        crate::shell::device_fabric::MediaSourceLocator::RemoteStream { url } => {
+            launch_with_context(package_id, room, None, Some(url), None, Some(state))
+        }
+    }
 }
 
 /// Launch the only package owned by a typed tool intent and pass that exact
@@ -1621,7 +1653,33 @@ pub fn launch_with_uri(
 /// environment.
 pub fn launch_tool_intent(intent: &ToolIntent, room: RoomId) -> Result<InstalledApp, LaunchError> {
     let package_id = intent.package_id().ok_or(LaunchError::ShellOwnedIntent)?;
-    launch_with_context(package_id, room, None, None, Some(intent))
+    launch_with_context(package_id, room, None, None, Some(intent), None)
+}
+
+#[derive(Clone)]
+struct MediaHandoffLaunch {
+    title: String,
+    request_id: [u8; 16],
+    position_ms: u64,
+    resume_playing: bool,
+}
+
+fn attach_media_handoff(command: &mut LaunchCommand, handoff: MediaHandoffLaunch) {
+    command
+        .env
+        .push(("QOS_MEDIA_HANDOFF_TITLE".to_string(), handoff.title));
+    command.env.push((
+        "QOS_MEDIA_HANDOFF_REQUEST_ID".to_string(),
+        hex::encode(handoff.request_id),
+    ));
+    command.env.push((
+        "QOS_MEDIA_HANDOFF_POSITION_MS".to_string(),
+        handoff.position_ms.to_string(),
+    ));
+    command.env.push((
+        "QOS_MEDIA_HANDOFF_RESUME_PLAYING".to_string(),
+        u8::from(handoff.resume_playing).to_string(),
+    ));
 }
 
 fn launch_with_context(
@@ -1630,6 +1688,7 @@ fn launch_with_context(
     document: Option<&Path>,
     uri: Option<&str>,
     tool_intent: Option<&ToolIntent>,
+    media_handoff: Option<MediaHandoffLaunch>,
 ) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
         .into_iter()
@@ -1717,6 +1776,9 @@ fn launch_with_context(
                 detail: format!("serialising tool context: {e}"),
             })?;
         command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
+    }
+    if let Some(handoff) = media_handoff {
+        attach_media_handoff(&mut command, handoff);
     }
     if let Err(error) = attach_trusted_identities_projection(&app, room, &mut command) {
         eprintln!(
