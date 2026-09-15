@@ -6832,6 +6832,10 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
 /// `None` means taffy layout computation failed and the caller must abandon
 /// the frame; otherwise `(relayout_branch, compute_us, apply_us)` for the
 /// perf log line.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded solve/recompose/focus/mount lifecycle keeps ownership and final-frame ordering explicit"
+)]
 fn run_layout_pass(
     app: &mut App,
     root_node: NodeId,
@@ -6839,6 +6843,7 @@ fn run_layout_pass(
     height: u32,
     scale_factor: f32,
     structure_rebuilt: bool,
+    native_host: Option<&crate::widget::NativeViewHost<'_>>,
 ) -> Option<(bool, u128, u128)> {
     use crate::widget::layout::{
         CompositionFocus, composition_geometry, settle_widget_composition,
@@ -6878,11 +6883,16 @@ fn run_layout_pass(
             if app.structure_dirty {
                 return Ok((None, true));
             }
-            if !app.focus_trap_active
-                && let Some(focus) = &focus
-            {
+            if let Some(focus) = &focus {
                 // SAFETY: rebuild completed, and sync retained this topology.
-                app.focused_node = unsafe { focus.restore(&app.node_map, &app.bindings) };
+                // A trap narrows eligible targets; it must not bypass identity
+                // restoration or send saved selection to a fallback control.
+                app.focused_node = unsafe {
+                    focus.restore(&app.node_map, &app.bindings, Some(&app.focusable_order))
+                };
+                if app.focus_trap_active && app.focused_node.is_none() {
+                    app.set_focused_node(app.focusable_order.first().copied());
+                }
             }
             current_root = app
                 .root_node
@@ -6926,7 +6936,15 @@ fn run_layout_pass(
     if let Err(error) = result {
         tracing::error!(?error, "widget layout did not settle; skipping frame");
         app.layout_dirty = true;
+        app.last_layout_logical = None;
         return None;
+    }
+    // NativeView measurement is independent of platform attachment. Mount only
+    // the successfully settled tree; mount publishes its retained geometry.
+    if (structure_rebuilt || recomposed)
+        && let Some(host) = native_host
+    {
+        app.root_widget.mount_native_views(host);
     }
     app.last_layout_logical = Some(logical);
     app.layout_dirty = false;
@@ -7847,10 +7865,6 @@ impl AppHandler {
         if app.structure_dirty {
             app.rebuild_structure();
         }
-        if structure_rebuilt {
-            app.root_widget
-                .mount_native_views(&crate::widget::NativeViewHost::live(window, app.platform));
-        }
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::BuildLayout, __prof_build);
         }
@@ -7872,6 +7886,7 @@ impl AppHandler {
             height,
             scale_factor,
             structure_rebuilt,
+            Some(&crate::widget::NativeViewHost::live(window, app.platform)),
         ) else {
             return;
         };
@@ -14189,7 +14204,7 @@ mod bound_component_tests {
         );
         let layout_root = app.root_node.unwrap();
         app.layout_dirty = true;
-        run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true).unwrap();
+        run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true, None).unwrap();
         assert!(
             qos_actions::door::resolve(
                 &app.collect_local_resources(),
@@ -15692,7 +15707,7 @@ pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
     app.init_layout();
     let root = app.root_node.unwrap();
     app.layout_dirty = true;
-    run_layout_pass(app, root, 800, 600, 1.0, true).unwrap();
+    run_layout_pass(app, root, 800, 600, 1.0, true, None).unwrap();
     let mut scene = Scene::new();
     draw_frame_content(app, &mut scene, 800, 600, 1.0, None);
 }
@@ -16463,7 +16478,7 @@ mod card_grid_host_tests {
 
     fn layout(app: &mut App, width: u32) {
         app.layout_dirty = true;
-        run_layout_pass(app, app.root_node.unwrap(), width, 2000, 1.0, false).unwrap();
+        run_layout_pass(app, app.root_node.unwrap(), width, 2000, 1.0, false, None).unwrap();
     }
 
     fn button_rects(app: &App) -> Vec<KurboRect> {
@@ -16605,7 +16620,7 @@ mod card_grid_host_tests {
         app.init_layout();
         app.layout_dirty = true;
         let root_node = app.root_node.unwrap();
-        run_layout_pass(&mut app, root_node, 200, 190, 1.0, true).unwrap();
+        run_layout_pass(&mut app, root_node, 200, 190, 1.0, true, None).unwrap();
         let root = app.root_widget.children()[0];
         assert_eq!(root.children()[0].get_rect().height(), 1160.0);
         let hidden_button = root.children()[0].children()[1].children()[0].children()[0].get_rect();
@@ -16717,7 +16732,7 @@ mod card_grid_host_tests {
         assert!(app.root_widget.take_structure_dirty());
         app.rebuild_structure();
         let root = app.root_node.unwrap();
-        run_layout_pass(&mut app, root, 300, 2000, 1.0, true).unwrap();
+        run_layout_pass(&mut app, root, 300, 2000, 1.0, true, None).unwrap();
         assert_eq!(button_keys(&app), vec!["row-1", "row-2", "row-3"]);
         // Rebuilding and post-build sync must preserve actual delegate geometry.
         for node in &app.focusable_order {
@@ -16871,7 +16886,7 @@ mod card_grid_host_tests {
         assert!(app.root_widget.take_structure_dirty());
         app.rebuild_structure();
         let root = app.root_node.unwrap();
-        run_layout_pass(&mut app, root, 300, 2000, 1.0, true).unwrap();
+        run_layout_pass(&mut app, root, 300, 2000, 1.0, true, None).unwrap();
         assert_eq!(app.focusable_order.len(), 2);
         let rects = app
             .focusable_order
@@ -16926,6 +16941,9 @@ mod viewport_composition_tests {
         nodes: Vec<NodeId>,
         builds: Rc<Cell<usize>>,
         editing: bool,
+        trap: bool,
+        modal_on_narrow: bool,
+        native_calls: Option<Rc<std::cell::RefCell<Vec<NativeCall>>>>,
         scroll: Rc<Cell<(f32, f32)>>,
         oscillate: Rc<Cell<bool>>,
         paints: Rc<Cell<usize>>,
@@ -16938,6 +16956,9 @@ mod viewport_composition_tests {
                 nodes: vec![],
                 builds,
                 editing: false,
+                trap: false,
+                modal_on_narrow: false,
+                native_calls: None,
                 scroll: Rc::new(Cell::new((0.0, 120.0))),
                 oscillate: Rc::default(),
                 paints: Rc::default(),
@@ -17015,6 +17036,36 @@ mod viewport_composition_tests {
                         )),
                 ));
             }
+            if self.modal_on_narrow {
+                // This fixture opens a modal whose fallback is another editor,
+                // so accidental transfer of the outside selection is observable.
+                if self.rect.width() < 1100.0 {
+                    self.children.swap(0, 1);
+                }
+                let mut body = crate::widget::Column::new();
+                for child in self.children.drain(..2) {
+                    body = body.push(child);
+                }
+                let mut modal = crate::widget::ModalDialog::new("Modal", body);
+                modal.set_open(self.rect.width() < 1100.0);
+                self.children = vec![
+                    Box::new(
+                        crate::widget::TextInput::new(vec![])
+                            .with_on_change_path("body")
+                            .with_id("outside"),
+                    ),
+                    Box::new(modal),
+                ];
+            }
+            if let Some(calls) = &self.native_calls {
+                self.children = vec![Box::new(crate::widget::NativeView::new(
+                    "Native",
+                    CountingNativeBackend {
+                        generation: self.builds.get(),
+                        calls: calls.clone(),
+                    },
+                ))];
+            }
             self.nodes = self
                 .children
                 .iter_mut()
@@ -17080,13 +17131,16 @@ mod viewport_composition_tests {
                 .map(|child| child.as_mut() as &mut dyn Widget)
                 .collect()
         }
+        fn traps_focus(&self) -> bool {
+            self.trap
+        }
         fn layout_needs_measure(&self) -> bool {
             false
         }
     }
     fn frame(app: &mut App, width: u32) {
         app.layout_dirty = true;
-        run_layout_pass(app, app.root_node.unwrap(), width, 400, 1.0, false).unwrap();
+        run_layout_pass(app, app.root_node.unwrap(), width, 400, 1.0, false, None).unwrap();
     }
     #[test]
     fn legacy_composition_matches_fresh_at_multiple_viewports_before_paint() {
@@ -17126,7 +17180,7 @@ mod viewport_composition_tests {
             before,
             "translation-only frames do not rebuild composition"
         );
-        run_layout_pass(&mut app, NodeId::from(0usize), 920, 400, 1.0, false).unwrap();
+        run_layout_pass(&mut app, NodeId::from(0usize), 920, 400, 1.0, false, None).unwrap();
         assert_eq!(
             builds.get(),
             before,
@@ -17143,12 +17197,12 @@ mod viewport_composition_tests {
         app.init_layout();
         frame(&mut app, 1200);
         let node = app.root_node.unwrap();
-        run_layout_pass(&mut app, node, 1200, 400, 2.0, false).unwrap();
+        run_layout_pass(&mut app, node, 1200, 400, 2.0, false, None).unwrap();
         assert_eq!(app.root_widget.children().len(), 1);
         let before = builds.get();
         let node = app.root_node.unwrap();
         app.layout_dirty = true;
-        run_layout_pass(&mut app, node, 600, 200, 1.0, false).unwrap();
+        run_layout_pass(&mut app, node, 600, 200, 1.0, false, None).unwrap();
         assert_eq!(
             builds.get(),
             before,
@@ -17330,8 +17384,232 @@ mod viewport_composition_tests {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
         let root = app.root_node.unwrap();
-        assert!(run_layout_pass(&mut app, root, 1200, 400, 1.0, false).is_none());
+        assert!(run_layout_pass(&mut app, root, 1200, 400, 1.0, false, None).is_none());
         assert!(builds.get() <= 8);
         assert!(app.last_layout_logical.is_none());
+    }
+    #[derive(Clone, Debug, PartialEq)]
+    enum NativeCall {
+        Mount(usize),
+        Unmount(usize),
+        Geometry(usize, KurboRect),
+        Visible(usize, bool),
+    }
+    struct CountingNativeBackend {
+        generation: usize,
+        calls: Rc<std::cell::RefCell<Vec<NativeCall>>>,
+    }
+    impl crate::widget::NativeViewBackend for CountingNativeBackend {
+        fn mount(&mut self, _: &crate::widget::NativeViewHost<'_>) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(NativeCall::Mount(self.generation));
+            Ok(())
+        }
+        fn unmount(&mut self) {
+            self.calls
+                .borrow_mut()
+                .push(NativeCall::Unmount(self.generation));
+        }
+        fn set_geometry(&mut self, geometry: crate::widget::NativeViewGeometry) {
+            self.calls
+                .borrow_mut()
+                .push(NativeCall::Geometry(self.generation, geometry.logical));
+        }
+        fn set_visible(&mut self, visible: bool) {
+            self.calls
+                .borrow_mut()
+                .push(NativeCall::Visible(self.generation, visible));
+        }
+        fn set_focus(&mut self, _: bool) {}
+        fn set_enabled(&mut self, _: bool) {}
+    }
+
+    #[test]
+    fn review_failed_headless_resize_can_return_to_last_successful_size() {
+        let root = ResponsiveRoot::new(Rc::default());
+        let oscillate = root.oscillate.clone();
+        let mut driver = harness(State::new(), root, 1200);
+        oscillate.set(true);
+        assert!(driver.resize((920, 400)).is_err());
+        oscillate.set(false);
+        driver.resize((1200, 400)).unwrap();
+        assert_eq!(driver.inspection().viewport, [1200, 400]);
+        assert_eq!(driver.inspection().root.children.len(), 3);
+        assert_eq!(driver.inspection().root.rect[2], 1200.0);
+        driver.resize((920, 400)).unwrap();
+        assert_eq!(driver.inspection().root.children.len(), 2);
+    }
+
+    #[test]
+    fn review_active_trap_retains_keyed_selection_after_replacing_and_reordering_controls() {
+        let (state, mut root) = editing_fixture();
+        root.trap = true;
+        let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+        app.init_layout();
+        frame(&mut app, 1200);
+        let editor = app.focusable_order[0];
+        app.set_focused_node(Some(editor));
+        app.mutate_node(editor, |widget| widget.set_state("5:b:1"))
+            .unwrap();
+        for width in [920, 600, 1200] {
+            frame(&mut app, width);
+            assert!(app.focus_trap_active);
+            let focused = app.focused_node.expect("modal editor remains focused");
+            assert!(app.focusable_order.contains(&focused));
+            assert_eq!(
+                app.inspect_node(focused, |widget| widget
+                    .accessibility()
+                    .unwrap()
+                    .semantic_key)
+                    .unwrap()
+                    .as_deref(),
+                Some("editor")
+            );
+            assert!(
+                app.inspect_node(focused, |widget| widget.is_focused())
+                    .unwrap()
+            );
+            assert_eq!(
+                app.inspect_node(focused, |widget| widget.get_state())
+                    .unwrap()
+                    .as_deref(),
+                Some("5:b:1")
+            );
+        }
+    }
+
+    #[test]
+    fn review_native_views_mount_only_after_successful_final_composition() {
+        let mut root = ResponsiveRoot::new(Rc::default());
+        let calls = Rc::new(std::cell::RefCell::new(Vec::new()));
+        root.native_calls = Some(calls.clone());
+        let builds = root.builds.clone();
+        let oscillate = root.oscillate.clone();
+        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+        app.init_layout();
+        let host = crate::widget::NativeViewHost::headless(app.platform, 1.0);
+        app.root_widget.mount_native_views(&host);
+        for width in [1200, 920] {
+            let mounts = calls
+                .borrow()
+                .iter()
+                .filter(|call| matches!(call, NativeCall::Mount(_)))
+                .count();
+            app.layout_dirty = true;
+            let node = app.root_node.unwrap();
+            run_layout_pass(&mut app, node, width, 400, 1.0, false, Some(&host)).unwrap();
+            let final_generation = builds.get();
+            assert_eq!(
+                calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| matches!(call, NativeCall::Mount(_)))
+                    .count(),
+                mounts + 1,
+                "mount final composition exactly once"
+            );
+            assert!(
+                calls
+                    .borrow()
+                    .contains(&NativeCall::Mount(final_generation))
+            );
+            assert!(calls.borrow().iter().any(|call| matches!(call, NativeCall::Geometry(generation, rect) if *generation == final_generation && rect.width() == f64::from(width))));
+            let mut scene = Scene::new();
+            app.root_widget.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut app.text_renderer,
+                &app.theme,
+                &PresenceCtx::default(),
+            );
+            assert!(
+                calls
+                    .borrow()
+                    .contains(&NativeCall::Visible(final_generation, true))
+            );
+        }
+        let mounts = calls
+            .borrow()
+            .iter()
+            .filter(|call| matches!(call, NativeCall::Mount(_)))
+            .count();
+        oscillate.set(true);
+        app.layout_dirty = true;
+        let node = app.root_node.unwrap();
+        assert!(run_layout_pass(&mut app, node, 600, 400, 1.0, false, Some(&host)).is_none());
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .filter(|call| matches!(call, NativeCall::Mount(_)))
+                .count(),
+            mounts,
+            "failed intermediate compositions never attach"
+        );
+        oscillate.set(false);
+        let node = app.root_node.unwrap();
+        run_layout_pass(&mut app, node, 920, 400, 1.0, false, Some(&host)).unwrap();
+        assert_eq!(
+            app.root_widget.get_rect().width(),
+            920.0,
+            "live recovery also invalidates failed geometry"
+        );
+    }
+    #[test]
+    fn review_new_modal_does_not_restore_outside_focus_or_copy_selection_to_fallback() {
+        let (state, mut root) = editing_fixture();
+        root.modal_on_narrow = true;
+        let mut app = App::new_with_controlled_inputs(state, Box::new(root));
+        app.init_layout();
+        frame(&mut app, 1200);
+        assert!(!app.focus_trap_active);
+        let outside = app.focusable_order[0];
+        app.set_focused_node(Some(outside));
+        app.mutate_node(outside, |widget| widget.set_state("5:b:1"))
+            .unwrap();
+        frame(&mut app, 920);
+        assert!(app.focus_trap_active);
+        let focused = app.focused_node.expect("modal owns focus");
+        assert!(app.focusable_order.contains(&focused));
+        assert!(
+            app.inspect_node(focused, |widget| widget.is_focused())
+                .unwrap()
+        );
+        assert_ne!(
+            app.inspect_node(focused, |widget| widget
+                .accessibility()
+                .unwrap()
+                .semantic_key)
+                .unwrap()
+                .as_deref(),
+            Some("outside")
+        );
+        assert_eq!(
+            app.inspect_node(focused, |widget| widget.get_state())
+                .unwrap()
+                .as_deref(),
+            Some("0"),
+            "fallback editor keeps its own caret and no selection"
+        );
+        let outside = app
+            .node_map
+            .keys()
+            .copied()
+            .find(|&node| {
+                app.inspect_node(node, |widget| {
+                    widget
+                        .accessibility()
+                        .and_then(|access| access.semantic_key)
+                        .as_deref()
+                        == Some("outside")
+                })
+                .unwrap_or(false)
+            })
+            .unwrap();
+        assert!(
+            !app.inspect_node(outside, |widget| widget.is_focused())
+                .unwrap()
+        );
     }
 }

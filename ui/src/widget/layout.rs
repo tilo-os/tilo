@@ -154,12 +154,11 @@ impl CompositionFocus {
                     // SAFETY: the same exclusive admitted tree is still live.
                     unsafe {
                         crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                            widget.is_focusable()
-                                && widget
-                                    .accessibility()
-                                    .and_then(|access| access.semantic_key)
-                                    .as_ref()
-                                    == Some(key)
+                            widget
+                                .accessibility()
+                                .and_then(|access| access.semantic_key)
+                                .as_ref()
+                                == Some(key)
                         })
                     }
                     .unwrap_or(false)
@@ -173,10 +172,13 @@ impl CompositionFocus {
 
     /// # Safety
     /// The caller exclusively owns the rebuilt tree described by both maps.
+    /// `allowed` restricts the unique target to the current host focus order,
+    /// including an active focus trap. It does not relax identity uniqueness.
     pub(crate) unsafe fn restore(
         &self,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
         bindings: &BoundNodeMap,
+        allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
         let candidates: Vec<_> = nodes
             .keys()
@@ -186,8 +188,6 @@ impl CompositionFocus {
                 unsafe {
                     crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
                         !self.ambiguous
-                            && widget.is_focusable()
-                            && widget.is_enabled()
                             && match &self.key {
                                 Some(key) => {
                                     widget
@@ -196,7 +196,7 @@ impl CompositionFocus {
                                         .as_ref()
                                         == Some(key)
                                 }
-                                None => widget.is_focused(),
+                                None => widget.is_focusable() && widget.is_focused(),
                             }
                     })
                 }
@@ -206,7 +206,18 @@ impl CompositionFocus {
         let target = candidates
             .first()
             .copied()
-            .filter(|_| candidates.len() == 1);
+            .filter(|_| candidates.len() == 1)
+            .filter(|node| allowed.is_none_or(|order| order.contains(node)))
+            .filter(|&node| {
+                // Identity must be unique BEFORE focusability/enabled checks;
+                // a disabled duplicate must never transfer state to its peer.
+                unsafe {
+                    crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                        widget.is_focusable() && widget.is_enabled()
+                    })
+                }
+                .unwrap_or(false)
+            });
         for &node in nodes.keys() {
             // SAFETY: same exclusive live-tree ownership, no topology changes.
             let _ = unsafe {
@@ -381,7 +392,7 @@ mod tests {
             unsafe {
                 bindings.rebuild(&rebuilt, &tree, root, &nodes);
             }
-            let restored = unsafe { focus.restore(&nodes, &bindings) };
+            let restored = unsafe { focus.restore(&nodes, &bindings, None) };
             if target_keys == ["other", "target"] {
                 assert!(restored.is_some());
                 assert!(!rebuilt.children()[0].is_focused());
@@ -417,7 +428,33 @@ mod tests {
         unsafe {
             bindings.rebuild(&survivor, &tree, root, &nodes);
         }
-        assert!(unsafe { focus.restore(&nodes, &bindings) }.is_none());
+        assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
         assert!(!survivor.is_focused());
+    }
+    #[test]
+    fn review_disabled_duplicate_target_does_not_transfer_focus_to_enabled_other() {
+        use crate::widget::{Button, Column};
+        let mut old = Button::new("target", "Original", None);
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        let mut bindings = BoundNodeMap::new();
+        unsafe {
+            bindings.rebuild(&old, &tree, root, &nodes);
+        }
+        let focus = unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
+        nodes.clear();
+        bindings.clear();
+        let mut disabled = Button::new("target", "Original", None);
+        disabled.set_enabled(false);
+        let mut rebuilt = Column::new()
+            .push(Box::new(disabled))
+            .push(Box::new(Button::new("target", "Other", None)));
+        let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        unsafe {
+            bindings.rebuild(&rebuilt, &tree, root, &nodes);
+        }
+        assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
+        assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
     }
 }
