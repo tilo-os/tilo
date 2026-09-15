@@ -13,8 +13,8 @@ use iroh::endpoint::presets;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::network::actor::WorkspaceControlRoute;
 use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
+use crate::network::actor::{PersonalFabricPayload, WorkspaceControlRoute};
 use crate::network::behaviour::load_or_create_keypair;
 use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
@@ -317,6 +317,43 @@ fn personal_continuity_path(keypair_path: &Path) -> PathBuf {
     keypair_path.with_file_name("personal-continuity.postcard")
 }
 
+fn device_fabric_path(keypair_path: &Path) -> PathBuf {
+    keypair_path.with_file_name("personal-device-fabric.postcard")
+}
+
+fn device_fabric_backup_path(path: &Path) -> PathBuf {
+    path.with_extension("postcard.backup")
+}
+
+fn load_device_fabric(path: &Path) -> crate::shell::device_fabric::DeviceFabric {
+    [path.to_path_buf(), device_fabric_backup_path(path)]
+        .into_iter()
+        .find_map(|candidate| {
+            let bytes = std::fs::read(candidate).ok()?;
+            crate::shell::device_fabric::DeviceFabric::decode_checkpoint(&bytes).ok()
+        })
+        .unwrap_or_default()
+}
+
+fn persist_device_fabric(path: &Path, fabric: &crate::shell::device_fabric::DeviceFabric) -> bool {
+    let Ok(bytes) = fabric.encode_checkpoint() else {
+        return false;
+    };
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return false;
+    }
+    let prior = std::fs::read(path)
+        .ok()
+        .filter(|prior| crate::shell::device_fabric::DeviceFabric::decode_checkpoint(prior).is_ok())
+        .unwrap_or_else(|| bytes.clone());
+    if atomic_file::write_with_mode(&device_fabric_backup_path(path), &prior, 0o600).is_err() {
+        return false;
+    }
+    atomic_file::write_with_mode(path, &bytes, 0o600).is_ok()
+}
+
 #[derive(Serialize, Deserialize)]
 struct PersistedPersonalContinuity {
     counter: u64,
@@ -504,6 +541,10 @@ pub struct ShellNetwork {
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
+    /// Convergent same-person device state, persisted separately from app
+    /// continuation so transport upgrades cannot regress existing handoff.
+    device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
+    device_fabric_path: Option<PathBuf>,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -813,6 +854,8 @@ impl ShellNetwork {
         let pending_invitations_path = pending_invites_path(keypair_path);
         let personal_continuity_path = personal_continuity_path(keypair_path);
         let persisted_continuity = load_personal_continuity(&personal_continuity_path);
+        let device_fabric_path = device_fabric_path(keypair_path);
+        let device_fabric = load_device_fabric(&device_fabric_path);
         let now = now_unix_seconds();
         let pending_identity_admissions: std::collections::HashMap<_, _> =
             load_pending_invitations(&pending_invitations_path)
@@ -846,6 +889,8 @@ impl ShellNetwork {
             personal_continuity_counter: Mutex::new(persisted_continuity.counter),
             personal_continuity_fingerprint: Mutex::new(None),
             personal_continuity_path: Some(personal_continuity_path),
+            device_fabric: Mutex::new(device_fabric),
+            device_fabric_path: Some(device_fabric_path),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
@@ -2145,6 +2190,7 @@ impl ShellNetwork {
         }
         self.publish_personal_continuity_request();
         self.publish_personal_continuity_if_changed();
+        self.publish_device_fabric_request();
     }
 
     fn local_continuity_snapshot_bytes(&self) -> Option<Vec<u8>> {
@@ -2259,6 +2305,92 @@ impl ShellNetwork {
         )
     }
 
+    /// Return the locally retained, convergent view of this person's devices.
+    pub fn device_fabric(&self) -> crate::shell::device_fabric::DeviceFabric {
+        self.device_fabric.lock().map_or_else(
+            |_| crate::shell::device_fabric::DeviceFabric::default(),
+            |state| state.clone(),
+        )
+    }
+
+    /// Replace this machine's self-authored fabric snapshot and advertise it
+    /// to currently connected, certified devices of the same person.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot is invalid or names another device.
+    pub fn upsert_local_device_fabric(
+        &self,
+        snapshot: crate::shell::device_fabric::DeviceFabricSnapshot,
+    ) -> Result<bool, crate::shell::device_fabric::FabricError> {
+        if self
+            .personal_continuity_device
+            .as_ref()
+            .is_none_or(|device| device != &snapshot.owner)
+        {
+            return Err(crate::shell::device_fabric::FabricError::ForeignAuthorship);
+        }
+        let changed = {
+            let mut fabric = self
+                .device_fabric
+                .lock()
+                .map_err(|_| crate::shell::device_fabric::FabricError::InvalidCheckpoint)?;
+            let changed = fabric.upsert(snapshot)?;
+            if changed
+                && self
+                    .device_fabric_path
+                    .as_deref()
+                    .is_some_and(|path| !persist_device_fabric(path, &fabric))
+            {
+                tracing::warn!("device fabric persistence failed");
+            }
+            drop(fabric);
+            changed
+        };
+        if changed {
+            self.publish_device_fabric_snapshot();
+        }
+        Ok(changed)
+    }
+
+    fn local_device_fabric_checkpoint(&self) -> Option<Vec<u8>> {
+        let local = self.personal_continuity_device.as_ref()?;
+        let snapshot = self
+            .device_fabric
+            .lock()
+            .ok()?
+            .snapshots()
+            .get(local)
+            .cloned()?;
+        let mut single = crate::shell::device_fabric::DeviceFabric::default();
+        single.upsert(snapshot).ok()?;
+        single.encode_checkpoint().ok()
+    }
+
+    fn publish_device_fabric_payload(&self, payload: PersonalFabricPayload) {
+        let Some(user_public_key) = self.personal_continuity_user else {
+            return;
+        };
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if self.join_topic(ws) {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishPersonalFabric {
+                ws,
+                user_public_key,
+                payload,
+            });
+        }
+    }
+
+    fn publish_device_fabric_request(&self) {
+        self.publish_device_fabric_payload(PersonalFabricPayload::Request);
+    }
+
+    fn publish_device_fabric_snapshot(&self) {
+        if let Some(snapshot) = self.local_device_fabric_checkpoint() {
+            self.publish_device_fabric_payload(PersonalFabricPayload::Snapshot(snapshot));
+        }
+    }
+
     fn publish_personal_continuity_request(&self) {
         let Some(user_public_key) = self.personal_continuity_user else {
             return;
@@ -2351,7 +2483,15 @@ impl ShellNetwork {
                 }
                 self.handle_host_ready(ws, peer);
             }
-            NetEvent::PeerJoined { .. } => self.publish_sync_requests(),
+            NetEvent::PeerJoined { ws, .. } => {
+                self.publish_sync_requests();
+                if self
+                    .personal_continuity_user
+                    .is_some_and(|user| ws == personal_continuity_topic_id(&user))
+                {
+                    self.publish_device_fabric_request();
+                }
+            }
             // Without this the roster only ever grows: nothing else
             // tells it a session went quiet.
             NetEvent::PeerLeft { ws, peer, cause } => {
@@ -2374,6 +2514,72 @@ impl ShellNetwork {
                 }
             }
             NetEvent::Msg { ws, peer, msg } => self.dispatch_neighbour_msg(ws, peer, msg),
+            NetEvent::PersonalFabric {
+                ws,
+                peer,
+                user_public_key,
+                payload,
+            } => self.dispatch_personal_fabric(ws, peer, user_public_key, payload),
+        }
+    }
+
+    fn dispatch_personal_fabric(
+        &self,
+        ws: u64,
+        peer: iroh::EndpointId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    ) {
+        let origin = crate::shell::state::PeerOrigin::peer(&peer);
+        let Some(identity) = self.peer_identities.get(&origin) else {
+            tracing::warn!(peer = %peer, "dropping unauthenticated personal fabric frame");
+            return;
+        };
+        if self.personal_continuity_user != Some(user_public_key)
+            || ws != personal_continuity_topic_id(&user_public_key)
+            || !identity.is_same_user(&user_public_key)
+        {
+            tracing::warn!(peer = %peer, "dropping cross-identity personal fabric frame");
+            return;
+        }
+        match payload {
+            PersonalFabricPayload::Request => self.publish_device_fabric_snapshot(),
+            PersonalFabricPayload::Snapshot(bytes) => {
+                let Ok(incoming) =
+                    crate::shell::device_fabric::DeviceFabric::decode_checkpoint(&bytes)
+                else {
+                    tracing::warn!(peer = %peer, "dropping invalid personal fabric checkpoint");
+                    return;
+                };
+                if incoming.snapshots().len() != 1 {
+                    tracing::warn!(peer = %peer, "dropping relayed personal fabric authorship");
+                    return;
+                }
+                let expected = hex::encode(identity.device_pubkey);
+                let Some(snapshot) = incoming.snapshots().values().next().cloned() else {
+                    return;
+                };
+                if snapshot.owner.as_str() != expected {
+                    tracing::warn!(peer = %peer, "personal fabric owner does not match device certificate");
+                    return;
+                }
+                let Ok(mut fabric) = self.device_fabric.lock() else {
+                    return;
+                };
+                match fabric.upsert(snapshot) {
+                    Ok(true) => {
+                        if let Some(path) = self.device_fabric_path.as_deref()
+                            && !persist_device_fabric(path, &fabric)
+                        {
+                            tracing::warn!("device fabric merge persistence failed");
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, peer = %peer, "dropping conflicting personal fabric state");
+                    }
+                }
+            }
         }
     }
 
@@ -3423,6 +3629,8 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_counter: Mutex::new(0),
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
+        device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
+        device_fabric_path: None,
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
@@ -3556,6 +3764,87 @@ mod tests {
             &cert,
             &[],
         );
+    }
+
+    fn fabric_snapshot(
+        owner: crate::shell::personal_continuity::DeviceId,
+        counter: u64,
+    ) -> crate::shell::device_fabric::DeviceFabricSnapshot {
+        use crate::shell::device_fabric::{
+            DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
+            FabricCapabilities, FabricStamp,
+        };
+        DeviceFabricSnapshot {
+            schema_version: FABRIC_SCHEMA_VERSION,
+            presence: DevicePresence {
+                device: owner.clone(),
+                label: "Test device".into(),
+                kind: DeviceKind::Laptop,
+                capabilities: FabricCapabilities {
+                    clipboard: true,
+                    app_continuation: true,
+                    ..FabricCapabilities::default()
+                },
+                online: true,
+                last_seen_unix_ms: counter,
+                stamp: FabricStamp {
+                    counter,
+                    device: owner.clone(),
+                },
+            },
+            owner,
+            media: Vec::new(),
+            clipboard: Vec::new(),
+            settings: Vec::new(),
+            wifi: Vec::new(),
+            display: None,
+        }
+    }
+
+    #[test]
+    fn device_fabric_store_recovers_from_valid_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-device-fabric.postcard");
+        let owner = crate::shell::personal_continuity::DeviceId::new("laptop").unwrap();
+        let mut expected = crate::shell::device_fabric::DeviceFabric::default();
+        expected.upsert(fabric_snapshot(owner, 7)).unwrap();
+        assert!(persist_device_fabric(&path, &expected));
+        std::fs::write(&path, b"damaged").unwrap();
+        assert_eq!(load_device_fabric(&path), expected);
+    }
+
+    #[test]
+    fn personal_fabric_merge_is_bound_to_authenticated_device_certificate() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xF1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer_device = iroh::SecretKey::generate();
+        let (net, _commands) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&net, &root, &peer_device);
+        let owner = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .unwrap();
+        let snapshot = fabric_snapshot(owner.clone(), 8);
+        let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+        incoming.upsert(snapshot).unwrap();
+        net.dispatch_personal_fabric(
+            personal_continuity_topic_id(&user),
+            peer_device.public(),
+            user,
+            PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
+        );
+        assert!(net.device_fabric().snapshots().contains_key(&owner));
+
+        let forged = crate::shell::personal_continuity::DeviceId::new("some-other-device").unwrap();
+        let mut incoming = crate::shell::device_fabric::DeviceFabric::default();
+        incoming.upsert(fabric_snapshot(forged.clone(), 9)).unwrap();
+        net.dispatch_personal_fabric(
+            personal_continuity_topic_id(&user),
+            peer_device.public(),
+            user,
+            PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
+        );
+        assert!(!net.device_fabric().snapshots().contains_key(&forged));
     }
 
     #[test]
