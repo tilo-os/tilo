@@ -15,6 +15,7 @@ import stat
 import struct
 import sys
 from pathlib import Path
+from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, read_definition
 
 
 PROFILE = Path("usr/lib/qos/hardware-profile.json")
@@ -57,13 +58,18 @@ def resolve_profile(root: Path, kver: str, architecture: str) -> Path | None:
         raise ValueError("hardware profile has missing or unknown fields")
     if type(data["schema_version"]) is not int or data["schema_version"] != 1:
         raise ValueError("unsupported hardware profile schema")
-    if data["id"] != "lenovo-83ed":
-        raise ValueError("unsupported hardware profile id")
-    if architecture != "aarch64" or data["architecture"] != architecture:
-        raise ValueError("Lenovo 83ED hardware profile requires an aarch64 image")
-    # An explicit allowlist binds this profile to the selected kernel's DTB;
-    # neither a path from another kernel nor an arbitrary rootfs file qualifies.
-    relative = Path(f"usr/lib/modules/{kver}/dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb")
+    definition = read_definition(trusted_path(root, DEFINITION_PATH, regular=True))
+    if data["id"] != definition["id"]:
+        raise ValueError("hardware profile id does not match its image-owned definition")
+    if architecture not in ARCH_CONFIG or data["architecture"] != architecture or definition["architecture"] != architecture:
+        raise ValueError("hardware profile requires a matching native image architecture")
+    # The reviewed definition is copied into the sealed rootfs. It binds the
+    # model to this kernel's DTB without model-specific branches in the builder.
+    if definition["devicetree"] is None:
+        if data["devicetree"] is not None or data["devicetree_sha256"] is not None:
+            raise ValueError("firmware-provided device tree profile must not override a DTB")
+        return None
+    relative = Path(f"usr/lib/modules/{kver}/dtb") / definition["devicetree"]
     if data["devicetree"] != f"/{relative.as_posix()}":
         raise ValueError("hardware profile device tree does not match this kernel and model")
     digest = data["devicetree_sha256"]

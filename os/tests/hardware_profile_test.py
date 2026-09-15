@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "dev/prepare-hardware-profile.py"
+sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location("prepare_hardware_profile", SCRIPT)
 prepare = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(prepare)
@@ -101,7 +102,7 @@ class HardwareProfileTest(unittest.TestCase):
         self.assertEqual(install_line, 'install_items+=" ' + " ".join(
             f"/usr/lib/firmware/qcom/x1e80100/LENOVO/83ED/{name}" for name in NAMES
         ) + ' "')
-        outputs = [profile_path, dracut, *(installed / name for name in NAMES)]
+        outputs = [profile_path, self.root / prepare.DEFINITION_PATH, dracut, *(installed / name for name in NAMES)]
         self.assertEqual(self.ownership.call_count, len(outputs))
         for output in outputs:
             self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
@@ -126,6 +127,63 @@ class HardwareProfileTest(unittest.TestCase):
         self.native.return_value = "x86_64"
         self.rejected_without_writes("native aarch64")
 
+    def definition(self, architecture="aarch64", devicetree=None, firmware=None):
+        directory = self.work / "definitions"
+        directory.mkdir(exist_ok=True)
+        data = {"schema_version": 1, "id": "other-board", "architecture": architecture,
+                "devicetree": devicetree, "firmware": firmware or {}}
+        (directory / "other-board.json").write_text(json.dumps(data))
+        return directory, data
+
+    def test_another_board_uses_its_own_device_tree_and_firmware_mapping(self):
+        definitions, data = self.definition(
+            devicetree="vendor/other-board.dtb", firmware={"radio.bin": "vendor/radio/calibration.bin"})
+        tree = self.kernel / "dtb/vendor/other-board.dtb"
+        tree.parent.mkdir()
+        tree.write_bytes(self.dtb.read_bytes())
+        payload = b"other board calibration"
+        (self.firmware / "radio.bin").write_bytes(payload)
+        self.manifest = {"schema_version": 1, "profile": "other-board",
+                         "files": {"radio.bin": hashlib.sha256(payload).hexdigest()}}
+        self.write_manifest()
+        prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions)
+        self.assertEqual((self.root / "usr/lib/firmware/vendor/radio/calibration.bin").read_bytes(), payload)
+        emitted = json.loads((self.root / "usr/lib/qos/hardware-profile.json").read_text())
+        self.assertEqual(emitted["devicetree"], "/" + tree.relative_to(self.root).as_posix())
+        self.assertEqual(json.loads((self.root / prepare.DEFINITION_PATH).read_text()), data)
+
+    def test_firmware_provided_boot_profiles_work_on_both_architectures(self):
+        for architecture, config in (("aarch64", "CONFIG_ARM64=y"), ("x86_64", "CONFIG_X86_64=y")):
+            with self.subTest(architecture=architecture):
+                definitions, _ = self.definition(architecture=architecture)
+                self.native.return_value = architecture
+                (self.kernel / "config").write_text(config + "\n")
+                prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions)
+                emitted = json.loads((self.root / "usr/lib/qos/hardware-profile.json").read_text())
+                self.assertEqual(emitted["architecture"], architecture)
+                self.assertIsNone(emitted["devicetree"])
+                self.assertIsNone(emitted["devicetree_sha256"])
+
+    def test_invalid_definitions_are_rejected_before_writes(self):
+        mutations = (
+            {"architecture": "riscv64"}, {"architecture": []}, {"id": "different"},
+            {"devicetree": "../outside.dtb"}, {"devicetree": "/boot/outside.dtb"},
+            {"firmware": {"a.bin": "../../outside"}},
+            {"firmware": {"../a.bin": "vendor/a.bin"}},
+            {"firmware": {"a.bin": "vendor/a.bin", "b.bin": "vendor/a.bin"}},
+            {"firmware": {"a.bin": "vendor/tree", "b.bin": "vendor/tree/b.bin"}},
+            {"firmware": {"a.bin": "vendor/with space.bin"}}, {"unknown": True},
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                definitions, data = self.definition()
+                (definitions / "other-board.json").write_text(json.dumps(data | mutation))
+                before = self.snapshot()
+                with self.assertRaises(ValueError):
+                    prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions)
+                self.assertEqual(self.snapshot(), before)
+                self.ownership.assert_not_called()
+
     def test_requires_privileged_image_builder(self):
         self.privileged.return_value = 1000
         self.rejected_without_writes("as root")
@@ -136,7 +194,7 @@ class HardwareProfileTest(unittest.TestCase):
 
     def test_wrong_kernel_configuration(self):
         (self.kernel / "config").write_text("CONFIG_X86_64=y\n", encoding="utf-8")
-        self.rejected_without_writes("ARM64 kernel configuration")
+        self.rejected_without_writes("aarch64 kernel configuration")
 
     def test_missing_dtb(self):
         self.dtb.unlink()
@@ -183,7 +241,7 @@ class HardwareProfileTest(unittest.TestCase):
     def test_manifest_extra_path(self):
         self.manifest["files"]["../extra.mbn"] = "0" * 64
         self.write_manifest()
-        self.rejected_without_writes("exactly the six")
+        self.rejected_without_writes("exactly the hardware definition")
 
     def test_manifest_invalid_digest(self):
         self.manifest["files"][NAMES[-1]] = "unverified"

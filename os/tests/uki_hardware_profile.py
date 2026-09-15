@@ -9,6 +9,7 @@ import json
 import os
 import stat
 import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,6 +17,7 @@ from unittest import mock
 
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "os/dev"))
 
 
 def load(name, path):
@@ -48,8 +50,11 @@ class HardwareProfileTests(unittest.TestCase):
         self.dtb = self.root / f"usr/lib/modules/{self.kver}/dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb"
         self.dtb.parent.mkdir(parents=True)
         self.dtb.write_bytes(dtb_fixture())
+        definition = self.root / "usr/lib/qos/hardware-profile-definition.json"
+        definition.parent.mkdir(parents=True, exist_ok=True)
+        definition.write_bytes((REPO / "os/hardware/profiles/lenovo-83ed.json").read_bytes())
         self.metadata = self.root / profile.PROFILE
-        self.metadata.parent.mkdir(parents=True)
+        self.metadata.parent.mkdir(parents=True, exist_ok=True)
         self.data = {
             "schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64",
             "devicetree": "/" + self.dtb.relative_to(self.root).as_posix(),
@@ -86,6 +91,30 @@ class HardwareProfileTests(unittest.TestCase):
     def test_valid_profile_resolves_exact_kernel_device_tree(self):
         self.assertEqual(self.resolve(), self.dtb)
 
+    def test_firmware_provided_boot_profile_does_not_inject_a_device_tree(self):
+        definition = self.root / "usr/lib/qos/hardware-profile-definition.json"
+        value = json.loads(definition.read_text())
+        value["devicetree"] = None
+        definition.write_text(json.dumps(value))
+        self.data["devicetree"] = self.data["devicetree_sha256"] = None
+        self.write_profile()
+        self.assertIsNone(self.resolve())
+        self.data["devicetree"] = "/boot/override.dtb"
+        self.write_profile()
+        with self.assertRaises(ValueError):
+            self.resolve()
+
+    def test_definition_is_subject_to_the_same_ownership_and_path_checks(self):
+        definition = self.root / "usr/lib/qos/hardware-profile-definition.json"
+        self.metadata_overrides[definition] = {0: stat.S_IFREG | 0o666}
+        with self.assertRaisesRegex(ValueError, "not group/world writable"):
+            self.resolve()
+        self.metadata_overrides.clear()
+        definition.unlink()
+        definition.symlink_to(self.root / "missing")
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            self.resolve()
+
     def test_wrong_architecture_or_kernel_is_rejected(self):
         for architecture, kver in (("x86_64", self.kver), ("aarch64", "different"),
                                    ("aarch64", "../../other")):
@@ -118,7 +147,8 @@ class HardwareProfileTests(unittest.TestCase):
             self.resolve()
 
     def test_writable_unowned_and_symlinked_inputs_fail_closed(self):
-        for path in (self.metadata, self.metadata.parent, self.dtb, self.dtb.parent):
+        for path in (self.metadata, self.metadata.parent, self.dtb, self.dtb.parent,
+                     self.root / "usr/lib/qos/hardware-profile-definition.json"):
             for mutation in ({0: stat.S_IFREG | 0o666}, {4: 1000}, {0: stat.S_IFLNK | 0o777}):
                 with self.subTest(path=path, mutation=mutation), self.assertRaises(ValueError):
                     self.metadata_overrides[path] = mutation
