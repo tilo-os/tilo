@@ -174,6 +174,30 @@ impl Widget for OverviewPane {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.core.borrow().overview_accessibility(self.rect))
     }
+
+    fn perform_action_at(
+        &mut self,
+        action: &Action,
+        key_path: &[u64],
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, Action::Activate) {
+            return false;
+        }
+        let Some(key) = key_path.last().copied() else {
+            return false;
+        };
+        let id = self
+            .core
+            .borrow()
+            .model
+            .locations
+            .iter()
+            .find(|location| ui::a11y::hash_key(&location.id) == key)
+            .map(|location| location.id);
+        id.is_some_and(|id| self.core.borrow_mut().open_location(id))
+    }
 }
 
 impl Widget for DetailPane {
