@@ -29,6 +29,7 @@ qos-reference = { path = "../../crates/collab/reference" }
 # The content store: `qdoc::blobstore` is what names a photograph by its
 # bytes rather than by the path one machine happened to open it from.
 qdoc = { path = "../../crates/doc/qdoc" }
+atomic-file = { path = "../../crates/system/atomic-file" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
