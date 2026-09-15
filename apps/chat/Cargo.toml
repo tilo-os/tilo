@@ -74,7 +74,8 @@ dirs.workspace = true
 # workspace attachment picker, plus PNG-encoding the demo thumbnails the shared
 # `ui::ImageStore` decodes on its worker threads — so the offline shot exercises
 # the real fetch → decode → cache → paint image path (no gradient stand-in).
-# Live attachments are read straight off the FUSE mount.
+# Live attachment bytes hydrate through qdoc's content-addressed blob store;
+# no sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 # Live-media-only (feature-gated; never compiled for the default build).

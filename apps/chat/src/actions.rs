@@ -23,9 +23,9 @@
 //!
 //! **External → never an action:** voice / screen-share *transport*, media
 //! upload, and the network send itself. When a file is shared, the message **row
-//! insert** is the action (it carries the attachment *by reference* — a FUSE
-//! path, name and dimensions, never the bytes); the media bytes and their
-//! transport are external and hydrate on demand.
+//! insert** is the action (it carries the attachment *by reference* — a qdoc
+//! content hash, display name, and bounded metadata, never a local path or the
+//! bytes); the media bytes remain outside the CRDT and hydrate on demand.
 //!
 //! ## A call is both halves, and only one of them is external
 //!
@@ -503,6 +503,16 @@ impl ChatAction {
                 mentions,
                 reference,
             } => {
+                if !ChatDoc::accepts_message_action(
+                    doc,
+                    channel,
+                    id,
+                    text,
+                    parent.as_deref(),
+                    attachment.as_ref(),
+                ) {
+                    return;
+                }
                 ChatDoc::push_message_with_id(
                     doc,
                     channel,
@@ -2231,6 +2241,46 @@ mod tests {
         let m = msgs.iter().find(|m| m.id == "m_test1").unwrap();
         assert_eq!(m.text, "hello");
         assert_eq!(m.author, model::ME);
+    }
+
+    #[test]
+    fn send_message_retries_are_exactly_once_and_reject_invalid_targets() {
+        let mut doc = seeded();
+        let action = send_message_action(
+            "c_general",
+            "m_retry_once",
+            model::ME,
+            TS,
+            "retry-safe",
+            None,
+            None,
+            Vec::new(),
+        );
+        dispatch(&mut doc, &action);
+        dispatch(&mut doc, &action);
+        assert_eq!(
+            ChatDoc::list_messages(&doc, "c_general")
+                .iter()
+                .filter(|message| message.id == "m_retry_once")
+                .count(),
+            1,
+            "replaying one authored action cannot create a second resource row"
+        );
+
+        dispatch(
+            &mut doc,
+            &send_message_action(
+                "c_missing",
+                "m_missing_target",
+                model::ME,
+                TS,
+                "must not create a hidden channel",
+                None,
+                None,
+                Vec::new(),
+            ),
+        );
+        assert!(ChatDoc::list_messages(&doc, "c_missing").is_empty());
     }
 
     /// An agent's progress on a summons, through the same action/doc path a

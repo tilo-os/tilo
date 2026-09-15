@@ -3892,8 +3892,8 @@ fn video_card_size(w: u32, h: u32, max_w: f64) -> (f64, f64) {
 /// (derived from the display name's extension) and a human-readable size.
 ///
 /// This deliberately carries **no filesystem path**. Where the bytes actually
-/// live — the P2P FUSE workspace mount (`/var/workspace/...`) — is an
-/// implementation detail; surfacing it in chrome is a HIG §4 violation
+/// live — qdoc's content-addressed blob store — is an implementation detail;
+/// surfacing a local source path in chrome is a HIG §4 violation
 /// ("no internal / implementation labels in user-facing chrome … a leaked
 /// `/var/workspace` path"). The chip already shows the human filename above
 /// this line, which is the only path-ish thing a user cares about.
