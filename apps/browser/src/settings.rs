@@ -306,12 +306,17 @@ impl SettingsPane {
     /// rhythm is done with explicit spacer rows because an intrinsic-height
     /// column lays out as a block stack that ignores taffy's inter-child
     /// gap — a plain `.push().push()` renders the rows touching.
-    fn build_composition(&self) -> Box<dyn Widget> {
+    fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
+        let large_text = theme.text_scale >= 1.5;
+        let action_height = if large_text { 56.0 } else { 36.0 };
         let header = Row::new()
-            .push(Box::new(Text::new("Settings").with_size(24.0)))
+            .push(Box::new(
+                Text::new("Settings").with_size(24.0).with_heading_level(1),
+            ))
             .push(Box::new(Spacer::new()))
             .push(Box::new(button_with_action(
-                Button::new("settings.close", "Done", None).with_size(96.0, 36.0),
+                Button::new("settings.close", "Done", None)
+                    .with_size(if large_text { 112.0 } else { 96.0 }, action_height),
                 self.actions.close.clone(),
             )));
 
@@ -335,6 +340,7 @@ impl SettingsPane {
             ]),
         );
 
+        let browsing_controls = browsing_data_controls(&self.actions, large_text, action_height);
         let mut privacy_rows = vec![
             setting_row_described(
                 "Block ads & trackers",
@@ -345,6 +351,7 @@ impl SettingsPane {
                         .with_accessible_name("Block ads & trackers"),
                     self.actions.adblock.clone(),
                 )),
+                large_text,
             ),
             setting_row_described(
                 "Clear data when the browser closes",
@@ -355,23 +362,13 @@ impl SettingsPane {
                         .with_accessible_name("Clear data when the browser closes"),
                     self.actions.clear_on_exit.clone(),
                 )),
+                large_text,
             ),
             setting_row_described(
                 "Browsing data",
                 "Clear stored history, or request a local engine site-data clear.",
-                Box::new(
-                    Row::new()
-                        .push(Box::new(button_with_action(
-                            Button::new("settings.clear_history", "Clear history", None)
-                                .with_size(140.0, 36.0),
-                            self.actions.clear_history.clone(),
-                        )))
-                        .push(Box::new(button_with_action(
-                            Button::new("settings.clear_cookies", "Request site-data clear", None)
-                                .with_size(200.0, 36.0),
-                            self.actions.clear_site_data.clone(),
-                        ))),
-                ),
+                browsing_controls,
+                large_text,
             ),
         ];
         if let Some(error) = &self.history_clear_error {
@@ -430,9 +427,9 @@ fn card(title: &str, body: El) -> El {
     let inner = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .push(Box::new(
-            Row::new().push(Box::new(Text::new(title).with_size(16.0))),
-        ))
+        .push(Box::new(Row::new().push(Box::new(
+            Text::new(title).with_size(16.0).with_heading_level(2),
+        ))))
         .push(vgap(CARD_TITLE_GAP))
         .push(body);
     Box::new(
@@ -457,19 +454,59 @@ fn rows(items: Vec<El>) -> El {
 
 /// A label with a dim helper line beneath it, paired with a trailing
 /// control. The `Spacer` pushes the control to the trailing edge.
-fn setting_row_described(label: &str, description: &str, control: El) -> El {
+fn setting_row_described(label: &str, description: &str, control: El, large_text: bool) -> El {
     let text_block = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
         .push(Box::new(Text::new(label).with_size(14.0)))
         .push(vgap(2.0))
         .push(Box::new(Text::new(description).with_size(12.0).dimmed()));
-    Box::new(
-        Row::new()
-            .push(Box::new(text_block))
-            .push(Box::new(Spacer::new()))
-            .push(control),
-    )
+    if large_text {
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(text_block))
+                .push(vgap(10.0))
+                .push(control),
+        )
+    } else {
+        Box::new(
+            Row::new()
+                .push(Box::new(text_block))
+                .push(Box::new(Spacer::new()))
+                .push(control),
+        )
+    }
+}
+
+fn browsing_data_controls(
+    actions: &SettingsActionBindings,
+    large_text: bool,
+    action_height: f32,
+) -> El {
+    let clear_history = Box::new(button_with_action(
+        Button::new("settings.clear_history", "Clear history", None)
+            .with_size(if large_text { 240.0 } else { 140.0 }, action_height),
+        actions.clear_history.clone(),
+    ));
+    let clear_site_data = Box::new(button_with_action(
+        Button::new("settings.clear_cookies", "Request site-data clear", None)
+            .with_size(if large_text { 300.0 } else { 200.0 }, action_height),
+        actions.clear_site_data.clone(),
+    ));
+    if large_text {
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(clear_history)
+                .push(vgap(8.0))
+                .push(clear_site_data),
+        )
+    } else {
+        Box::new(Row::new().push(clear_history).push(clear_site_data))
+    }
 }
 
 /// A labelled full-width text field: a caption above a [`TextInput`]
@@ -525,7 +562,7 @@ impl Widget for SettingsPane {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
+        let mut composed = self.build_composition(theme);
         let child_node = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
 

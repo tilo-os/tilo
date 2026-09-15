@@ -97,6 +97,7 @@ pub fn main() {
                 "--shots-error",
                 "--shots-library",
                 "--library-section",
+                "--download-state",
                 "--audit-state",
                 "--url",
                 "--size",
@@ -268,7 +269,11 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     }
     if let Some(out) = args.value("--shots-library") {
         let mut widget = BrowserWidget::new_headless();
-        widget.debug_show_library(args.value("--library-section").unwrap_or("history"));
+        let section = args.value("--library-section").unwrap_or("history");
+        widget.debug_show_library(section);
+        if section == "downloads" {
+            widget.debug_show_downloads(args.value("--download-state").unwrap_or("progress"));
+        }
         let size = args
             .value("--size")
             .and_then(parse_size)
@@ -359,6 +364,7 @@ fn render_suggestions_shot(out: &std::path::Path, text_scale: Option<f32>) {
     let theme = shot_theme(text_scale);
     let presence = PresenceCtx::empty();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
 
     let mut overlay = AddressSuggestions::new();
     overlay.set_suggestions(vec![
@@ -480,6 +486,7 @@ fn render_live_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
 
     let mut state = ui::State::new();
     let root_obj = state.root.clone();
@@ -633,6 +640,7 @@ fn render_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
