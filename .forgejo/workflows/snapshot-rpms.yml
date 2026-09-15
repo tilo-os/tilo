@@ -89,7 +89,7 @@ jobs:
           # This parser is shared with the static invariant test. It handles
           # quoted capability specs and every install command in a RUN line;
           # keeping a second awk copy here previously let them drift apart.
-          pkgs=$(./os/dev/derive-rpm-package-set.py | tr '\n' ' ')
+          pkgs=$(./os/dev/derive-rpm-package-set.py --arch '${{ matrix.arch }}' | tr '\n' ' ')
           test -n "$pkgs"
           echo "PACKAGES=$pkgs" >> "$GITHUB_ENV"
           echo "packages: $pkgs"

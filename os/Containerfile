@@ -1619,7 +1619,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # copied below for non-Steam games. The appliance packages provide one
 # KVM-accelerated, TPM-backed Windows fallback. Changing this list requires
 # refreshing RPMS_REF (see the file header).
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+# qos-rpm-snapshot-package[x86_64]: edk2-ovmf
+# qos-rpm-snapshot-package[aarch64]: edk2-aarch64
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    case "$(uname -m)" in \
+      x86_64) vm_firmware=edk2-ovmf ;; \
+      aarch64) vm_firmware=edk2-aarch64 ;; \
+      *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
+    esac && dnf install -y --setopt=reposdir=/repo \
     wine \
     wine-dxvk \
     gamescope \
@@ -1629,7 +1636,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     libvirt-daemon-config-nwfilter \
     swtpm \
     swtpm-tools \
-    edk2-ovmf \
+    "$vm_firmware" \
     freerdp \
     xwayland-satellite \
     virt-viewer \
