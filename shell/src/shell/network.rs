@@ -10,6 +10,7 @@ use std::time::SystemTime;
 
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
+use rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -36,6 +37,28 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// than a once-per-peer map. The history is session-local and intentionally
 /// contains no application payload.
 const PEER_DEPARTURE_HISTORY_CAPACITY: usize = 64;
+const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
+
+#[derive(Default)]
+struct PersonalFabricReplayWindow {
+    seen: std::collections::HashSet<[u8; 16]>,
+    order: VecDeque<[u8; 16]>,
+}
+
+impl PersonalFabricReplayWindow {
+    fn accept(&mut self, request_id: [u8; 16]) -> bool {
+        if !self.seen.insert(request_id) {
+            return false;
+        }
+        self.order.push_back(request_id);
+        if self.order.len() > PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY
+            && let Some(expired) = self.order.pop_front()
+        {
+            self.seen.remove(&expired);
+        }
+        true
+    }
+}
 
 /// A transport peer leaving one collaboration route.
 ///
@@ -309,6 +332,14 @@ fn now_unix_seconds() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 fn pending_invites_path(keypair_path: &Path) -> PathBuf {
     keypair_path.with_file_name("pending-invitations.json")
 }
@@ -545,6 +576,11 @@ pub struct ShellNetwork {
     /// continuation so transport upgrades cannot regress existing handoff.
     device_fabric: Mutex<crate::shell::device_fabric::DeviceFabric>,
     device_fabric_path: Option<PathBuf>,
+    /// Validated, ephemeral exact-target actions awaiting the shell runtime.
+    personal_fabric_actions:
+        Mutex<VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>>,
+    /// Bounded session-local replay filter for action request ids.
+    personal_fabric_action_replays: Mutex<PersonalFabricReplayWindow>,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -891,6 +927,8 @@ impl ShellNetwork {
             personal_continuity_path: Some(personal_continuity_path),
             device_fabric: Mutex::new(device_fabric),
             device_fabric_path: Some(device_fabric_path),
+            personal_fabric_actions: Mutex::new(VecDeque::new()),
+            personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
@@ -2327,6 +2365,78 @@ impl ShellNetwork {
         )
     }
 
+    /// Send one non-durable command to exactly one certified personal device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when personal identity is unavailable, the target is
+    /// malformed/local, or the action fails the bounded wire contract.
+    pub fn send_personal_fabric_action(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        action: crate::shell::device_fabric::PersonalFabricAction,
+    ) -> Result<[u8; 16], String> {
+        let user_public_key = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let source = self
+            .personal_continuity_device
+            .clone()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        if &source == target {
+            return Err("personal fabric actions require another device".into());
+        }
+        if !self.certified_secret_recipients().contains(target) {
+            return Err("target is not an enrolled personal device".into());
+        }
+        let target_bytes = hex::decode(target.as_str())
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+        let target_bytes: [u8; 32] = target_bytes
+            .try_into()
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+        let transport_target = iroh::EndpointId::from_bytes(&target_bytes)
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+
+        let mut request_id = [0; 16];
+        while request_id == [0; 16] {
+            rand_core::OsRng.fill_bytes(&mut request_id);
+        }
+        let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
+            request_id,
+            source,
+            target: target.clone(),
+            issued_unix_ms: now_unix_millis(),
+            action,
+        };
+        envelope
+            .validate_at(&envelope.source, target, envelope.issued_unix_ms)
+            .map_err(|error| error.to_string())?;
+        let bytes = postcard::to_allocvec(&envelope).map_err(|error| error.to_string())?;
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if !self.join_topic(ws) {
+            return Err("personal fabric transport is unavailable".into());
+        }
+        self.cmd_tx
+            .try_send(NetCmd::PublishPersonalFabricTarget {
+                ws,
+                user_public_key,
+                target: transport_target,
+                payload: PersonalFabricPayload::Action(bytes),
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(request_id)
+    }
+
+    /// Drain validated actions. They are never persisted or included in the
+    /// convergent snapshot, so a stale command cannot execute after restart.
+    pub fn take_personal_fabric_actions(
+        &self,
+    ) -> Vec<crate::shell::device_fabric::PersonalFabricActionEnvelope> {
+        self.personal_fabric_actions
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut actions| actions.drain(..).collect())
+    }
+
     /// Replace this machine's self-authored fabric snapshot and advertise it
     /// to currently connected, certified devices of the same person.
     ///
@@ -2714,7 +2824,62 @@ impl ShellNetwork {
                     }
                 }
             }
+            PersonalFabricPayload::Action(bytes) => {
+                self.dispatch_personal_fabric_action(peer, identity.device_pubkey, &bytes);
+            }
         }
+    }
+
+    fn dispatch_personal_fabric_action(
+        &self,
+        peer: iroh::EndpointId,
+        authenticated_device: [u8; 32],
+        bytes: &[u8],
+    ) {
+        if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_ACTION_BYTES {
+            tracing::warn!(peer = %peer, "dropping oversized personal fabric action");
+            return;
+        }
+        let Ok((envelope, trailing)) = postcard::take_from_bytes::<
+            crate::shell::device_fabric::PersonalFabricActionEnvelope,
+        >(bytes) else {
+            tracing::warn!(peer = %peer, "dropping invalid personal fabric action");
+            return;
+        };
+        if !trailing.is_empty() {
+            tracing::warn!(peer = %peer, "personal fabric action has trailing data");
+            return;
+        }
+        let Some(local) = self.personal_continuity_device.as_ref() else {
+            return;
+        };
+        let Ok(source) =
+            crate::shell::personal_continuity::DeviceId::new(hex::encode(authenticated_device))
+        else {
+            return;
+        };
+        if envelope
+            .validate_at(&source, local, now_unix_millis())
+            .is_err()
+        {
+            tracing::warn!(peer = %peer, "dropping untrusted personal fabric action");
+            return;
+        }
+        let Ok(mut replays) = self.personal_fabric_action_replays.lock() else {
+            return;
+        };
+        if !replays.accept(envelope.request_id) {
+            tracing::warn!(peer = %peer, "dropping replayed personal fabric action");
+            return;
+        }
+        drop(replays);
+        let Ok(mut actions) = self.personal_fabric_actions.lock() else {
+            return;
+        };
+        if actions.len() >= PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY {
+            actions.pop_front();
+        }
+        actions.push_back(envelope);
     }
 
     /// Capture departure evidence before identity and roster cleanup. Every
@@ -3765,6 +3930,8 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_path: None,
         device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
         device_fabric_path: None,
+        personal_fabric_actions: Mutex::new(VecDeque::new()),
+        personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
@@ -3979,6 +4146,100 @@ mod tests {
             PersonalFabricPayload::Snapshot(incoming.encode_checkpoint().unwrap()),
         );
         assert!(!net.device_fabric().snapshots().contains_key(&forged));
+    }
+
+    #[test]
+    fn personal_fabric_action_is_exact_target_and_ephemeral() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let target_key = iroh::SecretKey::generate();
+        let (net, mut commands) = personal_continuity_network_for_test(user);
+        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            target_key.public().as_bytes(),
+        ))
+        .unwrap();
+        net.registered_home_peer_ids
+            .lock()
+            .unwrap()
+            .insert(target_key.public());
+        let request_id = net
+            .send_personal_fabric_action(
+                &target,
+                crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+                    session_id: "player:one".into(),
+                    app_id: "dev.qos.music".into(),
+                    title: "Track".into(),
+                    locator: crate::shell::device_fabric::MediaSourceLocator::Workspace {
+                        path: "Music/track.flac".into(),
+                    },
+                    position_ms: 12,
+                    resume_playing: true,
+                    has_video: false,
+                },
+            )
+            .unwrap();
+        assert_ne!(request_id, [0; 16]);
+        let mut found = false;
+        while let Ok(command) = commands.try_recv() {
+            if matches!(
+                command,
+                NetCmd::PublishPersonalFabricTarget {
+                    target: selected,
+                    payload: PersonalFabricPayload::Action(_),
+                    ..
+                } if selected == target_key.public()
+            ) {
+                found = true;
+            }
+        }
+        assert!(found, "action must use the exact-target transport command");
+        assert!(net.take_personal_fabric_actions().is_empty());
+    }
+
+    #[test]
+    fn personal_fabric_action_replay_and_misaddress_are_rejected() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD2; 32]);
+        let user = root.verifying_key().to_bytes();
+        let peer_device = iroh::SecretKey::generate();
+        let (net, _commands) = personal_continuity_network_for_test(user);
+        authenticated_personal_peer(&net, &root, &peer_device);
+        let source = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            peer_device.public().as_bytes(),
+        ))
+        .unwrap();
+        let target = net.personal_continuity_device.clone().unwrap();
+        let envelope = crate::shell::device_fabric::PersonalFabricActionEnvelope {
+            request_id: [8; 16],
+            source,
+            target,
+            issued_unix_ms: now_unix_millis(),
+            action: crate::shell::device_fabric::PersonalFabricAction::MediaAccepted {
+                request_id: [7; 16],
+                session_id: "player:one".into(),
+            },
+        };
+        let payload = PersonalFabricPayload::Action(postcard::to_allocvec(&envelope).unwrap());
+        for _ in 0..2 {
+            net.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                peer_device.public(),
+                user,
+                payload.clone(),
+            );
+        }
+        assert_eq!(net.take_personal_fabric_actions(), vec![envelope.clone()]);
+
+        let mut misaddressed = envelope;
+        misaddressed.request_id = [9; 16];
+        misaddressed.target =
+            crate::shell::personal_continuity::DeviceId::new("another-device").unwrap();
+        net.dispatch_personal_fabric(
+            personal_continuity_topic_id(&user),
+            peer_device.public(),
+            user,
+            PersonalFabricPayload::Action(postcard::to_allocvec(&misaddressed).unwrap()),
+        );
+        assert!(net.take_personal_fabric_actions().is_empty());
     }
 
     #[test]
