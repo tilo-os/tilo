@@ -32,11 +32,27 @@ const HOST_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
 const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const SURFACE_STREAM_ALPN: &[u8] = b"qos-surface-stream/1";
+const PERSONAL_FABRIC_ALPN: &[u8] = b"qos-personal-fabric/1";
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SurfaceWireFrame {
     workspace: WorkspaceId,
     message: NeighbourMsg,
+}
+
+/// Versioned private-device traffic. A separate ALPN makes support
+/// negotiation implicit and leaves the legacy Postcard enum untouched.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PersonalFabricPayload {
+    Request,
+    Snapshot(Vec<u8>),
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PersonalFabricWireFrame {
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    payload: PersonalFabricPayload,
 }
 
 pub type WorkspaceId = u64;
@@ -151,6 +167,12 @@ pub enum NetCmd {
         ws: WorkspaceId,
         msg: NeighbourMsg,
     },
+    /// Exchange same-person fabric state over its separately negotiated ALPN.
+    PublishPersonalFabric {
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    },
     Connect {
         addr: EndpointAddr,
     },
@@ -196,6 +218,12 @@ pub enum NetEvent {
         peer: PeerId,
         msg: NeighbourMsg,
     },
+    PersonalFabric {
+        ws: WorkspaceId,
+        peer: PeerId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    },
 }
 
 /// Why the transport stopped treating a peer as live on a workspace topic.
@@ -236,6 +264,12 @@ enum InternalEvent {
         peer: EndpointId,
         fingerprint: [u8; 32],
         msg: NeighbourMsg,
+    },
+    PersonalFabric {
+        ws: WorkspaceId,
+        peer: EndpointId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
     },
     Closed {
         ws: WorkspaceId,
@@ -327,6 +361,64 @@ impl ProtocolHandler for SurfaceStreamProtocol {
     }
 }
 
+#[derive(Clone)]
+struct PersonalFabricProtocol {
+    internal_tx: mpsc::Sender<InternalEvent>,
+}
+
+impl std::fmt::Debug for PersonalFabricProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PersonalFabricProtocol")
+    }
+}
+
+impl ProtocolHandler for PersonalFabricProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        let peer = connection.remote_id();
+        let tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok(mut recv) = connection.accept_uni().await else {
+                    return;
+                };
+                let bytes = match recv
+                    .read_to_end(crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128)
+                    .await
+                {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        tracing::debug!(peer = %peer, %error, "personal fabric stream read failed");
+                        continue;
+                    }
+                };
+                let Ok((frame, remaining)) =
+                    postcard::take_from_bytes::<PersonalFabricWireFrame>(&bytes)
+                else {
+                    tracing::warn!(peer = %peer, "invalid personal fabric frame");
+                    continue;
+                };
+                if !remaining.is_empty() {
+                    tracing::warn!(peer = %peer, "personal fabric frame has trailing data");
+                    continue;
+                }
+                if tx
+                    .send(InternalEvent::PersonalFabric {
+                        ws: frame.workspace,
+                        peer,
+                        user_public_key: frame.user_public_key,
+                        payload: frame.payload,
+                    })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        Ok(())
+    }
+}
+
 pub struct Actor;
 
 impl Actor {
@@ -375,11 +467,16 @@ struct ActorState {
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
+    personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
 }
 
 impl ActorState {
     /// Handle one [`NetCmd`]. Returns `false` once the command channel has
     /// closed, so [`run`]'s loop should stop.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the actor command match is the single auditable transport mutation boundary"
+    )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
         match command {
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
@@ -435,6 +532,14 @@ impl ActorState {
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true).await;
+            }
+            Some(NetCmd::PublishPersonalFabric {
+                ws,
+                user_public_key,
+                payload,
+            }) => {
+                self.publish_personal_fabric(ws, user_public_key, payload)
+                    .await;
             }
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
@@ -588,6 +693,67 @@ impl ActorState {
             }
         }
         workspace_peer_count > 0 && sent == workspace_peer_count
+    }
+
+    async fn publish_personal_fabric(
+        &mut self,
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        payload: PersonalFabricPayload,
+    ) {
+        let wire = PersonalFabricWireFrame {
+            workspace: ws,
+            user_public_key,
+            payload,
+        };
+        let Ok(bytes) = postcard::to_allocvec(&wire) else {
+            return;
+        };
+        if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+            tracing::warn!(
+                ws,
+                bytes = bytes.len(),
+                "personal fabric frame exceeds wire limit"
+            );
+            return;
+        }
+        let targets: Vec<_> = self
+            .peers
+            .values()
+            .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
+            .cloned()
+            .collect();
+        for addr in targets {
+            let peer = addr.id;
+            let connection = if let Some(connection) = self.personal_fabric_connections.get(&peer) {
+                connection.clone()
+            } else {
+                let Ok(Ok(connection)) = tokio::time::timeout(
+                    Duration::from_millis(300),
+                    self.endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
+                )
+                .await
+                else {
+                    // An older qOS peer simply does not negotiate this ALPN.
+                    continue;
+                };
+                self.personal_fabric_connections
+                    .insert(peer, connection.clone());
+                connection
+            };
+            let send = async {
+                let mut stream = connection.open_uni().await.map_err(|_| ())?;
+                stream.write_all(&bytes).await.map_err(|_| ())?;
+                stream.finish().map_err(|_| ())?;
+                Ok::<(), ()>(())
+            };
+            if !matches!(
+                tokio::time::timeout(Duration::from_millis(100), send).await,
+                Ok(Ok(()))
+            ) {
+                self.personal_fabric_connections.remove(&peer);
+            }
+        }
     }
 
     /// Send consented input to one exact authenticated device. Gossip has no
@@ -751,6 +917,30 @@ impl ActorState {
                     && let Some(tx) = self.subscribers.get(&ws)
                 {
                     let _ = tx.send(NetEvent::Msg { ws, peer, msg }).await;
+                }
+            }
+            Some(InternalEvent::PersonalFabric {
+                ws,
+                peer,
+                user_public_key,
+                payload,
+            }) => {
+                // Topic membership establishes reachability only. ShellNetwork
+                // still binds the frame to the peer's certified person/device.
+                if !self.peers_seen.contains_key(&(ws, peer)) {
+                    tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
+                    return true;
+                }
+                self.peers_seen.insert((ws, peer), Instant::now());
+                if let Some(tx) = self.subscribers.get(&ws) {
+                    let _ = tx
+                        .send(NetEvent::PersonalFabric {
+                            ws,
+                            peer,
+                            user_public_key,
+                            payload,
+                        })
+                        .await;
                 }
             }
             None => return false,
@@ -1005,6 +1195,12 @@ async fn run(
                 internal_tx: internal_tx.clone(),
             },
         )
+        .accept(
+            PERSONAL_FABRIC_ALPN,
+            PersonalFabricProtocol {
+                internal_tx: internal_tx.clone(),
+            },
+        )
         .spawn();
     let mut state = ActorState {
         endpoint,
@@ -1024,6 +1220,7 @@ async fn run(
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         surface_connections: HashMap::new(),
+        personal_fabric_connections: HashMap::new(),
     };
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     let mut eviction = tokio::time::interval(EVICTION_INTERVAL);
@@ -1790,6 +1987,65 @@ mod tests {
                 > dedicated_before,
             "surface frame should arrive through the dedicated QUIC ALPN"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn personal_fabric_uses_its_negotiated_alpn() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let b_addr = b.addr();
+        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: 43,
+                on_event: event_a,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: 43,
+                on_event: event_b,
+            })
+            .await
+            .unwrap();
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        while !matches!(
+            timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            NetEvent::PeerJoined { .. }
+        ) {}
+
+        cmd_a
+            .send(NetCmd::PublishPersonalFabric {
+                ws: 43,
+                user_public_key: [0xA5; 32],
+                payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
+            })
+            .await
+            .unwrap();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                event,
+                NetEvent::PersonalFabric {
+                    ws: 43,
+                    user_public_key,
+                    payload: PersonalFabricPayload::Snapshot(bytes),
+                    ..
+                } if user_public_key == [0xA5; 32] && bytes == vec![1, 2, 3]
+            ) {
+                break;
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
