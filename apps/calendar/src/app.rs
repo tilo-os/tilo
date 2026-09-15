@@ -1737,9 +1737,11 @@ impl CalendarApp {
         }
     }
 
-    /// Convert parsed ICS records into one deterministic action. Ids are
-    /// minted here, at explicit import authoring time; replays carry the exact
-    /// ids and never consult the filesystem or clock.
+    /// Convert parsed ICS records into one deterministic action. qOS's UUID
+    /// UIDs survive parsing, so a repeated import resolves to the same task;
+    /// missing or external non-UUID identities are minted during parsing.
+    /// Replays carry this exact payload and never consult the filesystem or
+    /// clock.
     fn import_action_from_payload(&self, payload: &str) -> Option<crate::actions::CalendarAction> {
         let (events, tasks) = ics::parse(payload);
         let events: Vec<_> = events
@@ -1759,16 +1761,15 @@ impl CalendarApp {
         let tasks: Vec<_> = tasks
             .into_iter()
             .filter(|task| {
-                !self
-                    .model
-                    .tasks
-                    .iter()
-                    .any(|current| current.title == task.title)
+                !self.model.tasks.iter().any(|current| {
+                    current.id == task.id
+                        && current.title == task.title
+                        && current.done == task.done
+                        && current.due == task.due
+                        && current.priority == task.priority
+                })
             })
-            .map(|mut task| {
-                task.id = Uuid::new_v4();
-                crate::actions::TaskData::from_task(&task)
-            })
+            .map(|task| crate::actions::TaskData::from_task(&task))
             .collect();
         (!events.is_empty() || !tasks.is_empty())
             .then_some(crate::actions::CalendarAction::ImportIcs { events, tasks })
@@ -2722,8 +2723,9 @@ impl CalendarApp {
         match std::fs::write(&path, ics) {
             Ok(()) => {
                 self.status = Some(format!(
-                    "Exported {} events to {}",
+                    "Exported {} events · {} tasks to {}",
                     self.model.events.len(),
+                    self.model.tasks.len(),
                     path.display()
                 ));
             }
@@ -7809,6 +7811,37 @@ mod tests {
     }
 
     #[test]
+    fn uuid_vtodo_import_preserves_identity_and_is_idempotent() {
+        let id = Uuid::new_v4();
+        let payload = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:{id}@qos\r\nSUMMARY:Durable imported task\r\nDUE;VALUE=DATE:20260916\r\nPRIORITY:1\r\nEND:VTODO\r\nEND:VCALENDAR\r\n"
+        );
+        let mut app = CalendarApp::new_empty_for_shots();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let first = app
+            .import_action_from_payload(&payload)
+            .expect("the task is new on the first import");
+        let crate::actions::CalendarAction::ImportIcs { tasks, .. } = &first else {
+            panic!("ICS import builds one import action");
+        };
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, id.to_string(), "the VTODO UID is retained");
+
+        app.perform_action(&mut doc, &first);
+        app.model = CalDoc::read_model(&doc);
+        assert!(
+            app.model.task(id).is_some(),
+            "the exact UID became the task id"
+        );
+        assert!(
+            app.import_action_from_payload(&payload).is_none(),
+            "re-importing the same VTODO does not create a duplicate action"
+        );
+    }
+
+    #[test]
     #[serial]
     fn resource_import_is_stable_until_invoked_then_commits_one_batch() {
         let dir =
@@ -9967,6 +10000,13 @@ mod tests {
         assert!(
             app.status.as_deref().unwrap_or("").contains("Exported"),
             "the status pill confirms the export"
+        );
+        assert!(
+            app.status
+                .as_deref()
+                .unwrap_or("")
+                .contains(&format!("{} tasks", app.model.tasks.len())),
+            "the confirmation truthfully includes the exported VTODO count"
         );
 
         unsafe { std::env::remove_var("QOS_CALENDAR_IMPORT_DIR") };
