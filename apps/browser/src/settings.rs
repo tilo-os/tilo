@@ -31,7 +31,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Toggle, Widget,
+    Button, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
+    Toggle, Widget,
 };
 
 /// Resource bindings injected by Browser when this pane is hosted. They keep
@@ -402,9 +403,8 @@ impl Default for SettingsPane {
 
 // === composition helpers (qOS settings grammar) ======================
 // Bundle the recurring shapes — titled card, label/control row, labelled
-// field — so the pane reads consistently. Explicit spacer rows give the
-// per-gap control an intrinsic-height column doesn't (its taffy gap is
-// ignored in block layout), matching the system settings app.
+// field — so the pane reads consistently. Repeated vertical rhythm comes from
+// the shared `Section`, matching the system Settings app.
 
 /// Gap between stacked cards.
 const CARD_GAP: f32 = 16.0;
@@ -441,15 +441,7 @@ fn card(title: &str, body: El) -> El {
 
 /// A vertical stack of rows with explicit inter-row spacing.
 fn rows(items: Vec<El>) -> El {
-    let mut col = Column::new().with_no_padding().with_intrinsic_height();
-    let last = items.len().saturating_sub(1);
-    for (i, item) in items.into_iter().enumerate() {
-        col = col.push(item);
-        if i != last {
-            col = col.push(vgap(ROW_GAP));
-        }
-    }
-    Box::new(col)
+    Box::new(Section::with_gap(items, ROW_GAP))
 }
 
 /// A label with a dim helper line beneath it, paired with a trailing

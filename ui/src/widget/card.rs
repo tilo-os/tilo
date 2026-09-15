@@ -21,7 +21,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::{Column, Container, Element, Row, Spacer, Text, Widget};
+use crate::widget::{Container, Element, Row, Section, Spacer, Text, Widget};
 
 /// Lossless `usize -> f64` widening for grid geometry. Column/row counts
 /// are bounded far below `u32::MAX`, so routing through `u32` (which `f64`
@@ -115,29 +115,23 @@ fn surface(title: Option<String>, action: Option<Element>, body: Element) -> Ele
         if let Some(action) = action {
             title_row = title_row.push(Box::new(Spacer::new())).push(action);
         }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(title_row))
-                .push(vgap(CARD_TITLE_GAP))
-                .push(body),
-        )
+        Box::new(Section::with_gap(
+            vec![Box::new(title_row), body],
+            CARD_TITLE_GAP,
+        ))
     } else {
         body
     };
     Box::new(Container::new().with_background().with_child(inner))
 }
 
-/// An intrinsic-height `Column` lays out as a block stack that ignores the
-/// taffy `gap`, so explicit spacers are how per-gap spacing is expressed there.
-fn vgap(px: f32) -> Element {
-    Box::new(Container::new().with_no_padding().with_height(px))
-}
-
 impl Widget for Card {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.inner.sync(state, path);
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.inner.update(state, path)
     }
 
     fn build_layout(
@@ -413,6 +407,14 @@ impl Widget for CardGrid {
         for card in &mut self.cards {
             card.sync(state, path);
         }
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let mut changed = false;
+        for card in &mut self.cards {
+            changed |= card.update(state, path);
+        }
+        changed
     }
 
     fn build_layout(

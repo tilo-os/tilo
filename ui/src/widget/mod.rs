@@ -1793,6 +1793,8 @@ pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
 pub mod card;
 pub use card::{Card, CardGrid, card_column_width, card_columns};
+mod section;
+pub use section::{DEFAULT_SECTION_GAP, Section};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,

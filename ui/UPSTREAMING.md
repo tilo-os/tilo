@@ -184,13 +184,15 @@ imports them**. monitor, firewall, containers, disks, vpn each hand-draw
 caption/value tiles. Migrate them onto `StatTile` (or a `CardGrid` of
 `StatTile`s for the reflow case).
 
-### 6. CardColumn / Section (vertical card stack with correct gaps)  — MEDIUM
+### 6. Section (vertical card/row stack with correct gaps)  ✅ BUILT
 An intrinsic-height `Column` lays out as a CSS **block** stack, which **ignores
-the taffy `gap`** — so every card-stacking app injects manual fixed-height
-spacer boxes (settings `vgap`/`cards`/`rows`, etc.) to get uniform spacing. A
-`CardColumn` / `Section` primitive that stacks cards with a correct, uniform gap
-(via the same internal-spacer technique, once) removes those hacks fleet-wide
-and guarantees one consistent vertical rhythm. Complements item 1.
+the taffy `gap`**. `ui::widget::Section` now owns the necessary internal-spacer
+technique once, without leading/trailing spacer nodes, and preserves ordinary
+widget traversal, focus, accessibility, actions, updates, and document sync.
+`Card` title/body composition plus Settings' card and row stacks and Browser's
+settings rows use it; one-off asymmetric heading gaps remain explicit by
+design. This removes the recurring private spacer loop and gives future apps a
+single reliable vertical-rhythm primitive.
 
 ### 7. Shared caret/selection core adoption (HIG §3)  — MEDIUM, per-app risk
 `text_input`, `block_editor`, `rich_text_line`, `editable_label`, and
