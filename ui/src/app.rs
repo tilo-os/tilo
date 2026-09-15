@@ -17621,3 +17621,7 @@ mod card_composition_tests;
 #[cfg(test)]
 #[path = "app/form_composition_tests.rs"]
 mod form_composition_tests;
+
+#[cfg(test)]
+#[path = "app/manual_composition_tests.rs"]
+mod manual_composition_tests;

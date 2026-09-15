@@ -324,3 +324,7 @@ path = "examples/card_composition_shots.rs"
 [[example]]
 name = "form-composition-shots"
 path = "examples/form_composition_shots.rs"
+
+[[example]]
+name = "manual-composition-shots"
+path = "examples/manual_composition_shots.rs"

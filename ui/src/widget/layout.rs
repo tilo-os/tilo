@@ -16,6 +16,16 @@ pub enum WidgetLayoutError {
     DidNotSettle,
     #[error("widget composition did not settle after eight layout passes")]
     CompositionDidNotSettle,
+    #[error("manual layout nesting exceeds 32 levels")]
+    ManualNestingLimit,
+    #[error("manual geometry must be finite with nonnegative dimensions")]
+    InvalidManualGeometry,
+    #[error("manual child index {0} is out of bounds")]
+    ManualChildIndex(usize),
+    #[error("manual policy must place every child")]
+    UnplacedManualChild,
+    #[error("manual child {0} was placed more than once")]
+    DuplicateManualPlacement(usize),
 }
 
 /// Measure the host tree and settle allocation-dependent styles before calling
@@ -47,6 +57,42 @@ pub unsafe fn compute_widget_layout(
     bindings: &BoundNodeMap,
     text: &mut TextRenderer,
 ) -> Result<(), WidgetLayoutError> {
+    // SAFETY: forwards the caller's exact live-tree ownership contract.
+    unsafe { compute_widget_layout_depth(taffy, root, available, nodes, bindings, text, 0) }
+}
+
+pub(super) unsafe fn compute_widget_layout_depth(
+    taffy: &mut TaffyTree<()>,
+    root: NodeId,
+    available: Size<AvailableSpace>,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    bindings: &BoundNodeMap,
+    text: &mut TextRenderer,
+    depth: usize,
+) -> Result<(), WidgetLayoutError> {
+    if depth > 32 {
+        return Err(WidgetLayoutError::ManualNestingLimit);
+    }
+    let mut policies = Vec::new();
+    // Traversal order is stable; extraction ends all widget references before
+    // invoking an owned policy or measuring descendants.
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        let policy = unsafe {
+            crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                widget.manual_layout_policy()
+            })
+        }
+        .ok()
+        .flatten();
+        if let Some(policy) = policy {
+            policies.push((node, policy));
+        }
+        pending.extend(taffy.children(node)?.into_iter().rev());
+    }
+    if !policies.is_empty() {
+        taffy.disable_rounding();
+    }
     for _ in 0..8 {
         taffy.compute_layout_with_measure(root, available, |known, available, node, _, _| {
             // SAFETY: caller owns the stable matching tree, each callback is
@@ -59,6 +105,21 @@ pub unsafe fn compute_widget_layout(
             .unwrap_or(Size::ZERO)
         })?;
         let mut changed = false;
+        for (node, policy) in &policies {
+            // Descriptor extraction proved admission (including unbound).
+            // Re-enter the same owner's existing lease for the WHOLE policy.
+            let binding = bindings.binding_for(*node);
+            let Ok(_owner) = binding
+                .as_ref()
+                .map(crate::bound_dispatch::CallbackBinding::enter)
+                .transpose()
+            else {
+                continue;
+            };
+            changed |= unsafe {
+                super::manual::run_policy(policy, taffy, *node, nodes, bindings, text, depth)?
+            };
+        }
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
             // permitted by adjust_layout_with_measure.
@@ -317,6 +378,75 @@ mod tests {
     }
 
     #[test]
+    fn manual_fractional_allocation_contract() {
+        use crate::widget::{Button, Manual};
+        let mut widget = Manual::new(|ctx| {
+            ctx.place(0, Rect::new(10.25, 20.75, 130.75, 61.0))?;
+            Ok(Size {
+                width: ctx.available().width,
+                height: 100.0,
+            })
+        })
+        .child(Box::new(Button::new("action", "Action", None)));
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        let mut bindings = BoundNodeMap::new();
+        unsafe {
+            bindings.rebuild(&widget, &tree, root, &nodes);
+        }
+        let mut text = crate::font_catalog::fixture_renderer();
+        unsafe {
+            compute_widget_layout(
+                &mut tree,
+                root,
+                Size {
+                    width: AvailableSpace::Definite(400.0),
+                    height: AvailableSpace::Definite(300.0),
+                },
+                &nodes,
+                &bindings,
+                &mut text,
+            )
+            .unwrap();
+        }
+        widget.apply_layout(&tree, root, Point::ZERO);
+        assert_eq!(
+            widget.children()[0].get_rect(),
+            Rect::new(10.25, 20.75, 130.75, 61.0)
+        );
+    }
+
+    #[test]
+    fn ordinary_hosts_keep_default_pixel_rounding() {
+        use crate::widget::Button;
+        let mut widget = Button::new("ordinary", "Ordinary", None).with_size(100.25, 40.25);
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        let mut bindings = BoundNodeMap::new();
+        unsafe {
+            bindings.rebuild(&widget, &tree, root, &nodes);
+        }
+        unsafe {
+            compute_widget_layout(
+                &mut tree,
+                root,
+                Size {
+                    width: AvailableSpace::Definite(300.0),
+                    height: AvailableSpace::Definite(200.0),
+                },
+                &nodes,
+                &bindings,
+                &mut crate::font_catalog::fixture_renderer(),
+            )
+            .unwrap();
+        }
+        widget.apply_layout(&tree, root, Point::ZERO);
+        assert_eq!(widget.get_rect(), Rect::new(0.0, 0.0, 100.0, 40.0));
+    }
+
+    #[test]
     fn style_solver_bounds_adjustment_cycles_and_rejects_unadmitted_callbacks() {
         let mut widget = UnsettledStyles::default();
         let mut tree = TaffyTree::new();
@@ -456,5 +586,36 @@ mod tests {
         }
         assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
         assert!(rebuilt.children().iter().all(|child| !child.is_focused()));
+    }
+}
+
+/// Preserve legacy overflow extents except on axes with an exact absolute
+/// allocation. Culling continues to use the separate content bounds.
+pub(super) fn allocation_or_content_size(
+    tree: &TaffyTree<()>,
+    node: NodeId,
+    layout: &taffy::Layout,
+) -> Size<f32> {
+    let exact = tree
+        .style(node)
+        .ok()
+        .filter(|style| style.position == taffy::Position::Absolute);
+    Size {
+        width: if exact.is_some_and(|style| {
+            style.min_size.width.into_option().is_some()
+                && style.min_size.width == style.max_size.width
+        }) {
+            layout.size.width
+        } else {
+            layout.size.width.max(layout.content_size.width)
+        },
+        height: if exact.is_some_and(|style| {
+            style.min_size.height.into_option().is_some()
+                && style.min_size.height == style.max_size.height
+        }) {
+            layout.size.height
+        } else {
+            layout.size.height.max(layout.content_size.height)
+        },
     }
 }

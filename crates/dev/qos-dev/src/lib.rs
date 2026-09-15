@@ -7161,10 +7161,11 @@ fn cargo_toml(spec: &AppSpec) -> String {
     } else {
         let repo = spec.ui_path.parent().unwrap_or_else(|| Path::new(".."));
         format!(
-            "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\n",
+            "\n[patch.crates-io]\nwinit = {{ path = {:?} }}\nvello_encoding = {{ path = {:?} }}\nvello = {{ path = {:?} }}\nvello_shaders = {{ path = {:?} }}\n",
             repo.join("vendor/winit").to_string_lossy(),
             repo.join("vendor/vello_encoding").to_string_lossy(),
             repo.join("vendor/vello").to_string_lossy(),
+            repo.join("vendor/vello_shaders").to_string_lossy(),
         )
     };
     let extras = format!("{lints}{patches}");
@@ -7205,6 +7206,7 @@ fn app_lib(spec: &AppSpec) -> String {
 fn source_catalog() -> String {
     String::from(
         "starter-title = Your first qOS app\n\
+starter-profile-title = Profile\n\
 starter-name-label = Your name\n\
 starter-name-placeholder = Type your name\n\
 starter-updates-label = Receive updates\n\
@@ -7292,6 +7294,14 @@ fn app_responds_to_semantic_input() {{
         {crate_name}::app_root(),
         (800, 500),
     );
+
+    let inspection = app.inspection();
+    fn contains_widget(node: &ui::headless::InspectionNode, name: &str) -> bool {{
+        node.widget == name || node.children.iter().any(|child| contains_widget(child, name))
+    }}
+    assert!(contains_widget(&inspection.root, "FormPage"));
+    assert!(contains_widget(&inspection.root, "Form"));
+    app.resize((340, 700)).expect("automatic starter resizes");
 
     app.perform_named("name-input", &Action::SetValue("Ada".into()))
         .expect("the generated input remains addressable");
@@ -10320,6 +10330,12 @@ mod tests {
         let outcome = create_app(request(destination.clone())).expect("create app");
         assert_eq!(outcome.app_id, "dev.qos.reading.list");
         assert!(destination.join("Cargo.toml").is_file());
+        let cargo = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
+        let cargo: toml::Value = toml::from_str(&cargo).unwrap();
+        let shader_path = cargo["patch"]["crates-io"]["vello_shaders"]["path"]
+            .as_str()
+            .unwrap();
+        assert!(destination.join(shader_path).join("Cargo.toml").is_file());
         assert!(destination.join("src/main.rs").is_file());
         assert!(destination.join("tests/app.rs").is_file());
         assert!(destination.join("tests/headless-actions.json").is_file());
@@ -10331,8 +10347,8 @@ mod tests {
         let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
         assert!(library.contains("LocalState::new"));
         assert!(library.contains("Text::from_state"));
-        assert!(library.contains("ui::column!["));
-        assert!(library.contains("labeled_field(\"starter-name-label\", input)"));
+        assert!(library.contains("FormPage::new("));
+        assert!(library.contains("Field::new(\"starter-name-label\", input)"));
         assert!(!library.contains("with_accessible_name(\"starter-name-label\")"));
         assert!(!library.contains("Column::new()"));
         assert!(library.contains("with_id(\"name-input\")"));
@@ -10341,7 +10357,7 @@ mod tests {
         assert!(library.contains("NumberInput::from_state(&refresh_minutes)"));
         assert!(library.contains("Slider::from_state(&volume)"));
         assert!(library.contains("Dropdown::from_state("));
-        assert!(library.contains("labeled_check(\"starter-updates-label\", updates_widget)"));
+        assert!(library.contains("labeled_check("));
         assert!(!library.contains("on_change(name.text_sink())"));
         assert!(!library.contains("with_initial_value(&name.get())"));
         assert!(library.contains("pub mod locales;"));

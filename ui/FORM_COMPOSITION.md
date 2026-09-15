@@ -75,4 +75,4 @@ The equivalent primitive fixture has the same content, controls, order, themed p
 
 `account`/`automatic` supply none of those 16 composition settings: **zero caller layout pixel values and zero viewport branches**. The guided source adds **two selected decisions**, compact density and labels above. Both paths use shared Actions, so its internal button sizing/alignment is not counted as a primitive-only decision.
 
-This is a reproducible source-decision inventory, not measured developer time, human visual acceptance, or a productivity ratio. Existing applications, including Store, are unchanged; adopting these forms is an explicit application change. General manual placement, mixed-mode fixtures, inspector UI and scaffolding remain separate work.
+This is a reproducible source-decision inventory, not measured developer time, human visual acceptance, or a productivity ratio. Existing applications, including Store, are unchanged; adopting these forms is an explicit application change. For shared child measurement, exact placement, mixed fixtures, existing inspector metadata, and the automatic starter scaffold, see [Manual layout](MANUAL_LAYOUT.md).
