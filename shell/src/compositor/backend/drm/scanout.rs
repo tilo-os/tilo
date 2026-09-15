@@ -304,11 +304,16 @@ impl CardHandle {
             if info.state() != connector::State::Connected {
                 continue;
             }
-            let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
-            let lower_name = connector_name.to_ascii_lowercase();
-            if lower_name.contains("writeback") || lower_name.contains("virtual") {
+            // Writeback connectors are capture sinks rather than physical or
+            // virtual displays.  Do not infer that from the human-readable
+            // connector name: QEMU/virtio/Bochs expose perfectly usable KMS
+            // displays as `Virtual-N`, and rejecting that label makes qOS
+            // immediately exit in a VM even while the connector is connected
+            // and advertises modes.
+            if info.interface() == connector::Interface::Writeback {
                 continue;
             }
+            let connector_name = format!("{}-{}", info.interface().as_str(), info.interface_id());
             let Some(mode) = pick_configured_mode(info.modes(), None) else {
                 continue;
             };
