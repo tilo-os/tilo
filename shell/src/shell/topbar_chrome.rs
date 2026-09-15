@@ -2826,6 +2826,303 @@ impl TopBarChrome {
             _ => {}
         }
     }
+
+    fn draw_clock_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        activity: &crate::shell::chrome_state::ClockActivity,
+    ) {
+        let (width, height) = (clock_overlay_width(self.rect.x1), CLOCK_OVERLAY_HEIGHT);
+        let fallback = Point::new((self.rect.x1 - width - 16.0).max(8.0), self.rect.y1 + 16.0);
+        let clamped = clamp_clock_overlay(
+            self.clock_overlay_pos.unwrap_or(fallback),
+            (width, height),
+            self.clock_viewport(),
+            self.rect.y1,
+        );
+        let panel = Rect::from_origin_size(clamped, (width, height));
+        self.clock_overlay_pos = Some(clamped);
+        self.clock_overlay_rect = panel;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &RoundedRect::from_rect(panel, 18.0),
+        );
+        let grip = Line::new(
+            Point::new(panel.center().x - 14.0, panel.y0 + 9.0),
+            Point::new(panel.center().x + 14.0, panel.y0 + 9.0),
+        );
+        scene.stroke(
+            &Stroke::new(3.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &grip,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &activity.label,
+            theme.tokens.typography.scale.sm,
+            theme.tokens.colors.text_dim,
+            at(transform, (panel.x0 + 18.0, panel.y0 + 21.0)),
+            None,
+            TextWeight::Medium,
+        );
+        let elapsed = format!(
+            "{:02}:{:02}",
+            activity.remaining_secs / 60,
+            activity.remaining_secs % 60
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            &elapsed,
+            theme.tokens.typography.scale.lg,
+            theme.tokens.colors.text_primary,
+            at(transform, (panel.x0 + 18.0, panel.y0 + 43.0)),
+            None,
+            TextWeight::Bold,
+        );
+        [
+            self.clock_pause_rect,
+            self.clock_add_rect,
+            self.clock_close_rect,
+        ] = clock_overlay_controls(panel);
+        ui::widget::Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::widget::ButtonFace::new(
+                self.clock_pause_rect,
+                if activity.paused { "Resume" } else { "Pause" },
+            )
+            .primary()
+            .icon(if activity.paused {
+                ui::icons::Icon::Play
+            } else {
+                ui::icons::Icon::Pause
+            })
+            .focused(self.clock_control_focus == Some(0)),
+        );
+        ui::widget::Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::widget::ButtonFace::new(
+                self.clock_add_rect,
+                if activity.stopwatch { "Lap" } else { "+1 min" },
+            )
+            .focused(self.clock_control_focus == Some(1)),
+        );
+        ui::widget::Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::widget::ButtonFace::new(self.clock_close_rect, "")
+                .ghost()
+                .icon(ui::icons::Icon::X)
+                .accessible_name(if activity.stopwatch {
+                    "Close floating stopwatch"
+                } else {
+                    "Close floating timer"
+                })
+                .focused(self.clock_control_focus == Some(2)),
+        );
+    }
+
+    fn handle_clock_keyboard(
+        &mut self,
+        logical_key: &winit::keyboard::Key,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        use winit::keyboard::{Key, NamedKey};
+        match logical_key {
+            Key::Named(NamedKey::Escape) => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().overlays.clock = false;
+                }
+                self.publish_clock_activity_command("close", "close-stopwatch");
+            }
+            Key::Named(NamedKey::Tab) => {
+                self.clock_control_focus = Some(if modifiers.state().shift_key() {
+                    match self.clock_control_focus {
+                        None | Some(0 | 3..) => 2,
+                        Some(1) => 0,
+                        Some(2) => 1,
+                    }
+                } else {
+                    match self.clock_control_focus {
+                        None | Some(2..) => 0,
+                        Some(0) => 1,
+                        Some(1) => 2,
+                    }
+                });
+                self.cache_fp = CacheFingerprint::default();
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                let Some(control) = self.clock_control_focus else {
+                    return false;
+                };
+                self.activate_clock_control(control);
+            }
+            Key::Named(
+                key @ (NamedKey::ArrowLeft
+                | NamedKey::ArrowRight
+                | NamedKey::ArrowUp
+                | NamedKey::ArrowDown),
+            ) if modifiers.state().alt_key() => {
+                let step = if modifiers.state().shift_key() {
+                    32.0
+                } else {
+                    8.0
+                };
+                let mut position = self.clock_overlay_pos.unwrap_or_else(|| {
+                    Point::new(
+                        (self.rect.x1 - clock_overlay_width(self.rect.x1) - 16.0).max(8.0),
+                        self.rect.y1 + 16.0,
+                    )
+                });
+                match key {
+                    NamedKey::ArrowLeft => position.x -= step,
+                    NamedKey::ArrowRight => position.x += step,
+                    NamedKey::ArrowUp => position.y -= step,
+                    NamedKey::ArrowDown => position.y += step,
+                    _ => {}
+                }
+                self.clock_overlay_pos = Some(clamp_clock_overlay(
+                    position,
+                    (clock_overlay_width(self.rect.x1), CLOCK_OVERLAY_HEIGHT),
+                    self.clock_viewport(),
+                    self.rect.y1,
+                ));
+                self.cache_fp = CacheFingerprint::default();
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn handle_clock_touch(&mut self, touch: &winit::event::Touch, scale_factor: f64) -> bool {
+        let point = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            winit::event::TouchPhase::Started => {
+                if self.clock_touch_id.is_none()
+                    && self.clock_touch_control.is_none()
+                    && let Some(control) = self.clock_control_at(point)
+                {
+                    self.clock_touch_control = Some((touch.id, control));
+                    self.clock_control_focus = Some(control);
+                    self.cache_fp = CacheFingerprint::default();
+                    return true;
+                }
+                if self.clock_touch_id.is_none()
+                    && self.clock_touch_control.is_none()
+                    && self.begin_clock_drag_at(point)
+                {
+                    self.clock_touch_id = Some(touch.id);
+                    return true;
+                }
+            }
+            winit::event::TouchPhase::Moved
+                if self
+                    .clock_touch_control
+                    .is_some_and(|(id, _)| id == touch.id) =>
+            {
+                // Keep ownership so lifting elsewhere cancels the press;
+                // never turn a control gesture into an accidental drag.
+                return true;
+            }
+            winit::event::TouchPhase::Moved if self.clock_touch_id == Some(touch.id) => {
+                return self.move_clock_drag_to(point);
+            }
+            winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                if self
+                    .clock_touch_control
+                    .is_some_and(|(id, _)| id == touch.id) =>
+            {
+                let pending = self.clock_touch_control.take();
+                if let Some(control) = released_clock_touch_control(
+                    pending,
+                    touch.id,
+                    touch.phase == winit::event::TouchPhase::Ended,
+                    self.clock_control_at(point),
+                ) {
+                    self.activate_clock_control(control);
+                }
+                return true;
+            }
+            winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+                if self.clock_touch_id == Some(touch.id) =>
+            {
+                self.clock_touch_id = None;
+                self.clock_drag_offset = None;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn clock_accessibility_node(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        if !state.overlays.clock {
+            return None;
+        }
+        let stopwatch = state
+            .clock_activity
+            .as_ref()
+            .is_some_and(|activity| activity.stopwatch);
+        let paused = state
+            .clock_activity
+            .as_ref()
+            .is_some_and(|activity| activity.paused);
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(if stopwatch {
+                    "Floating stopwatch"
+                } else {
+                    "Floating timer"
+                })
+                .with_bounds(self.clock_overlay_rect)
+                .with_children(vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(if paused { "Resume" } else { "Pause" })
+                        .with_action_target("clock.overlay.toggle")
+                        .with_bounds(self.clock_pause_rect)
+                        .with_state(AccessState::new().focusable(true)),
+                    AccessNode::new(Role::Button)
+                        .with_name(if stopwatch {
+                            "Record lap"
+                        } else {
+                            "Add one minute"
+                        })
+                        .with_action_target("clock.overlay.add-minute")
+                        .with_bounds(self.clock_add_rect)
+                        .with_state(AccessState::new().focusable(true)),
+                    AccessNode::new(Role::Button)
+                        .with_name(if stopwatch {
+                            "Close floating stopwatch"
+                        } else {
+                            "Close floating timer"
+                        })
+                        .with_action_target("clock.overlay.close")
+                        .with_bounds(self.clock_close_rect)
+                        .with_state(AccessState::new().focusable(true)),
+                ]),
+        )
+    }
 }
 
 impl Widget for TopBarChrome {
@@ -2990,108 +3287,12 @@ impl Widget for TopBarChrome {
         );
         self.draw_activity_badge(scene, transform, theme, text_renderer);
         self.draw_focus_indicator(scene, transform, theme);
-        if let Some(chrome) = self.chrome.as_ref()
-            && chrome.borrow().overlays.clock
-            && let Some(activity) = chrome.borrow().clock_activity.clone()
-        {
-            let (width, height) = (clock_overlay_width(self.rect.x1), CLOCK_OVERLAY_HEIGHT);
-            let fallback = Point::new((self.rect.x1 - width - 16.0).max(8.0), self.rect.y1 + 16.0);
-            let pos = self.clock_overlay_pos.unwrap_or(fallback);
-            let clamped =
-                clamp_clock_overlay(pos, (width, height), self.clock_viewport(), self.rect.y1);
-            let (x, y) = (clamped.x, clamped.y);
-            let panel = Rect::new(x, y, x + width, y + height);
-            self.clock_overlay_pos = Some(Point::new(x, y));
-            self.clock_overlay_rect = panel;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(panel, 18.0),
-            );
-            let grip = Line::new(
-                Point::new(panel.center().x - 14.0, panel.y0 + 9.0),
-                Point::new(panel.center().x + 14.0, panel.y0 + 9.0),
-            );
-            scene.stroke(
-                &Stroke::new(3.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &grip,
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &activity.label,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_dim,
-                at(transform, (panel.x0 + 18.0, panel.y0 + 21.0)),
-                None,
-                TextWeight::Medium,
-            );
-            let elapsed = format!(
-                "{:02}:{:02}",
-                activity.remaining_secs / 60,
-                activity.remaining_secs % 60
-            );
-            text_renderer.draw_text_weighted(
-                scene,
-                &elapsed,
-                theme.tokens.typography.scale.lg,
-                theme.tokens.colors.text_primary,
-                at(transform, (panel.x0 + 18.0, panel.y0 + 43.0)),
-                None,
-                TextWeight::Bold,
-            );
-            [
-                self.clock_pause_rect,
-                self.clock_add_rect,
-                self.clock_close_rect,
-            ] = clock_overlay_controls(panel);
-            ui::widget::Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ui::widget::ButtonFace::new(
-                    self.clock_pause_rect,
-                    if activity.paused { "Resume" } else { "Pause" },
-                )
-                .primary()
-                .icon(if activity.paused {
-                    ui::icons::Icon::Play
-                } else {
-                    ui::icons::Icon::Pause
-                })
-                .focused(self.clock_control_focus == Some(0)),
-            );
-            ui::widget::Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ui::widget::ButtonFace::new(
-                    self.clock_add_rect,
-                    if activity.stopwatch { "Lap" } else { "+1 min" },
-                )
-                .focused(self.clock_control_focus == Some(1)),
-            );
-            ui::widget::Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ui::widget::ButtonFace::new(self.clock_close_rect, "")
-                    .ghost()
-                    .icon(ui::icons::Icon::X)
-                    .accessible_name(if activity.stopwatch {
-                        "Close floating stopwatch"
-                    } else {
-                        "Close floating timer"
-                    })
-                    .focused(self.clock_control_focus == Some(2)),
-            );
+        let clock_activity = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.clock.then(|| state.clock_activity.clone())?
+        });
+        if let Some(activity) = clock_activity {
+            self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
         }
 
         out_scene.append(&local, Some(out_transform));
@@ -3118,80 +3319,7 @@ impl Widget for TopBarChrome {
                 .as_ref()
                 .is_some_and(|c| c.borrow().overlays.clock)
         {
-            use winit::keyboard::{Key, NamedKey};
-            match &key.logical_key {
-                Key::Named(NamedKey::Escape) => {
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        chrome.borrow_mut().overlays.clock = false;
-                    }
-                    self.publish_clock_activity_command("close", "close-stopwatch");
-                    *handled = true;
-                    return;
-                }
-                Key::Named(NamedKey::Tab) => {
-                    self.clock_control_focus = Some(if modifiers.state().shift_key() {
-                        match self.clock_control_focus {
-                            None | Some(0) | Some(3..) => 2,
-                            Some(1) => 0,
-                            Some(2) => 1,
-                        }
-                    } else {
-                        match self.clock_control_focus {
-                            None | Some(2..) => 0,
-                            Some(0) => 1,
-                            Some(1) => 2,
-                        }
-                    });
-                    self.cache_fp = CacheFingerprint::default();
-                    *handled = true;
-                    return;
-                }
-                Key::Named(NamedKey::Enter | NamedKey::Space) => match self.clock_control_focus {
-                    Some(0) => self.publish_clock_activity_command("toggle", "toggle-stopwatch"),
-                    Some(1) => self.publish_clock_activity_command("add-minute", "lap-stopwatch"),
-                    Some(2) => {
-                        if let Some(chrome) = self.chrome.as_ref() {
-                            chrome.borrow_mut().overlays.clock = false;
-                        }
-                        self.publish_clock_activity_command("close", "close-stopwatch");
-                    }
-                    _ => return,
-                },
-                Key::Named(
-                    key @ (NamedKey::ArrowLeft
-                    | NamedKey::ArrowRight
-                    | NamedKey::ArrowUp
-                    | NamedKey::ArrowDown),
-                ) if modifiers.state().alt_key() => {
-                    let step = if modifiers.state().shift_key() {
-                        32.0
-                    } else {
-                        8.0
-                    };
-                    let mut position = self.clock_overlay_pos.unwrap_or_else(|| {
-                        Point::new(
-                            (self.rect.x1 - clock_overlay_width(self.rect.x1) - 16.0).max(8.0),
-                            self.rect.y1 + 16.0,
-                        )
-                    });
-                    match key {
-                        NamedKey::ArrowLeft => position.x -= step,
-                        NamedKey::ArrowRight => position.x += step,
-                        NamedKey::ArrowUp => position.y -= step,
-                        NamedKey::ArrowDown => position.y += step,
-                        _ => {}
-                    }
-                    self.clock_overlay_pos = Some(clamp_clock_overlay(
-                        position,
-                        (clock_overlay_width(self.rect.x1), CLOCK_OVERLAY_HEIGHT),
-                        self.clock_viewport(),
-                        self.rect.y1,
-                    ));
-                    self.cache_fp = CacheFingerprint::default();
-                }
-                _ => return,
-            }
-            *handled = true;
+            *handled = self.handle_clock_keyboard(&key.logical_key, *modifiers);
             return;
         }
         if let WindowEvent::Touch(touch) = event
@@ -3200,69 +3328,7 @@ impl Widget for TopBarChrome {
                 .as_ref()
                 .is_some_and(|chrome| chrome.borrow().overlays.clock)
         {
-            let point = Point::new(
-                touch.location.x / scale_factor,
-                touch.location.y / scale_factor,
-            );
-            match touch.phase {
-                winit::event::TouchPhase::Started => {
-                    if self.clock_touch_id.is_none()
-                        && self.clock_touch_control.is_none()
-                        && let Some(control) = self.clock_control_at(point)
-                    {
-                        self.clock_touch_control = Some((touch.id, control));
-                        self.clock_control_focus = Some(control);
-                        self.cache_fp = CacheFingerprint::default();
-                        *handled = true;
-                        return;
-                    }
-                    if self.clock_touch_id.is_none()
-                        && self.clock_touch_control.is_none()
-                        && self.begin_clock_drag_at(point)
-                    {
-                        self.clock_touch_id = Some(touch.id);
-                        *handled = true;
-                    }
-                }
-                winit::event::TouchPhase::Moved
-                    if self
-                        .clock_touch_control
-                        .is_some_and(|(id, _)| id == touch.id) =>
-                {
-                    // Keep ownership so lifting elsewhere cancels the press;
-                    // never turn a control gesture into an accidental drag.
-                    *handled = true;
-                }
-                winit::event::TouchPhase::Moved if self.clock_touch_id == Some(touch.id) => {
-                    if self.move_clock_drag_to(point) {
-                        *handled = true;
-                    }
-                }
-                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
-                    if self
-                        .clock_touch_control
-                        .is_some_and(|(id, _)| id == touch.id) =>
-                {
-                    let pending = self.clock_touch_control.take();
-                    if let Some(control) = released_clock_touch_control(
-                        pending,
-                        touch.id,
-                        touch.phase == winit::event::TouchPhase::Ended,
-                        self.clock_control_at(point),
-                    ) {
-                        self.activate_clock_control(control);
-                    }
-                    *handled = true;
-                }
-                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
-                    if self.clock_touch_id == Some(touch.id) =>
-                {
-                    self.clock_touch_id = None;
-                    self.clock_drag_offset = None;
-                    *handled = true;
-                }
-                _ => {}
-            }
+            *handled = self.handle_clock_touch(touch, scale_factor);
             return;
         }
         // Cached so `MouseInput` (no position) can hit-test against
@@ -3453,51 +3519,8 @@ impl Widget for TopBarChrome {
                 node
             })
             .collect();
-        if self
-            .chrome
-            .as_ref()
-            .is_some_and(|chrome| chrome.borrow().overlays.clock)
-        {
-            let activity = self
-                .chrome
-                .as_ref()
-                .and_then(|chrome| chrome.borrow().clock_activity.clone());
-            let stopwatch = activity.as_ref().is_some_and(|activity| activity.stopwatch);
-            let paused = activity.as_ref().is_some_and(|activity| activity.paused);
-            children.push(
-                AccessNode::new(Role::Group)
-                    .with_name(if stopwatch {
-                        "Floating stopwatch"
-                    } else {
-                        "Floating timer"
-                    })
-                    .with_bounds(self.clock_overlay_rect)
-                    .with_children(vec![
-                        AccessNode::new(Role::Button)
-                            .with_name(if paused { "Resume" } else { "Pause" })
-                            .with_action_target("clock.overlay.toggle")
-                            .with_bounds(self.clock_pause_rect)
-                            .with_state(AccessState::new().focusable(true)),
-                        AccessNode::new(Role::Button)
-                            .with_name(if stopwatch {
-                                "Record lap"
-                            } else {
-                                "Add one minute"
-                            })
-                            .with_action_target("clock.overlay.add-minute")
-                            .with_bounds(self.clock_add_rect)
-                            .with_state(AccessState::new().focusable(true)),
-                        AccessNode::new(Role::Button)
-                            .with_name(if stopwatch {
-                                "Close floating stopwatch"
-                            } else {
-                                "Close floating timer"
-                            })
-                            .with_action_target("clock.overlay.close")
-                            .with_bounds(self.clock_close_rect)
-                            .with_state(AccessState::new().focusable(true)),
-                    ]),
-            );
+        if let Some(clock) = self.clock_accessibility_node() {
+            children.push(clock);
         }
         Some(
             AccessNode::new(Role::Toolbar)
