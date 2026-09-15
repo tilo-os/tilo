@@ -51,3 +51,34 @@ the corrected full run is still required. Passing the six isolated cases does
 not establish full FEX acceptance, Wine/Proton compatibility, or graphics
 acceleration. Graphics thunk builds additionally require the upstream
 `X86_DEV_ROOTFS` development inputs and their own runtime checks.
+
+## Recorded native validation
+
+Rebuilding all assembly fixtures with the pinned NASM produced 7,779 passing
+instruction/emitter tests, 24 upstream skips, and zero failures. The upstream
+disabled-test lists and expected CPU results were unchanged.
+
+The old OS base digest was unavailable from the public Fedora registry and the
+private mirror required renewed authentication. A separate test filesystem was
+therefore acquired from `quay.io/fedora/fedora-bootc:44` after resolving it to
+index digest
+`sha256:5fca5bb111aa1aa7ea40a2501d78bdacbe40ccee7250e9c50a4242e0c6110098`.
+Its amd64 child is
+`sha256:4eb463c47f595ff98a0d98e5fdd43a126ed32bf428cc166e6bacfd389b878f7f`.
+This is a test input, not a change to `os/base-snapshot.env`. Fedora may garbage
+collect these manifests; preserve the acquired artifact for repeated testing.
+
+Native ARM FEX executed x86-64 `uname` and nested x86-64 shell/child processes
+with that filesystem mounted read-only in a container, without global binfmt
+registration. The full 12,074-case rerun then produced:
+
+- 10,041 passes;
+- 458 upstream skips;
+- 1,525 failures from missing 32-bit runtime support in the test filesystem;
+- 38 structure-layout failures with missing cross-architecture C++ headers;
+- 11 other failures and one timeout still requiring investigation.
+
+The instruction-only success is not full-suite acceptance. The next run needs
+the 32-bit runtime and complete target development headers. Preserve normal RPM
+installation scripts when constructing that environment; simply ignoring the
+failed checks or using incomplete header parsing cannot validate ABI layouts.
