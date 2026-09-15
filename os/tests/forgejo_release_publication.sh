@@ -41,7 +41,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         global release
         path = urlsplit(self.path).path
-        if path.endswith("/releases/tags/imager-v1.2.3"):
+        if path == "/api/v1/repos/qos/releases":
+            self.send_json(200, {"full_name": "qos/releases", "private": False, "archived": False})
+        elif path == "/api/v1/repos/qos/private-downloads":
+            self.send_json(200, {"full_name": "qos/private-downloads", "private": True, "archived": False})
+        elif path.endswith("/releases/tags/imager-v1.2.3"):
             if release is None:
                 self.send_json(404, {"message": "not found"})
             else:
@@ -132,7 +136,7 @@ printf 'AAAAAAAAAAAAAAAA\n' >"$work/assets/qos-imager-test.bin"
 
 publish() {
   GITHUB_SERVER_URL="$server_url" \
-  GITHUB_REPOSITORY='qos/quickdesktop' \
+  GITHUB_REPOSITORY='qos/qos' \
   GITHUB_REF_NAME='imager-v1.2.3' \
   FORGEJO_TOKEN='test-token' \
     "$publisher" "$work/assets"
@@ -143,6 +147,18 @@ grep -Fq 'published and verified qos-imager-test.bin' <<<"$first" \
   || { printf 'first publication was not uploaded and verified\n' >&2; exit 1; }
 grep -Fq 'published complete release imager-v1.2.3' <<<"$first" \
   || { printf 'verified draft was not promoted after upload\n' >&2; exit 1; }
+
+if QOS_RELEASE_REPOSITORY=qos/qos publish >"$work/source.out" 2>"$work/source.err"; then
+  printf 'publisher accepted the source repository as its binary target\n' >&2
+  exit 1
+fi
+grep -Fq 'must be separate from the source repository' "$work/source.err"
+if QOS_RELEASE_REPOSITORY=qos/private-downloads publish \
+    >"$work/private.out" 2>"$work/private.err"; then
+  printf 'publisher accepted a private binary target\n' >&2
+  exit 1
+fi
+grep -Fq 'release repository must be public' "$work/private.err"
 
 second="$(publish)"
 grep -Fq 'verified existing qos-imager-test.bin' <<<"$second" \

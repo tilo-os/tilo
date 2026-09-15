@@ -87,7 +87,7 @@ descriptor used by the sandboxed writer.
 
 ## Short-lived credentials
 
-The seven credentialed jobs set Forgejo's native `enable-openid-connect: true`.
+The eight credentialed jobs set Forgejo's native `enable-openid-connect: true`.
 Do not add GitHub's `permissions: id-token: write`: Forgejo ignores that field
 and emits a workflow warning. Repository capabilities come from Authorized
 Integrations; the native key is what causes Forgejo to inject
@@ -123,6 +123,7 @@ variables:
 | `IMAGER_LINUX_CREDENTIAL_BROKER` | both Linux architectures | environment file described below |
 | `IMAGER_WINDOWS_CREDENTIAL_BROKER` | Windows x86-64 | environment file described below |
 | `IMAGER_MACOS_CREDENTIAL_BROKER` | both macOS architectures | environment file described below |
+| `IMAGER_RELEASE_CREDENTIAL_BROKER` | Linux x86-64 promotion runner | raw Forgejo token file |
 | `IMAGER_HOMEBREW_CREDENTIAL_BROKER` | macOS ARM64 | raw Forgejo token file |
 | `IMAGER_WINGET_CREDENTIAL_BROKER` | Linux x86-64 | raw GitHub token file |
 | `IMAGER_SITE_CREDENTIAL_BROKER` | Linux x86-64 | raw Forgejo token file |
@@ -131,7 +132,7 @@ variables:
 
 Each value is an absolute executable path appropriate to that host. The
 workflow invokes it as `BROKER PLATFORM OUTPUT`, where `PLATFORM` is `linux`,
-`windows`, `macos`, `homebrew`, `winget`, or `site`. The broker receives
+`windows`, `macos`, `release`, `homebrew`, `winget`, or `site`. The broker receives
 `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, requests the
 configured audience, validates its server-side claims, and exchanges the JWT
 for a narrowly scoped lease. It must create `OUTPUT` with mode 0600 (or a
@@ -204,6 +205,15 @@ newline-terminated `NAME=value` per line:
   the release bot write access to only that repository, and mint the token for
   that bot. Repository creation is supported by the script for bootstrap, but
   should not be part of the steady-state lease.
+- Release: for the `release` platform, write a 5–15 minute Forgejo token as the
+  complete raw output. Pre-create `qos/releases` as a public repository with a
+  `main` branch. The token may create/update releases and attachments only in
+  that repository; it must have no write access to the private `qos/qos`
+  source repository, the Homebrew tap, or the website. The publisher checks
+  the target's exact full name and public/non-archived state before uploading,
+  reads every attachment back byte-for-byte, and publishes only a complete
+  draft. Set `IMAGER_PUBLIC_RELEASE_REPOSITORY` only when intentionally using
+  another pre-created public `OWNER/REPOSITORY` target.
 - WinGet: for the `winget` platform, write the complete raw GitHub token. A
   GitHub App **installation** token scoped only to the bot's fork can push the
   branch but cannot be relied on to create a pull request in
@@ -218,8 +228,11 @@ newline-terminated `NAME=value` per line:
 - Site: for the `site` platform, write a 5–15 minute Forgejo token as the
   complete raw output. Give its bot write access only to `qos/website`. After all
   native and package-index gates pass, the workflow updates only
-  `src/data/imager-release.json`, runs the site's release contract and full
-  production build, and pushes that exact-tag change to `main`.
+  `src/data/imager-release.json`, including its exact public `releaseRoot`, runs
+  the site's release contract and full production build, and pushes that
+  exact-tag change to `main`. Promotion also inspects the generated site and
+  refuses to push unless its signed setup link uses that manifest root and no
+  private-source download URL remains.
 
 The workflow rejects every other output key. The underlying code-signing
 identities are not all ephemeral, but their private material never needs to be
@@ -307,7 +320,8 @@ administrators):
 
 | Variable | Required value |
 |---|---|
-| the six `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
+| the seven `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
+| `IMAGER_PUBLIC_RELEASE_REPOSITORY` | optional public binary repository in `OWNER/REPOSITORY` form; omit for `qos/releases` |
 | `QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex qOS-main registry-owner Ed25519 public key |
 | `QOS_INSTALLER_OS_IMAGE` | signed, published multi-architecture `code.podesta.ai/qos/qos@sha256:...` manifest-list reference used by installer media |
 | `QOS_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
@@ -328,8 +342,9 @@ destroys both after use; installer-media CI never
 pushes an OS image or allocates a generation. Rotate it independently of
 signing. The WPE buildroot snapshot workflow does **not** use
 that persistent token in steady state; its broker setup is described below.
-Forgejo provides the tag-release upload token as `github.token` and no
-additional release-upload secret is required.
+The source job's `github.token` is deliberately never used for binary
+publication. `IMAGER_RELEASE_CREDENTIAL_BROKER` exchanges the protected-tag
+OIDC identity for the short-lived, target-only token described above.
 
 Do not configure any of the following in steady state:
 `IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP`, `IMAGER_LINUX_SIGNING_KEY_B64`,
