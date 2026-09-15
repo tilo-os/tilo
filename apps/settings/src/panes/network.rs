@@ -61,6 +61,8 @@ pub const ENTERPRISE_IDENTITY_KEY: &str = "network.enterprise.identity";
 pub const ENTERPRISE_ANONYMOUS_KEY: &str = "network.enterprise.anonymous";
 pub const ENTERPRISE_CA_KEY: &str = "network.enterprise.ca";
 pub const ENTERPRISE_CONNECT_KEY: &str = "network.enterprise.connect";
+/// Opens or closes the task-focused enterprise network setup surface.
+pub const ENTERPRISE_EDITOR_KEY: &str = "network.enterprise.editor";
 pub const ENTERPRISE_CA_CHOOSE_KEY: &str = "network.enterprise.ca.choose";
 pub const ENTERPRISE_METHOD_KEY: &str = "network.enterprise.method";
 pub const ENTERPRISE_PHASE2_KEY: &str = "network.enterprise.phase2";
@@ -259,6 +261,7 @@ pub struct NetworkPane {
     sims: Vec<os_actions::SimInfo>,
     diagnostics: Option<os_actions::ConnectionDiagnostics>,
     advanced_open: bool,
+    enterprise_editor_open: bool,
     /// Configured VPN connections (read-only status), sampled at
     /// construction and on refresh.
     vpns: Vec<VpnInfo>,
@@ -351,6 +354,7 @@ impl NetworkPane {
             sims: os_actions::list_mobile_sims().unwrap_or_default(),
             diagnostics: None,
             advanced_open: false,
+            enterprise_editor_open: false,
             vpns,
             vpn_lister,
             tool_opener: Arc::new(os_actions::open_tool),
@@ -401,6 +405,7 @@ impl NetworkPane {
             sims: Vec::new(),
             diagnostics: None,
             advanced_open: false,
+            enterprise_editor_open: false,
             vpns: Vec::new(),
             vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             tool_opener: Arc::new(os_actions::open_tool),
@@ -446,6 +451,7 @@ impl NetworkPane {
             sims: Vec::new(),
             diagnostics: None,
             advanced_open: false,
+            enterprise_editor_open: false,
             vpns: Vec::new(),
             vpn_lister: Arc::new(Vec::<VpnInfo>::new),
             tool_opener: Arc::new(os_actions::open_tool),
@@ -618,7 +624,7 @@ impl NetworkPane {
         let mut cards = vec![
             self.internet_access_card(),
             self.wifi_card(),
-            card("Enterprise Wi-Fi", rows(self.enterprise_rows())),
+            self.enterprise_card(),
             self.wired_card(),
             self.profile_card(),
             card("Connection diagnostics", rows(self.diagnostic_rows())),
@@ -1072,9 +1078,6 @@ impl NetworkPane {
 
     fn enterprise_rows(&self) -> Vec<El> {
         vec![
-            caption(
-                "PEAP, TTLS and EAP-TLS use NetworkManager's 802.1X support. Server certificate validation is mandatory.",
-            ),
             choice_row(
                 "Method",
                 Box::new(
@@ -1161,6 +1164,32 @@ impl NetworkPane {
                     .push(Box::new(Spacer::new())),
             ),
         ]
+    }
+
+    /// Keep specialist 802.1X credentials out of the ordinary connection
+    /// view. The affordance remains visible, while the form appears only when
+    /// someone has chosen to add that kind of network.
+    fn enterprise_card(&self) -> El {
+        let mut content = vec![caption(
+            "Use an enterprise network for PEAP, TTLS, or EAP-TLS sign-in. Server certificate validation is mandatory.",
+        )];
+        if self.enterprise_editor_open {
+            content.extend(self.enterprise_rows());
+        }
+        content.push(Box::new(
+            Row::new()
+                .push(Box::new(Button::new(
+                    "settings.network.enterprise.editor",
+                    if self.enterprise_editor_open {
+                        "Close enterprise setup"
+                    } else {
+                        "Set up enterprise"
+                    },
+                    Some(ENTERPRISE_EDITOR_KEY),
+                )))
+                .push(Box::new(Spacer::new())),
+        ));
+        card("Enterprise Wi-Fi", rows(content))
     }
 
     fn hotspot_config_from_values(
@@ -1551,6 +1580,7 @@ impl NetworkPane {
             MOBILE_CREATE_KEY,
             MOBILE_UNLOCK_KEY,
             ENTERPRISE_CONNECT_KEY,
+            ENTERPRISE_EDITOR_KEY,
             ENTERPRISE_CA_CHOOSE_KEY,
             CAPTIVE_PORTAL_KEY,
             DIAGNOSTICS_KEY,
@@ -1973,6 +2003,15 @@ impl NetworkPane {
         self.structure_dirty = true;
     }
 
+    fn sync_enterprise_editor(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if !read_bool(state, root, ENTERPRISE_EDITOR_KEY) {
+            return;
+        }
+        let _ = state.put(root, ENTERPRISE_EDITOR_KEY, false);
+        self.enterprise_editor_open = !self.enterprise_editor_open;
+        self.structure_dirty = true;
+    }
+
     fn sync_diagnostics(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if !read_bool(state, root, DIAGNOSTICS_KEY) {
             return;
@@ -2374,6 +2413,7 @@ impl Widget for NetworkPane {
         self.sync_ipv4_apply(state, root);
         self.sync_mobile_create(state, root);
         self.sync_advanced_toggle(state, root);
+        self.sync_enterprise_editor(state, root);
         self.sync_diagnostics(state, root);
         self.sync_profile_policy(state, root);
         self.sync_mobile_unlock(state, root);
@@ -2581,6 +2621,26 @@ mod tests {
         assert_eq!(by_ssid, vec!["Home_Network", "Cafe_Guest", "Neighbour_5G"]);
         // Status line picks the connected network.
         assert_eq!(pane.connection_status_text(), "Connected to Home_Network");
+    }
+
+    #[test]
+    fn enterprise_editor_opens_only_after_its_explicit_action() {
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = NetworkPane::with_dispatcher(
+            rec as Arc<dyn Dispatcher + Send + Sync>,
+            true,
+            sample_networks(),
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        assert!(!pane.enterprise_editor_open);
+
+        let _ = doc.put(&root, ENTERPRISE_EDITOR_KEY, true);
+        pane.sync(&mut doc, &root);
+        assert!(pane.enterprise_editor_open);
+        assert!(pane.take_structure_dirty());
+        assert!(!read_bool(&doc, &root, ENTERPRISE_EDITOR_KEY));
     }
 
     #[test]
