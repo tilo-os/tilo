@@ -3906,6 +3906,35 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Mirrors same-strip tab transfers and splits from the live rows into
+    /// the persisted workspace tree. The row publishes only group/tab ids;
+    /// the tree remains the sole owner of tile content and collaboration data.
+    fn harvest_pending_group_topology(&self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut changes = Vec::new();
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: same contract as the other row harvesters: the content
+            // tree owns this pointer and harvest passes run sequentially.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some(topology) = row.take_pending_topology_change() {
+                changes.push((strip_id, topology));
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+        let state = chrome.borrow_mut();
+        let mut tree = state.tree_mut();
+        for (strip_id, topology) in changes {
+            tree.reconcile_strip_topology(strip_id, &topology);
+        }
+    }
+
     /// Drains each group's [`UiWindowGroup::take_pending_search_open`]
     /// one-shot and opens the search bar scoped to the active app — the
     /// same entry point Ctrl+K uses. The palette lives on the host, not
@@ -4602,6 +4631,11 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_tab_reorder();
+    }
+
+    /// Test and deterministic-scenario entry point for same-strip tab moves.
+    pub fn tick_pending_group_topology_harvest_for_tests(&mut self) {
+        self.harvest_pending_group_topology();
     }
 
     /// Test-only: runs the per-frame decoration-search-chip handling outside `update`.
@@ -10692,6 +10726,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_width_changes();
         self.harvest_pending_group_reorder();
         self.harvest_pending_tab_reorder();
+        self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
         // Refreshing here (not inside the harvest) means the palette never
         // shows "Nothing to show" before the user's first keystroke.
