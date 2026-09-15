@@ -3274,8 +3274,21 @@ struct CapnpChannelHandle {
     verified_identity: AdmittedJoinIdentity,
 }
 
+const MAX_PRIVATE_PLAYBACK_REPORT_BYTES: usize = 256 * 1024;
+
+fn playback_report_owner(route: &CrdtRoute, peer_id: u64) -> String {
+    format!(
+        "{}#{}#{}#{peer_id}",
+        route.cluster_id, route.app_id, route.record_id
+    )
+}
+
 impl Drop for CapnpChannelHandle {
     fn drop(&mut self) {
+        media::handoff::remove_external_reports(&playback_report_owner(
+            &self.route(),
+            self.peer_id,
+        ));
         self.state.remove_connection(self.peer_id);
         self.directories.remove(self.peer_id);
     }
@@ -5009,6 +5022,69 @@ impl channel_handle::Server for CapnpChannelHandle {
             }
             Err(error) => Promise::err(capnp::Error::failed(error)),
         }
+    }
+
+    fn report_playback(
+        self: Rc<Self>,
+        params: channel_handle::ReportPlaybackParams,
+        _results: channel_handle::ReportPlaybackResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let app_id = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value.to_owned(),
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let route = self.route();
+        if route.app_id.is_empty() || app_id != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "reportPlayback appId must match the certified connection route".into(),
+            ));
+        }
+        if crate::shell::state::RoomId::parse(&route.cluster_id).is_none() {
+            return Promise::err(capnp::Error::failed(
+                "reportPlayback route has no durable workspace room".into(),
+            ));
+        }
+        let bytes = match request.get_reports_json() {
+            Ok(bytes) if bytes.len() <= MAX_PRIVATE_PLAYBACK_REPORT_BYTES => bytes,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "reportPlayback payload exceeds session-local limit".into(),
+                ));
+            }
+            Err(error) => return Promise::err(error),
+        };
+        let reports: Vec<media::handoff::PlaybackReport> = match serde_json::from_slice(bytes) {
+            Ok(reports) => reports,
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        if reports.len() > media::handoff::MAX_PLAYBACK_REPORTS
+            || !reports
+                .iter()
+                .all(|report| report.validate_route(&app_id, &route.cluster_id))
+        {
+            return Promise::err(capnp::Error::failed(
+                "reportPlayback contains an invalid or foreign media session".into(),
+            ));
+        }
+        media::handoff::replace_external_reports(
+            playback_report_owner(&route, self.peer_id),
+            reports,
+        );
+        Promise::ok(())
     }
 }
 

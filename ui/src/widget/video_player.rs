@@ -474,6 +474,9 @@ impl VideoPlayer {
     /// `identity` the human-readable player name. Without the `mpris` feature
     /// (or a session bus) this is an inert no-op, so the call is always safe.
     pub fn enable_mpris(&mut self, app_id: &str, identity: &str) {
+        if let Some(engine) = self.engine.as_mut() {
+            engine.set_handoff_controller(Some(format!("org.mpris.MediaPlayer2.{app_id}")));
+        }
         self.mpris = crate::mpris::MprisHandle::spawn(
             crate::mpris::MprisConfig::new(app_id, identity),
             self.mpris_snapshot(),

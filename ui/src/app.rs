@@ -586,6 +586,8 @@ pub struct App {
     action_directory_cursors: std::collections::HashMap<String, ActionDirectoryCursor>,
     /// Last app-owned continuation projection sent to the local shell.
     last_published_continuation: Option<crate::collaboration::ContinuationMetadata>,
+    last_published_playback: Option<Vec<media::handoff::PlaybackReport>>,
+    last_playback_publish: Option<Instant>,
     pending_continuation_restore: Option<crate::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until the first layout has built the
     /// focus order. App-specific projections still apply before first sync.
@@ -754,6 +756,8 @@ impl App {
             last_published_actions: None,
             action_directory_cursors: std::collections::HashMap::new(),
             last_published_continuation: None,
+            last_published_playback: None,
+            last_playback_publish: None,
             pending_continuation_restore: crate::collaboration::continuation_restore_env(),
             pending_continuation_view: None,
             directed_invocations: std::collections::HashMap::new(),
@@ -795,6 +799,7 @@ impl App {
         // launched app visible to continuity capture even if it receives no
         // input events before the next peer asks for a checkpoint.
         app.publish_continuation_metadata();
+        app.publish_playback_handoff();
         app
     }
 
@@ -2093,6 +2098,38 @@ impl App {
             self.collab_manager.send(request);
         }
         self.last_published_continuation = metadata;
+    }
+
+    /// Publish private source descriptors over the authenticated local app
+    /// broker. Public cross-device state is derived by the shell and remains
+    /// path/URL-free; this report never enters the room document.
+    fn publish_playback_handoff(&mut self) {
+        if !self.collab_manager.is_connected() {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .last_playback_publish
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(500))
+        {
+            return;
+        }
+        let app_id = crate::collaboration::local_app_id();
+        let workspace_id = crate::collaboration::local_cluster_id().to_string();
+        let reports = media::handoff::playback_reports(&app_id, &workspace_id);
+        if self.last_published_playback.as_ref() == Some(&reports) {
+            return;
+        }
+        let Ok(reports_json) = serde_json::to_vec(&reports) else {
+            return;
+        };
+        self.collab_manager
+            .send(crate::collaboration::CollabRequest::ReportPlayback {
+                app_id,
+                reports_json,
+            });
+        self.last_published_playback = Some(reports);
+        self.last_playback_publish = Some(now);
     }
 
     fn apply_pending_continuation_restore(&mut self) {
@@ -7349,6 +7386,7 @@ impl AppHandler {
         app.broadcast_view_presence();
         app.publish_action_surface();
         app.publish_continuation_metadata();
+        app.publish_playback_handoff();
 
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
@@ -7879,6 +7917,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.layout_dirty = true;
             window.request_redraw();
         }
+        app.publish_playback_handoff();
 
         // Keep pumping frames while any "just typed" highlighter mark is
         // still fading, so the taper animates instead of freezing.
