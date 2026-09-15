@@ -62,6 +62,9 @@ pub struct Page {
     pub crop: Crop,
     pub rotation: Rotation,
     pub ocr: Option<Document>,
+    /// The automatic correction used for the retained OCR result. Kept next
+    /// to it so status/preview UX can be honest and edits invalidate both.
+    pub ocr_deskew_degrees: Option<f64>,
 }
 
 impl Page {
@@ -78,6 +81,7 @@ impl Page {
             },
             rotation: Rotation::None,
             ocr: None,
+            ocr_deskew_degrees: None,
         }
     }
 
@@ -97,6 +101,7 @@ impl Page {
         }
         self.crop = crop;
         self.ocr = None;
+        self.ocr_deskew_degrees = None;
         Ok(())
     }
 
@@ -108,6 +113,7 @@ impl Page {
             Rotation::CounterClockwise => Rotation::None,
         };
         self.ocr = None;
+        self.ocr_deskew_degrees = None;
     }
 
     #[must_use]
@@ -158,7 +164,9 @@ impl Page {
     }
 
     pub fn recognize(&mut self, language: &str) -> Result<&Document, qos_ocr::Error> {
-        self.ocr = Some(qos_ocr::recognize(&self.rendered(), language)?);
+        let recognition = qos_ocr::recognize_detailed(&self.rendered(), language)?;
+        self.ocr = Some(recognition.document);
+        self.ocr_deskew_degrees = recognition.deskew_degrees;
         // Set immediately above and retained by `self`.
         self.ocr
             .as_ref()
