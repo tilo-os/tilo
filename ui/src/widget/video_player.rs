@@ -50,6 +50,7 @@ pub enum PlaybackState {
 
 const MENU_ROW_H: f64 = 30.0;
 const MENU_WIDTH: f64 = 224.0;
+const MENU_WIDTH_F32: f32 = 224.0;
 const MIN_SCRUB_WIDTH: f64 = 48.0;
 
 /// The embedding app owns the *meaning*; the player owns the *rendering* and
@@ -138,6 +139,22 @@ pub enum PlayerSettingEvent {
     Toggled { id: String, on: bool },
     Chose { id: String, index: usize },
     Activated { id: String },
+}
+
+fn setting_value(setting: &PlayerSetting) -> String {
+    match &setting.control {
+        PlayerSettingControl::Toggle { on } => {
+            if *on {
+                "On".into()
+            } else {
+                "Off".into()
+            }
+        }
+        PlayerSettingControl::Choice { options, selected } => {
+            options.get(*selected).cloned().unwrap_or_default()
+        }
+        PlayerSettingControl::Button => String::new(),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -806,10 +823,15 @@ impl VideoPlayer {
         self.controls_visible_until = Instant::now().checked_add(CONTROLS_AUTO_HIDE);
     }
 
-    fn controls_bar_rect(&self) -> Rect {
+    fn controls_bar_rect(&self, theme: &Theme) -> Rect {
+        let height = if theme.text_scale > 1.25 {
+            (CONTROLS_BAR_HEIGHT * f64::from(theme.text_scale)).min(96.0)
+        } else {
+            CONTROLS_BAR_HEIGHT
+        };
         Rect::new(
             self.rect.x0,
-            (self.rect.y1 - CONTROLS_BAR_HEIGHT).max(self.rect.y0),
+            (self.rect.y1 - height).max(self.rect.y0),
             self.rect.x1,
             self.rect.y1,
         )
@@ -995,7 +1017,7 @@ impl VideoPlayer {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let bar = self.controls_bar_rect();
+        let bar = self.controls_bar_rect(theme);
         if bar.width() <= 0.0 || bar.height() <= 0.0 {
             return;
         }
@@ -1009,6 +1031,19 @@ impl VideoPlayer {
             None,
             &bar,
         );
+
+        if theme.text_scale > 1.25 {
+            self.paint_large_text_controls(scene, transform, text_renderer, theme, bar);
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_standard,
+                None,
+                &bar,
+            );
+            self.paint_menu(scene, transform, text_renderer, theme);
+            return;
+        }
 
         let pad = f64::from(theme.tokens.spacing.s2);
         let mid_y = bar.y0 + bar.height() * 0.5;
@@ -1059,6 +1094,192 @@ impl VideoPlayer {
         );
 
         self.paint_menu(scene, transform, text_renderer, theme);
+    }
+
+    /// Large text uses two intentional rows: an uninterrupted timeline, then
+    /// the complete transport/audio/settings cluster. This keeps every semantic
+    /// control reachable without shrinking type or letting the time label eat
+    /// the scrubber on phone-width surfaces.
+    fn paint_large_text_controls(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bar: Rect,
+    ) {
+        let pad = f64::from(theme.tokens.spacing.s2).max(8.0);
+        let icon = (PLAY_BUTTON_SIZE * 1.25).min(bar.height() * 0.42);
+        let timeline_y = bar.y0 + pad + SCRUB_THUMB_RADIUS;
+        let timeline_layout = ControlsLayout {
+            bar,
+            mid_y: timeline_y,
+            pad,
+            icon,
+            play_btn: Rect::ZERO,
+            cluster_x0: bar.x1,
+        };
+        self.paint_scrub_track(
+            scene,
+            transform,
+            theme,
+            &timeline_layout,
+            bar.x0 + pad,
+            bar.x1 - pad,
+        );
+
+        let (play, mid_y, cluster_x0) =
+            self.paint_large_transport_ends(scene, transform, theme, bar, pad, icon);
+        self.paint_large_time_volume(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            (play, mid_y, cluster_x0, pad, icon),
+        );
+    }
+
+    fn paint_large_transport_ends(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        bar: Rect,
+        pad: f64,
+        icon: f64,
+    ) -> (Rect, f64, f64) {
+        let colors = &theme.tokens.colors;
+        let mid_y = bar.y1 - pad - icon * 0.5;
+        let play = Rect::new(
+            bar.x0 + pad,
+            mid_y - icon * 0.5,
+            bar.x0 + pad + icon,
+            mid_y + icon * 0.5,
+        );
+        self.play_button_rect = play;
+        self.draw_play_glyph(scene, transform, play, colors.text_primary);
+        let fs = Rect::new(
+            bar.x1 - pad - icon,
+            mid_y - icon * 0.5,
+            bar.x1 - pad,
+            mid_y + icon * 0.5,
+        );
+        self.fullscreen_button_rect = fs;
+        draw_fullscreen_glyph(scene, transform, fs, colors.text_primary, self.fullscreen);
+        self.setting_icon_rects.clear();
+        self.gear_entries.clear();
+        self.gear_entries.extend(0..self.settings.len());
+        let gear = if self.settings.is_empty() {
+            Rect::ZERO
+        } else {
+            let rect = Rect::new(
+                fs.x0 - pad - icon,
+                mid_y - icon * 0.5,
+                fs.x0 - pad,
+                mid_y + icon * 0.5,
+            );
+            let tint = if self.open_menu == Some(OpenMenu::Gear) {
+                colors.accent[ACCENT_PRIMARY_IDX]
+            } else {
+                colors.text_primary
+            };
+            Icon::Settings2.draw(scene, transform, inset_rect(rect, 5.0), tint);
+            rect
+        };
+        self.gear_button_rect = gear;
+        (
+            play,
+            mid_y,
+            if gear.width() > 0.0 { gear.x0 } else { fs.x0 },
+        )
+    }
+
+    fn paint_large_time_volume(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: (Rect, f64, f64, f64, f64),
+    ) {
+        let (play, mid_y, cluster_x0, pad, icon) = layout;
+        let colors = &theme.tokens.colors;
+        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let time_text = format!(
+            "{} / {}",
+            format_ms(self.position_ms),
+            format_ms(self.duration_ms)
+        );
+        let time_size = 12.0;
+        let (time_w, _) = text_renderer.measure(&time_text, time_size, None);
+        let time_x = play.x1 + pad;
+        text_renderer.draw_text(
+            scene,
+            &time_text,
+            time_size,
+            colors.text_dim,
+            translated(
+                transform,
+                time_x,
+                mid_y - f64::from(time_size) * f64::from(theme.text_scale) * 0.5,
+            ),
+            None,
+        );
+
+        let mute_x0 = time_x + f64::from(time_w) + pad;
+        let mute = Rect::new(
+            mute_x0,
+            mid_y - icon * 0.4,
+            (mute_x0 + icon * 0.8).min(cluster_x0 - pad),
+            mid_y + icon * 0.4,
+        );
+        self.mute_button_rect = if mute.width() >= 18.0 {
+            mute
+        } else {
+            Rect::ZERO
+        };
+        if self.mute_button_rect.width() > 0.0 {
+            draw_speaker_glyph(
+                scene,
+                transform,
+                self.mute_button_rect,
+                colors.text_primary,
+                self.muted,
+            );
+        }
+        let volume_x0 = self.mute_button_rect.x1 + pad * 0.5;
+        let volume_x1 = cluster_x0 - pad;
+        if volume_x1 - volume_x0 >= 24.0 {
+            let track = Rect::new(
+                volume_x0,
+                mid_y - SCRUB_TRACK_HEIGHT * 0.5,
+                volume_x1,
+                mid_y + SCRUB_TRACK_HEIGHT * 0.5,
+            );
+            self.volume_track_rect = track;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.border_standard,
+                None,
+                &RoundedRect::from_rect(track, SCRUB_TRACK_HEIGHT * 0.5),
+            );
+            let filled = Rect::new(
+                track.x0,
+                track.y0,
+                track.x0 + track.width() * f64::from(self.effective_volume()),
+                track.y1,
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                accent,
+                None,
+                &RoundedRect::from_rect(filled, SCRUB_TRACK_HEIGHT * 0.5),
+            );
+        } else {
+            self.volume_track_rect = Rect::ZERO;
+        }
     }
 
     /// Right cluster `[ setting icons ][ gear ][ fullscreen ]`, packed from
@@ -1489,7 +1710,8 @@ impl VideoPlayer {
         }
         let colors = &theme.tokens.colors;
 
-        let row_h = MENU_ROW_H;
+        let text_scale = f64::from(theme.text_scale);
+        let row_h = MENU_ROW_H * text_scale * if theme.text_scale > 1.25 { 1.35 } else { 1.0 };
         let pad = f64::from(theme.tokens.spacing.s2);
         let title_h = if panel.title.is_some() { row_h } else { 0.0 };
         // The row count is a small UI list (settings + their options), well
@@ -1499,7 +1721,9 @@ impl VideoPlayer {
             reason = "menu row count is a small UI list, well within f64 precision"
         )]
         let panel_h = title_h + panel.rows.len() as f64 * row_h + pad;
-        let width = MENU_WIDTH.min(self.rect.width() - 8.0).max(80.0);
+        let width = (MENU_WIDTH * text_scale.min(1.5))
+            .min(self.rect.width() - 8.0)
+            .max(80.0);
         // Right-aligned to the anchor, clamped inside the surface.
         let x1 = panel.anchor.x1.min(self.rect.x1 - 4.0);
         let x0 = (x1 - width).max(self.rect.x0 + 4.0);
@@ -1524,7 +1748,7 @@ impl VideoPlayer {
                 t,
                 12.0,
                 colors.text_dim,
-                translated(transform, x0 + pad, y + row_h * 0.5 - 7.0),
+                translated(transform, x0 + pad, y + row_h * 0.5 - 7.0 * text_scale),
                 None,
             );
             y += row_h;
@@ -1585,21 +1809,33 @@ impl VideoPlayer {
         idx: usize,
         row_rect: Rect,
     ) {
-        let Some(s) = self.settings.get(idx) else {
+        let Some(s) = self.settings.get(idx).cloned() else {
             return;
         };
         let x1 = row_rect.x1 + 3.0;
         let y = row_rect.y0;
         let row_h = row_rect.height() + 2.0;
         let pad = f64::from(theme.tokens.spacing.s2);
+        let text_scale = f64::from(theme.text_scale);
         let colors = &theme.tokens.colors;
         let accent = colors.accent[ACCENT_PRIMARY_IDX];
 
+        if theme.text_scale > 1.25 {
+            self.paint_large_setting_row(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                (idx, row_rect, &s),
+            );
+            return;
+        }
+
         let icon_r = Rect::new(
             row_rect.x0 + 4.0,
-            y + 5.0,
-            row_rect.x0 + 22.0,
-            y + row_h - 7.0,
+            y + 5.0 * text_scale,
+            row_rect.x0 + 4.0 + 18.0 * text_scale.min(1.5),
+            y + row_h - 7.0 * text_scale,
         );
         s.icon.draw(scene, transform, icon_r, colors.text_primary);
         text_renderer.draw_text(
@@ -1607,7 +1843,11 @@ impl VideoPlayer {
             &s.name,
             13.0,
             colors.text_primary,
-            translated(transform, icon_r.x1 + 8.0, y + row_h * 0.5 - 8.0),
+            translated(
+                transform,
+                icon_r.x1 + 8.0,
+                y + row_h * 0.5 - 8.0 * text_scale,
+            ),
             None,
         );
         let value: String = match &s.control {
@@ -1633,7 +1873,62 @@ impl VideoPlayer {
                 &value,
                 12.0,
                 tint,
-                translated(transform, x1 - pad - f64::from(vw), y + row_h * 0.5 - 7.0),
+                translated(
+                    transform,
+                    x1 - pad - f64::from(vw),
+                    y + row_h * 0.5 - 7.0 * text_scale,
+                ),
+                None,
+            );
+        }
+        self.menu_hit_rects.push((MenuHit::Setting(idx), row_rect));
+    }
+
+    fn paint_large_setting_row(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        entry: (usize, Rect, &PlayerSetting),
+    ) {
+        let (idx, row_rect, setting) = entry;
+        let colors = &theme.tokens.colors;
+        let row_h = row_rect.height() + 2.0;
+        let text_scale = f64::from(theme.text_scale);
+        let icon_size = 24.0 * text_scale.min(1.5);
+        let icon_r = Rect::new(
+            row_rect.x0 + 6.0,
+            row_rect.y0 + (row_h - icon_size) * 0.5,
+            row_rect.x0 + 6.0 + icon_size,
+            row_rect.y0 + (row_h + icon_size) * 0.5,
+        );
+        setting
+            .icon
+            .draw(scene, transform, icon_r, colors.text_primary);
+        let text_x = icon_r.x1 + 10.0;
+        let text_budget = (MENU_WIDTH_F32 * theme.text_scale - 72.0).max(0.0);
+        let name = text_renderer.elide_to_width(&setting.name, 13.0, text_budget);
+        text_renderer.draw_text(
+            scene,
+            &name,
+            13.0,
+            colors.text_primary,
+            translated(transform, text_x, row_rect.y0 + 6.0),
+            None,
+        );
+        let value = setting_value(setting);
+        if !value.is_empty() {
+            let value = text_renderer.elide_to_width(&value, 12.0, text_budget);
+            let tint = matches!(setting.control, PlayerSettingControl::Toggle { on: true })
+                .then_some(colors.accent[ACCENT_PRIMARY_IDX])
+                .unwrap_or(colors.text_dim);
+            text_renderer.draw_text(
+                scene,
+                &value,
+                12.0,
+                tint,
+                translated(transform, text_x, row_rect.y0 + row_h * 0.5),
                 None,
             );
         }
@@ -1663,6 +1958,7 @@ impl VideoPlayer {
         let y = row_rect.y0;
         let row_h = row_rect.height() + 2.0;
         let pad = f64::from(theme.tokens.spacing.s2);
+        let text_scale = f64::from(theme.text_scale);
         let colors = &theme.tokens.colors;
         let accent = colors.accent[ACCENT_PRIMARY_IDX];
 
@@ -1702,7 +1998,7 @@ impl VideoPlayer {
             &label,
             13.0,
             tint,
-            translated(transform, x0 + indent, y + row_h * 0.5 - 8.0),
+            translated(transform, x0 + indent, y + row_h * 0.5 - 8.0 * text_scale),
             None,
         );
         if selected {
@@ -1712,7 +2008,11 @@ impl VideoPlayer {
                 "✓",
                 13.0,
                 accent,
-                translated(transform, x1 - pad - f64::from(cw), y + row_h * 0.5 - 8.0),
+                translated(
+                    transform,
+                    x1 - pad - f64::from(cw),
+                    y + row_h * 0.5 - 8.0 * text_scale,
+                ),
                 None,
             );
         }
@@ -3145,6 +3445,60 @@ mod tests {
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
         vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn draw_once_with_theme(vp: &mut VideoPlayer, theme: &Theme) {
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        vp.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    }
+
+    #[test]
+    fn large_text_controls_use_two_reachable_rows_while_one_x_is_unchanged() {
+        let mut regular = VideoPlayer::new();
+        regular.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        regular.show_controls();
+        regular.set_setting(PlayerSetting::toggle(
+            "captions",
+            Icon::FileText,
+            "Captions",
+            2,
+            false,
+        ));
+        let one_x = Theme::dark();
+        draw_once_with_theme(&mut regular, &one_x);
+        assert_eq!(
+            regular.controls_bar_rect(&one_x).height(),
+            CONTROLS_BAR_HEIGHT
+        );
+        assert_eq!(
+            regular.scrub_track_rect.center().y,
+            regular.play_button_rect.center().y
+        );
+
+        let mut accessible = VideoPlayer::new();
+        accessible.rect = regular.rect;
+        accessible.show_controls();
+        accessible.set_setting(PlayerSetting::toggle(
+            "captions",
+            Icon::FileText,
+            "Captions",
+            2,
+            false,
+        ));
+        let two_x = Theme::dark().with_text_scale(2.0);
+        draw_once_with_theme(&mut accessible, &two_x);
+        let bar = accessible.controls_bar_rect(&two_x);
+        assert_eq!(bar.height(), CONTROLS_BAR_HEIGHT * 2.0);
+        assert!(accessible.scrub_track_rect.width() > 350.0);
+        assert!(accessible.scrub_track_rect.center().y < accessible.play_button_rect.y0);
+        assert!(bar.contains(accessible.play_button_rect.center()));
+        assert!(bar.contains(accessible.fullscreen_button_rect.center()));
+        assert!(bar.contains(accessible.gear_button_rect.center()));
+        assert!(accessible.setting_icon_rects.is_empty());
+        assert!(accessible.setting_in_gear("captions"));
     }
 
     #[test]
