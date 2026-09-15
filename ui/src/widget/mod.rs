@@ -1772,7 +1772,9 @@ pub use layout_info::{
     ManualConflict, ManualLayout, PageLayout, SectionLayout,
 };
 mod manual;
-pub use manual::{ChildMeasurement, Manual, ManualContext, ManualPolicy, MeasureConstraint};
+pub use manual::{
+    ChildMeasurement, Manual, ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint,
+};
 mod row;
 pub use row::Row;
 mod toggle;
