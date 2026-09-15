@@ -521,11 +521,13 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
     ]
     .iter()
     .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty() && value != "0"));
-    let text_scale = std::env::var("QOS_SHOTS_TEXT_SCALE")
-        .ok()
-        .and_then(|value| value.parse::<f32>().ok())
-        .filter(|scale| scale.is_finite())
-        .map_or(1.0, |scale| scale.clamp(0.5, 2.0));
+    let text_scale = args.text_scale.unwrap_or_else(|| {
+        std::env::var("QOS_SHOTS_TEXT_SCALE")
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .filter(|scale| scale.is_finite())
+            .map_or(1.0, |scale| scale.clamp(0.5, 2.0))
+    });
     theme
         .with_reduce_motion(reduce_motion)
         .with_text_scale(text_scale)
