@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # Shared streaming + playback layer. The watch page's video surface is a
 # `ui::widget::VideoPlayer` driven by a `media::MediaEngine`, so real decode +
@@ -74,7 +75,7 @@ base64 = { workspace = true, optional = true }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg", optional = true }
 sha2 = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
-dirs = { workspace = true, optional = true }
+dirs.workspace = true
 
 [dev-dependencies]
 # Encoding-level assertions in the video-surface test: prove a decoded frame
@@ -124,7 +125,6 @@ grayjay-sync = [
     "dep:runtime-portal-xdg",
     "dep:sha2",
     "dep:zeroize",
-    "dep:dirs",
 ]
 
 [lints]
