@@ -45,10 +45,9 @@ false.
   snapshot and pagination walk still cover the whole document each frame. True
   viewport-only layout and streaming import remain performance work.
 - Live typing is a framework-owned collaborative edit stream rather than one
-  catalogue action per keystroke. Most discrete formatting/structure/review
-  operations are typed actions; table row/column mutations, ruler drags and style
-  definition edits still need migration from direct CRDT writes to explicit
-  typed action payloads before the architecture is fully uniform.
+  catalogue action per keystroke. Discrete formatting, structure, layout and
+  review operations—including table row/column mutations, ruler drags and style
+  definition edits—use typed action payloads with replay and undo boundaries.
 - The exported accessibility subtree exposes readable block/table content and
   actionable toolbar controls. Fine-grained AT text selection/edit commands,
   keyboard roving focus within every immediate-mode panel, and an installed-VM
