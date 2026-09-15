@@ -523,6 +523,14 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
             "<clock offset='utc'/>",
         ),
     };
+    // ARM virt has no ACPI S3/S4 support. Libvirt rejects even explicit
+    // disabled declarations there; keep them only on the x86 machine.
+    let power_management = match &config.firmware {
+        FirmwareConfig::X86Pflash { .. } => {
+            "<pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>"
+        }
+        FirmwareConfig::Arm64Variables { .. } => "",
+    };
     let network = xml_escape(&config.host_only_network);
     let cpu = match config.performance.cpu_mode {
         CpuMode::HostPassthrough => "<cpu mode='host-passthrough' check='none' migratable='off'/>",
@@ -541,7 +549,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <features><acpi/>{platform_features}</features>{clock}\
 <os firmware='efi'><type arch='{arch}' machine='{machine}'>hvm</type>\
 {firmware}<smbios mode='sysinfo'/><boot dev='hd'/><boot dev='cdrom'/></os>\
-<pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>\
+{power_management}\
 <devices><emulator>{emulator}</emulator>\
 <controller type='sata' index='0'/>\
 <controller type='scsi' index='0' model='virtio-scsi'><driver iothread='1'/></controller>\
@@ -703,6 +711,7 @@ mod tests {
         assert!(xml.contains("enabled='yes' name='secure-boot'"));
         assert!(xml.contains("enabled='yes' name='enrolled-keys'"));
         assert!(xml.contains("<gic version='3'/>"));
+        assert!(!xml.contains("<pm>"));
         assert!(xml.contains("<tpm model='tpm-tis'>"));
         for x86_only in [
             "<smm",
