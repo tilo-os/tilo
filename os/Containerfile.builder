@@ -4,7 +4,8 @@
 # Rebuilt weekly by .forgejo/workflows/build-builder-image.yml. Fedora rather
 # than the runner's default Ubuntu image: the OS is Fedora-based, so the build
 # deps and their versions match what the image build uses.
-FROM github-assets AS github-assets
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
 FROM registry.fedoraproject.org/fedora:42
 
@@ -68,7 +69,7 @@ RUN curl -fsSL https://sh.rustup.rs \
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
 ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
-RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
+RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
     case "$(uname -m)" in \
       x86_64) sccache_arch=x86_64; sccache_sha="$SCCACHE_SHA256_X86_64" ;; \
       aarch64) sccache_arch=aarch64; sccache_sha="$SCCACHE_SHA256_AARCH64" ;; \
