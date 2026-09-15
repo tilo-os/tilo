@@ -89,7 +89,6 @@ jobs:
     env:
       QOS_PCR_PREDICTION_SIGNER: ${{ vars.QOS_PCR_PREDICTION_SIGNER }}
       QOS_EFI_SIGNING_CERT_SHA256: ${{ vars.QOS_EFI_SIGNING_CERT_SHA256 }}
-      QOS_REQUIRE_PCR_PREDICTION: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')) && '1' || '0' }}
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -404,6 +403,11 @@ jobs:
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
+          if [[ "$publish" == true ]]; then
+            echo 'QOS_REQUIRE_PCR_PREDICTION=1' >> "$GITHUB_ENV"
+          else
+            echo 'QOS_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
+          fi
           echo "::notice::OS integration validation: $validate; publication: $publish"
 
       - name: Load the pinned marketplace owner trust input

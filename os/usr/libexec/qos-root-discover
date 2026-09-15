@@ -29,8 +29,12 @@ esp="$devroot/disk/by-partuuid/$loader_var"
 for _ in $(seq 1 100); do [ -e "$esp" ] && break; udevadm settle 2>/dev/null || true; sleep .05; done
 [ -e "$esp" ] || die "boot ESP $loader_var did not appear"
 esp="$(readlink -f "$esp")"
-parent="$("$lsblk_bin" -dno PKNAME "$esp" | head -1 | xargs)"
-[ -n "$parent" ] || die "could not identify the boot ESP's physical disk"
+mapfile -t parents < <("$lsblk_bin" -dno PKNAME "$esp")
+[ "${#parents[@]}" -eq 1 ] \
+  || die "could not identify exactly one physical disk for the boot ESP"
+read -r parent extra <<<"${parents[0]}"
+[ -n "$parent" ] && [ -z "${extra:-}" ] \
+  || die "could not identify the boot ESP's physical disk"
 case "$parent" in /*) disk="$parent" ;; *) disk="$devroot/$parent" ;; esac
 
 mapfile -t roots < <("$lsblk_bin" -lnpo NAME,TYPE,PARTTYPE "$disk" \
