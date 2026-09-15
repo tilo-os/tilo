@@ -119,12 +119,19 @@ impl SecretProvider for SecretServiceProvider {
             ])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
-            .output()?;
+            .output()
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    io::Error::from_raw_os_error(libc::ENOKEY)
+                } else {
+                    error
+                }
+            })?;
         if !output.status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "identity key is unavailable from Secret Service",
-            ));
+            // ENOKEY is retained through the runtime loader so the trusted
+            // compositor can distinguish a locked/missing keyring from a
+            // corrupt identity record without parsing human error text.
+            return Err(io::Error::from_raw_os_error(libc::ENOKEY));
         }
         let encoded =
             Zeroizing::new(String::from_utf8(output.stdout).map_err(|_| {

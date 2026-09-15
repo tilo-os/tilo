@@ -75,6 +75,24 @@ pub use secure_store::{BrokerFileProvider, SecretProvider};
 
 pub use runtime_portal::NotAvailable;
 
+/// True when a secured identity's Secret Service item could not be obtained.
+/// The storage provider marks this condition with `ENOKEY`; keeping the
+/// classification typed avoids making startup policy depend on localized
+/// `secret-tool` diagnostics.
+pub fn is_secret_service_unavailable(error: &NotAvailable) -> bool {
+    matches!(
+        error,
+        NotAvailable::ConnectionFailed(io_error)
+            if io_error.raw_os_error() == Some(libc::ENOKEY)
+    )
+}
+
+/// Equivalent classifier for callers that add context while preserving the
+/// original provider error as the source of an `io::Error`.
+pub fn is_secret_service_unavailable_io(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ENOKEY)
+}
+
 /// Legacy unsandboxed-development path. The Tilo launcher uses
 /// [`broker::BROKER_ENV_VAR`] and never sets this for packaged apps.
 pub const IDENTITY_ENV_VAR: &str = "TILO_USER_IDENTITY";
@@ -1773,6 +1791,15 @@ fn _static_no_serialize() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_service_unavailability_has_a_typed_classification() {
+        let unavailable =
+            NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::ENOKEY));
+        assert!(is_secret_service_unavailable(&unavailable));
+        let other = NotAvailable::ConnectionFailed(io::Error::from_raw_os_error(libc::EACCES));
+        assert!(!is_secret_service_unavailable(&other));
+    }
 
     #[cfg(unix)]
     #[test]
