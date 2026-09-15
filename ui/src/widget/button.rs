@@ -51,6 +51,8 @@ pub struct Button {
     click_value: Option<String>,
     /// Size the width from the visible label rather than using the 120px default.
     fit_content: bool,
+    content_sized: bool,
+    content_padding: f32,
     /// Fires on release-while-hovered *in addition to* any
     /// `on_click_path` CRDT mutation, for app code that isn't modelling
     /// its control flow in the CRDT (e.g. the file explorer's command sink).
@@ -103,6 +105,8 @@ impl Button {
             on_click_path: on_click_path.map(std::string::ToString::to_string),
             click_value: None,
             fit_content: false,
+            content_sized: false,
+            content_padding: 16.0,
             on_click: None,
             action: None,
             native_resource: None,
@@ -241,7 +245,7 @@ impl Button {
         if revision != self.i18n_revision {
             self.i18n_revision = revision;
             self.dirty = true;
-            self.layout_dirty |= self.fit_content;
+            self.layout_dirty |= self.fit_content || self.content_sized;
         }
     }
 
@@ -250,6 +254,8 @@ impl Button {
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.size = Some((width, height));
         self.fill_width = false;
+        self.fit_content = false;
+        self.content_sized = false;
         self
     }
 
@@ -259,20 +265,37 @@ impl Button {
         self.size = Some((0.0, height));
         self.fill_width = true;
         self.fit_content = false;
+        self.content_sized = false;
         self
     }
 
-    /// Use a compact label-derived width and the supplied height.
-    ///
-    /// Layout cannot access the text renderer, so this deliberately mirrors the
-    /// conservative sizing used by app-local buttons: 8px per character plus
-    /// 30px of horizontal padding, with a 64px minimum.
+    /// Measure the actual label and icon width, retaining the supplied fixed height.
+    /// Long text may intentionally overflow that explicit height.
     #[must_use]
     pub fn fit_content(mut self, height: f32) -> Self {
         self.fit_content = true;
+        self.content_sized = false;
         self.fill_width = false;
         self.size = Some((0.0, height));
         self
+    }
+
+    /// Size both dimensions from the measured label, wrapping to available width.
+    #[must_use]
+    pub fn content_sized(mut self) -> Self {
+        self.content_sized = true;
+        self.fit_content = false;
+        self.fill_width = false;
+        self.size = None;
+        self
+    }
+
+    pub(crate) fn with_action_sizing(self) -> Self {
+        if self.size.is_none() {
+            self.content_sized()
+        } else {
+            self
+        }
     }
 
     /// Write `value` to the click path on activation instead of pulsing it as a
@@ -525,6 +548,7 @@ pub struct ButtonFace<'a> {
     weight: crate::text_render::TextWeight,
     text_size: f32,
     accessible_name: Option<&'a str>,
+    wrap_label: bool,
 }
 
 impl<'a> ButtonFace<'a> {
@@ -539,7 +563,14 @@ impl<'a> ButtonFace<'a> {
             weight: crate::text_render::TextWeight::Medium,
             text_size: 14.0,
             accessible_name: None,
+            wrap_label: false,
         }
+    }
+    /// Wrap the label inside this manually assigned rectangle using theme insets.
+    #[must_use]
+    pub fn wrap_label(mut self) -> Self {
+        self.wrap_label = true;
+        self
     }
     #[must_use]
     pub fn style(mut self, style: ButtonStyle) -> Self {
@@ -629,15 +660,17 @@ impl<'a> ButtonFace<'a> {
     }
 }
 
-/// Widens a label's character count for the `fit_content` width estimate.
-/// A button label is a handful of characters, so this is far below `f32`'s
-/// exact-integer range.
 #[allow(
-    clippy::cast_precision_loss,
-    reason = "a button label's character count is always far below f32's exact-integer range"
+    clippy::cast_possible_truncation,
+    reason = "logical layout width narrows to renderer precision"
 )]
-fn label_px(chars: usize) -> f32 {
-    chars as f32
+fn label_width(rect: Rect, icon: Option<crate::icons::Icon>, padding: f32) -> f32 {
+    let icon_width = if icon.is_some() {
+        (rect.height() - 14.0).clamp(12.0, 22.0) + 6.0
+    } else {
+        0.0
+    };
+    (rect.width() as f32 - padding * 2.0 - icon_width as f32).max(0.0)
 }
 
 /// Paints the icon and/or label centred in `rect`: icon-only centres the
@@ -657,6 +690,7 @@ fn paint_icon_and_label(
     icon: Option<crate::icons::Icon>,
     label: &str,
     text_size: f32,
+    max_label_width: Option<f32>,
     weight: crate::text_render::TextWeight,
     fg: vello::peniko::Color,
 ) {
@@ -676,7 +710,8 @@ fn paint_icon_and_label(
             );
         }
         (icon, _) => {
-            let (text_width, _) = text_renderer.measure_weighted(label, text_size, None, weight);
+            let (text_width, text_height) =
+                text_renderer.measure_weighted(label, text_size, max_label_width, weight);
             let gap = if icon.is_some() { 6.0 } else { 0.0 };
             let icon_w = if icon.is_some() { icon_px } else { 0.0 };
             let cluster_w = icon_w + gap + f64::from(text_width);
@@ -693,14 +728,14 @@ fn paint_icon_and_label(
                 );
             }
             let text_x = start_x + icon_w + gap;
-            let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+            let text_y = rect.y0 + (rect.height() - f64::from(text_height)) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 label,
                 text_size,
                 fg,
                 transform.pre_translate(Vec2::new(text_x, text_y)),
-                None,
+                max_label_width,
                 weight,
             );
         }
@@ -744,6 +779,8 @@ impl Button {
             face.icon,
             &label,
             face.text_size,
+            face.wrap_label
+                .then(|| label_width(face.rect, face.icon, theme.padding_standard)),
             face.weight,
             fg,
         );
@@ -777,32 +814,110 @@ impl Widget for Button {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_i18n_revision();
+        self.content_padding = theme.padding_standard;
         let (mut w, mut h) = self.size.unwrap_or((120.0, 40.0));
         let minimum_target = self.interaction.minimum_target();
         w = w.max(minimum_target);
         h = h.max(minimum_target);
-        if self.fit_content {
-            let label = i18n!(&self.label);
-            w = (label_px(label.chars().count()) * 8.0 + 30.0).max(64.0);
-        }
         let node = taffy.leaf_node(Style {
-            flex_shrink: 0.0,
+            flex_shrink: if self.content_sized { 1.0 } else { 0.0 },
+            min_size: Size {
+                width: Dimension::length(0.0),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: if self.content_sized {
+                    Dimension::percent(1.0)
+                } else {
+                    Dimension::auto()
+                },
+                height: Dimension::auto(),
+            },
             size: Size {
                 width: if self.fill_width {
                     Dimension::percent(1.0)
+                } else if self.fit_content || self.content_sized {
+                    Dimension::auto()
                 } else {
                     Dimension::length(w)
                 },
-                height: Dimension::length(h),
+                height: if self.content_sized {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(h)
+                },
             },
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let label = i18n!(&self.label);
+        let fixed_height = self
+            .size
+            .map_or(40.0, |(_, h)| h)
+            .max(self.interaction.minimum_target());
+        let icon_width = if self.icon.is_some() {
+            if self.content_sized {
+                22.0
+            } else {
+                (fixed_height - 14.0).clamp(12.0, 22.0)
+            }
+        } else {
+            0.0
+        };
+        let icon_gap = if self.icon.is_some() && !label.is_empty() {
+            6.0
+        } else {
+            0.0
+        };
+        let horizontal = if self.content_sized {
+            self.content_padding * 2.0
+        } else {
+            30.0
+        };
+        let extra_width = icon_width + icon_gap + horizontal;
+        let max_width = if self.content_sized {
+            known
+                .width
+                .or(match available.width {
+                    taffy::AvailableSpace::Definite(width) => Some(width),
+                    taffy::AvailableSpace::MinContent => Some(0.0),
+                    taffy::AvailableSpace::MaxContent => None,
+                })
+                .map(|width| (width.floor() - extra_width).max(0.0))
+        } else {
+            None
+        };
+        let (width, height) = text.measure(&label, 14.0, max_width);
+        Size {
+            width: known.width.unwrap_or_else(|| {
+                (width + extra_width)
+                    .ceil()
+                    .max(if self.content_sized { 0.0 } else { 64.0 })
+                    .max(self.interaction.minimum_target())
+            }),
+            height: known.height.unwrap_or_else(|| {
+                if self.content_sized {
+                    (height.max(icon_width) + self.content_padding)
+                        .max(40.0)
+                        .max(self.interaction.minimum_target())
+                } else {
+                    fixed_height
+                }
+            }),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -908,6 +1023,8 @@ impl Widget for Button {
             self.icon,
             &label,
             14.0,
+            self.content_sized
+                .then(|| label_width(self.rect, self.icon, self.content_padding)),
             crate::text_render::TextWeight::Regular,
             fg_color,
         );
@@ -938,7 +1055,8 @@ impl Widget for Button {
     fn is_layout_dirty(&self) -> bool {
         self.cache_rect == Rect::ZERO
             || self.layout_dirty
-            || (self.fit_content && self.i18n_revision != crate::i18n::I18nManager::revision())
+            || ((self.fit_content || self.content_sized)
+                && self.i18n_revision != crate::i18n::I18nManager::revision())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1256,6 +1374,184 @@ mod tests {
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn measured_button_rect(button: Button, scale: f32) -> Rect {
+        let harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(crate::widget::Row::new().push(Box::new(button))),
+            (1000, 200),
+            Theme::dark().with_text_scale(scale),
+        );
+        let rect = harness.inspection().root.children[0].rect;
+        Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+    }
+
+    #[test]
+    fn content_sized_wraps_long_scaled_actions_inside_available_width() {
+        let label = "Refresh all remote connections and discover updates";
+        let harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(
+                crate::widget::Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(
+                        Button::new("refresh", label, None)
+                            .with_icon(crate::icons::Icon::Search)
+                            .content_sized(),
+                    )),
+            ),
+            (220, 400),
+            Theme::dark().with_text_scale(2.0),
+        );
+        let rect = harness.inspection().root.children[0].rect;
+        assert!(rect[2] <= 220.0);
+        assert!(
+            rect[3] > 70.0,
+            "wrapped action must grow in height: {rect:?}"
+        );
+    }
+
+    #[test]
+    fn label_line_box_is_centered_at_scaled_size() {
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+        let (_, height) = text.measure("Refresh", 14.0, None);
+        paint_icon_and_label(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            rect,
+            None,
+            "Refresh",
+            14.0,
+            None,
+            crate::text_render::TextWeight::Regular,
+            vello::peniko::Color::WHITE,
+        );
+        let actual = &scene.encoding().resources.glyph_runs[0];
+        let mut expected = Scene::new();
+        text.draw_text_weighted(
+            &mut expected,
+            "Refresh",
+            14.0,
+            vello::peniko::Color::WHITE,
+            Affine::translate((0.0, (40.0 - f64::from(height)) / 2.0)),
+            None,
+            crate::text_render::TextWeight::Regular,
+        );
+        let reference = &expected.encoding().resources.glyph_runs[0];
+        assert_eq!(
+            actual.transform.translation[1],
+            reference.transform.translation[1]
+        );
+    }
+
+    #[test]
+    fn wrapped_retained_and_immediate_labels_share_geometry() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let label = "Refresh all remote connections";
+        let rect = Rect::new(10.0, 20.0, 230.0, 180.0);
+        let mut button = Button::new("action", label, None)
+            .content_sized()
+            .with_icon(crate::icons::Icon::Refresh);
+        let mut tree = TaffyTree::new();
+        button.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+        button.apply_layout_external(rect);
+        let mut retained = Scene::new();
+        button.draw(
+            &mut retained,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &crate::presence::PresenceCtx::default(),
+        );
+        let mut immediate = Scene::new();
+        Button::paint(
+            &mut immediate,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &ButtonFace::new(rect, label)
+                .icon(crate::icons::Icon::Refresh)
+                .wrap_label()
+                .weight(crate::text_render::TextWeight::Regular),
+        );
+        let a = &retained.encoding().resources.glyph_runs;
+        let b = &immediate.encoding().resources.glyph_runs;
+        assert!(!a.is_empty());
+        assert_eq!(a.len(), b.len());
+        for (a, b) in a.iter().zip(b) {
+            assert_eq!(a.transform, b.transform);
+            assert_eq!(a.font_size, b.font_size);
+        }
+    }
+
+    #[test]
+    fn intrinsic_width_rounding_does_not_wrap_a_fitting_single_line() {
+        let mut text = TextRenderer::new();
+        for label in ["Install workspace", "Refresh connections", "View details"] {
+            let rect =
+                measured_button_rect(Button::new("action", label, None).content_sized(), 1.0);
+            let (width, _) = text.measure(label, 14.0, None);
+            assert!(
+                rect.width() >= f64::from(width + Theme::dark().padding_standard * 2.0),
+                "rounded width clips or wraps {label}: {rect:?}, text {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_modifiers_replace_fully_content_sized_mode() {
+        let rect = measured_button_rect(
+            Button::new("action", "A long scaled label", None)
+                .content_sized()
+                .with_size(81.0, 35.0),
+            2.0,
+        );
+        assert_eq!(rect.size(), vello::kurbo::Size::new(81.0, 35.0));
+        let rect = measured_button_rect(
+            Button::new("action", "Short", None)
+                .content_sized()
+                .fit_content(36.0),
+            2.0,
+        );
+        assert_eq!(rect.height(), 36.0);
+    }
+
+    #[test]
+    fn fit_content_contains_real_scaled_label_and_icon() {
+        let label = "WWW Refresh remote connections";
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let (width, _) = text.measure(label, 14.0, None);
+        let rect = measured_button_rect(
+            Button::new("refresh", label, None)
+                .with_icon(crate::icons::Icon::Search)
+                .fit_content(40.0),
+            2.0,
+        );
+        assert!(
+            rect.width() >= f64::from(width) + 22.0 + 6.0,
+            "measured label and icon escape button: {rect:?}, text width {width}"
+        );
+        assert_eq!(rect.height(), 40.0, "fit_content keeps explicit height");
+    }
+
+    #[test]
+    fn manual_size_after_fit_content_owns_both_dimensions() {
+        let rect = measured_button_rect(
+            Button::new("manual", "Long label intentionally clipped", None)
+                .fit_content(40.0)
+                .with_size(81.0, 35.0),
+            2.0,
+        );
+        assert_eq!(rect.size(), vello::kurbo::Size::new(81.0, 35.0));
+    }
 
     #[test]
     fn button_test_id_is_stable_constructor_id() {

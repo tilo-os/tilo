@@ -1936,6 +1936,8 @@ pub mod banner;
 pub use banner::{Banner, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
+mod card_composition;
+pub use card_composition::{Actions, ContentCard};
 pub mod card;
 pub use card::{Card, CardGrid, card_column_width, card_columns};
 pub mod capture_studio;
