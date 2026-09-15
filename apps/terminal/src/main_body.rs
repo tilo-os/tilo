@@ -123,15 +123,13 @@ impl Selection {
 /// Open a URL from an OSC 8 hyperlink click. Best-effort: spawns the OS opener
 /// (`xdg-open`) detached and never blocks or panics — a missing opener or a
 /// malformed URL is silently ignored, exactly like the clipboard helpers.
-/// Only `http(s)`, `file`, and `mailto` schemes are launched so a hostile
-/// program can't smuggle a `javascript:`/`data:` URI (or a shell argument)
-/// into the opener.
+/// Only plain public `http(s)` targets are launched. In particular, terminal
+/// output never gets to turn an OSC 8 link into access to a local `file:` URL,
+/// a `mailto:` draft, credentials in an authority, or a query/fragment that
+/// might contain a bearer token. A user can still select and copy any text the
+/// process printed; the opener is deliberately the narrower, explicit effect.
 pub(crate) fn open_url(url: &str) {
-    let ok = url.starts_with("http://")
-        || url.starts_with("https://")
-        || url.starts_with("file://")
-        || url.starts_with("mailto:");
-    if !ok {
+    if !is_public_web_link(url) {
         return;
     }
     let _ = std::process::Command::new("xdg-open")
@@ -140,6 +138,41 @@ pub(crate) fn open_url(url: &str) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+/// An OSC 8 target that is safe to publish to the action directory and hand to
+/// the external opener. This intentionally accepts a small URL subset instead
+/// of attempting to parse and redact arbitrary process-provided metadata: a
+/// redaction mistake would disclose a secret in a resource payload.
+pub(crate) fn is_public_web_link(url: &str) -> bool {
+    let Some(authority_and_path) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    if authority_and_path.is_empty()
+        || authority_and_path.contains(['?', '#', '@', '\\'])
+        || authority_and_path
+            .chars()
+            .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return false;
+    }
+    // An authority is required. A slash is optional (for example
+    // `https://qos.example`), but a path cannot be mistaken for one.
+    authority_and_path
+        .split_once('/')
+        .map_or(!authority_and_path.is_empty(), |(authority, _)| {
+            !authority.is_empty()
+        })
+}
+
+/// Prompted resource input is text, not an escape hatch for arbitrary terminal
+/// control bytes. This keeps the typed `send` promise truthful and lets `run`
+/// guarantee precisely one appended Enter.
+fn is_reviewable_terminal_text(value: &str) -> bool {
+    !value.chars().any(|ch| ch.is_control() && ch != '\t')
 }
 
 /// Convert an OSC metadata field into a compact, single-line label. OSC is
@@ -843,7 +876,10 @@ impl TerminalWidget {
             for attr in row {
                 if attr.link_id != 0
                     && seen.insert(attr.link_id)
-                    && self.links.contains_key(&attr.link_id)
+                    && self
+                        .links
+                        .get(&attr.link_id)
+                        .is_some_and(|url| is_public_web_link(url))
                 {
                     ids.push(attr.link_id);
                     if ids.len() >= MAX_VISIBLE_RESOURCE_LINKS {
@@ -1899,6 +1935,11 @@ impl Widget for TerminalWidget {
                         MAX_RESOURCE_SEND_BYTES / 1024
                     ));
                 }
+                if !is_reviewable_terminal_text(&value) {
+                    return Err(
+                        "text to send may not contain terminal control characters".to_string()
+                    );
+                }
                 self.try_write_input(value.as_bytes())?;
             }
             "terminal.run" => {
@@ -1913,6 +1954,12 @@ impl Widget for TerminalWidget {
                         "command exceeds the {} KiB reviewed-command limit",
                         MAX_RESOURCE_SEND_BYTES / 1024
                     ));
+                }
+                if !is_reviewable_terminal_text(&value) {
+                    return Err(
+                        "command must be one line and may not contain terminal control characters"
+                            .to_string(),
+                    );
                 }
                 let mut command = value.into_bytes();
                 command.push(b'\r');
@@ -1937,12 +1984,9 @@ impl Widget for TerminalWidget {
                     return Ok(false);
                 }
                 if safe_osc_text(value.as_bytes(), MAX_OSC_LINK_BYTES).is_none()
-                    || !(value.starts_with("http://")
-                        || value.starts_with("https://")
-                        || value.starts_with("file://")
-                        || value.starts_with("mailto:"))
+                    || !is_public_web_link(&value)
                 {
-                    return Err("link target is not a supported safe URL".to_string());
+                    return Err("link target is not a safe public web URL".to_string());
                 }
                 open_url(&value);
             }
@@ -2135,8 +2179,6 @@ impl Widget for TerminalWidget {
         // grid origin is single-sourced. `set_geometry` and hit-testing read the
         // cached metrics — neither sees a `Theme` — mirroring `last_padding_x`.
         self.refresh_chrome_metrics(theme);
-        self.grid_rect = self.grid_content_rect(self.rect);
-        let grid_rect = self.grid_rect;
 
         // The terminal body fills the whole widget in the theme's terminal
         // background (a deliberate deep surface, not an accidental void). No
@@ -2160,6 +2202,15 @@ impl Widget for TerminalWidget {
             text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
         self.char_w = f64::from(w).max(1.0);
         self.char_h = (f64::from(font_size) * 1.25f64).ceil().max(1.0);
+
+        // `measure` happens before we can resolve the theme's actual
+        // monospace face. Reconcile the PTY geometry after that exact
+        // measurement as well: at 200% text scale a fallback/default advance
+        // can be much narrower than the rendered mono advance, otherwise the
+        // process sees more columns than fit on screen and its right side is
+        // silently clipped. This is a no-op on steady frames.
+        self.set_geometry(self.rect);
+        let grid_rect = self.grid_rect;
 
         let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
         let max_top = self.grid.len().saturating_sub(visible_rows);
@@ -3618,10 +3669,19 @@ impl TerminalWidget {
         }
         let label = self.disconnected_message();
         let size = theme.tokens.typography.scale.sm;
-        let (label_w, _) = tr.measure(label, size, None);
         let pad = f64::from(theme.tokens.spacing.s2);
         let height = f64::from(size) * 1.7;
-        let width = (f64::from(label_w) + pad * 2.0).min(self.grid_rect.width());
+        // Reuse the renderer's shared elision behaviour instead of letting a
+        // lifecycle message run under the scrollbar or off a narrow / 200%
+        // text-scale surface. The complete state remains in accessibility;
+        // this is only the one-line visual badge.
+        let label = tr.elide_to_width(
+            label,
+            size,
+            (self.grid_rect.width() - pad * 4.0).max(0.0) as f32,
+        );
+        let (label_w, _) = tr.measure(&label, size, None);
+        let width = (f64::from(label_w) + pad * 2.0).min(self.grid_rect.width() - pad);
         let rect = Rect::new(
             self.grid_rect.x0 + pad,
             self.grid_rect.y1 - height - pad,
@@ -3638,7 +3698,7 @@ impl TerminalWidget {
         );
         tr.draw_text_weighted(
             scene,
-            label,
+            &label,
             size,
             theme.text_primary,
             transform * Affine::translate((rect.x0 + pad, rect.y0 + f64::from(size) * 0.25)),
