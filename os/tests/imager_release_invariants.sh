@@ -18,6 +18,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
+  "$repo/apps/imager/packaging/monitor-winget-acceptance.sh" \
   "$repo/apps/imager/packaging/publish-winget.sh" \
   "$repo/os/dev/use-published-image.sh" \
   "$repo/os/dev/test-installer-cycle.sh" \
@@ -26,6 +27,8 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
 
 bash "$repo/os/tests/forgejo_release_publication.sh" \
   || bad 'Forgejo release publication is not idempotent and immutable'
+bash "$repo/os/tests/winget_acceptance_monitor.sh" \
+  || bad 'WinGet acceptance monitor is not fail-closed and version-bound'
 
 if command -v appstreamcli >/dev/null 2>&1; then
   appstreamcli validate --no-net \
@@ -436,5 +439,18 @@ grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v'
   && grep -Fq 'refusing to replace newer landing-page release' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && ok 'tag promotion is serialized while stale branch validation is superseded' \
   || bad 'release promotion can regress or stale validation can block the current commit'
+
+winget_monitor="$repo/.forgejo/workflows/monitor-winget.yml"
+winget_reconcile="$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
+grep -Fq 'cron: "23 */6 * * *"' "$winget_monitor" \
+  && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != '' || vars.IMAGER_ALLOW_STATIC_SIGNING_BOOTSTRAP == '1'" "$winget_monitor" \
+  && grep -Fq 'enable-openid-connect: true' "$winget_monitor" \
+  && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$winget_monitor" \
+  && grep -Fq 'acquire-release-token.sh' "$winget_monitor" \
+  && grep -Fq 'state="$(jq -r '\''.channels.winget // empty'\'' "$manifest")"' "$winget_reconcile" \
+  && grep -Fq 'GITHUB_REF_NAME="$tag" apps/imager/packaging/publish-site-release.sh' "$winget_reconcile" \
+  && grep -Fq 'published landing-page release has invalid WinGet state' "$winget_reconcile" \
+  && ok 'WinGet acceptance is reconciled automatically with short-lived site authority' \
+  || bad 'WinGet acceptance still requires a manual site-promotion rerun'
 
 exit "$fail"
