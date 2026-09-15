@@ -125,6 +125,11 @@ pub struct AppShell {
     content_area_rect: Rect,
     /// The narrow content screen's back-arrow button (zero-sized otherwise).
     back_rect: Rect,
+    /// Narrow chrome grows with text scale so large page headings do not
+    /// overlap the Back affordance or its divider.
+    back_band_h: f64,
+    /// Vertically centres the fixed-size Back target in that band.
+    back_button_top: f64,
 
     /// The order the child nodes were built in, mirrored by `children()`.
     slots: Vec<Slot>,
@@ -158,6 +163,8 @@ impl AppShell {
             sidebar_panel_rect: Rect::ZERO,
             content_area_rect: Rect::ZERO,
             back_rect: Rect::ZERO,
+            back_band_h: BACK_BAND_H,
+            back_button_top: PAD,
             slots: Vec::new(),
             last_cursor: Point::ZERO,
         }
@@ -365,9 +372,9 @@ impl AppShell {
                     self.content_area_rect = r;
                     self.back_rect = Rect::new(
                         r.x0 + PAD,
-                        r.y0 + PAD,
+                        r.y0 + self.back_button_top,
                         r.x0 + PAD + BACK_BTN,
-                        r.y0 + PAD + BACK_BTN,
+                        r.y0 + self.back_button_top + BACK_BTN,
                     );
                 }
             },
@@ -392,7 +399,7 @@ impl AppShell {
                 s.inset = taffy::Rect {
                     left: length(PAD as f32),
                     right: auto(),
-                    top: length(PAD as f32),
+                    top: length(self.back_button_top as f32),
                     bottom: auto(),
                 };
                 s.size = taffy::Size {
@@ -404,7 +411,7 @@ impl AppShell {
                 let (left, top) = if self.layout == ShellLayout::Wide {
                     (length(sw as f32), length(0.0_f32))
                 } else {
-                    (length(0.0_f32), length(BACK_BAND_H as f32))
+                    (length(0.0_f32), length(self.back_band_h as f32))
                 };
                 s.inset = taffy::Rect {
                     left,
@@ -543,7 +550,7 @@ impl AppShell {
         }
 
         if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::Content {
-            let y = self.rect.y0 + BACK_BAND_H;
+            let y = self.rect.y0 + self.back_band_h;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -610,6 +617,8 @@ impl Widget for AppShell {
     ) -> NodeId {
         self.layout = self.resolve_layout();
         self.built_layout = self.layout;
+        self.back_band_h = (BACK_BAND_H * f64::from(theme.text_scale)).max(BACK_BAND_H);
+        self.back_button_top = (self.back_band_h - BACK_BTN).max(0.0) / 2.0;
 
         // ABSOLUTE-positioned direct nodes stay in the host tree (and thus
         // keyboard-focusable); each is then pinned to its slot rect.
@@ -1096,6 +1105,23 @@ mod tests {
             names,
             vec!["Button", "Text"],
             "content screen composes the standard Back control before content"
+        );
+    }
+
+    #[test]
+    fn narrow_back_band_grows_for_large_text() {
+        let mut s = shell().with_width_hint(460.0);
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = s.build_layout(&mut taffy, &theme, &mut map);
+
+        assert_eq!(s.layout, ShellLayout::Narrow);
+        assert_eq!(s.back_band_h, BACK_BAND_H * 2.0);
+        assert_eq!(
+            s.back_button_top,
+            (s.back_band_h - BACK_BTN) / 2.0,
+            "Back remains centred in the expanded accessibility band"
         );
     }
 
