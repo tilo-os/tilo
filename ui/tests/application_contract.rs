@@ -255,6 +255,7 @@ fn successful_initialization_survives_factory_failure_with_only_error_owner() {
         source,
         record,
         records,
+        ..
     } = error
     else {
         panic!("missing retained binding")
@@ -399,6 +400,7 @@ fn invalid_factory_view_retains_new_ready_record_without_saving_view() {
         source,
         record,
         records,
+        ..
     } = error
     else {
         panic!("missing Ready owner")
@@ -560,6 +562,7 @@ fn new_restore_hook_failure_keeps_ready_record_and_old_view_bytes() {
         source,
         record,
         records,
+        ..
     } = error
     else {
         panic!("missing restore failure owner")
@@ -656,6 +659,7 @@ fn returned_component_must_be_the_exact_prepared_context() {
         source,
         record,
         records,
+        ..
     } = error
     else {
         panic!("missing original binding")
@@ -826,6 +830,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             source,
             record,
             records,
+            ..
         } = error
         else {
             panic!("Ready validation must retain its last owner: {case}")
@@ -918,4 +923,164 @@ fn failed_setup_destructor_panic_is_not_converted_to_a_launch_error() {
         Some(&"probe destructor panic")
     );
     assert!(drop_was_closed());
+}
+
+#[test]
+fn prepared_driver_semantic_outputs_use_the_canonical_document() {
+    let host = ProbeHost::new();
+    let component = runner_probe_definition()
+        .instantiate(
+            host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                .unwrap(),
+            LaunchTarget::New,
+            RestoreInput::None,
+        )
+        .unwrap();
+    let checkout = component.record().clone();
+    let dump = host.temp.path().join("output/document.json");
+    let inspect = host.temp.path().join("output/inspect.json");
+    let targets = host.temp.path().join("output/targets.json");
+    let spec = ui::headless::Spec {
+        dump: Some(dump.clone()),
+        inspect: Some(inspect.clone()),
+        targets: Some(targets.clone()),
+        ..Default::default()
+    };
+    assert_eq!(
+        ui::headless::run_component(&spec, component, runner_inputs()),
+        0
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dump).unwrap()).unwrap();
+    assert_eq!(document["body"], "initialized");
+    assert!(std::fs::metadata(inspect).unwrap().len() > 0);
+    assert!(std::fs::metadata(targets).unwrap().len() > 0);
+    assert_eq!(body(&host.records, &checkout), "initialized");
+    assert!(host.view_path(11).is_file());
+    assert_eq!(calls(), 1);
+}
+
+#[test]
+fn prepared_runner_mount_failure_retains_close_recovery() {
+    for native in [false, true] {
+        let host = ProbeHost::new();
+        let mut component = runner_probe_definition()
+            .instantiate(
+                host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                    .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let checkout = component.record().clone();
+        component.mount(|_| {}).unwrap();
+        let path = host.view_path(11);
+        std::fs::create_dir_all(&path).unwrap();
+        drop(host.views);
+        let error = if native {
+            ui::App::from_component(component, runner_inputs())
+                .err()
+                .unwrap()
+        } else {
+            ui::headless::Driver::from_component(component, (320, 180), runner_inputs())
+                .err()
+                .unwrap()
+        };
+        let LaunchError::ComponentSetup {
+            record,
+            records,
+            mut reports,
+            ..
+        } = error
+        else {
+            panic!("runner setup lost the canonical recovery owner");
+        };
+        assert_eq!(record, checkout);
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].view_error.is_some());
+        assert_eq!(body(&records, &record), "initialized");
+        std::fs::remove_dir(&path).unwrap();
+        reports[0].retry_view().unwrap();
+        assert!(path.is_file());
+    }
+}
+
+#[test]
+fn prepared_headless_action_and_output_failure_keep_exit_one_and_close() {
+    for output_failure in [false, true] {
+        let host = ProbeHost::new();
+        let component = runner_probe_definition()
+            .instantiate(
+                host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                    .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let writer = local_state().writer();
+        let output = host.root().join("output-is-directory");
+        std::fs::create_dir_all(&output).unwrap();
+        let spec = if output_failure {
+            ui::headless::Spec {
+                dump: Some(output),
+                ..Default::default()
+            }
+        } else {
+            ui::headless::Spec {
+                actions: vec![ui::headless::Action::ClickNamed("absent".into())],
+                ..Default::default()
+            }
+        };
+        assert_eq!(
+            ui::headless::run_component(&spec, component, runner_inputs()),
+            1
+        );
+        assert!(!writer.try_set("after runner close".into()));
+        assert!(host.view_path(11).is_file());
+    }
+}
+
+#[test]
+fn prepared_headless_flush_failure_is_durability_exit_with_original_bytes() {
+    let host = ProbeHost::new();
+    let component = runner_probe_definition()
+        .instantiate(
+            host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                .unwrap(),
+            LaunchTarget::New,
+            RestoreInput::None,
+        )
+        .unwrap();
+    let checkout = component.record().clone();
+    host.records.try_flush().unwrap();
+    let path = app_state::DocStore::room_record_dir_at(
+        &host.root(),
+        APP,
+        ROOM,
+        &checkout.id.storage_key(),
+    )
+    .unwrap()
+    .join(app_state::DOCUMENT_FILE);
+    let original = std::fs::read(&path).unwrap();
+    let retained = path.with_extension("retained");
+    std::fs::rename(&path, &retained).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    host.records
+        .with(&checkout.id, |doc| {
+            doc.put(ROOT, "body", "pending durability").unwrap();
+        })
+        .unwrap();
+    assert_eq!(
+        ui::headless::run_component(&ui::headless::Spec::default(), component, runner_inputs()),
+        3
+    );
+    assert_eq!(std::fs::read(&retained).unwrap(), original);
+    assert_eq!(body(&host.records, &checkout), "pending durability");
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::rename(&retained, &path).unwrap();
+    host.records.try_flush().unwrap();
+    assert_eq!(
+        host.records.save_status(&checkout.id).unwrap(),
+        ui::record::RecordSaveStatus::Saved
+    );
 }

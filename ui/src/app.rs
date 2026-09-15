@@ -437,8 +437,7 @@ pub struct App {
     state: State,
     root_widget: Box<dyn Widget>,
     text_renderer: TextRenderer,
-    palette_text_renderer: fn() -> TextRenderer,
-    palette_field: fn() -> crate::widget::SearchField,
+    palette_source: PaletteSource,
     taffy: TaffyTree<()>,
     root_node: Option<NodeId>,
     node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
@@ -655,15 +654,37 @@ pub struct App {
 
 /// Lazy private inputs keep discovery at the original initializer/callback boundary.
 /// Constructing this provider itself performs no discovery beyond its supplied manager.
+enum ConstructionValue<T> {
+    Lazy(fn() -> T),
+    Ready(T),
+}
+impl<T> ConstructionValue<T> {
+    fn resolve(self) -> T {
+        match self {
+            Self::Lazy(produce) => produce(),
+            Self::Ready(value) => value,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PaletteSource {
+    Owned {
+        renderer: fn() -> TextRenderer,
+        field: fn() -> crate::widget::SearchField,
+    },
+    Host,
+}
+
 struct AppConstructionInputs {
     collab_manager: CollaborationManager,
-    configured_theme: fn() -> Theme,
-    text_renderer: fn() -> TextRenderer,
-    palette_field: fn() -> crate::widget::SearchField,
+    configured_theme: ConstructionValue<Theme>,
+    text_renderer: ConstructionValue<TextRenderer>,
+    palette_source: PaletteSource,
     debug_mode: fn() -> bool,
     theme_store_stamp: fn() -> Option<std::time::SystemTime>,
-    local_author: fn() -> crate::permissions::UserId,
-    presence_ctx: fn() -> PresenceCtx,
+    local_author: ConstructionValue<crate::permissions::UserId>,
+    presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
     high_contrast: fn() -> bool,
     reduce_motion: fn() -> bool,
@@ -673,23 +694,57 @@ struct AppConstructionInputs {
     profiler: fn() -> Option<crate::profiling::FrameProfiler>,
     floating_surface_client: fn() -> Option<crate::floating_surface::FloatingSurfaceServiceClient>,
     startup_presence_scope: fn() -> Option<PresenceKey>,
-    surface_id: fn() -> String,
+    surface_id: ConstructionValue<String>,
 }
 
 impl AppConstructionInputs {
+    fn component(
+        inputs: crate::application::ComponentRunnerInputs,
+        binding: &crate::bound_dispatch::CallbackBinding,
+    ) -> Self {
+        let mut presence = PresenceCtx::empty();
+        presence.set_own_identity([binding.author.0.clone()]);
+        Self {
+            collab_manager: CollaborationManager::disabled(),
+            configured_theme: ConstructionValue::Ready(inputs.theme),
+            text_renderer: ConstructionValue::Ready(inputs.text_renderer),
+            palette_source: PaletteSource::Host,
+            local_author: ConstructionValue::Ready(binding.author.clone()),
+            presence_ctx: ConstructionValue::Ready(presence),
+            surface_id: ConstructionValue::Ready(format!(
+                "component:{}:{}",
+                binding.instance_id, binding.lifetime_id
+            )),
+            debug_mode: || false,
+            theme_store_stamp: || None,
+            screen_reader: || None,
+            high_contrast: || false,
+            reduce_motion: || false,
+            text_scale: || 1.0,
+            ui_scale: || 1.0,
+            pending_continuation_restore: || None,
+            profiler: || None,
+            floating_surface_client: || None,
+            startup_presence_scope: || None,
+        }
+    }
+
     fn production(collab_manager: CollaborationManager) -> Self {
         Self {
             collab_manager,
-            configured_theme: Theme::configured,
-            text_renderer: TextRenderer::new,
-            palette_field: crate::widget::SearchField::new,
+            configured_theme: ConstructionValue::Lazy(Theme::configured),
+            text_renderer: ConstructionValue::Lazy(TextRenderer::new),
+            palette_source: PaletteSource::Owned {
+                renderer: TextRenderer::new,
+                field: crate::widget::SearchField::new,
+            },
             debug_mode: || cfg!(debug_assertions) && std::env::var("QUICK_UI_DEBUG").is_ok(),
             theme_store_stamp: || {
                 settings_store::settings_path()
                     .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
             },
-            local_author: crate::collaboration::local_user_id,
-            presence_ctx: App::initial_presence_context,
+            local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
+            presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
                 if App::screen_reader_env_enabled()
                     || App::persisted_accessibility_bool("screen_reader")
@@ -708,7 +763,7 @@ impl AppConstructionInputs {
             floating_surface_client:
                 crate::floating_surface::FloatingSurfaceServiceClient::discover,
             startup_presence_scope: PresenceKey::for_local_workspace,
-            surface_id: crate::local_surface_id,
+            surface_id: ConstructionValue::Lazy(crate::local_surface_id),
         }
     }
 
@@ -716,17 +771,22 @@ impl AppConstructionInputs {
     fn controlled() -> Self {
         Self {
             collab_manager: CollaborationManager::disabled(),
-            configured_theme: Theme::dark,
-            text_renderer: crate::font_catalog::fixture_renderer,
-            palette_field: || crate::widget::SearchField::with_language("en_US"),
+            configured_theme: ConstructionValue::Lazy(Theme::dark),
+            text_renderer: ConstructionValue::Lazy(crate::font_catalog::fixture_renderer),
+            palette_source: PaletteSource::Owned {
+                renderer: crate::font_catalog::fixture_renderer,
+                field: || crate::widget::SearchField::with_language("en_US"),
+            },
             debug_mode: || false,
             theme_store_stamp: || None,
-            local_author: || crate::permissions::UserId("fixture-user".into()),
-            presence_ctx: || {
+            local_author: ConstructionValue::Lazy(|| {
+                crate::permissions::UserId("fixture-user".into())
+            }),
+            presence_ctx: ConstructionValue::Lazy(|| {
                 let mut presence = PresenceCtx::empty();
                 presence.set_own_identity(["fixture-user".to_owned()]);
                 presence
-            },
+            }),
             screen_reader: || None,
             high_contrast: || false,
             reduce_motion: || false,
@@ -736,12 +796,34 @@ impl AppConstructionInputs {
             profiler: || None,
             floating_surface_client: || None,
             startup_presence_scope: || None,
-            surface_id: || "fixture-surface".into(),
+            surface_id: ConstructionValue::Lazy(|| "fixture-surface".into()),
         }
     }
 }
 
 impl App {
+    /// Mount an already prepared component with explicit presentation and local services.
+    /// # Errors
+    /// Returns the original component recovery owners when mounting is refused.
+    pub fn from_component(
+        mut component: crate::application::AppComponent,
+        inputs: crate::application::ComponentRunnerInputs,
+    ) -> Result<Self, crate::launch::LaunchError> {
+        let scope = crate::wake::WakeScope::new();
+        let handle = scope.handle();
+        if let Err(error) = component.mount(move |_| handle.wake()) {
+            return Err(component.setup_error(error));
+        }
+        let inputs = AppConstructionInputs::component(inputs, &component.callback_binding());
+        let root = Box::new(crate::widget::BoundAppWidget { component });
+        Ok(Self::from_scoped_parts_with_inputs(
+            scope,
+            State::new(),
+            root,
+            || inputs,
+        ))
+    }
+
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
@@ -752,6 +834,11 @@ impl App {
         self.bindings.clear();
         self.node_map.clear();
     }
+    fn close_native_content(&mut self) {
+        self.close_components();
+        self.root_widget.unmount_native_views();
+    }
+
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
         &self.component_close_reports
     }
@@ -917,7 +1004,7 @@ impl App {
     }
 
     #[cfg(test)]
-    fn from_scoped_parts_with_controlled_inputs(
+    pub(crate) fn from_scoped_parts_with_controlled_inputs(
         wake_scope: crate::wake::WakeScope,
         state: State,
         root_widget: Box<dyn Widget>,
@@ -980,14 +1067,13 @@ impl App {
             crate::wake::WakeScope::enter_detached,
             crate::wake::WakeScope::enter,
         );
-        let configured_theme = (inputs.configured_theme)();
+        let configured_theme = inputs.configured_theme.resolve();
         let mut app = Self {
             wake_scope,
             state,
             root_widget,
-            text_renderer: (inputs.text_renderer)(),
-            palette_text_renderer: inputs.text_renderer,
-            palette_field: inputs.palette_field,
+            text_renderer: inputs.text_renderer.resolve(),
+            palette_source: inputs.palette_source,
             taffy: TaffyTree::new(),
             root_node: None,
             node_map: std::collections::HashMap::new(),
@@ -1015,8 +1101,8 @@ impl App {
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager: inputs.collab_manager,
-            local_author: (inputs.local_author)(),
-            presence_ctx: (inputs.presence_ctx)(),
+            local_author: inputs.local_author.resolve(),
+            presence_ctx: inputs.presence_ctx.resolve(),
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
             pointer_space: None,
@@ -1082,10 +1168,19 @@ impl App {
         };
 
         app.a11y.high_contrast = (inputs.high_contrast)();
-        app.a11y.reduce_motion = (inputs.reduce_motion)();
+        app.a11y.reduce_motion = match app.palette_source {
+            PaletteSource::Host => app.base_theme.reduce_motion,
+            PaletteSource::Owned { .. } => (inputs.reduce_motion)(),
+        };
         app.a11y.screen_reader = app.screen_reader.is_some();
-        app.text_scale = (inputs.text_scale)();
-        app.ui_scale = (inputs.ui_scale)();
+        app.text_scale = match app.palette_source {
+            PaletteSource::Host => app.text_renderer.text_scale(),
+            PaletteSource::Owned { .. } => (inputs.text_scale)(),
+        };
+        app.ui_scale = match app.palette_source {
+            PaletteSource::Host => app.base_theme.ui_scale,
+            PaletteSource::Owned { .. } => (inputs.ui_scale)(),
+        };
         app.rebuild_theme();
 
         // The scope is also what sends `Arrived`, so an app that never set
@@ -1094,7 +1189,7 @@ impl App {
         if let Some(scope) = (inputs.startup_presence_scope)() {
             app.set_presence_broadcast_scope(Some(scope));
         }
-        app.presence_ctx.set_surface_id((inputs.surface_id)());
+        app.presence_ctx.set_surface_id(inputs.surface_id.resolve());
         // Apply launcher-provided continuation before the first widget sync or
         // redraw.  Waiting for an input event left a restored app blank on a
         // quiet freshly-created window.
@@ -1107,10 +1202,27 @@ impl App {
     }
 
     fn rebuild_theme(&mut self) {
-        self.theme = self
-            .base_theme
-            .clone()
-            .with_a11y(&self.a11y, self.text_scale, self.ui_scale);
+        self.theme = match self.palette_source {
+            PaletteSource::Host => {
+                self.text_renderer.set_text_scale(self.text_scale);
+                self.text_scale = self.text_renderer.text_scale();
+                let base = if self.a11y.high_contrast {
+                    Theme::high_contrast()
+                } else {
+                    self.base_theme.clone()
+                };
+                let theme = base
+                    .with_component_scales(self.text_scale, self.ui_scale)
+                    .with_reduce_motion(self.a11y.reduce_motion);
+                self.ui_scale = theme.ui_scale;
+                theme
+            }
+            PaletteSource::Owned { .. } => {
+                self.base_theme
+                    .clone()
+                    .with_a11y(&self.a11y, self.text_scale, self.ui_scale)
+            }
+        };
         // Deliver motion policy before the event loop consults
         // `needs_animation_frame`. This lets custom roots settle their own
         // transitions immediately and prevents a forgotten app-local curve
@@ -3559,10 +3671,14 @@ impl App {
         )
         .unwrap_or_default();
         let providers = crate::bound_dispatch::search_providers(self.root_widget.as_ref());
-        let mut palette = crate::action_palette::ActionPalette::with_inputs(
-            (self.palette_text_renderer)(),
-            self.palette_field,
-        );
+        let mut palette = match self.palette_source {
+            PaletteSource::Owned { renderer, field } => {
+                crate::action_palette::ActionPalette::with_inputs(renderer(), field)
+            }
+            PaletteSource::Host => crate::action_palette::ActionPalette::with_host_text(
+                self.text_renderer.font_system.locale().to_owned(),
+            ),
+        };
         palette.load_open_resources(&resources);
         palette.load_bound_resources(bound);
         palette.set_providers(providers);
@@ -6487,7 +6603,15 @@ fn draw_frame_content(
         let card_w = (win_w * 0.6).clamp(360.0, 640.0);
         let x0 = ((win_w - card_w) / 2.0).max(0.0);
         let y0 = (f64::from(height) / f64::from(scale_factor) * 0.12).max(24.0);
-        ap.layout(&app.theme, Point::new(x0, y0), card_w);
+        match app.palette_source {
+            PaletteSource::Owned { .. } => ap.layout(&app.theme, Point::new(x0, y0), card_w),
+            PaletteSource::Host => ap.layout_with_text(
+                &app.theme,
+                Point::new(x0, y0),
+                card_w,
+                &mut app.text_renderer,
+            ),
+        }
         ap.draw(
             scene,
             transform,
@@ -8708,7 +8832,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // AppHandler field-drop order.
         self.a11y_adapter = None;
         self.app.autosave_flush();
-        self.app.root_widget.unmount_native_views();
+        self.app.close_native_content();
         self.close_audience_presentation();
         for surface in &mut self.floating_windows {
             if let Some(mut render) = surface.render.take() {
@@ -15472,5 +15596,529 @@ mod bound_component_tests {
             CONTROL_AUTHORITY.with_borrow(Clone::clone),
             vec![(false, false), (true, false)]
         );
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
+    app.init_layout();
+    let root = app.root_node.unwrap();
+    app.layout_dirty = true;
+    run_layout_pass(app, root, 800, 600, 1.0, true).unwrap();
+    let mut scene = Scene::new();
+    draw_frame_content(app, &mut scene, 800, 600, 1.0, None);
+}
+
+#[cfg(test)]
+mod prepared_runner_tests {
+    use super::*;
+    use crate::application::{AppComponent, LaunchTarget, RestoreInput};
+    use crate::application_test_support::*;
+    use crate::widget::TileHost;
+    use automerge::ReadDoc;
+    use winit::keyboard::{Key, NamedKey};
+
+    enum Runner {
+        App(Box<App>),
+        Driver(Box<crate::headless::Driver>),
+    }
+    impl Runner {
+        fn new(mode: u8, mut component: AppComponent) -> Self {
+            match mode {
+                0 => Self::App(Box::new(
+                    App::from_component(component, runner_inputs()).unwrap(),
+                )),
+                1 => {
+                    let scope = crate::WakeScope::new();
+                    let handle = scope.handle();
+                    component.mount(move |_| handle.wake()).unwrap();
+                    let author = component.callback_binding().author;
+                    Self::App(Box::new(App::from_scoped_parts_with_inputs(
+                        scope,
+                        State::new(),
+                        Box::new(TileHost::from_component(component)),
+                        || {
+                            let mut inputs = AppConstructionInputs::controlled();
+                            let mut presence = PresenceCtx::empty();
+                            presence.set_own_identity([author.0.clone()]);
+                            inputs.local_author = ConstructionValue::Ready(author);
+                            inputs.presence_ctx = ConstructionValue::Ready(presence);
+                            inputs
+                        },
+                    )))
+                }
+                _ => Self::Driver(Box::new(
+                    crate::headless::Driver::from_component(component, (320, 180), runner_inputs())
+                        .unwrap(),
+                )),
+            }
+        }
+        fn invoke(&mut self, action: &str) -> Result<(), String> {
+            match self {
+                Self::App(app) => {
+                    app.init_layout();
+                    app.refresh_semantic_tree();
+                    let id = app
+                        .semantic_tree()
+                        .iter()
+                        .find(|node| node.name.as_deref() == Some("Shared probe"))
+                        .ok_or_else(|| "resource absent after authority projection".to_owned())?
+                        .id
+                        .clone();
+                    if app.invoke_semantic_action(&id, action, None)? {
+                        Ok(())
+                    } else {
+                        Err("action absent".into())
+                    }
+                }
+                Self::Driver(driver) => driver
+                    .invoke_bound_action(
+                        &crate::bound_dispatch::BoundActionAddress {
+                            instance_id: 11,
+                            address: qos_actions::ActionAddress::new("probe:shared", action),
+                        },
+                        &serde_json::Map::new(),
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+            }
+        }
+        fn close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            match self {
+                Self::App(app) => {
+                    app.close_components();
+                    app.take_component_close_reports()
+                }
+                Self::Driver(driver) => {
+                    driver.close_components();
+                    driver.take_component_close_reports()
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one source record and View are compared across three real runner paths"
+    )]
+    fn prepared_three_runner_factory_record_view_action_and_denial_parity() {
+        let seed = ProbeHost::new();
+        let mut component = runner_probe_definition()
+            .instantiate(
+                seed.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                    .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let checkout = component.record().clone();
+        component
+            .restore_local_view(&crate::view::View {
+                scroll: vec![37.0],
+                focus: Some(crate::view::FocusView {
+                    ordinal: 0,
+                    ephemeral: "caret=9".into(),
+                }),
+                ..crate::view::View::default()
+            })
+            .unwrap();
+        let saved = component.close().recovery.unwrap();
+        let bytes = seed
+            .records
+            .with(&checkout.id, automerge::AutoCommit::save)
+            .unwrap();
+        let mut results = Vec::new();
+        for mode in 0..3 {
+            let host = ProbeHost::new();
+            let path = app_state::DocStore::room_record_dir_at(
+                &host.root(),
+                APP,
+                ROOM,
+                &checkout.id.storage_key(),
+            )
+            .unwrap()
+            .join(app_state::DOCUMENT_FILE);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let target = existing(&checkout);
+            let permissions = runner_permissions();
+            let context = host
+                .prepare_with_permissions(
+                    runner_probe_definition(),
+                    11,
+                    &target,
+                    permissions.clone(),
+                )
+                .unwrap();
+            let component = runner_probe_definition()
+                .instantiate(context, target, RestoreInput::Local(saved.clone()))
+                .unwrap();
+            assert_eq!(calls(), 1);
+            assert_eq!(initializations(), 0);
+            assert_eq!(body(&host.records, &checkout), "initialized");
+            assert_eq!(component.capture_local_view().unwrap(), saved.view);
+            host.records
+                .with(&checkout.id, |doc| {
+                    use automerge::transaction::Transactable;
+                    assert_eq!(doc.pending_ops(), 0);
+                    // A fresh CRDT actor sorts before the copied historical actors.
+                    // It is independent of the authenticated participant identity.
+                    doc.set_actor(automerge::ActorId::from([0_u8].as_slice()));
+                    assert_eq!(doc.pending_ops(), 0);
+                })
+                .unwrap();
+            let mut runner = Runner::new(mode, component);
+            runner.invoke("view").unwrap();
+            runner.invoke("effect").unwrap();
+            assert_eq!(
+                *operation_observations()[0].borrow(),
+                vec!["View", "Effect"]
+            );
+            runner.invoke("edit").unwrap();
+            assert_eq!(body(&host.records, &checkout), "edited");
+            host.records
+                .read_history(&checkout.id, |_, history| {
+                    assert!(history.next_undo_in(&author(), 11).is_some());
+                })
+                .unwrap();
+            *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(None, "probe-author"),
+                vec![],
+            )
+            .at_unix_time(100);
+            assert!(runner.invoke("edit").is_err());
+            assert_eq!(body(&host.records, &checkout), "edited");
+            assert_eq!(
+                *operation_observations()[0].borrow(),
+                vec!["View", "Effect"]
+            );
+            let reports = runner.close();
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].recovery.as_ref().unwrap().view, saved.view);
+            assert!(reports[0].view_error.is_none());
+            results.push(
+                serde_json::to_vec(
+                    &host
+                        .records
+                        .read(&checkout.id, |doc| {
+                            doc.get(automerge::ROOT, "body")
+                                .unwrap()
+                                .unwrap()
+                                .0
+                                .to_str()
+                                .unwrap()
+                                .to_owned()
+                        })
+                        .unwrap(),
+                )
+                .unwrap(),
+            );
+            host.records
+                .with_history(&checkout.id, |doc, history| {
+                    assert!(history.undo_in(doc, &author(), 11, None, None).is_some());
+                    assert!(history.next_undo_in(&author(), 11).is_none());
+                })
+                .unwrap();
+            assert_eq!(body(&host.records, &checkout), "initialized");
+        }
+        assert_eq!(results, vec![b"\"edited\"".to_vec(); 3]);
+    }
+
+    #[test]
+    fn prepared_three_runner_close_retains_original_view_store_for_retry() {
+        for mode in 0..3 {
+            let host = ProbeHost::new();
+            let component = runner_probe_definition()
+                .instantiate(
+                    host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                        .unwrap(),
+                    LaunchTarget::New,
+                    RestoreInput::None,
+                )
+                .unwrap();
+            let path = host.view_path(11);
+            std::fs::create_dir_all(&path).unwrap();
+            let mut runner = Runner::new(mode, component);
+            drop(host.views);
+            let mut reports = runner.close();
+            assert_eq!(reports.len(), 1);
+            let report = &mut reports[0];
+            assert!(report.view_error.is_some());
+            assert!(report.view_retry.is_some());
+            assert_eq!(report.recovery.as_ref().unwrap().app_id, APP);
+            drop(runner);
+            std::fs::remove_dir(&path).unwrap();
+            report.retry_view().unwrap();
+            assert!(report.view_error.is_none());
+            assert!(report.view_retry.is_none());
+            let saved: crate::application_view::SavedInstanceView =
+                postcard::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved.instance_id, 11);
+            assert_eq!(saved.device_id, DEVICE);
+            assert_eq!(saved.workspace_id, ROOM);
+        }
+    }
+    #[test]
+    fn prepared_native_close_retains_original_recovery_and_is_idempotent() {
+        let host = ProbeHost::new();
+        let component = runner_probe_definition()
+            .instantiate(
+                host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                    .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let binding = component.callback_binding();
+        let path = host.view_path(11);
+        std::fs::create_dir_all(&path).unwrap();
+        let mut app = App::from_component(component, runner_inputs()).unwrap();
+        drop(host.views);
+        app.close_wake_scope();
+        let _closed = app.enter_wake_scope();
+        app.close_native_content();
+        assert!(!binding.lifetime.is_active());
+        assert_eq!(app.component_close_reports().len(), 1);
+        assert!(app.component_close_reports()[0].view_error.is_some());
+        app.close_native_content();
+        let mut reports = app.take_component_close_reports();
+        assert_eq!(reports.len(), 1);
+        assert!(binding.records.read(&binding.checkout.id, |_| ()).is_some());
+        assert_eq!(reports[0].recovery.as_ref().unwrap().instance_id, 11);
+        std::fs::remove_dir(&path).unwrap();
+        reports[0].retry_view().unwrap();
+        assert!(path.is_file());
+        assert!(app.take_component_close_reports().is_empty());
+    }
+
+    #[test]
+    fn prepared_three_runner_close_cancels_local_operations_and_rejects_stale_results() {
+        for mode in 0..3 {
+            let host = ProbeHost::new();
+            let component = runner_probe_definition()
+                .instantiate(
+                    host.prepare_with_permissions(
+                        runner_probe_definition(),
+                        11,
+                        &LaunchTarget::New,
+                        runner_permissions(),
+                    )
+                    .unwrap(),
+                    LaunchTarget::New,
+                    RestoreInput::None,
+                )
+                .unwrap();
+            let checkout = component.record().clone();
+            let writer = local_state().writer();
+            let observed = operation_observations()[0].clone();
+            let mut runner = Runner::new(mode, component);
+            runner.invoke("pending").unwrap();
+            assert_eq!(*observed.borrow(), vec!["pending"]);
+            let reports = runner.close();
+            assert_eq!(*observed.borrow(), vec!["pending", "cancelled"]);
+            assert!(!writer.try_set("stale after close".into()));
+            let target = existing(&checkout);
+            let successor = runner_probe_definition()
+                .instantiate(
+                    host.prepare_with_permissions(
+                        runner_probe_definition(),
+                        11,
+                        &target,
+                        runner_permissions(),
+                    )
+                    .unwrap(),
+                    target,
+                    RestoreInput::Local(reports[0].recovery.clone().unwrap()),
+                )
+                .unwrap();
+            let successor_local = local_state();
+            let mut successor = Runner::new(mode, successor);
+            assert!(!writer.try_set("stale after reopen".into()));
+            assert_eq!(successor_local.with(Clone::clone), "construction wake");
+            successor.invoke("view").unwrap();
+            successor.close();
+            assert_eq!(body(&host.records, &checkout), "initialized");
+            assert_eq!(*observed.borrow(), vec!["pending", "cancelled"]);
+        }
+    }
+
+    fn palette_key(app: &mut App, key: Key, text: Option<&str>) {
+        let mut event = action_palette_tests::synth_enter();
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.logical_key = key;
+            event.text = text.map(Into::into);
+        }
+        assert!(app.action_palette_handle_key(&event));
+    }
+
+    #[test]
+    fn prepared_presentation_replaces_effective_factors_across_runners_and_setters() {
+        for theme_scale in [0.5, 1.0, 1.5, 2.0] {
+            for native in [true, false] {
+                let host = ProbeHost::new();
+                let component = runner_probe_definition()
+                    .instantiate(
+                        host.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                            .unwrap(),
+                        LaunchTarget::New,
+                        RestoreInput::None,
+                    )
+                    .unwrap();
+                let inputs = presentation_inputs(theme_scale);
+                let observed = observe_presentation();
+                if native {
+                    let mut app = App::from_component(component, inputs).unwrap();
+                    for scale in [1.5, 0.5, 4.0, 4.0, 0.75] {
+                        app.set_text_scale(scale);
+                        draw_prepared_component_test_frame(&mut app);
+                        let observation = observed.borrow();
+                        let (theme, renderer_scale) = observation.draws.last().unwrap();
+                        assert_eq!(*renderer_scale, scale);
+                        assert_presentation(theme, scale, 1.25);
+                        assert_presentation(observation.layouts.last().unwrap(), scale, 1.25);
+                    }
+                    app.set_ui_scale(1.5);
+                    app.set_ui_scale(1.5);
+                    app.set_high_contrast(true);
+                    assert_eq!(app.theme.name, "High Contrast");
+                    assert_eq!(app.theme.text_scale, 0.75);
+                    assert_eq!(app.theme.ui_scale, 1.5);
+                    app.set_high_contrast(false);
+                    draw_prepared_component_test_frame(&mut app);
+                    let observation = observed.borrow();
+                    let (theme, renderer_scale) = observation.draws.last().unwrap();
+                    assert_eq!(*renderer_scale, 0.75);
+                    assert_presentation(theme, 0.75, 1.5);
+                    assert!(!observation.motion.is_empty());
+                    assert!(observation.motion.iter().all(|value| *value));
+                    app.close_components();
+                } else {
+                    let mut driver =
+                        crate::headless::Driver::from_component(component, (800, 600), inputs)
+                            .unwrap();
+                    let observation = observed.borrow();
+                    let (theme, renderer_scale) = observation.draws.last().unwrap();
+                    assert_eq!(*renderer_scale, 1.5);
+                    assert_presentation(theme, 1.5, 1.25);
+                    assert_presentation(observation.layouts.last().unwrap(), 1.5, 1.25);
+                    assert!(!observation.motion.is_empty());
+                    assert!(observation.motion.iter().all(|value| *value));
+                    driver.close_components();
+                }
+            }
+        }
+    }
+    fn palette_frame(app: &mut App) {
+        let mut scene = Scene::new();
+        draw_frame_content(app, &mut scene, 800, 600, 1.0, None);
+        let palette = app.action_palette().unwrap();
+        assert!(palette.rect().width() > 0.0 && palette.rect().height() > 0.0);
+        assert_eq!(
+            crate::action_palette::observed_field_language(palette),
+            "de-DE"
+        );
+        assert_eq!(app.text_renderer.text_scale(), 1.5);
+    }
+    fn activate_palette_action(app: &mut App, action: &str) {
+        app.refresh_semantic_tree();
+        let target = app
+            .semantic_tree
+            .bound_actions_for_test()
+            .into_iter()
+            .find(|(_, target)| {
+                target.address.instance_id == 11 && target.address.address.action == action
+            })
+            .unwrap()
+            .1;
+        assert!(app.action_palette.as_mut().unwrap().activate_bound(&target));
+    }
+    #[test]
+    fn component_palette_uses_host_text_through_prompt_confirmation_and_reopen() {
+        let host = ProbeHost::new();
+        let component = runner_probe_definition()
+            .instantiate(
+                host.prepare_with_permissions(
+                    runner_probe_definition(),
+                    11,
+                    &LaunchTarget::New,
+                    runner_permissions(),
+                )
+                .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let checkout = component.record().clone();
+        let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            "de-DE",
+        );
+        let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
+        renderer.set_text_scale(1.5);
+        renderer.bump_generation();
+        let mut app = App::from_component(
+            component,
+            crate::application::ComponentRunnerInputs {
+                theme: Theme::dark(),
+                text_renderer: renderer,
+            },
+        )
+        .unwrap();
+        assert_eq!(app.local_author(), &author());
+        app.init_layout();
+        app.open_action_palette();
+        let before = app.text_renderer.cache_stats();
+        palette_frame(&mut app);
+        assert!(
+            app.text_renderer.cache_stats().1 > before.1,
+            "measurement uses the host cache"
+        );
+        palette_key(&mut app, Key::Character("P".into()), Some("P"));
+        assert_eq!(app.action_palette().unwrap().query(), "P");
+        palette_frame(&mut app);
+        activate_palette_action(&mut app, "prompt");
+        assert!(app.action_palette().unwrap().in_argument_mode());
+        palette_frame(&mut app);
+        palette_key(&mut app, Key::Named(NamedKey::Escape), None);
+        assert!(!app.action_palette().unwrap().in_argument_mode());
+        palette_frame(&mut app);
+        activate_palette_action(&mut app, "prompt");
+        app.action_palette.as_mut().unwrap().set_query("prompted");
+        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
+        assert_eq!(body(&host.records, &checkout), "prompted");
+        app.open_action_palette();
+        palette_frame(&mut app);
+        activate_palette_action(&mut app, "typed");
+        palette_frame(&mut app);
+        app.action_palette
+            .as_mut()
+            .unwrap()
+            .set_query(r#"{"value":"typed","enabled":true}"#);
+        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
+        assert_eq!(body(&host.records, &checkout), "typed");
+        app.open_action_palette();
+        activate_palette_action(&mut app, "confirm");
+        palette_frame(&mut app);
+        app.action_palette.as_mut().unwrap().set_query("wrong");
+        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
+        assert_eq!(body(&host.records, &checkout), "typed");
+        app.action_palette.as_mut().unwrap().set_query("JA");
+        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
+        assert_eq!(body(&host.records, &checkout), "confirmed");
+        app.open_action_palette();
+        let before = app.text_renderer.cache_stats();
+        app.text_renderer.bump_generation();
+        palette_frame(&mut app);
+        assert!(app.text_renderer.cache_stats().1 > before.1);
+        host.records
+            .read_history(&checkout.id, |_, history| {
+                assert_eq!(
+                    history.next_undo_in(&author(), 11).unwrap().author.as_ref(),
+                    Some(&author())
+                );
+            })
+            .unwrap();
+        app.close_components();
     }
 }

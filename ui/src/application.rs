@@ -58,6 +58,24 @@ pub struct HostContext {
     queued_controls: Rc<RefCell<std::collections::VecDeque<qos_actions::ControlInvocation>>>,
     closing: Rc<Cell<bool>>,
 }
+/// Presentation owned by a runner. Authority comes only from the component context.
+pub struct ComponentRunnerInputs {
+    /// Effective snapshot, with scale metadata describing its baked values, as when
+    /// each scale builder is applied once to a fresh theme. Runners preserve its
+    /// palette, custom tokens, UI scale, and motion while replacing its text factor.
+    pub theme: crate::Theme,
+    /// The single owned renderer supplies the requested text factor and font locale.
+    pub text_renderer: crate::TextRenderer,
+}
+
+/// Explicit host preparation completed before invoking the application factory.
+pub struct PreparedComponentInputs {
+    pub context: HostContext,
+    pub target: LaunchTarget,
+    pub restore: RestoreInput,
+    pub runner_inputs: ComponentRunnerInputs,
+}
+
 impl HostContext {
     /// Reserve New or open Existing before the factory, using only supplied identities.
     ///
@@ -258,6 +276,7 @@ impl ApplicationDefinition {
                     source: Box::new(source),
                     record,
                     records,
+                    reports: Vec::new(),
                 }
             } else {
                 source
@@ -339,6 +358,18 @@ pub struct AppComponent {
     providers: Rc<RefCell<ProviderPayloads>>,
 }
 impl AppComponent {
+    /// Preserve every recovery owner while a runner still has custody of this component.
+    pub(crate) fn setup_error(&mut self, source: LaunchError) -> LaunchError {
+        let binding = self.callback_binding();
+        self.close();
+        LaunchError::ComponentSetup {
+            source: Box::new(source),
+            record: binding.checkout,
+            records: binding.records,
+            reports: self.take_close_reports(),
+        }
+    }
+
     pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         self.context.callback_binding()
     }

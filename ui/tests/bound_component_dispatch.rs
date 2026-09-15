@@ -2307,3 +2307,50 @@ fn task4_driver_unqualified_control_selects_or_refuses_bound_targets() {
         }
     }
 }
+
+#[test]
+fn prepared_runner_nested_mount_failure_retains_each_original_report_once() {
+    for native in [false, true] {
+        let host = ProbeHost::new();
+        NESTED.with_borrow_mut(|nested| *nested = Some(component(&host, 2)));
+        let definition = definition(nested_factory);
+        let mut parent = definition
+            .instantiate(
+                host.prepare(&definition, 1, &LaunchTarget::New).unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        parent.mount(|_| {}).unwrap();
+        for id in [1, 2] {
+            std::fs::create_dir_all(host.view_path(id)).unwrap();
+        }
+        let paths = [host.view_path(1), host.view_path(2)];
+        drop(host.views);
+        let error = if native {
+            ui::App::from_component(parent, crate::support::application::runner_inputs())
+                .err()
+                .unwrap()
+        } else {
+            ui::headless::Driver::from_component(
+                parent,
+                (320, 180),
+                crate::support::application::runner_inputs(),
+            )
+            .err()
+            .unwrap()
+        };
+        let ui::launch::LaunchError::ComponentSetup { mut reports, .. } = error else {
+            panic!("missing setup recovery");
+        };
+        assert_eq!(reports.len(), 2);
+        reports.sort_by_key(|report| report.recovery.as_ref().unwrap().instance_id);
+        for (index, report) in reports.iter_mut().enumerate() {
+            assert_eq!(report.recovery.as_ref().unwrap().instance_id, [1, 2][index]);
+            assert!(report.view_error.is_some());
+            std::fs::remove_dir(&paths[index]).unwrap();
+            report.retry_view().unwrap();
+            assert!(paths[index].is_file());
+        }
+    }
+}
