@@ -4005,6 +4005,14 @@ impl Widget for TextInput {
     }
 
     fn get_state(&self) -> Option<String> {
+        if let Some(anchor) = self.selection_anchor {
+            let affinity = if self.caret_affinity == TextAffinity::After {
+                "a"
+            } else {
+                "b"
+            };
+            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
+        }
         Some(match self.caret_affinity {
             // Keep the historical state shape for the overwhelmingly common
             // unambiguous/default caret.
@@ -4014,9 +4022,13 @@ impl Widget for TextInput {
     }
 
     fn set_state(&mut self, state: &str) {
-        let (byte, affinity) = state.split_once(':').unwrap_or((state, "b"));
+        let mut parts = state.split(':');
+        let byte = parts.next().unwrap_or_default();
+        let affinity = parts.next().unwrap_or("b");
+        let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
         if let Ok(pos) = byte.parse::<usize>() {
             self.cursor_pos = pos;
+            self.selection_anchor = anchor;
             self.caret_affinity = if affinity == "a" {
                 TextAffinity::After
             } else {
@@ -5230,6 +5242,25 @@ mod tests {
         assert_eq!(ti.caret_position(), right);
         assert_eq!(left.byte, right.byte);
         assert_ne!(left.affinity, right.affinity);
+    }
+
+    #[test]
+    fn selection_survives_widget_state_round_trip_and_legacy_state_still_loads() {
+        let mut original = TextInput::local().with_initial_value("hello world");
+        original.cursor_pos = 5;
+        original.selection_anchor = Some(1);
+        let saved = original.get_state().unwrap();
+        let mut rebuilt = TextInput::local().with_initial_value("hello world");
+        rebuilt.set_state(&saved);
+        assert_eq!(rebuilt.selection_range_public(), Some((1, 5)));
+        rebuilt.set_state("3");
+        assert_eq!(rebuilt.cursor_pos(), 3);
+        assert_eq!(rebuilt.selection_range_public(), None);
+        rebuilt.set_state("4:a");
+        assert_eq!(
+            rebuilt.caret_position(),
+            TextPosition::with_affinity(4, TextAffinity::After)
+        );
     }
 
     #[test]
