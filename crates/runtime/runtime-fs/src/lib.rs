@@ -73,6 +73,11 @@ pub use grants::{
 #[cfg(unix)]
 pub use native::{FsSession, NativeGrantAuthority};
 
+#[cfg(unix)]
+pub mod operations;
+#[cfg(unix)]
+pub mod recovery;
+
 pub mod storage;
 
 pub use fs_capnp::workspace_fs::Client as WorkspaceFsClient;
