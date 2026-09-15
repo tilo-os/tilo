@@ -283,6 +283,10 @@ fn clock_overlay_controls(panel: Rect) -> [Rect; 3] {
     ]
 }
 
+fn clock_overlay_drag_region(panel: Rect) -> Rect {
+    Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 66.0)
+}
+
 fn released_clock_touch_control(
     pending: Option<(u64, u8)>,
     touch_id: u64,
@@ -611,12 +615,7 @@ impl TopBarChrome {
         reason = "bounded pointer coordinates minus bounded overlay coordinates produce a screen-space drag offset"
     )]
     fn begin_clock_drag_at(&mut self, point: Point) -> bool {
-        let header = Rect::new(
-            self.clock_overlay_rect.x0,
-            self.clock_overlay_rect.y0,
-            self.clock_overlay_rect.x1,
-            self.clock_overlay_rect.y0 + 66.0,
-        );
+        let header = clock_overlay_drag_region(self.clock_overlay_rect);
         if !header.contains(point) {
             return false;
         }
@@ -3084,14 +3083,12 @@ impl TopBarChrome {
         if !state.overlays.clock {
             return None;
         }
-        let stopwatch = state
-            .clock_activity
-            .as_ref()
-            .is_some_and(|activity| activity.stopwatch);
-        let paused = state
-            .clock_activity
-            .as_ref()
-            .is_some_and(|activity| activity.paused);
+        let activity = state.clock_activity.as_ref()?;
+        let stopwatch = activity.stopwatch;
+        let paused = activity.paused;
+        let minutes = activity.remaining_secs / 60;
+        let seconds = activity.remaining_secs % 60;
+        let reading = format!("{minutes:02}:{seconds:02}");
         Some(
             AccessNode::new(Role::Group)
                 .with_name(if stopwatch {
@@ -3099,13 +3096,28 @@ impl TopBarChrome {
                 } else {
                     "Floating timer"
                 })
+                .with_description(
+                    "Drag to reposition. With a keyboard, hold Alt and use the arrow keys; hold Shift for larger steps.",
+                )
                 .with_bounds(self.clock_overlay_rect)
                 .with_children(vec![
+                    AccessNode::new(Role::StaticText)
+                        .with_name(if activity.label.is_empty() {
+                            if stopwatch { "Stopwatch" } else { "Timer" }
+                        } else {
+                            &activity.label
+                        })
+                        .with_value(&reading)
+                        .with_description(if paused { "Paused" } else { "Running" }),
                     AccessNode::new(Role::Button)
                         .with_name(if paused { "Resume" } else { "Pause" })
                         .with_action_target("clock.overlay.toggle")
                         .with_bounds(self.clock_pause_rect)
-                        .with_state(AccessState::new().focusable(true)),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.clock_control_focus == Some(0)),
+                        ),
                     AccessNode::new(Role::Button)
                         .with_name(if stopwatch {
                             "Record lap"
@@ -3114,7 +3126,11 @@ impl TopBarChrome {
                         })
                         .with_action_target("clock.overlay.add-minute")
                         .with_bounds(self.clock_add_rect)
-                        .with_state(AccessState::new().focusable(true)),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.clock_control_focus == Some(1)),
+                        ),
                     AccessNode::new(Role::Button)
                         .with_name(if stopwatch {
                             "Close floating stopwatch"
@@ -3123,7 +3139,11 @@ impl TopBarChrome {
                         })
                         .with_action_target("clock.overlay.close")
                         .with_bounds(self.clock_close_rect)
-                        .with_state(AccessState::new().focusable(true)),
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .focused(self.clock_control_focus == Some(2)),
+                        ),
                 ]),
         )
     }
@@ -3591,6 +3611,21 @@ impl Widget for TopBarChrome {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.clock_drag_offset.is_some() {
+            return Some(winit::window::CursorIcon::Grabbing);
+        }
+        if self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow().overlays.clock)
+        {
+            if self.clock_control_at(point).is_some() {
+                return Some(winit::window::CursorIcon::Pointer);
+            }
+            if clock_overlay_drag_region(self.clock_overlay_rect).contains(point) {
+                return Some(winit::window::CursorIcon::Grab);
+            }
+        }
         self.control_targets()
             .into_iter()
             .any(|target| self.control_rect(target).contains(point))
@@ -3707,6 +3742,74 @@ mod tests {
         };
         tree.active = tree.workspaces[0].id;
         TopBarChrome::from_tree(&tree)
+    }
+
+    fn floating_clock() -> TopBarChrome {
+        let mut tree = WorkspaceTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = crate::shell::chrome_state::ChromeState::new(tree.clone());
+        {
+            let mut state = chrome.borrow_mut();
+            state.overlays.clock = true;
+            state.clock_activity = Some(crate::shell::chrome_state::ClockActivity {
+                active: true,
+                label: "Tea".into(),
+                remaining_secs: 125,
+                overlay: true,
+                producer_pid: std::process::id(),
+                ..Default::default()
+            });
+        }
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+        bar.clock_overlay_rect = Rect::new(100.0, 80.0, 352.0, 238.0);
+        [
+            bar.clock_pause_rect,
+            bar.clock_add_rect,
+            bar.clock_close_rect,
+        ] = clock_overlay_controls(bar.clock_overlay_rect);
+        bar
+    }
+
+    #[test]
+    fn floating_clock_cursor_exposes_buttons_and_drag_state() {
+        let mut bar = floating_clock();
+        assert_eq!(
+            bar.cursor_shape(bar.clock_pause_rect.center()),
+            Some(winit::window::CursorIcon::Pointer)
+        );
+        let header = Point::new(
+            bar.clock_overlay_rect.x0 + 20.0,
+            bar.clock_overlay_rect.y0 + 20.0,
+        );
+        assert_eq!(
+            bar.cursor_shape(header),
+            Some(winit::window::CursorIcon::Grab)
+        );
+        assert!(bar.begin_clock_drag_at(header));
+        assert_eq!(
+            bar.cursor_shape(Point::new(900.0, 700.0)),
+            Some(winit::window::CursorIcon::Grabbing)
+        );
+    }
+
+    #[test]
+    fn floating_clock_accessibility_announces_time_and_focus() {
+        let mut bar = floating_clock();
+        bar.clock_control_focus = Some(1);
+        let node = bar.clock_accessibility_node().expect("visible timer node");
+        assert_eq!(node.name.as_deref(), Some("Floating timer"));
+        assert!(
+            node.description
+                .as_deref()
+                .is_some_and(|text| text.contains("Alt"))
+        );
+        assert_eq!(node.children[0].name.as_deref(), Some("Tea"));
+        assert_eq!(node.children[0].value.as_deref(), Some("02:05"));
+        assert!(node.children[2].state.focused);
     }
 
     fn lay_out_and_draw_with_theme(bar: &mut TopBarChrome, width: f32, theme: &Theme) {
