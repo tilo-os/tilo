@@ -40,6 +40,7 @@ grep -Fq '"$appdir/usr/share/metainfo/org.qos.Imager.appdata.xml"' \
 
 grep -Fq 'QOS_REQUIRE_SIGNING=1' "$workflow" \
   && grep -Fq 'QOS_REQUIRE_NATIVE_PACKAGES=1' "$workflow" \
+  && grep -Fq 'QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY }}' "$workflow" \
   && ok 'tag releases fail closed without signed native packages' \
   || bad 'tag releases can publish unsigned or substitute packages'
 

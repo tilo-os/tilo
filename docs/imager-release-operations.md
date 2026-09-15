@@ -286,6 +286,7 @@ administrators):
 | Variable | Required value |
 |---|---|
 | the six `IMAGER_*_CREDENTIAL_BROKER` variables listed above | absolute path on each corresponding golden image |
+| `QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY` | independently verified lowercase 64-hex qOS-main registry-owner Ed25519 public key |
 | `QOS_PCR_PREDICTION_SIGNER` | absolute root-owned KMS/HSM wrapper path on both native Linux runner images |
 | `QOS_EFI_SIGNING_CERT_SHA256` | independently verified lowercase 64-hex fingerprint of the firmware-trusted release certificate |
 | `IMAGER_LINUX_SIGNING_FINGERPRINT` | uppercase 40- or 64-hex full primary-key fingerprint, independently verified |
