@@ -1703,7 +1703,9 @@ impl CameraApp {
                 self.document_scan.add_page(image);
                 self.toast = Some(format!("Page {} captured", self.document_scan.pages.len()));
             }
-            DocumentJobResult::Capture(Err(error)) => self.toast = Some(error),
+            DocumentJobResult::Capture(Err(error)) => {
+                self.toast = Some(crate::document_scan::capture_error_message(&error).into());
+            }
             DocumentJobResult::Recognize {
                 page,
                 result: Ok(document),
