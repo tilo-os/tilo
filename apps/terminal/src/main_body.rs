@@ -812,6 +812,13 @@ impl TerminalWidget {
             .lock()
             .map_or("Session ended — input unavailable", |message| *message)
     }
+
+    /// A compact visual lifecycle state. The detailed transport cause stays in
+    /// the accessible description/live region, where it is neither clipped at
+    /// 200% text scale nor mistaken for a recoverable command prompt.
+    pub(crate) fn disconnected_badge_label(&self) -> &'static str {
+        "Session ended"
+    }
     /// Current window title (OSC 0/2), defaulting to "Terminal". Host/test
     /// accessor — also what `AppWidget::app_title` returns.
     pub fn title(&self) -> &str {
@@ -3667,7 +3674,7 @@ impl TerminalWidget {
         if !self.is_disconnected() || self.grid_rect.width() <= 0.0 {
             return;
         }
-        let label = self.disconnected_message();
+        let label = self.disconnected_badge_label();
         let size = theme.tokens.typography.scale.sm;
         let pad = f64::from(theme.tokens.spacing.s2);
         let height = f64::from(size) * 1.7;
