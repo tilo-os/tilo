@@ -16,9 +16,9 @@ use crate::images::Imgs;
 use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
-    Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, Len, PlayerHost, SharedPlayer,
-    Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, gap, hover_fill,
-    hover_pill_surface, spring, subtle_fill, subtle_surface, text, text_c,
+    Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, LargeVideoMeta, Len, PlayerHost,
+    SharedPlayer, Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, gap,
+    hover_fill, hover_pill_surface, spring, subtle_fill, subtle_surface, text, text_c,
 };
 
 use crate::contrast::SelectedStyle;
@@ -202,8 +202,8 @@ fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Fl
 /// affordance on a wide window (the rail is already docked) that becomes the
 /// way to summon the rail once it has collapsed into an overlay flap on a
 /// narrow one.
-fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
-    Flex::row()
+fn menu_button(theme: &Theme) -> Flex {
+    let button = Flex::row()
         .id("nav_toggle")
         .fixed(40.0, 40.0)
         .justify(Justify::Center)
@@ -215,19 +215,33 @@ fn menu_button(theme: &Theme, bus: &ActionBus) -> Flex {
             border: None,
         })
         .hover_surface(hover_pill_surface(theme))
-        .on_click(bus, Action::ToggleSidebar)
-        .accessible_name("Show or hide navigation")
+        .accessible_name("Show or hide navigation");
+    if let Some(binding) = crate::actions::sidebar_binding() {
+        button.on_action(binding)
+    } else {
+        button
+    }
 }
 
 fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
-    Flex::row()
+    let title_row = Flex::row()
         .fill_w()
         .gap(10.0)
         .align(Align::Center)
         .push(icon(kind, 22.0, theme.accent_primary))
-        .push(text(title, 21.0))
-        .push(spring())
-        .push(dim(theme, subtitle, 13.0))
+        .push(text(title, 21.0));
+    // Large type must reflow rather than leave a right-aligned subtitle to
+    // collide with the heading. The subtitle remains present and readable;
+    // it simply takes its own line, as it would on a compact window.
+    if theme.text_scale >= 1.5 {
+        // The secondary phrase is useful at ordinary density but repeats the
+        // selected source/filter and has no action. At large text we preserve
+        // the primary landmark and reclaim its row for actual results instead
+        // of producing a narrow, three-line fragment above the first card.
+        Flex::col().fill_w().push(title_row).push(gap(1.0, 38.0))
+    } else {
+        title_row.push(spring()).push(dim(theme, subtitle, 13.0))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,23 +259,52 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         thumb = thumb.progress(p);
     }
 
-    let mut meta = Flex::col().gap(3.0).grow(1.0);
-    meta = meta.push(text(v.display_title(dearrow), 14.5));
-    meta = meta.push(
-        Flex::row()
+    let high_text = theme.text_scale >= 1.5;
+    let title = text(v.display_title(dearrow), 14.5);
+    let stats_label = format!("{} • {}", human_views(v.views), v.published);
+    let details = if high_text {
+        // The leaf measures and paints all three scaled lanes together. This
+        // makes its bottom edge a real typography result, rather than a set of
+        // guessed spacers which can collide with the next card at 2×.
+        Flex::col().fill_w().push(LargeVideoMeta::new(
+            v.display_title(dearrow),
+            &v.channel_name,
+            &stats_label,
+        ))
+    } else {
+        let channel = Flex::row()
+            .fill_w()
             .gap(5.0)
             .align(Align::Center)
-            .push(dim(theme, &v.channel_name, 12.5))
+            .push(
+                Flex::row()
+                    .grow(1.0)
+                    .push(dim(theme, &v.channel_name, 12.5)),
+            )
             .push_if(
                 model.channel(&v.channel_id).is_some_and(|c| c.verified),
                 icon(Icon::Check, 12.0, theme.text_dim),
-            ),
-    );
-    meta = meta.push(dim(
-        theme,
-        format!("{} • {}", human_views(v.views), v.published),
-        12.5,
-    ));
+            );
+        let stats = dim(theme, stats_label, 12.5);
+        let meta = Flex::col()
+            .gap(3.0)
+            .grow(1.0)
+            .push(title)
+            .push(channel)
+            .push(stats);
+        Flex::row()
+            .gap(10.0)
+            .fill_w()
+            .align(Align::Start)
+            .push(channel_avatar(
+                imgs,
+                model,
+                &v.channel_id,
+                &v.channel_name,
+                36.0,
+            ))
+            .push(meta)
+    };
     // No fixed width: as a responsive-grid item the card stretches to fill its
     // column (which the grid sizes between CARD_W and its natural max).
     Flex::col()
@@ -277,20 +320,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         .on_click(bus, Action::OpenVideo(v.id.clone()))
         .accessible_name(format!("Open video: {}", v.display_title(dearrow)))
         .push(thumb)
-        .push(
-            Flex::row()
-                .gap(10.0)
-                .fill_w()
-                .align(Align::Start)
-                .push(channel_avatar(
-                    imgs,
-                    model,
-                    &v.channel_id,
-                    &v.channel_name,
-                    36.0,
-                ))
-                .push(meta),
-        )
+        .push(details)
 }
 
 /// Compact horizontal card for the "Up next" rail + history rows.
@@ -351,11 +381,22 @@ fn subs_label(subscribers: u64) -> Option<String> {
     (subscribers > 0).then(|| format!("{} subscribers", human_count(subscribers)))
 }
 
-fn grid(cards: Vec<Flex>) -> Flex {
-    grid_with_id(cards, "video_grid")
+fn grid(theme: &Theme, cards: Vec<Flex>) -> Flex {
+    grid_with_id(theme, cards, "video_grid")
 }
 
-fn grid_with_id(cards: Vec<Flex>, id: &str) -> Flex {
+fn grid_with_id(theme: &Theme, cards: Vec<Flex>, id: &str) -> Flex {
+    // At 2× text a card's title and metadata are intentionally allowed to
+    // occupy several lines. A vertical feed is more readable than squeezing
+    // four visual cards into a desktop-width row; ordinary text keeps the
+    // efficient responsive grid below.
+    if theme.text_scale >= 1.5 {
+        let mut col = Flex::col().id(id).fill_w().gap(24.0);
+        for card in cards {
+            col = col.push(card);
+        }
+        return col;
+    }
     // Responsive grid: columns are ≥ `CARD_W` and flex to fill the row, so the
     // cards scale with the window width up to their natural max and only then
     // wrap to add a column — the row is always filled edge to edge (no right
@@ -417,7 +458,7 @@ fn skeleton_card(theme: &Theme) -> Flex {
 }
 
 fn skeleton_grid(theme: &Theme, n: usize) -> Flex {
-    grid((0..n).map(|_| skeleton_card(theme)).collect())
+    grid(theme, (0..n).map(|_| skeleton_card(theme)).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -426,11 +467,11 @@ fn skeleton_grid(theme: &Theme, n: usize) -> Flex {
 
 fn nav_item(
     theme: &Theme,
-    bus: &ActionBus,
     kind: Icon,
     label: &str,
-    route: Route,
+    route: &Route,
     active: bool,
+    expanded: bool,
 ) -> Flex {
     // Active item: a solid accent fill with a foreground chosen to contrast it
     // (so the selected destination reads clearly), instead of accent-coloured
@@ -470,25 +511,44 @@ fn nav_item(
     // Stable, addressable id so headless click-tests can target a nav item by
     // name (e.g. "nav_home"). Derived from the label, lowercased.
     let id = format!("nav_{}", label.to_lowercase());
-    Flex::col()
-        .id(&id)
-        .fill_w()
-        .gap(4.0)
-        .pad_xy(4.0, 8.0)
-        .align(Align::Center)
-        .justify(Justify::Center)
-        .surface(surface)
-        .hover_surface(hover)
-        .on_click(bus, Action::Navigate(route))
-        .accessible_name(label)
-        .push(icon(kind, 22.0, fg))
-        .push(text_c(label, 11.0, fg))
+    let item = if expanded {
+        Flex::row()
+            .id(&id)
+            .fill_w()
+            .gap(12.0)
+            .pad_xy(14.0, 12.0)
+            .align(Align::Center)
+            .surface(surface)
+            .hover_surface(hover)
+            .accessible_name(label)
+            .push(icon(kind, 21.0, fg))
+            .push(text_c(label, 14.0, fg))
+    } else {
+        Flex::col()
+            .id(&id)
+            .fill_w()
+            .gap(4.0)
+            .pad_xy(4.0, 8.0)
+            .align(Align::Center)
+            .justify(Justify::Center)
+            .surface(surface)
+            .hover_surface(hover)
+            .accessible_name(label)
+            .push(icon(kind, 22.0, fg))
+            .push(text_c(label, 11.0, fg))
+    };
+    if let Some(binding) = crate::actions::navigation_binding(route) {
+        item.on_action(binding)
+    } else {
+        item
+    }
 }
 
-pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) -> Flex {
     let sec = model.route.nav_section();
+    let expanded = width > NAV_RAIL_W;
     Flex::col()
-        .w(Len::Px(NAV_RAIL_W as f32))
+        .w(Len::Px(width as f32))
         .fill_h()
         .pad_xy(8.0, 14.0)
         .gap(8.0)
@@ -510,47 +570,48 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
                 })
                 .push(icon(Icon::Play, 22.0, Color::WHITE)),
         )
+        .push_if(expanded, text_c("Tube", 16.0, theme.text_primary))
         .push(gap(1.0, 6.0))
         .push(nav_item(
             theme,
-            bus,
             Icon::Home,
             "Home",
-            Route::Home,
+            &Route::Home,
             sec == "home",
+            expanded,
         ))
         .push(nav_item(
             theme,
-            bus,
             Icon::Flame,
             "Trending",
-            Route::Trending,
+            &Route::Trending,
             sec == "trending",
+            expanded,
         ))
         .push(nav_item(
             theme,
-            bus,
             Icon::GalleryVerticalEnd,
             "Subs",
-            Route::Subscriptions,
+            &Route::Subscriptions,
             sec == "subs",
+            expanded,
         ))
         .push(nav_item(
             theme,
-            bus,
             Icon::History,
             "History",
-            Route::History,
+            &Route::History,
             sec == "history",
+            expanded,
         ))
         .push(spring())
         .push(nav_item(
             theme,
-            bus,
             Icon::Settings,
             "Settings",
-            Route::Settings,
+            &Route::Settings,
             sec == "settings",
+            expanded,
         ))
 }
 
@@ -632,7 +693,7 @@ pub fn top_bar(
             radius: 0.0,
             border: Some((1.0, theme.border_standard)),
         })
-        .push(menu_button(theme, bus))
+        .push(menu_button(theme))
         .push_if(can_back, back_button(theme, bus))
         // The OS owns the window title/app-name — no "Tube" wordmark here.
         .push(search)
@@ -754,6 +815,7 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
         }
     } else {
         grid(
+            theme,
             model
                 .videos
                 .iter()
@@ -794,7 +856,7 @@ pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -
                 "Trending",
                 "Most-watched right now",
             ))
-            .push(grid(cards)),
+            .push(grid(theme, cards)),
     )
 }
 
@@ -833,7 +895,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
             "Subscribe to channels and their latest uploads land here.",
         )
     } else {
-        grid(cards)
+        grid(theme, cards)
     };
 
     scroll(
@@ -873,12 +935,29 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
             .pad(24.0)
             .gap(18.0)
             .max_w(820.0)
-            .push(section_header(
-                theme,
-                Icon::History,
-                "Watch history",
-                "Stored locally — never uploaded",
-            ))
+            .push(
+                Flex::row()
+                    .fill_w()
+                    .gap(12.0)
+                    .align(Align::Center)
+                    .push(Flex::row().grow(1.0).push(section_header(
+                        theme,
+                        Icon::History,
+                        "Watch history",
+                        "Private to this profile — syncs across your devices",
+                    )))
+                    .push_if(
+                        !model.history.is_empty(),
+                        pill(
+                            theme,
+                            bus,
+                            "Clear history",
+                            Some(Icon::Trash),
+                            Action::ClearHistory,
+                            false,
+                        ),
+                    ),
+            )
             .push(col),
     )
 }
@@ -1087,7 +1166,7 @@ pub fn search(
                 .iter()
                 .map(|p| playlist_card(theme, bus, imgs, p))
                 .collect();
-            col = col.push(grid_with_id(cards, "playlist_grid"));
+            col = col.push(grid_with_id(theme, cards, "playlist_grid"));
         }
         if !videos.is_empty() {
             if visible_results == 1 {
@@ -1113,7 +1192,7 @@ pub fn search(
                     .iter()
                     .map(|v| video_card(model, theme, bus, imgs, v))
                     .collect();
-                col = col.push(grid(cards));
+                col = col.push(grid(theme, cards));
             }
         }
         col
@@ -1317,7 +1396,7 @@ pub fn channel(
             .push(header)
             .push(divider(theme))
             .push(text("Videos", 16.0))
-            .push(grid(cards)),
+            .push(grid(theme, cards)),
     )
 }
 

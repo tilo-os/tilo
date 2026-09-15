@@ -540,6 +540,7 @@ pub fn model() -> TubeModel {
         // The shared queue starts empty; screenshots should not imply a video
         // was queued by a collaborator.
         queue: Vec::new(),
+        history_owner: "profile:local".into(),
         history: vec!["vid_black_holes".into(), "vid_donut".into()],
         settings,
         route: Route::Home,

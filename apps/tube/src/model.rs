@@ -2,7 +2,9 @@
 //! no toolkit types, no colours, no IO. The model is device-local presentation
 //! state. Explicit collaboration boundaries live in `actions`: subscriptions
 //! and settings are structured Automerge actions, while fetched catalogues,
-//! playback, navigation and watch history stay local.
+//! playback and navigation stay local. Watch history is a private, per-user
+//! CRDT projection: it syncs between that user's devices but is not a shared
+//! collaborator feed.
 //!
 //! Colours are never stored: thumbnails derive a deterministic gradient
 //! from a seed string at draw time (`util::seed_gradient`) so the model
@@ -554,6 +556,15 @@ pub struct TubeModel {
     /// silently reordering another client's queue.
     #[serde(default)]
     pub queue: Vec<VideoId>,
+    /// Stable signed-in profile scope for the private history collection. The
+    /// host supplies this from the account identity; the offline default is a
+    /// deterministic local profile for hermetic tests and screenshots.
+    #[serde(default = "default_history_owner")]
+    pub history_owner: String,
+    /// Ordered visible projection of the private history CRDT. This cache is
+    /// derived from `tube.private_history[history_owner]`, never the source of
+    /// persistence. IDs without loaded metadata remain here so a refresh
+    /// cannot erase durable history membership.
     pub history: Vec<VideoId>,
     pub settings: Settings,
     pub route: Route,
@@ -654,6 +665,7 @@ impl Default for TubeModel {
             playlists: Vec::new(),
             subscriptions: Vec::new(),
             queue: Vec::new(),
+            history_owner: default_history_owner(),
             history: Vec::new(),
             settings: Settings::default(),
             route: Route::Home,
@@ -795,11 +807,25 @@ impl TubeModel {
         self.notices.truncate(8);
     }
 
-    /// Push a video onto the front of the watch history (dedup, cap 50).
+    /// Update the in-memory projection after an already-dispatched canonical
+    /// history action. Persistence belongs to `TubeAction::SetHistoryEntry`;
+    /// retaining this helper keeps the opened card responsive before the next
+    /// document reconciliation pass.
     pub fn record_watch(&mut self, id: &str) {
         self.history.retain(|h| h != id);
         self.history.insert(0, id.to_string());
         self.history.truncate(50);
+    }
+
+    /// Replace the visible ordered projection of the private history CRDT.
+    /// Entries are sorted by the authored watch timestamp (newest first) with
+    /// the stable video id as a deterministic concurrent tie-breaker.
+    pub fn set_history_projection(&mut self, entries: BTreeMap<VideoId, u64>) {
+        let mut ordered = entries.into_iter().collect::<Vec<_>>();
+        ordered.sort_by(|(left_id, left_at), (right_id, right_at)| {
+            right_at.cmp(left_at).then_with(|| left_id.cmp(right_id))
+        });
+        self.history = ordered.into_iter().map(|(id, _)| id).collect();
     }
 
     /// Videos uploaded by channels the user is subscribed to.
@@ -1053,6 +1079,10 @@ impl TubeModel {
         }
         out
     }
+}
+
+fn default_history_owner() -> String {
+    "profile:local".to_string()
 }
 
 #[cfg(test)]
