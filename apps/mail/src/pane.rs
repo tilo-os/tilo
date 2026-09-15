@@ -85,18 +85,18 @@ fn list_zero_state(
 /// vertical centre). `chip_here` is whether the chip overlays this pane's
 /// header. Pure so the "title lines up with, and is spaced from, the collapse
 /// button" invariant is unit-testable.
-fn list_header_layout(rect: Rect, chip_here: bool, gap: f64) -> (f64, f64, f64) {
+fn list_header_layout(rect: Rect, chip_here: bool, gap: f64, scale: f64) -> (f64, f64, f64) {
     // The chip is a CHIP_SIZE square inset CHIP_INSET from the pane's top-left
     // (mirrored from `ui`'s NavShell), so its centre line is:
-    let header_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
+    let header_cy = rect.y0 + (CHIP_INSET + CHIP_SIZE / 2.0) * scale;
     let title_x = if chip_here {
-        rect.x0 + CHIP_INSET + CHIP_SIZE + gap
+        rect.x0 + (CHIP_INSET + CHIP_SIZE + gap) * scale
     } else {
-        rect.x0 + 20.0
+        rect.x0 + 20.0 * scale
     };
     // Text is positioned by the top of its line box (`size * 1.25`), so drop the
     // title top by half its own box to centre the glyphs on `header_cy`.
-    let title_y = header_cy - 18.0 * 1.25 / 2.0;
+    let title_y = header_cy - 18.0 * 1.25 * scale / 2.0;
     (title_x, title_y, header_cy)
 }
 
@@ -179,6 +179,10 @@ pub struct Pane {
     role: Role,
     shared: Shared,
     rect: Rect,
+    /// Captured from the host theme during the inner `NavShell` layout pass.
+    /// Canvas text is scaled by the shared renderer; this companion value
+    /// expands Mail's custom row/control geometry so 200% text has room.
+    layout_scale: f64,
     hits: Vec<(Rect, Hit)>,
     /// List pane only: the search field.
     search_input: Option<TextInput>,
@@ -227,6 +231,7 @@ impl Pane {
             role,
             shared,
             rect: Rect::ZERO,
+            layout_scale: 1.0,
             hits: Vec::new(),
             search_input,
             swipe: None,
@@ -249,6 +254,18 @@ impl Pane {
     }
 
     // ---- geometry / hit-list, recomputed from the current rect + state ----
+
+    fn scale(&self) -> f64 {
+        self.layout_scale.clamp(0.5, 4.0)
+    }
+
+    fn header_h(&self) -> f64 {
+        HEADER_H * self.scale()
+    }
+
+    fn list_row_h(&self) -> f64 {
+        LIST_ROW_H * self.scale()
+    }
 
     fn header_left_inset(&self) -> f64 {
         let st = self.shared.borrow();
@@ -278,23 +295,36 @@ impl Pane {
     /// The manual sync / refresh button in the list header (right edge).
     fn refresh_box_rect(&self) -> Rect {
         let r = self.rect;
+        let s = self.scale();
         Rect::new(
-            r.x1 - 16.0 - 32.0,
-            r.y0 + 12.0,
-            r.x1 - 16.0,
-            r.y0 + 12.0 + 32.0,
+            r.x1 - (16.0 + 32.0) * s,
+            r.y0 + 12.0 * s,
+            r.x1 - 16.0 * s,
+            r.y0 + (12.0 + 32.0) * s,
         )
     }
 
     fn search_box_rect(&self) -> Rect {
         let r = self.rect;
+        let s = self.scale();
         // Leave room for the refresh button on the far right.
         let x1 = self.refresh_box_rect().x0 - 10.0;
         // Adapt the search width to the (often narrow) list column, always
         // leaving room for the folder title on its left.
-        let sw = (r.width() * 0.46).clamp(140.0, 230.0);
-        let x0 = (x1 - sw).max(r.x0 + self.header_left_inset() + 70.0);
-        Rect::new(x0, r.y0 + 12.0, x1, r.y0 + 12.0 + 32.0)
+        // On a 200% narrow screen preserve a readable folder title instead
+        // of letting an accessibility-sized search field consume the entire
+        // header. The field remains comfortably touch-sized (200 logical px)
+        // and can still be focused with `/`.
+        let narrow_large_text = r.width() < 600.0 && s > 1.0;
+        let (min_search_w, max_search_w) = if narrow_large_text {
+            (160.0, 200.0)
+        } else {
+            (140.0 * s, 230.0 * s)
+        };
+        let sw = (r.width() * 0.46).clamp(min_search_w, max_search_w);
+        let title_reserve = if narrow_large_text { 20.0 } else { 70.0 * s };
+        let x0 = (x1 - sw).max(r.x0 + self.header_left_inset() * s + title_reserve);
+        Rect::new(x0, r.y0 + 12.0 * s, x1, r.y0 + (12.0 + 32.0) * s)
     }
 
     fn rebuild_hits(&mut self) {
@@ -380,16 +410,23 @@ impl Pane {
                 Hit::SearchClear,
             ));
         }
-        let mut ly = r.y0 + HEADER_H;
+        let mut ly = r.y0 + self.header_h();
         for (id, _len) in st.list_rows() {
             if ly >= r.y1 {
                 break;
             }
-            let row = Rect::new(r.x0, ly, r.x1, ly + LIST_ROW_H);
-            let star = Rect::new(row.x1 - 36.0, row.y0 + 8.0, row.x1 - 12.0, row.y0 + 32.0);
+            let row_h = self.list_row_h();
+            let row = Rect::new(r.x0, ly, r.x1, ly + row_h);
+            let s = self.scale();
+            let star = Rect::new(
+                row.x1 - 36.0 * s,
+                row.y0 + 8.0 * s,
+                row.x1 - 12.0 * s,
+                row.y0 + 32.0 * s,
+            );
             hits.push((star, Hit::RowStar(id)));
             hits.push((row, Hit::Row(id)));
-            ly += LIST_ROW_H;
+            ly += row_h;
         }
     }
 
@@ -407,7 +444,11 @@ impl Pane {
             20.0
         };
         let mut bx = r.x0 + inset;
-        let by = r.y0 + 12.0;
+        // In the accessibility reading flow the NavShell back affordance owns
+        // the first header band. Keep message actions in the second band so
+        // they remain visible and reachable rather than being translated
+        // above the narrow reader viewport.
+        let by = r.y0 + if self.scale() > 1.25 { HEADER_H } else { 0.0 } + 12.0;
         // Compact icon-only buttons when the reader column is tight (narrow
         // layout, or a slim detail pane) so five actions always fit;
         // labelled when there's room.
@@ -742,9 +783,10 @@ impl Pane {
         // Whether the collapse chip sits over this pane's header (the list is
         // then the leftmost pane); matches `header_left_inset`'s List branch.
         let chip_here = st.narrow || !st.sidebar_open;
+        let s = self.scale();
         let gap = f64::from(theme.tokens.spacing.s3);
-        let (title_x, title_y, header_cy) = list_header_layout(r, chip_here, gap);
-        let title_budget = sr.x0 - title_x - 12.0;
+        let (title_x, title_y, header_cy) = list_header_layout(r, chip_here, gap, s);
+        let title_budget = sr.x0 - title_x - 12.0 * s;
         let title_full = st.folder.title();
         let (twd, _) = tr.measure_weighted(title_full, 18.0, None, TextWeight::Bold);
         let title = crate::draw::elide(tr, title_full, 18.0, TextWeight::Bold, title_budget);
@@ -760,9 +802,9 @@ impl Pane {
         // Count sits after the full title only when there's room for both,
         // centred on the same line.
         let count = st.mailbox.count(st.folder);
-        let count_x = title_x + f64::from(twd) + 10.0;
-        if f64::from(twd) <= title_budget && count_x + 26.0 < sr.x0 {
-            let count_y = header_cy - 12.0 * 1.25 / 2.0;
+        let count_x = title_x + f64::from(twd) + 10.0 * s;
+        if f64::from(twd) <= title_budget && count_x + 26.0 * s < sr.x0 {
+            let count_y = header_cy - 12.0 * 1.25 * s / 2.0;
             tr.draw_text(
                 scene,
                 &format!("{count}"),
@@ -772,12 +814,12 @@ impl Pane {
                 None,
             );
         }
-        fill_round(scene, t, sr, 9.0, c.surfaces.raised);
+        fill_round(scene, t, sr, 9.0 * s, c.surfaces.raised);
         stroke_round(
             scene,
             t,
             sr,
-            9.0,
+            9.0 * s,
             1.0,
             if st.search_focused {
                 c.border_focus
@@ -788,7 +830,12 @@ impl Pane {
         Icon::Search.draw(
             scene,
             t,
-            Rect::new(sr.x0 + 8.0, sr.y0 + 8.0, sr.x0 + 24.0, sr.y0 + 24.0),
+            Rect::new(
+                sr.x0 + 8.0 * s,
+                sr.y0 + 8.0 * s,
+                sr.x0 + 24.0 * s,
+                sr.y0 + 24.0 * s,
+            ),
             c.text_dim,
         );
         if st.search.is_empty() && !st.search_focused {
@@ -797,7 +844,7 @@ impl Pane {
                 "Search",
                 13.0,
                 c.text_dim,
-                t * Affine::translate((sr.x0 + 30.0, sr.y0 + 9.0)),
+                t * Affine::translate((sr.x0 + 30.0 * s, sr.y0 + 9.0 * s)),
                 None,
             );
         }
@@ -805,7 +852,12 @@ impl Pane {
             Icon::X.draw(
                 scene,
                 t,
-                Rect::new(sr.x1 - 24.0, sr.y0 + 8.0, sr.x1 - 8.0, sr.y0 + 24.0),
+                Rect::new(
+                    sr.x1 - 24.0 * s,
+                    sr.y0 + 8.0 * s,
+                    sr.x1 - 8.0 * s,
+                    sr.y0 + 24.0 * s,
+                ),
                 c.text_dim,
             );
         }
@@ -817,15 +869,15 @@ impl Pane {
             scene,
             t,
             rb,
-            9.0,
+            9.0 * s,
             if rb_hov {
                 c.lift(0.72)
             } else {
                 c.surfaces.raised
             },
         );
-        stroke_round(scene, t, rb, 9.0, 1.0, c.border_standard);
-        Icon::Refresh.draw(scene, t, rb.inset(-9.0), c.neutral[7]);
+        stroke_round(scene, t, rb, 9.0 * s, 1.0, c.border_standard);
+        Icon::Refresh.draw(scene, t, rb.inset(-9.0 * s), c.neutral[7]);
     }
 
     fn draw_list(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -848,7 +900,7 @@ impl Pane {
                 t,
                 tr,
                 theme,
-                Rect::new(r.x0, r.y0 + HEADER_H, r.x1, r.y1),
+                Rect::new(r.x0, r.y0 + self.header_h(), r.x1, r.y1),
                 Some(icon),
                 title,
                 Some(message),
@@ -1003,7 +1055,7 @@ impl Pane {
     ) {
         let unread = !msg.read;
         self.draw_list_row_identity(scene, t, tr, theme, row, msg, unread, now_min);
-        Self::draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread);
+        self.draw_list_row_subject(scene, t, tr, theme, row, msg, len, unread);
     }
 
     /// The unread dot, avatar, sender name, and relative date of a list row.
@@ -1030,7 +1082,13 @@ impl Pane {
                 t,
                 c.accent[5],
                 None,
-                &Circle::new(Point::new(row.x0 + 14.0, row.y0 + LIST_ROW_H / 2.0), 4.0),
+                &Circle::new(
+                    Point::new(
+                        row.x0 + 14.0 * self.scale(),
+                        row.y0 + self.list_row_h() / 2.0,
+                    ),
+                    4.0 * self.scale(),
+                ),
             );
         }
         draw_avatar(
@@ -1039,14 +1097,14 @@ impl Pane {
             t,
             theme,
             &self.shared.borrow().images,
-            Point::new(row.x0 + 42.0, row.y0 + 26.0),
-            17.0,
+            Point::new(row.x0 + 42.0 * self.scale(), row.y0 + 26.0 * self.scale()),
+            17.0 * self.scale(),
             &msg.from,
             0,
         );
 
-        let text_x = row.x0 + 70.0;
-        let right = row.x1 - 14.0;
+        let text_x = row.x0 + 70.0 * self.scale();
+        let right = row.x1 - 14.0 * self.scale();
         let name_weight = if unread {
             TextWeight::Bold
         } else {
@@ -1057,14 +1115,14 @@ impl Pane {
             &msg.from.display(),
             13.5,
             name_weight,
-            right - text_x - 56.0,
+            right - text_x - 56.0 * self.scale(),
         );
         tr.draw_text_weighted(
             scene,
             &name,
             13.5,
             c.text_primary,
-            t * Affine::translate((text_x, row.y0 + 12.0)),
+            t * Affine::translate((text_x, row.y0 + 12.0 * self.scale())),
             None,
             name_weight,
         );
@@ -1075,7 +1133,7 @@ impl Pane {
             &date,
             11.5,
             c.text_dim,
-            t * Affine::translate((right - f64::from(dw), row.y0 + 13.0)),
+            t * Affine::translate((right - f64::from(dw), row.y0 + 13.0 * self.scale())),
             None,
         );
     }
@@ -1087,6 +1145,7 @@ impl Pane {
         reason = "each parameter is a distinct piece of the row state draw_list_row already resolved; bundling them would just move the same count into a field list"
     )]
     fn draw_list_row_subject(
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
@@ -1097,17 +1156,18 @@ impl Pane {
         unread: bool,
     ) {
         let c = &theme.tokens.colors;
-        let text_x = row.x0 + 70.0;
-        let right = row.x1 - 14.0;
+        let s = self.scale();
+        let text_x = row.x0 + 70.0 * s;
+        let right = row.x1 - 14.0 * s;
 
-        let subj_y = row.y0 + 32.0;
+        let subj_y = row.y0 + 32.0 * s;
         let subj_col = if unread { c.text_primary } else { c.neutral[7] };
         let subj_weight = if unread {
             TextWeight::Semibold
         } else {
             TextWeight::Regular
         };
-        let subj_budget = right - text_x - if len > 1 { 48.0 } else { 16.0 };
+        let subj_budget = right - text_x - if len > 1 { 48.0 * s } else { 16.0 * s };
         let subject = elide(tr, &msg.thread_subject(), 12.5, subj_weight, subj_budget);
         tr.draw_text_weighted(
             scene,
@@ -1121,21 +1181,25 @@ impl Pane {
         if len > 1 {
             let badge_txt = len.to_string();
             let (bw, _) = tr.measure_weighted(&badge_txt, 10.5, None, TextWeight::Semibold);
-            let bx = right - f64::from(bw) - 12.0;
-            let badge = Rect::new(bx - 6.0, subj_y - 1.0, right, subj_y + 15.0);
-            fill_round(scene, t, badge, 8.0, c.neutral[3]);
+            let bx = right - f64::from(bw) - 12.0 * s;
+            let badge = Rect::new(bx - 6.0 * s, subj_y - s, right, subj_y + 15.0 * s);
+            fill_round(scene, t, badge, 8.0 * s, c.neutral[3]);
             tr.draw_text_weighted(
                 scene,
                 &badge_txt,
                 10.5,
                 c.neutral[8],
-                t * Affine::translate((bx, subj_y + 1.0)),
+                t * Affine::translate((bx, subj_y + s)),
                 None,
                 TextWeight::Semibold,
             );
         }
 
-        let icon_reserve = if msg.has_attachments() { 64.0 } else { 28.0 };
+        let icon_reserve = if msg.has_attachments() {
+            64.0 * s
+        } else {
+            28.0 * s
+        };
         let snippet = elide(
             tr,
             &msg.snippet(),
@@ -1148,13 +1212,18 @@ impl Pane {
             &snippet,
             11.5,
             c.text_dim,
-            t * Affine::translate((text_x, row.y0 + 52.0)),
+            t * Affine::translate((text_x, row.y0 + 52.0 * s)),
             None,
         );
 
         // A favourited mail shows a solid, filled star; an unstarred one a
         // faint outline — the state reads at a glance, not just as a colour.
-        let star_box = Rect::new(right - 24.0, row.y0 + 48.0, right - 8.0, row.y0 + 64.0);
+        let star_box = Rect::new(
+            right - 24.0 * s,
+            row.y0 + 48.0 * s,
+            right - 8.0 * s,
+            row.y0 + 64.0 * s,
+        );
         if msg.starred {
             Icon::Star.draw_filled(scene, t, star_box, c.semantic.warning);
         } else {
@@ -1164,7 +1233,12 @@ impl Pane {
             Icon::Paperclip.draw(
                 scene,
                 t,
-                Rect::new(right - 44.0, row.y0 + 48.0, right - 30.0, row.y0 + 62.0),
+                Rect::new(
+                    right - 44.0 * s,
+                    row.y0 + 48.0 * s,
+                    right - 30.0 * s,
+                    row.y0 + 62.0 * s,
+                ),
                 c.text_dim,
             );
         }
@@ -1269,6 +1343,17 @@ impl Pane {
         let rr = self.rect;
         fill_rect(scene, t, rr, c.surfaces.raised);
 
+        // Thread cards deliberately pack several independent lines into a
+        // compact desktop rhythm. At accessibility scales that density stops
+        // being readable, so use a single-column reading flow measured by the
+        // same TextRenderer instead of allowing the original baselines to
+        // overlap. This is a presentation reflow only; messages, actions and
+        // the selected resource remain the same.
+        if theme.text_scale > 1.25 {
+            self.draw_large_text_reader(scene, t, tr, theme, rr);
+            return;
+        }
+
         let Some((head_id, head_html, webview_rect)) =
             self.draw_reader_thread(scene, t, tr, theme, rr)
         else {
@@ -1312,6 +1397,135 @@ impl Pane {
             // to an HTML mail reloads fresh (and blocked again by default).
             self.html_key = None;
             self.html_shown_id = None;
+        }
+    }
+
+    /// Accessibility-scale reader presentation: a measured, single-column
+    /// thread flow.  It intentionally favours message text over dense sender /
+    /// recipient metadata, which is still available in the ordinary 1× cards.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the large-text reader is one linear measured flow; keeping its action bar, thread header, and message cards in one pass preserves a single vertical cursor"
+    )]
+    fn draw_large_text_reader(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rr: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        self.reader_attachment_hits.clear();
+        self.html_view_rect = None;
+        self.html_toggle_rect = None;
+        let st = self.shared.borrow();
+        let msgs = st.selected_thread_messages();
+        if msgs.is_empty() {
+            let hint = "Select a conversation to read";
+            let (w, _) = tr.measure(hint, 14.0, None);
+            tr.draw_text(
+                scene,
+                hint,
+                14.0,
+                c.text_dim,
+                t * Affine::translate((
+                    f64::midpoint(rr.x0, rr.x1) - f64::from(w) / 2.0,
+                    rr.y0 + rr.height() / 2.0,
+                )),
+                None,
+            );
+            return;
+        }
+
+        let compact = true;
+        let starred = st
+            .selected
+            .and_then(|id| st.mailbox.get(id))
+            .is_some_and(|message| message.starred);
+        self.draw_reader_action_bar(scene, t, tr, theme, compact, starred, st.last_mouse);
+
+        let width = (rr.width() - 48.0).max(120.0) as f32;
+        let x = rr.x0 + 24.0;
+        let mut y = rr.y0 + HEADER_H + 68.0;
+        let Some(head) = msgs.last().copied() else {
+            return;
+        };
+        let subject = elide(
+            tr,
+            &head.thread_subject(),
+            20.0,
+            TextWeight::Bold,
+            f64::from(width),
+        );
+        let (_, title_h) = tr.measure_weighted(&subject, 20.0, Some(width), TextWeight::Bold);
+        tr.draw_text_weighted(
+            scene,
+            &subject,
+            20.0,
+            c.text_primary,
+            t * Affine::translate((x, y)),
+            Some(width),
+            TextWeight::Bold,
+        );
+        y += f64::from(title_h) + 10.0;
+        let context = format!(
+            "{} message{} · {}",
+            msgs.len(),
+            if msgs.len() == 1 { "" } else { "s" },
+            st.folder.title()
+        );
+        tr.draw_text(
+            scene,
+            &context,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((x, y)),
+            Some(width),
+        );
+        y += 38.0;
+
+        for message in msgs {
+            if y >= rr.y1 - 30.0 {
+                break;
+            }
+            let sender = message.from.display();
+            tr.draw_text_weighted(
+                scene,
+                &sender,
+                14.0,
+                c.text_primary,
+                t * Affine::translate((x, y)),
+                Some(width),
+                TextWeight::Semibold,
+            );
+            y += 28.0;
+            let when = format_absolute(message.timestamp_min);
+            tr.draw_text(
+                scene,
+                &when,
+                11.5,
+                c.text_dim,
+                t * Affine::translate((x, y)),
+                Some(width),
+            );
+            y += 28.0;
+            let (_, body_h) = tr.measure(&message.body, 13.5, Some(width));
+            tr.draw_text(
+                scene,
+                &message.body,
+                13.5,
+                c.text_primary,
+                t * Affine::translate((x, y)),
+                Some(width),
+            );
+            y += f64::from(body_h) + 24.0;
+            fill_rect(
+                scene,
+                t,
+                Rect::new(x, y - 12.0, rr.x1 - 24.0, y - 11.0),
+                c.border_standard,
+            );
         }
     }
 
@@ -2347,9 +2561,10 @@ impl Widget for Pane {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_scale = f64::from(theme.text_scale);
         // `Widget::build_layout` returns a bare `NodeId`, not a `Result` — a
         // framework-wide contract this one widget can't change — so a
         // `new_leaf` failure (which a valid, freshly-created `Style` cannot
@@ -2842,7 +3057,7 @@ mod tests {
         // chip beside it and sit a consistent gap past it — not a few px off.
         let rect = Rect::new(0.0, 0.0, 420.0, 900.0);
         let gap = 12.0;
-        let (title_x, title_y, header_cy) = list_header_layout(rect, true, gap);
+        let (title_x, title_y, header_cy) = list_header_layout(rect, true, gap, 1.0);
         let chip_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
         let chip_right = rect.x0 + CHIP_INSET + CHIP_SIZE;
         // Vertically centred on the chip's centre line (glyph box is size*1.25).
@@ -2865,7 +3080,7 @@ mod tests {
             "title does not crowd the collapse button"
         );
         // With no chip over the header, the title returns to the plain inset.
-        let (nx, _, _) = list_header_layout(rect, false, gap);
+        let (nx, _, _) = list_header_layout(rect, false, gap, 1.0);
         assert_eq!(nx, rect.x0 + 20.0);
     }
 
