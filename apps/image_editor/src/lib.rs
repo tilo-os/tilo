@@ -17,6 +17,7 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImageEditorApp::new())
 }
 pub const SHOT_SCENARIOS: &[&str] = &[
+    "empty",
     "canvas-stack",
     "graph",
     "narrow",
