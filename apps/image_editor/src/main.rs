@@ -38,7 +38,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), ui::launch::LaunchError> {
         .and_then(|s| s.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .or(args.viewport)
-        .unwrap_or(if scenario == "narrow" {
+        .unwrap_or(if scenario.contains("narrow") {
             (620, 760)
         } else {
             (1280, 800)
@@ -60,7 +60,7 @@ fn render(
     image_editor::write_shot_image(&staging)?;
     let mut state = ui::State::new();
     let mut widget = image_editor::ImageEditorApp::new();
-    widget.seed_shot(&mut state.doc, &staging, scenario == "graph");
+    widget.seed_shot(&mut state.doc, &staging, scenario.starts_with("graph"));
     if scenario == "narrow-more" {
         widget.open_more_for_shot();
     }
