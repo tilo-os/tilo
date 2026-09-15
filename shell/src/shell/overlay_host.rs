@@ -672,6 +672,9 @@ pub struct ShellOverlayHost {
     /// stay unreachable until a real identity has been provisioned and the
     /// user dismisses the result screen.
     onboarding: Option<crate::onboarding_view::OnboardingView>,
+    /// Layout node for the modal setup/tour surface. A reopened desktop tour
+    /// shares the normal desktop tree; first-login setup still owns the root.
+    onboarding_node: Option<NodeId>,
     /// One-shot relayout edge raised when onboarding releases the desktop.
     onboarding_released: bool,
     /// One-shot focus edge paired with [`Self::onboarding_released`]. Kept
@@ -1486,7 +1489,11 @@ impl ShellOverlayHost {
         let mut workspace = Scene::new();
         let mut quick_settings = Scene::new();
         let mut above_quick_settings = Scene::new();
-        if let Some(onboarding) = self.onboarding.as_mut() {
+        let contextual_tour = self
+            .onboarding
+            .as_ref()
+            .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
+        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(&mut backdrop, transform, text_renderer, theme, presence);
             return ShellSceneSections {
                 backdrop,
@@ -1591,6 +1598,15 @@ impl ShellOverlayHost {
             theme,
             presence,
         );
+        if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+            onboarding.draw(
+                &mut above_quick_settings,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
+        }
         self.capture_studio.draw(
             &mut above_quick_settings,
             transform,
@@ -1724,6 +1740,7 @@ impl ShellOverlayHost {
             content,
             workspace_scene_parts: None,
             onboarding: None,
+            onboarding_node: None,
             onboarding_released: false,
             onboarding_focus_reset: false,
             sidebar: None,
@@ -10841,8 +10858,13 @@ impl Widget for ShellOverlayHost {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        if let Some(onboarding) = self.onboarding.as_mut() {
+        let contextual_tour = self
+            .onboarding
+            .as_ref()
+            .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
+        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             let onboarding_node = onboarding.build_layout(taffy, theme, node_map);
+            self.onboarding_node = Some(onboarding_node);
             // Setup remains an independent modal workflow, but Print Screen
             // must be able to put Capture Studio above it without destroying
             // the setup step.  Keep the capture node in this otherwise
@@ -10865,6 +10887,7 @@ impl Widget for ShellOverlayHost {
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
         }
+        self.onboarding_node = None;
         // Both pushed before the content tree is built, so this pass's
         // fullscreen collapse and per-display width resolution are in
         // effect — the latter is what makes a single-frame offscreen
@@ -10978,6 +11001,11 @@ impl Widget for ShellOverlayHost {
             children.push(markup_node);
         }
         children.extend(self.capture_mirror_nodes.iter().copied());
+        if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+            let onboarding_node = onboarding.build_layout(taffy, theme, node_map);
+            self.onboarding_node = Some(onboarding_node);
+            children.push(onboarding_node);
+        }
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -11017,11 +11045,17 @@ impl Widget for ShellOverlayHost {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.workspace_settings_overlay.layout(self.rect);
-        if let Some(onboarding) = self.onboarding.as_mut() {
-            if let Ok(children) = taffy.children(node)
-                && let Some(&child) = children.first()
-            {
-                onboarding.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
+        let contextual_tour = self
+            .onboarding
+            .as_ref()
+            .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
+        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+            if let Some(onboarding_node) = self.onboarding_node {
+                onboarding.apply_layout(
+                    taffy,
+                    onboarding_node,
+                    Point::new(self.rect.x0, self.rect.y0),
+                );
             }
             if let Some(capture_node) = self.capture_node {
                 self.capture_studio.apply_layout(
@@ -11139,6 +11173,16 @@ impl Widget for ShellOverlayHost {
         {
             mirror.apply_layout(taffy, mirror_node, Point::new(self.rect.x0, self.rect.y0));
         }
+        if contextual_tour
+            && let (Some(onboarding), Some(onboarding_node)) =
+                (self.onboarding.as_mut(), self.onboarding_node)
+        {
+            onboarding.apply_layout(
+                taffy,
+                onboarding_node,
+                Point::new(self.rect.x0, self.rect.y0),
+            );
+        }
         self.publish_strip_viewport();
     }
 
@@ -11150,7 +11194,11 @@ impl Widget for ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if let Some(onboarding) = self.onboarding.as_mut() {
+        let contextual_tour = self
+            .onboarding
+            .as_ref()
+            .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
+        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
             self.capture_studio
                 .draw(scene, transform, text_renderer, theme, presence);
@@ -11194,6 +11242,9 @@ impl Widget for ShellOverlayHost {
         self.draw_overview_and_ws_settings_overlays(scene, transform, text_renderer, theme, flags);
         self.draw_dropdowns_and_sheets(scene, transform, text_renderer, theme, presence, flags);
         self.draw_top_overlays(scene, transform, text_renderer, theme, presence);
+        if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+            onboarding.draw(scene, transform, text_renderer, theme, presence);
+        }
         self.capture_studio
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -20454,7 +20505,18 @@ mod tests {
         assert!(
             host.onboarding
                 .as_ref()
-                .is_some_and(|view| !view.flow().is_done())
+                .is_some_and(|view| !view.flow().is_done() && view.presents_desktop_context())
+        );
+        let mut taffy = TaffyTree::new();
+        let mut node_map = StdHashMap::new();
+        let _ = host.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        assert!(
+            host.content_node.is_some(),
+            "the tour keeps the real desktop laid out"
+        );
+        assert!(
+            host.onboarding_node.is_some(),
+            "the coachmark surface shares that tree"
         );
         assert!(
             !chrome.borrow().overlays.desktop_tour,
