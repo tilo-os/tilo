@@ -121,3 +121,33 @@ crash in Fedora's static PIE `ldconfig`, which remains unresolved. Preserve
 normal RPM scriptlets and distinguish SDK construction from translator runtime
 acceptance. Release SDK production still requires a pinned, reproducible build
 and its own acceptance evidence.
+
+## Runtime filesystem and syscall test fixture
+
+An exported distribution image is not directly a FEX runtime overlay. Follow
+the upstream [custom RootFS instructions](https://wiki.fex-emu.com/index.php/Development:Setting_up_RootFS):
+exclude runtime directories such as `/tmp`, `/dev`, `/proc`, `/sys`, and `/home`,
+and the host-specific configuration files listed there. Keep the complete SDK
+separately for package maintenance. Preserve the source export and build a
+separate runtime view; exclusions applied during tar extraction can break
+hardlinks in Fedora bootc's OSTree objects. Copying the complete filesystem
+before moving excluded paths aside preserves those objects.
+
+The native ARM syscall diagnostics identified three fixture requirements:
+
+- PID 1 must belong to root, as the upstream `sched_setparam` and `sigqueue`
+  permission tests explicitly assume. Run the tests as an ordinary user with
+  all capabilities dropped, under a root-owned supervisor that waits for them.
+- Make `/dev/fuse` and `/dev/net/tun` available in the isolated test container.
+  Device existence is tested even when privileged operations are skipped by
+  upstream. No network administration capability is required for this run.
+- The outer container's default seccomp filter changes invalid `clock_settime`
+  calls from `EINVAL` to `EPERM`. An equivalent native ARM control reproduced
+  this failure and passed with the outer filter disabled. Disable that filter
+  only for the isolated diagnostic fixture; this does not change the product
+  application sandbox or grant clock-setting capabilities.
+
+With a read-only runtime view, a root-owned supervisor, unprivileged test
+processes, the two devices, and the diagnostic seccomp setting, all 11 previously
+failing syscall groups passed. The complete suite must still pass with this
+fixture; targeted success alone is not full acceptance.
