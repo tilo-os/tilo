@@ -28,6 +28,27 @@ pub struct ChildMeasurement {
     pub content_size: Size<f32>,
 }
 
+/// Explicit invalidation for inputs captured by a retained [`Manual`] policy.
+/// After changing an input, call [`Self::invalidate`] and schedule a normal
+/// host layout frame. This handle does not schedule a window redraw itself.
+#[derive(Clone, Default)]
+pub struct ManualInvalidation(Rc<PolicyRevision>);
+#[derive(Default)]
+struct PolicyRevision {
+    requested: Cell<u64>,
+    solved: Cell<Option<u64>>,
+    applied: Cell<Option<u64>>,
+}
+impl ManualInvalidation {
+    /// Request another solve without replacing the region or its children.
+    pub fn invalidate(&self) {
+        self.0.requested.set(self.0.requested.get().wrapping_add(1));
+    }
+    fn is_pending(&self) -> bool {
+        self.0.applied.get() != Some(self.0.requested.get())
+    }
+}
+
 type Policy = dyn Fn(&mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError>;
 /// An owned descriptor. Hosts consume this through admitted Widget dispatch.
 #[doc(hidden)]
@@ -36,6 +57,7 @@ pub struct ManualPolicy {
     policy: Rc<Policy>,
     children: Vec<(NodeId, Style)>,
     info: Rc<Cell<Option<ManualLayout>>>,
+    invalidation: ManualInvalidation,
 }
 
 /// A manual region whose children keep their standard rendering and interaction.
@@ -47,6 +69,7 @@ pub struct Manual {
     policy: Rc<Policy>,
     baseline: Vec<(NodeId, Style)>,
     info: Rc<Cell<Option<ManualLayout>>>,
+    invalidation: ManualInvalidation,
 }
 impl Manual {
     pub fn new(
@@ -57,6 +80,7 @@ impl Manual {
             policy: Rc::new(policy),
             baseline: Vec::new(),
             info: Rc::new(Cell::new(None)),
+            invalidation: ManualInvalidation::default(),
         }
     }
     #[must_use]
@@ -64,12 +88,34 @@ impl Manual {
         self.parts.children.push(child);
         self
     }
+    /// Retain this handle alongside captured policy inputs. Invalidate it
+    /// after changing those inputs, then request the host's next layout frame.
+    pub fn invalidation(&self) -> ManualInvalidation {
+        self.invalidation.clone()
+    }
     pub fn effective_layout(&self) -> Option<ManualLayout> {
         self.info.get()
     }
 }
 impl Widget for Manual {
-    retained_parts!("Manual");
+    retained_parts!("Manual", custom_apply_layout);
+    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.parts.apply_layout(tree, node, origin);
+        // Probes may solve policies, but only actual placement acknowledges
+        // their revision. Failed solves never reach this point.
+        self.invalidation
+            .0
+            .applied
+            .set(self.invalidation.0.solved.get());
+    }
+    fn layout_needs_measure(&self) -> bool {
+        self.invalidation.is_pending()
+            || self
+                .parts
+                .children
+                .iter()
+                .any(|child| child.layout_needs_measure())
+    }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -81,6 +127,7 @@ impl Widget for Manual {
             policy: self.policy.clone(),
             children: self.baseline.clone(),
             info: self.info.clone(),
+            invalidation: self.invalidation.clone(),
         })
     }
     fn build_layout(
@@ -303,6 +350,7 @@ pub(super) unsafe fn run_policy(
     text: &mut TextRenderer,
     depth: usize,
 ) -> Result<bool, WidgetLayoutError> {
+    let revision = descriptor.invalidation.0.requested.get();
     let layout = *tree.layout(node)?;
     let mut context = ManualContext {
         tree,
@@ -378,6 +426,7 @@ pub(super) unsafe fn run_policy(
             || overflow_bounds.y1 > f64::from(layout.size.height),
         first_conflict: conflict,
     }));
+    descriptor.invalidation.0.solved.set(Some(revision));
     Ok(changed)
 }
 /// Conservative solved-layout paint bounds, relative to the root's parent.

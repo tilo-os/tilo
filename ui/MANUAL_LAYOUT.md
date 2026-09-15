@@ -60,6 +60,40 @@ Legacy hosts that rebuild topology from previous geometry settle that topology
 after actual placement. A probe does not predict every hypothetical topology
 of a legacy AppShell.
 
+## Changing retained policy inputs
+
+Keep a clone of `Manual::invalidation()` when a policy captures mutable input:
+
+```rust
+use std::{cell::Cell, rc::Rc};
+use ui::widget::Manual;
+let offset = Rc::new(Cell::new(0.25_f64));
+let policy_offset = offset.clone();
+let region = Manual::new(move |ctx| {
+    // Measure/place retained children using policy_offset.get().
+    let _x = policy_offset.get();
+    Ok(taffy::Size { width: ctx.available().width, height: 100.0 })
+});
+let invalidation = region.invalidation();
+// Later, in the owning widget's input/update handling:
+offset.set(5.75);
+invalidation.invalidate();
+// Return true from the owning Widget::update to request a normal App layout
+// frame, or use the custom host's ordinary layout-frame scheduling mechanism.
+```
+
+The handle marks policy work; it does not wake a window or observe arbitrary
+`Rc<Cell<_>>` changes automatically. Both invalidation and normal frame scheduling
+are required. A same-viewport layout frame then solves and places the existing
+children, preserving their identities, entry text, selection and focus. No
+structural rebuild is required. Changes to viewport/child measurement continue
+to trigger their existing layout paths.
+
+Only actual placement acknowledges the revision successfully solved. Hypothetical
+measurement probes, failed solves, and a newer invalidation during policy
+evaluation do not clear pending work. Once applied, unchanged paint or scroll
+frames reuse solved geometry without evaluating the policy again.
+
 ## Exact geometry and conflicts
 
 Rectangles are local to the Manual region. Coordinates use Taffy's `f32`
@@ -93,8 +127,9 @@ quality defect by itself.
   page. Other fields keep their own automatic/guided policies.
 - Put an intrinsic `Form` in a Manual child, measure it at the chosen width,
   then place it. The Form still measures its labels and applies local overrides.
-- Retain the same controls and change a closure input or region override. The
-  host rebuild/resize lifecycle preserves entry text, selection and focus.
+- Retain the same controls and change a closure input using the invalidation
+  handle above, or change a region override. Retained placement and the host
+  rebuild/resize lifecycle preserve entry text, selection and focus.
   Saved focus restoration requires a semantic key that is **unique across the
   admitted tree**. Do not give support labels the input's key. Anonymous or
   ambiguous fresh controls deliberately do not inherit saved state.
