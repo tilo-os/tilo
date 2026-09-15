@@ -423,7 +423,17 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true'
     needs: catalog
     enable-openid-connect: true
-    runs-on: imager-windows-x86_64
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: imager-windows-x86_64
+          - arch: aarch64
+            runner: imager-windows-aarch64
+    runs-on: ${{ matrix.runner }}
+    env:
+      QOS_WINDOWS_ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
@@ -432,6 +442,14 @@ jobs:
           path: release-catalog
       - shell: powershell
         run: Copy-Item release-catalog/qos-installer-catalog-v1.json apps/imager/release-catalog.json
+      - name: Require native Windows architecture
+        shell: powershell
+        run: |
+          $Expected = if ($env:QOS_WINDOWS_ARCH -eq 'aarch64') { 12 } else { 9 }
+          $Processors = @(Get-CimInstance Win32_Processor)
+          if ($Processors.Count -eq 0 -or @($Processors | Where-Object { $_.Architecture -ne $Expected }).Count -ne 0) {
+            throw "Windows runner architecture does not match $env:QOS_WINDOWS_ARCH"
+          }
       - name: Configure release signing
         shell: powershell
         env:
@@ -471,20 +489,21 @@ jobs:
             "QOS_RELEASE_BASE_URL=https://code.sandbox.example/qos/qos/releases/download/$env:GITHUB_REF_NAME" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
       - shell: powershell
-        run: cargo test -p imager --lib --locked
+        run: cargo test -p imager --lib --locked --target "$env:QOS_WINDOWS_ARCH-pc-windows-msvc"
       - name: Prove the packaged host writer is enabled
         shell: powershell
-        run: cargo test -p imager --lib --locked --features host-media-writer
+        run: cargo test -p imager --lib --locked --features host-media-writer --target "$env:QOS_WINDOWS_ARCH-pc-windows-msvc"
       - name: Build the complete native Windows package set
         shell: powershell
         env:
           QOS_REQUIRE_NATIVE_PACKAGES: "1"
-        run: apps/imager/packaging/package-host.ps1
+        run: apps/imager/packaging/package-host.ps1 -Architecture $env:QOS_WINDOWS_ARCH
       - name: Verify Windows package architecture boundaries
         shell: powershell
         run: |
           & apps/imager/packaging/test-package-host.ps1
           & apps/imager/packaging/test-package-architecture.ps1
+          & tools/tests/windows_runner_architecture.ps1
       - name: Remove bootstrap Windows signing material
         if: always()
         shell: powershell
@@ -497,7 +516,7 @@ jobs:
           $Smoke = Join-Path $env:RUNNER_TEMP "qos-imager-smoke"
           $Install = Join-Path $Smoke "installed"
           New-Item -ItemType Directory -Force -Path $Smoke | Out-Null
-          $Setup = "dist/qos-imager/qos-imager-setup-windows-x86_64.exe"
+          $Setup = "dist/qos-imager/qos-imager-setup-windows-$env:QOS_WINDOWS_ARCH.exe"
           if (Test-Path $Setup) {
             & $Setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$Install"
             if ($LASTEXITCODE -ne 0) { throw "qOS Imager setup failed" }
@@ -505,7 +524,7 @@ jobs:
           } elseif ($env:GITHUB_REF -like "refs/tags/imager-v*") {
             throw "release setup executable is missing"
           } else {
-            $Binary = "dist/qos-imager/qos-imager-windows-x86_64.exe"
+            $Binary = "dist/qos-imager/qos-imager-windows-$env:QOS_WINDOWS_ARCH.exe"
           }
           $Shot = Join-Path $Smoke "installed.png"
           & $Binary --shots $Shot --scenario confirm --viewport 1180x820
@@ -521,15 +540,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "WinGet manifest validation failed" }
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
-          name: qos-imager-windows
+          name: qos-imager-windows-${{ matrix.arch }}
           path: |
-            dist/qos-imager/qos-imager-windows-x86_64.exe
-            dist/qos-imager/qos-imager-windows-x86_64.exe.sha256
-            dist/qos-imager/qos-imager-windows-x86_64.zip
-            dist/qos-imager/qos-imager-windows-x86_64.zip.sha256
-            dist/qos-imager/qos-imager-setup-windows-x86_64.exe
-            dist/qos-imager/qos-imager-setup-windows-x86_64.exe.sha256
-            dist/qos-imager/winget/*.yaml
+            dist/qos-imager/qos-imager-windows-${{ matrix.arch }}.exe
+            dist/qos-imager/qos-imager-windows-${{ matrix.arch }}.exe.sha256
+            dist/qos-imager/qos-imager-windows-${{ matrix.arch }}.zip
+            dist/qos-imager/qos-imager-windows-${{ matrix.arch }}.zip.sha256
+            dist/qos-imager/qos-imager-setup-windows-${{ matrix.arch }}.exe
+            dist/qos-imager/qos-imager-setup-windows-${{ matrix.arch }}.exe.sha256
           if-no-files-found: error
 
   macos:
@@ -689,6 +707,12 @@ jobs:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release-assets
+      - name: Generate the complete WinGet manifest set
+        shell: bash
+        run: |
+          python3 apps/imager/packaging/generate-winget.py release-assets \
+            --version "${GITHUB_REF_NAME#imager-v}" \
+            --base-url "https://code.sandbox.example/qos/qos/releases/download/${GITHUB_REF_NAME}"
       - name: Require the complete native release matrix
         shell: bash
         run: |
@@ -705,6 +729,9 @@ jobs:
             qos-imager-windows-x86_64.exe
             qos-imager-windows-x86_64.zip
             qos-imager-setup-windows-x86_64.exe
+            qos-imager-windows-aarch64.exe
+            qos-imager-windows-aarch64.zip
+            qos-imager-setup-windows-aarch64.exe
             qos-imager-macos-x86_64.dmg
             qos-imager-macos-aarch64.dmg
             qos-imager-macos-x86_64.zip

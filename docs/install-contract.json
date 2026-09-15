@@ -11,7 +11,7 @@
       },
       {
         "os": "Windows 10 or 11",
-        "architectures": ["x86_64"],
+        "architectures": ["x86_64", "aarch64"],
         "downloads": ["setup EXE", "standalone EXE", "portable zip"],
         "packageManager": "WinGet"
       },
