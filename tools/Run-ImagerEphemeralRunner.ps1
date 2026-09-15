@@ -7,6 +7,11 @@ param(
 # Install this script and forgejo-runner.exe as Administrator-owned files on a
 # disposable golden image. Never execute a copy from a workflow checkout.
 $ErrorActionPreference = "Stop"
+$qOSTrustedOwnerSids = @(
+    'S-1-5-18',
+    'S-1-5-32-544',
+    'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+)
 $Runner = if ($env:QOS_FORGEJO_RUNNER) {
     $env:QOS_FORGEJO_RUNNER
 } else {
@@ -23,25 +28,29 @@ function Assert-qOSPrivateMetadataFile([string]$Path, [string]$Description) {
     }
     if ($Item.FullName -cne [IO.Path]::GetFullPath($Path)) { throw "$Description must use its canonical path" }
     $Acl = Get-Acl -LiteralPath $Item.FullName
-    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    if (-not $Acl.AreAccessRulesProtected -or $Acl.Owner -cne $Identity) {
+    $IdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if (-not $Acl.AreAccessRulesProtected -or $OwnerSid -cne $IdentitySid) {
         throw "$Description must disable inheritance and be owned by the runner identity"
     }
-    foreach ($Rule in $Acl.Access) {
-        $Trusted = $Rule.IdentityReference.Value -ceq $Identity -or
-            $Rule.IdentityReference.Value -match '(?i)(SYSTEM|Administrators)$'
+    foreach ($Rule in @($Acl.GetAccessRules(
+                $true, $true, [Security.Principal.SecurityIdentifier]))) {
+        $Trusted = $Rule.IdentityReference.Value -ceq $IdentitySid -or
+            $Rule.IdentityReference.Value -in $qOSTrustedOwnerSids
         if ($Rule.AccessControlType -eq 'Allow' -and -not $Trusted) {
             throw "$Description ACL grants another principal access"
         }
     }
     $ParentAcl = Get-Acl -LiteralPath $Item.Directory.FullName
-    if (-not $ParentAcl.AreAccessRulesProtected -or $ParentAcl.Owner -cne $Identity) {
+    $ParentOwnerSid = $ParentAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if (-not $ParentAcl.AreAccessRulesProtected -or $ParentOwnerSid -cne $IdentitySid) {
         throw "$Description parent must be a private runner-owned directory"
     }
     $CanDeleteChildren = $false
-    foreach ($Rule in $ParentAcl.Access) {
-        $IsRunner = $Rule.IdentityReference.Value -ceq $Identity
-        $Trusted = $IsRunner -or $Rule.IdentityReference.Value -match '(?i)(SYSTEM|Administrators)$'
+    foreach ($Rule in @($ParentAcl.GetAccessRules(
+                $true, $true, [Security.Principal.SecurityIdentifier]))) {
+        $IsRunner = $Rule.IdentityReference.Value -ceq $IdentitySid
+        $Trusted = $IsRunner -or $Rule.IdentityReference.Value -in $qOSTrustedOwnerSids
         if ($Rule.AccessControlType -eq 'Allow' -and -not $Trusted) {
             throw "$Description parent ACL grants another principal access"
         }
@@ -67,7 +76,8 @@ function Assert-qOSTrustedRunner([string]$Path) {
     $Current = $Item
     while ($Current) {
         $Acl = Get-Acl -LiteralPath $Current.FullName
-        if ($Acl.Owner -notmatch '(?i)(SYSTEM|Administrators|TrustedInstaller)$') {
+        $OwnerSid = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($OwnerSid -notin $qOSTrustedOwnerSids) {
             throw "forgejo-runner and every parent must have a trusted owner"
         }
         # WriteData on a drive root may only permit creating unrelated children.
@@ -81,8 +91,9 @@ function Assert-qOSTrustedRunner([string]$Path) {
         if ($Current -is [IO.FileInfo]) {
             $Dangerous = $Dangerous -bor [Security.AccessControl.FileSystemRights]::Write
         }
-        foreach ($Rule in $Acl.Access) {
-            $TrustedPrincipal = $Rule.IdentityReference.Value -match '(?i)(SYSTEM|Administrators|TrustedInstaller)$'
+        foreach ($Rule in @($Acl.GetAccessRules(
+                    $true, $true, [Security.Principal.SecurityIdentifier]))) {
+            $TrustedPrincipal = $Rule.IdentityReference.Value -in $qOSTrustedOwnerSids
             if ($Rule.AccessControlType -eq 'Allow' -and ($Rule.FileSystemRights -band $Dangerous) -and
                 -not $TrustedPrincipal) {
                 throw "forgejo-runner or a parent is writable by an untrusted principal"
