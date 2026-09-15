@@ -10374,6 +10374,7 @@ dependencies = [
 name = "photos"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "image",
  "png 0.18.1",

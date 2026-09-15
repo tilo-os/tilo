@@ -38,9 +38,9 @@
 use automerge::AutoCommit;
 
 use qos_actions::{
-    Action, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
-    ResultSpec, RetryPolicy,
+    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource,
+    ResourceProvider, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::PhotosDoc;
@@ -59,6 +59,10 @@ const ALBUM_CONTEXT_LIMIT: usize = 24;
 const FOLDER_CONTEXT_LIMIT: usize = 24;
 const PERSON_CONTEXT_LIMIT: usize = 24;
 const TAG_CONTEXT_LIMIT: usize = 24;
+const MAX_RESOURCE_ID_CHARS: usize = 4_096;
+const MAX_ALBUM_ID_CHARS: usize = 160;
+const MAX_NAME_CHARS: usize = 256;
+const MAX_ALBUM_MEMBERS: usize = 4_096;
 type LabelCounts = Vec<(String, usize)>;
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -119,8 +123,48 @@ pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<PhotosOp
 }
 
 fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> {
-    let spec =
-        ActionSpec::operation(id, label, OperationKind::Effect, PHOTOS_OPERATION_TYPE, op).ok()?;
+    let kind = if matches!(
+        op,
+        PhotosOperation::View
+            | PhotosOperation::ViewAlbum { .. }
+            | PhotosOperation::ViewFolder { .. }
+            | PhotosOperation::ViewPerson { .. }
+            | PhotosOperation::ViewTag { .. }
+    ) {
+        OperationKind::View
+    } else {
+        OperationKind::Effect
+    };
+    let tags = match op {
+        PhotosOperation::View
+        | PhotosOperation::ViewAlbum { .. }
+        | PhotosOperation::ViewFolder { .. }
+        | PhotosOperation::ViewPerson { .. }
+        | PhotosOperation::ViewTag { .. } => vec!["device-local".into(), "presentation".into()],
+        PhotosOperation::Open { .. } | PhotosOperation::Save { .. } => vec![
+            "device-local".into(),
+            "filesystem".into(),
+            "portal".into(),
+            "sensitive-path".into(),
+        ],
+        PhotosOperation::Copy | PhotosOperation::ShareReference { .. } => {
+            vec!["device-local".into(), "clipboard".into()]
+        }
+    };
+    let contract = if kind == OperationKind::View {
+        ActionContract {
+            tags,
+            ..ActionContract::view()
+        }
+    } else {
+        ActionContract {
+            tags,
+            ..ActionContract::default()
+        }
+    };
+    let spec = ActionSpec::operation(id, label, kind, PHOTOS_OPERATION_TYPE, op)
+        .ok()?
+        .with_contract(contract);
     Some(match op {
         PhotosOperation::View
         | PhotosOperation::ViewAlbum { .. }
@@ -218,6 +262,63 @@ impl PhotosAction {
     }
 }
 
+fn valid_name(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.chars().count() <= MAX_NAME_CHARS
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_album_id(value: &str) -> bool {
+    let Some(suffix) = value.strip_prefix("photos.album:") else {
+        return false;
+    };
+    !suffix.is_empty()
+        && value.chars().count() <= MAX_ALBUM_ID_CHARS
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn validate_resource_id(value: &str) -> Result<(), ActionError> {
+    if value.trim().is_empty()
+        || value.chars().count() > MAX_RESOURCE_ID_CHARS
+        || value.chars().any(char::is_control)
+    {
+        Err(ActionError::Refused(
+            "photograph resource id is invalid or too long".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn valid_photo(photo: &LibraryPhoto) -> bool {
+    let canonical_id = LibraryPhoto::from_image(photo.image.clone()).id;
+    let valid_content = photo.image.content.as_ref().is_some_and(|hash| {
+        hash.len() == CONTENT_HEX_LEN
+            && hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    let dimensions = u64::from(photo.image.width).saturating_mul(u64::from(photo.image.height));
+    photo.id == canonical_id
+        && validate_resource_id(&photo.id).is_ok()
+        && valid_name(&photo.image.name)
+        && !photo.image.path.trim().is_empty()
+        && photo.image.path.chars().count() <= MAX_RESOURCE_ID_CHARS
+        && !photo.image.path.chars().any(char::is_control)
+        && photo.image.width > 0
+        && photo.image.height > 0
+        && dimensions <= crate::pixels::MAX_DECODED_PIXELS
+        && valid_content
+        && valid_metadata(
+            photo.folder.as_deref(),
+            &photo.people,
+            &photo.tags,
+            photo.captured_at.as_deref(),
+        )
+}
+
 impl Action for PhotosAction {
     #[allow(
         clippy::too_many_lines,
@@ -230,8 +331,10 @@ impl Action for PhotosAction {
                 Ok(())
             }
             Self::ImportPhoto { photo } => {
-                if photo.id.is_empty() || photo.image.name.trim().is_empty() {
-                    return Err(ActionError::Refused("photo metadata is incomplete".into()));
+                if !valid_photo(photo) {
+                    return Err(ActionError::Refused(
+                        "photo metadata must be canonical, portable, and bounded".into(),
+                    ));
                 }
                 let mut library = PhotosDoc::library(doc);
                 library.add_photo(photo.clone());
@@ -240,6 +343,7 @@ impl Action for PhotosAction {
                 Ok(())
             }
             Self::SelectPhoto { photo_id } => {
+                validate_resource_id(photo_id)?;
                 let library = PhotosDoc::library(doc);
                 let photo = library.photo(photo_id).ok_or_else(|| {
                     ActionError::Refused("that photograph is no longer in the library".into())
@@ -248,6 +352,7 @@ impl Action for PhotosAction {
                 Ok(())
             }
             Self::RemovePhoto { photo_id } => {
+                validate_resource_id(photo_id)?;
                 let mut library = PhotosDoc::library(doc);
                 let before = library.photos.len();
                 library.photos.retain(|photo| photo.id != *photo_id);
@@ -269,6 +374,7 @@ impl Action for PhotosAction {
                 Ok(())
             }
             Self::SetFavorite { photo_id, favorite } => {
+                validate_resource_id(photo_id)?;
                 let mut library = PhotosDoc::library(doc);
                 let photo = library
                     .photos
@@ -288,7 +394,9 @@ impl Action for PhotosAction {
                 tags,
                 captured_at,
             } => {
-                if !valid_metadata(folder.as_deref(), people, tags, captured_at.as_deref()) {
+                if validate_resource_id(photo_id).is_err()
+                    || !valid_metadata(folder.as_deref(), people, tags, captured_at.as_deref())
+                {
                     return Err(ActionError::Refused(
                         "photo metadata must be short, non-empty labels without duplicates".into(),
                     ));
@@ -309,7 +417,7 @@ impl Action for PhotosAction {
                 Ok(())
             }
             Self::CreateAlbum { id, name } => {
-                if id.trim().is_empty() || name.trim().is_empty() {
+                if !valid_album_id(id) || !valid_name(name) {
                     return Err(ActionError::Refused(
                         "an album needs an id and a name".into(),
                     ));
@@ -327,7 +435,7 @@ impl Action for PhotosAction {
                 Ok(())
             }
             Self::RenameAlbum { id, name } => {
-                if name.trim().is_empty() {
+                if !valid_album_id(id) || !valid_name(name) {
                     return Err(ActionError::Refused("an album needs a name".into()));
                 }
                 let mut library = PhotosDoc::library(doc);
@@ -343,6 +451,9 @@ impl Action for PhotosAction {
                 Ok(())
             }
             Self::RemoveAlbum { id } => {
+                if !valid_album_id(id) {
+                    return Err(ActionError::Refused("that album id is invalid".into()));
+                }
                 let mut library = PhotosDoc::library(doc);
                 let before = library.albums.len();
                 library.albums.retain(|album| album.id != *id);
@@ -358,6 +469,11 @@ impl Action for PhotosAction {
                 album_id,
                 photo_ids,
             } => {
+                if !valid_album_id(album_id) || photo_ids.len() > MAX_ALBUM_MEMBERS {
+                    return Err(ActionError::Refused(
+                        "album membership or stable id is invalid".into(),
+                    ));
+                }
                 let mut library = PhotosDoc::library(doc);
                 let valid = photo_ids.iter().all(|id| library.photo(id).is_some())
                     && photo_ids.iter().enumerate().all(|(index, id)| {
@@ -388,7 +504,7 @@ impl Action for PhotosAction {
                 create,
             } => {
                 let name = name.trim();
-                if id.trim().is_empty() || name.is_empty() {
+                if !valid_album_id(id) || !valid_name(name) || photo_ids.len() > MAX_ALBUM_MEMBERS {
                     return Err(ActionError::Refused(
                         "an album needs an id and a name".into(),
                     ));
@@ -1124,8 +1240,18 @@ fn file_operation(id: &str, label: &str, open: bool) -> ActionSpec {
             })
         },
     )
-    .execution(ExecutionMode::Background { cancellable: false })
-    .returns(ResultSpec::Job)
+    .with_contract(ActionContract {
+        retry: RetryPolicy::AtMostOnce,
+        execution: ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        tags: vec![
+            "device-local".into(),
+            "filesystem".into(),
+            "portal".into(),
+            "sensitive-path".into(),
+        ],
+        ..ActionContract::default()
+    })
 }
 
 /// The address of a photograph: what it is, not where a machine put it.
@@ -1210,6 +1336,11 @@ pub fn content_of(id: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn portable_photo(path: &str, width: u32, height: u32) -> LibraryPhoto {
+        let hash = qdoc::blobstore::hash_bytes(path.as_bytes());
+        LibraryPhoto::from_image(OpenImage::from_path(path, width, height).with_content(hash))
+    }
     use crate::model::OpenImage;
     use qos_actions::flatten;
 
@@ -1596,7 +1727,7 @@ mod tests {
         let open = res[0].actions.iter().find(|a| a.id == "open").unwrap();
         assert_eq!(
             open.contract.execution,
-            qos_actions::ExecutionMode::Background { cancellable: false }
+            qos_actions::ExecutionMode::Background { cancellable: true }
         );
         assert_eq!(open.contract.result, qos_actions::ResultSpec::Job);
         assert_eq!(open.params()[0].name.as_ref(), "path");
@@ -1604,6 +1735,66 @@ mod tests {
         assert_eq!(copy.contract.retry, RetryPolicy::Idempotent);
         let view = res[0].actions.iter().find(|a| a.id == "view").unwrap();
         assert_eq!(view.contract.retry, RetryPolicy::Idempotent);
+        assert_eq!(view.kind, OperationKind::View);
+        assert!(view.contract.tags.iter().any(|tag| tag == "presentation"));
+        assert!(view.contract.tags.iter().any(|tag| tag == "device-local"));
+        assert_eq!(open.kind, OperationKind::Effect);
+        for tag in ["device-local", "filesystem", "portal", "sensitive-path"] {
+            assert!(
+                open.contract.tags.iter().any(|candidate| candidate == tag),
+                "open must disclose its {tag} boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn hostile_durable_photo_and_album_payloads_are_refused() {
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let path_only = LibraryPhoto::from_image(OpenImage::from_path(
+            "/private/should-not-be-probed.png",
+            20,
+            10,
+        ));
+        assert!(
+            PhotosAction::ImportPhoto { photo: path_only }
+                .apply(&mut doc)
+                .is_err(),
+            "a replayed import may not ask another device to probe a local path"
+        );
+        let hash = "a".repeat(CONTENT_HEX_LEN);
+        let image = OpenImage::from_path("/private/harbour.png", 20, 10).with_content(hash);
+        let mut photo = LibraryPhoto::from_image(image);
+        photo.id = "photos.photo:not-the-content".into();
+        assert!(PhotosAction::ImportPhoto { photo }.apply(&mut doc).is_err());
+
+        let huge_name = "x".repeat(MAX_NAME_CHARS + 1);
+        assert!(
+            PhotosAction::CreateAlbum {
+                id: "photos.album:bounded".into(),
+                name: huge_name,
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+        assert!(
+            PhotosAction::CreateAlbum {
+                id: "../not-a-stable-album".into(),
+                name: "Album".into(),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+        assert!(
+            PhotosAction::SetAlbumMembership {
+                album_id: "photos.album:bounded".into(),
+                photo_ids: vec!["photos.photo:x".into(); MAX_ALBUM_MEMBERS + 1],
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
+        assert!(PhotosDoc::library(&doc).photos.is_empty());
+        assert!(PhotosDoc::library(&doc).albums.is_empty());
     }
 
     #[test]
@@ -1636,20 +1827,20 @@ mod tests {
     fn library_actions_are_atomic_and_refuse_stale_membership() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/夏.png", 20, 10));
+        let photo = portable_photo("/photos/夏.png", 20, 10);
         PhotosAction::ImportPhoto {
             photo: photo.clone(),
         }
         .apply(&mut doc)
         .unwrap();
         PhotosAction::CreateAlbum {
-            id: "album:summer".into(),
+            id: "photos.album:summer".into(),
             name: "夏".into(),
         }
         .apply(&mut doc)
         .unwrap();
         PhotosAction::SetAlbumMembership {
-            album_id: "album:summer".into(),
+            album_id: "photos.album:summer".into(),
             photo_ids: vec![photo.id.clone()],
         }
         .apply(&mut doc)
@@ -1672,7 +1863,7 @@ mod tests {
     fn saving_an_album_is_atomic_replayable_and_refuses_a_stale_editor() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
-        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
+        let photo = portable_photo("/photos/one.png", 20, 10);
         PhotosAction::ImportPhoto {
             photo: photo.clone(),
         }
@@ -1699,7 +1890,7 @@ mod tests {
         let mut replica = AutoCommit::new();
         PhotosDoc::seed(&mut replica);
         PhotosAction::ImportPhoto {
-            photo: LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10)),
+            photo: portable_photo("/photos/one.png", 20, 10),
         }
         .apply(&mut replica)
         .unwrap();
