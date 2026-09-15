@@ -269,6 +269,9 @@ pub struct BlockEditor {
     /// Current accessibility text scale, retained for prefix and gutter
     /// geometry that is resolved after the taffy pass.
     text_scale: f64,
+    /// Reflow prose blocks to the available width instead of giving each
+    /// block a horizontally scrolling single line.
+    wrap_lines: bool,
     child_nodes: Vec<NodeId>,
     dirty: bool,
     /// Set when the block list grows/shrinks; drained by
@@ -359,6 +362,7 @@ impl BlockEditor {
             is_focused: false,
             rect: Rect::ZERO,
             text_scale: 1.0,
+            wrap_lines: false,
             child_nodes: Vec::new(),
             dirty: true,
             structure_dirty: true,
@@ -397,6 +401,12 @@ impl BlockEditor {
     #[must_use]
     pub fn with_empty_hint(mut self, hint: &str) -> Self {
         self.empty_hint = hint.to_string();
+        self
+    }
+
+    #[must_use]
+    pub fn with_wrap_lines(mut self, wrap: bool) -> Self {
+        self.wrap_lines = wrap;
         self
     }
 
@@ -3540,6 +3550,8 @@ impl Widget for BlockEditor {
             .collect();
         let is_formula_end = compute_is_formula_end(&self.blocks);
         for (i, b) in self.blocks.iter_mut().enumerate() {
+            b.line
+                .set_wrap(self.wrap_lines && !matches!(b.kind, BlockKind::CodeBlock { .. }));
             let n = b.line.build_layout(taffy, theme, node_map);
             // Per-block top margin (not the parent's `gap`) so it can be
             // zeroed for soft-break continuations, the first block, and
