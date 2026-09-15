@@ -591,25 +591,36 @@ fn live_job_card(job: &os_actions::printing::PrintJob, tx: &mpsc::Sender<UiComma
                     page_count,
                 )))
                 .push(Box::new(
-                    Column::new()
+                    // A bare Column requests 100% row width and therefore
+                    // wraps below the preview. The shared zero-basis flex
+                    // container claims only the space left after the page,
+                    // while its minimum keeps the narrow fallback readable.
+                    Container::new()
                         .with_no_padding()
-                        .with_intrinsic_height()
-                        .push(title(&job_title(job), 17.0))
-                        .push(muted(&format!(
-                            "Sent to {}",
-                            display_name(&job.destination)
-                        )))
-                        .push(gap(12.0))
-                        .push(Box::new(
-                            ProgressBar::new(progress).with_label("Current document progress"),
-                        ))
-                        .push(gap(12.0))
-                        .push(Box::new(Row::new().push(command_action(
-                            "print-centre.job.cancel",
-                            "Cancel",
-                            tx,
-                            UiCommand::RequestCancel(job.id.clone()),
-                        )))),
+                        .with_flex_grow()
+                        .with_min_width(260.0)
+                        .with_child(Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .push(title(&job_title(job), 17.0))
+                                .push(muted(&format!(
+                                    "Sent to {}",
+                                    display_name(&job.destination)
+                                )))
+                                .push(gap(12.0))
+                                .push(Box::new(
+                                    ProgressBar::new(progress)
+                                        .with_label("Current document progress"),
+                                ))
+                                .push(gap(12.0))
+                                .push(Box::new(Row::new().push(command_action(
+                                    "print-centre.job.cancel",
+                                    "Cancel",
+                                    tx,
+                                    UiCommand::RequestCancel(job.id.clone()),
+                                )))),
+                        )),
                 )),
         ),
     ))
@@ -3212,6 +3223,55 @@ mod tests {
             inspect(&centre, width, &mut buttons);
             assert!(buttons >= 8, "expected the complete scan-review action set");
         }
+    }
+
+    #[test]
+    fn active_job_uses_the_space_beside_its_preview_and_wraps_when_needed() {
+        fn rects_named(widget: &dyn Widget, name: &str, out: &mut Vec<Rect>) {
+            if widget.name() == name && widget.get_rect().area() > 0.0 {
+                out.push(widget.get_rect());
+            }
+            for child in widget.children() {
+                rects_named(child, name, out);
+            }
+        }
+        fn geometry(width: f32) -> (Rect, Rect) {
+            let mut centre = PrintCentre::demo(DemoScenario::Active);
+            let mut tree = TaffyTree::new();
+            let mut map = HashMap::new();
+            let node = centre.build_layout(&mut tree, &Theme::dark(), &mut map);
+            tree.compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::Definite(800.0),
+                },
+            )
+            .unwrap();
+            centre.apply_layout(&tree, node, Point::ZERO);
+            let mut pages = Vec::new();
+            let mut progress = Vec::new();
+            rects_named(&centre, "PagePreview", &mut pages);
+            rects_named(&centre, "ProgressBar", &mut progress);
+            (
+                *pages.first().expect("active document preview"),
+                *progress.first().expect("active document progress"),
+            )
+        }
+
+        let (wide_page, wide_progress) = geometry(1280.0);
+        assert!(
+            wide_progress.x0 > wide_page.x1,
+            "desktop details should use the empty space beside the preview: {wide_page:?} {wide_progress:?}"
+        );
+        assert!(wide_progress.y0 < wide_page.y1);
+
+        let (phone_page, phone_progress) = geometry(360.0);
+        assert!(
+            phone_progress.y0 >= phone_page.y1,
+            "a genuinely narrow screen should wrap without crushing either child: {phone_page:?} {phone_progress:?}"
+        );
+        assert!(phone_progress.x0 >= 0.0 && phone_progress.x1 <= 360.5);
     }
 
     #[test]
