@@ -12,7 +12,7 @@
 //! regions are never stale.
 //!
 //! State: `State::doc` (CRDT) holds settings/progress/annotations, mutated
-//! directly in `handle_event`/`sync`. Ephemeral widget caches (open book,
+//! through typed replayable actions. Ephemeral widget caches (open book,
 //! page index, selection, layout cache) are per-peer view state kept out of
 //! the document so readers browse independently.
 
@@ -23,6 +23,7 @@
 )]
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread;
@@ -809,6 +810,12 @@ pub struct BooksApp {
     /// Library-wide snapshot used by global search. The reader-facing
     /// `annotations` cache above remains scoped to the open book.
     all_annotations: Vec<Annotation>,
+    /// Retained global-search index. Building chapter full text is linear in
+    /// the library, so it is refreshed at document/materialisation boundaries
+    /// and cloned cheaply into each palette session rather than rebuilt per
+    /// keystroke or provider request.
+    search_provider: crate::search_provider::BookSearchProvider,
+    search_revision: u64,
 
     // --- settings screen (ephemeral) --------------------------------------
     settings_tab: SettingsTab,
@@ -917,9 +924,11 @@ impl BooksApp {
         } else {
             View::Reader
         };
+        let search_provider = crate::search_provider::BookSearchProvider::new(&library, &[]);
         Self {
             library,
             view,
+            search_provider,
             ..Self::blank_view_state()
         }
     }
@@ -1024,6 +1033,8 @@ impl BooksApp {
             schemes: default_schemes(),
             annotations: Vec::new(),
             all_annotations: Vec::new(),
+            search_provider: crate::search_provider::BookSearchProvider::new(&[], &[]),
+            search_revision: 0,
             settings_tab: SettingsTab::Fonts,
             renaming: None,
             number_controls: NumberControls::default(),
@@ -2113,7 +2124,8 @@ impl BooksApp {
             self.import_loading = None;
             match completed.result {
                 Ok(book) => {
-                    let book = content::record_imported_book(doc, &completed.path, book);
+                    let (book, entry) = content::prepare_imported_book(&completed.path, book);
+                    self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
                     let id = book.id.clone();
                     self.local_library.remember_book(&id, &completed.path);
                     self.local_library.save();
@@ -2203,7 +2215,8 @@ impl BooksApp {
     #[cfg(test)]
     fn import_and_open_for_test(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let book = content::parse_path_detailed(path).expect("test EPUB parses");
-        let book = content::record_imported_book(doc, path, book);
+        let (book, entry) = content::prepare_imported_book(path, book);
+        self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
         let id = book.id.clone();
         self.local_library.remember_book(&id, path);
         self.library_paths.insert(id.clone(), path.to_path_buf());
@@ -2649,7 +2662,8 @@ impl BooksApp {
         let Some(pending) = self.pending_share.take() else {
             return;
         };
-        let book = content::record_imported_book(doc, &pending.path, pending.book);
+        let (book, entry) = content::prepare_imported_book(&pending.path, pending.book);
+        self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
         if book.id == pending.book_id {
             self.local_library
                 .remember_book(&pending.book_id, &pending.path);
@@ -4440,6 +4454,33 @@ impl Widget for BooksApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: (cursor.is_empty() && max_results > 0)
+                .then(|| {
+                    <Self as qos_actions::ResourceProvider>::resource(self, doc, "ebook.library")
+                })
+                .flatten()
+                .into_iter()
+                .collect(),
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
+    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
+        Some(format!("ebook-search:{}", self.search_revision))
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
     /// Hand the host the heads captured before an on-page affordance
     /// dispatched its annotation action. Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
@@ -4449,10 +4490,7 @@ impl Widget for BooksApp {
     /// Make books, chapters and annotations findable through canonical
     /// resource view actions in the unified Ctrl+K palette.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::BookSearchProvider::new(
-            &self.library,
-            &self.all_annotations,
-        ))]
+        vec![Box::new(self.search_provider.clone())]
     }
 
     #[allow(
@@ -4565,6 +4603,39 @@ impl Widget for BooksApp {
         }
         self.refresh_from_doc(doc);
         self.persist_progress(doc);
+        let registry = BooksDoc::read_library_entries(doc);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for book in &self.library {
+            book.id.hash(&mut hasher);
+        }
+        for annotation in &self.all_annotations {
+            annotation.id.hash(&mut hasher);
+            annotation.doc_id.hash(&mut hasher);
+            annotation.chapter.hash(&mut hasher);
+            annotation.block.hash(&mut hasher);
+            annotation.start.hash(&mut hasher);
+            annotation.end.hash(&mut hasher);
+            annotation.excerpt.hash(&mut hasher);
+            annotation.note.hash(&mut hasher);
+            std::mem::discriminant(&annotation.kind).hash(&mut hasher);
+            std::mem::discriminant(&annotation.color).hash(&mut hasher);
+        }
+        for entry in &registry {
+            entry.id.hash(&mut hasher);
+            entry.title.hash(&mut hasher);
+            entry.author.hash(&mut hasher);
+            entry.subject.hash(&mut hasher);
+            entry.shared.hash(&mut hasher);
+        }
+        let revision = hasher.finish();
+        if revision != self.search_revision {
+            self.search_provider = crate::search_provider::BookSearchProvider::new_with_registry(
+                &self.library,
+                &self.all_annotations,
+                &registry,
+            );
+            self.search_revision = revision;
+        }
     }
 
     fn build_layout(
@@ -9675,8 +9746,9 @@ impl BooksApp {
         );
     }
 
-    /// The underline-indicator tab bar. Returns the
-    /// tab row's height.
+    /// The underline-indicator tab bar. Wide layouts stay on one line; narrow
+    /// or large-text layouts use a bounded two-by-two grid so every tab remains
+    /// fully visible and touchable instead of clipping at the viewport edge.
     #[allow(clippy::too_many_arguments)]
     fn draw_settings_tabs(
         &mut self,
@@ -9688,17 +9760,34 @@ impl BooksApp {
         r: Rect,
         tabs_y: f64,
     ) -> f64 {
-        let tab_h = 38.0;
-        let mut tx = r.x0 + 26.0;
-        for (tab, label) in [
+        let tabs = [
             (SettingsTab::Library, "Library"),
             (SettingsTab::Fonts, "Fonts"),
-            (SettingsTab::Colours, "Colour schemes"),
+            (SettingsTab::Colours, "Colours"),
             (SettingsTab::Shortcuts, "Shortcuts"),
-        ] {
+        ];
+        let row_h = if self.text_scale >= 1.5 { 48.0 } else { 38.0 };
+        let required_w = tabs.iter().fold(0.0, |width, (_, label)| {
+            let (label_w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
+            width + f64::from(label_w) + 30.0
+        });
+        let stacked = required_w > r.width() - 24.0;
+        let tab_h = if stacked { row_h * 2.0 } else { row_h };
+        let grid_w = ((r.width() - 24.0) / 2.0).max(1.0);
+        let mut tx = r.x0 + 12.0;
+        for (index, (tab, label)) in tabs.into_iter().enumerate() {
             let active = self.settings_tab == tab;
             let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-            let tab_rect = Rect::new(tx, tabs_y, tx + f64::from(lw) + 24.0, tabs_y + tab_h);
+            let (tab_x, row_y, tab_w) = if stacked {
+                (
+                    r.x0 + 12.0 + (index % 2) as f64 * grid_w,
+                    tabs_y + (index / 2) as f64 * row_h,
+                    grid_w,
+                )
+            } else {
+                (tx, tabs_y, f64::from(lw) + 24.0)
+            };
+            let tab_rect = Rect::new(tab_x, row_y, tab_x + tab_w, row_y + row_h);
             let hover = self.is_hover(tab_rect);
             let col = if active || hover {
                 c.text_primary
@@ -9710,8 +9799,8 @@ impl BooksApp {
                 label,
                 14.0,
                 col,
-                t * Affine::translate((tx + 12.0, tabs_y + 11.0)),
-                None,
+                t * Affine::translate((tab_x + 12.0, row_y + 11.0)),
+                Some((tab_w - 24.0).max(1.0) as f32),
                 if active {
                     TextWeight::Semibold
                 } else {
@@ -9720,17 +9809,20 @@ impl BooksApp {
             );
             if active {
                 let ind = Rect::new(
-                    tx + 8.0,
-                    tabs_y + tab_h - 3.0,
-                    tx + f64::from(lw) + 16.0,
-                    tabs_y + tab_h,
+                    tab_x + 8.0,
+                    row_y + row_h - 3.0,
+                    (tab_x + f64::from(lw) + 16.0).min(tab_rect.x1 - 8.0),
+                    row_y + row_h,
                 );
                 paint::fill_round(scene, t, ind, 1.5, theme.accent_primary);
             }
-            if !active {
-                self.push_hit(tab_rect, Action::SetSettingsTab(tab));
+            // Keep the selected radio tab in the semantic/hit tree too:
+            // screen-reader and keyboard users must be able to revisit and
+            // identify the current tab, even though activating it is a no-op.
+            self.push_hit(tab_rect, Action::SetSettingsTab(tab));
+            if !stacked {
+                tx += tab_w + 6.0;
             }
-            tx += f64::from(lw) + 24.0 + 6.0;
         }
         // Divider under the whole tab bar.
         paint::line(
@@ -9774,15 +9866,21 @@ impl BooksApp {
             TextWeight::Semibold,
         );
         y += 20.0;
+        let large_text = self.text_scale >= 1.5;
+        let guidance = if large_text {
+            "Choose a shortcut, then press a key. Arrow and Page keys stay available."
+        } else {
+            "Choose a row, then press one printable key. These bindings stay on this device; Arrow and Page keys always navigate."
+        };
         tr.draw_text(
             scene,
-            "Choose a row, then press one printable key. These bindings stay on this device; Arrow and Page keys always navigate.",
+            guidance,
             12.5,
             c.text_dim,
             t * Affine::translate((x, y)),
             Some(w as f32),
         );
-        y += 54.0;
+        y += if large_text { 132.0 } else { 54.0 };
 
         if let Some(error) = &self.shortcut_capture_error {
             tr.draw_text_weighted(
@@ -9797,7 +9895,8 @@ impl BooksApp {
         }
 
         for shortcut in ReaderShortcut::ALL {
-            let row = Rect::new(x, y, x + w, y + 58.0);
+            let row_h = if large_text { 68.0 } else { 58.0 };
+            let row = Rect::new(x, y, x + w, y + row_h);
             let capturing = self.shortcut_capture == Some(shortcut);
             let hovered = self.is_hover(row);
             let background = if capturing {
@@ -9822,7 +9921,17 @@ impl BooksApp {
             );
             tr.draw_text_weighted(
                 scene,
-                shortcut.label(),
+                if large_text {
+                    match shortcut {
+                        ReaderShortcut::PreviousPage => "Previous",
+                        ReaderShortcut::NextPage => "Next",
+                        ReaderShortcut::Bookmark => "Bookmark",
+                        ReaderShortcut::Highlight => "Highlight",
+                        ReaderShortcut::AddNote => "Note",
+                    }
+                } else {
+                    shortcut.label()
+                },
                 14.0,
                 c.text_primary,
                 t * Affine::translate((x + 16.0, y + 14.0)),
@@ -9832,9 +9941,16 @@ impl BooksApp {
             let binding = if capturing {
                 "Press a key…".to_string()
             } else {
-                self.local_library
+                let raw = self
+                    .local_library
                     .shortcut(shortcut.id(), shortcut.default_key())
-                    .to_uppercase()
+                    .to_uppercase();
+                match raw.as_str() {
+                    "," => "Comma".to_string(),
+                    "." => "Period".to_string(),
+                    " " => "Space".to_string(),
+                    _ => raw,
+                }
             };
             let (binding_w, _) = tr.measure_weighted(&binding, 13.0, None, TextWeight::Semibold);
             let pill_w = (f64::from(binding_w) + 24.0).max(42.0);
@@ -9867,7 +9983,7 @@ impl BooksApp {
                 TextWeight::Semibold,
             );
             self.push_hit(row, Action::BeginShortcutCapture(shortcut));
-            y += 68.0;
+            y += if large_text { 76.0 } else { 68.0 };
         }
         y
     }
@@ -14281,6 +14397,45 @@ mod interaction_tests {
         assert!(
             label.contains("reserved"),
             "screen readers receive the refusal"
+        );
+    }
+
+    #[test]
+    fn narrow_large_text_settings_tabs_are_complete_and_semantic() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Shortcuts;
+        app.sync(&mut doc, &automerge::ROOT);
+        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        let theme = Theme::light().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        let mut scene = Scene::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+
+        let tabs = app
+            .hits
+            .iter()
+            .filter(|hit| matches!(hit.action, Action::SetSettingsTab(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(tabs.len(), 4, "the active tab remains discoverable");
+        assert!(tabs.iter().all(|hit| {
+            hit.rect.x0 >= app.rect.x0
+                && hit.rect.x1 <= app.rect.x1
+                && hit.rect.y0 >= app.rect.y0
+                && hit.rect.y1 <= app.rect.y1
+        }));
+        let first_y = tabs.first().map_or(0.0, |hit| hit.rect.y0);
+        assert!(
+            tabs.iter().any(|hit| (hit.rect.y0 - first_y).abs() > 1.0),
+            "large text reflows settings navigation into two bounded rows"
         );
     }
 
