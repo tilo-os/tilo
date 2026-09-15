@@ -1731,10 +1731,13 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-video",
  "image",
+ "os-actions",
  "png 0.18.1",
  "qdoc",
+ "qdoc-pdf",
  "qos-actions",
  "qos-app",
+ "qos-ocr",
  "qrcode",
  "rqrr",
  "runtime-dylib",
@@ -2212,6 +2215,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
 dependencies = [
  "error-code",
+]
+
+[[package]]
+name = "clocks"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "chrono",
+ "chrono-tz",
+ "qos-actions",
+ "qos-app",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "taffy",
+ "uuid",
+ "vello",
+ "winit",
 ]
 
 [[package]]
@@ -4138,6 +4159,7 @@ dependencies = [
  "collab-types",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
+ "flate2",
  "fluent",
  "fs",
  "fuser",
@@ -4161,6 +4183,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "taffy",
+ "tar",
  "tempfile",
  "thumbnail",
  "tokio",
@@ -6564,6 +6587,20 @@ checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
 dependencies = [
  "byteorder-lite",
  "quick-error 2.0.1",
+]
+
+[[package]]
+name = "image_editor"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "image",
+ "qos-actions",
+ "qos-app",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -10066,6 +10103,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "passwords"
+version = "0.1.0"
+dependencies = [
+ "accounts",
+ "automerge",
+ "qos-app",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "taffy",
+ "vello",
+ "winit",
+ "zeroize",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10938,6 +10991,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "print-centre"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "image",
+ "os-actions",
+ "qdoc-pdf",
+ "qos-actions",
+ "qos-app",
+ "qos-ocr",
+ "runtime-dylib",
+ "taffy",
+ "tempfile",
+ "thumbnail",
+ "vello",
+ "winit",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11343,6 +11415,16 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "zeroize",
+]
+
+[[package]]
+name = "qos-ocr"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

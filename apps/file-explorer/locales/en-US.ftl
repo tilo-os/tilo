@@ -449,7 +449,6 @@ files-menu-add-favourite = Add to Favourites
 files-menu-remove-favourite = Remove from Favourites
 files-menu-hide-hidden = Hide Hidden Files
 files-menu-show-hidden = Show Hidden Files
-files-menu-show-hidden-checked = ✓ Show Hidden Files
 files-menu-sort-name = Sort by Name
 files-menu-sort-size = Sort by Size
 files-menu-sort-type = Sort by Type
@@ -461,10 +460,26 @@ files-sort-type = Type
 files-sort-date = Date
 files-sort-ascending = Ascending
 files-sort-descending = Descending
-files-menu-checked = ✓ { $label }
-files-menu-unchecked =      { $label }
 files-new-from-template = New { $name }
 files-drag-items = { $count } items
+
+## Archives
+files-archive-extract = Extract archive…
+files-archive-extract-here = Extract here
+files-archive-compress = Compress to ZIP
+files-archive-select-compress = Select files or folders to compress
+files-archive-read-only = Archives are read-only until extracted
+files-archive-open-after-extract = Extract this archive to open or edit files inside it
+files-archive-select = Select a ZIP, TAR, or TAR.GZ archive to extract
+files-archive-extracted =
+    { $count ->
+        [one] Extracted 1 file
+       *[other] Extracted { $count } files
+    }
+files-archive-extracted-partial = Extracted { $count } files; { $failures }
+files-archive-extract-failed = Could not extract archive: { $error }
+files-archive-created = Created { $name }
+files-archive-create-failed = Could not create archive: { $error }
 
 ## File-operation validation
 files-folder-name-empty = Folder name cannot be empty

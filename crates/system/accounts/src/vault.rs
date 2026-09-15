@@ -136,6 +136,17 @@ impl SecretVault {
         self.entries.get(id.as_str()).cloned()
     }
 
+    /// Internal snapshot used by the typed stores layered over this encrypted
+    /// container. Kept crate-private so applications cannot enumerate account
+    /// credentials by bypassing their broker.
+    pub(crate) fn entries_with_prefix(&self, prefix: &str) -> Vec<(String, Secret)> {
+        self.entries
+            .iter()
+            .filter(|(id, _)| id.starts_with(prefix))
+            .map(|(id, secret)| (id.clone(), secret.clone()))
+            .collect()
+    }
+
     /// Remove the secret for `id`, returning whether one existed. In-memory until [`Self::save`].
     pub fn remove(&mut self, id: &AccountId) -> bool {
         self.entries.remove(id.as_str()).is_some()

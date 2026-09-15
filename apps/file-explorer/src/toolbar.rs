@@ -77,6 +77,7 @@ pub struct FileToolbar {
     can_forward: bool,
     can_up: bool,
     view_mode: ViewMode,
+    archive_read_only: bool,
     // Stateless children, rebuilt each `build_layout`.
     left: Vec<Box<dyn Widget>>,
     right: Vec<Box<dyn Widget>>,
@@ -96,6 +97,7 @@ impl FileToolbar {
             can_forward: false,
             can_up: false,
             view_mode: ViewMode::List,
+            archive_read_only: false,
             left: Vec::new(),
             right: Vec::new(),
             rect: Rect::ZERO,
@@ -108,7 +110,11 @@ impl FileToolbar {
     }
 
     /// Refresh the live context (called before each rebuild).
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::fn_params_excessive_bools,
+        reason = "navigation availability and archive mode are independent facts supplied by the owning Files state"
+    )]
     pub fn set_context(
         &mut self,
         current: std::path::PathBuf,
@@ -118,11 +124,13 @@ impl FileToolbar {
         can_forward: bool,
         can_up: bool,
         view_mode: ViewMode,
+        archive_read_only: bool,
     ) {
         self.can_back = can_back;
         self.can_forward = can_forward;
         self.can_up = can_up;
         self.view_mode = view_mode;
+        self.archive_read_only = archive_read_only;
         self.path_bar.set_path(current, home, workspace_roots);
     }
 
@@ -224,6 +232,26 @@ impl FileToolbar {
                         .on_effect(move || push(&sink, FileCommand::OpenSortMenu)),
                 ));
             }
+        }
+
+        // Archives browse like folders, but extraction is their primary
+        // mutation. Keep it directly reachable rather than burying it in an
+        // overflow; compact layouts retain the same 36px control with a
+        // spoken/hover label so the location field still has room.
+        if self.archive_read_only {
+            let sink = self.sink.clone();
+            let extract_label = t("files-archive-extract");
+            let button = Button::new(
+                "files.archive.extract",
+                if self.compact { "" } else { &extract_label },
+                None,
+            )
+            .with_icon(Icon::Download)
+            .with_size(if self.compact { NAV_W } else { 104.0 }, NAV_H)
+            .with_accessible_name(&extract_label)
+            .tooltip(extract_label)
+            .on_effect(move || push(&sink, FileCommand::ExtractCurrentArchive));
+            out.push(Box::new(button));
         }
 
         // Overflow: the labelled View-options menu (new folder/file, show

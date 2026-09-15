@@ -69,6 +69,9 @@ the ordering can later become personal as usage history exists.
 - **E-book reader** — annotations, bookmarks, comments (shares primitives with the
   PDF reader and word processor).
 - **2FA TOTP client**.
+- **Passwords and secrets** — encrypted credential custody, password generation,
+  exact-origin app autofill, and explicit once/session consent through the
+  system credential broker.
 - **Weather**.
 - **Maps** — OSM-based; car/bike/foot navigation (Organic Maps / OsmAnd class); strong
   **public-transport** support (à la oeffi / public-transport-enabler); a custom
@@ -79,8 +82,6 @@ the ordering can later become personal as usage history exists.
   detection, full-text search (objects/events/descriptions/people/dates) with proper
   complex-query support, galleries + shared galleries, dedup, simple RAW editing
   (rotate/flip/basic filters), timeline-oriented.
-- **Password manager** — very high-risk to build; not until much later. Option:
-  Bitwarden compatibility.
 
 ### Maker software (need not be separate apps)
 Code editor/IDE, git client, container/distrobox manager, API testing tool

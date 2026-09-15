@@ -804,6 +804,7 @@ mod tests {
     fn job() -> PrintJob {
         PrintJob {
             id: "Office-42".into(),
+            title: Some("Quarterly report.pdf".into()),
             owner: "ada".into(),
             size_bytes: 2048,
             submitted: "now".into(),

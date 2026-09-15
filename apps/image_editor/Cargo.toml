@@ -1,0 +1,26 @@
+[package]
+name = "image_editor"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+[lib]
+name = "image_editor"
+path = "src/lib.rs"
+[[bin]]
+name = "image_editor"
+path = "src/main.rs"
+[dependencies]
+ui = { package = "qos-app", path = "../../crates/app/qos-app", features = ["portal"] }
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+automerge.workspace = true
+qos-actions = { path = "../../crates/collab/actions" }
+serde.workspace = true
+serde_json.workspace = true
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
+[dev-dependencies]
+tempfile.workspace = true
+[features]
+thin = ["dep:runtime-dylib"]
+[lints]
+workspace = true
