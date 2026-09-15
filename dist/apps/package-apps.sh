@@ -16,11 +16,18 @@ source_epoch=${SOURCE_DATE_EPOCH:-0}
 max_qpkg_bytes=${MAX_QPKG_BYTES:-10000000}
 
 out=$(realpath -m "$out")
-case "$out" in
-    "$repo_root"/dist/*) ;;
-    *) printf 'TILO_APP_RELEASE_OUT must be below %s/dist\n' "$repo_root" >&2; exit 1 ;;
-esac
-[[ ! -L $out ]] || { printf 'refusing symlink output directory: %s\n' "$out" >&2; exit 1; }
+[[ $out != / && $out != "$repo_root" ]] || {
+    printf 'refusing unsafe TILO_APP_RELEASE_OUT: %s\n' "$out" >&2
+    exit 1
+}
+cursor=$out
+while [[ $cursor != / ]]; do
+    [[ ! -L $cursor ]] || {
+        printf 'refusing symlinked TILO_APP_RELEASE_OUT component: %s\n' "$cursor" >&2
+        exit 1
+    }
+    cursor=$(dirname "$cursor")
+done
 mkdir -p "$out/qpkg" "$out/work"
 find "$out" -mindepth 1 -depth -delete
 mkdir -p "$out/qpkg" "$out/work"
