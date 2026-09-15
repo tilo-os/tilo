@@ -415,6 +415,11 @@ fn parse_vevent(lines: &[String], mut i: usize) -> (Option<ParsedEvent>, usize) 
 }
 
 fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
+    // qOS resource identities are UUIDs. Preserve a UUID-valued RFC UID so a
+    // task exported by qOS can be imported repeatedly without becoming a new
+    // task. Non-UUID external UIDs still import safely with an author-minted
+    // id; they cannot be used as an Automerge object key in this model.
+    let mut id: Option<Id> = None;
     let mut title = String::new();
     let mut due: Option<NaiveDate> = None;
     let mut done = false;
@@ -429,6 +434,7 @@ fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
         if let Some((key, val)) = split_prop(raw) {
             let base = key.split(';').next().unwrap_or(&key);
             match base {
+                "UID" => id = parse_uid(&val),
                 "SUMMARY" => title = unescape(&val),
                 "DUE" => due = parse_cal_date(&val),
                 "STATUS" => done = val.eq_ignore_ascii_case("COMPLETED"),
@@ -454,7 +460,7 @@ fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
     }
     (
         Some(Task {
-            id: Uuid::new_v4(),
+            id: id.unwrap_or_else(Uuid::new_v4),
             title,
             done,
             due,
@@ -471,20 +477,42 @@ fn parse_vtodo(lines: &[String], mut i: usize) -> (Option<Task>, usize) {
 /// Emit a TEXT-valued property (SUMMARY, LOCATION, DESCRIPTION) with the
 /// RFC 5545 character escaping applied.
 fn line(out: &mut String, key: &str, val: &str) {
-    out.push_str(key);
-    out.push(':');
-    out.push_str(&escape(val));
-    out.push_str("\r\n");
+    let line = format!("{key}:{}", escape(val));
+    folded_line(out, &line);
 }
 
 /// Emit a structured / non-TEXT property (RRULE, DTSTART, TRIGGER, …)
 /// verbatim — these use `;` and `,` as syntax, so they must NOT be
 /// TEXT-escaped.
 fn raw(out: &mut String, key: &str, val: &str) {
-    out.push_str(key);
-    out.push(':');
-    out.push_str(val);
-    out.push_str("\r\n");
+    let line = format!("{key}:{val}");
+    folded_line(out, &line);
+}
+
+/// Write one RFC 5545 content line with physical lines no wider than 75
+/// octets. Continuations reserve their leading folding space, and split only
+/// at UTF-8 character boundaries, so long international event titles remain
+/// standards-compliant and round-trip through parsers that enforce the limit.
+fn folded_line(out: &mut String, line: &str) {
+    let mut rest = line;
+    let mut first = true;
+    while !rest.is_empty() {
+        // The leading space belongs to each continuation's 75-octet budget.
+        let budget = if first { 75 } else { 74 };
+        let mut end = rest.len().min(budget);
+        while end > 0 && !rest.is_char_boundary(end) {
+            end -= 1;
+        }
+        // `budget` is much wider than every UTF-8 scalar, so a non-empty
+        // input always yields a character-boundary chunk.
+        if !first {
+            out.push(' ');
+        }
+        out.push_str(&rest[..end]);
+        out.push_str("\r\n");
+        rest = &rest[end..];
+        first = false;
+    }
 }
 
 fn emit_datetime(out: &mut String, property: &str, value: NaiveDateTime, timezone: &str) {
@@ -785,6 +813,11 @@ mod tests {
         let (_, tasks) = parse(&export(&model));
         assert!(tasks.iter().any(|t| t.done));
         assert!(tasks.iter().any(|t| t.priority == Priority::High));
+        let mut expected: Vec<_> = model.tasks.iter().map(|task| task.id).collect();
+        let mut actual: Vec<_> = tasks.iter().map(|task| task.id).collect();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, expected, "VTODO UIDs retain task identities");
     }
 
     #[test]
@@ -919,5 +952,48 @@ mod tests {
         assert_eq!(escape("a,b;c"), "a\\,b\\;c");
         assert_eq!(unescape("a\\,b\\;c"), "a,b;c");
         assert_eq!(unescape("line1\\nline2"), "line1\nline2");
+    }
+
+    #[test]
+    fn long_unicode_content_lines_fold_at_the_rfc_octet_limit_and_round_trip() {
+        let title = format!("Planning {}", "界".repeat(40));
+        let event = Event {
+            id: Uuid::new_v4(),
+            title: title.clone(),
+            start: NaiveDate::from_ymd_opt(2026, 9, 15)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap(),
+            end: NaiveDate::from_ymd_opt(2026, 9, 15)
+                .unwrap()
+                .and_hms_opt(10, 0, 0)
+                .unwrap(),
+            all_day: false,
+            location: String::new(),
+            color: Palette::Indigo,
+            recurrence: Recurrence::None,
+            recurrence_interval: 1,
+            recurrence_until: None,
+            recurrence_count: None,
+            recurrence_exdates: Vec::new(),
+            occurrence_overrides: Vec::new(),
+            timezone: "floating".into(),
+            organizer: None,
+            attendees: Vec::new(),
+            reminder_min: None,
+            calendar_id: None,
+            project: None,
+        };
+        let ics = export(&Model {
+            events: vec![event],
+            tasks: Vec::new(),
+            projects: Vec::new(),
+        });
+        assert!(
+            ics.split("\r\n").all(|line| line.len() <= 75),
+            "every physical content line respects RFC 5545's 75-octet limit"
+        );
+        let (events, _) = parse(&ics);
+        assert_eq!(events[0].title, title);
     }
 }
