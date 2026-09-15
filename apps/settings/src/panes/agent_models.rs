@@ -25,9 +25,9 @@ use zeroize::Zeroize;
 use crate::widgets::{El, caption, card, card_with_action, hgap, rows, value_row};
 
 const SETUP_KEY: &str = "agent_models.local.setup";
-const CONFIRM_KEY: &str = "agent_models.local.confirm";
+pub(crate) const CONFIRM_KEY: &str = "agent_models.local.confirm";
 const CANCEL_KEY: &str = "agent_models.local.cancel";
-const ACCELERATOR_SETUP_KEY: &str = "agent_models.accelerator.setup";
+pub(crate) const ACCELERATOR_SETUP_KEY: &str = "agent_models.accelerator.setup";
 const POLL_INTERVAL: Duration = Duration::from_millis(750);
 
 #[derive(Clone)]
@@ -143,7 +143,7 @@ pub enum AcceleratorSetupState {
 }
 
 impl AcceleratorSetupState {
-    fn blocks_model_setup(&self) -> bool {
+    pub(crate) fn blocks_model_setup(&self) -> bool {
         !matches!(self, Self::Active)
     }
 
@@ -259,6 +259,13 @@ impl LocalModelControl for ModelManagerCli {
     }
 }
 
+/// Read the manager's current, signed inventory for the resource tree and
+/// effect-time validation.  This performs no mutation and deliberately keeps
+/// manager implementation details out of `actions.rs`.
+pub fn live_snapshot() -> Result<LocalModelSnapshot, String> {
+    LocalModelControl::snapshot(&ModelManagerCli)
+}
+
 fn fallback_snapshot() -> LocalModelSnapshot {
     let memory_gib = std::fs::read_to_string("/proc/meminfo")
         .ok()
@@ -310,7 +317,7 @@ fn fallback_snapshot() -> LocalModelSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModelAction {
+pub(crate) enum ModelAction {
     Start,
     Stop,
     Remove,
@@ -348,7 +355,7 @@ fn action_slug(action: ModelAction) -> &'static str {
     }
 }
 
-fn model_key(id: &str, action: ModelAction) -> String {
+pub(crate) fn model_key(id: &str, action: ModelAction) -> String {
     let token = id
         .chars()
         .map(|character| {
@@ -486,6 +493,7 @@ pub struct AgentModelsPane {
     last_poll: Instant,
     needs_seed: bool,
     structure_dirty: bool,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     /// API keys are deliberately process-local masked-input buffers. They are
     /// not Automerge text, never enter the settings document, and are erased
     /// as soon as the gateway accepts or rejects submission.
@@ -496,6 +504,15 @@ pub struct AgentModelsPane {
 }
 
 impl AgentModelsPane {
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
     pub fn new() -> Self {
         let mut pane = Self::with_control(Arc::new(ModelManagerCli));
         pane.sync_provider_profile = true;
@@ -525,6 +542,7 @@ impl AgentModelsPane {
             last_poll: Instant::now(),
             needs_seed: true,
             structure_dirty: false,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             provider_key_buffers: Arc::new(Mutex::new(HashMap::new())),
             provider_field_buffers: Arc::new(Mutex::new(HashMap::new())),
             composed: None,
@@ -549,6 +567,38 @@ impl AgentModelsPane {
         }
         self.last_poll = Instant::now();
         self.structure_dirty = true;
+    }
+
+    fn operation_is_running(&self, operation: &crate::actions::AgentModelOperation) -> bool {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::AGENT_MODEL_OPERATION_TYPE,
+            operation,
+        );
+        matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: active } if active == token
+        )
+    }
+
+    fn operation_finished(
+        &self,
+        operation: &crate::actions::AgentModelOperation,
+        result: Result<String, String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::AGENT_MODEL_OPERATION_TYPE,
+            operation,
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: active } if active == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
     }
 
     fn is_busy(&self) -> bool {
@@ -1144,12 +1194,29 @@ impl AgentModelsPane {
     }
 
     fn run_model_action(&mut self, model: &InstalledLocalModel, action: ModelAction) {
+        let operation = match action {
+            ModelAction::Start => crate::actions::AgentModelOperation::Start {
+                id: model.package.id.clone(),
+            },
+            ModelAction::Stop => crate::actions::AgentModelOperation::Stop {
+                id: model.package.id.clone(),
+            },
+            ModelAction::Retry => crate::actions::AgentModelOperation::Retry {
+                id: model.package.id.clone(),
+                revision: model.package.revision.clone(),
+            },
+            ModelAction::Remove => crate::actions::AgentModelOperation::Remove {
+                id: model.package.id.clone(),
+            },
+        };
         let result = match action {
             ModelAction::Start => self.control.start(&model.package.id),
             ModelAction::Stop => self.control.stop(&model.package.id),
             ModelAction::Retry => self.control.install(&model.package),
             ModelAction::Remove => {
-                if self.remove_confirmation.as_deref() != Some(&model.package.id) {
+                if self.remove_confirmation.as_deref() != Some(&model.package.id)
+                    && !self.operation_is_running(&operation)
+                {
                     self.remove_confirmation = Some(model.package.id.clone());
                     self.notice = Some(format!(
                         "Remove {}? This deletes its {} local snapshot. Tasks and workspace data are unchanged.",
@@ -1163,19 +1230,44 @@ impl AgentModelsPane {
                 self.control.remove(&model.package.id)
             }
         };
-        if let Err(error) = result {
-            self.notice = Some(format!("{} failed: {error}", action_label(action)));
-            self.structure_dirty = true;
-        } else {
-            self.refresh();
+        match result {
+            Err(error) => {
+                self.operation_finished(
+                    &operation,
+                    Err(format!("{} failed: {error}", action_label(action))),
+                );
+                self.notice = Some(format!("{} failed: {error}", action_label(action)));
+                self.structure_dirty = true;
+            }
+            Ok(()) => {
+                self.refresh();
+                self.operation_finished(
+                    &operation,
+                    Ok(format!(
+                        "{} request accepted by the local model manager",
+                        action_label(action)
+                    )),
+                );
+            }
         }
     }
 
     fn sync_actions(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if take_bool(state, root, ACCELERATOR_SETUP_KEY) {
+            let operation = crate::actions::AgentModelOperation::StageAccelerator;
             match self.control.stage_accelerator() {
-                Ok(()) => self.refresh(),
+                Ok(()) => {
+                    self.refresh();
+                    self.operation_finished(
+                        &operation,
+                        Ok("Accelerator setup request accepted by the local model manager".into()),
+                    );
+                }
                 Err(error) => {
+                    self.operation_finished(
+                        &operation,
+                        Err(format!("Accelerator setup could not start: {error}")),
+                    );
                     self.notice = Some(format!("Accelerator setup could not start: {error}"));
                     self.structure_dirty = true;
                 }
@@ -1193,12 +1285,30 @@ impl AgentModelsPane {
         }
         if take_bool(state, root, CONFIRM_KEY)
             && let Some(package) = self.snapshot.recommendation.clone()
-            && self.confirmation.as_deref() == Some(package.id.as_str())
+            && (self.confirmation.as_deref() == Some(package.id.as_str())
+                || self.operation_is_running(&crate::actions::AgentModelOperation::Install {
+                    id: package.id.clone(),
+                    revision: package.revision.clone(),
+                }))
         {
             self.confirmation = None;
+            let operation = crate::actions::AgentModelOperation::Install {
+                id: package.id.clone(),
+                revision: package.revision.clone(),
+            };
             match self.control.install(&package) {
-                Ok(()) => self.refresh(),
+                Ok(()) => {
+                    self.refresh();
+                    self.operation_finished(
+                        &operation,
+                        Ok("Model installation request accepted by the local model manager".into()),
+                    );
+                }
                 Err(error) => {
+                    self.operation_finished(
+                        &operation,
+                        Err(format!("Installation could not start: {error}")),
+                    );
                     self.notice = Some(format!("Installation could not start: {error}"));
                     self.structure_dirty = true;
                 }
@@ -1511,6 +1621,42 @@ mod tests {
             control.calls.lock().unwrap().as_slice(),
             ["install:test/model@0123456789abcdef"]
         );
+    }
+
+    #[test]
+    fn local_start_reports_a_terminal_receipt_only_for_its_matching_operation() {
+        let control = Arc::new(MockControl {
+            snapshot: Mutex::new(snapshot(Some(LocalModelPhase::Ready {
+                running: false,
+                endpoint: None,
+            }))),
+            calls: Mutex::new(Vec::new()),
+        });
+        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+        let mut pane =
+            AgentModelsPane::with_control(control.clone()).with_operation_status(&status);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        let operation = crate::actions::AgentModelOperation::Start {
+            id: "test/model".into(),
+        };
+        status.set(crate::actions::LocalOperationStatus::Running {
+            token: crate::actions::local_operation_token_for(
+                crate::actions::AGENT_MODEL_OPERATION_TYPE,
+                &operation,
+            ),
+        });
+        let _ = doc.put(&root, model_key("test/model", ModelAction::Start), true);
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["start:test/model"]
+        );
+        assert!(matches!(
+            status.get(),
+            crate::actions::LocalOperationStatus::Succeeded { .. }
+        ));
     }
 
     #[test]
