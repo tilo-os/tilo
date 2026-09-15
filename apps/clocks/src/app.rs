@@ -113,6 +113,43 @@ fn city_time(zone: &str) -> String {
         .unwrap_or_else(|_| "Time unavailable".into())
 }
 
+fn timezone_label(zone: &str) -> String {
+    let city = zone.rsplit('/').next().unwrap_or(zone).replace('_', " ");
+    let region = zone.split('/').next().unwrap_or_default();
+    if region.is_empty() || region == city {
+        city
+    } else {
+        format!("{city} · {region}")
+    }
+}
+
+fn timezone_results(query: &str) -> Vec<String> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return [
+            "America/New_York",
+            "Europe/London",
+            "Europe/Paris",
+            "Asia/Tokyo",
+            "Asia/Kolkata",
+            "Australia/Sydney",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    }
+    chrono_tz::TZ_VARIANTS
+        .iter()
+        .map(ToString::to_string)
+        .filter(|zone| {
+            !zone.starts_with("Etc/")
+                && (zone.to_lowercase().contains(&query)
+                    || timezone_label(zone).to_lowercase().contains(&query))
+        })
+        .take(8)
+        .collect()
+}
+
 fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
     let list_state = state.clone();
     let list = ModelView::from_state(state, move |s| {
@@ -142,30 +179,38 @@ fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
         }
         Box::new(col)
     });
-    let mut choices = Row::new();
-    for (city, zone) in [
-        ("New York", "America/New_York"),
-        ("London", "Europe/London"),
-        ("Tokyo", "Asia/Tokyo"),
-        ("Sydney", "Australia/Sydney"),
-    ] {
-        let st = state.clone();
-        choices = choices.push(button(
-            &format!("clocks.world.add.{}", city.to_lowercase().replace(' ', "-")),
-            city,
-            move || {
-                st.update(|s| {
-                    if !s.world_clocks.iter().any(|c| c.timezone == zone) {
-                        s.world_clocks.push(WorldClock {
-                            id: Uuid::new_v4(),
-                            city: city.into(),
-                            timezone: zone.into(),
-                        })
-                    }
-                })
-            },
-        ));
-    }
+    let city_query = ui::LocalState::new(String::new());
+    let result_state = state.clone();
+    let result_query = city_query.clone();
+    let choices = ModelView::from_state(&city_query, move |query| {
+        let mut choices = Row::new();
+        for zone in timezone_results(query) {
+            let st = result_state.clone();
+            let clear = result_query.clone();
+            let city = zone.rsplit('/').next().unwrap_or(&zone).replace('_', " ");
+            let label = timezone_label(&zone);
+            let id = zone.to_lowercase().replace(['/', '_'], "-");
+            choices = choices.push(button(
+                &format!("clocks.world.add.{id}"),
+                &label,
+                move || {
+                    let city = city.clone();
+                    let zone = zone.clone();
+                    st.update(|s| {
+                        if !s.world_clocks.iter().any(|clock| clock.timezone == zone) {
+                            s.world_clocks.push(WorldClock {
+                                id: Uuid::new_v4(),
+                                city,
+                                timezone: zone,
+                            });
+                        }
+                    });
+                    clear.set(String::new());
+                },
+            ));
+        }
+        Box::new(choices)
+    });
     Box::new(
         Column::new()
             .with_gap(14.0)
@@ -183,6 +228,12 @@ fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
             )))
             .push(Box::new(list))
             .push(Box::new(Text::new("Add a city").with_heading_level(3)))
+            .push(Box::new(
+                TextInput::from_state(&city_query)
+                    .with_id("clocks.world.search")
+                    .with_kind(TextInputKind::Search)
+                    .with_placeholder("Search cities or time zones"),
+            ))
             .push(Box::new(choices)),
     )
 }
@@ -910,7 +961,10 @@ impl Widget for ClocksApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{WEEKDAYS, alarm_label, remaining_fraction, repeat_summary, timer_label};
+    use super::{
+        WEEKDAYS, alarm_label, remaining_fraction, repeat_summary, timer_label, timezone_label,
+        timezone_results,
+    };
     use std::collections::BTreeSet;
 
     #[test]
@@ -938,5 +992,30 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(repeat_summary(&selected), "Mon, Wed, Fri");
         assert_eq!(repeat_summary(&BTreeSet::new()), "Once");
+    }
+
+    #[test]
+    fn world_clock_search_covers_the_timezone_catalogue_without_jargon() {
+        assert_eq!(
+            timezone_label("America/Argentina/Buenos_Aires"),
+            "Buenos Aires · America"
+        );
+        assert!(
+            timezone_results("reykjavik")
+                .iter()
+                .any(|zone| zone == "Atlantic/Reykjavik")
+        );
+        assert!(
+            timezone_results("new york")
+                .iter()
+                .any(|zone| zone == "America/New_York")
+        );
+        assert!(timezone_results("").len() >= 6);
+        assert!(timezone_results("a").len() <= 8);
+        assert!(
+            timezone_results("a")
+                .iter()
+                .all(|zone| !zone.starts_with("Etc/"))
+        );
     }
 }
