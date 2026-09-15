@@ -423,7 +423,14 @@ impl NotesApp {
         theme: &Theme,
     ) {
         let now = std::time::Instant::now();
-        let label = self.status.bubble_text();
+        // On a phone the full page/word summary becomes a wide obstruction.
+        // Keep the transient edge affordance to the actionable save state;
+        // wider layouts retain the richer summary.
+        let label = if self.built_narrow {
+            self.status.save_text().to_string()
+        } else {
+            self.status.bubble_text()
+        };
         let text_size = 12.0f32;
         let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
         let margin = 14.0;
@@ -1862,6 +1869,7 @@ impl Widget for NotesApp {
         let _ = taffy.set_style(sidebar_node, Self::sidebar_style(narrow, self.text_scale));
         self.sidebar_node = Some(sidebar_node);
 
+        self.main.set_bottom_inset(if narrow { 44.0 } else { 0.0 });
         let main_node = self.main.build_layout(taffy, theme, node_map);
         // Augment the panel's own style (preserve its flex-column
         // layout) with the parent-driven sizing. `taffy.style(...)`
@@ -2161,6 +2169,13 @@ impl Widget for NotesApp {
                     ),
             );
         }
+        children.push(
+            AccessNode::new(Role::StaticText)
+                .with_name(self.status.save_text())
+                .with_description(self.status.right_text())
+                .with_live(ui::a11y::Politeness::Polite)
+                .with_hashed_key("notes.save-status"),
+        );
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Notes")
@@ -2266,8 +2281,16 @@ impl NotesApp {
                     bottom: length(0.0_f32),
                 },
                 size: Size {
-                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH * text_scale)),
+                    // Fill a phone when the preferred large-text drawer is
+                    // wider than the viewport; the max keeps it a drawer on
+                    // roomier narrow windows. A fixed scaled width pushed the
+                    // New-note affordance offscreen at 390 px / 200%.
+                    width: Dimension::percent(1.0),
                     height: Dimension::percent(1.0),
+                },
+                max_size: Size {
+                    width: Dimension::length(num::f32_of_f64(DRAWER_WIDTH * text_scale)),
+                    height: Dimension::auto(),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()

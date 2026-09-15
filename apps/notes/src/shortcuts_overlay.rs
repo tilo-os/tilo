@@ -18,6 +18,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::modal_frame::{ModalFrame, ModalLayout, ModalSpec};
 
+use crate::num;
+
 /// Body row size before `TextRenderer` applies the accessibility multiplier.
 const ROW_SIZE_TOKEN: fn(&Theme) -> f32 =
     |t| (t.tokens.typography.scale.sm / t.text_scale).max(12.0);
@@ -29,6 +31,10 @@ const MODAL_WIDTH: f64 = 640.0;
 const BODY_HEIGHT: f64 = 388.0;
 /// Row height per shortcut entry — base size × 1.6 for vertical breath.
 const ROW_HEIGHT: f64 = 22.0;
+/// Compact layouts stack the key below its description. This leaves room for
+/// a two-line description at 200% text instead of making two tiny columns
+/// collide.
+const COMPACT_ROW_HEIGHT: f64 = 56.0;
 /// Vertical gap between a group heading and its rows.
 const GROUP_HEADING_TO_ROWS_GAP: f64 = 8.0;
 
@@ -163,10 +169,15 @@ impl ShortcutsOverlay {
         let close_hovered = self.is_over_close(self.last_cursor);
         let scale = f64::from(theme.text_scale);
         self.text_scale = scale;
-        let spec = ModalSpec::new("Keyboard shortcuts")
-            .body_height(BODY_HEIGHT)
-            .max_width(MODAL_WIDTH)
-            .close_hovered(close_hovered);
+        let compact_view = self.viewport.width() < 600.0 * scale;
+        let spec = ModalSpec::new(if compact_view {
+            "Shortcuts"
+        } else {
+            "Keyboard shortcuts"
+        })
+        .body_height(BODY_HEIGHT)
+        .max_width(MODAL_WIDTH)
+        .close_hovered(close_hovered);
         let layout = ModalFrame::layout(self.viewport, &spec, text_renderer, theme);
         ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
 
@@ -176,7 +187,11 @@ impl ShortcutsOverlay {
         let hint_y = layout.body.y0 + 2.0 * scale;
         text_renderer.draw_text(
             scene,
-            "Press Esc or click outside to close",
+            if compact_view {
+                "Esc or tap outside to close"
+            } else {
+                "Press Esc or click outside to close"
+            },
             hint_size,
             tokens.colors.text_dim,
             transform * Affine::translate((layout.body.x0, hint_y)),
@@ -194,7 +209,8 @@ impl ShortcutsOverlay {
             layout.body.x1,
             (layout.body.y1 - footer_h).max(groups_top),
         );
-        self.max_scroll_y = shortcut_scroll_limit(groups_top, groups_view.y1, theme);
+        let compact = layout.body.width() < 520.0 * scale;
+        self.max_scroll_y = shortcut_scroll_limit(groups_top, groups_view.y1, theme, compact);
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll_y);
         scene.push_layer(
             Fill::NonZero,
@@ -211,6 +227,7 @@ impl ShortcutsOverlay {
             layout.body.x0,
             layout.body.width(),
             groups_top - self.scroll_y,
+            compact,
         );
         scene.pop_layer();
         if self.max_scroll_y > 0.0 {
@@ -301,24 +318,44 @@ impl Default for ShortcutsOverlay {
     }
 }
 
-fn group_block_height(row_count: usize, group_size: f32, _row_size: f32, scale: f64) -> f64 {
+fn group_block_height(
+    row_count: usize,
+    group_size: f32,
+    _row_size: f32,
+    scale: f64,
+    compact: bool,
+) -> f64 {
     f64::from(group_size) * scale
         + GROUP_HEADING_TO_ROWS_GAP * scale
-        + (row_count as f64) * ROW_HEIGHT * scale
+        + (row_count as f64)
+            * if compact {
+                COMPACT_ROW_HEIGHT
+            } else {
+                ROW_HEIGHT
+            }
+            * scale
 }
 
-fn shortcut_scroll_limit(groups_top: f64, groups_bottom: f64, theme: &Theme) -> f64 {
+fn shortcut_scroll_limit(groups_top: f64, groups_bottom: f64, theme: &Theme, compact: bool) -> f64 {
     let scale = f64::from(theme.text_scale);
     let group_size = GROUP_SIZE_TOKEN(theme);
     let row_size = ROW_SIZE_TOKEN(theme);
     let group_height = |index: usize| {
         GROUPS.get(index).map_or(0.0, |group| {
-            group_block_height(group.rows.len(), group_size, row_size, scale)
+            group_block_height(group.rows.len(), group_size, row_size, scale, compact)
         })
     };
-    let full_content_h = group_height(0).max(group_height(1))
-        + f64::from(theme.tokens.spacing.s6) * scale
-        + group_height(2).max(group_height(3));
+    let gap = f64::from(theme.tokens.spacing.s6) * scale;
+    let full_content_h = if compact {
+        GROUPS
+            .iter()
+            .enumerate()
+            .map(|(index, _)| group_height(index))
+            .sum::<f64>()
+            + gap * (GROUPS.len().saturating_sub(1) as f64)
+    } else {
+        group_height(0).max(group_height(1)) + gap + group_height(2).max(group_height(3))
+    };
     (groups_top + full_content_h - groups_bottom).max(0.0)
 }
 
@@ -327,7 +364,8 @@ fn shortcut_scroll_limit(groups_top: f64, groups_bottom: f64, theme: &Theme) -> 
 /// row 1.
 #[allow(
     clippy::too_many_arguments,
-    reason = "draw-context bundle, not real parameter coupling"
+    clippy::too_many_lines,
+    reason = "one linear renderer keeps the compact and two-column geometry paired with the same canonical shortcut rows"
 )]
 fn draw_groups(
     scene: &mut Scene,
@@ -337,11 +375,16 @@ fn draw_groups(
     inner_x0: f64,
     inner_w: f64,
     groups_top: f64,
+    compact: bool,
 ) {
     let tokens = &theme.tokens;
     let scale = f64::from(theme.text_scale);
     let gutter = f64::from(tokens.spacing.s6) * scale;
-    let col_w = ((inner_w - gutter) / 2.0).max(0.0);
+    let col_w = if compact {
+        inner_w
+    } else {
+        ((inner_w - gutter) / 2.0).max(0.0)
+    };
     let col_left_x = inner_x0;
     let col_right_x = inner_x0 + col_w + gutter;
 
@@ -350,21 +393,32 @@ fn draw_groups(
 
     // Find the tallest group in row 0 to figure where row 1 starts.
     let column_top_for = |idx: usize| -> f64 {
+        if compact {
+            return groups_top
+                + GROUPS
+                    .iter()
+                    .take(idx)
+                    .map(|group| {
+                        group_block_height(group.rows.len(), group_size, row_size, scale, true)
+                            + gutter
+                    })
+                    .sum::<f64>();
+        }
         if idx < 2 {
             groups_top
         } else {
             let h0 = GROUPS.first().map_or(0.0, |g| {
-                group_block_height(g.rows.len(), group_size, row_size, scale)
+                group_block_height(g.rows.len(), group_size, row_size, scale, false)
             });
             let h1 = GROUPS.get(1).map_or(0.0, |g| {
-                group_block_height(g.rows.len(), group_size, row_size, scale)
+                group_block_height(g.rows.len(), group_size, row_size, scale, false)
             });
             groups_top + h0.max(h1) + f64::from(tokens.spacing.s6) * scale
         }
     };
 
     for (idx, group) in GROUPS.iter().enumerate() {
-        let x = if idx % 2 == 0 {
+        let x = if compact || idx % 2 == 0 {
             col_left_x
         } else {
             col_right_x
@@ -383,20 +437,30 @@ fn draw_groups(
 
         let rows_top = y + f64::from(group_size) * scale + GROUP_HEADING_TO_ROWS_GAP * scale;
         for (i, (label, key)) in group.rows.iter().enumerate() {
-            let row_y = rows_top + (i as f64) * ROW_HEIGHT * scale;
+            let row_height = if compact {
+                COMPACT_ROW_HEIGHT
+            } else {
+                ROW_HEIGHT
+            };
+            let row_y = rows_top + (i as f64) * row_height * scale;
             text_renderer.draw_text(
                 scene,
                 label,
                 row_size,
                 tokens.colors.text_dim,
                 transform * Affine::translate((x, row_y)),
-                None,
+                compact.then_some(num::f32_of_f64(inner_w)),
             );
             // Shortcut chip: right-aligned in the column.
             let (kw, _) = text_renderer.measure(key, row_size, None);
             // Keep the chip inside its column even when a scaled glyph's
             // measured advance lands exactly on the right edge.
-            let kx = x + col_w - f64::from(kw) - 4.0 * scale;
+            let kx = if compact {
+                x + 6.0 * scale
+            } else {
+                x + col_w - f64::from(kw) - 4.0 * scale
+            };
+            let key_y = if compact { row_y + 30.0 * scale } else { row_y };
             // Soft chip background — translucent white for a "kbd"
             // affordance without needing per-theme tinting.
             let chip_pad_x = 6.0 * scale;
@@ -404,9 +468,9 @@ fn draw_groups(
             let chip = RoundedRect::from_rect(
                 Rect::new(
                     kx - chip_pad_x,
-                    row_y - chip_pad_y,
+                    key_y - chip_pad_y,
                     kx + f64::from(kw) + chip_pad_x,
-                    row_y + f64::from(row_size) * scale + chip_pad_y,
+                    key_y + f64::from(row_size) * scale + chip_pad_y,
                 ),
                 f64::from(tokens.radii.sm) * scale,
             );
@@ -422,7 +486,7 @@ fn draw_groups(
                 key,
                 row_size,
                 tokens.colors.text_primary,
-                transform * Affine::translate((kx, row_y)),
+                transform * Affine::translate((kx, key_y)),
                 None,
             );
         }
@@ -653,7 +717,7 @@ mod tests {
         let theme = Theme::dark().with_text_scale(2.0);
         let groups_top = 180.0;
         let groups_bottom = 560.0;
-        let limit = shortcut_scroll_limit(groups_top, groups_bottom, &theme);
+        let limit = shortcut_scroll_limit(groups_top, groups_bottom, &theme, true);
         assert!(limit > 0.0, "2× shortcut reference needs a scroll range");
         assert!(groups_bottom - groups_top >= ROW_HEIGHT * 2.0);
 
