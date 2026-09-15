@@ -93,6 +93,7 @@ pub fn frame_cost_bytes(frame: &Frame) -> usize {
         // a huge picture *almost nothing*, so the cache would stop evicting and
         // starve the decoder's buffer pool — the exact failure the byte budget
         // exists to prevent.
+        #[cfg(unix)]
         FramePayload::Dmabuf(d) => {
             (d.width as usize)
                 .saturating_mul(d.height as usize)
@@ -314,6 +315,7 @@ pub fn read_ahead_targets(
 )]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::dmabuf::{Colorimetry, DRM_FORMAT_NV12, DmabufImage};
 
     fn rgba_frame(w: u32, h: u32, pts_ms: u64) -> Arc<Frame> {
@@ -430,6 +432,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_dmabuf_frame_is_charged_for_its_gpu_bytes_not_treated_as_free() {
         // Holding a dmabuf holds a decoder pool buffer and an fd. Charging it
         // zero would let the cache starve the decoder.
