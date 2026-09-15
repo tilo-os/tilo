@@ -121,17 +121,12 @@ fn render_scenario(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+    let base_theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
-    }
-    .with_reduce_motion(shot_motion_reduced());
-    let theme = if let Some(scale) = text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
     };
+    let theme = configured_shot_theme(base_theme, text_scale, shot_motion_reduced());
     photos::strings::install();
 
     // The generated pattern is written beside the output, so a shot run
@@ -243,4 +238,37 @@ fn shot_motion_reduced() -> bool {
             let value = value.trim();
             !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
         })
+}
+
+/// Apply the accessibility inputs the launcher parsed before either layout or
+/// text shaping begins. Keeping this pure makes it impossible for the custom
+/// screenshot runner to claim 200% or reduced motion while rendering a
+/// default Theme/TextRenderer pair.
+fn configured_shot_theme(base: Theme, text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    let theme = base.with_reduce_motion(reduce_motion);
+    match text_scale {
+        Some(scale) => theme.with_text_scale(scale),
+        None => theme,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_shot_theme_carries_real_text_scale_and_reduced_motion() {
+        let theme = configured_shot_theme(Theme::dark(), Some(2.0), true);
+        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
+        assert!(theme.reduce_motion);
+
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        let (normal, _) = TextRenderer::new().measure("Photograph", 16.0, None);
+        let (scaled, _) = renderer.measure("Photograph", 16.0, None);
+        assert!(
+            scaled > normal * 1.8,
+            "the screenshot renderer must shape genuinely enlarged text"
+        );
+    }
 }
