@@ -137,7 +137,8 @@ impl Chip {
     }
 
     fn intrinsic_width(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> f64 {
-        let (w, _) = text_renderer.measure(&self.label, theme.tokens.typography.scale.sm, None);
+        let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
+        let (w, _) = text_renderer.measure(&self.label, size, None);
         let mut total = PAD_X * 2.0 + f64::from(w);
         if self.dot.is_some() {
             total += DOT_D + GAP;
@@ -263,7 +264,8 @@ impl Chip {
                   truncate anything that matters for a UI scale factor"
     )]
     pub fn label_size_for_height(height: f64, theme: &Theme) -> f32 {
-        theme.tokens.typography.scale.sm * (height / HEIGHT).clamp(0.75, 1.6) as f32
+        let scaled_height = HEIGHT * f64::from(theme.text_scale);
+        theme.tokens.typography.scale.sm * (height / scaled_height).clamp(0.75, 1.6) as f32
     }
 
     /// Intrinsic width of an immediate-mode chip — what [`Chip::draw_at`]
@@ -275,7 +277,7 @@ impl Chip {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) -> f64 {
-        let size = Self::label_size_for_height(height, theme);
+        let size = Self::label_size_for_height(height, theme) / text_renderer.text_scale();
         let (w, _) = text_renderer.measure(label, size, None);
         let lead_w = match lead {
             ChipLead::None => 0.0,
@@ -385,7 +387,7 @@ impl Chip {
         }
 
         // Label, truncated to the space actually left inside the pill.
-        let size = Self::label_size_for_height(rect.height(), theme);
+        let size = Self::label_size_for_height(rect.height(), theme) / text_renderer.text_scale();
         let avail = rect.x1 - PAD_X - x;
         if avail <= 1.0 {
             return;
@@ -545,7 +547,7 @@ impl Widget for Chip {
             x += DOT_D + GAP;
         }
 
-        let size = theme.tokens.typography.scale.sm;
+        let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
         let (lw, lh) = text_renderer.measure(&self.label, size, None);
         self.label_w = f64::from(lw);
         let label_col = if selected { accent } else { theme.text_primary };
@@ -790,6 +792,34 @@ mod tests {
         assert_eq!(
             Widget::accessibility(&plain).unwrap().role,
             Role::StaticText
+        );
+    }
+
+    #[test]
+    fn immediate_chip_large_text_scales_once_inside_scaled_geometry() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        Chip::draw_at(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 240.0, HEIGHT * 2.0),
+            "Group: All",
+            ChipLead::None,
+            ChipStyle::quiet(),
+            &theme,
+            &mut tr,
+        );
+        let run = scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .first()
+            .expect("chip label glyph run");
+        assert_eq!(
+            run.font_size, theme.tokens.typography.scale.sm,
+            "theme and renderer scale must not multiply each other"
         );
     }
 }

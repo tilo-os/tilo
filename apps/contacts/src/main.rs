@@ -87,9 +87,12 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
             Box::new(|a: &mut contacts::ContactsApp| a.shots_show_import_conflict())
         }
         Some("empty") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_empty()),
+        Some("search") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_search()),
+        Some("loading") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_loading()),
+        Some("error") => Box::new(|a: &mut contacts::ContactsApp| a.shots_show_error()),
         _ => Box::new(|_: &mut contacts::ContactsApp| {}),
     };
-    render_shot_to_png(app, viewport, out, setup)
+    render_shot_to_png(app, viewport, args.text_scale.unwrap_or(1.0), out, setup)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -121,6 +124,9 @@ pub fn main() {
                 "confirm",
                 "import-conflict",
                 "empty",
+                "search",
+                "loading",
+                "error",
             ])
             .open_state(open_state)
             .configure_app(|app| contacts::actions::register(app.action_registry_mut())),
@@ -132,6 +138,7 @@ pub fn main() {
 fn render_shot_to_png(
     mut app: contacts::ContactsApp,
     viewport: (u32, u32),
+    text_scale: f32,
     out: &std::path::Path,
     setup: Box<dyn FnOnce(&mut contacts::ContactsApp)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -146,6 +153,7 @@ fn render_shot_to_png(
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     }
+    .with_text_scale(text_scale)
     .with_reduce_motion(matches!(
         std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
@@ -153,6 +161,7 @@ fn render_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
