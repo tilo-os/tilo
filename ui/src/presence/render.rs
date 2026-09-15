@@ -2187,8 +2187,12 @@ mod tests {
             &theme,
             &peers,
         );
+        // The rail and label background are the two geometry draws that
+        // prove an off-screen cue was emitted. Glyph batching is deliberately
+        // renderer-dependent, so counting the label's glyph draws made this
+        // test vary between the local and CI render backends.
         assert!(
-            scene.encoding().draw_tags.len() >= 4,
+            scene.encoding().draw_tags.len() >= 2,
             "an off-screen desktop peer produced no directional mist",
         );
     }
