@@ -613,6 +613,13 @@ impl OnboardingView {
         self.finished
     }
 
+    /// A reopened tour is trusted modal chrome, but it deliberately keeps the
+    /// real desktop visible underneath so each lesson points at its context.
+    /// First-login identity setup remains an opaque machine surface.
+    pub fn presents_desktop_context(&self) -> bool {
+        self.tour_only
+    }
+
     fn restore_pending_progress_from_disk(&mut self) {
         let Some(identity_dir) = self.identity_dir.as_ref() else {
             return;
@@ -1634,6 +1641,64 @@ fn clear_secret(buffer: &Arc<Mutex<String>>) {
 impl OnboardingView {
     fn draw_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let colors = &theme.tokens.colors;
+        if self.tour_only {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.neutral[9].with_alpha_factor(
+                    if theme.name.eq_ignore_ascii_case("high contrast") {
+                        0.72
+                    } else {
+                        0.48
+                    },
+                ),
+                None,
+                &self.rect,
+            );
+            if let Some(page) = self.tour_page {
+                let focus = match page {
+                    TourPage::Navigate => Rect::new(
+                        self.rect.x0 + 16.0,
+                        self.rect.y0 + 10.0,
+                        self.rect.x1 - 16.0,
+                        (self.rect.y0 + 68.0).min(self.rect.y1),
+                    ),
+                    TourPage::Organise => Rect::new(
+                        self.rect.x0 + 12.0,
+                        self.rect.y0 + 82.0,
+                        (self.rect.x0 + 208.0).min(self.rect.x1),
+                        self.rect.y1 - 20.0,
+                    ),
+                    TourPage::Collaborate => Rect::new(
+                        (self.rect.x1 - 340.0).max(self.rect.x0),
+                        self.rect.y0 + 78.0,
+                        self.rect.x1 - 16.0,
+                        (self.rect.y0 + 286.0).min(self.rect.y1),
+                    ),
+                    TourPage::Start => Rect::new(
+                        self.rect.x0 + self.rect.width() * 0.22,
+                        self.rect.y1 - 92.0,
+                        self.rect.x1 - self.rect.width() * 0.22,
+                        self.rect.y1 - 18.0,
+                    ),
+                };
+                let shape = RoundedRect::from_rect(focus, f64::from(theme.tokens.radii.lg));
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(
+                        if theme.name.eq_ignore_ascii_case("high contrast") {
+                            4.0
+                        } else {
+                            2.5
+                        },
+                    ),
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &shape,
+                );
+            }
+            return;
+        }
         scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
         if theme.name.eq_ignore_ascii_case("high contrast") {
             return;
