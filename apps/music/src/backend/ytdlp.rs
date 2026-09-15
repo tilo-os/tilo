@@ -32,7 +32,7 @@ use crate::backend::ResolvedStream;
 /// `None` when `url` is not a googlevideo media URL. Pure (no I/O) so it is
 /// unit-tested without a network or `yt-dlp`.
 pub fn parse_stream(video_id: &str, url: &str) -> Option<ResolvedStream> {
-    if !url.contains("googlevideo.com") || !url.contains("itag=") {
+    if !crate::backend::trusted_googlevideo_url(url) || !url.contains("itag=") {
         return None;
     }
     let field = |key: &str| {
@@ -100,7 +100,11 @@ pub fn resolve_full_audio(video_id: &str) -> Option<ResolvedStream> {
         "-g",
         watch.as_str(),
     ];
-    let stdout = run_with_timeout(&bin, &args, std::time::Duration::from_secs(20))?;
+    // Keep this optional helper inside the same bounded resolver lifecycle as
+    // the cancellable RustyPipe fallback. Eight seconds leaves room for the
+    // 12-second player deadline and the bounded proxy probe before the app's
+    // 30-second host-visible stream-start deadline.
+    let stdout = run_with_timeout(&bin, &args, std::time::Duration::from_secs(8))?;
     // Take the first googlevideo URL line (there is one per selected format).
     let url = stdout
         .lines()
@@ -187,6 +191,15 @@ mod tests {
     #[test]
     fn parse_rejects_non_googlevideo_or_non_media() {
         assert!(parse_stream("v", "https://example.com/notvideo").is_none());
+        assert!(
+            parse_stream(
+                "v",
+                "https://googlevideo.com.attacker.invalid/audio?itag=140"
+            )
+            .is_none()
+        );
+        assert!(parse_stream("v", "http://x.googlevideo.com/audio?itag=140").is_none());
+        assert!(parse_stream("v", "https://user@x.googlevideo.com/audio?itag=140").is_none());
         // A googlevideo URL without an itag is not a resolved media URL.
         assert!(parse_stream("v", "https://x.googlevideo.com/foo?source=youtube").is_none());
     }

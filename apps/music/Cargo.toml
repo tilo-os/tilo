@@ -15,17 +15,15 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The real app ships on by default: `streaming` + `audio` + `live` give a
+# The real app ships on by default: `audio` + `live` give a
 # normally-built `music` real YouTube-Music search, real audio-stream
 # resolution, and real sound out of the box. The bundled sample library and
 # the runtime offline switch (`set_offline_for_shot`) keep `--shots` and tests
 # fully hermetic regardless — the features compile the live code in; the
 # runtime mode decides live vs sample. `lyrics` and `p2p` stay opt-in extras.
-default = ["streaming", "audio", "live"]
-# Real HTTP audio-stream resolution (Piped/Invidious).
-streaming = ["dep:reqwest"]
-# Real desktop audio integration. Off by default (no system GStreamer / D-Bus
-# dependency for CI / screenshots). Bundles everything the real running app
+default = ["audio", "live"]
+# Real desktop audio integration. Included in the shipping default; hermetic
+# tests/screenshots still use the runtime offline switch. Bundles everything the real running app
 # needs to *sound* and be *controllable* on a live session, so the documented
 # real path (`--features live,audio`) turns them all on together:
 #   * `gstreamer` — real `playbin` audio output through a real system sink;
@@ -63,6 +61,7 @@ automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+url.workspace = true
 base64.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tracing.workspace = true
@@ -72,7 +71,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 
-# Optional: enabled only by the `streaming` / `audio` / `lyrics` / `p2p`
+# Optional: enabled only by the `audio` / `live` / `lyrics` / `p2p`
 # features above. Versions pinned to match the workspace lock so no extra
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
 reqwest = { workspace = true, optional = true, features = ["blocking", "json"], default-features = true }
