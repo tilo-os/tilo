@@ -172,6 +172,7 @@ fn mono_now_ms() -> u64 {
 /// which returns the [`MediaEvent`]s since the last call and refreshes
 /// [`Self::latest_frame`].
 pub struct MediaEngine {
+    handoff_id: u64,
     backend: Backend,
     source: Option<Source>,
     volume: f32,
@@ -190,6 +191,23 @@ enum Backend {
 }
 
 impl MediaEngine {
+    fn next_handoff_id() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .max(1)
+    }
+
+    fn refresh_handoff(&self) {
+        crate::handoff::update(
+            self.handoff_id,
+            self.source.as_ref(),
+            self.volume > 0.0,
+            self.position_ms(),
+            self.duration_ms(),
+            self.is_playing(),
+        );
+    }
+
     /// Build an engine with the default configuration: system-memory RGBA
     /// frames, hardware decode per `QOS_MEDIA_HWDEC`. With `--features decode`
     /// this stands up a real `GStreamer` pipeline; if `GStreamer` can't initialise
@@ -216,6 +234,7 @@ impl MediaEngine {
                 crate::gst_backend::GstState::new(config.acceptance, config.hw_policy)
             {
                 return Self {
+                    handoff_id: Self::next_handoff_id(),
                     backend: Backend::Gst(gst),
                     source: None,
                     volume: config.volume,
@@ -226,6 +245,7 @@ impl MediaEngine {
             }
         }
         Self {
+            handoff_id: Self::next_handoff_id(),
             backend: Backend::Synth(SynthState::new()),
             source: None,
             volume: config.volume,
@@ -240,6 +260,7 @@ impl MediaEngine {
     /// exercised deterministically without a real decode.
     pub fn new_synthesized() -> Self {
         Self {
+            handoff_id: Self::next_handoff_id(),
             backend: Backend::Synth(SynthState::new()),
             source: None,
             volume: 0.8,
@@ -302,6 +323,7 @@ impl MediaEngine {
         // backend reads `self.source`, so recording it afterwards is the same
         // observable state without the copy.
         self.source = Some(source);
+        self.refresh_handoff();
     }
 
     /// Start (or resume) playback.
@@ -311,6 +333,7 @@ impl MediaEngine {
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.set_playing(true),
         }
+        self.refresh_handoff();
     }
 
     /// Pause playback, holding the playhead in place.
@@ -320,6 +343,7 @@ impl MediaEngine {
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.set_playing(false),
         }
+        self.refresh_handoff();
     }
 
     /// Toggle play/pause.
@@ -358,7 +382,7 @@ impl MediaEngine {
     /// coarse option for a fast drag where landing within a GOP is acceptable;
     /// [`SeekMode::Accurate`] is the default everywhere else.
     pub fn seek_with(&mut self, ms: u64, mode: SeekMode) -> bool {
-        match &mut self.backend {
+        let accepted = match &mut self.backend {
             Backend::Synth(s) => {
                 let _ = mode;
                 s.seek(ms);
@@ -366,7 +390,9 @@ impl MediaEngine {
             }
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.seek(ms, mode),
-        }
+        };
+        self.refresh_handoff();
+        accepted
     }
 
     /// Seek to `ms` and pump until the picture for that time has landed, or
@@ -422,6 +448,7 @@ impl MediaEngine {
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.set_volume(self.volume),
         }
+        self.refresh_handoff();
     }
 
     pub fn volume(&self) -> f32 {
@@ -602,22 +629,26 @@ impl MediaEngine {
     /// playhead. Returns the [`MediaEvent`]s produced since the last call.
     /// Call once per rendered frame.
     pub fn poll(&mut self) -> Vec<MediaEvent> {
-        match &mut self.backend {
+        let events = match &mut self.backend {
             Backend::Synth(s) => s.poll_at(mono_now_ms()),
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.poll(),
-        }
+        };
+        self.refresh_handoff();
+        events
     }
 
     /// Test seam: pump the synthesized backend at an explicit virtual `now_ms`
     /// so event ordering is deterministic without real time. On a real-decode
     /// backend this behaves like [`Self::poll`] (the argument is ignored).
     pub fn poll_at(&mut self, now_ms: u64) -> Vec<MediaEvent> {
-        match &mut self.backend {
+        let events = match &mut self.backend {
             Backend::Synth(s) => s.poll_at(now_ms),
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.poll(),
-        }
+        };
+        self.refresh_handoff();
+        events
     }
 
     // --- Collaborative transport ------------------------------------------
@@ -652,6 +683,12 @@ impl MediaEngine {
             self.pause();
         }
         seeked
+    }
+}
+
+impl Drop for MediaEngine {
+    fn drop(&mut self) {
+        crate::handoff::remove(self.handoff_id);
     }
 }
 
