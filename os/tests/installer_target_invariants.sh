@@ -13,6 +13,8 @@ production_containerfile="$repo_root/os/Containerfile"
 builder="$repo_root/os/dev/build-custom-installer.sh"
 firstboot_user="$repo_root/os/usr/libexec/qos-firstboot-user"
 profile_extractor="$repo_root/os/usr/libexec/qos-installer-profile-extract"
+installer_app="$repo_root/crates/session/installer/src/installer_app.rs"
+media_profile="$repo_root/crates/session/installer/src/media_profile.rs"
 preflight="$repo_root/os/usr/libexec/qos-verified-boot-install-preflight"
 secret_policy="$repo_root/os/usr/libexec/qos-startup-secret-policy"
 prediction_signer="$repo_root/os/dev/sign-target-prediction.sh"
@@ -23,6 +25,16 @@ fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
+
+if grep -Fq 'enum FieldCompletion {' "$installer_app" \
+   && grep -Fq 'profile_completion: Option<ProfileCompletion>' "$installer_app" \
+   && grep -Fq 'pub repairs: Vec<MediaProfileField>' "$media_profile" \
+   && grep -Fq 'repair_summary' "$installer_app" \
+   && ! grep -Fq 'preconfigured: bool' "$installer_app"; then
+  ok "installer tracks transported setup fields independently and preserves repair routing"
+else
+  bad "installer profile routing regressed to an all-or-nothing shortcut"
+fi
 
 unlock_placeholder=qos.unlock=0000000000000000000000000000000000000000000000000000000000000000000000000000
 sample_uuid=00000000-0000-0000-0000-000000000000

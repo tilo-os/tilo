@@ -66,15 +66,21 @@ means that verification succeeded, not merely that the write call returned.
 
 Everything currently on the selected installation medium is erased.
 
-For a verified official qOS image, Customize collects the non-destructive install profile before
-the medium is written: account name, host name, locale, keyboard, time zone and
-an explicit Btrfs (recommended), Ext4, or XFS filesystem choice. The imager writes a checksummed, secret-free profile into a fixed
+For a verified official qOS image, Customize collects the non-destructive
+install profile before the medium is written: account name, host name, locale,
+keyboard, time zone, and an explicit Btrfs (recommended), Ext4, or XFS
+filesystem choice. The imager writes a checksummed, secret-free profile into a
+fixed
 reserved block on the medium and reads it back during verification. Before the
 live UI starts, a privileged one-shot service extracts and verifies that block;
-the installer validates every field again, applies it, and starts at the first
-local decision. Disk selection, erase/alongside choice, a fresh account/startup
-secret and recovery-key acknowledgement remain on the target computer. The
-Review screen shows the resulting choices before any destructive operation.
+the installer validates every field independently, retains every sound value,
+and starts at the first missing or local decision. A missing required or invalid
+value opens only the screen that can repair it; an omitted optional full name
+remains a valid choice. Disk selection, erase/alongside
+choice, a fresh account/startup secret and recovery-key acknowledgement remain
+on the target computer. Network and optional hardware-key setup remain
+available from the normal step trail. The Review screen shows the resulting
+choices before any destructive operation.
 
 The current host bundles keep the Imager UI unprivileged. Only after the target
 and destructive warning are confirmed does the operating system authenticate a
