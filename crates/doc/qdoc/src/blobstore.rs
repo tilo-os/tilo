@@ -9,8 +9,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
@@ -236,12 +234,9 @@ struct RootWriteLock(std::fs::File);
 
 impl Drop for RootWriteLock {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        {
-            // The OS also releases this lock when a process dies.  Explicitly
-            // unlock so a waiting writer can proceed before the File drops.
-            let _ = unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
-        }
+        // The OS also releases this lock when a process dies. std selects
+        // flock/LockFileEx for the host while retaining the same quota boundary.
+        let _ = self.0.unlock();
     }
 }
 
@@ -273,22 +268,8 @@ impl FsBlobStore {
             .truncate(false)
             .open(path)
             .map_err(|error| BlobStoreError::Io(error.to_string()))?;
-        #[cfg(unix)]
-        {
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-                return Err(BlobStoreError::Io(
-                    std::io::Error::last_os_error().to_string(),
-                ));
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            // Failing closed is preferable to claiming a process-wide quota
-            // on a platform where this build has no interprocess lock.
-            return Err(BlobStoreError::Io(
-                "filesystem blob quotas require an interprocess lock on this platform".into(),
-            ));
-        }
+        file.lock()
+            .map_err(|error| BlobStoreError::Io(error.to_string()))?;
         Ok(RootWriteLock(file))
     }
 
