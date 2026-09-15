@@ -49,6 +49,21 @@ for a in "$@"; do
   esac
 done
 
+# Hardware profiles affect the sealed rootfs and UKI. Generic builds remain the
+# default; a machine-specific image must be requested explicitly.
+: "${QOS_HARDWARE_PROFILE:=generic}"
+case "$QOS_HARDWARE_PROFILE" in
+  generic) ;;
+  lenovo-83ed)
+    [ "${QOS_SKIP_BUILD:-0}" != 1 ] \
+      || die "QOS_SKIP_BUILD cannot apply the lenovo-83ed hardware profile; rebuild the image with its firmware and device tree"
+    [ "$(uname -m)" = aarch64 ] || die "lenovo-83ed requires a native ARM64 builder"
+    [ -s "$QOS_OS_DIR/hardware/firmware/lenovo-83ed/manifest.json" ] \
+      || die "stage the Lenovo firmware manifest first; see os/hardware/README.md"
+    ;;
+  *) die "unsupported hardware profile: $QOS_HARDWARE_PROFILE" ;;
+esac
+
 # Reproducible builds: derive a deterministic SOURCE_DATE_EPOCH from the HEAD
 # commit time (same commit -> same value), pass it through to the build, and
 # clamp layer + image timestamps to it. With the base pinned by digest and the
@@ -77,7 +92,9 @@ RPMS_REF="${_qos_rpms_ref_override:-${RPMS_REF:-}}"
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # qos-kernel-core out of it.  Cross-time reproducible.
 # shellcheck disable=SC1091
+_qos_kernel_ref_override="${KERNEL_RPMS_REF:-}"
 [ -f "$QOS_OS_DIR/kernel-snapshot.env" ] && . "$QOS_OS_DIR/kernel-snapshot.env"
+KERNEL_RPMS_REF="${_qos_kernel_ref_override:-${KERNEL_RPMS_REF:-}}"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
 # Pre-flight: every host-side COPY source exists. Decidable in a second, and the
 # alternative is finding out ~20 minutes in from a message naming a path with a
@@ -213,6 +230,7 @@ build_image() {
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
     --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
     --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
+    --build-arg "QOS_HARDWARE_PROFILE=$QOS_HARDWARE_PROFILE" \
     --build-arg "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
     --build-arg "QOS_GENERATION=$QOS_GENERATION" \
     --build-arg "QOS_SEAL_GENERATION=$QOS_SEAL_GENERATION" \
