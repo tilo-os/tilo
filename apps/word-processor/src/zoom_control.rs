@@ -29,6 +29,10 @@ pub(crate) struct ZoomControl {
 impl ZoomControl {
     pub(crate) const WIDTH: f64 = 88.0;
 
+    pub(crate) fn width(text_scale: f64) -> f64 {
+        Self::WIDTH * text_scale
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             factor: 1.0,
@@ -109,39 +113,43 @@ impl ZoomControl {
         text_color: Color,
     ) {
         self.hits.clear();
+        let scale = f64::from(text.text_scale());
         let center_y = f64::midpoint(row.y0, row.y1);
-        let button_width = 18.0;
-        let button_height = 18.0;
+        let button_width = 18.0 * scale;
+        let button_height = 18.0 * scale;
         let y = center_y - button_height / 2.0;
         let percent = format!("{}%", num::i32_of_f64((self.factor * 100.0).round()));
-        let value_width = 44.0;
-        let total = button_width * 2.0 + value_width + 8.0;
-        let mut x = row.x1 - 14.0 - total;
+        let value_width = 44.0 * scale;
+        let total = button_width * 2.0 + value_width + 8.0 * scale;
+        let mut x = row.x1 - 14.0 * scale - total;
 
         self.hits.push((
             Action::Out,
             draw_button(
-                scene, transform, text, x, y, center_y, chip, text_color, "−",
+                scene, transform, text, x, y, center_y, scale, chip, text_color, "−",
             ),
         ));
-        x += button_width + 4.0;
+        x += button_width + 4.0 * scale;
         let value = Rect::new(x, y, x + value_width, y + button_height);
-        let percent_width = num::f64_of_usize(percent.chars().count()) * 6.8;
+        let percent_width = num::f64_of_usize(percent.chars().count()) * 6.8 * scale;
         text.draw_text(
             scene,
             &percent,
             12.5,
             text_color,
             transform
-                * Affine::translate((x + (value_width - percent_width) / 2.0, center_y - 8.0)),
+                * Affine::translate((
+                    x + (value_width - percent_width) / 2.0,
+                    center_y - 8.0 * scale,
+                )),
             None,
         );
         self.hits.push((Action::Reset, value));
-        x += value_width + 4.0;
+        x += value_width + 4.0 * scale;
         self.hits.push((
             Action::In,
             draw_button(
-                scene, transform, text, x, y, center_y, chip, text_color, "+",
+                scene, transform, text, x, y, center_y, scale, chip, text_color, "+",
             ),
         ));
     }
@@ -160,20 +168,21 @@ fn draw_button(
     x: f64,
     y: f64,
     center_y: f64,
+    scale: f64,
     chip: Color,
     text_color: Color,
     label: &str,
 ) -> Rect {
-    let width = 18.0;
-    let rect = Rect::new(x, y, x + width, y + 18.0);
+    let width = 18.0 * scale;
+    let rect = Rect::new(x, y, x + width, y + 18.0 * scale);
     scene.fill(
         Fill::NonZero,
         transform,
         chip,
         None,
-        &RoundedRect::from_rect(rect, 4.0),
+        &RoundedRect::from_rect(rect, 4.0 * scale),
     );
-    let label_width = num::f64_of_usize(label.chars().count()) * 6.5;
+    let label_width = num::f64_of_usize(label.chars().count()) * 6.5 * scale;
     text.draw_text(
         scene,
         label,
@@ -181,8 +190,8 @@ fn draw_button(
         text_color,
         transform
             * Affine::translate((
-                rect.x0 + (width - label_width).max(2.0) / 2.0,
-                center_y - 8.0,
+                rect.x0 + (width - label_width).max(2.0 * scale) / 2.0,
+                center_y - 8.0 * scale,
             )),
         None,
     );

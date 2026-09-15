@@ -151,7 +151,13 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         // takes, then open the strip.
         let (mut state, mut wp) = build_concrete(file)?;
         seed_revisions(&mut state, &mut wp)?;
-        render_shot(state, Box::new(wp), (1000, 700), out)?;
+        render_shot(
+            state,
+            Box::new(wp),
+            args.viewport.unwrap_or((1000, 700)),
+            args.text_scale,
+            out,
+        )?;
         return Ok(());
     }
 
@@ -183,6 +189,7 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         state,
         Box::new(wp),
         args.viewport.unwrap_or((1000, 700)),
+        args.text_scale,
         out,
     )?;
     Ok(())
@@ -499,6 +506,7 @@ fn render_shot(
     mut state: State,
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
+    text_scale: Option<f32>,
     out: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
@@ -509,9 +517,25 @@ fn render_shot(
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
     };
+    let theme = if let Some(scale) = text_scale {
+        theme.with_text_scale(scale)
+    } else {
+        theme
+    };
+    let reduce_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        });
+    let theme = theme.with_reduce_motion(reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
+    tr.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
