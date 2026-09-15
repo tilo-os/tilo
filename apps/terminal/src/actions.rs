@@ -456,6 +456,29 @@ mod tests {
             )
             .is_err()
         );
+
+        // A reviewed `run` action must be exactly one command. Newlines or
+        // escape bytes would turn the promised single trailing Enter into an
+        // arbitrary sequence of shell submissions/control operations.
+        for dangerous in ["printf first\nprintf second", "printf x\x1b[200~"] {
+            let payload = serde_json::to_vec(dangerous).expect("serialize control payload");
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut widget,
+                    ui::qos_actions::OperationKind::Effect,
+                    "terminal.run",
+                    &payload,
+                    &doc,
+                    &ROOT,
+                )
+                .is_err(),
+                "unsafe multi-effect command must be rejected: {dangerous:?}"
+            );
+        }
+        assert!(
+            drain_writes(&writes).is_empty(),
+            "a rejected reviewed command must not write a partial PTY sequence"
+        );
     }
 
     #[test]
@@ -492,6 +515,22 @@ mod tests {
             writes.try_recv().is_err(),
             "rejected input never reaches the PTY"
         );
+
+        for dangerous in ["one\ntwo", "one\rtwo", "one\x1b[31m"] {
+            let payload = serde_json::to_vec(dangerous).expect("serialize control payload");
+            assert!(
+                Widget::invoke_resource_operation(
+                    &mut widget,
+                    ui::qos_actions::OperationKind::Effect,
+                    "terminal.send",
+                    &payload,
+                    &doc,
+                    &root,
+                )
+                .is_err(),
+                "send text must not smuggle a terminal control sequence: {dangerous:?}"
+            );
+        }
     }
 
     #[test]
@@ -570,5 +609,41 @@ mod tests {
             .is_err()
         );
         assert!(widget.is_disconnected());
+    }
+
+    #[test]
+    fn only_public_web_osc_links_are_exported_to_agents() {
+        let (mut widget, _writes) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.init_crdt(&mut doc, &ROOT);
+        widget.feed(
+            &mut doc,
+            &ROOT,
+            b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
+              \x1b]8;;https://token@example.test/private\x1b\\credential\x1b]8;;\x1b\\ \
+              \x1b]8;;https://qos.example/docs\x1b\\public\x1b]8;;\x1b\\",
+        );
+        widget.sync(&mut doc, &ROOT);
+
+        let transcript = Widget::resources(&widget, &doc)
+            .into_iter()
+            .next()
+            .expect("session resource")
+            .children
+            .into_iter()
+            .find(|resource| resource.kind == "terminal.transcript")
+            .expect("transcript resource");
+        assert_eq!(
+            transcript.children.len(),
+            1,
+            "local and credential-bearing process links are not agent resources"
+        );
+        assert_eq!(transcript.children[0].label, "https://qos.example/docs");
+        assert!(
+            !crate::inner::is_public_web_link("file:///home/me/.ssh/id_ed25519")
+                && !crate::inner::is_public_web_link("https://token@example.test/private")
+                && !crate::inner::is_public_web_link("https://qos.example/?access_token=no"),
+            "the directory rejects local paths, credentials, and query-bearing targets"
+        );
     }
 }
