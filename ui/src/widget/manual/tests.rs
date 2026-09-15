@@ -536,3 +536,168 @@ fn intentional_overflow_remains_drawn_when_region_allocation_is_outside_viewport
         );
     }
 }
+
+fn nested_negative_overflow(horizontal: bool) {
+    let inner = Manual::new(move |ctx| {
+        let (x, y) = if horizontal {
+            (-100.0, 0.0)
+        } else {
+            (0.0, -100.0)
+        };
+        ctx.place(0, Rect::new(x, y, x + 100.0, y + 40.0))?;
+        Ok(Size {
+            width: 100.0,
+            height: 20.0,
+        })
+    })
+    .child(Box::new(Button::new("grandchild", "Visible", None)));
+    let mut outer = Manual::new(|ctx| {
+        ctx.place(0, Rect::new(0.0, 0.0, 100.0, 20.0))?;
+        Ok(Size {
+            width: 100.0,
+            height: 20.0,
+        })
+    })
+    .child(Box::new(inner));
+    let mut tree = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let root = outer.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+    let mut bindings = BoundNodeMap::new();
+    unsafe {
+        bindings.rebuild(&outer, &tree, root, &nodes);
+    }
+    let mut text = crate::font_catalog::fixture_renderer();
+    unsafe {
+        super::super::compute_widget_layout(
+            &mut tree,
+            root,
+            Size {
+                width: AvailableSpace::Definite(300.0),
+                height: AvailableSpace::Definite(200.0),
+            },
+            &nodes,
+            &bindings,
+            &mut text,
+        )
+        .unwrap();
+    }
+    let (origin, viewport, expected) = if horizontal {
+        (
+            Point::new(100.0, 0.0),
+            Rect::new(0.0, 0.0, 90.0, 100.0),
+            [-100.0, 0.0, 200.0, 40.0],
+        )
+    } else {
+        (
+            Point::new(0.0, 100.0),
+            Rect::new(0.0, 0.0, 200.0, 90.0),
+            [0.0, -100.0, 100.0, 120.0],
+        )
+    };
+    outer.apply_layout(&tree, root, origin);
+    let presence = PresenceCtx::empty();
+    presence.viewport.set(Some(viewport));
+    let mut scene = Scene::new();
+    outer.draw_with_presence(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &Theme::dark(),
+        &presence,
+        &crate::permissions::PermissionContext::permissive(),
+    );
+    assert!(
+        !scene.encoding().draw_tags.is_empty(),
+        "visible nested grandchild was culled"
+    );
+    let info = outer.effective_layout().unwrap();
+    assert_eq!(info.content_bounds, expected);
+    assert!(info.overflow);
+    assert_eq!(info.requested_bounds, [0.0, 0.0, 100.0, 20.0]);
+    assert_eq!(info.allocation, [100.0, 20.0]);
+    assert!(info.first_conflict.is_none());
+    assert_eq!(
+        outer.children()[0].get_rect().size(),
+        vello::kurbo::Size::new(100.0, 20.0)
+    );
+}
+#[test]
+fn nested_negative_x_overflow_is_painted_and_inspected() {
+    nested_negative_overflow(true);
+}
+#[test]
+fn nested_negative_y_overflow_is_painted_and_inspected() {
+    nested_negative_overflow(false);
+}
+
+#[test]
+fn nested_overflow_stops_at_a_scrollable_clip() {
+    let inner = Manual::new(|ctx| {
+        ctx.place(0, Rect::new(-100.0, -100.0, 0.0, -60.0))?;
+        Ok(Size {
+            width: 100.0,
+            height: 20.0,
+        })
+    })
+    .child(Box::new(Button::new("clipped", "Clipped grandchild", None)));
+    let region = Manual::new(|ctx| {
+        ctx.place(0, Rect::new(0.0, 0.0, 100.0, 20.0))?;
+        Ok(Size {
+            width: 100.0,
+            height: 20.0,
+        })
+    })
+    .child(Box::new(
+        crate::widget::Scrollable::new_vertical().with_child(Box::new(inner)),
+    ));
+    let harness = FrameHarness::new(crate::State::new(), Box::new(region), (300, 200));
+    let snapshot = harness.inspection();
+    let Some(LayoutInfo::Manual(info)) = snapshot.root.layout else {
+        panic!("manual info")
+    };
+    assert_eq!(info.content_bounds, [0.0, 0.0, 100.0, 20.0]);
+    assert!(!info.overflow);
+}
+
+#[test]
+fn descendant_bounds_accumulate_anonymous_offsets_and_clip_each_axis_independently() {
+    fn positioned(x: f32, y: f32, width: f32, height: f32) -> Style {
+        Style {
+            position: taffy::Position::Absolute,
+            inset: taffy::Rect {
+                left: taffy::LengthPercentageAuto::length(x),
+                top: taffy::LengthPercentageAuto::length(y),
+                ..taffy::Rect::auto()
+            },
+            size: Size {
+                width: Dimension::length(width),
+                height: Dimension::length(height),
+            },
+            ..Style::default()
+        }
+    }
+    let mut tree = TaffyTree::new();
+    tree.disable_rounding();
+    let leaf = tree
+        .new_leaf(positioned(-60.0, -80.0, 100.0, 10.0))
+        .unwrap();
+    let mut clipped = positioned(12.5, 17.25, 100.0, 50.0);
+    clipped.overflow.x = taffy::Overflow::Hidden;
+    let anonymous = tree.new_with_children(clipped, &[leaf]).unwrap();
+    let branch = tree
+        .new_with_children(positioned(20.25, 30.75, 100.0, 50.0), &[anonymous])
+        .unwrap();
+    let root = tree.new_with_children(Style::default(), &[branch]).unwrap();
+    tree.compute_layout(
+        root,
+        Size {
+            width: AvailableSpace::Definite(300.0),
+            height: AvailableSpace::Definite(200.0),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        descendant_bounds(&tree, branch).unwrap(),
+        Rect::new(0.0, -32.0, 132.75, 98.0)
+    );
+}

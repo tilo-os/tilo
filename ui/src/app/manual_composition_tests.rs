@@ -3,14 +3,14 @@ use crate::widget::{Button, Field, Form, Manual, MeasureConstraint, Section, Tex
 
 #[test]
 fn manual_and_mixed_hosts_preserve_focus_selection_and_authored_clicks_on_resize() {
-    for automatic_child in [false, true] {
+    for mode in 0..3 {
         let shift = std::rc::Rc::new(std::cell::Cell::new(0.25_f64));
         let offset = shift.clone();
         let mut input = TextInput::local()
             .with_id("name")
             .with_accessible_name("Name");
         input.set_text("Alex Morgan");
-        let child: Box<dyn Widget> = if automatic_child {
+        let child: Box<dyn Widget> = if mode == 1 {
             Box::new(Form::new().section(Section::new("Profile").field(Field::new("Name", input))))
         } else {
             Box::new(input)
@@ -49,7 +49,12 @@ fn manual_and_mixed_hosts_preserve_focus_selection_and_authored_clicks_on_resize
         })
         .child(child)
         .child(Box::new(Button::new("save", "Save", Some("saved"))));
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+        let root: Box<dyn Widget> = if mode == 2 {
+            Box::new(Form::new().section(Section::new("Automatic parent").content(Box::new(root))))
+        } else {
+            Box::new(root)
+        };
+        let mut app = App::new_with_controlled_inputs(State::new(), root);
         app.init_layout();
         let run = |app: &mut App, width| {
             app.layout_dirty = true;

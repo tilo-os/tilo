@@ -115,6 +115,10 @@ resolved values and property origins (`Theme`, `Pattern`, or nearest authored
 region). Field metadata includes its measured required/available widths and
 resolved label position. `Manual` is an explicit mode and reports allocation,
 requested bounds, content bounds, overflow, and its first unsatisfied constraint.
+Content bounds include solved descendant origins, including negative coordinates,
+and respect per-axis Taffy overflow clipping. They are conservative layout/paint
+extents where custom drawing or clipping is not represented in Taffy; they are
+not a universal pixel-level paint diagnostic.
 The normal child rectangles remain the effective alignment edges. Existing
 `child_clip` describes actual clipping where available.
 
