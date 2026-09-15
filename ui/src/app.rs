@@ -17625,3 +17625,7 @@ mod form_composition_tests;
 #[cfg(test)]
 #[path = "app/manual_composition_tests.rs"]
 mod manual_composition_tests;
+
+#[cfg(test)]
+#[path = "app/number_input_layout_tests.rs"]
+mod number_input_layout_tests;
