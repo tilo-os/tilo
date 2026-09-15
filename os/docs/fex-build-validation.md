@@ -82,3 +82,19 @@ The instruction-only success is not full-suite acceptance. The next run needs
 the 32-bit runtime and complete target development headers. Preserve normal RPM
 installation scripts when constructing that environment; simply ignoring the
 failed checks or using incomplete header parsing cannot validate ABI layouts.
+
+## Server lifecycle during tests
+
+Run `python3 os/tests/run-fex-tests.py --build-dir /build --rootfs /rootfs` inside
+the isolated test container. Optional CTest arguments follow `--`, for example
+`-- -R gcc-target-32`. The runner starts FEXServer in the foreground, waits for
+its readiness pipe, writes server output to `Testing/Temporary/FEXServer.log`,
+and terminates only that server when CTest finishes. It preserves test failures
+and does not change the upstream disabled-test lists or expected results.
+
+The upstream auto-started daemon inherits standard output. With a capturing
+test wrapper this can keep the first test waiting for pipe EOF even after its
+guest process exits. Both observed first-case timeouts (`clock-2-1` and the
+32-bit `20000609-1` case) passed in 0.10 seconds when the server was managed
+explicitly. This resolves the test-process lifecycle issue; it does not waive
+the remaining ABI, permissions, or runtime checks.
