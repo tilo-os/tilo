@@ -14,6 +14,22 @@ pub fn existing(checkout: &RecordCheckout) -> LaunchTarget {
     }
 }
 pub fn component(f: &LegacyFixture, instance: u64, target: LaunchTarget) -> AppComponent {
+    restored_component(f, instance, target, RestoreInput::None)
+}
+pub fn restored_component(
+    f: &LegacyFixture,
+    instance: u64,
+    target: LaunchTarget,
+    restore: RestoreInput,
+) -> AppComponent {
+    try_restored_component(f, instance, target, restore).unwrap()
+}
+pub fn try_restored_component(
+    f: &LegacyFixture,
+    instance: u64,
+    target: LaunchTarget,
+    restore: RestoreInput,
+) -> Result<AppComponent, ui::launch::LaunchError> {
     let context = HostContext::prepare(
         notes::definition(),
         f.records.clone(),
@@ -29,9 +45,7 @@ pub fn component(f: &LegacyFixture, instance: u64, target: LaunchTarget) -> AppC
         &target,
     )
     .unwrap();
-    notes::definition()
-        .instantiate(context, target, RestoreInput::None)
-        .unwrap()
+    notes::definition().instantiate(context, target, restore)
 }
 pub fn renderer() -> ui::TextRenderer {
     let catalog = ui::font_catalog::FontCatalog::controlled_fixture(

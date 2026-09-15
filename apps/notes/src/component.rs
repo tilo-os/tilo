@@ -14,7 +14,7 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         record_kind: RecordKind::new("notes.notebook"),
         required: vec![],
         optional: vec![],
-        create: |context, target, restore| create_component(context, &target, restore),
+        create: |context, target, restore| create_component(context, &target, &restore),
     });
 pub fn definition() -> &'static ApplicationDefinition {
     &DEFINITION
@@ -22,8 +22,13 @@ pub fn definition() -> &'static ApplicationDefinition {
 fn create_component(
     mut context: HostContext,
     target: &LaunchTarget,
-    _restore: RestoreInput,
+    restore: &RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
+    if let RestoreInput::Local(saved) = restore
+        && let Some(local) = &saved.application
+    {
+        crate::local_view::NotesLocalViewV1::decode(local).map_err(LaunchError::Restore)?;
+    }
     if matches!(target, LaunchTarget::New) {
         context
             .initialize_new_record(crate::notebook::initialize_empty)

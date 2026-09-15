@@ -720,18 +720,80 @@ impl BlockEditor {
     }
 
     /// Bind a canonical existing list without initializing its durable contents.
-    pub fn bind_existing_blocks(&mut self, state: &mut AutoCommit, list: ObjId) {
+    /// # Errors
+    /// Rejects malformed identities, kinds or Text objects before installing local state.
+    pub fn bind_existing_blocks(
+        &mut self,
+        state: &AutoCommit,
+        list: ObjId,
+    ) -> Result<(), crate::view::ThawError> {
+        let invalid = |message: &str| crate::view::ThawError::State(message.into());
+        if state.object_type(&list).ok() != Some(ObjType::List) {
+            return Err(invalid("canonical blocks must be a List"));
+        }
+        let len = state.length(&list);
+        let mut blocks = Vec::with_capacity(len);
+        let mut ids = std::collections::HashSet::new();
+        for index in 0..len {
+            let values = state
+                .get_all(&list, index)
+                .map_err(|e| invalid(&e.to_string()))?;
+            let [(Value::Object(ObjType::Map), map)] = values.as_slice() else {
+                return Err(invalid("canonical block must be one Map"));
+            };
+            let read_string = |key: &str| -> Result<String, crate::view::ThawError> {
+                let values = state
+                    .get_all(map, key)
+                    .map_err(|e| invalid(&e.to_string()))?;
+                match values.as_slice() {
+                    [(Value::Scalar(value), _)] => value
+                        .to_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| invalid("canonical block field must be a string")),
+                    _ => Err(invalid("canonical block field is missing or conflicted")),
+                }
+            };
+            let id = read_string("id")?;
+            let uuid = Uuid::parse_str(&id).map_err(|e| invalid(&e.to_string()))?;
+            if uuid.is_nil() || !ids.insert(uuid) {
+                return Err(invalid("nil or duplicate block UUID"));
+            }
+            let spelling = read_string("kind")?;
+            let kind = kind_from_str(&spelling);
+            if !valid_existing_kind(&spelling) {
+                return Err(invalid("invalid canonical block kind"));
+            }
+            let values = state
+                .get_all(map, "text")
+                .map_err(|e| invalid(&e.to_string()))?;
+            let [(Value::Object(ObjType::Text), text)] = values.as_slice() else {
+                return Err(invalid("canonical block text must be one Text"));
+            };
+            let mut block = block_for_kind(&kind);
+            block.id = id;
+            block.line.set_local_author(self.local_author.clone());
+            block.line.set_direct_crdt_writes(false);
+            block.line.bind_text(text.clone());
+            block.line.adopt_bound_text(state)?;
+            blocks.push(block);
+        }
+        // The placeholder is local and deliberately unbound; it never has a stable caret.
+        if blocks.is_empty() {
+            let mut block = Block::paragraph("");
+            block.line.set_local_author(self.local_author.clone());
+            block.line.set_direct_crdt_writes(false);
+            blocks.push(block);
+        }
+        self.set_blocks(blocks);
         self.set_action_interception(true);
         self.canonical_existing = true;
-        let len = state.length(&list);
         self.canonical_empty = len == 0;
-        if len == 0 {
-            self.set_blocks(vec![Block::paragraph("")]);
-        } else {
-            self.rebuild_from_doc(state, &list, len);
-        }
-        self.doc_structure_dirty = false;
         self.blocks_list = Some(list);
+        self.edit_pending = false;
+        self.doc_structure_dirty = false;
+        self.interception_before = None;
+        self.pending_semantic_ops.clear();
+        Ok(())
     }
 
     /// Preserves each existing block's `Text` object by identity
@@ -2396,6 +2458,26 @@ fn kind_to_str(kind: &BlockKind) -> String {
         }
         BlockKind::Divider => "divider".to_string(),
     }
+}
+
+fn valid_existing_kind(kind: &str) -> bool {
+    let indent = |value: &str| {
+        value
+            .parse::<u8>()
+            .is_ok_and(|value| value <= MAX_LIST_INDENT)
+    };
+    matches!(
+        kind,
+        "paragraph" | "divider" | "heading1" | "heading2" | "heading3"
+    ) || kind.strip_prefix("bullet:").is_some_and(indent)
+        || kind.strip_prefix("numbered:").is_some_and(indent)
+        || kind.strip_prefix("checklist:").is_some_and(|rest| {
+            let mut parts = rest.split(':');
+            parts.next().is_some_and(indent)
+                && matches!(parts.next(), Some("0" | "1"))
+                && parts.next().is_none()
+        })
+        || kind.starts_with("code:")
 }
 
 fn kind_from_str(s: &str) -> BlockKind {
@@ -5991,6 +6073,26 @@ mod tests {
         assert_eq!(rest, "no indent");
     }
 
+    // Catches replacing live local state before malformed canonical shape is rejected.
+    #[test]
+    fn canonical_readonly_restore_rejects_shape_before_installing_editor() {
+        let mut doc = AutoCommit::new();
+        let list = doc
+            .put_object(automerge::ROOT, "blocks", ObjType::List)
+            .unwrap();
+        doc.insert_object(&list, 0, ObjType::Map).unwrap();
+        doc.commit();
+        let before = (doc.base_heads(), doc.pending_ops());
+        let mut editor = BlockEditor::from_markdown("retain me");
+        editor.focus_block(0, CursorPlacement::Byte(3));
+        let id = editor.blocks()[0].id.clone();
+        assert!(editor.bind_existing_blocks(&doc, list).is_err());
+        assert_eq!(editor.blocks()[0].text(), "retain me");
+        assert_eq!(editor.blocks()[0].id, id);
+        assert_eq!(editor.blocks()[0].line.cursor_pos(), 3);
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+    }
+
     // Catch writes/replacement of the presentation paragraph on an empty read-only bind.
     #[test]
     fn canonical_existing_list_empty_noop_retains_caret_and_heads() {
@@ -6001,7 +6103,7 @@ mod tests {
         doc.commit();
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
-        editor.bind_existing_blocks(&mut doc, list.clone());
+        editor.bind_existing_blocks(&doc, list.clone()).unwrap();
         editor.set_focus(true);
         editor.focus_block(0, CursorPlacement::Start);
         let id = editor.blocks()[0].id.clone();
@@ -6028,7 +6130,7 @@ mod tests {
         seed.bind_blocks(&mut doc, list.clone());
         doc.commit();
         let mut editor = BlockEditor::new();
-        editor.bind_existing_blocks(&mut doc, list.clone());
+        editor.bind_existing_blocks(&doc, list.clone()).unwrap();
         editor.set_focus(true);
         editor.focus_block(0, CursorPlacement::End);
         doc.delete(&list, 0).unwrap();
@@ -6073,7 +6175,7 @@ mod tests {
         doc.commit();
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
-        editor.bind_existing_blocks(&mut doc, list);
+        editor.bind_existing_blocks(&doc, list).unwrap();
         let id = editor.blocks()[0].id.clone();
         editor.begin_action_intercept();
         editor.blocks_mut()[0].line.set_text("first é");
@@ -6099,7 +6201,7 @@ mod tests {
         doc.commit();
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
-        editor.bind_existing_blocks(&mut doc, list);
+        editor.bind_existing_blocks(&doc, list).unwrap();
         editor.begin_action_intercept();
         editor.split_at_cursor(0, 0);
         let ids = editor
@@ -6136,7 +6238,7 @@ mod tests {
         doc.commit();
         let before = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
-        editor.bind_existing_blocks(&mut doc, list);
+        editor.bind_existing_blocks(&doc, list).unwrap();
         editor.begin_action_intercept();
         editor.blocks_mut()[0].line.set_text("first ésecond");
         editor.blocks_mut()[0]
@@ -6190,7 +6292,7 @@ mod tests {
         doc.commit();
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut canonical = BlockEditor::new();
-        canonical.bind_existing_blocks(&mut doc, list);
+        canonical.bind_existing_blocks(&doc, list).unwrap();
         canonical.sync(&mut doc, &automerge::ROOT);
         assert_eq!(canonical.blocks()[0].text(), "retained");
         assert_eq!((doc.base_heads(), doc.pending_ops()), heads);

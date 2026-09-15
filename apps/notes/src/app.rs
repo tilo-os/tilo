@@ -205,6 +205,9 @@ pub struct NotesApp {
     /// it for width/height reservations so 200% text switches to the drawer
     /// before page labels or the title stack can collide.
     text_scale: f64,
+    prepared_local_focus: Option<crate::local_view::PreparedFocus>,
+    // The first measured width resolves the saved drawer and Sidebar intent once.
+    pending_responsive_view: Option<(bool, bool)>,
 }
 
 /// Compatibility storage for the old standalone entry point and disk fixtures.
@@ -314,21 +317,8 @@ impl NotesApp {
         let mut main = MainPanel::new();
         main.set_local_author(Some(author.0.clone()));
         let mut app = Self::build_widget(workspace, sidebar, main, None);
-        // The editor's binding signature is mutable for legacy consumers, but
-        // canonical binding only reads. Never borrow/commit the owner's transaction.
-        if let Some(page) = app.workspace.selected() {
-            let title = app
-                .workspace
-                .get(page)
-                .ok_or("selected page is missing")?
-                .title
-                .clone();
-            let blocks = NotesDoc::page_blocks_list(doc, page)
-                .ok_or("selected page block list is missing")?;
-            app.main
-                .bind_canonical_page(&mut doc.clone(), page, &title, blocks)?;
-            app.bound_page = Some(page);
-        }
+        app.main = app.main.project_canonical(doc, &app.workspace)?;
+        app.bound_page = app.workspace.selected();
         app.refresh_link_pages();
         app.canonical_marks = app.main.inline_marks();
         Ok(app)
@@ -404,6 +394,8 @@ impl NotesApp {
             search_heads: None,
             search_provider,
             text_scale: 1.0,
+            prepared_local_focus: None,
+            pending_responsive_view: None,
         };
         app.refresh_link_pages();
         let visible_tags = app
@@ -2091,6 +2083,142 @@ fn seed_welcome(root: &std::path::Path, workspace: &mut Workspace) {
 }
 
 impl ui::widget::AppWidget for NotesApp {
+    fn capture_application_view(
+        &self,
+    ) -> Result<Option<ui::application_view::ApplicationLocalView>, ui::view::ThawError> {
+        use crate::local_view::{BlockPosition, NotesFocus, NotesLocalViewV1};
+        let editor = self.main.editor();
+        let position = |index: usize, byte_offset| {
+            editor
+                .blocks()
+                .get(index)
+                .filter(|block| block.line.bound_obj().is_some())
+                .map(|block| BlockPosition {
+                    block_id: block.id.clone(),
+                    byte_offset,
+                })
+        };
+        let (anchor, caret) = if let Some(selection) = editor.document_selection() {
+            (
+                position(selection.anchor.block, selection.anchor.byte),
+                position(selection.cursor.block, selection.cursor.byte),
+            )
+        } else if let Some(index) = editor.focused_index() {
+            let block = editor.blocks().get(index);
+            let caret = block.and_then(|block| position(index, block.line.cursor_pos()));
+            let anchor = block.and_then(|block| {
+                block.line.selection_range().and_then(|(start, end)| {
+                    position(
+                        index,
+                        if block.line.cursor_pos() == start {
+                            end
+                        } else {
+                            start
+                        },
+                    )
+                })
+            });
+            (anchor, caret)
+        } else {
+            (None, None)
+        };
+        let focus = if self
+            .pending_responsive_view
+            .is_some_and(|(_, sidebar)| sidebar)
+            || self.sidebar.is_focused()
+        {
+            NotesFocus::Sidebar
+        } else if self.main.title_focused() {
+            NotesFocus::Title
+        } else if editor.is_focused() && self.main.page_id().is_some() {
+            NotesFocus::Editor
+        } else {
+            NotesFocus::None
+        };
+        let local = NotesLocalViewV1 {
+            selected_page: self.workspace.selected(),
+            active_tag: self.active_tag_filter,
+            drawer_open: self
+                .pending_responsive_view
+                .map_or_else(|| self.drawer.is_open(), |(open, _)| open),
+            expanded_pages: self.sidebar.expanded_pages(),
+            editor_scroll: self.main.local_scroll(),
+            focus,
+            anchor,
+            caret,
+        };
+        local.encode().map(Some)
+    }
+
+    fn restore_application_view(
+        &mut self,
+        local: &ui::application_view::ApplicationLocalView,
+        doc: &AutoCommit,
+    ) -> Result<ui::application_view::ApplicationFocusRestore, ui::view::ThawError> {
+        use crate::local_view::{NotesLocalViewV1, PreparedFocus};
+        let local = NotesLocalViewV1::decode(local)?;
+        let workspace = Self::project_workspace(doc, local.selected_page)
+            .map_err(ui::view::ThawError::State)?;
+        let mut main = self
+            .main
+            .project_canonical(doc, &workspace)
+            .map_err(ui::view::ThawError::State)?;
+        let focus = PreparedFocus::resolve(&local, main.editor());
+        main.restore_scroll(local.editor_scroll);
+        let mut sidebar = NoteTreeView::new();
+        sidebar.sync_from_workspace(&workspace);
+        sidebar.restore_expanded_pages(&local.expanded_pages, &workspace);
+        let active_tag = local
+            .active_tag
+            .filter(|id| workspace.tags().iter().any(|tag| tag.id == *id));
+        // All validation/projection above precedes the first saved local change.
+        self.main = main;
+        self.workspace = workspace;
+        self.sidebar = sidebar;
+        self.active_tag_filter = active_tag;
+        self.bound_page = self.workspace.selected();
+        self.canonical_marks = self.main.inline_marks();
+        self.pending_events.clear();
+        self.pending_block_reveal = None;
+        self.palette = PageJumpPalette::new();
+        self.drawer.snap(local.drawer_open);
+        self.pending_responsive_view = Some((local.drawer_open, false));
+        self.prepared_local_focus = Some(focus);
+        self.refresh_link_pages();
+        self.refresh_status();
+        self.self_dirty = true;
+        Ok(ui::application_view::ApplicationFocusRestore::Application)
+    }
+
+    fn finish_application_view_restore(&mut self) -> Result<(), ui::view::ThawError> {
+        use crate::local_view::NotesFocus;
+        let Some(plan) = self.prepared_local_focus.take() else {
+            return Ok(());
+        };
+        self.sidebar.set_focus(false);
+        // Restore editor presentation even while another local control holds focus.
+        if let Some(caret) = plan.caret {
+            if let Some(anchor) = plan.anchor {
+                self.main.editor_mut().select_document_range(anchor, caret);
+            } else {
+                self.main
+                    .editor_mut()
+                    .focus_block(caret.block, ui::widget::CursorPlacement::Byte(caret.byte));
+            }
+        }
+        self.main.finish_local_focus(plan.focus);
+        if plan.focus == NotesFocus::Sidebar {
+            if self.rect.width() > 0.0 {
+                self.sidebar
+                    .set_focus(!self.want_narrow || self.drawer.is_open());
+            } else if let Some((_, sidebar)) = self.pending_responsive_view.as_mut() {
+                *sidebar = true;
+                self.sidebar.set_focus(true);
+            }
+        }
+        Ok(())
+    }
+
     fn app_kind(&self) -> ui::widget::AppKind {
         ui::widget::AppKind::Editor
     }
@@ -2397,6 +2525,14 @@ impl Widget for NotesApp {
             // geometry and breakpoint memory track this frame (this is where a
             // stale open/closed preference is reconciled on a breakpoint cross).
             self.drawer.resolve(self.content_rect);
+            if width > 0.0
+                && let Some((open, sidebar)) = self.pending_responsive_view.take()
+            {
+                self.drawer.snap(open);
+                if sidebar {
+                    self.sidebar.set_focus(!self.want_narrow || open);
+                }
+            }
             if let Some(n) = self.sidebar_node {
                 self.sidebar.apply_layout(taffy, n, content_origin);
             }

@@ -313,7 +313,7 @@ impl MainPanel {
     /// Rejects a list that is absent or does not belong to the requested page.
     pub fn bind_canonical_page(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         page: PageId,
         title: &str,
         blocks: ObjId,
@@ -323,7 +323,9 @@ impl MainPanel {
         }
         let mut editor = BlockEditor::new();
         editor.set_local_author(self.local_author.clone());
-        editor.bind_existing_blocks(doc, blocks);
+        editor
+            .bind_existing_blocks(doc, blocks)
+            .map_err(|error| error.to_string())?;
         editor.set_focus(true);
         editor.focus_block(0, ui::widget::CursorPlacement::Start);
         self.editor = editor;
@@ -339,6 +341,46 @@ impl MainPanel {
                 .collect(),
         );
         Ok(())
+    }
+
+    pub(crate) fn project_canonical(
+        &self,
+        doc: &AutoCommit,
+        workspace: &crate::Workspace,
+    ) -> Result<Self, String> {
+        let mut panel = Self::new();
+        panel.set_local_author(self.local_author.clone());
+        if let Some(page) = workspace.selected() {
+            let title = &workspace.get(page).ok_or("selected page missing")?.title;
+            let blocks =
+                crate::doc::NotesDoc::page_blocks_list(doc, page).ok_or("page blocks missing")?;
+            panel.bind_canonical_page(doc, page, title, blocks)?;
+        }
+        Ok(panel)
+    }
+
+    pub(crate) fn local_scroll(&self) -> f64 {
+        self.scroll_y
+    }
+    pub(crate) fn restore_scroll(&mut self, scroll: f64) {
+        self.scroll_y = scroll;
+    }
+    pub(crate) fn title_focused(&self) -> bool {
+        self.title_label.is_editing()
+    }
+    pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
+        self.title_label.cancel();
+        let _ = self.title_label.take_outcome();
+        self.pending_rename = None;
+        self.empty_action_focused = false;
+        self.editor.set_focus(false);
+        if self.page_id.is_some() {
+            match focus {
+                crate::local_view::NotesFocus::Title => self.title_label.begin_edit(),
+                crate::local_view::NotesFocus::Editor => self.editor.set_focus(true),
+                _ => {}
+            }
+        }
     }
 
     /// Set the local user's id for authorship attribution. Re-applied to
