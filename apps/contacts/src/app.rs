@@ -100,8 +100,8 @@ const TOAST_LIFETIME: Duration = Duration::from_millis(2600);
 const DIVIDER_W: f64 = 6.0;
 const PAD: f64 = 16.0;
 const FIELD_H: f64 = 38.0;
-/// File reads happen on the UI-owned import completion path, so keep them
-/// bounded even when an automation supplies a path rather than the picker.
+/// File reads happen on the UI-owned portal completion path, so keep selected
+/// files bounded even if the portal backend supplies a malformed result.
 const MAX_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_IMPORT_FILES: usize = 16;
 const MAX_IMPORT_TOTAL_BYTES: u64 = 16 * 1024 * 1024;
@@ -557,10 +557,9 @@ fn best_field_in_direction(
 
 /// Build a single form field input seeded with `value`.
 fn field(slot: Slot, value: &str) -> FieldInput {
-    FieldInput {
-        slot,
-        ti: TextInput::local().with_initial_value(value),
-    }
+    let mut input = TextInput::local().with_initial_value(value);
+    input.set_multiline(slot == Slot::Notes);
+    FieldInput { slot, ti: input }
 }
 
 /// Floating overlay state (only one open at a time).
@@ -814,7 +813,6 @@ pub struct ContactsApp {
     /// The contacts + vCard version parked while the export Save dialog is up,
     /// written to the chosen destination when the portal returns a path.
     pending_export: Option<(Vec<ContactId>, VCardVersion)>,
-    resource_file: Option<(bool, PathBuf)>,
     resource_invocation: Option<qos_actions::InvocationId>,
     completed_resource_invocation: Option<qos_actions::InvocationUpdate>,
     /// Pending untrusted UID collisions. These never enter the document until
@@ -917,7 +915,6 @@ impl ContactsApp {
             import_generation: 0,
             export_rx: None,
             pending_export: None,
-            resource_file: None,
             resource_invocation: None,
             completed_resource_invocation: None,
             import_conflicts: Vec::new(),
@@ -967,6 +964,15 @@ impl ContactsApp {
             self.focus_form_slot(Slot::First);
             self.push.snap(Pane::Detail);
         }
+    }
+
+    /// Show the lower half of the long edit form. This makes the 200%/phone
+    /// screenshot matrix prove that address, birthday, website, notes and
+    /// groups remain reachable rather than merely checking the sticky header.
+    pub fn shots_edit_lower(&mut self) {
+        self.shots_edit_contact();
+        self.detail_scroll = 1_840.0;
+        self.relayout = true;
     }
 
     /// Snap the export-selection dialog open for `--shots`.
@@ -1534,6 +1540,7 @@ impl ContactsApp {
     /// hermetic core shared by the live portal
     /// drain and the tests — it never touches the picker, so multi-file import
     /// can be driven directly without a desktop portal.
+    #[cfg(test)]
     fn import_paths(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> ImportSummary {
         if paths.is_empty() {
             // An empty selection (or a cancelled picker) fabricates nothing.
@@ -2279,8 +2286,9 @@ impl ContactsApp {
 
         // Notes (full width)
         y += label_h;
-        plan.push((Slot::Notes, Rect::new(x0, y, x1, y + nh)));
-        y += nh + gap;
+        let notes_h = nh * 3.0;
+        plan.push((Slot::Notes, Rect::new(x0, y, x1, y + notes_h)));
+        y += notes_h + gap;
 
         // Groups (full width)
         y += label_h;
@@ -3247,38 +3255,52 @@ impl ContactsApp {
         // Name + subtitle on their own full-width rows beneath the avatar.
         let head_w = (x1 - x0).max(40.0) as f32;
         let name_y = y + avatar + 16.0 * scale;
-        let name =
-            tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
-        tr.draw_text_weighted(
-            scene,
-            &name,
+        let max_header_lines = if self.narrow && scale >= 1.75 { 2 } else { 1 };
+        let name_lines = tr.clamp_to_lines(
+            &contact.display_name(),
             26.0,
-            c.text_primary,
-            t * Affine::translate((x0, name_y)),
-            None,
-            TextWeight::Bold,
+            head_w * if max_header_lines > 1 { 0.9 } else { 1.0 },
+            max_header_lines,
         );
-        let mut hy = name_y + 36.0 * scale;
+        for (line, text) in name_lines.iter().enumerate() {
+            let text = tr.elide_to_width_weighted(text, 26.0, head_w, TextWeight::Bold);
+            tr.draw_text_weighted(
+                scene,
+                &text,
+                26.0,
+                c.text_primary,
+                t * Affine::translate((x0, name_y + line as f64 * 34.0 * scale)),
+                None,
+                TextWeight::Bold,
+            );
+        }
+        let mut hy = name_y + name_lines.len().max(1) as f64 * 36.0 * scale;
         let sub = contact.subtitle();
         if !sub.is_empty() {
-            let sub = tr.elide_to_width(&sub, 14.0, head_w);
-            tr.draw_text(
-                scene,
-                &sub,
-                14.0,
-                c.text_dim,
-                t * Affine::translate((x0, hy)),
-                None,
-            );
-            hy += 26.0 * scale;
+            let sub_lines = tr.clamp_to_lines(&sub, 14.0, head_w, max_header_lines);
+            for (line, text) in sub_lines.iter().enumerate() {
+                tr.draw_text(
+                    scene,
+                    text,
+                    14.0,
+                    c.text_dim,
+                    t * Affine::translate((x0, hy + line as f64 * 20.0 * scale)),
+                    None,
+                );
+            }
+            hy += sub_lines.len().max(1) as f64 * 22.0 * scale;
         }
         // Group badges below the name/subtitle.
         if !contact.groups.is_empty() {
             let mut bx = x0;
-            let by = hy;
+            let mut by = hy;
             for g in &contact.groups {
                 let tw = f64::from(tr.measure(&g.value, 11.0, None).0);
-                let bw = tw + 18.0 * scale;
+                let bw = (tw + 18.0 * scale).min((x1 - x0).max(40.0));
+                if bx > x0 && bx + bw > x1 {
+                    bx = x0;
+                    by += 28.0 * scale;
+                }
                 let br = Rect::new(bx, by, bx + bw, by + 20.0 * scale);
                 let shape = RoundedRect::from_rect(br, 10.0);
                 scene.fill(
@@ -3288,20 +3310,18 @@ impl ContactsApp {
                     None,
                     &shape,
                 );
+                let label = tr.elide_to_width(&g.value, 11.0, (bw - 18.0 * scale).max(12.0) as f32);
                 tr.draw_text(
                     scene,
-                    &g.value,
+                    &label,
                     11.0,
                     theme.accent_primary,
                     t * Affine::translate((bx + 9.0 * scale, by + 4.0 * scale)),
                     None,
                 );
                 bx += bw + 8.0 * scale;
-                if bx > x1 - 60.0 {
-                    break;
-                }
             }
-            hy += 28.0 * scale;
+            hy = by + 28.0 * scale;
         }
 
         // Start of the field sections below the header block.
@@ -4934,25 +4954,6 @@ impl Widget for ContactsApp {
         {
             self.show_toast(format!("Couldn't resolve import review: {error}"));
         }
-        if let Some((export, file)) = self.resource_file.take() {
-            if export {
-                let ids = self
-                    .store
-                    .contacts
-                    .iter()
-                    .map(|contact| contact.id)
-                    .collect::<Vec<_>>();
-                self.write_export(&ids, crate::vcard::VCardVersion::V4, &file);
-                self.finish_resource_file(
-                    file.is_file(),
-                    (!file.is_file()).then(|| "vCard export was not written".into()),
-                );
-            } else {
-                let imported = self.import_paths(state, &[file]);
-                let success = imported.completed();
-                self.finish_resource_file(success, (!success).then(|| imported.failure_message()));
-            }
-        }
         // Drain any in-flight file-chooser portal request first, so a chosen
         // import/export lands in the book before this frame lays out.
         self.drain_portal(state);
@@ -5205,8 +5206,14 @@ impl Widget for ContactsApp {
             ) => self.reveal_group(&name)?,
             (
                 qos_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ImportVcard { .. },
+                crate::actions::ContactsOperation::ImportVcard { path },
             ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
                 if self.import_rx.is_some() || self.import_parse_rx.is_some() {
                     return Err("a contact import is already in progress".into());
                 }
@@ -5214,8 +5221,14 @@ impl Widget for ContactsApp {
             }
             (
                 qos_actions::OperationKind::Effect,
-                crate::actions::ContactsOperation::ExportAllVcard { .. },
+                crate::actions::ContactsOperation::ExportAllVcard { path },
             ) => {
+                if path.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
                 if self.export_rx.is_some() {
                     return Err("a contact export is already in progress".into());
                 }
@@ -5282,12 +5295,14 @@ impl Widget for ContactsApp {
                 {
                     return Err("another contact file operation is running".into());
                 }
-                self.resource_invocation = Some(invocation);
-                if let Some(file) = file {
-                    self.resource_file = Some((false, file.into()));
-                } else {
-                    self.request_import();
+                if file.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
                 }
+                self.resource_invocation = Some(invocation);
+                self.request_import();
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
             crate::actions::ContactsOperation::ExportAllVcard { path: file } => {
@@ -5297,15 +5312,17 @@ impl Widget for ContactsApp {
                 if self.resource_invocation.is_some() {
                     return Err("another contact file operation is running".into());
                 }
+                if file.is_some() {
+                    return Err(
+                        "direct filesystem paths are not accepted; use the system file picker"
+                            .into(),
+                    );
+                }
                 self.resource_invocation = Some(invocation);
-                if let Some(file) = file {
-                    self.resource_file = Some((true, file.into()));
-                } else {
-                    let ids = self.store.contacts.iter().map(|c| c.id).collect();
-                    if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
-                        self.resource_invocation = None;
-                        return Err("contact export could not be started".into());
-                    }
+                let ids = self.store.contacts.iter().map(|c| c.id).collect();
+                if !self.request_export(ids, crate::vcard::VCardVersion::V4) {
+                    self.resource_invocation = None;
+                    return Err("contact export could not be started".into());
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
@@ -5333,7 +5350,6 @@ impl Widget for ContactsApp {
     ) -> Option<qos_actions::InvocationUpdate> {
         if cancellation_requested && self.resource_invocation == Some(invocation) {
             self.resource_invocation = None;
-            self.resource_file = None;
             self.import_rx = None;
             self.import_parse_rx = None;
             let exhausted = self.advance_import_generation().is_err();
@@ -8255,6 +8271,19 @@ mod tests {
             .ti_rect();
         assert!(last.y0 > first.y1, "paired fields stack at large text");
         assert_eq!(first.height(), FIELD_H * 2.0);
+        let notes = form
+            .inputs
+            .iter()
+            .find(|field| field.slot == Slot::Notes)
+            .expect("notes editor");
+        assert!(
+            notes.ti.is_multiline(),
+            "note text wraps instead of clipping"
+        );
+        assert!(
+            notes.ti_rect().height() >= FIELD_H * 4.0,
+            "notes reserve multiple large-text lines"
+        );
     }
 
     #[test]
@@ -10717,6 +10746,74 @@ mod tests {
     }
 
     #[test]
+    fn reimporting_the_same_uidless_card_is_idempotent() {
+        let (dir, _path) = scratch_book();
+        std::fs::create_dir_all(&dir).unwrap();
+        let vcf = dir.join("external.vcf");
+        std::fs::write(
+            &vcf,
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nEND:VCARD\r\n",
+        )
+        .unwrap();
+
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::new();
+        app.sync(&mut doc, &ROOT);
+        let first = app.import_paths(&mut doc, std::slice::from_ref(&vcf));
+        let imported_id = app.store.contacts[0].id;
+        let imported_phone_id = app.store.contacts[0].phones[0].id;
+        let second = app.import_paths(&mut doc, std::slice::from_ref(&vcf));
+
+        assert_eq!(first.created, 1);
+        assert_eq!(second.created, 0);
+        assert_eq!(second.unchanged, 1);
+        assert_eq!(app.store.len(), 1);
+        assert_eq!(app.store.contacts[0].id, imported_id);
+        assert_eq!(app.store.contacts[0].phones[0].id, imported_phone_id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disconnected_uidless_imports_converge_on_one_contact_and_stable_rows() {
+        let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nCATEGORIES:Pioneers\r\nEND:VCARD\r\n";
+        let mut ancestor = AutoCommit::new();
+        let mut app = ContactsApp::new();
+        app.sync(&mut ancestor, &ROOT);
+        ancestor.commit();
+        let mut left = ancestor.fork();
+        let mut right = ancestor.fork();
+        let left_contact = vcard::parse_vcards(card).pop().unwrap();
+        let right_contact = vcard::parse_vcards(card).pop().unwrap();
+        assert_eq!(left_contact, right_contact);
+
+        qos_actions::Action::apply(
+            &crate::actions::create_contact_action(&left_contact),
+            &mut left,
+        )
+        .unwrap();
+        qos_actions::Action::apply(
+            &crate::actions::create_contact_action(&right_contact),
+            &mut right,
+        )
+        .unwrap();
+        left.commit();
+        right.commit();
+        left.merge(&mut right).unwrap();
+
+        let merged = ContactsDoc::list_contacts(&left);
+        assert_eq!(
+            merged.len(),
+            1,
+            "the repeated external import is one entity"
+        );
+        assert_eq!(merged[0].phones.len(), 1);
+        assert_eq!(merged[0].emails.len(), 1);
+        assert_eq!(merged[0].groups.len(), 1);
+        assert_eq!(merged[0].id, left_contact.id);
+        assert_eq!(merged[0].phones[0].id, left_contact.phones[0].id);
+    }
+
+    #[test]
     fn hostile_known_uid_is_reported_for_review_without_overwriting_contact() {
         let (dir, _path) = scratch_book();
         std::fs::create_dir_all(&dir).unwrap();
@@ -10940,6 +11037,35 @@ mod tests {
             app.poll_resource_operation(invocation, false, &doc, &ROOT),
             Some(qos_actions::InvocationUpdate::Failed { .. })
         ));
+    }
+
+    #[test]
+    fn brokered_file_operations_refuse_legacy_direct_paths() {
+        let mut doc = AutoCommit::new();
+        let mut app = ContactsApp::sample();
+        app.sync(&mut doc, &ROOT);
+        for operation in [
+            crate::actions::ContactsOperation::ImportVcard {
+                path: Some("/etc/passwd".into()),
+            },
+            crate::actions::ContactsOperation::ExportAllVcard {
+                path: Some("/tmp/contacts.vcf".into()),
+            },
+        ] {
+            let payload = serde_json::to_vec(&operation).unwrap();
+            let error = app
+                .start_resource_operation(
+                    qos_actions::InvocationId::new(),
+                    qos_actions::OperationKind::Effect,
+                    crate::actions::CONTACTS_OPERATION_TYPE,
+                    &payload,
+                    &doc,
+                    &ROOT,
+                )
+                .expect_err("a broker cannot bypass the system file picker");
+            assert!(error.contains("system file picker"));
+            assert!(app.resource_invocation.is_none());
+        }
     }
 
     #[test]
