@@ -113,6 +113,12 @@ impl Graph {
     /// Replace one input connection atomically. If the proposed edge is
     /// invalid (including a cycle or type mismatch), the previous edge is
     /// restored so an imprecise pointer drop can never damage the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same structural error as [`Self::connect`] when the new
+    /// edge has an invalid endpoint, incompatible type, occupied input, or
+    /// would introduce a cycle.
     pub fn reconnect_input(&mut self, edge: Edge) -> Result<Option<Edge>, ConnectError> {
         let previous = self.disconnect_input(&edge.to_node, &edge.to_port);
         match self.connect(edge) {
@@ -314,16 +320,19 @@ impl GraphEditor {
         if targets.is_empty() {
             return None;
         }
-        let index = current
-            .and_then(|target| targets.iter().position(|candidate| candidate == target))
-            .map(|index| {
-                if backwards {
-                    (index + targets.len() - 1) % targets.len()
-                } else {
-                    (index + 1) % targets.len()
-                }
-            })
-            .unwrap_or_else(|| if backwards { targets.len() - 1 } else { 0 });
+        let current_index =
+            current.and_then(|target| targets.iter().position(|candidate| candidate == target));
+        let index = match (current_index, backwards) {
+            (Some(index), true) => index
+                .checked_sub(1)
+                .unwrap_or_else(|| targets.len().saturating_sub(1)),
+            (Some(index), false) => index
+                .checked_add(1)
+                .filter(|next| *next < targets.len())
+                .unwrap_or(0),
+            (None, true) => targets.len().saturating_sub(1),
+            (None, false) => 0,
+        };
         targets.get(index).cloned()
     }
     pub fn select_only(&mut self, id: impl Into<NodeId>) {
@@ -468,6 +477,13 @@ impl GraphEditor {
         })
     }
 
+    /// Complete the active connection gesture against a target input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConnectError::UnknownPort`] when no gesture is active, or
+    /// forwards the graph's validation error when the proposed edge is not
+    /// structurally valid.
     pub fn finish_connection(
         &mut self,
         graph: &mut Graph,
