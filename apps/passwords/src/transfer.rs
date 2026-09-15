@@ -13,6 +13,11 @@ pub const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
 pub const MAX_ROWS: usize = 10_000;
 pub const MAX_FIELDS: usize = 32;
 pub const MAX_FIELD_BYTES: usize = 16 * 1024;
+const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
+const BACKUP_MAGIC: &[u8] = b"QOSPWBACKUP";
+const BACKUP_VERSION: u8 = 1;
+const BACKUP_SALT_BYTES: usize = 16;
+const BACKUP_NONCE_BYTES: usize = 24;
 
 pub fn import_request() -> ui::portal::PickRequest {
     ui::portal::PickRequest::open("Import passwords", "Choose CSV")
@@ -34,6 +39,45 @@ pub fn export_request() -> ui::portal::PickRequest {
                 .glob("*.csv"),
         )
         .all_files()
+}
+
+pub fn backup_request() -> ui::portal::PickRequest {
+    ui::portal::PickRequest::save(
+        "Back up password vault",
+        "Back up",
+        "passwords-backup.qospw",
+    )
+    .thread_name("passwords-portal-backup")
+    .filter(
+        ui::portal::FileFilter::new("Encrypted Passwords backup")
+            .mimetype("application/x-qos-passwords-backup")
+            .glob("*.qospw"),
+    )
+    .all_files()
+}
+
+pub fn restore_request() -> ui::portal::PickRequest {
+    ui::portal::PickRequest::open("Restore password vault", "Open backup")
+        .thread_name("passwords-portal-restore")
+        .filter(
+            ui::portal::FileFilter::new("Encrypted Passwords backup")
+                .mimetype("application/x-qos-passwords-backup")
+                .glob("*.qospw"),
+        )
+        .all_files()
+}
+
+pub fn read_encrypted_backup(mut reader: impl Read) -> Result<Zeroizing<Vec<u8>>, String> {
+    let mut bytes = Zeroizing::new(Vec::new());
+    reader
+        .by_ref()
+        .take(MAX_BACKUP_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read the selected backup".to_string())?;
+    if bytes.len() > MAX_BACKUP_BYTES {
+        return Err("The selected backup is larger than 64 MB".into());
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug)]
@@ -187,6 +231,113 @@ pub fn export_browser_csv(items: &[SecretItem]) -> Zeroizing<String> {
     csv
 }
 
+/// Serialize every vault field into a portable, passphrase-encrypted backup.
+/// XChaCha20-Poly1305 authenticates both the ciphertext and format header;
+/// Argon2id deliberately makes offline passphrase guesses expensive.
+pub fn export_encrypted_backup(
+    items: &[SecretItem],
+    passphrase: &str,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    use chacha20poly1305::aead::{Aead, Payload};
+    use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
+
+    validate_backup_passphrase(passphrase)?;
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(items).map_err(|_| "Could not prepare the vault backup".to_string())?,
+    );
+    if plaintext.len() > MAX_BACKUP_BYTES {
+        return Err("The vault is too large to back up safely".into());
+    }
+    let mut salt = [0_u8; BACKUP_SALT_BYTES];
+    let mut nonce = [0_u8; BACKUP_NONCE_BYTES];
+    getrandom::getrandom(&mut salt)
+        .and_then(|()| getrandom::getrandom(&mut nonce))
+        .map_err(|_| "Secure randomness is unavailable; no backup was created".to_string())?;
+    let key = derive_backup_key(passphrase, &salt)?;
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
+    let mut header = Vec::with_capacity(BACKUP_MAGIC.len() + 1 + salt.len() + nonce.len());
+    header.extend_from_slice(BACKUP_MAGIC);
+    header.push(BACKUP_VERSION);
+    header.extend_from_slice(&salt);
+    header.extend_from_slice(&nonce);
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &plaintext,
+                aad: &header,
+            },
+        )
+        .map_err(|_| "Could not encrypt the vault backup".to_string())?;
+    if header.len().saturating_add(ciphertext.len()) > MAX_BACKUP_BYTES {
+        return Err("The vault is too large to back up safely".into());
+    }
+    header.extend_from_slice(&ciphertext);
+    Ok(Zeroizing::new(header))
+}
+
+/// Open a backup created by [`export_encrypted_backup`]. Authentication is
+/// verified before JSON is parsed, so wrong passwords and modified files
+/// yield no partial vault contents.
+pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<SecretItem>, String> {
+    use chacha20poly1305::aead::{Aead, Payload};
+    use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
+
+    validate_backup_passphrase(passphrase)?;
+    let header_len = BACKUP_MAGIC.len() + 1 + BACKUP_SALT_BYTES + BACKUP_NONCE_BYTES;
+    if backup.len() > MAX_BACKUP_BYTES || backup.len() <= header_len {
+        return Err("This is not a valid Passwords backup".into());
+    }
+    let Some(rest) = backup.strip_prefix(BACKUP_MAGIC) else {
+        return Err("This is not a valid Passwords backup".into());
+    };
+    if rest.first() != Some(&BACKUP_VERSION) {
+        return Err("This Passwords backup uses an unsupported version".into());
+    }
+    let salt_start = BACKUP_MAGIC.len() + 1;
+    let nonce_start = salt_start + BACKUP_SALT_BYTES;
+    let ciphertext_start = nonce_start + BACKUP_NONCE_BYTES;
+    let salt = &backup[salt_start..nonce_start];
+    let nonce = &backup[nonce_start..ciphertext_start];
+    let key = derive_backup_key(passphrase, salt)?;
+    let cipher = XChaCha20Poly1305::new(Key::from_slice(&key[..]));
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(
+                XNonce::from_slice(nonce),
+                Payload {
+                    msg: &backup[ciphertext_start..],
+                    aad: &backup[..ciphertext_start],
+                },
+            )
+            .map_err(|_| "The password is incorrect or the backup was changed".to_string())?,
+    );
+    let items = serde_json::from_slice::<Vec<SecretItem>>(&plaintext)
+        .map_err(|_| "The decrypted backup is not a valid vault".to_string())?;
+    if items.len() > MAX_ROWS {
+        return Err("The backup contains more than 10,000 items".into());
+    }
+    Ok(items)
+}
+
+fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
+    if passphrase.chars().count() < 12 {
+        return Err("Use at least 12 characters for the backup password".into());
+    }
+    if passphrase.len() > 1024 {
+        return Err("The backup password is too long".into());
+    }
+    Ok(())
+}
+
+fn derive_backup_key(passphrase: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
+    let mut key = Zeroizing::new([0_u8; 32]);
+    argon2::Argon2::default()
+        .hash_password_into(passphrase.as_bytes(), salt, key.as_mut())
+        .map_err(|_| "Could not secure the backup password".to_string())?;
+    Ok(key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +379,50 @@ mod tests {
         let save = export_request();
         assert_eq!(save.suggested_name(), Some("passwords.csv"));
         assert_eq!(save.filter_names(), vec!["CSV file", "All files"]);
+        let backup = backup_request();
+        assert_eq!(backup.suggested_name(), Some("passwords-backup.qospw"));
+        assert_eq!(
+            backup.filter_names(),
+            vec!["Encrypted Passwords backup", "All files"]
+        );
+        assert_eq!(
+            restore_request().filter_names(),
+            vec!["Encrypted Passwords backup", "All files"]
+        );
+    }
+
+    #[test]
+    fn encrypted_backup_round_trips_every_vault_field_without_plaintext() {
+        let mut item = SecretItem::login("Payroll", "ada@example.com", "UniqueSecret-1942");
+        item.kind = accounts::SecretItemKind::ApiKey;
+        item.notes = "Recovery belongs to Finance".into();
+        item.add_origin("https://people.example/login").unwrap();
+        item.add_origin("https://sso.example/payroll").unwrap();
+        item.fields.insert("tenant".into(), "northstar".into());
+        item.tags.extend(["work".into(), "favorite".into()]);
+        let expected = item.clone();
+
+        let backup = export_encrypted_backup(&[item], "correct horse battery staple").unwrap();
+        assert!(backup.starts_with(BACKUP_MAGIC));
+        assert!(
+            !backup
+                .windows(b"UniqueSecret-1942".len())
+                .any(|w| w == b"UniqueSecret-1942")
+        );
+        assert!(!backup.windows(b"Payroll".len()).any(|w| w == b"Payroll"));
+        let restored = import_encrypted_backup(&backup, "correct horse battery staple").unwrap();
+        assert_eq!(restored, vec![expected]);
+    }
+
+    #[test]
+    fn encrypted_backup_rejects_wrong_password_tampering_and_weak_passwords() {
+        let item = SecretItem::login("Mail", "ada", "strong secret");
+        assert!(export_encrypted_backup(&[item.clone()], "short").is_err());
+        let mut backup = export_encrypted_backup(&[item], "a sufficiently long password").unwrap();
+        assert!(import_encrypted_backup(&backup, "a different long password").is_err());
+        let last = backup.len() - 1;
+        backup[last] ^= 0x80;
+        assert!(import_encrypted_backup(&backup, "a sufficiently long password").is_err());
+        assert!(import_encrypted_backup(b"not a backup", "a sufficiently long password").is_err());
     }
 }
