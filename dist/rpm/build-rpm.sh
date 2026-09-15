@@ -89,6 +89,8 @@ install -pm 0755 "$rel/tilo-app-host" "$app_stage/libexec/tilo-app-host"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-host.service" \
     "$app_stage/systemd-user/tilo-app-host.service"
+install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-model-storage.service" \
+    "$app_stage/systemd-user/tilo-model-storage.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-models.service" \
     "$app_stage/systemd-user/tilo-models.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-model-gateway.service" \

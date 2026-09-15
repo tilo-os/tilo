@@ -190,7 +190,7 @@ install -Dpm 0755 apps/bin/tilo-model-gateway %{buildroot}%{_bindir}/tilo-model-
 install -Dpm 0755 apps/libexec/tilo-cli-shim %{buildroot}%{_libexecdir}/tilo-cli-shim
 install -Dpm 0755 apps/libexec/tilo-app-host %{buildroot}%{_libexecdir}/tilo-app-host
 install -Dpm 0755 apps/libexec/tilo-ush %{buildroot}%{_libexecdir}/tilo-ush
-for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo-ush; do
     install -Dpm 0644 apps/systemd-user/$unit.service \
         %{buildroot}%{_userunitdir}/$unit.service
 done
@@ -249,7 +249,7 @@ test -s %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^id = "dev.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.toml
 test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
-for unit in tilo-app-host tilo-models tilo-model-gateway tilo-ush; do
+for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
 done
 
@@ -275,6 +275,7 @@ done
 %{_libexecdir}/tilo-app-host
 %{_libexecdir}/tilo-ush
 %{_userunitdir}/tilo-app-host.service
+%{_userunitdir}/tilo-model-storage.service
 %{_userunitdir}/tilo-models.service
 %{_userunitdir}/tilo-model-gateway.service
 %{_userunitdir}/tilo-ush.service
