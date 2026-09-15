@@ -176,6 +176,7 @@ RUN PYTHONPATH=/src/src python3 -m unittest discover -s /src/tests -p 'test_wfd.
 # buildroot snapshot workflow. Production builds consume that per-architecture
 # image by digest and therefore have no Fedora mirror path in this stage.
 FROM ${WPE_BUILDROOT_REF} AS wpe-builder-1
+ARG WPE_BUILD_JOBS=8
 RUN test -s /usr/lib/qos/wpe-buildroot-packages.txt \
     && test "$(cat /usr/lib/qos/wpe-buildroot-arch)" = "$(uname -m)"
 
@@ -184,6 +185,7 @@ RUN --mount=type=cache,target=/wpe-cache \
     --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
     QOS_WPE_CACHE=/wpe-cache QOS_WPE_SOURCE_DIR=/qos-assets QOS_WPE_OFFLINE=1 \
     QOS_WPE_PREFIX=/usr QOS_WPE_DESTDIR=/wpe \
+    JOBS="$WPE_BUILD_JOBS" \
     bash /build-wpe.sh build \
     && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
 
