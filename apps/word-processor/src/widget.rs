@@ -350,6 +350,39 @@ enum ToolAction {
     More,
 }
 
+fn toolbar_item(
+    action: ToolAction,
+    label: impl Into<String>,
+    width: f64,
+    active: bool,
+) -> (ToolAction, ToolbarItem) {
+    let cue = match action {
+        ToolAction::Bold => LabelCue::Bold,
+        ToolAction::Underline => LabelCue::Underline,
+        ToolAction::Strike => LabelCue::Strike,
+        _ => LabelCue::None,
+    };
+    let group_start = matches!(
+        action,
+        ToolAction::NewMenu
+            | ToolAction::Bold
+            | ToolAction::FontCycle
+            | ToolAction::InsertTable
+            | ToolAction::InsertImage
+            | ToolAction::TableRowAdd
+            | ToolAction::ToggleStyles
+            | ToolAction::ToggleOutline
+            | ToolAction::More
+    );
+    (
+        action,
+        ToolbarItem::new(label, width)
+            .active(active)
+            .cue(cue)
+            .group_start(group_start),
+    )
+}
+
 /// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
 /// (= `bw + gap + val_w + gap + bw` in `draw_zoom_control`). Reserved on the
 /// toolbar's last row, right of the colour swatches, so buttons never pack under it.
@@ -11780,136 +11813,160 @@ impl WordProcessorWidget {
     /// section (editing controls inside a cell, else "Insert table"), and the
     /// panel/pane toggles. Paragraph-style presets/controls live in the side
     /// panel, not here — see [`ToolAction`].
-    #[allow(clippy::too_many_lines)]
     fn toolbar_button_specs(&self, compact: bool) -> Vec<(ToolAction, ToolbarItem)> {
-        let bold_a = self.mark_active_in_selection("strong");
-        let italic_a = self.mark_active_in_selection("em");
-        let under_a = self.mark_active_in_selection("underline");
-        let strike_a = self.mark_active_in_selection("strike");
-        let super_a = self.mark_active_in_selection("super");
-        let sub_a = self.mark_active_in_selection("sub");
-        // Only the caret block *kind* is needed now (to switch in the contextual
-        // table controls). Paragraph-style choices (Body / Heading / List) live in
-        // the side panel's style picker, not the toolbar — see `draw_styles_panel`.
-        let (kind, _level) = self.current_block_style();
-        let font_label = self.current_font().label();
-
-        // Build the toolbar spec; the ui::chrome toolbar component owns the look
-        // and hands back each button's clickable rect (zipped to its action).
-        let cue = |a: ToolAction| match a {
-            ToolAction::Bold => LabelCue::Bold,
-            ToolAction::Underline => LabelCue::Underline,
-            ToolAction::Strike => LabelCue::Strike,
-            _ => LabelCue::None,
-        };
-        let group_start = |a: ToolAction| {
-            matches!(
-                a,
-                ToolAction::NewMenu
-                    | ToolAction::Bold
-                    | ToolAction::FontCycle
-                    | ToolAction::InsertTable
-                    | ToolAction::InsertImage
-                    | ToolAction::TableRowAdd
-                    | ToolAction::ToggleStyles
-                    | ToolAction::ToggleOutline
-                    | ToolAction::More
-            )
-        };
-        let panel_open = self.styles_panel_open;
-        let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
-        let mut add = |a: ToolAction, label: &str, w: f64, active: bool| {
-            specs.push((
-                a,
-                ToolbarItem::new(label, w)
-                    .active(active)
-                    .cue(cue(a))
-                    .group_start(group_start(a)),
-            ));
-        };
+        let mut specs = self.primary_toolbar_specs();
         // New-from-template picker (leads the toolbar). Active while its menu is open.
         // Single-glyph faces (B/I/U/S, x²/x₂, H1/H2, A−/A+, ✕) are symbols, not
         // words, and stay as literals; the spelled-out names live in the a11y
         // labels (see `tool_action_a11y_label`).
-        add(
-            ToolAction::NewMenu,
-            &t("toolbar-new"),
-            64.0,
-            self.template_picker.is_open(),
-        );
-        add(ToolAction::Bold, "B", 34.0, bold_a);
-        add(ToolAction::Italic, "I", 30.0, italic_a);
-        add(ToolAction::Underline, "U", 32.0, under_a);
         // A compact tile keeps the writing surface primary: the common writing
         // trio, font choice, and style inspector remain one coherent row;
         // every lower-frequency command is reachable from an explicit More
         // menu instead of wrapping into orphaned ribbon rows.
         if compact {
-            add(ToolAction::FontCycle, font_label, 58.0, false);
-            add(
-                ToolAction::ToggleStyles,
-                &t("toolbar-styles"),
-                64.0,
-                panel_open,
-            );
-            add(
-                ToolAction::More,
-                &t("toolbar-more"),
-                62.0,
-                self.context_menu.is_open(),
-            );
-            return specs;
+            specs.extend([
+                toolbar_item(
+                    ToolAction::FontCycle,
+                    self.current_font().label(),
+                    58.0,
+                    false,
+                ),
+                toolbar_item(
+                    ToolAction::ToggleStyles,
+                    t("toolbar-styles"),
+                    64.0,
+                    self.styles_panel_open,
+                ),
+                toolbar_item(
+                    ToolAction::More,
+                    t("toolbar-more"),
+                    62.0,
+                    self.context_menu.is_open(),
+                ),
+            ]);
+        } else {
+            specs.extend(self.desktop_toolbar_specs());
         }
-        add(ToolAction::Strike, "S", 30.0, strike_a);
-        add(ToolAction::Super, "x²", 34.0, super_a);
-        add(ToolAction::Sub, "x₂", 34.0, sub_a);
+        specs
+    }
+
+    /// Controls shared by both responsive toolbar compositions.
+    fn primary_toolbar_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
+        vec![
+            toolbar_item(
+                ToolAction::NewMenu,
+                t("toolbar-new"),
+                64.0,
+                self.template_picker.is_open(),
+            ),
+            toolbar_item(
+                ToolAction::Bold,
+                "B",
+                34.0,
+                self.mark_active_in_selection("strong"),
+            ),
+            toolbar_item(
+                ToolAction::Italic,
+                "I",
+                30.0,
+                self.mark_active_in_selection("em"),
+            ),
+            toolbar_item(
+                ToolAction::Underline,
+                "U",
+                32.0,
+                self.mark_active_in_selection("underline"),
+            ),
+        ]
+    }
+
+    /// Desktop-only direct formatting, contextual table, and view controls.
+    fn desktop_toolbar_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
+        let mut specs = vec![
+            toolbar_item(
+                ToolAction::Strike,
+                "S",
+                30.0,
+                self.mark_active_in_selection("strike"),
+            ),
+            toolbar_item(
+                ToolAction::Super,
+                "x²",
+                34.0,
+                self.mark_active_in_selection("super"),
+            ),
+            toolbar_item(
+                ToolAction::Sub,
+                "x₂",
+                34.0,
+                self.mark_active_in_selection("sub"),
+            ),
+        ];
         // Paragraph-style presets (H1/H2/Body/List) and paragraph controls
         // (alignment, line spacing) are the side panel's job, not the toolbar —
         // see `ToolAction`. Quick headings remain on Ctrl+1/2/3.
-        add(ToolAction::FontCycle, font_label, 58.0, false);
-        add(ToolAction::FontSizeDec, "A−", 34.0, false);
-        add(ToolAction::FontSizeInc, "A+", 34.0, false);
+        specs.extend([
+            toolbar_item(
+                ToolAction::FontCycle,
+                self.current_font().label(),
+                58.0,
+                false,
+            ),
+            toolbar_item(ToolAction::FontSizeDec, "A−", 34.0, false),
+            toolbar_item(ToolAction::FontSizeInc, "A+", 34.0, false),
+        ]);
         // Contextual table section: editing controls inside a cell, else insert.
-        if kind == "cell" {
-            add(ToolAction::TableRowAdd, &t("toolbar-row-add"), 54.0, false);
-            add(ToolAction::TableRowDel, &t("toolbar-row-del"), 54.0, false);
-            add(ToolAction::TableColAdd, &t("toolbar-col-add"), 52.0, false);
-            add(ToolAction::TableColDel, &t("toolbar-col-del"), 52.0, false);
-            add(ToolAction::TableDelete, "✕", 30.0, false);
+        if self.current_block_style().0 == "cell" {
+            specs.extend([
+                toolbar_item(ToolAction::TableRowAdd, t("toolbar-row-add"), 54.0, false),
+                toolbar_item(ToolAction::TableRowDel, t("toolbar-row-del"), 54.0, false),
+                toolbar_item(ToolAction::TableColAdd, t("toolbar-col-add"), 52.0, false),
+                toolbar_item(ToolAction::TableColDel, t("toolbar-col-del"), 52.0, false),
+                toolbar_item(ToolAction::TableDelete, "✕", 30.0, false),
+            ]);
         } else {
-            add(ToolAction::InsertTable, &t("toolbar-table"), 78.0, false);
+            specs.push(toolbar_item(
+                ToolAction::InsertTable,
+                t("toolbar-table"),
+                78.0,
+                false,
+            ));
         }
         // The Image button is drawn as a vector glyph (a lucide `Image` icon,
         // overlaid below after the chrome lays the toolbar out) with no text
         // label — replacing the old emoji-prefixed "🖼 Image" caption. The empty
         // label keeps the chrome button blank so only the icon shows.
-        add(ToolAction::InsertImage, "", 40.0, false);
-        add(
-            ToolAction::ToggleStyles,
-            &t("toolbar-styles"),
-            64.0,
-            panel_open,
-        );
-        add(
-            ToolAction::ToggleRuler,
-            &t("toolbar-ruler"),
-            60.0,
-            self.ruler_on,
-        );
+        specs.extend([
+            toolbar_item(ToolAction::InsertImage, "", 40.0, false),
+            toolbar_item(
+                ToolAction::ToggleStyles,
+                t("toolbar-styles"),
+                64.0,
+                self.styles_panel_open,
+            ),
+            toolbar_item(
+                ToolAction::ToggleRuler,
+                t("toolbar-ruler"),
+                60.0,
+                self.ruler_on,
+            ),
+        ]);
         // Navigation: outline pane toggle + table-of-contents generator.
-        add(
-            ToolAction::ToggleOutline,
-            &t("toolbar-outline"),
-            72.0,
-            self.outline.is_open(),
-        );
-        add(
-            ToolAction::ToggleHistory,
-            &t("toolbar-history"),
-            68.0,
-            self.history.is_open(),
-        );
-        add(ToolAction::InsertToc, &t("toolbar-toc"), 48.0, false);
+        specs.extend([
+            toolbar_item(
+                ToolAction::ToggleOutline,
+                t("toolbar-outline"),
+                72.0,
+                self.outline.is_open(),
+            ),
+            toolbar_item(
+                ToolAction::ToggleHistory,
+                t("toolbar-history"),
+                68.0,
+                self.history.is_open(),
+            ),
+            toolbar_item(ToolAction::InsertToc, t("toolbar-toc"), 48.0, false),
+        ]);
         specs
     }
 
@@ -13091,6 +13148,41 @@ mod tests {
         left_click(&mut wp, &mut state, swatch);
         wp.refresh_blocks(&mut state.doc);
         assert_eq!(wp.current_text_color(), Some(STYLE_PALETTE[3]));
+    }
+
+    /// Responsive composition may move commands, but it must never remove one:
+    /// the visible compact row plus its More menu covers every action exposed by
+    /// the full desktop toolbar.
+    #[test]
+    fn compact_toolbar_and_more_cover_the_full_toolbar() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "coverage");
+
+        let full = wp
+            .toolbar_button_specs(false)
+            .into_iter()
+            .map(|(action, _)| action)
+            .collect::<Vec<_>>();
+        let mut compact = wp
+            .toolbar_button_specs(true)
+            .into_iter()
+            .map(|(action, _)| action)
+            .filter(|action| *action != ToolAction::More)
+            .collect::<Vec<_>>();
+        wp.open_toolbar_overflow();
+        compact.extend(wp.context_actions.iter().filter_map(|entry| match entry {
+            Some(CtxAction::Tool(action)) => Some(*action),
+            _ => None,
+        }));
+
+        for action in full {
+            assert!(
+                compact.contains(&action),
+                "compact toolbar and More menu lost {action:?}"
+            );
+        }
     }
 
     fn assert_compact_clear_footer(
