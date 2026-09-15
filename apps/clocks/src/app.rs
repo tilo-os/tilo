@@ -72,6 +72,36 @@ fn timer_label(input: &str) -> String {
         label.chars().take(80).collect()
     }
 }
+
+fn alarm_label(input: &str) -> String {
+    let label = input.trim();
+    if label.is_empty() {
+        "Alarm".into()
+    } else {
+        label.chars().take(80).collect()
+    }
+}
+
+const WEEKDAYS: [(WeekdayKey, &str); 7] = [
+    (WeekdayKey::Mon, "Mon"),
+    (WeekdayKey::Tue, "Tue"),
+    (WeekdayKey::Wed, "Wed"),
+    (WeekdayKey::Thu, "Thu"),
+    (WeekdayKey::Fri, "Fri"),
+    (WeekdayKey::Sat, "Sat"),
+    (WeekdayKey::Sun, "Sun"),
+];
+
+fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
+    if days.is_empty() {
+        return "Once".into();
+    }
+    WEEKDAYS
+        .iter()
+        .filter_map(|(day, label)| days.contains(day).then_some(*label))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 fn city_time(zone: &str) -> String {
     zone.parse::<chrono_tz::Tz>()
         .map(|z| {
@@ -159,8 +189,13 @@ fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
 
 fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
     let draft = ui::LocalState::new(TimeValue::new(7, 30));
+    let draft_label = ui::LocalState::new(String::new());
+    let draft_repeat = ui::LocalState::new(BTreeSet::<WeekdayKey>::new());
     let add_state = state.clone();
     let add_draft = draft.clone();
+    let add_label = draft_label.clone();
+    let add_repeat = draft_repeat.clone();
+    let repeat_controls = draft_repeat.clone();
     let list_state = state.clone();
     let list = ModelView::from_state(state, move |s| {
         let mut col = Column::new()
@@ -177,18 +212,14 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
             let id = alarm.id;
             let toggle = list_state.clone();
             let remove = list_state.clone();
-            let repeat = if alarm.weekdays.is_empty() {
-                "Once"
-            } else {
-                "Repeats"
-            };
+            let repeat = repeat_summary(&alarm.weekdays);
             let row = Row::new()
                 .push(Box::new(
                     Text::new(&alarm.local_time.format("%H:%M").to_string()).with_size(32.0),
                 ))
                 .push(Box::new(
                     Text::new(&format!(
-                        "{repeat}, {}",
+                        "{repeat} · {}",
                         if alarm.enabled { "On" } else { "Off" }
                     ))
                     .dimmed(),
@@ -224,25 +255,64 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
             .push(Box::new(Card::titled(
                 "New alarm",
                 Box::new(
-                    Row::new()
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(12.0)
+                        .push(Box::new(
+                            TextInput::from_state(&draft_label)
+                                .with_id("clocks.alarm.label")
+                                .with_kind(TextInputKind::Name)
+                                .with_placeholder("What is this alarm for?"),
+                        ))
                         .push(Box::new(TimePicker::from_state(&draft)))
+                        .push(Box::new(Text::new("Repeat").with_heading_level(3)))
+                        .push(Box::new(ModelView::from_state(
+                            &draft_repeat,
+                            move |selected| {
+                                let mut days = Row::new();
+                                for (day, label) in WEEKDAYS {
+                                    let selection = repeat_controls.clone();
+                                    let mut day_button = Button::new(
+                                        &format!("clocks.alarm.repeat.{}", label.to_lowercase()),
+                                        label,
+                                        None,
+                                    )
+                                    .with_size(44.0, 44.0)
+                                    .on_effect(move || {
+                                        selection.update(|days| {
+                                            if !days.remove(&day) {
+                                                days.insert(day);
+                                            }
+                                        });
+                                    });
+                                    if selected.contains(&day) {
+                                        day_button = day_button.primary();
+                                    }
+                                    days = days.push(Box::new(day_button));
+                                }
+                                Box::new(days)
+                            },
+                        )))
                         .push(primary_button("clocks.alarm.add", "Add alarm", move || {
                             let t = add_draft.get();
                             add_state.update(|s| {
                                 s.alarms.push(Alarm {
                                     id: Uuid::new_v4(),
-                                    label: "Alarm".into(),
+                                    label: alarm_label(&add_label.get()),
                                     local_time: NaiveTime::from_hms_opt(
                                         t.hours.into(),
                                         t.minutes.into(),
                                         0,
                                     )
                                     .unwrap_or_default(),
-                                    weekdays: BTreeSet::<WeekdayKey>::new(),
+                                    weekdays: add_repeat.get(),
                                     enabled: true,
                                     last_fired_local_date: None,
                                 })
                             });
+                            add_label.set(String::new());
+                            add_repeat.set(BTreeSet::new());
                         })),
                 ),
             ))),
@@ -840,7 +910,8 @@ impl Widget for ClocksApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{remaining_fraction, timer_label};
+    use super::{WEEKDAYS, alarm_label, remaining_fraction, repeat_summary, timer_label};
+    use std::collections::BTreeSet;
 
     #[test]
     fn countdown_progress_visualizes_time_remaining() {
@@ -856,5 +927,16 @@ mod tests {
         assert_eq!(timer_label("  Pasta  "), "Pasta");
         assert_eq!(timer_label("   "), "Timer");
         assert_eq!(timer_label(&"x".repeat(120)).chars().count(), 80);
+    }
+
+    #[test]
+    fn alarm_schedule_summaries_are_specific_and_labels_are_bounded() {
+        assert_eq!(alarm_label("  School run "), "School run");
+        assert_eq!(alarm_label(" "), "Alarm");
+        let selected = [WEEKDAYS[0].0, WEEKDAYS[2].0, WEEKDAYS[4].0]
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(repeat_summary(&selected), "Mon, Wed, Fri");
+        assert_eq!(repeat_summary(&BTreeSet::new()), "Once");
     }
 }
