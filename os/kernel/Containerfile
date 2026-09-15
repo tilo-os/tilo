@@ -224,7 +224,14 @@ RUN set -eux; \
     # — they point outside the staging tree and rpm would fail file
     # ownership checks on them.
     rm -f "$STAGE/lib/modules/$KVER/source" "$STAGE/lib/modules/$KVER/build"; \
-    du -sh "$STAGE"
+    du -sh "$STAGE"; \
+    # The RPM step consumes only STAGE and kver.env. Exporting the compiler \
+    # tree in a cached layer duplicates tens of GiB during image commit. \
+    # Remove it only after the complete staged module tree passes its checks. \
+    case "$KSRC" in /work/rpmbuild/BUILD/*) ;; \
+        *) echo "refusing to remove kernel source outside the build root" >&2; exit 1;; esac; \
+    cd /work; \
+    rm -rf -- "$KSRC"
 
 # Hand-written spec — no Fedora scriptlets, no debuginfo, no brp-*
 # chain. `dnf swap kernel-core qos-kernel-core` in os/Containerfile
