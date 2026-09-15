@@ -62,13 +62,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let scenario = parse_scenario_arg(&args).unwrap_or(AuthScenario::Form);
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let text_scale = parse_text_scale_arg(&args);
-        let widget = GreeterApp::for_shot(scenario);
+        let mut widget = GreeterApp::for_shot(scenario);
+        let credentials = shot_credentials(scenario);
+        if let Some((_, password)) = credentials {
+            widget.seed_shot_password(password);
+        }
         render_shot_to_png(
             Box::new(widget),
             viewport,
             text_scale,
             &out,
-            shot_credentials(scenario),
+            credentials.map(|(username, _)| username),
         )?;
         return Ok(());
     }
@@ -207,8 +211,9 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 /// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
 ///
-/// `seed` pre-populates the username/password CRDT objects so the
-/// non-form screens render representative text. Because the composed
+/// `username` pre-populates the non-secret username CRDT object. The caller
+/// seeds representative passcode text through `GreeterApp`'s process-local
+/// buffer, never the document. Because the composed
 /// children are only created *inside* `build_layout`, we sync a second time
 /// afterwards so those children (the `TextInputs`) pull their values from the
 /// document — the live App achieves the same via its per-frame sync.
@@ -217,7 +222,7 @@ fn render_shot_to_png(
     viewport: (u32, u32),
     text_scale: Option<f32>,
     out: &std::path::Path,
-    seed: Option<(&str, &str)>,
+    username: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use automerge::{ObjType, transaction::Transactable};
 
@@ -238,15 +243,11 @@ fn render_shot_to_png(
 
     let mut state = ui::State::new();
 
-    if let Some((username, password)) = seed {
+    if let Some(username) = username {
         let uobj = state
             .doc
             .put_object(&state.root, "greeter.username", ObjType::Text)?;
         let _ = state.doc.splice_text(&uobj, 0, 0, username);
-        let pobj = state
-            .doc
-            .put_object(&state.root, "greeter.password", ObjType::Text)?;
-        let _ = state.doc.splice_text(&pobj, 0, 0, password);
     }
 
     widget.sync(&mut state.doc, &state.root);

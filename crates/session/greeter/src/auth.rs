@@ -13,6 +13,7 @@
 //! rides the `External(String)` variant without pulling in serde.
 
 use winit::event_loop::EventLoopProxy;
+use zeroize::Zeroizing;
 
 use ui::app::UserEvent;
 
@@ -99,7 +100,7 @@ pub fn spawn_auth(
     proxy: EventLoopProxy<UserEvent>,
     sock: String,
     username: String,
-    password: String,
+    password: Zeroizing<String>,
     cmd: Vec<String>,
     env: Vec<String>,
 ) {
