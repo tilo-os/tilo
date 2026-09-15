@@ -14,6 +14,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 use taffy::{NodeId, TaffyTree};
@@ -36,11 +37,87 @@ use crate::widgets::{Flex, SharedPlayer};
 
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
+fn history_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Resolve the owner scope for private watch history. The runtime signing
+/// identity is the canonical qOS account identity and survives device pairing.
+/// Outside a full qOS session we persist a generated profile id locally, so a
+/// fallback is never a shared `profile:local` value that could collide with a
+/// collaborator. The final user@host-derived id is only a no-filesystem last
+/// resort.
+fn resolve_history_owner() -> String {
+    if let Ok(identity) = runtime_identity::load() {
+        let mut public_key = String::with_capacity(64);
+        for byte in identity.group_public_key() {
+            use std::fmt::Write as _;
+            let _ = write!(public_key, "{byte:02x}");
+        }
+        return format!("user:{public_key}");
+    }
+    let path = dirs::data_local_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("qos")
+        .join("tube")
+        .join("history-owner");
+    if let Ok(owner) = std::fs::read_to_string(&path)
+        && owner.starts_with("user:")
+        && owner.len() > "user:".len()
+    {
+        return owner;
+    }
+    let owner = format!("user:{}", uuid::Uuid::new_v4().simple());
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_ok()
+        && std::fs::write(&path, &owner).is_ok()
+    {
+        return owner;
+    }
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_default();
+    let host = std::env::var("HOSTNAME").unwrap_or_default();
+    let seed = format!("{user}@{host}");
+    if seed == "@" {
+        owner
+    } else {
+        let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+        for byte in seed.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("user:{hash:016x}")
+    }
+}
+
+/// Deterministic materialization rule for concurrent private-history writes.
+/// The document may preserve several scalar values at one video key; authored
+/// time then the stable mutation id decides the same winner on every device.
+fn newest_history_record(
+    records: impl Iterator<Item = crate::actions::HistoryEntryRecord>,
+) -> Option<crate::actions::HistoryEntryRecord> {
+    records.max_by(|left, right| {
+        left.watched_at_ms
+            .cmp(&right.watched_at_ms)
+            .then_with(|| left.mutation_id.cmp(&right.mutation_id))
+    })
+}
+
 /// Below this allocated width (logical px) the navigation rail stops sitting
 /// beside the content and collapses into an overlay flap summoned by the
 /// hamburger. Chosen so a readable column of 300px video cards plus the rail
 /// stop fitting comfortably side by side.
 const NAV_BREAKPOINT: f64 = 760.0;
+/// At large accessibility text a compact icon rail wastes less usable width
+/// than it saves: the labelled drawer is clearer and preserves a meaningful
+/// reading column. This threshold intentionally includes a normal desktop
+/// window at 2× text.
+const LARGE_TEXT_NAV_BREAKPOINT: f64 = 1_760.0;
 
 /// Right-edge lane (logical px) reserved for the vertical scrollbar on every
 /// scroll view, so the bar never draws over the content (the video player in
@@ -183,6 +260,10 @@ pub struct TubeApp {
     /// Last pointer position (logical px), tracked so a mouse-button press can
     /// seed the edge-swipe back gesture with the press point.
     last_pointer: Point,
+    /// Last theme text scale observed during layout. The root owns responsive
+    /// chrome decisions because `NavSplit` needs the same effective breakpoint
+    /// as the rest of the shell.
+    text_scale: f32,
 }
 
 impl Default for TubeApp {
@@ -193,8 +274,10 @@ impl Default for TubeApp {
 
 impl TubeApp {
     pub fn new() -> Self {
+        let mut model = crate::sample::model();
+        model.history_owner = resolve_history_owner();
         Self {
-            model: crate::sample::model(),
+            model,
             actions: ui::ActionHost::new(),
             bus: action::new_bus(),
             worker: None,
@@ -231,6 +314,7 @@ impl TubeApp {
             scroll_cells: RefCell::new(HashMap::new()),
             requested_channels: HashSet::new(),
             last_pointer: Point::ZERO,
+            text_scale: 1.0,
         }
     }
 
@@ -239,6 +323,10 @@ impl TubeApp {
             crate::actions::TubeOperation::TogglePlayback => {
                 self.player.borrow_mut().toggle_play();
                 self.model.playing = self.player.borrow().is_playing();
+            }
+            crate::actions::TubeOperation::ToggleSidebar => {
+                let now = self.sidebar_currently_open();
+                self.sidebar_open = Some(!now);
             }
             crate::actions::TubeOperation::Share { video_id } => {
                 let url = format!("https://youtu.be/{video_id}");
@@ -444,6 +532,7 @@ impl TubeApp {
         // review path — never presented as real. Home shows a loading skeleton
         // until the first live feed lands.
         self.model = TubeModel::default();
+        self.model.history_owner = resolve_history_owner();
         self.model.feed_loading = true;
         // Real thumbnails / avatars / banners: an async image store backed by a
         // network fetcher. Kept off the offline/`--shots` path (which never
@@ -815,12 +904,12 @@ impl TubeApp {
         // Esc dismissal and resolves docked-vs-overlay from its own allocated
         // width against `NAV_BREAKPOINT`.
         let mut split = NavSplit::new(
-            Box::new(screens::nav_rail(m, theme, bus)),
+            Box::new(screens::nav_rail(m, theme, bus, self.nav_rail_width())),
             Box::new(content_area),
         )
         .with_mode(SplitMode::Adaptive)
-        .with_breakpoint(NAV_BREAKPOINT)
-        .with_sidebar_width(screens::NAV_RAIL_W);
+        .with_breakpoint(self.nav_breakpoint())
+        .with_sidebar_width(self.nav_rail_width());
 
         // Seed the freshly-built split's open state deterministically. The
         // split is recreated each time the tree is rebuilt (navigation), and
@@ -868,7 +957,23 @@ impl TubeApp {
         // flap open over the content. A real width self-corrects on its first
         // laid-out frame: a wide window rebuilds once the true width lands (see
         // `built_overlay` in `apply_layout`).
-        w <= 0.0 || w < NAV_BREAKPOINT
+        w <= 0.0 || w < self.nav_breakpoint()
+    }
+
+    fn nav_breakpoint(&self) -> f64 {
+        if self.text_scale >= 1.5 {
+            LARGE_TEXT_NAV_BREAKPOINT
+        } else {
+            NAV_BREAKPOINT
+        }
+    }
+
+    fn nav_rail_width(&self) -> f64 {
+        if self.text_scale >= 1.5 {
+            264.0
+        } else {
+            screens::NAV_RAIL_W
+        }
     }
 
     /// Logical width available to the screen content, i.e. the split's content
@@ -881,7 +986,7 @@ impl TubeApp {
         if self.nav_is_overlay() {
             w
         } else if self.sidebar_currently_open() {
-            (w - screens::NAV_RAIL_W).max(0.0)
+            (w - self.nav_rail_width()).max(0.0)
         } else {
             w
         }
@@ -1273,6 +1378,11 @@ impl TubeApp {
     )]
     fn apply(&mut self, action: Action, _state: &AutoCommit, _root: &ObjId) -> bool {
         match action {
+            Action::ClearHistory => {
+                self.model.history.clear();
+                self.model
+                    .push_notice("Watch history cleared for this profile");
+            }
             Action::ToggleSidebar => {
                 // Flip the rail relative to its current resolved openness, so
                 // the hamburger always does the visually-expected thing at the
@@ -1860,6 +1970,74 @@ impl TubeApp {
                 changed = true;
             }
         }
+        if let Ok(Some((Value::Object(ObjType::Map), private_history))) =
+            state.get(&tube, "private_history")
+            && let Ok(Some((Value::Object(ObjType::Map), owner))) =
+                state.get(&private_history, self.model.history_owner.as_str())
+        {
+            // Private history is owner-keyed. We deliberately read only this
+            // signed-in profile's scope: the collection syncs across their
+            // devices, but collaborators' activity can never appear in this
+            // UI, palette, or resource tree.
+            let cleared_at_ms = state
+                .get(&owner, "clears")
+                .ok()
+                .flatten()
+                .and_then(|(value, clears)| match value {
+                    Value::Object(ObjType::Map) => Some(clears),
+                    _ => None,
+                })
+                .map_or(0, |clears| {
+                    state
+                        .keys(&clears)
+                        .filter_map(|id| {
+                            state.get_all(&clears, id.as_str()).ok().and_then(|values| {
+                                values
+                                    .into_iter()
+                                    .filter_map(|(value, _)| {
+                                        value.to_str().and_then(|v| v.parse().ok())
+                                    })
+                                    .max()
+                            })
+                        })
+                        .max()
+                        .unwrap_or(0)
+                });
+            let entries = state
+                .get(&owner, "entries")
+                .ok()
+                .flatten()
+                .and_then(|(value, entries)| match value {
+                    Value::Object(ObjType::Map) => Some(entries),
+                    _ => None,
+                })
+                .map_or_else(std::collections::BTreeMap::new, |entries| {
+                    state
+                        .keys(&entries)
+                        .filter_map(|video_id| {
+                            let records = state
+                                .get_all(&entries, video_id.as_str())
+                                .ok()?
+                                .into_iter()
+                                .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+                                .filter_map(|value| {
+                                    serde_json::from_str::<crate::actions::HistoryEntryRecord>(
+                                        &value,
+                                    )
+                                    .ok()
+                                });
+                            let record = newest_history_record(records)?;
+                            (record.present && record.watched_at_ms > cleared_at_ms)
+                                .then_some((video_id, record.watched_at_ms))
+                        })
+                        .collect()
+                });
+            let before = self.model.history.clone();
+            self.model.set_history_projection(entries);
+            if self.model.history != before {
+                changed = true;
+            }
+        }
         if let Ok(Some((Value::Object(ObjType::Map), settings))) = state.get(&tube, "settings") {
             for (key, slot) in [
                 (
@@ -2083,6 +2261,7 @@ impl Widget for TubeApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = theme.text_scale;
         self.refresh_watch_control_bindings();
         // Remember which layout resolution this tree was seeded with, so a
         // later `apply_layout` at the true width can detect a wrong seed (the
@@ -2344,6 +2523,27 @@ impl Widget for TubeApp {
         let mut changed = false;
         for a in actions {
             let document_action = match &a {
+                Action::OpenVideo(id) => {
+                    let watched_at_ms = history_now_ms();
+                    Some(crate::actions::TubeAction::SetHistoryEntry {
+                        owner_id: self.model.history_owner.clone(),
+                        video_id: id.clone(),
+                        watched_at_ms,
+                        present: true,
+                        mutation_id: format!(
+                            "{}:watch:{}:{watched_at_ms}",
+                            self.model.history_owner, id
+                        ),
+                    })
+                }
+                Action::ClearHistory => {
+                    let cleared_at_ms = history_now_ms();
+                    Some(crate::actions::TubeAction::ClearHistory {
+                        owner_id: self.model.history_owner.clone(),
+                        cleared_at_ms,
+                        clear_id: format!("{}:clear:all:{cleared_at_ms}", self.model.history_owner),
+                    })
+                }
                 Action::ToggleLike(id) => Some(crate::actions::TubeAction::SetVideoLiked {
                     video_id: id.clone(),
                     liked: !self.model.is_liked(id),
@@ -2558,6 +2758,7 @@ impl Widget for TubeApp {
 mod tests {
     use super::*;
     use crate::model::Category;
+    use qos_actions::Action as _;
 
     fn fresh() -> (TubeApp, AutoCommit) {
         (TubeApp::new(), AutoCommit::new())
@@ -3420,6 +3621,97 @@ mod tests {
             Some("vid_donut"),
             "opening a watch page arms stream resolution (no Play click needed)"
         );
+    }
+
+    #[test]
+    fn private_history_projects_only_owner_and_resolves_conflicts_by_authored_order() {
+        let mut model = crate::sample::model();
+        model.history_owner = "user:alice".into();
+        model.history.clear();
+        let mut app = TubeApp::new().with_model_for_test(model);
+        let mut base = AutoCommit::new();
+        crate::actions::TubeAction::SetHistoryEntry {
+            owner_id: "user:bob".into(),
+            video_id: "vid_donut".into(),
+            watched_at_ms: 99,
+            present: true,
+            mutation_id: "bob:watch:99".into(),
+        }
+        .apply(&mut base)
+        .expect("bob record");
+        base.commit();
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).expect("left replica");
+        let mut right = AutoCommit::load(&bytes).expect("right replica");
+        left.set_actor(automerge::ActorId::from(b"alice-device-a".as_slice()));
+        right.set_actor(automerge::ActorId::from(b"alice-device-b".as_slice()));
+        crate::actions::TubeAction::SetHistoryEntry {
+            owner_id: "user:alice".into(),
+            video_id: "vid_donut".into(),
+            watched_at_ms: 10,
+            present: true,
+            mutation_id: "alice:watch:10".into(),
+        }
+        .apply(&mut left)
+        .expect("left record");
+        left.commit();
+        crate::actions::TubeAction::SetHistoryEntry {
+            owner_id: "user:alice".into(),
+            video_id: "vid_donut".into(),
+            watched_at_ms: 20,
+            present: false,
+            mutation_id: "alice:remove:20".into(),
+        }
+        .apply(&mut right)
+        .expect("right tombstone");
+        right.commit();
+        left.merge(&mut right).expect("replicas merge");
+        let winner = newest_history_record(
+            [
+                crate::actions::HistoryEntryRecord {
+                    present: true,
+                    watched_at_ms: 10,
+                    mutation_id: "alice:watch:10".into(),
+                },
+                crate::actions::HistoryEntryRecord {
+                    present: false,
+                    watched_at_ms: 20,
+                    mutation_id: "alice:remove:20".into(),
+                },
+            ]
+            .into_iter(),
+        )
+        .expect("conflict candidates have a deterministic winner");
+        assert!(!winner.present);
+        assert!(
+            !app.reconcile_collaborative_actions(&left),
+            "Bob's private scope and Alice's newer removal must leave Alice's empty projection unchanged"
+        );
+        assert!(
+            app.model.history.is_empty(),
+            "newer remove wins concurrently"
+        );
+
+        crate::actions::TubeAction::SetHistoryEntry {
+            owner_id: "user:alice".into(),
+            video_id: "vid_donut".into(),
+            watched_at_ms: 30,
+            present: true,
+            mutation_id: "alice:watch:30".into(),
+        }
+        .apply(&mut left)
+        .expect("newer watch");
+        left.commit();
+        crate::actions::TubeAction::ClearHistory {
+            owner_id: "user:alice".into(),
+            cleared_at_ms: 25,
+            clear_id: "alice:clear:25".into(),
+        }
+        .apply(&mut left)
+        .expect("clear marker");
+        left.commit();
+        assert!(app.reconcile_collaborative_actions(&left));
+        assert_eq!(app.model.history, vec!["vid_donut"]);
     }
 
     #[test]
