@@ -228,6 +228,8 @@ for artifact in \
   'qos-imager-linux-*.flatpak' \
   'qos-imager-windows-x86_64.exe' \
   'qos-imager-setup-windows-x86_64.exe' \
+  'qos-imager-windows-aarch64.exe' \
+  'qos-imager-setup-windows-aarch64.exe' \
   'qos-imager-macos-*.dmg'; do
   grep -Fq "$artifact" "$workflow" \
     && ok "$artifact is carried into the release" \
@@ -236,8 +238,9 @@ done
 grep -Fq 'runner: imager-linux-aarch64' "$workflow" \
   && grep -Fq 'runner: imager-macos-x86_64' "$workflow" \
   && grep -Fq 'runner: imager-macos-aarch64' "$workflow" \
-  && grep -Fq 'runs-on: imager-windows-x86_64' "$workflow" \
-  && ok 'Linux ARM64, Windows x64, and both macOS architectures have native lanes' \
+  && grep -Fq 'runner: imager-windows-x86_64' "$workflow" \
+  && grep -Fq 'runner: imager-windows-aarch64' "$workflow" \
+  && ok 'Linux, Windows, and macOS have native x86-64 and ARM64 lanes' \
   || bad 'the requested native release architecture matrix is incomplete'
 grep -Fq 'Require the complete native release matrix' "$workflow" \
   && [ "$(grep -Fc 'if-no-files-found: error' "$workflow")" -ge 3 ] \
