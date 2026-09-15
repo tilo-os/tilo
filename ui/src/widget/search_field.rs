@@ -64,7 +64,6 @@ impl SearchField {
         Self::with_input(TextInput::local())
     }
 
-    #[cfg(test)]
     pub(crate) fn with_language(language: &str) -> Self {
         Self::with_input(TextInput::local_with_language(language))
     }
@@ -504,6 +503,11 @@ impl Widget for SearchField {
         }
         Widget::perform_action(&mut self.input, action, state, path)
     }
+}
+
+#[cfg(test)]
+pub(crate) fn observed_language(field: &SearchField) -> &str {
+    field.input.spell_language()
 }
 
 #[cfg(test)]

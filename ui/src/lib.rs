@@ -45,6 +45,13 @@ pub mod accesskit_bridge;
 pub mod action_host;
 pub mod action_palette;
 pub mod animation;
+#[cfg(test)]
+extern crate self as ui;
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../tests/support/application.rs"]
+pub(crate) mod application_test_support;
+
 pub mod app;
 pub mod caps_lock;
 pub mod chrome;

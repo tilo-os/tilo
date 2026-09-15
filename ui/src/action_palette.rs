@@ -214,8 +214,21 @@ pub struct ActionPalette {
     field_node: Option<NodeId>,
     /// A text renderer kept for the field's per-frame measure pass, so `layout`
     /// does not construct a font system every frame the palette is open.
-    measure: TextRenderer,
-    field_factory: fn() -> SearchField,
+    measure: Option<TextRenderer>,
+    field_source: PaletteFieldSource,
+}
+
+enum PaletteFieldSource {
+    Factory(fn() -> SearchField),
+    Language(String),
+}
+impl PaletteFieldSource {
+    fn build(&self) -> SearchField {
+        match self {
+            Self::Factory(factory) => factory(),
+            Self::Language(language) => SearchField::with_language(language),
+        }
+    }
 }
 
 impl Default for ActionPalette {
@@ -232,8 +245,18 @@ impl ActionPalette {
 
     /// Use the host's explicit font construction input for the real initializer.
     pub(crate) fn with_inputs(measure: TextRenderer, field_factory: fn() -> SearchField) -> Self {
+        Self::with_source(Some(measure), PaletteFieldSource::Factory(field_factory))
+    }
+
+    pub(crate) fn with_host_text(language: String) -> Self {
+        Self::with_source(None, PaletteFieldSource::Language(language))
+    }
+
+    fn with_source(measure: Option<TextRenderer>, field_source: PaletteFieldSource) -> Self {
         Self {
-            field: field_factory().with_placeholder("Search actions and results"),
+            field: field_source
+                .build()
+                .with_placeholder("Search actions and results"),
             results: SearchResultsView::new()
                 .with_empty_text("No matches")
                 .with_test_id("action-palette-results"),
@@ -263,7 +286,7 @@ impl ActionPalette {
             field_taffy: TaffyTree::new(),
             field_node: None,
             measure,
-            field_factory,
+            field_source,
         }
     }
 
@@ -353,7 +376,10 @@ impl ActionPalette {
         self.confirm = None;
         self.pending_dispatch = None;
         self.pending_nav = None;
-        self.field = (self.field_factory)().with_placeholder("Search actions and results");
+        self.field = self
+            .field_source
+            .build()
+            .with_placeholder("Search actions and results");
         self.field.set_focused(true);
         self.rebuild("");
     }
@@ -958,14 +984,14 @@ impl ActionPalette {
                     ActionKind::Prompted { prompt, .. } => {
                         // Repurpose the field to collect the argument; clear the result
                         // list so only the prompt shows.
-                        self.field = (self.field_factory)();
+                        self.field = self.field_source.build();
                         self.field.set_placeholder(&prompt);
                         self.field.set_focused(true);
                         self.results.set_groups(Vec::new());
                         self.arg = Some(ArgState { bound, address });
                     }
                     ActionKind::Typed { prompt, .. } => {
-                        self.field = (self.field_factory)();
+                        self.field = self.field_source.build();
                         self.field.set_placeholder(&prompt);
                         self.field.set_focused(true);
                         self.results.set_groups(Vec::new());
@@ -1163,13 +1189,73 @@ impl ActionPalette {
                   for taffy's f32-based layout loses no visually \
                   meaningful precision"
     )]
+    #[allow(
+        clippy::expect_used,
+        reason = "private palette ownership mismatch is an invariant violation"
+    )]
+    /// # Panics
+    /// Internal host-text palettes must use `layout_with_text` with their owning renderer.
     pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
+        let text = self
+            .measure
+            .as_mut()
+            .expect("host-text palette requires layout_with_text");
+        Self::layout_field(
+            &mut self.field,
+            &mut self.results,
+            &mut self.field_taffy,
+            &mut self.field_node,
+            &mut self.rect,
+            theme,
+            origin,
+            width,
+            text,
+        );
+    }
+
+    pub(crate) fn layout_with_text(
+        &mut self,
+        theme: &Theme,
+        origin: Point,
+        width: f64,
+        text: &mut TextRenderer,
+    ) {
+        assert!(self.measure.is_none(), "owned-text palette requires layout");
+        Self::layout_field(
+            &mut self.field,
+            &mut self.results,
+            &mut self.field_taffy,
+            &mut self.field_node,
+            &mut self.rect,
+            theme,
+            origin,
+            width,
+            text,
+        );
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::cast_possible_truncation,
+        reason = "disjoint palette state borrows share one bounded logical-pixel layout algorithm"
+    )]
+    fn layout_field(
+        field: &mut SearchField,
+        results: &mut SearchResultsView,
+        field_taffy: &mut TaffyTree<()>,
+        field_node: &mut Option<NodeId>,
+        rect: &mut Rect,
+        theme: &Theme,
+        origin: Point,
+        width: f64,
+        tr: &mut TextRenderer,
+    ) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
         // inner text input's node, then place it at the top of the card.
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = self.field.build_layout(&mut taffy, theme, &mut node_map);
-        let tr = &mut self.measure;
+        let node = field.build_layout(&mut taffy, theme, &mut node_map);
+
         let Ok(()) = taffy.compute_layout_with_measure(
             node,
             Size {
@@ -1187,16 +1273,15 @@ impl ActionPalette {
             // rather than panicking the app.
             return;
         };
-        self.field.apply_layout(&taffy, node, origin);
-        self.field_taffy = taffy;
-        self.field_node = Some(node);
+        field.apply_layout(&taffy, node, origin);
+        *field_taffy = taffy;
+        *field_node = Some(node);
 
         // Results overlay directly under the field.
         let top = origin.y + FIELD_H + GAP;
-        let h = self.results.desired_height();
-        self.results
-            .set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
-        self.rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
+        let h = results.desired_height();
+        results.set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
+        *rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
     }
 
     /// The palette's outer rect after the last `layout`.
@@ -1392,7 +1477,10 @@ impl ActionPalette {
         self.arg = None;
         self.confirm = None;
         // Restore the query field and result set.
-        self.field = (self.field_factory)().with_placeholder("Search actions and results");
+        self.field = self
+            .field_source
+            .build()
+            .with_placeholder("Search actions and results");
         self.field.set_focused(true);
         self.rebuild("");
     }
@@ -1407,7 +1495,7 @@ impl ActionPalette {
             ConfirmationPolicy::Confirm => "CONFIRM".to_string(),
             ConfirmationPolicy::Phrase { phrase } => phrase,
         };
-        self.field = (self.field_factory)();
+        self.field = self.field_source.build();
         self.field
             .set_placeholder(&format!("Type {expected} to confirm"));
         self.field.set_focused(true);
@@ -1496,6 +1584,11 @@ fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
         }
     }
     groups
+}
+
+#[cfg(test)]
+pub(crate) fn observed_field_language(palette: &ActionPalette) -> &str {
+    crate::widget::search_field::observed_language(&palette.field)
 }
 
 #[cfg(test)]
