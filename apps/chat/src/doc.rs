@@ -74,6 +74,21 @@ const LEGACY_MIGRATION_PATH_BYTES: usize = 256;
 /// still let one click exhaust memory and room bandwidth.
 pub const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 
+/// A collaborative message is a small piece of conversation, not an
+/// unbounded document upload.  Keeping the durable body bounded prevents one
+/// malformed/replayed action from making every peer allocate arbitrary memory
+/// while still leaving room for long code snippets and detailed hand-offs.
+pub const MAX_MESSAGE_TEXT_BYTES: usize = 64 * 1024;
+/// Attachment captions are display metadata.  The payload is addressed by its
+/// hash, so accepting an unbounded filename buys no fidelity and can make a
+/// timeline or search row needlessly expensive to shape.
+const MAX_ATTACHMENT_NAME_BYTES: usize = 255;
+/// Image dimensions are metadata supplied by an untrusted container header;
+/// keep absurd values out of layout and thumbnail paths.  This is not a claim
+/// to validate pixels or decode arbitrary media safely.
+const MAX_ATTACHMENT_DIMENSION: u32 = 16_384;
+const MAX_MESSAGE_ID_BYTES: usize = 128;
+
 /// Deterministic "now" for the seeded fixture so the offline screenshot is
 /// stable (epoch → 2026-06-30 12:40 UTC). Runtime sends use wall-clock.
 pub const NOW: i64 = 1_782_477_600;
@@ -1148,6 +1163,15 @@ impl ChatDoc {
             work,
         } = nm;
 
+        // Keep this low-level writer compatible with old persisted rows and
+        // migrations, while still making a repeated stable id harmless. New
+        // network/palette actions go through `accepts_message_action` below,
+        // which also validates their channel, hierarchy, text, and attachment
+        // metadata before it reaches this compatibility seam.
+        if Self::message_id_exists(doc, id) {
+            return id.to_string();
+        }
+
         let list = Self::messages_list_mut(doc, channel);
         let idx = doc.length(&list);
         let block = doc
@@ -1166,6 +1190,110 @@ impl ChatDoc {
         Self::write_attachment(doc, &block, attachment.as_ref());
 
         id.to_string()
+    }
+
+    /// Whether a new wire action is safe to add to the durable conversation.
+    /// This is intentionally separate from `push_message_with_id`: migration
+    /// code must be able to faithfully retain pre-qdoc legacy descriptors,
+    /// while an incoming modern action must not create an ambiguous resource,
+    /// hidden channel, dangling thread edge, or unbounded display metadata.
+    pub fn accepts_message_action(
+        doc: &AutoCommit,
+        channel: &str,
+        id: &str,
+        text: &str,
+        parent: Option<&str>,
+        attachment: Option<&Attachment>,
+    ) -> bool {
+        Self::channel_exists(doc, channel)
+            && Self::valid_message_id(id)
+            && !Self::message_id_exists(doc, id)
+            && text.len() <= MAX_MESSAGE_TEXT_BYTES
+            && Self::valid_attachment(attachment)
+            && Self::valid_parent(doc, channel, parent)
+    }
+
+    /// A message id belongs to one durable row across the whole chat
+    /// namespace.  This makes direct resolution deterministic and makes an
+    /// action replay idempotent before it reaches the list writer.
+    fn message_id_exists(doc: &AutoCommit, id: &str) -> bool {
+        let Some(channels) = map_at(doc, &ROOT, "messages") else {
+            return false;
+        };
+        doc.keys(&channels).any(|channel| {
+            list_at(doc, &channels, &channel).is_some_and(|list| {
+                (0..doc.length(&list)).any(|index| {
+                    matches!(doc.get(&list, index), Ok(Some((Value::Object(ObjType::Map), row))) if get_str(doc, &row, "id") == id)
+                })
+            })
+        })
+    }
+
+    fn channel_exists(doc: &AutoCommit, channel: &str) -> bool {
+        map_at(doc, &ROOT, "channels")
+            .and_then(|channels| map_at(doc, &channels, channel))
+            .is_some()
+    }
+
+    fn valid_message_id(id: &str) -> bool {
+        !id.is_empty()
+            && id.len() <= MAX_MESSAGE_ID_BYTES
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    }
+
+    /// A reply can only point at a known top-level row in the same
+    /// conversation. An unknown parent is accepted provisionally: independent
+    /// peers may receive a causally related reply before its parent, and
+    /// rejecting it would turn network ordering into permanent data loss. Once
+    /// the parent arrives it resolves to the same one-hop thread everywhere.
+    fn valid_parent(doc: &AutoCommit, channel: &str, parent: Option<&str>) -> bool {
+        let Some(parent) = parent.filter(|parent| !parent.is_empty()) else {
+            return true;
+        };
+        Self::find_message_obj(doc, channel, parent)
+            .is_none_or(|row| get_str(doc, &row, "parent").is_empty())
+    }
+
+    fn valid_attachment(attachment: Option<&Attachment>) -> bool {
+        let Some(attachment) = attachment else {
+            return true;
+        };
+        let valid_blob =
+            |blob: &str| blob.len() == 64 && blob.bytes().all(|byte| byte.is_ascii_hexdigit());
+        let valid_name = |name: &str| {
+            !name.is_empty()
+                && name.len() <= MAX_ATTACHMENT_NAME_BYTES
+                && !name.chars().any(char::is_control)
+        };
+        match attachment {
+            Attachment::Image { name, blob, w, h } => {
+                valid_name(name)
+                    && valid_blob(blob)
+                    && *w > 0
+                    && *h > 0
+                    && *w <= MAX_ATTACHMENT_DIMENSION
+                    && *h <= MAX_ATTACHMENT_DIMENSION
+            }
+            Attachment::Video {
+                name,
+                blob,
+                w,
+                h,
+                size,
+            } => {
+                valid_name(name)
+                    && valid_blob(blob)
+                    && *size > 0
+                    && *size <= MAX_ATTACHMENT_BYTES
+                    && *w <= MAX_ATTACHMENT_DIMENSION
+                    && *h <= MAX_ATTACHMENT_DIMENSION
+            }
+            Attachment::File { name, blob, size } => {
+                valid_name(name) && valid_blob(blob) && *size > 0 && *size <= MAX_ATTACHMENT_BYTES
+            }
+        }
     }
 
     /// Append a message with a fresh UUID id.
@@ -2321,6 +2449,68 @@ mod tests {
         assert_eq!(
             plain.reference, None,
             "an ordinary message must carry no reference"
+        );
+    }
+
+    #[test]
+    fn replayed_message_id_is_exactly_once_and_cannot_break_thread_identity() {
+        let mut doc = seeded();
+        let message = NewMessage {
+            author: model::ME.into(),
+            ts: NOW,
+            text: "idempotent send".into(),
+            ..Default::default()
+        };
+        ChatDoc::push_message_with_id(&mut doc, "c_general", "m_retry", message.clone());
+        // A duplicate delivery may carry an equivalent decoded payload, but it
+        // must not create a second row or turn `chat.message:m_retry` into an
+        // ambiguous resource.
+        ChatDoc::push_message_with_id(&mut doc, "c_general", "m_retry", message);
+        assert_eq!(
+            ChatDoc::list_messages(&doc, "c_general")
+                .iter()
+                .filter(|row| row.id == "m_retry")
+                .count(),
+            1
+        );
+
+        // A message action cannot manufacture a hidden conversation or a
+        // reply-to-reply thread edge when replayed from outside the visible
+        // UI. (A parent not yet received remains valid so delivery ordering
+        // cannot lose a reply.)
+        assert!(!ChatDoc::accepts_message_action(
+            &doc,
+            "c_missing",
+            "m_missing_channel",
+            "orphan",
+            None,
+            None,
+        ));
+        ChatDoc::push_message_with_id(
+            &mut doc,
+            "c_general",
+            "m_first_reply",
+            NewMessage {
+                author: model::ME.into(),
+                ts: NOW,
+                text: "first reply".into(),
+                parent: Some("m_retry".into()),
+                ..Default::default()
+            },
+        );
+        assert!(!ChatDoc::accepts_message_action(
+            &doc,
+            "c_general",
+            "m_nested_reply",
+            "nested reply",
+            Some("m_first_reply"),
+            None,
+        ));
+        assert!(ChatDoc::list_messages(&doc, "c_missing").is_empty());
+        assert!(
+            ChatDoc::list_messages(&doc, "c_general")
+                .iter()
+                .all(|row| row.id != "m_nested_reply")
         );
     }
 
