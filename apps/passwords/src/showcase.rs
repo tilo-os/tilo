@@ -157,6 +157,8 @@ pub struct PasswordsSurface {
     /// First filtered vault row shown in the retained list viewport.
     list_scroll: usize,
     list_touch: Option<(u64, Point, usize)>,
+    editor_scroll: f64,
+    editor_touch: Option<(u64, Point, f64)>,
     query: String,
     editing: Option<SecretId>,
     draft_title: String,
@@ -311,6 +313,21 @@ impl PasswordsSurface {
         }
     }
 
+    fn current_panel_rect(&self) -> Rect {
+        let content = Rect::new(
+            self.rect.x0 + 24.0,
+            self.rect.y0 + 24.0,
+            self.rect.x1 - 24.0,
+            self.rect.y1 - 24.0,
+        );
+        let main = self.drawer.content_rect();
+        if self.drawer.is_docked() {
+            Rect::new(main.x0 + 354.0, content.y0, content.x1, content.y1)
+        } else {
+            self.current_list_rect()
+        }
+    }
+
     fn move_list_selection(&mut self, forward: bool) {
         let visible = self.visible_indices();
         if visible.is_empty() {
@@ -393,6 +410,8 @@ impl PasswordsSurface {
             sidebar_touch: None,
             list_scroll: 0,
             list_touch: None,
+            editor_scroll: 0.0,
+            editor_touch: None,
             query: String::new(),
             editing: None,
             draft_title: String::new(),
@@ -464,6 +483,8 @@ impl PasswordsSurface {
             sidebar_touch: None,
             list_scroll: 0,
             list_touch: None,
+            editor_scroll: 0.0,
+            editor_touch: None,
             query: String::new(),
             editing,
             draft_title: "Northstar Bank".into(),
@@ -561,6 +582,7 @@ impl PasswordsSurface {
         self.draft_notes.clear();
         self.active_field = Some(ActiveField::Name);
         self.status.clear();
+        self.editor_scroll = 0.0;
         self.mode = ShowcaseMode::Editor;
         self.sync_editor_inputs();
     }
@@ -583,6 +605,7 @@ impl PasswordsSurface {
         self.draft_notes = Zeroizing::new(item.notes);
         self.active_field = Some(ActiveField::Name);
         self.status = "Leave password blank to keep it".into();
+        self.editor_scroll = 0.0;
         self.mode = ShowcaseMode::Editor;
         self.sync_editor_inputs();
     }
@@ -774,6 +797,7 @@ impl PasswordsSurface {
             } else {
                 148.0
             }
+            - self.editor_scroll
     }
     fn editor_field_step(&self, panel: Rect) -> f64 {
         if Self::editor_is_compact(panel) {
@@ -784,6 +808,28 @@ impl PasswordsSurface {
     }
     fn editor_generate_height(&self, _panel: Rect) -> f64 {
         52.0
+    }
+
+    fn editor_body_viewport(&self, panel: Rect) -> Rect {
+        let (_, cancel, _) = self.editor_footer_rects(panel);
+        Rect::new(panel.x0, panel.y0 + 58.0, panel.x1, cancel.y0 - 8.0)
+    }
+
+    fn max_editor_scroll(&self, panel: Rect) -> f64 {
+        let note_bottom = self.editor_note_y(panel)
+            + self.editor_scroll
+            + if Self::editor_is_compact(panel) {
+                90.0
+            } else {
+                108.0
+            };
+        (note_bottom - self.editor_body_viewport(panel).y1).max(0.0)
+    }
+
+    fn scroll_editor_by(&mut self, panel: Rect, delta: f64) -> bool {
+        let previous = self.editor_scroll;
+        self.editor_scroll = (self.editor_scroll + delta).clamp(0.0, self.max_editor_scroll(panel));
+        (self.editor_scroll - previous).abs() > f64::EPSILON
     }
 
     fn kind_segments(&self, panel: Rect) -> Vec<Rect> {
@@ -798,7 +844,7 @@ impl PasswordsSurface {
                         panel.y0 + 70.0
                     } else {
                         panel.y0 + 82.0
-                    };
+                    } - self.editor_scroll;
                     Rect::new(left, top, left + segment, top + 44.0)
                 })
                 .collect()
@@ -809,10 +855,20 @@ impl PasswordsSurface {
                 .map(|index| {
                     if index < 3 {
                         let left = x + f64::from(index) * (first + 8.0);
-                        Rect::new(left, panel.y0 + 70.0, left + first, panel.y0 + 114.0)
+                        Rect::new(
+                            left,
+                            panel.y0 + 70.0 - self.editor_scroll,
+                            left + first,
+                            panel.y0 + 114.0 - self.editor_scroll,
+                        )
                     } else {
                         let left = x + f64::from(index - 3) * (second + 8.0);
-                        Rect::new(left, panel.y0 + 122.0, left + second, panel.y0 + 166.0)
+                        Rect::new(
+                            left,
+                            panel.y0 + 122.0 - self.editor_scroll,
+                            left + second,
+                            panel.y0 + 166.0 - self.editor_scroll,
+                        )
                     }
                 })
                 .collect()
@@ -2510,6 +2566,9 @@ impl PasswordsSurface {
                 TextWeight::Regular,
             );
         }
+        self.editor_scroll = self.editor_scroll.clamp(0.0, self.max_editor_scroll(rect));
+        let body_viewport = self.editor_body_viewport(rect);
+        scene.push_clip_layer(Fill::NonZero, transform, &body_viewport);
         let kinds = [
             SecretItemKind::Login,
             SecretItemKind::ApiKey,
@@ -2701,6 +2760,26 @@ impl PasswordsSurface {
                 x,
                 y - 14.0,
                 TextWeight::Medium,
+            );
+        }
+        scene.pop_layer();
+        let content_height = body_viewport.height() + self.max_editor_scroll(rect);
+        let track = Rect::new(
+            body_viewport.x1 - 5.0,
+            body_viewport.y0 + 4.0,
+            body_viewport.x1 - 2.0,
+            body_viewport.y1 - 4.0,
+        );
+        if let Some(thumb) = Scrollbar::vertical().thumb_rect(
+            track,
+            ScrollMetrics::new(content_height, body_viewport.height(), self.editor_scroll),
+        ) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                c.border_standard,
+                None,
+                &RoundedRect::from_rect(thumb, 2.0),
             );
         }
         let (delete, cancel, save) = self.editor_footer_rects(rect);
@@ -3103,6 +3182,52 @@ impl Widget for PasswordsSurface {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = Point::new(position.x / scale, position.y / scale);
         }
+        if self.mode == ShowcaseMode::Editor {
+            match event {
+                WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => {
+                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    self.drawer.resolve(Rect::new(
+                        self.rect.x0 + 24.0,
+                        self.rect.y0 + 24.0,
+                        self.rect.x1 - 24.0,
+                        self.rect.y1 - 24.0,
+                    ));
+                    let panel = self.current_panel_rect();
+                    if self.editor_body_viewport(panel).contains(point) {
+                        self.editor_touch = Some((touch.id, point, self.editor_scroll));
+                    }
+                }
+                WindowEvent::Touch(touch) if touch.phase == TouchPhase::Moved => {
+                    if let Some((id, start, initial_scroll)) = self.editor_touch
+                        && id == touch.id
+                    {
+                        let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                        if (start.y - point.y).abs() > 8.0 {
+                            self.editor_scroll = initial_scroll;
+                            let panel = self.current_panel_rect();
+                            let _ = self.scroll_editor_by(panel, start.y - point.y);
+                            *handled = true;
+                            return;
+                        }
+                    }
+                }
+                WindowEvent::Touch(touch)
+                    if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) =>
+                {
+                    if let Some((id, start, _)) = self.editor_touch
+                        && id == touch.id
+                    {
+                        let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                        self.editor_touch = None;
+                        if (start.y - point.y).abs() > 8.0 {
+                            *handled = true;
+                            return;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         if self.route_editor_inputs(event, scale, modifiers, state, path, focus, node, taffy) {
             *handled = true;
             return;
@@ -3373,7 +3498,18 @@ impl Widget for PasswordsSurface {
                     self.rect.x1 - 24.0,
                     self.rect.y1 - 24.0,
                 ));
-                if self.drawer.sidebar_contains(self.last_pointer) {
+                let panel = self.current_panel_rect();
+                if self.mode == ShowcaseMode::Editor
+                    && self.editor_body_viewport(panel).contains(self.last_pointer)
+                {
+                    let dy = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 46.0,
+                        MouseScrollDelta::PixelDelta(position) => -position.y,
+                    };
+                    if self.scroll_editor_by(panel, dy) {
+                        *handled = true;
+                    }
+                } else if self.drawer.sidebar_contains(self.last_pointer) {
                     let dy = match delta {
                         MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 46.0,
                         MouseScrollDelta::PixelDelta(position) => position.y,
@@ -3421,6 +3557,14 @@ impl Widget for PasswordsSurface {
                     self.sidebar_touch = Some((touch.id, point, self.sidebar_scroll));
                     *handled = true;
                 } else {
+                    let panel = self.current_panel_rect();
+                    if self.mode == ShowcaseMode::Editor
+                        && self.editor_body_viewport(panel).contains(point)
+                    {
+                        self.editor_touch = Some((touch.id, point, self.editor_scroll));
+                        *handled = true;
+                        return;
+                    }
                     let list = self.current_list_rect();
                     if (self.mode == ShowcaseMode::Vault || self.drawer.is_docked())
                         && Rect::new(list.x0, list.y0 + 150.0, list.x1, list.y1).contains(point)
@@ -3437,6 +3581,14 @@ impl Widget for PasswordsSurface {
                     let point = Point::new(touch.location.x / scale, touch.location.y / scale);
                     self.sidebar_scroll = initial_scroll;
                     let _ = self.scroll_sidebar_by(start.y - point.y);
+                    *handled = true;
+                } else if let Some((id, start, initial_scroll)) = self.editor_touch
+                    && id == touch.id
+                {
+                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    self.editor_scroll = initial_scroll;
+                    let panel = self.current_panel_rect();
+                    let _ = self.scroll_editor_by(panel, start.y - point.y);
                     *handled = true;
                 } else if let Some((id, start, initial_scroll)) = self.list_touch
                     && id == touch.id
@@ -3459,7 +3611,10 @@ impl Widget for PasswordsSurface {
                 let list_scroll = self.list_touch.take().is_some_and(|(id, start, _)| {
                     id == touch.id && (start.y - point.y).abs() > 8.0
                 });
-                let was_scroll = sidebar_scroll || list_scroll;
+                let editor_scroll = self.editor_touch.take().is_some_and(|(id, start, _)| {
+                    id == touch.id && (start.y - point.y).abs() > 8.0
+                });
+                let was_scroll = sidebar_scroll || list_scroll || editor_scroll;
                 if touch.phase == TouchPhase::Ended && !was_scroll {
                     self.last_pointer = point;
                     if self.activate_touch(point) {
@@ -4268,6 +4423,26 @@ mod tests {
             "delete must remain a secondary action"
         );
         assert!(delete.x1 < cancel.x0 && cancel.x1 < save.x0);
+    }
+
+    #[test]
+    fn short_phone_editor_scrolls_every_field_behind_a_fixed_action_bar() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Editor);
+        let panel = Rect::new(24.0, 24.0, 366.0, 496.0);
+        let (_, cancel_before, save_before) = app.editor_footer_rects(panel);
+        let maximum = app.max_editor_scroll(panel);
+        assert!(maximum > 0.0);
+
+        assert!(app.scroll_editor_by(panel, f64::MAX));
+        assert_eq!(app.editor_scroll, maximum);
+        let (_, cancel_after, save_after) = app.editor_footer_rects(panel);
+        assert_eq!(cancel_before, cancel_after);
+        assert_eq!(save_before, save_after);
+        assert!(app.editor_note_y(panel) < app.editor_body_viewport(panel).y1);
+
+        assert!(app.scroll_editor_by(panel, -f64::MAX));
+        assert_eq!(app.editor_scroll, 0.0);
+        assert!(!app.scroll_editor_by(panel, -1.0));
     }
 
     #[test]
