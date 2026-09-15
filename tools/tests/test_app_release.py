@@ -15,10 +15,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AppReleaseTests(unittest.TestCase):
-    def test_main_push_defaults_to_available_native_lane(self) -> None:
+    def test_ordinary_builds_default_to_both_native_lanes(self) -> None:
+        for ref, event in [("refs/heads/main", "push"), ("refs/pull/17/merge", "pull_request")]:
+            with self.subTest(event=event):
+                self.assertEqual(
+                    app_release.architecture_matrix(ref, event),
+                    {"include": [
+                        {"arch": "aarch64", "runner": "runner-arm64"},
+                        {"arch": "x86_64", "runner": "runner"},
+                    ]},
+                )
+
+    def test_manual_build_can_explicitly_select_one_architecture(self) -> None:
         self.assertEqual(
-            app_release.architecture_matrix("refs/heads/main", "push"),
-            {"include": [{"arch": "x86_64", "runner": "runner"}]},
+            app_release.architecture_matrix("refs/heads/main", "workflow_dispatch", requested="aarch64"),
+            {"include": [{"arch": "aarch64", "runner": "runner-arm64"}]},
         )
 
     def test_main_architecture_switch_and_tags_cover_both(self) -> None:

@@ -70,10 +70,11 @@ preserves the source-build fallback for bootstrap work.
 Successful default-collection publications from `main` advance the URL and
 digest variables automatically. Architecture-specific
 `QOS_APP_COLLECTION_{URL,SHA256}_{X86_64,AARCH64}` variables are maintained as
-native runners become available; the unsuffixed pair remains the x86_64
+both native lanes publish; the unsuffixed pair remains the x86_64
 compatibility channel.
 
-Manual app publication normally builds both native architectures. During
+Main-branch publication and pull-request builds default to both native
+architectures, as does manual app publication. During
 bootstrap, `architectures=x86_64` (or `aarch64`) may publish one architecture
 without waiting for an unavailable native runner; tagged releases always
 enforce the complete `x86_64 aarch64` matrix.

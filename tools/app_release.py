@@ -42,7 +42,7 @@ def architecture_matrix(
     if ref.startswith("refs/tags/"):
         raw = "x86_64 aarch64"
     elif ref == "refs/heads/main" and event == "push":
-        raw = main_architectures or "x86_64"
+        raw = main_architectures or "x86_64 aarch64"
     else:
         raw = requested or "x86_64 aarch64"
     architectures = sorted(set(filter(None, re.split(r"[ ,]+", raw))))
