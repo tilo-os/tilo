@@ -118,8 +118,14 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     if args.has("--sidebar-open") {
         app.shots_snap_sidebar(true);
     }
-    render_scenario_to_png(app, viewport, out, args.scenario.as_deref())
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    render_scenario_to_png(
+        app,
+        viewport,
+        out,
+        args.scenario.as_deref(),
+        args.text_scale,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Render one offscreen frame of the `CodeApp`, optionally staging a scenario
@@ -135,6 +141,7 @@ fn render_scenario_to_png(
     viewport: (u32, u32),
     out: &std::path::Path,
     scenario: Option<&str>,
+    text_scale: Option<f32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
@@ -143,6 +150,17 @@ fn render_scenario_to_png(
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
+    };
+    // This binary owns a custom offscreen path rather than ui::launch's
+    // generic harness. Thread the requested type scale into the theme so
+    // shared widgets and this app's custom editor geometry receive the same
+    // accessibility preference; otherwise a `--text-scale 2` review silently
+    // renders normal-size custom text and cannot expose reflow or clipping
+    // regressions.
+    let theme = if let Some(scale) = text_scale {
+        theme.with_text_scale(scale)
+    } else {
+        theme
     };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();

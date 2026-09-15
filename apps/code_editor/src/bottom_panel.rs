@@ -113,6 +113,9 @@ pub struct BottomPanel {
     activated_hit: Option<usize>,
     /// Search hit rows recorded during `draw`, for hit-testing clicks.
     hit_rects: Vec<Rect>,
+    /// Current host text scale, captured during layout so panel height, rows,
+    /// drawing, and hit testing grow as one accessible surface.
+    text_scale: f64,
     dirty: bool,
 }
 
@@ -132,6 +135,7 @@ impl BottomPanel {
             search_scroll: 0,
             activated_hit: None,
             hit_rects: Vec::new(),
+            text_scale: 1.0,
             dirty: true,
         }
     }
@@ -158,9 +162,21 @@ impl BottomPanel {
     /// list needs more room than a status line.
     pub fn height(&self) -> f64 {
         match self.tab {
-            PanelTab::Search => PANEL_HEIGHT_SEARCH,
-            _ => PANEL_HEIGHT,
+            PanelTab::Search => PANEL_HEIGHT_SEARCH * self.text_scale,
+            _ => PANEL_HEIGHT * self.text_scale,
         }
+    }
+
+    fn tab_height(&self) -> f64 {
+        TAB_H * self.text_scale
+    }
+
+    fn row_height(&self) -> f64 {
+        ROW_H * self.text_scale
+    }
+
+    fn hit_row_height(&self) -> f64 {
+        HIT_ROW_H * self.text_scale
     }
 
     /// How many search rows fit in the body at the current height.
@@ -168,8 +184,12 @@ impl BottomPanel {
     /// The reserved strip covers the summary line above the rows *and* the
     /// "more below" hint under them, so neither can be overprinted by a row.
     fn visible_hit_rows(&self) -> usize {
-        let body = (self.rect.height() - TAB_H - 26.0 - 20.0).max(0.0);
-        (body / HIT_ROW_H).floor().max(0.0) as usize
+        let body = (self.rect.height()
+            - self.tab_height()
+            - 26.0 * self.text_scale
+            - 20.0 * self.text_scale)
+            .max(0.0);
+        (body / self.hit_row_height()).floor().max(0.0) as usize
     }
 
     /// The one-line summary above the results: how many hits, across how many
@@ -231,7 +251,7 @@ impl BottomPanel {
         if self.search.query.is_empty() {
             let body = Rect::new(
                 self.rect.x0,
-                self.rect.y0 + TAB_H,
+                self.rect.y0 + self.tab_height(),
                 self.rect.x1,
                 self.rect.y1,
             );
@@ -254,13 +274,17 @@ impl BottomPanel {
         text_renderer.draw_text(
             scene,
             &summary,
-            12.0,
+            12.0 * theme.text_scale,
             if self.search.rows.is_empty() && !self.search.running {
                 c.semantic.warning
             } else {
                 c.text_dim
             },
-            transform * Affine::translate((self.rect.x0 + 14.0, self.rect.y0 + TAB_H + 6.0)),
+            transform
+                * Affine::translate((
+                    self.rect.x0 + 14.0 * self.text_scale,
+                    self.rect.y0 + self.tab_height() + 6.0 * self.text_scale,
+                )),
             Some((self.rect.width() - 28.0) as f32),
         );
 
@@ -279,9 +303,13 @@ impl BottomPanel {
             text_renderer.draw_text(
                 scene,
                 &more,
-                11.0,
+                11.0 * theme.text_scale,
                 c.text_dim,
-                transform * Affine::translate((self.rect.x0 + 14.0, self.rect.y1 - 17.0)),
+                transform
+                    * Affine::translate((
+                        self.rect.x0 + 14.0 * self.text_scale,
+                        self.rect.y1 - 17.0 * self.text_scale,
+                    )),
                 None,
             );
         }
@@ -304,7 +332,7 @@ impl BottomPanel {
         loc_col: f64,
     ) {
         let c = &theme.tokens.colors;
-        let first_row_y = self.rect.y0 + TAB_H + 26.0;
+        let first_row_y = self.rect.y0 + self.tab_height() + 26.0 * self.text_scale;
         for (i, row) in self
             .search
             .rows
@@ -313,8 +341,13 @@ impl BottomPanel {
             .take(visible)
             .enumerate()
         {
-            let y = first_row_y + i as f64 * HIT_ROW_H;
-            let rect = Rect::new(self.rect.x0 + 8.0, y, self.rect.x1 - 8.0, y + HIT_ROW_H);
+            let y = first_row_y + i as f64 * self.hit_row_height();
+            let rect = Rect::new(
+                self.rect.x0 + 8.0,
+                y,
+                self.rect.x1 - 8.0,
+                y + self.hit_row_height(),
+            );
             if rect.y1 > self.rect.y1 {
                 break;
             }
@@ -333,15 +366,15 @@ impl BottomPanel {
             let location = ellipsize_front(
                 text_renderer,
                 &format!("{}:{}", row.rel, row.line),
-                12.0,
-                loc_col - 12.0,
+                12.0 * theme.text_scale,
+                loc_col - 12.0 * self.text_scale,
             );
             // Drawn with no wrap width: a wrapped row would spill onto the row
             // below it and the two would overprint.
             text_renderer.draw_text(
                 scene,
                 &location,
-                12.0,
+                12.0 * theme.text_scale,
                 c.accent[5],
                 transform * Affine::translate((rect.x0 + 8.0, y + 5.0)),
                 None,
@@ -368,15 +401,16 @@ impl BottomPanel {
                 }
                 // Truncated to what fits rather than wrapped, for the same
                 // reason as the path: one hit is one row.
-                let fitted = ellipsize_back(text_renderer, text, 12.0, right_edge - x);
-                let (w, _) = text_renderer.measure(&fitted, 12.0, None);
+                let fitted =
+                    ellipsize_back(text_renderer, text, 12.0 * theme.text_scale, right_edge - x);
+                let (w, _) = text_renderer.measure(&fitted, 12.0 * theme.text_scale, None);
                 // The matched span is the one that must stay legible, so it is
                 // drawn on the theme's primary text colour against the dimmed
                 // surrounding line rather than on a coloured block.
                 text_renderer.draw_text(
                     scene,
                     &fitted,
-                    12.0,
+                    12.0 * theme.text_scale,
                     color,
                     transform * Affine::translate((x, y + 5.0)),
                     None,
@@ -434,7 +468,7 @@ impl BottomPanel {
     pub fn content_rect(&self) -> Rect {
         Rect::new(
             self.rect.x0,
-            self.rect.y0 + TAB_H,
+            self.rect.y0 + self.tab_height(),
             self.rect.x1,
             self.rect.y1,
         )
@@ -496,17 +530,21 @@ impl BottomPanel {
         ];
         let mut x = self.rect.x0 + 8.0;
         for (tab, label) in &labels {
-            let (w, _) = text_renderer.measure(label, 12.0, None);
-            let x1 = x + f64::from(w) + 24.0;
+            let (w, _) = text_renderer.measure(label, 12.0 * theme.text_scale, None);
+            let x1 = x + f64::from(w) + 24.0 * self.text_scale;
             self.tab_rects.push((x, x1, *tab));
             let active = self.tab == *tab;
             let color = if active { c.text_primary } else { c.text_dim };
             text_renderer.draw_text_weighted(
                 scene,
                 label,
-                12.0,
+                12.0 * theme.text_scale,
                 color,
-                transform * Affine::translate((x + 6.0, self.rect.y0 + 9.0)),
+                transform
+                    * Affine::translate((
+                        x + 6.0 * self.text_scale,
+                        self.rect.y0 + 9.0 * self.text_scale,
+                    )),
                 None,
                 if active {
                     TextWeight::Semibold
@@ -515,7 +553,12 @@ impl BottomPanel {
                 },
             );
             if active {
-                let underline = Rect::new(x, self.rect.y0 + TAB_H - 2.0, x1, self.rect.y0 + TAB_H);
+                let underline = Rect::new(
+                    x,
+                    self.rect.y0 + self.tab_height() - 2.0,
+                    x1,
+                    self.rect.y0 + self.tab_height(),
+                );
                 scene.fill(Fill::NonZero, transform, c.accent[5], None, &underline);
             }
             x = x1;
@@ -527,8 +570,8 @@ impl BottomPanel {
             c.border_standard,
             None,
             &Line::new(
-                Point::new(self.rect.x0, self.rect.y0 + TAB_H),
-                Point::new(self.rect.x1, self.rect.y0 + TAB_H),
+                Point::new(self.rect.x0, self.rect.y0 + self.tab_height()),
+                Point::new(self.rect.x1, self.rect.y0 + self.tab_height()),
             ),
         );
     }
@@ -536,6 +579,10 @@ impl BottomPanel {
     /// Draw the Problems tab body: the shared zero-state when there is
     /// nothing to show (distinguishing "not analysed yet" from "analysed and
     /// clean"), otherwise one row per diagnostic.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the empty-state truthfulness branch and the compact diagnostic-row fallback must stay adjacent so each panel state has one complete, auditable paint path"
+    )]
     fn draw_problems(
         &self,
         scene: &mut Scene,
@@ -554,7 +601,7 @@ impl BottomPanel {
             // tab beside it rather than a bare line of dim text.
             let body = Rect::new(
                 self.rect.x0,
-                self.rect.y0 + TAB_H,
+                self.rect.y0 + self.tab_height(),
                 self.rect.x1,
                 self.rect.y1,
             );
@@ -598,8 +645,8 @@ impl BottomPanel {
             );
         } else {
             for (i, d) in self.problems.iter().enumerate() {
-                let y = content_y0 + i as f64 * ROW_H;
-                if y > self.rect.y1 - ROW_H {
+                let y = content_y0 + i as f64 * self.row_height();
+                if y > self.rect.y1 - self.row_height() {
                     break;
                 }
                 let (glyph, sev_color) = match d.severity {
@@ -611,28 +658,54 @@ impl BottomPanel {
                 text_renderer.draw_text(
                     scene,
                     glyph,
-                    13.0,
+                    13.0 * theme.text_scale,
                     sev_color,
-                    transform * Affine::translate((self.rect.x0 + 14.0, y)),
+                    transform * Affine::translate((self.rect.x0 + 14.0 * self.text_scale, y)),
                     None,
                 );
                 let loc = format!("[Ln {}, Col {}]", d.line, d.col);
-                text_renderer.draw_text(
-                    scene,
-                    &loc,
-                    12.0,
-                    c.text_dim,
-                    transform * Affine::translate((self.rect.x0 + 36.0, y + 0.5)),
-                    None,
-                );
-                text_renderer.draw_text(
-                    scene,
-                    &d.message,
-                    13.0,
-                    c.neutral[8],
-                    transform * Affine::translate((self.rect.x0 + 130.0, y)),
-                    Some((self.rect.width() - 140.0) as f32),
-                );
+                let compact = self.rect.width() < 420.0 * self.text_scale;
+                if compact {
+                    // At large type in a narrow pane, location + message do
+                    // not fit beside each other. Keep the actionable finding
+                    // in one non-overlapping row; selecting the source via the
+                    // Problems list remains the route to its exact location.
+                    let message = ellipsize_back(
+                        text_renderer,
+                        &d.message,
+                        13.0 * theme.text_scale,
+                        self.rect.width() - 62.0 * self.text_scale,
+                    );
+                    text_renderer.draw_text(
+                        scene,
+                        &message,
+                        13.0 * theme.text_scale,
+                        c.neutral[8],
+                        transform * Affine::translate((self.rect.x0 + 48.0 * self.text_scale, y)),
+                        None,
+                    );
+                } else {
+                    text_renderer.draw_text(
+                        scene,
+                        &loc,
+                        12.0 * theme.text_scale,
+                        c.text_dim,
+                        transform
+                            * Affine::translate((
+                                self.rect.x0 + 36.0 * self.text_scale,
+                                y + 0.5 * self.text_scale,
+                            )),
+                        None,
+                    );
+                    text_renderer.draw_text(
+                        scene,
+                        &d.message,
+                        13.0 * theme.text_scale,
+                        c.neutral[8],
+                        transform * Affine::translate((self.rect.x0 + 130.0 * self.text_scale, y)),
+                        Some((self.rect.width() - 140.0 * self.text_scale) as f32),
+                    );
+                }
             }
         }
     }
@@ -711,9 +784,10 @@ impl Widget for BottomPanel {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a single leaf with a fixed Style cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -776,7 +850,7 @@ impl Widget for BottomPanel {
 
         self.draw_tab_strip(scene, transform, text_renderer, theme);
 
-        let content_y0 = self.rect.y0 + TAB_H + 6.0;
+        let content_y0 = self.rect.y0 + self.tab_height() + 6.0;
         match self.tab {
             PanelTab::Problems => {
                 self.draw_problems(scene, transform, text_renderer, theme, content_y0);
@@ -791,10 +865,14 @@ impl Widget for BottomPanel {
                     text_renderer.draw_text(
                         scene,
                         note,
-                        13.0,
+                        13.0 * theme.text_scale,
                         c.text_dim,
-                        transform * Affine::translate((self.rect.x0 + 14.0, content_y0)),
-                        Some((self.rect.width() - 28.0) as f32),
+                        transform
+                            * Affine::translate((
+                                self.rect.x0 + 14.0 * self.text_scale,
+                                content_y0,
+                            )),
+                        Some((self.rect.width() - 28.0 * self.text_scale) as f32),
                     );
                 }
             }
@@ -840,7 +918,8 @@ impl Widget for BottomPanel {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.last_cursor.y >= self.rect.y0 && self.last_cursor.y <= self.rect.y0 + TAB_H
+                if self.last_cursor.y >= self.rect.y0
+                    && self.last_cursor.y <= self.rect.y0 + self.tab_height()
                 {
                     for (x0, x1, tab) in &self.tab_rects {
                         if self.last_cursor.x >= *x0 && self.last_cursor.x < *x1 {
