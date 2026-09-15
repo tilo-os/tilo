@@ -65,7 +65,7 @@ fi
 runtime_dylib="$thin_app_dir/libruntime_dylib.so"
 rust_libstd=$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)
 [[ -f $runtime_dylib && -f $rust_libstd ]]
-OUT_DIR="$out/runtime" RUNTIME_VERSION="$runtime_version" FROM=/ \
+OUT_DIR="$out" RUNTIME_VERSION="$runtime_version" FROM=/ \
     SOURCE_DATE_EPOCH="$source_epoch" \
     ARCH="$(uname -m)" IDENTITY_JSON="$runtime_identity" \
     BUNDLE_BIN="$release_dir/tilo-runtime-bundle" \
