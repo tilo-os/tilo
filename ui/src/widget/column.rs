@@ -21,6 +21,8 @@ pub struct Column {
     /// tree; hot event/layout traversal must not allocate `taffy.children()`.
     child_nodes: Vec<NodeId>,
     rect: vello::kurbo::Rect,
+    /// Overflow extent used for culling independently of an exact allocation.
+    paint_rect: vello::kurbo::Rect,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     extra_left_padding: f32,
@@ -61,6 +63,7 @@ impl Column {
             children: Vec::new(),
             child_nodes: Vec::new(),
             rect: vello::kurbo::Rect::ZERO,
+            paint_rect: vello::kurbo::Rect::ZERO,
             presence_path: Vec::new(),
             permission_scope: None,
             extra_left_padding: 0.0,
@@ -304,13 +307,19 @@ impl Widget for Column {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        // The larger of own size and content bounds: constrained Grid/Flex
-        // layouts can report a viewport-sized box with taller overflowing
-        // content, and `layout.size` alone would make `should_cull` discard
-        // the subtree once scrolling pushed the box off the viewport, even
-        // with children still on screen.
-        let w = f64::from(layout.size.width.max(layout.content_size.width));
-        let h = f64::from(layout.size.height.max(layout.content_size.height));
+        let allocated = super::layout::allocation_or_content_size(taffy, node, &layout);
+        let w = f64::from(allocated.width);
+        let h = f64::from(allocated.height);
+        self.paint_rect = vello::kurbo::Rect::from_origin_size(
+            (
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+            ),
+            (
+                f64::from(layout.size.width.max(layout.content_size.width)),
+                f64::from(layout.size.height.max(layout.content_size.height)),
+            ),
+        );
         self.rect = vello::kurbo::Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
@@ -498,7 +507,7 @@ impl Widget for Column {
         presence: &crate::presence::PresenceCtx,
         permissions: &crate::permissions::PermissionContext,
     ) {
-        if presence.should_cull(self.get_rect()) {
+        if presence.should_cull(self.paint_rect) {
             return;
         }
 
