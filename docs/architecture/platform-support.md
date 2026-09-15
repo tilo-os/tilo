@@ -95,8 +95,22 @@ its detached release signature verifies against the key obtained from the
 [official download server](https://download.libvirt.org/gpg_key.asc), fingerprint
 `453B65310595562855471199CA68BE8010084C9C`. This records upstream HTTPS key
 provenance, not independent certification of that key. Native RPM construction
-from the upstream spec has started; it is not yet a verified replacement for
-the existing package snapshot.
+from the unmodified upstream spec completed with 161 passing tests, one expected
+failure and no skips. The resulting 79 RPMs pass package digest verification;
+the client, library and QEMU driver are aarch64. These local packages have not
+yet replaced the production package snapshot.
+
+An isolated libvirt 12.7.0/QEMU 10.2.2 container successfully converted the
+rendered ARM domain into QEMU arguments after substituting TCG and its `max`
+CPU for the diagnostic host, which has no KVM. The conversion selects the
+enrolled qemuvars firmware and `uefi-vars-sysbus`. It also exposed unsupported
+ARM ACPI sleep declarations, which are now omitted, and the implicit multi-socket
+CPU topology, now explicitly one socket with the allocated number of cores.
+This proves domain conversion, not guest boot or native KVM acceptance.
+
+The native FEX runtime compiled, but runtime acceptance remains open.
+See [FEX build validation](../../os/docs/fex-build-validation.md) for the pinned
+assembler regression fix, root filesystem prerequisites and remaining checks.
 
 The pinned `virtio-win-0.1.302-1.noarch.rpm` was downloaded and verified against
 its manifest SHA-256. Inspection found 76 ARM64 PE driver files, including
