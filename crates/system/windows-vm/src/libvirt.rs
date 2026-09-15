@@ -532,10 +532,16 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
         FirmwareConfig::Arm64Variables { .. } => "",
     };
     let network = xml_escape(&config.host_only_network);
-    let cpu = match config.performance.cpu_mode {
-        CpuMode::HostPassthrough => "<cpu mode='host-passthrough' check='none' migratable='off'/>",
-        CpuMode::HostModel => "<cpu mode='host-model' check='partial'/>",
+    let cpu_attributes = match config.performance.cpu_mode {
+        CpuMode::HostPassthrough => "mode='host-passthrough' check='none' migratable='off'",
+        CpuMode::HostModel => "mode='host-model' check='partial'",
     };
+    // Keep the appliance within Windows client socket limits. Without an
+    // explicit topology, libvirt can expose each allocated vCPU as a socket.
+    let cpu = format!(
+        "<cpu {cpu_attributes}><topology sockets='1' cores='{}' threads='1'/></cpu>",
+        config.performance.vcpus,
+    );
     Ok(format!(
         "<domain type='kvm'>\
 <name>{}</name><uuid>{}</uuid>\
@@ -694,6 +700,32 @@ mod tests {
         assert!(!xml.contains("type='bridge'"));
         assert!(!xml.contains("listen='0.0.0.0'"));
         assert!(!xml.contains("<redirdev"));
+    }
+
+    #[test]
+    fn cpu_allocation_uses_one_socket_for_both_architectures_and_modes() {
+        for architecture in [
+            crate::GuestArchitecture::X86_64,
+            crate::GuestArchitecture::Aarch64,
+        ] {
+            for mode in [CpuMode::HostPassthrough, CpuMode::HostModel] {
+                for cores in [1, 4, 64] {
+                    let mut configuration = ApplianceConfig::recommended_for(
+                        architecture,
+                        "01234567-89ab-cdef-0123-456789abcdef",
+                        "/var/lib/qos/windows/system.qcow2",
+                        "/var/lib/qos/windows/firmware-state",
+                    );
+                    configuration.performance.cpu_mode = mode;
+                    configuration.performance.vcpus = cores;
+                    let xml = render_domain_xml(&configuration).unwrap();
+                    assert!(xml.contains(&format!("<vcpu placement='static'>{cores}</vcpu>")));
+                    assert!(xml.contains(&format!(
+                        "<topology sockets='1' cores='{cores}' threads='1'/>"
+                    )));
+                }
+            }
+        }
     }
 
     #[test]
