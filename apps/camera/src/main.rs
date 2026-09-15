@@ -54,6 +54,7 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
             ("--scroll", "CAMERA_SCROLL"),
             ("--hover", "CAMERA_SHOT_HOVER"),
             ("--library-loading", "CAMERA_SHOT_LIBRARY_LOADING"),
+            ("--mode", "CAMERA_SHOT_MODE"),
         ] {
             if let Some(value) = args.value(option) {
                 std::env::set_var(variable, value);
@@ -70,6 +71,12 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         }
         if args.has("--library-loading") {
             std::env::set_var("CAMERA_SHOT_LIBRARY_LOADING", "1");
+        }
+        if args.has("--drawer") {
+            std::env::set_var("CAMERA_SHOT_DRAWER", "1");
+        }
+        if args.has("--timer-running") {
+            std::env::set_var("CAMERA_SHOT_TIMER_RUNNING", "1");
         }
         if let Some(state) = args.value("--camera-state") {
             std::env::set_var("CAMERA_SHOT_CAMERA_STATE", state);
@@ -109,6 +116,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("high-contrast") => ui::Theme::high_contrast(),
         _ => ui::Theme::dark(),
     }
+    .with_text_scale(args.text_scale.unwrap_or(1.0))
     .with_reduce_motion(matches!(
         std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
         Some("1" | "true" | "yes")
@@ -135,6 +143,8 @@ pub fn main() {
                 "--disk",
                 "--library-loading",
                 "--crop",
+                "--drawer",
+                "--timer-running",
             ])
             .allowed_options(&[
                 "--screen",
@@ -144,6 +154,7 @@ pub fn main() {
                 "--width",
                 "--height",
                 "--camera-state",
+                "--mode",
             ])
             .allowed_live_options(&["--emit-photos"])
             .command_handler(command)
