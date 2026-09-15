@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     APPLIANCE_DOMAIN_NAME, ApplianceConfig, CommandError, CommandOutput, CommandRequest,
-    CommandRunner, ConfigError, CpuMode, GraphicsAssignment,
+    CommandRunner, ConfigError, CpuMode, FirmwareConfig, GraphicsAssignment,
 };
 
 const LIBVIRT_URI: &str = "qemu:///system";
@@ -490,9 +490,39 @@ impl<R: CommandRunner> VmBackend for LibvirtBackend<R> {
 pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendError> {
     config.validate()?;
     let disk = xml_path(&config.system_disk)?;
-    let loader = xml_path(&config.firmware.secure_boot_loader)?;
-    let nvram_template = xml_path(&config.firmware.nvram_template)?;
-    let nvram = xml_path(&config.firmware.nvram)?;
+    let (arch, machine, emulator, tpm, firmware, platform_features, clock) = match &config.firmware
+    {
+        FirmwareConfig::X86Pflash {
+            secure_boot_loader,
+            nvram_template,
+            nvram,
+        } => (
+            "x86_64",
+            "q35",
+            "/usr/bin/qemu-system-x86_64",
+            "tpm-crb",
+            format!(
+                "<loader readonly='yes' secure='yes' type='pflash'>{}</loader><nvram template='{}'>{}</nvram>",
+                xml_path(secure_boot_loader)?,
+                xml_path(nvram_template)?,
+                xml_path(nvram)?
+            ),
+            "<apic/><hyperv mode='custom'><relaxed state='on'/><vapic state='on'/><spinlocks state='on' retries='8191'/><vpindex state='on'/><runtime state='on'/><synic state='on'/><stimer state='on'><direct state='on'/></stimer><frequencies state='on'/><tlbflush state='on'/><ipi state='on'/><evmcs state='on'/></hyperv><vmport state='off'/><smm state='on'/>",
+            "<clock offset='localtime'><timer name='rtc' tickpolicy='catchup'/><timer name='pit' tickpolicy='delay'/><timer name='hpet' present='no'/><timer name='hypervclock' present='yes'/></clock>",
+        ),
+        FirmwareConfig::Arm64Variables { varstore } => (
+            "aarch64",
+            "virt",
+            "/usr/bin/qemu-system-aarch64",
+            "tpm-tis",
+            format!(
+                "<firmware><feature enabled='yes' name='secure-boot'/><feature enabled='yes' name='enrolled-keys'/></firmware><varstore path='{}'/>",
+                xml_path(varstore)?
+            ),
+            "<gic version='3'/>",
+            "<clock offset='utc'/>",
+        ),
+    };
     let network = xml_escape(&config.host_only_network);
     let cpu = match config.performance.cpu_mode {
         CpuMode::HostPassthrough => "<cpu mode='host-passthrough' check='none' migratable='off'/>",
@@ -508,19 +538,11 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <entry name='uuid'>{}</entry></system></sysinfo>\
 <memory unit='MiB'>{}</memory><currentMemory unit='MiB'>{}</currentMemory>\
 <vcpu placement='static'>{}</vcpu><iothreads>{}</iothreads>{cpu}\
-<features><acpi/><apic/><hyperv mode='custom'>\
-<relaxed state='on'/><vapic state='on'/><spinlocks state='on' retries='8191'/>\
-<vpindex state='on'/><runtime state='on'/><synic state='on'/><stimer state='on'>\
-<direct state='on'/></stimer><frequencies state='on'/><tlbflush state='on'/>\
-<ipi state='on'/><evmcs state='on'/></hyperv><vmport state='off'/><smm state='on'/></features>\
-<clock offset='localtime'><timer name='rtc' tickpolicy='catchup'/>\
-<timer name='pit' tickpolicy='delay'/><timer name='hpet' present='no'/>\
-<timer name='hypervclock' present='yes'/></clock>\
-<os firmware='efi'><type arch='x86_64' machine='q35'>hvm</type>\
-<loader readonly='yes' secure='yes' type='pflash'>{loader}</loader><smbios mode='sysinfo'/>\
-<nvram template='{nvram_template}'>{nvram}</nvram><boot dev='hd'/><boot dev='cdrom'/></os>\
+<features><acpi/>{platform_features}</features>{clock}\
+<os firmware='efi'><type arch='{arch}' machine='{machine}'>hvm</type>\
+{firmware}<smbios mode='sysinfo'/><boot dev='hd'/><boot dev='cdrom'/></os>\
 <pm><suspend-to-mem enabled='no'/><suspend-to-disk enabled='no'/></pm>\
-<devices><emulator>/usr/bin/qemu-system-x86_64</emulator>\
+<devices><emulator>{emulator}</emulator>\
 <controller type='sata' index='0'/>\
 <controller type='scsi' index='0' model='virtio-scsi'><driver iothread='1'/></controller>\
 <controller type='virtio-serial' index='0'/>\
@@ -534,7 +556,7 @@ pub fn render_domain_xml(config: &ApplianceConfig) -> Result<String, VmBackendEr
 <channel type='unix'><target type='virtio' name='org.qemu.guest_agent.0'/></channel>\
 <channel type='spicevmc'><target type='virtio' name='com.redhat.spice.0'/></channel>\
 <vsock model='virtio'><cid auto='no' address='{}'/></vsock>\
-<tpm model='tpm-crb'><backend type='emulator' version='2.0'/></tpm>\
+<tpm model='{tpm}'><backend type='emulator' version='2.0'/></tpm>\
 <rng model='virtio'><backend model='random'>/dev/urandom</backend></rng>\
 <!-- Windows virtio-gpu is a paravirtual 2D fallback; do not infer a Linux virgl 3D path. -->\
 <video><model type='virtio' heads='1' primary='yes'><acceleration accel3d='no'/></model></video>\
@@ -627,7 +649,8 @@ mod tests {
     }
 
     fn config() -> ApplianceConfig {
-        ApplianceConfig::recommended(
+        ApplianceConfig::recommended_for(
+            crate::GuestArchitecture::X86_64,
             "01234567-89ab-cdef-0123-456789abcdef",
             "/var/lib/qos/windows/a&b.qcow2",
             "/var/lib/qos/windows/nvram.fd",
@@ -663,6 +686,38 @@ mod tests {
         assert!(!xml.contains("type='bridge'"));
         assert!(!xml.contains("listen='0.0.0.0'"));
         assert!(!xml.contains("<redirdev"));
+    }
+
+    #[test]
+    fn arm64_domain_uses_protected_variables_and_native_devices() {
+        let configuration = ApplianceConfig::recommended_for(
+            crate::GuestArchitecture::Aarch64,
+            "01234567-89ab-cdef-0123-456789abcdef",
+            "/var/lib/qos/windows/system.qcow2",
+            "/var/lib/qos/windows/vars.json",
+        );
+        let xml = render_domain_xml(&configuration).unwrap();
+        assert!(xml.contains("arch='aarch64' machine='virt'"));
+        assert!(xml.contains("/usr/bin/qemu-system-aarch64"));
+        assert!(xml.contains("<varstore path='/var/lib/qos/windows/vars.json'/>"));
+        assert!(xml.contains("enabled='yes' name='secure-boot'"));
+        assert!(xml.contains("enabled='yes' name='enrolled-keys'"));
+        assert!(xml.contains("<gic version='3'/>"));
+        assert!(xml.contains("<tpm model='tpm-tis'>"));
+        for x86_only in [
+            "<smm",
+            "<apic",
+            "<hyperv",
+            "<nvram",
+            "name='pit'",
+            "name='hpet'",
+        ] {
+            assert!(!xml.contains(x86_only), "unexpected x86 device: {x86_only}");
+        }
+        assert!(xml.contains("<listen type='none'/>"));
+        assert!(xml.contains("<clipboard copypaste='no'/>"));
+        assert!(xml.contains("<filetransfer enable='no'/>"));
+        assert!(!xml.contains("<filesystem"));
     }
 
     #[test]
