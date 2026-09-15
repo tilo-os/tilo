@@ -70,6 +70,16 @@ done
 
 has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'
+has "$workflow" 'runner: runner-arm64' \
+  'snapshot builds ARM64 dependencies on a native runner'
+has "$workflow" 'platforms: ${{ matrix.platform }}' \
+  'snapshot explicitly selects each native OCI platform'
+has "$workflow" 'needs: snapshot' \
+  'snapshot promotion waits for every native build'
+has "$workflow" 'python3 os/dev/promote-native-index.py' \
+  'snapshot promotion verifies signed native children'
+has "$workflow" 'test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"' \
+  'snapshot pin updates reject source changes during the build'
 has "$workflow" '- os/dev/derive-rpm-package-set.py' \
   'package parser changes retrigger the snapshot'
 

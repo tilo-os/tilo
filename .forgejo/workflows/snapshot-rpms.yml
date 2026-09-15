@@ -18,6 +18,8 @@ on:
       - os/external-assets/github-assets.tsv
       - os/dev/cache-github-assets.sh
       - os/dev/derive-rpm-package-set.py
+      - os/dev/promote-native-index.py
+      - os/dev/install-cached-cosign.sh
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/qos-relay/Containerfile
@@ -30,12 +32,25 @@ concurrency:
 
 jobs:
   snapshot:
-    runs-on: runner
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: runner
+          - arch: aarch64
+            platform: linux/arm64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Require a native build host
+        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
 
       - name: Restore checksum-verified external build inputs
         id: github-assets-cache
@@ -99,34 +114,92 @@ jobs:
           build-contexts: |
             github-assets=os/external-assets/cache
           file: os/Containerfile.rpms
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: code.podesta.ai/qos/rpms:${{ github.sha }}
+          tags: code.podesta.ai/qos/rpms:native-${{ github.sha }}-${{ matrix.arch }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
-          cache-from: type=registry,ref=code.podesta.ai/qos/qos-rpms-buildcache:latest
-          cache-to: type=registry,ref=code.podesta.ai/qos/qos-rpms-buildcache:latest,mode=max
+          cache-from: type=registry,ref=code.podesta.ai/qos/qos-rpms-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=code.podesta.ai/qos/qos-rpms-buildcache:${{ matrix.arch }},mode=max
           provenance: false
 
-      - name: Report the pinned RPMS_REF to commit
+      - name: Install checksum-pinned Cosign
+        run: ./os/dev/install-cached-cosign.sh
+
+      - name: Sign and describe the native repository
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          CHILD_ARCH: ${{ matrix.arch }}
+          CHILD_DIGEST: ${{ steps.rpms.outputs.digest }}
         run: |
-          ref="code.podesta.ai/qos/rpms@${{ steps.rpms.outputs.digest }}"
-          echo "::notice::Frozen RPM repo published. Set os/rpms-snapshot.env to: RPMS_REF=$ref"
-          {
-            echo "## Frozen RPM repo published"
-            echo ""
-            echo 'Commit this to `os/rpms-snapshot.env`:'
-            echo ""
-            echo '```'
-            echo "RPMS_REF=$ref"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "code.podesta.ai/qos/rpms@${CHILD_DIGEST}"
+          mkdir -p native-child
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path("native-child/child.json").write_text(json.dumps({
+              "architecture": os.environ["CHILD_ARCH"],
+              "digest": os.environ["CHILD_DIGEST"],
+              "sourceRevision": os.environ["GITHUB_SHA"],
+          }))
+          PY
+
+      - name: Upload the native child descriptor
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: rpms-native-${{ matrix.arch }}
+          path: native-child/
+          if-no-files-found: error
+
+  promote-snapshot:
+    needs: snapshot
+    runs-on: runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Download native child descriptors
+        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: native-children
+      - name: Log in to code.podesta.ai
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.podesta.ai
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Install publication tools
+        run: |
+          ./os/dev/install-cached-cosign.sh
+          if command -v apt-get >/dev/null; then
+            sudo -n apt-get update
+            sudo -n apt-get install -y --no-install-recommends podman skopeo
+          else
+            sudo -n dnf install -y podman skopeo
+          fi
+      - name: Verify and promote the complete native index
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          python3 os/dev/promote-native-index.py \
+            --repository code.podesta.ai/qos/rpms --tag "$GITHUB_SHA" \
+            --revision "$GITHUB_SHA" --descriptors native-children \
+            --signing-key env://COSIGN_PRIVATE_KEY --output rpms-index.txt
+          echo "RPMS_REF=$(cat rpms-index.txt)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit the frozen snapshot pin to the dispatched branch
-        env:
-          RPMS_DIGEST: ${{ steps.rpms.outputs.digest }}
         run: |
-          ref="code.podesta.ai/qos/rpms@${RPMS_DIGEST}"
+          set -euo pipefail
+          # Never rebase a completed snapshot onto changed build inputs. A
+          # concurrent branch update must start a fresh snapshot instead.
+          git fetch origin "${GITHUB_REF_NAME}"
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          ref="$(cat rpms-index.txt)"
           printf '%s\n' \
             '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
             '# Updated by the snapshot-rpms workflow when the package set changes.' \
@@ -138,8 +211,7 @@ jobs:
           git config user.name "qOS CI"
           git config user.email "ci@qos.invalid"
           git add os/rpms-snapshot.env
-          git commit -m "os: refresh frozen RPM snapshot"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git commit -m "build(os): refresh native RPM snapshot index"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Dispatch the full image build and boot test
@@ -151,4 +223,4 @@ jobs:
             -H "Authorization: token ${FORGEJO_TOKEN}" \
             -H 'Content-Type: application/json' \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/build-image.yml/dispatches" \
-            --data "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"with_browser\":\"0\"}}"
+            --data "{\"ref\":\"${GITHUB_REF_NAME}\",\"inputs\":{\"with_browser\":\"1\"}}"
