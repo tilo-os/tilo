@@ -110,9 +110,9 @@ pub enum ActionKind {
     Remove,
     /// qOS registry, installed but older version available → **Update**.
     Update,
-    /// qOS registry, cached but not pinned → **Mark installed** (pin).
+    /// qOS registry, cached but not pinned → **Keep on device** (pin).
     MarkInstalled,
-    /// qOS registry, pinned → **Installed** (click unpins).
+    /// qOS registry, pinned → **Kept on device** (click allows cleanup).
     Unmark,
     /// Flatpak, not installed → **Install** (spawns `flatpak install`).
     FlatpakInstall,
@@ -143,8 +143,8 @@ impl ActionKind {
             ActionKind::Open | ActionKind::FlatpakOpen => "Open",
             ActionKind::Remove | ActionKind::FlatpakRemove => "Remove",
             ActionKind::Update | ActionKind::FlatpakUpdate => "Update",
-            ActionKind::MarkInstalled => "Mark installed",
-            ActionKind::Unmark => "Installed",
+            ActionKind::MarkInstalled => "Keep on device",
+            ActionKind::Unmark => "Allow cleanup",
             ActionKind::FlatpakInstall => "Install",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
         }
@@ -159,8 +159,8 @@ impl ActionKind {
             Self::Open | Self::FlatpakOpen => "Starting",
             Self::Remove | Self::FlatpakRemove => "Removing",
             Self::Update | Self::FlatpakUpdate => "Updating",
-            Self::MarkInstalled => "Marking installed",
-            Self::Unmark => "Unmarking",
+            Self::MarkInstalled => "Keeping on device",
+            Self::Unmark => "Allowing cleanup",
             Self::FlatpakInstall => "Installing",
             Self::NeedsFlatpakHost => "Preparing Flatpak",
         }
@@ -383,7 +383,8 @@ pub enum SourceFilter {
     Qos,
     /// Only Flatpak entries.
     Flatpak,
-    /// Only installed items regardless of source.
+    /// Items already present on this device: cached qOS apps or installed
+    /// Flatpaks. The variant name remains serialized for compatibility.
     Installed,
 }
 
@@ -400,7 +401,7 @@ impl SourceFilter {
             SourceFilter::All => "All",
             SourceFilter::Qos => "qOS",
             SourceFilter::Flatpak => "Flatpak",
-            SourceFilter::Installed => "Installed",
+            SourceFilter::Installed => "On device",
         }
     }
 

@@ -49,6 +49,7 @@ pub fn store_card(
     action_binding: Option<ui::qos_actions::ActionBinding<()>>,
     detail_binding: Option<ui::qos_actions::ActionBinding<()>>,
     compact: bool,
+    large_text: bool,
     operation_active: bool,
 ) -> Box<dyn Widget> {
     // Left column: name + description. Secondary text reads its dim tone
@@ -65,7 +66,7 @@ pub fn store_card(
         .with_gap(4.0)
         .push(Box::new(
             Text::new(&item.name)
-                .with_scaled_size(18.0)
+                .with_scaled_size(if compact { 18.0 } else { 20.0 })
                 .with_weight(TextWeight::Semibold),
         ))
         .push(Box::new(
@@ -113,43 +114,36 @@ pub fn store_card(
     let action_btn = action_btn.fit_content(40.0);
 
     let content: Box<dyn Widget> = if compact {
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(10.0)
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(icon_artwork(item, images))
-                        .push(Box::new(
-                            Container::new()
-                                .with_no_padding()
-                                .with_flex_grow()
-                                .with_child(Box::new(identity)),
-                        )),
-                ))
-                // The custom artwork leaf paints at the device-scale-aware
-                // size negotiated by the inner grid. Give the following
-                // copy an explicit breathing band so a tall fallback mark
-                // cannot appear to sit on its first baseline on narrow
-                // displays.
-                .push(Box::new(
-                    Container::new().with_no_padding().with_height(10.0),
-                ))
-                .push(Box::new(
-                    Text::new(&item.description)
-                        .with_scaled_size(14.0)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(details))
-                        .push(Box::new(action_btn)),
-                )),
-        )
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(if large_text { 6.0 } else { 10.0 })
+            .push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(icon_artwork(item, images, large_text))
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_flex_grow()
+                            .with_child(Box::new(identity)),
+                    )),
+            ));
+        if !large_text {
+            column = column.push(Box::new(
+                Text::new(&item.description)
+                    .with_scaled_size(14.0)
+                    .with_color(theme.text_dim),
+            ));
+        }
+        column = column.push(Box::new(
+            Row::new()
+                .no_wrap()
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(details))
+                .push(Box::new(action_btn)),
+        ));
+        Box::new(column)
     } else {
         Box::new(
             Column::new()
@@ -162,8 +156,8 @@ pub fn store_card(
                             images,
                             item.icon_url.as_deref(),
                             &item.name,
-                            52.0,
-                            52.0,
+                            48.0,
+                            48.0,
                         )))
                         .push(Box::new(
                             Container::new()
@@ -216,7 +210,11 @@ pub fn store_card(
 /// [`super::Artwork`] requests HTTPS imagery through the Store's guarded
 /// [`ui::ImageStore`]; an absent, rejected, or undecodable image keeps the
 /// same card geometry and renders the fallback instead.
-fn icon_artwork(item: &StoreItem, images: Option<ui::ImageStore>) -> Box<dyn Widget> {
+fn icon_artwork(
+    item: &StoreItem,
+    images: Option<ui::ImageStore>,
+    large_text: bool,
+) -> Box<dyn Widget> {
     Box::new(super::Artwork::new(
         images,
         item.icon_url.as_deref(),
@@ -225,8 +223,8 @@ fn icon_artwork(item: &StoreItem, images: Option<ui::ImageStore>) -> Box<dyn Wid
         // artwork.  A 36px tile looked fine with a one-line title but let
         // taller fallback marks visually run into the following description
         // once metadata wrapped on narrow screens.
-        56.0,
-        56.0,
+        if large_text { 44.0 } else { 52.0 },
+        if large_text { 44.0 } else { 52.0 },
     ))
 }
 

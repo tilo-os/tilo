@@ -68,7 +68,7 @@ fn configure_settled_capture_renderer() {
 ///
 ///   * a qOS item that's not installed  → **Open**
 ///   * a qOS item that's cached + pinned → **Open** + **Installed** + Remove
-///   * a qOS item that's cached but out-of-date → **Update** + Mark installed
+///   * a qOS item that's cached but out-of-date → **Update** + Keep on device
 ///   * a Flatpak item (flatpak available) → **Install**
 ///   * a Flatpak item, flatpak unavailable path is covered by a
 ///     `set_flatpak_available(false)` variant used by the
@@ -144,7 +144,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             "Files",
             "Browse, organise, and share files across your workspaces.",
             "System",
-            // Cached, not pinned, update available: Update + Mark installed.
+            // Cached, not pinned, update available: Update + Keep on device.
             InstalledState::Installed {
                 version: "0.3.0".into(),
                 available: "0.4.0".into(),
@@ -207,6 +207,30 @@ pub fn render_scenario_to_path(
     out: &Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    render_scenario_to_path_with_preferences(
+        viewport,
+        out,
+        scenario,
+        Some(shot_text_scale()),
+        shot_reduce_motion(),
+    )
+}
+
+/// Render a named state with the accessibility preferences parsed by the
+/// shared launcher. Store owns its screenshot loop, so these values must be
+/// carried explicitly instead of relying on the live `ui::App` setup path.
+///
+/// # Errors
+///
+/// Returns renderer, layout, or PNG-write failures from the native offscreen
+/// capture path.
+pub fn render_scenario_to_path_with_preferences(
+    viewport: (u32, u32),
+    out: &Path,
+    scenario: Option<&str>,
+    text_scale: Option<f32>,
+    reduce_motion: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = seeded_app();
     app.set_layout_width_hint(f64::from(viewport.0));
     match scenario {
@@ -261,7 +285,7 @@ pub fn render_scenario_to_path(
     // headless frame captures it (a still can't hover it).
     app.arm_status_bubble_for_shots();
     let mut widget: Box<dyn Widget> = Box::new(app);
-    render_widget(viewport, out, &mut widget)
+    render_widget_with_preferences(viewport, out, &mut widget, text_scale, reduce_motion)
 }
 
 /// Guts of the render pass — mirrors what `ui::App` does for a
@@ -276,19 +300,36 @@ pub fn render_widget(
     out: &Path,
     widget: &mut Box<dyn Widget>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
+    render_widget_with_preferences(
+        viewport,
+        out,
+        widget,
+        Some(shot_text_scale()),
+        shot_reduce_motion(),
+    )
+}
+
+fn configured_shot_theme(text_scale: Option<f32>, reduce_motion: bool) -> Theme {
     let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
         _ => Theme::dark(),
+    };
+    if let Some(scale) = text_scale {
+        theme = theme.with_text_scale(scale);
     }
-    .with_text_scale(shot_text_scale());
-    if matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
-        Ok("1" | "true" | "yes")
-    ) {
-        theme = theme.with_reduce_motion(true);
-    }
+    theme.with_reduce_motion(reduce_motion)
+}
+
+fn render_widget_with_preferences(
+    viewport: (u32, u32),
+    out: &Path,
+    widget: &mut Box<dyn Widget>,
+    text_scale: Option<f32>,
+    reduce_motion: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    let theme = configured_shot_theme(text_scale, reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -360,6 +401,20 @@ pub fn render_widget(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("store: wrote shot to {}", out.display());
     Ok(())
+}
+
+fn shot_reduce_motion() -> bool {
+    [
+        "QOS_A11Y_REDUCE_MOTION",
+        "QOS_REDUCE_MOTION",
+        "QOS_SHOTS_REDUCE_MOTION",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .any(|value| {
+        let value = value.trim();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
 }
 
 /// Parse `WxH` into `(u32, u32)`.
@@ -445,6 +500,13 @@ mod tests {
         // default in the normal test process.  Rendering callers exercise a
         // valid multiplier through the documented environment seam.
         assert!((1.0..=2.0).contains(&shot_text_scale()));
+    }
+
+    #[test]
+    fn explicit_launch_preferences_reach_the_shot_theme() {
+        let theme = configured_shot_theme(Some(2.0), true);
+        assert!((theme.text_scale - 2.0).abs() < f32::EPSILON);
+        assert!(theme.reduce_motion);
     }
 
     #[test]

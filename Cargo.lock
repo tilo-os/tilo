@@ -14021,6 +14021,7 @@ version = "0.1.2"
 dependencies = [
  "app-catalogue",
  "app-host",
+ "atomic-file",
  "automerge",
  "blake3",
  "dirs 6.0.0",
