@@ -23,10 +23,10 @@ use media::dmabuf::{ColorRange, Colorimetry};
 use media::frame::{PlanarFormat, PlanarImage};
 use vello::wgpu;
 
-#[cfg(feature = "dmabuf-import")]
+#[cfg(all(unix, feature = "dmabuf-import"))]
 use crate::dmabuf_import::PlaneLayout;
 
-#[cfg(not(feature = "dmabuf-import"))]
+#[cfg(not(all(unix, feature = "dmabuf-import")))]
 /// How the planes are laid out. Mirrors `dmabuf_import::PlaneLayout` for
 /// builds that upload planes but do not import dmabufs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

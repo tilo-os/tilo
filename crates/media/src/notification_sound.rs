@@ -15,9 +15,12 @@ use std::thread::JoinHandle;
 pub enum SoundBackend {
     Libcanberra,
     PipeWire,
+    #[cfg(windows)]
+    WindowsSystem,
     Unavailable,
 }
 
+#[cfg(unix)]
 pub fn sound_backend() -> SoundBackend {
     if command_exists("canberra-gtk-play") {
         SoundBackend::Libcanberra
@@ -28,6 +31,17 @@ pub fn sound_backend() -> SoundBackend {
     }
 }
 
+#[cfg(windows)]
+pub fn sound_backend() -> SoundBackend {
+    SoundBackend::WindowsSystem
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn sound_backend() -> SoundBackend {
+    SoundBackend::Unavailable
+}
+
+#[cfg(unix)]
 fn command_exists(name: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::env::var_os("PATH").is_some_and(|paths| {
@@ -54,6 +68,19 @@ fn themed_sound() -> Option<PathBuf> {
 
 fn play_one(backend: SoundBackend) {
     let mut command = match backend {
+        #[cfg(windows)]
+        SoundBackend::WindowsSystem => {
+            #[link(name = "user32")]
+            unsafe extern "system" {
+                fn MessageBeep(sound_type: u32) -> i32;
+            }
+            // MessageBeep takes no pointers and asynchronously plays the
+            // user's configured system sound. It never displays a dialog.
+            if unsafe { MessageBeep(0) } == 0 {
+                tracing::debug!("media: Windows system notification sound unavailable");
+            }
+            return;
+        }
         SoundBackend::Libcanberra => {
             let mut c = Command::new("canberra-gtk-play");
             c.args(["--id=message-new-instant", "--description=qOS notification"]);
