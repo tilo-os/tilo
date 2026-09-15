@@ -75,12 +75,18 @@ same repository, digest, signature, provenance, and embedded-generation checks.
 The workflow materializes checksum-pinned `linuxdeploy`, `appimagetool`, and
 type-2 runtime binaries from the Forgejo cache separately for each Linux
 architecture. They do not need to be baked into the runner, and AppImage
-creation is forbidden from downloading an implicit “latest” runtime.
-The same golden images preinstall `org.freedesktop.Sdk//25.08` and run UDisks2
+creation is forbidden from downloading an implicit “latest” runtime. CI runs
+the completed AppImage through both its extraction compatibility path and its
+normal embedded FUSE runtime. An extract-only result is accepted solely when
+the kernel exposes neither the FUSE filesystem nor `/dev/fuse`; a missing or
+inaccessible device on a FUSE-capable runner is a release failure, and the
+fallback reason is retained in the job summary.
+The same golden images preinstall `org.freedesktop.Sdk//25.08` and
+`org.freedesktop.Platform//25.08` system-wide and run UDisks2
 with at least the VM's system disk visible. The Flatpak build forbids downloads
-during bundle assembly, smoke-loads the exported app inside the pinned runtime,
-and reconciles its sandbox inventory with that host UDisks2 view before it can
-become an artifact.
+during bundle assembly, installs the emitted bundle into a clean per-job user
+installation, launches that installed application, and reconciles its sandbox
+inventory with that host UDisks2 view before it can become an artifact.
 End-user Linux hosts need UDisks2 (standard on major desktop
 distributions); its polkit prompt mediates the one exclusive removable-drive
 descriptor used by the sandboxed writer.

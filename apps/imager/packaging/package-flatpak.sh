@@ -39,6 +39,8 @@ cp "$repo/apps/imager/packaging/linux/org.qos.Imager.metainfo.xml" "$stage/"
 cp "$repo/apps/imager/packaging/linux/qos-imager.svg" "$stage/org.qos.Imager.svg"
 
 flatpak-builder "$flatpak_scope" --force-clean --disable-download \
+  --disable-rofiles-fuse \
+  --state-dir="$work/state" \
   --repo="$work/repository" "$work/build" "$stage/org.qos.Imager.yml"
 artifact="$out/qos-imager-linux-$arch.flatpak"
 flatpak build-bundle "$work/repository" "$artifact" org.qos.Imager
@@ -47,10 +49,23 @@ flatpak build-bundle "$work/repository" "$artifact" org.qos.Imager
   sha256sum "$(basename "$artifact")" >"$(basename "$artifact").sha256"
 )
 
-# Prove the exported app resolves entirely inside its runtime. The demo flag
-# avoids hardware access; the real writer is tested separately against a file
-# descriptor in Rust tests and on a disposable USB release runner.
-flatpak-builder "$flatpak_scope" --run "$work/build" "$stage/org.qos.Imager.yml" \
-  /app/bin/qos-imager --qos-package-smoke
-flatpak-builder "$flatpak_scope" --run "$work/build" "$stage/org.qos.Imager.yml" \
-  /app/bin/qos-imager --qos-flatpak-probe-smoke
+# Test the file users actually download, rather than only running the builder
+# tree which produced it. A private per-job user installation proves import,
+# deployment, runtime resolution, the exported command and the final sandbox
+# permissions without changing the runner's ordinary Flatpak inventory.
+flatpak info --system "org.freedesktop.Platform//25.08" >/dev/null 2>&1 \
+  || { printf 'the system Flatpak 25.08 runtime is required for isolated bundle verification\n' >&2; exit 1; }
+isolated_install="$work/flatpak-user"
+smoke="$work/installed-smoke"
+mkdir -p "$isolated_install" "$smoke"
+chmod 0700 "$isolated_install"
+export FLATPAK_USER_DIR="$isolated_install"
+flatpak install --user --noninteractive --no-deps --bundle "$artifact"
+flatpak info --user org.qos.Imager >/dev/null
+flatpak run --user org.qos.Imager --qos-package-smoke
+flatpak run --user org.qos.Imager --qos-flatpak-probe-smoke
+flatpak run --user --filesystem="$smoke" org.qos.Imager \
+  --shots "$smoke/flatpak-installed.png" \
+  --scenario done --viewport 1180x820
+test -s "$smoke/flatpak-installed.png"
+flatpak uninstall --user --noninteractive org.qos.Imager
