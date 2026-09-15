@@ -130,6 +130,9 @@ pub struct LayoutKey {
     pub width_q: i32,
     pub height_q: i32,
     pub scale_q: i32,
+    /// System accessibility text scale. `TextRenderer` applies this to glyph
+    /// metrics, so the flow cache and vertical rhythm must invalidate with it.
+    pub text_scale_q: i32,
     pub spacing_q: i32,
     pub composition: bool,
     /// Signature of the selected font (family + per-face size multiplier), so a
@@ -144,12 +147,14 @@ impl LayoutKey {
         content_h: f32,
         s: &Settings,
         font_sig: u64,
+        text_scale: f32,
     ) -> Self {
         Self {
             chapter,
             width_q: content_w.round() as i32,
             height_q: content_h.round() as i32,
             scale_q: (s.font_scale * 100.0).round() as i32,
+            text_scale_q: (text_scale * 100.0).round() as i32,
             spacing_q: (s.line_spacing * 100.0).round() as i32,
             composition: s.composition.justified(),
             font_sig,
@@ -170,7 +175,7 @@ struct BlockStyle {
     fixed_height: Option<f32>,
 }
 
-fn style_for(block: &Block, body: f32) -> BlockStyle {
+fn style_for(block: &Block, body: f32, text_scale: f32) -> BlockStyle {
     match block {
         Block::Heading { level, .. } => {
             let (mult, sb) = match level {
@@ -184,7 +189,7 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
                 force_italic: false,
                 force_bold: true,
                 indent: 0.0,
-                space_before: body * sb,
+                space_before: body * sb * text_scale,
                 fixed_height: None,
             }
         }
@@ -194,7 +199,7 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             force_italic: false,
             force_bold: false,
             indent: 0.0,
-            space_before: body * 0.75,
+            space_before: body * 0.75 * text_scale,
             fixed_height: None,
         },
         Block::Quote { .. } => BlockStyle {
@@ -202,8 +207,8 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             size: body * 1.02,
             force_italic: true,
             force_bold: false,
-            indent: 30.0,
-            space_before: body * 0.9,
+            indent: 30.0 * text_scale,
+            space_before: body * 0.9 * text_scale,
             fixed_height: None,
         },
         Block::ListItem { .. } => BlockStyle {
@@ -211,8 +216,8 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             size: body,
             force_italic: false,
             force_bold: false,
-            indent: 28.0,
-            space_before: body * 0.4,
+            indent: 28.0 * text_scale,
+            space_before: body * 0.4 * text_scale,
             fixed_height: None,
         },
         Block::Math { .. } => BlockStyle {
@@ -221,7 +226,7 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             force_italic: false,
             force_bold: false,
             indent: 0.0,
-            space_before: body,
+            space_before: body * text_scale,
             fixed_height: None,
         },
         Block::Separator => BlockStyle {
@@ -230,8 +235,8 @@ fn style_for(block: &Block, body: f32) -> BlockStyle {
             force_italic: false,
             force_bold: false,
             indent: 0.0,
-            space_before: body * 1.2,
-            fixed_height: Some(body * 1.6),
+            space_before: body * 1.2 * text_scale,
+            fixed_height: Some(body * 1.6 * text_scale),
         },
     }
 }
@@ -1010,14 +1015,17 @@ pub fn layout_chapter(
     font_mult: f32,
     font_sig: u64,
 ) -> ChapterLayout {
-    let key = LayoutKey::new(chapter, content_w, content_h, settings, font_sig);
+    let text_scale = tr.text_scale();
+    let key = LayoutKey::new(
+        chapter, content_w, content_h, settings, font_sig, text_scale,
+    );
     let body = settings.body_size_with(font_mult);
     let base_mono = matches!(base_family, FontChoice::Monospace);
     let mut laid: Vec<LaidBlock> = Vec::with_capacity(blocks.len());
     let mut y = 0.0f32;
 
     for (index, block) in blocks.iter().enumerate() {
-        let st = style_for(block, body);
+        let st = style_for(block, body, text_scale);
         y += st.space_before;
 
         if let Block::Math { expr, source, .. } = block {
@@ -1034,7 +1042,7 @@ pub fn layout_chapter(
             continue;
         }
 
-        let mut line_height = st.size * 1.25 * settings.line_spacing;
+        let mut line_height = st.size * 1.25 * settings.line_spacing * text_scale;
         let (words, canon, char_pos) = build_words(
             block,
             &st,
@@ -1341,22 +1349,27 @@ mod tests {
 
     #[test]
     fn layout_key_changes_with_settings_and_font() {
-        let base = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0);
+        let base = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 1.0);
         let bigger_font = Settings {
             font_scale: 1.4,
             ..Default::default()
         };
-        let scaled = LayoutKey::new(0, 300.0, 200.0, &bigger_font, 0);
+        let scaled = LayoutKey::new(0, 300.0, 200.0, &bigger_font, 0, 1.0);
         assert_ne!(base, scaled, "font scale change relays out");
         // A different font signature (family/size-mult) also relays out.
-        let font_changed = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 99);
+        let font_changed = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 99, 1.0);
         assert_ne!(base, font_changed, "font change relays out");
         let ragged = Settings {
             composition: CompositionStyle::Ragged,
             ..Default::default()
         };
-        let ragged_key = LayoutKey::new(0, 300.0, 200.0, &ragged, 0);
+        let ragged_key = LayoutKey::new(0, 300.0, 200.0, &ragged, 0, 1.0);
         assert_ne!(base, ragged_key, "composition change relays out");
+        let accessibility_scaled = LayoutKey::new(0, 300.0, 200.0, &Settings::default(), 0, 2.0);
+        assert_ne!(
+            base, accessibility_scaled,
+            "host accessibility text scale relays out"
+        );
     }
 
     #[test]

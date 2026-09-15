@@ -26,7 +26,10 @@ use qos_actions::{
 };
 
 use crate::doc::BooksDoc;
-use crate::model::{AnnoKind, Annotation, HiColor, Progress};
+use crate::model::{
+    AnnoKind, Annotation, ColorScheme, CompositionStyle, FontEntry, HiColor, LibraryEntry,
+    LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
+};
 
 /// Registry `type_id` for every Books action.
 pub const EBOOK_ACTION_TYPE: &str = "ebook.action";
@@ -217,6 +220,39 @@ pub struct HiPiece {
 /// error, so a bad replay can't wedge a peer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EbookAction {
+    /// Add or explicitly restore one content-addressed library row. The path
+    /// remains device-local; every replicated field is absolute and authored
+    /// before dispatch, including the first-added timestamp.
+    RestoreLibraryBook {
+        book_id: String,
+        shared: bool,
+        title: String,
+        author: String,
+        subject: String,
+        added: u64,
+    },
+    /// Replace the authored reading-preference snapshot. Every field is an
+    /// absolute value, making replay independent of a receiver's UI state.
+    SetReadingSettings {
+        before: Settings,
+        settings: Settings,
+    },
+    /// Upsert one stable-id font without disturbing concurrent edits to other
+    /// faces.
+    UpsertFont { font: FontEntry },
+    /// Tombstone one font id so delayed peer edits cannot resurrect it.
+    DeleteFont { id: String },
+    /// Choose the registry-wide default face by stable font id.
+    SetDefaultFont { id: String },
+    /// Upsert one stable-id colour scheme without replacing its siblings.
+    UpsertColorScheme { scheme: ColorScheme },
+    /// Tombstone one custom scheme.
+    DeleteColorScheme { id: String },
+    /// Persist the shelf's absolute sort/filter preferences.
+    SetLibraryPreferences {
+        before: LibraryPrefs,
+        preferences: LibraryPrefs,
+    },
     /// Tombstone one library membership row by stable content id. The book's
     /// annotations and progress remain intact, so an explicit re-import can
     /// restore the shelf row without losing collaborative reading state.
@@ -672,6 +708,61 @@ impl Action for EbookAction {
     )]
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         match self {
+            EbookAction::RestoreLibraryBook {
+                book_id,
+                shared,
+                title,
+                author,
+                subject,
+                added,
+            } => {
+                if !book_id.starts_with("book:") {
+                    return Err(Self::refused("book id is invalid"));
+                }
+                BooksDoc::restore_library_entry(
+                    doc,
+                    &LibraryEntry {
+                        id: book_id.clone(),
+                        shared: *shared,
+                        title: title.clone(),
+                        author: author.clone(),
+                        subject: subject.clone(),
+                        added: *added,
+                    },
+                );
+                Ok(())
+            }
+            EbookAction::SetReadingSettings { before, settings } => {
+                BooksDoc::write_settings_delta(doc, before, settings);
+                Ok(())
+            }
+            EbookAction::UpsertFont { font } => {
+                BooksDoc::upsert_font(doc, font);
+                Ok(())
+            }
+            EbookAction::DeleteFont { id } => {
+                BooksDoc::remove_font(doc, id);
+                Ok(())
+            }
+            EbookAction::SetDefaultFont { id } => {
+                BooksDoc::write_default_font(doc, id);
+                Ok(())
+            }
+            EbookAction::UpsertColorScheme { scheme } => {
+                BooksDoc::upsert_scheme(doc, scheme);
+                Ok(())
+            }
+            EbookAction::DeleteColorScheme { id } => {
+                BooksDoc::remove_scheme(doc, id);
+                Ok(())
+            }
+            EbookAction::SetLibraryPreferences {
+                before,
+                preferences,
+            } => {
+                BooksDoc::write_library_prefs_delta(doc, before, preferences);
+                Ok(())
+            }
             EbookAction::RemoveLibraryBook { book_id } => {
                 Self::apply_remove_library_book(doc, book_id)
             }
@@ -805,6 +896,51 @@ pub fn encode(action: &EbookAction) -> EncodedAction {
 pub fn remove_library_book_action(book_id: &str) -> EbookAction {
     EbookAction::RemoveLibraryBook {
         book_id: book_id.to_string(),
+    }
+}
+
+pub fn restore_library_book_action(entry: &LibraryEntry) -> EbookAction {
+    EbookAction::RestoreLibraryBook {
+        book_id: entry.id.clone(),
+        shared: entry.shared,
+        title: entry.title.clone(),
+        author: entry.author.clone(),
+        subject: entry.subject.clone(),
+        added: entry.added,
+    }
+}
+
+pub fn set_reading_settings_action(before: Settings, settings: Settings) -> EbookAction {
+    EbookAction::SetReadingSettings { before, settings }
+}
+
+pub fn upsert_font_action(font: FontEntry) -> EbookAction {
+    EbookAction::UpsertFont { font }
+}
+
+pub fn delete_font_action(id: &str) -> EbookAction {
+    EbookAction::DeleteFont { id: id.into() }
+}
+
+pub fn set_default_font_action(id: &str) -> EbookAction {
+    EbookAction::SetDefaultFont { id: id.into() }
+}
+
+pub fn upsert_color_scheme_action(scheme: ColorScheme) -> EbookAction {
+    EbookAction::UpsertColorScheme { scheme }
+}
+
+pub fn delete_color_scheme_action(id: &str) -> EbookAction {
+    EbookAction::DeleteColorScheme { id: id.into() }
+}
+
+pub fn set_library_preferences_action(
+    before: LibraryPrefs,
+    preferences: LibraryPrefs,
+) -> EbookAction {
+    EbookAction::SetLibraryPreferences {
+        before,
+        preferences,
     }
 }
 
@@ -1295,6 +1431,180 @@ fn standalone_note_resources(
         .collect()
 }
 
+fn settings_resource(doc: &AutoCommit) -> Resource {
+    let settings = BooksDoc::read_settings(doc);
+    let mut root = Resource::new("ebook.settings", "ebook.settings", "Reading settings")
+        .with_action(operation(
+            "open",
+            "Open reading settings",
+            OperationKind::View,
+            EbookOperation::OpenSettings,
+        ));
+    for mode in ReadMode::ALL {
+        let mut next = settings.clone();
+        next.mode = mode;
+        root = root.with_action(encode_spec(
+            &format!("mode-{}", mode.as_str()),
+            &format!("Use {} reading", mode.label()),
+            &set_reading_settings_action(settings.clone(), next),
+        ));
+    }
+    for composition in CompositionStyle::ALL {
+        let mut next = settings.clone();
+        next.composition = composition;
+        root = root.with_action(encode_spec(
+            &format!("composition-{}", composition.as_str()),
+            &format!("Use {} composition", composition.label()),
+            &set_reading_settings_action(settings.clone(), next),
+        ));
+    }
+    for theme in ReadTheme::ALL {
+        let mut next = settings.clone();
+        next.theme = theme;
+        next.scheme_id.clear();
+        root = root.with_action(encode_spec(
+            &format!("theme-{}", theme.as_str()),
+            &format!("Use {} page theme", theme.label()),
+            &set_reading_settings_action(settings.clone(), next),
+        ));
+    }
+
+    root = font_resources(root, doc);
+    scheme_resources(root, doc)
+}
+
+fn font_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
+    for font in BooksDoc::read_fonts(doc) {
+        let id = font.id.clone();
+        let mut child = Resource::new(format!("ebook.font:{id}"), "ebook.font", font.name.clone())
+            .with_action(operation(
+                "open-settings",
+                "Open font settings",
+                OperationKind::View,
+                EbookOperation::OpenSettings,
+            ));
+        let mut toggled = font.clone();
+        toggled.shown = !toggled.shown;
+        child = child.with_action(encode_spec(
+            "toggle-quick-picker",
+            if font.shown {
+                "Hide from quick picker"
+            } else {
+                "Show in quick picker"
+            },
+            &upsert_font_action(toggled),
+        ));
+        let rename_source = font.clone();
+        child = child.with_action(ActionSpec::prompted(
+            "rename",
+            "Rename font",
+            "Name",
+            "font name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let mut renamed = rename_source.clone();
+                renamed.name = name.trim().to_string();
+                encode(&upsert_font_action(renamed))
+            },
+        ));
+        child = child.with_action(
+            encode_spec("delete", "Remove font", &delete_font_action(&id)).with_contract(
+                qos_actions::ActionContract {
+                    risk: RiskLevel::Destructive,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::Idempotent,
+                    reversible: true,
+                    tags: vec!["font".into(), "tombstone".into()],
+                    ..qos_actions::ActionContract::default()
+                },
+            ),
+        );
+        root = root.with_child(child);
+    }
+    root
+}
+
+fn scheme_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
+    for scheme in BooksDoc::read_schemes(doc) {
+        let id = scheme.id.clone();
+        let mut child = Resource::new(
+            format!("ebook.scheme:{id}"),
+            "ebook.color-scheme",
+            scheme.name.clone(),
+        )
+        .with_action(operation(
+            "open-settings",
+            "Open colour settings",
+            OperationKind::View,
+            EbookOperation::OpenSettings,
+        ));
+        let mut toggled = scheme.clone();
+        toggled.enabled = !toggled.enabled;
+        child = child.with_action(encode_spec(
+            "toggle-enabled",
+            if scheme.enabled {
+                "Disable scheme"
+            } else {
+                "Enable scheme"
+            },
+            &upsert_color_scheme_action(toggled),
+        ));
+        if !scheme.builtin {
+            let rename_source = scheme.clone();
+            child = child.with_action(ActionSpec::prompted(
+                "rename",
+                "Rename scheme",
+                "Name",
+                "scheme name…",
+                ExecutionLocus::ClientLocal,
+                move |name: &str| {
+                    let mut renamed = rename_source.clone();
+                    renamed.name = name.trim().to_string();
+                    encode(&upsert_color_scheme_action(renamed))
+                },
+            ));
+            child = child.with_action(
+                encode_spec("delete", "Delete scheme", &delete_color_scheme_action(&id))
+                    .with_contract(qos_actions::ActionContract {
+                        risk: RiskLevel::Destructive,
+                        confirmation: ConfirmationPolicy::Confirm,
+                        retry: RetryPolicy::Idempotent,
+                        reversible: true,
+                        tags: vec!["colour-scheme".into(), "tombstone".into()],
+                        ..qos_actions::ActionContract::default()
+                    }),
+            );
+        }
+        root = root.with_child(child);
+    }
+    root
+}
+
+fn library_preference_actions(mut library: Resource, doc: &AutoCommit) -> Resource {
+    let prefs = BooksDoc::read_library_prefs(doc);
+    let mut toggled = prefs;
+    toggled.hide_read = !toggled.hide_read;
+    library = library.with_action(encode_spec(
+        "toggle-hide-read",
+        if prefs.hide_read {
+            "Show read books"
+        } else {
+            "Hide read books"
+        },
+        &set_library_preferences_action(prefs, toggled),
+    ));
+    for sort in LibrarySort::ALL {
+        let mut next = prefs;
+        next.sort = sort;
+        library = library.with_action(encode_spec(
+            &format!("sort-{}", sort.as_str()),
+            &format!("Sort by {}", sort.label()),
+            &set_library_preferences_action(prefs, next),
+        ));
+    }
+    library
+}
+
 /// Build the resource tree Books currently has open: the book being read, its
 /// highlights (each owning its comments), its bookmarks, and its standalone
 /// notes — every document-mutating operation exported as an action.
@@ -1421,11 +1731,11 @@ pub fn provide_resources(
         .iter()
         .map(|book| book_resource(book, current, doc))
         .collect::<Vec<_>>();
-    vec![
-        Resource::new("ebook.library", "ebook.library", "Books library")
-            .with_action(open_book_operation())
-            .with_children(books),
-    ]
+    let library = Resource::new("ebook.library", "ebook.library", "Books library")
+        .with_action(open_book_operation())
+        .with_children(books)
+        .with_child(settings_resource(doc));
+    vec![library_preference_actions(library, doc)]
 }
 
 impl ResourceProvider for crate::app::BooksApp {
@@ -1536,14 +1846,37 @@ mod tests {
         assert_eq!(library.id.as_str(), "ebook.library");
         assert_eq!(
             library.children.len(),
-            app.library().len(),
-            "every shelf book"
+            app.library().len() + 1,
+            "every shelf book plus durable reader settings"
         );
-        assert!(library.children.iter().all(|book| {
-            book.actions
+        assert!(
+            library
+                .children
                 .iter()
-                .any(|action| action.id == "open" && action.kind == OperationKind::View)
-        }));
+                .filter(|resource| resource.kind == "ebook.book")
+                .all(|book| {
+                    book.actions
+                        .iter()
+                        .any(|action| action.id == "open" && action.kind == OperationKind::View)
+                })
+        );
+        let settings = library
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "ebook.settings")
+            .expect("settings are a canonical nested resource");
+        assert!(
+            settings
+                .children
+                .iter()
+                .any(|child| child.kind == "ebook.font")
+        );
+        assert!(
+            settings
+                .children
+                .iter()
+                .any(|child| child.kind == "ebook.color-scheme")
+        );
         assert!(
             library
                 .actions
@@ -1702,6 +2035,116 @@ mod tests {
             assert!(BooksDoc::read_library_entries(peer).is_empty());
         }
         assert_eq!(a.get_heads(), b.get_heads(), "replay converges exactly");
+    }
+
+    #[test]
+    fn encoded_import_action_restores_the_same_content_addressed_row_on_a_peer() {
+        use crate::model::LibraryEntry;
+
+        let entry = LibraryEntry {
+            id: "book:fedcba9876543210fedcba9876543210".into(),
+            shared: true,
+            title: "A shared book".into(),
+            author: "A. Reader".into(),
+            subject: "Architecture".into(),
+            added: 42,
+        };
+        let action = restore_library_book_action(&entry);
+        let encoded = encode(&action);
+        let mut author = AutoCommit::new();
+        let envelope = qos_actions::apply_local(&mut author, &action, encoded).unwrap();
+        let mut peer = AutoCommit::new();
+        qos_actions::replay(&mut peer, &envelope, &registry()).unwrap();
+
+        assert_eq!(BooksDoc::read_library_entries(&author), vec![entry.clone()]);
+        assert_eq!(BooksDoc::read_library_entries(&peer), vec![entry]);
+        assert_eq!(author.get_heads(), peer.get_heads());
+    }
+
+    #[test]
+    fn encoded_registry_actions_converge_without_lost_siblings_or_resurrection() {
+        use crate::model::{FontEntry, FontKind, ReadTheme};
+
+        let mut base = AutoCommit::new().with_actor(ActorId::random());
+        let original = Settings::default();
+        let mut left = base.fork().with_actor(ActorId::random());
+        let mut right = base.fork().with_actor(ActorId::random());
+        let mut themed = original.clone();
+        themed.theme = ReadTheme::Dark;
+        let mut spaced = original.clone();
+        spaced.line_spacing = 1.55;
+        for (peer, action) in [
+            (
+                &mut left,
+                set_reading_settings_action(original.clone(), themed),
+            ),
+            (&mut right, set_reading_settings_action(original, spaced)),
+        ] {
+            let encoded = encode(&action);
+            registry().decode(&encoded).unwrap().apply(peer).unwrap();
+        }
+        let left_font = FontEntry::new(
+            "font-left",
+            FontKind::Named("Atkinson Hyperlegible".into()),
+            "Atkinson",
+            1.0,
+            true,
+        );
+        let right_font = FontEntry::new(
+            "font-right",
+            FontKind::Named("Literata".into()),
+            "Literata",
+            1.08,
+            true,
+        );
+        for (peer, action) in [
+            (&mut left, upsert_font_action(left_font.clone())),
+            (&mut right, upsert_font_action(right_font.clone())),
+        ] {
+            let encoded = encode(&action);
+            registry().decode(&encoded).unwrap().apply(peer).unwrap();
+        }
+        left.merge(&mut right).unwrap();
+        right.merge(&mut left).unwrap();
+        for peer in [&left, &right] {
+            let settings = BooksDoc::read_settings(peer);
+            assert_eq!(settings.theme, ReadTheme::Dark);
+            assert_eq!(settings.line_spacing, 1.55);
+            let ids: Vec<String> = BooksDoc::read_fonts(peer)
+                .into_iter()
+                .map(|font| font.id)
+                .collect();
+            assert!(ids.contains(&left_font.id), "left sibling survives");
+            assert!(ids.contains(&right_font.id), "right sibling survives");
+        }
+
+        let mut deleting = left.fork().with_actor(ActorId::random());
+        let mut editing = left.fork().with_actor(ActorId::random());
+        let delete = delete_font_action(&left_font.id);
+        let mut late_edit = left_font.clone();
+        late_edit.name = "Late offline rename".into();
+        for (peer, action) in [
+            (&mut deleting, delete),
+            (&mut editing, upsert_font_action(late_edit)),
+        ] {
+            let encoded = encode(&action);
+            registry().decode(&encoded).unwrap().apply(peer).unwrap();
+        }
+        deleting.merge(&mut editing).unwrap();
+        editing.merge(&mut deleting).unwrap();
+        for peer in [&deleting, &editing] {
+            assert!(
+                BooksDoc::read_fonts(peer)
+                    .iter()
+                    .all(|font| font.id != left_font.id),
+                "the stable-id tombstone wins over an offline edit"
+            );
+        }
+        assert_eq!(
+            BooksDoc::read_fonts(&deleting),
+            BooksDoc::read_fonts(&editing),
+            "both replicas materialise the same stable registry"
+        );
     }
 
     /// Deleting the highlight through its action removes the highlight *and*
