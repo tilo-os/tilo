@@ -4,8 +4,8 @@
 The selector works from Cargo metadata rather than a hand-maintained package
 list.  A package is selected when its own files change, or when it transitively
 depends on a changed workspace package.  Repository-wide build inputs fall back
-to the complete workspace.  The emitted two-shard matrix is consumed directly
-by Forgejo Actions.
+to the complete workspace. Each balanced shard runs on both native architectures.
+The emitted matrix is consumed directly by Forgejo Actions.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Iterable
 
 
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc"}
+NATIVE_RUNNERS = {"x86_64": "runner", "aarch64": "runner-arm64"}
 GLOBAL_FILES = {
     "Cargo.toml",
     "Cargo.lock",
@@ -193,7 +194,11 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int) 
         "estimated_cost": sum(package_cost(packages[name]) for name in selected),
         "requested_shards": shard_count,
         "shard_count": effective_shards,
-        "matrix": {"include": balance(selected, packages, effective_shards)},
+        "matrix": {"include": [
+            {**shard, "arch": arch, "runner": runner}
+            for arch, runner in NATIVE_RUNNERS.items()
+            for shard in balance(selected, packages, effective_shards)
+        ]},
     }
 
 
