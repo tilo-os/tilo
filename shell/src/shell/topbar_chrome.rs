@@ -440,8 +440,8 @@ pub struct TopBarChrome {
     media_started: Option<Instant>,
     media_expanded: bool,
     notification_badge: u32,
-    /// Last completed timer generation announced by this shell instance.
-    clock_notified_generation: u64,
+    /// Latest durable due-event identity announced by this shell instance.
+    clock_notified_id: Option<String>,
     clock_overlay_pos: Option<Point>,
     clock_overlay_rect: Rect,
     clock_pause_rect: Rect,
@@ -667,7 +667,7 @@ impl TopBarChrome {
             media_started: None,
             media_expanded: false,
             notification_badge: 0,
-            clock_notified_generation: 0,
+            clock_notified_id: None,
             clock_overlay_pos: None,
             clock_overlay_rect: Rect::ZERO,
             clock_pause_rect: Rect::ZERO,
@@ -2424,20 +2424,24 @@ impl TopBarChrome {
             && std::path::Path::new(&format!("/proc/{}", activity.producer_pid)).exists()
         {
             let mut state = chrome.borrow_mut();
+            if let Some(notification_id) = activity.notification_id.as_ref()
+                && self.clock_notified_id.as_ref() != Some(notification_id)
+            {
+                state.push_notification(
+                    if activity.notification_title.is_empty() {
+                        "Clocks"
+                    } else {
+                        &activity.notification_title
+                    },
+                    if activity.notification_body.is_empty() {
+                        "Time is up"
+                    } else {
+                        &activity.notification_body
+                    },
+                );
+                self.clock_notified_id = Some(notification_id.clone());
+            }
             if activity.active {
-                if activity.remaining_secs == 0
-                    && activity.generation != self.clock_notified_generation
-                {
-                    state.push_notification(
-                        "Timer finished",
-                        if activity.label.is_empty() {
-                            "Time is up"
-                        } else {
-                            &activity.label
-                        },
-                    );
-                    self.clock_notified_generation = activity.generation;
-                }
                 state.overlays.clock = activity.overlay;
                 state.clock_activity = Some(activity);
             } else {
