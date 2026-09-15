@@ -23,6 +23,13 @@ use threshold_identity::ThresholdIdentity;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use ui::widget::identity_flow::IdentityRecord;
 
+fn identity_load_error(error: runtime_identity::NotAvailable) -> io::Error {
+    match error {
+        runtime_identity::NotAvailable::ConnectionFailed(error) => error,
+        other => io::Error::new(io::ErrorKind::InvalidData, other.to_string()),
+    }
+}
+
 /// Human-facing name of the Unix account running this session.
 ///
 /// This is only used by the compatibility path where Tilo Desktop is installed
@@ -600,8 +607,7 @@ fn ensure_collaboration_identity_in_context(
             (primary_path, outcome)
         };
 
-    let signer = runtime_identity::load_from_path(selected_path)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let signer = runtime_identity::load_from_path(selected_path).map_err(identity_load_error)?;
     if !signer.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
