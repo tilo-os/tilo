@@ -4,7 +4,7 @@
 //!
 //! The qOS side deliberately has **no "Install" button**. `Open`
 //! fetches the package the first time and launches it every time;
-//! `Mark installed` (pin) is the separate, optional step that keeps an
+//! `Keep on device` (pin) is the separate, optional step that keeps an
 //! app and ranks it first. app-host binds the download to the signed
 //! catalogue's root, publisher, app id, version, and size before extracting.
 
@@ -112,7 +112,7 @@ pub fn download_qpkg(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
     }
-    std::fs::write(dest, &bytes).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    atomic_file::write(dest, &bytes).map_err(|e| format!("write {}: {e}", dest.display()))?;
     Ok(bytes.len() as u64)
 }
 
