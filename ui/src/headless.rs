@@ -1035,32 +1035,20 @@ impl FrameHarness {
         let measure_map = self.node_map.clone();
         let text = &mut self.text;
         let bindings = &self.bindings;
-        let layout_result = self.taffy.compute_layout_with_measure(
-            root_node,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if measure_map.contains_key(&node_id) {
-                    // SAFETY: `node_map` holds pointers into `self.root`,
-                    // which outlives this call and is not otherwise
-                    // borrowed here. Same contract as `App`'s own measure
-                    // closure.
-                    unsafe {
-                        crate::bound_dispatch::mutate_bound_node(
-                            bindings,
-                            &measure_map,
-                            node_id,
-                            |widget| widget.measure(known, available, text),
-                        )
-                    }
-                    .unwrap_or(taffy::Size::ZERO)
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        );
+        // SAFETY: Driver exclusively owns this exact live tree and its maps.
+        let layout_result = unsafe {
+            crate::widget::compute_widget_layout(
+                &mut self.taffy,
+                root_node,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                &measure_map,
+                bindings,
+                text,
+            )
+        };
         // Mirrors `App`'s own frame loop (`ui/src/app.rs`): a computed-layout
         // failure skips this frame rather than crashing the driven process.
         if let Err(err) = layout_result {
