@@ -301,6 +301,15 @@ pub fn approved_policy(
     digest
 }
 
+/// The NV counter comparison embedded in a sealed generation policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NvConstraint {
+    /// TPM NV index containing the monotonic rollback floor.
+    pub index: u32,
+    /// Absolute counter value this generation permits or exceeds.
+    pub operand: u64,
+}
+
 /// The full seal policy digest for one generation.
 ///
 /// # Errors
@@ -312,15 +321,14 @@ pub fn seal_policy(
     key_name: &[u8],
     platform_selection: &str,
     gen_num: u64,
-    nv_index: u32,
-    nv_operand: u64,
+    nv: NvConstraint,
     with_pin: bool,
 ) -> Result<Vec<u8>> {
     flush(runner);
     let name_file = ws.put("signkey.name", key_name)?;
     let ref_file = ws.put("policyref.bin", &generation::policy_ref(gen_num))?;
-    let operand_file = ws.put("operand.bin", &nv_operand.to_be_bytes())?;
-    let idx = format!("0x{nv_index:08X}");
+    let operand_file = ws.put("operand.bin", &nv.operand.to_be_bytes())?;
+    let idx = format!("0x{:08X}", nv.index);
     let sess = ws.path("trial_seal.ctx");
 
     require(
