@@ -933,6 +933,27 @@ pub struct MessageResource {
     pub label: String,
     pub pinned: bool,
     pub parent: Option<String>,
+    /// An attachment is a durable, content-addressed child of the message,
+    /// rather than an unsearchable bit of its paint. There can be only one in
+    /// the current message schema, so its stable address is keyed by message.
+    pub attachment: Option<AttachmentResource>,
+    /// Reactions are shared rows keyed by their canonical emoji value. Keeping
+    /// them as children makes a reaction discoverable and actionable without
+    /// forcing callers to parse the message body or inspect a rendered chip.
+    pub reactions: Vec<ReactionResource>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AttachmentResource {
+    pub name: String,
+    pub blob: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReactionResource {
+    pub emoji: String,
+    pub count: usize,
+    pub reacted_by_me: bool,
 }
 
 /// The presentation context Chat hands [`provide_resources`]: the local peer id,
@@ -1182,25 +1203,72 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         annotate_contracts(&mut resource);
         return Some(resource);
     }
-    let message_id = id.strip_prefix("chat.message:")?;
-    let message = ChatDoc::list_channels(doc)
-        .into_iter()
-        .find_map(|channel| {
-            ChatDoc::list_messages(doc, &channel.id)
+    if let Some(message_id) = id.strip_prefix("chat.attachment:") {
+        let (channel, message) = find_message(doc, message_id)?;
+        let attachment = message.attachment.as_ref()?;
+        let workspace = ChatDoc::list_workspaces(doc)
+            .into_iter()
+            .find(|workspace| workspace.id == channel.workspace)?;
+        let channel_model = channel_resource(&channel);
+        let mut resource = build_attachment_resource(
+            &workspace.id,
+            &channel_model,
+            &message.id,
+            message.parent.as_ref(),
+            &AttachmentResource {
+                name: attachment.name().to_owned(),
+                blob: attachment.blob().to_owned(),
+            },
+        );
+        annotate_contracts(&mut resource);
+        return Some(resource);
+    }
+    if let Some(rest) = id.strip_prefix("chat.reaction:") {
+        // Emoji is unconstrained Unicode and may itself contain ':' (custom
+        // emoji commonly do), so resolve against the complete message-id
+        // catalogue rather than splitting an opaque stable id heuristically.
+        let (channel, message, reaction) =
+            ChatDoc::list_channels(doc)
                 .into_iter()
-                .find(|message| message.id == message_id)
-                .map(|message| (channel, message))
-        })?;
+                .find_map(|channel| {
+                    ChatDoc::list_messages(doc, &channel.id)
+                        .into_iter()
+                        .find_map(|message| {
+                            message.reactions.iter().find_map(|reaction| {
+                                let candidate = format!("{}:{}", message.id, reaction.emoji);
+                                (candidate == rest)
+                                    .then(|| (channel.clone(), message.clone(), reaction.clone()))
+                            })
+                        })
+                })?;
+        let workspace = ChatDoc::list_workspaces(doc)
+            .into_iter()
+            .find(|workspace| workspace.id == channel.workspace)?;
+        let channel_model = channel_resource(&channel);
+        let reaction_count = reaction.count();
+        let reacted_by_me = reaction.reacted_by(&ctx.me);
+        let mut resource = build_reaction_resource(
+            ctx,
+            &workspace.id,
+            &channel_model,
+            &message.id,
+            message.parent.as_ref(),
+            &ReactionResource {
+                emoji: reaction.emoji,
+                count: reaction_count,
+                reacted_by_me,
+            },
+        );
+        annotate_contracts(&mut resource);
+        return Some(resource);
+    }
+    let message_id = id.strip_prefix("chat.message:")?;
+    let message = find_message(doc, message_id)?;
     let (channel, message) = message;
     let workspace = ChatDoc::list_workspaces(doc)
         .into_iter()
         .find(|workspace| workspace.id == channel.workspace)?;
-    let channel_model = ChannelResource {
-        id: channel.id,
-        name: channel.name,
-        kind: channel.kind,
-        archived: channel.archived,
-    };
+    let channel_model = channel_resource(&channel);
     let users = ChatDoc::list_users(doc);
     let message_model = MessageResource {
         id: message.id,
@@ -1212,10 +1280,49 @@ pub fn resolve_resource(ctx: &ChatResourceCtx, doc: &AutoCommit, id: &str) -> Op
         ),
         pinned: message.pinned,
         parent: message.parent,
+        attachment: message
+            .attachment
+            .as_ref()
+            .map(|attachment| AttachmentResource {
+                name: attachment.name().to_owned(),
+                blob: attachment.blob().to_owned(),
+            }),
+        reactions: message
+            .reactions
+            .iter()
+            .map(|reaction| ReactionResource {
+                emoji: reaction.emoji.clone(),
+                count: reaction.count(),
+                reacted_by_me: reaction.reacted_by(&ctx.me),
+            })
+            .collect(),
     };
     let mut resource = build_message_resource(ctx, &workspace.id, &channel_model, &message_model);
     annotate_contracts(&mut resource);
     Some(resource)
+}
+
+/// Resolve an immutable message row and its owning channel once. Resource
+/// resolution must read the document, never a currently rendered projection.
+fn find_message(
+    doc: &AutoCommit,
+    message_id: &str,
+) -> Option<(crate::model::Channel, crate::model::Message)> {
+    ChatDoc::list_channels(doc).into_iter().find_map(|channel| {
+        ChatDoc::list_messages(doc, &channel.id)
+            .into_iter()
+            .find(|message| message.id == message_id)
+            .map(|message| (channel, message))
+    })
+}
+
+fn channel_resource(channel: &crate::model::Channel) -> ChannelResource {
+    ChannelResource {
+        id: channel.id.clone(),
+        name: channel.name.clone(),
+        kind: channel.kind,
+        archived: channel.archived,
+    }
 }
 
 /// Workspace-level: create a new text channel in the uncategorised group. The
@@ -1620,7 +1727,104 @@ fn build_message_resource(
         &delete_message_action(&ch.id, &m.id),
     ));
 
+    if let Some(attachment) = &m.attachment {
+        message = message.with_child(build_attachment_resource(
+            workspace_id,
+            ch,
+            &m.id,
+            m.parent.as_ref(),
+            attachment,
+        ));
+    }
+    for reaction in &m.reactions {
+        message = message.with_child(build_reaction_resource(
+            ctx,
+            workspace_id,
+            ch,
+            &m.id,
+            m.parent.as_ref(),
+            reaction,
+        ));
+    }
+
     message
+}
+
+/// The portable attachment is an addressable child of its message. Opening it
+/// deliberately reveals the owning message: qdoc hydration/opening happens in
+/// the content app that knows the file type, whereas Chat's truthful action is
+/// to navigate to the durable conversation record that shared it.
+fn build_attachment_resource(
+    workspace_id: &str,
+    ch: &ChannelResource,
+    message_id: &str,
+    parent: Option<&String>,
+    attachment: &AttachmentResource,
+) -> Resource {
+    Resource::new(
+        format!("chat.attachment:{message_id}"),
+        "chat.attachment",
+        attachment.name.clone(),
+    )
+    .with_action(view_operation(
+        "open-message",
+        "Reveal shared message",
+        &ChatOperation::RevealMessage {
+            workspace: workspace_id.to_owned(),
+            channel: ch.id.clone(),
+            message: message_id.to_owned(),
+            parent: parent.cloned(),
+        },
+    ))
+}
+
+/// A reaction is both a durable aggregate and a direct action surface. The
+/// canonical resource contains the current count in its label and its one
+/// available mutation is the same absolute Add/Remove action the painted chip
+/// dispatches; it never reimplements a local toggle.
+fn build_reaction_resource(
+    ctx: &ChatResourceCtx,
+    workspace_id: &str,
+    ch: &ChannelResource,
+    message_id: &str,
+    parent: Option<&String>,
+    reaction: &ReactionResource,
+) -> Resource {
+    let label = format!("{} · {}", reaction.emoji, reaction.count);
+    let mut resource = Resource::new(
+        format!("chat.reaction:{message_id}:{}", reaction.emoji),
+        "chat.reaction",
+        label,
+    )
+    .with_action(view_operation(
+        "open-message",
+        "Reveal message",
+        &ChatOperation::RevealMessage {
+            workspace: workspace_id.to_owned(),
+            channel: ch.id.clone(),
+            message: message_id.to_owned(),
+            parent: parent.cloned(),
+        },
+    ));
+    let action = if reaction.reacted_by_me {
+        remove_reaction_action(&ch.id, message_id, &reaction.emoji, &ctx.me)
+    } else {
+        add_reaction_action(&ch.id, message_id, &reaction.emoji, &ctx.me)
+    };
+    resource = resource.with_action(immediate_spec(
+        if reaction.reacted_by_me {
+            "remove"
+        } else {
+            "add"
+        },
+        if reaction.reacted_by_me {
+            "Remove my reaction"
+        } else {
+            "Add my reaction"
+        },
+        &action,
+    ));
+    resource
 }
 
 fn message_label(
@@ -1733,6 +1937,19 @@ mod tests {
                 label: m.text.chars().take(24).collect(),
                 pinned: m.pinned,
                 parent: m.parent,
+                attachment: m.attachment.as_ref().map(|attachment| AttachmentResource {
+                    name: attachment.name().to_owned(),
+                    blob: attachment.blob().to_owned(),
+                }),
+                reactions: m
+                    .reactions
+                    .iter()
+                    .map(|reaction| ReactionResource {
+                        emoji: reaction.emoji.clone(),
+                        count: reaction.count(),
+                        reacted_by_me: reaction.reacted_by(model::ME),
+                    })
+                    .collect(),
             })
             .collect();
         ChatResourceCtx {
@@ -1795,6 +2012,22 @@ mod tests {
             label: source.text,
             pinned: source.pinned,
             parent: source.parent,
+            attachment: source
+                .attachment
+                .as_ref()
+                .map(|attachment| AttachmentResource {
+                    name: attachment.name().to_owned(),
+                    blob: attachment.blob().to_owned(),
+                }),
+            reactions: source
+                .reactions
+                .iter()
+                .map(|reaction| ReactionResource {
+                    emoji: reaction.emoji.clone(),
+                    count: reaction.count(),
+                    reacted_by_me: reaction.reacted_by(model::ME),
+                })
+                .collect(),
         };
         let msg = build_message_resource(&ctx, "ws_acme", ch, &msg_model);
         assert_eq!(msg.kind, "chat.message");
@@ -1876,6 +2109,41 @@ mod tests {
         );
     }
 
+    /// Attachments and reaction aggregates are durable parts of a message, so
+    /// both must have a stable lazy address rather than being discoverable only
+    /// by scanning the painted timeline.
+    #[test]
+    fn attachment_and_reaction_resources_resolve_with_canonical_actions() {
+        let doc = seeded();
+        let ctx = ctx_from(&doc);
+
+        let attachment = resolve_resource(&ctx, &doc, "chat.attachment:m_concept")
+            .expect("attached message exposes its portable child resource");
+        assert_eq!(attachment.kind, "chat.attachment");
+        assert!(
+            attachment
+                .actions
+                .iter()
+                .any(|action| action.id == "open-message")
+        );
+
+        let reaction = resolve_resource(&ctx, &doc, "chat.reaction:m_concept:❤️")
+            .expect("reaction aggregate exposes its canonical child resource");
+        assert_eq!(reaction.kind, "chat.reaction");
+        let remove = reaction
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .expect("your current reaction offers the shared remove action");
+        let expected = encode(&remove_reaction_action(
+            "c_crit",
+            "m_concept",
+            "❤️",
+            model::ME,
+        ));
+        assert_eq!(immediate_encode(remove).payload, expected.payload);
+    }
+
     #[test]
     fn ten_thousand_messages_do_not_expand_the_open_snapshot() {
         let doc = seeded();
@@ -1886,6 +2154,8 @@ mod tests {
                 label: format!("Message {id}"),
                 pinned: false,
                 parent: None,
+                attachment: None,
+                reactions: Vec::new(),
             })
             .collect();
         let resources = provide_resources(&ctx, &doc);
@@ -2326,6 +2596,22 @@ mod tests {
                 label: source.text,
                 pinned: source.pinned,
                 parent: source.parent,
+                attachment: source
+                    .attachment
+                    .as_ref()
+                    .map(|attachment| AttachmentResource {
+                        name: attachment.name().to_owned(),
+                        blob: attachment.blob().to_owned(),
+                    }),
+                reactions: source
+                    .reactions
+                    .iter()
+                    .map(|reaction| ReactionResource {
+                        emoji: reaction.emoji.clone(),
+                        count: reaction.count(),
+                        reacted_by_me: reaction.reacted_by(model::ME),
+                    })
+                    .collect(),
             },
         );
         let pin_spec = msg.actions.iter().find(|a| a.id == "pin").unwrap();
@@ -2391,6 +2677,22 @@ mod tests {
                 label: source.text,
                 pinned: source.pinned,
                 parent: source.parent,
+                attachment: source
+                    .attachment
+                    .as_ref()
+                    .map(|attachment| AttachmentResource {
+                        name: attachment.name().to_owned(),
+                        blob: attachment.blob().to_owned(),
+                    }),
+                reactions: source
+                    .reactions
+                    .iter()
+                    .map(|reaction| ReactionResource {
+                        emoji: reaction.emoji.clone(),
+                        count: reaction.count(),
+                        reacted_by_me: reaction.reacted_by(model::ME),
+                    })
+                    .collect(),
             },
         );
         assert_eq!(
