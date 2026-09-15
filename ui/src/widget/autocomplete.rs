@@ -132,6 +132,14 @@ fn px(v: f64) -> f32 {
     v as f32
 }
 
+/// Converts a size from the theme's already-scaled typography tokens back to
+/// the renderer's input space. `TextRenderer` applies its own accessibility
+/// scale while shaping and measuring, so passing a scaled token through
+/// unchanged would apply the preference twice.
+fn renderer_font_size(theme_size: f32, renderer_scale: f32) -> f32 {
+    theme_size / renderer_scale.max(f32::EPSILON)
+}
+
 pub struct Autocomplete {
     id: String,
     /// The real editable field — owns caret / selection / clipboard / IME.
@@ -500,8 +508,12 @@ impl Autocomplete {
         } else {
             tokens.colors.text_dim
         };
-        let text_size = tokens.typography.scale.base;
-        let detail_size = tokens.typography.scale.sm;
+        let text_size =
+            renderer_font_size(tokens.typography.scale.base, text_renderer.text_scale());
+        let detail_size =
+            renderer_font_size(tokens.typography.scale.sm, text_renderer.text_scale());
+        let rendered_text_height = f64::from(tokens.typography.scale.base);
+        let rendered_detail_height = f64::from(tokens.typography.scale.sm);
         let large_text = self.text_scale >= 1.5;
         let icon_px = ICON_PX * self.text_scale.min(1.5);
         let mut x = row.x0 + ROW_PAD_X;
@@ -524,7 +536,7 @@ impl Autocomplete {
         let ty = if large_text && s.detail.is_some() {
             row.y0 + 7.0
         } else {
-            row.y0 + (row.height() - f64::from(text_size) * self.text_scale) / 2.0
+            row.y0 + (row.height() - rendered_text_height) / 2.0
         };
         // Right-aligned detail first, so we can bound the label width.
         let mut label_x1 = row.x1 - ROW_PAD_X;
@@ -547,7 +559,7 @@ impl Autocomplete {
                     if large_text {
                         row.y0 + row.height() / 2.0 + 2.0
                     } else {
-                        row.y0 + (row.height() - f64::from(detail_size)) / 2.0
+                        row.y0 + (row.height() - rendered_detail_height) / 2.0
                     },
                 )),
                 None,
@@ -724,12 +736,14 @@ impl Widget for Autocomplete {
             &shape,
         );
 
-        let text_size = tokens.typography.scale.base;
+        let text_size =
+            renderer_font_size(tokens.typography.scale.base, text_renderer.text_scale());
 
         // No rows yet: render the lone status line (loading / no matches).
         if self.suggestions.is_empty() {
             if let Some(status) = &self.status {
-                let ty = panel.y0 + (panel.height() - f64::from(text_size)) / 2.0;
+                let rendered_text_height = f64::from(tokens.typography.scale.base);
+                let ty = panel.y0 + (panel.height() - rendered_text_height) / 2.0;
                 text_renderer.draw_text(
                     scene,
                     status,
@@ -1236,5 +1250,21 @@ mod tests {
         assert_eq!(first.height(), ROW_H * 2.0);
         assert_eq!(first.y1, second.y0, "rows do not overlap");
         assert_eq!(ac.row_at(second.center()), Some(1));
+    }
+
+    #[test]
+    fn scaled_theme_font_is_normalized_before_scaled_text_rendering() {
+        let normal = Theme::dark();
+        let large = Theme::dark().with_text_scale(2.0);
+
+        assert_eq!(
+            renderer_font_size(large.tokens.typography.scale.base, large.text_scale),
+            normal.tokens.typography.scale.base,
+            "theme and renderer must not both apply the accessibility text scale"
+        );
+        assert_eq!(
+            renderer_font_size(large.tokens.typography.scale.sm, large.text_scale),
+            normal.tokens.typography.scale.sm,
+        );
     }
 }

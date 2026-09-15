@@ -51,10 +51,11 @@ struct StripGeometry {
     icon_cy: f64,
     precip_y: f64,
     label_y: f64,
+    large_text: bool,
 }
 
 impl StripGeometry {
-    fn new(band: Rect, cols: &[HourColumn], col_w: f64, scroll_x: f64) -> Self {
+    fn new(band: Rect, cols: &[HourColumn], col_w: f64, scroll_x: f64, text_scale: f32) -> Self {
         // Temperature range for the curve, with headroom so it never clips.
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
         for p in cols {
@@ -65,18 +66,20 @@ impl StripGeometry {
             hi += 1.0;
             lo -= 1.0;
         }
+        let large_text = text_scale >= 1.5;
         Self {
             band,
             scroll_x,
             col_w,
             lo,
             span: hi - lo,
-            curve_top: band.y0 + 22.0,
-            curve_bottom: band.y0 + 58.0,
+            curve_top: band.y0 + if large_text { 42.0 } else { 22.0 },
+            curve_bottom: band.y0 + if large_text { 84.0 } else { 58.0 },
             value_y: band.y0 + 2.0,
-            icon_cy: band.y0 + 82.0,
-            precip_y: band.y0 + 100.0,
-            label_y: band.y1 - 15.0,
+            icon_cy: band.y0 + if large_text { 126.0 } else { 82.0 },
+            precip_y: band.y0 + if large_text { 152.0 } else { 100.0 },
+            label_y: band.y1 - if large_text { 28.0 } else { 15.0 },
+            large_text,
         }
     }
 
@@ -111,7 +114,7 @@ pub fn draw_hourly_strip(
     if cols.is_empty() {
         return;
     }
-    let geo = StripGeometry::new(band, cols, col_w, scroll_x);
+    let geo = StripGeometry::new(band, cols, col_w, scroll_x, theme.text_scale);
 
     // Clip everything to the band so scrolled-off columns don't bleed out.
     scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &band);
@@ -221,11 +224,12 @@ fn draw_column_marks(
 
         // Temperature value.
         let val = format!("{}{}", p.temp.round() as i64, temp_suffix);
-        let (vw, _) = tr.measure_weighted(&val, 13.0, None, TextWeight::Semibold);
+        let value_size = if geo.large_text { 11.0 } else { 13.0 };
+        let (vw, _) = tr.measure_weighted(&val, value_size, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             &val,
-            13.0,
+            value_size,
             c.text_primary,
             t * Affine::translate((cx - f64::from(vw) / 2.0, geo.value_y)),
             None,
@@ -267,11 +271,12 @@ fn draw_column_marks(
                 &Circle::new(drop_c, 2.4),
             );
             let txt = format!("{}%", p.precip.round() as i64);
-            let (pw, _) = tr.measure(&txt, 11.0, None);
+            let detail_size = if geo.large_text { 9.0 } else { 11.0 };
+            let (pw, _) = tr.measure(&txt, detail_size, None);
             tr.draw_text(
                 scene,
                 &txt,
-                11.0,
+                detail_size,
                 c.semantic.info,
                 t * Affine::translate((cx - f64::from(pw) / 2.0 + 4.0, geo.precip_y - 2.0)),
                 None,
@@ -284,11 +289,12 @@ fn draw_column_marks(
         } else {
             (format!("{}:00", p.hour), TextWeight::Regular, c.text_dim)
         };
-        let (lw, _) = tr.measure_weighted(&label, 11.0, None, weight);
+        let label_size = if geo.large_text { 9.0 } else { 11.0 };
+        let (lw, _) = tr.measure_weighted(&label, label_size, None, weight);
         tr.draw_text_weighted(
             scene,
             &label,
-            11.0,
+            label_size,
             color,
             t * Affine::translate((cx - f64::from(lw) / 2.0, geo.label_y)),
             None,

@@ -54,6 +54,11 @@ pub enum WeatherAction {
     SetLocationOrder {
         ids: Vec<String>,
     },
+    /// Absolute, granular reorder operation for one stable location.
+    SetLocationRank {
+        id: String,
+        rank: f64,
+    },
 }
 
 impl Action for WeatherAction {
@@ -80,6 +85,11 @@ impl Action for WeatherAction {
             Self::SetLocationOrder { ids } => {
                 let ids: Vec<LocationId> = ids.iter().filter_map(|id| id.parse().ok()).collect();
                 WeatherDoc::set_location_order(doc, &ids);
+            }
+            Self::SetLocationRank { id, rank } => {
+                if let Ok(id) = id.parse::<LocationId>() {
+                    WeatherDoc::set_location_rank(doc, id, *rank);
+                }
             }
         }
         Ok(())
@@ -116,6 +126,13 @@ pub fn select_location_action(id: LocationId) -> WeatherAction {
 pub fn location_order_action(ids: &[LocationId]) -> WeatherAction {
     WeatherAction::SetLocationOrder {
         ids: ids.iter().map(ToString::to_string).collect(),
+    }
+}
+
+pub fn location_rank_action(id: LocationId, rank: f64) -> WeatherAction {
+    WeatherAction::SetLocationRank {
+        id: id.to_string(),
+        rank,
     }
 }
 
@@ -256,5 +273,46 @@ mod tests {
                 .iter()
                 .any(|location| location.id == tokyo.id)
         );
+    }
+
+    #[test]
+    fn encoded_moves_of_different_locations_converge_across_divergent_replicas() {
+        let mut base = seeded_doc();
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).unwrap();
+        let mut right = AutoCommit::load(&bytes).unwrap();
+        let locations = WeatherDoc::read_model(&base).locations;
+        let first = locations[0].id;
+        let last = locations[3].id;
+        let left_action = WeatherAction::SetLocationRank {
+            id: last.to_string(),
+            rank: -1024.0,
+        };
+        let right_action = WeatherAction::SetLocationRank {
+            id: first.to_string(),
+            rank: 8192.0,
+        };
+
+        let left_envelope =
+            qos_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
+        let right_envelope =
+            qos_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
+        qos_actions::replay(&mut left, &right_envelope, &registry()).unwrap();
+        qos_actions::replay(&mut right, &left_envelope, &registry()).unwrap();
+
+        assert_eq!(left.get_heads(), right.get_heads());
+        let left_ids: Vec<_> = WeatherDoc::read_model(&left)
+            .locations
+            .into_iter()
+            .map(|location| location.id)
+            .collect();
+        let right_ids: Vec<_> = WeatherDoc::read_model(&right)
+            .locations
+            .into_iter()
+            .map(|location| location.id)
+            .collect();
+        assert_eq!(left_ids, right_ids);
+        assert_eq!(left_ids.first(), Some(&last));
+        assert_eq!(left_ids.last(), Some(&first));
     }
 }
