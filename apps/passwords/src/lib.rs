@@ -199,6 +199,10 @@ pub fn app_root_showcase(mode: ShowcaseMode) -> Box<dyn Widget> {
     Box::new(PasswordsSurface::demo(mode))
 }
 
+pub fn app_root_long_list_showcase() -> Box<dyn Widget> {
+    Box::new(PasswordsSurface::demo_long_list())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

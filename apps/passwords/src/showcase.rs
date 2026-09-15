@@ -6,6 +6,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::scrollbar::{ScrollMetrics, Scrollbar};
 use ui::widget::{
     Button, ButtonFace, SegmentedFace, SegmentedStyle, SidebarDrawer, SidebarNav, SidebarNavItem,
     SidebarNavSection, TextInput, ToggleGroup, Widget,
@@ -153,6 +154,9 @@ pub struct PasswordsSurface {
     /// Retained navigation position for short/landscape phone drawers.
     sidebar_scroll: f64,
     sidebar_touch: Option<(u64, Point, f64)>,
+    /// First filtered vault row shown in the retained list viewport.
+    list_scroll: usize,
+    list_touch: Option<(u64, Point, usize)>,
     query: String,
     editing: Option<SecretId>,
     draft_title: String,
@@ -264,10 +268,75 @@ impl PasswordsSurface {
         ((rect.y1 - first_row) / 76.0).floor().max(0.0) as usize
     }
 
+    fn max_list_scroll(&self, rect: Rect) -> usize {
+        self.visible_indices()
+            .len()
+            .saturating_sub(Self::list_capacity(rect).max(1))
+    }
+
+    fn scroll_list_to(&mut self, rect: Rect, offset: usize) -> bool {
+        let next = offset.min(self.max_list_scroll(rect));
+        let changed = next != self.list_scroll;
+        self.list_scroll = next;
+        changed
+    }
+
+    fn ensure_selected_visible(&mut self, rect: Rect) {
+        let visible = self.visible_indices();
+        let Some(position) = visible.iter().position(|index| *index == self.selected) else {
+            self.list_scroll = 0;
+            return;
+        };
+        let capacity = Self::list_capacity(rect).max(1);
+        if position < self.list_scroll {
+            self.list_scroll = position;
+        } else if position >= self.list_scroll.saturating_add(capacity) {
+            self.list_scroll = position.saturating_add(1).saturating_sub(capacity);
+        }
+        self.list_scroll = self.list_scroll.min(self.max_list_scroll(rect));
+    }
+
+    fn current_list_rect(&self) -> Rect {
+        let content = Rect::new(
+            self.rect.x0 + 24.0,
+            self.rect.y0 + 24.0,
+            self.rect.x1 - 24.0,
+            self.rect.y1 - 24.0,
+        );
+        let main = self.drawer.content_rect();
+        if self.drawer.is_docked() {
+            Rect::new(main.x0, content.y0 + 4.0, main.x0 + 330.0, content.y1)
+        } else {
+            Rect::new(main.x0 + 60.0, main.y0, main.x1, main.y1)
+        }
+    }
+
+    fn move_list_selection(&mut self, forward: bool) {
+        let visible = self.visible_indices();
+        if visible.is_empty() {
+            return;
+        }
+        let current = visible
+            .iter()
+            .position(|index| *index == self.selected)
+            .unwrap_or(0);
+        let last = visible.len().saturating_sub(1);
+        let next = if forward {
+            current.saturating_add(1).min(last)
+        } else {
+            current.saturating_sub(1)
+        };
+        if let Some(selected) = visible.get(next).copied() {
+            self.selected = selected;
+        }
+        self.ensure_selected_visible(self.current_list_rect());
+    }
+
     fn select_filter(&mut self, filter: VaultFilter) {
         self.vault_filter = filter;
         self.mode = ShowcaseMode::Vault;
         self.mobile_detail = false;
+        self.list_scroll = 0;
         if let Some(first) = self.visible_indices().first().copied() {
             self.selected = first;
         }
@@ -322,6 +391,8 @@ impl PasswordsSurface {
                 .breakpoint(960.0),
             sidebar_scroll: 0.0,
             sidebar_touch: None,
+            list_scroll: 0,
+            list_touch: None,
             query: String::new(),
             editing: None,
             draft_title: String::new(),
@@ -391,6 +462,8 @@ impl PasswordsSurface {
                 .breakpoint(960.0),
             sidebar_scroll: 0.0,
             sidebar_touch: None,
+            list_scroll: 0,
+            list_touch: None,
             query: String::new(),
             editing,
             draft_title: "Northstar Bank".into(),
@@ -416,6 +489,23 @@ impl PasswordsSurface {
             export_portal: None,
             transfer_dialog,
         }
+    }
+
+    /// Deterministic overflow fixture for responsive screenshot and scrollbar
+    /// review. Values remain synthetic and are never backed by the live vault.
+    pub fn demo_long_list() -> Self {
+        let mut app = Self::demo(ShowcaseMode::Vault);
+        let seed = app.items.clone();
+        for cycle in 1..=3 {
+            for item in &seed {
+                let mut copy = item.clone();
+                copy.id = SecretId(format!("{}-{cycle}", copy.id.0));
+                copy.title = format!("{} {cycle}", copy.title);
+                app.items.push(copy);
+            }
+        }
+        app.list_scroll = 4;
+        app
     }
 
     fn loaded(mut self) -> Self {
@@ -1358,8 +1448,10 @@ impl PasswordsSurface {
             }
             let first_y = list.y0 + 168.0;
             let visible = self.visible_indices();
+            let scroll = self.list_scroll.min(self.max_list_scroll(list));
             for (display_index, item_index) in visible
                 .into_iter()
+                .skip(scroll)
                 .take(Self::list_capacity(list))
                 .enumerate()
             {
@@ -1999,7 +2091,10 @@ impl PasswordsSurface {
             TextWeight::Medium,
         );
         let shown = Self::list_capacity(rect);
-        for (display_index, item_index) in visible.into_iter().take(shown).enumerate() {
+        let total = visible.len();
+        let scroll = self.list_scroll.min(total.saturating_sub(shown.max(1)));
+        for (display_index, item_index) in visible.into_iter().skip(scroll).take(shown).enumerate()
+        {
             let item = &self.items[item_index];
             let y = tabs_y + 52.0 + display_index as f64 * 76.0;
             let row = Rect::new(rect.x0, y, rect.x1, y + 66.0);
@@ -2072,6 +2167,24 @@ impl PasswordsSurface {
                 );
             } else {
                 Icon::Star.draw(scene, transform, star, c.text_dim);
+            }
+        }
+        if total > shown && shown > 0 {
+            let track = Rect::new(
+                rect.x1 - 4.0,
+                tabs_y + 52.0,
+                rect.x1,
+                tabs_y + 52.0 + shown as f64 * 76.0 - 10.0,
+            );
+            let metrics = ScrollMetrics::new(total as f64, shown as f64, scroll as f64);
+            if let Some(thumb) = Scrollbar::vertical().thumb_rect(track, metrics) {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.border_standard,
+                    None,
+                    &RoundedRect::from_rect(thumb, 2.0),
+                );
             }
         }
     }
@@ -3078,9 +3191,12 @@ impl Widget for PasswordsSurface {
                         && self.last_pointer.y >= first_y
                     {
                         let display_index = ((self.last_pointer.y - first_y) / 76.0) as usize;
+                        let scroll = self.list_scroll.min(self.max_list_scroll(list));
                         if display_index < Self::list_capacity(list)
-                            && let Some(item_index) =
-                                self.visible_indices().get(display_index).copied()
+                            && let Some(item_index) = self
+                                .visible_indices()
+                                .get(scroll.saturating_add(display_index))
+                                .copied()
                         {
                             let row_y = first_y + display_index as f64 * 76.0;
                             if Rect::new(list.x1 - 52.0, row_y, list.x1, row_y + 68.0)
@@ -3265,6 +3381,32 @@ impl Widget for PasswordsSurface {
                     if self.scroll_sidebar_by(-dy) {
                         *handled = true;
                     }
+                } else {
+                    let list = self.current_list_rect();
+                    if (self.mode == ShowcaseMode::Vault || self.drawer.is_docked())
+                        && Rect::new(list.x0, list.y0 + 150.0, list.x1, list.y1)
+                            .contains(self.last_pointer)
+                    {
+                        let rows = match delta {
+                            MouseScrollDelta::LineDelta(_, y) => y.abs().ceil() as usize,
+                            MouseScrollDelta::PixelDelta(position) => {
+                                (position.y.abs() / 38.0).ceil() as usize
+                            }
+                        }
+                        .max(1);
+                        let upwards = match delta {
+                            MouseScrollDelta::LineDelta(_, y) => *y > 0.0,
+                            MouseScrollDelta::PixelDelta(position) => position.y > 0.0,
+                        };
+                        let next = if upwards {
+                            self.list_scroll.saturating_sub(rows)
+                        } else {
+                            self.list_scroll.saturating_add(rows)
+                        };
+                        if self.scroll_list_to(list, next) {
+                            *handled = true;
+                        }
+                    }
                 }
             }
             WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => {
@@ -3278,6 +3420,14 @@ impl Widget for PasswordsSurface {
                 if self.drawer.sidebar_contains(point) {
                     self.sidebar_touch = Some((touch.id, point, self.sidebar_scroll));
                     *handled = true;
+                } else {
+                    let list = self.current_list_rect();
+                    if (self.mode == ShowcaseMode::Vault || self.drawer.is_docked())
+                        && Rect::new(list.x0, list.y0 + 150.0, list.x1, list.y1).contains(point)
+                    {
+                        self.list_touch = Some((touch.id, point, self.list_scroll));
+                        *handled = true;
+                    }
                 }
             }
             WindowEvent::Touch(touch) if touch.phase == TouchPhase::Moved => {
@@ -3288,15 +3438,28 @@ impl Widget for PasswordsSurface {
                     self.sidebar_scroll = initial_scroll;
                     let _ = self.scroll_sidebar_by(start.y - point.y);
                     *handled = true;
+                } else if let Some((id, start, initial_scroll)) = self.list_touch
+                    && id == touch.id
+                {
+                    let point = Point::new(touch.location.x / scale, touch.location.y / scale);
+                    let rows = ((start.y - point.y) / 76.0).round() as isize;
+                    let next = initial_scroll.saturating_add_signed(rows);
+                    let list = self.current_list_rect();
+                    let _ = self.scroll_list_to(list, next);
+                    *handled = true;
                 }
             }
             WindowEvent::Touch(touch)
                 if matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled) =>
             {
                 let point = Point::new(touch.location.x / scale, touch.location.y / scale);
-                let was_scroll = self.sidebar_touch.take().is_some_and(|(id, start, _)| {
+                let sidebar_scroll = self.sidebar_touch.take().is_some_and(|(id, start, _)| {
                     id == touch.id && (start.y - point.y).abs() > 8.0
                 });
+                let list_scroll = self.list_touch.take().is_some_and(|(id, start, _)| {
+                    id == touch.id && (start.y - point.y).abs() > 8.0
+                });
+                let was_scroll = sidebar_scroll || list_scroll;
                 if touch.phase == TouchPhase::Ended && !was_scroll {
                     self.last_pointer = point;
                     if self.activate_touch(point) {
@@ -3360,22 +3523,24 @@ impl Widget for PasswordsSurface {
                     Key::Named(NamedKey::ArrowDown)
                         if self.active_field.is_none() && !self.items.is_empty() =>
                     {
-                        self.selected = (self.selected + 1).min(self.items.len() - 1);
+                        self.move_list_selection(true);
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) if self.active_field.is_none() => {
-                        self.selected = self.selected.saturating_sub(1);
+                        self.move_list_selection(false);
                         *handled = true;
                     }
                     Key::Named(NamedKey::Backspace)
                         if self.active_field == Some(ActiveField::Search) =>
                     {
                         self.query.pop();
+                        self.list_scroll = 0;
                         self.refresh();
                         *handled = true;
                     }
                     Key::Character(text) if self.active_field == Some(ActiveField::Search) => {
                         self.query.push_str(text);
+                        self.list_scroll = 0;
                         self.refresh();
                         *handled = true;
                     }
@@ -3799,6 +3964,7 @@ impl Widget for PasswordsSurface {
             ("passwords.search", Action::Focus) => self.active_field = Some(ActiveField::Search),
             ("passwords.search", Action::SetValue(value)) => {
                 self.query.clone_from(value);
+                self.list_scroll = 0;
                 self.refresh();
             }
             ("passwords.generate", Action::Activate) => self.generate_password(),
@@ -3850,6 +4016,7 @@ impl Widget for PasswordsSurface {
                     .and_then(|value| value.parse::<usize>().ok())
                 {
                     self.selected = index.min(self.items.len().saturating_sub(1));
+                    self.ensure_selected_visible(self.current_list_rect());
                 } else {
                     return false;
                 }
@@ -4040,6 +4207,36 @@ mod tests {
     fn phone_list_capacity_uses_every_fully_visible_row() {
         let list = Rect::new(76.0, 24.0, 366.0, 820.0);
         assert_eq!(PasswordsSurface::list_capacity(list), 8);
+    }
+
+    #[test]
+    fn long_vault_list_scrolls_clamps_and_keeps_keyboard_selection_visible() {
+        let mut app = PasswordsSurface::demo(ShowcaseMode::Vault);
+        let seed = app.items[0].clone();
+        for index in 0..18 {
+            let mut item = seed.clone();
+            item.id = SecretId(format!("overflow-{index}"));
+            item.title = format!("Overflow item {index}");
+            app.items.push(item);
+        }
+        let list = Rect::new(84.0, 24.0, 366.0, 430.0);
+        assert_eq!(PasswordsSurface::list_capacity(list), 3);
+        assert!(app.scroll_list_to(list, usize::MAX));
+        assert_eq!(app.list_scroll, app.items.len() - 3);
+        assert!(!app.scroll_list_to(list, usize::MAX));
+
+        app.selected = app.items.len() - 1;
+        app.ensure_selected_visible(list);
+        assert_eq!(app.list_scroll, app.items.len() - 3);
+        app.selected = 0;
+        app.ensure_selected_visible(list);
+        assert_eq!(app.list_scroll, 0);
+
+        app.select_filter(VaultFilter::Favorites);
+        assert_eq!(
+            app.list_scroll, 0,
+            "changing views starts at the first result"
+        );
     }
 
     #[test]
@@ -4348,7 +4545,7 @@ mod tests {
         app.transfer_dialog = None;
 
         let payload = serde_json::to_vec(&crate::actions::PasswordOperation::RequestDelete {
-            id: id.0.clone(),
+            id: id.0,
         })
         .unwrap();
         assert!(
