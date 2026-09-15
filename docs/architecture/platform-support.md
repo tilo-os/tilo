@@ -44,14 +44,23 @@ support. A completed compile check alone is not a claim of hardware support.
 | Dependency snapshots | Base index has ARM64; native RPM/kernel publication verifies both signed children and their source revision | Produce complete ARM64 dependencies and update existing x86-only pins |
 | Browser | WPE has native-architecture buildroot selection | Produce and validate an ARM64 WPE buildroot |
 | Windows compatibility | Service crates compile on ARM64 | Fedora ARM64 lacks Wine/DXVK RPMs; pinned Proton and VM hardware definitions need an explicit ARM64 implementation |
-| Imager | Native Windows host detection; ARM64 packaging checks PE architecture; both Windows release lanes and combined WinGet manifests required | Complete native Windows build, signed installer and UI acceptance |
+| Imager | Native Windows ARM64 executable builds, loads, and renders an offscreen fixture; library tests pass (138); file identity comes from the open native handle; ARM64 packaging checks PE architecture; both Windows release lanes and combined WinGet manifests required | Signed installer and live UI acceptance; investigate host Vulkan loader warnings separately from the successful offscreen render |
 | Desktop packaging | Build scripts contain ARM64 targets | Enable and validate native release lanes and architecture-specific assets |
-| CI | Both native architectures selected for affected packages; builder publication waits for native cache tests; native Vulkan paths | Run new lanes against published native builder/dependency indexes; extend remaining nightly coverage |
+| CI | Both native architectures selected for affected packages and ordinary app builds by default; builder publication waits for native cache tests; native Vulkan paths | Run new lanes against published native builder/dependency indexes; extend remaining nightly coverage |
 | Speech | Unix socket backend scoped to Unix; portable speech tests pass on Linux ARM64 (31) and Windows ARM64 (28) | Live speech and accessibility acceptance on each supported host |
+| Media | Native media tests pass on Linux ARM64 (98) and Windows ARM64 (91); Linux decode/encode features and affected video apps compile; file URLs use native path conversion; Unix DMA buffers use the target's standard file ABI | Live GPU/media acceptance |
+| Document quotas | Native file locks preserve cross-process serialization; quota regressions pass on Linux ARM64 and Windows ARM64 (10 each) | Full document storage integration coverage |
+| Hosted identity | Remote broker client remains portable; Windows rejects unsupported local authority storage without creating files | Local authority ownership and permission enforcement remains a Unix service; native Windows authority storage is not implemented |
 
 Validation was performed on a native ARM64 Fedora WSL environment. It exposes
 software QEMU emulation but no `/dev/kvm`. Secure Boot, measured boot and
 physical device support require their own acceptance evidence.
+
+After the hosted portability changes, native Linux Imager test targets and
+the required `cargo check -p shell --tests --locked` passed again. The Windows
+Imager executable also passed its package-loading smoke probe. The offscreen
+render uses fixture data and does not establish that an ARM64 OS image is
+available or that live installation works.
 
 ## Acceptance sequence
 

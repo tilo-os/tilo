@@ -122,7 +122,7 @@ variables:
 | Variable | Invoked on | Output contract |
 |---|---|---|
 | `IMAGER_LINUX_CREDENTIAL_BROKER` | both Linux architectures | environment file described below |
-| `IMAGER_WINDOWS_CREDENTIAL_BROKER` | Windows x86-64 | environment file described below |
+| `IMAGER_WINDOWS_CREDENTIAL_BROKER` | Windows x86-64 and ARM64 | environment file described below |
 | `IMAGER_MACOS_CREDENTIAL_BROKER` | both macOS architectures | environment file described below |
 | `IMAGER_HOMEBREW_CREDENTIAL_BROKER` | macOS ARM64 | raw Forgejo token file |
 | `IMAGER_WINGET_CREDENTIAL_BROKER` | Linux x86-64 | raw GitHub token file |
