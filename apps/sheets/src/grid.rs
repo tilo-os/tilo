@@ -192,6 +192,7 @@ struct FillDrag {
 struct CellTextStyle {
     size: f32,
     color: Color,
+    right_align: bool,
 }
 
 #[allow(
@@ -203,6 +204,10 @@ struct CellTextStyle {
 )]
 pub struct Grid {
     pub rect: Rect,
+    /// Geometry follows the active accessibility text scale. The grid is a
+    /// custom canvas rather than a toolkit table, so it must grow its rows,
+    /// headers, hit targets, and default columns alongside token typography.
+    text_scale: f64,
     scroll_x: f64,
     scroll_y: f64,
     col_widths: HashMap<u32, f64>,
@@ -271,6 +276,7 @@ impl Grid {
     pub fn new() -> Self {
         let mut g = Self {
             rect: Rect::ZERO,
+            text_scale: 1.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
             col_widths: HashMap::new(),
@@ -302,6 +308,25 @@ impl Grid {
         };
         g.rebuild_geom();
         g
+    }
+
+    /// Apply the current theme's bounded text scale to custom grid geometry.
+    /// Stored manual widths remain logical user choices and are projected at
+    /// this scale, while auto-fit widths are recomputed from scaled text.
+    pub fn set_text_scale(&mut self, scale: f64) {
+        let scale = if scale.is_finite() {
+            scale.clamp(0.5, 4.0)
+        } else {
+            1.0
+        };
+        if (self.text_scale - scale).abs() <= f64::EPSILON {
+            return;
+        }
+        self.text_scale = scale;
+        self.needs_autofit = true;
+        self.rebuild_geom();
+        self.scroll_x = self.scroll_x.min(self.max_scroll_x());
+        self.scroll_y = self.scroll_y.min(self.max_scroll_y());
     }
 
     /// Recompute the column/row offset prefix sums. Cheap (a single pass over
@@ -700,12 +725,19 @@ impl Grid {
         // A manual resize wins; otherwise use the auto-fitted width; otherwise
         // the default.
         if let Some(w) = self.col_widths.get(&c) {
-            return *w;
+            return *w * self.text_scale;
         }
-        self.auto_col_w.get(&c).copied().unwrap_or(DEFAULT_COL_W)
+        self.auto_col_w
+            .get(&c)
+            .copied()
+            .unwrap_or(DEFAULT_COL_W * self.text_scale)
     }
     fn row_h(&self, r: u32) -> f64 {
-        self.row_heights.get(&r).copied().unwrap_or(DEFAULT_ROW_H)
+        self.row_heights
+            .get(&r)
+            .map_or(DEFAULT_ROW_H * self.text_scale, |height| {
+                height * self.text_scale
+            })
     }
 
     /// Content-space x (before scroll) of column `c`'s left edge. O(1) via
@@ -715,7 +747,7 @@ impl Grid {
             x
         } else {
             let last = self.col_x.last().copied().unwrap_or(0.0);
-            last + f64::from(c.saturating_sub(self.n_cols)) * DEFAULT_COL_W
+            last + f64::from(c.saturating_sub(self.n_cols)) * DEFAULT_COL_W * self.text_scale
         }
     }
     fn row_top(&self, r: u32) -> f64 {
@@ -723,16 +755,16 @@ impl Grid {
             y
         } else {
             let last = self.row_y.last().copied().unwrap_or(0.0);
-            last + f64::from(r.saturating_sub(self.n_rows)) * DEFAULT_ROW_H
+            last + f64::from(r.saturating_sub(self.n_rows)) * DEFAULT_ROW_H * self.text_scale
         }
     }
 
     fn body_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x0 + ROW_HEADER_W,
-            self.rect.y0 + COL_HEADER_H,
-            self.rect.x1 - SCROLLBAR_THICKNESS,
-            self.rect.y1 - SCROLLBAR_THICKNESS,
+            self.rect.x0 + ROW_HEADER_W * self.text_scale,
+            self.rect.y0 + COL_HEADER_H * self.text_scale,
+            self.rect.x1 - SCROLLBAR_THICKNESS * self.text_scale,
+            self.rect.y1 - SCROLLBAR_THICKNESS * self.text_scale,
         )
     }
 
@@ -781,7 +813,7 @@ impl Grid {
             length
         } else {
             (length * viewport / content)
-                .max(SCROLLBAR_MIN_THUMB)
+                .max(SCROLLBAR_MIN_THUMB * self.text_scale)
                 .min(length)
         };
         let max_scroll = (content - viewport).max(0.0);
@@ -807,10 +839,10 @@ impl Grid {
     }
 
     fn grid_x0(&self) -> f64 {
-        self.rect.x0 + ROW_HEADER_W
+        self.rect.x0 + ROW_HEADER_W * self.text_scale
     }
     fn grid_y0(&self) -> f64 {
-        self.rect.y0 + COL_HEADER_H
+        self.rect.y0 + COL_HEADER_H * self.text_scale
     }
 
     /// Screen rect for a cell, in absolute coords (may lie outside the body).
@@ -832,11 +864,11 @@ impl Grid {
         let cell = self.cell_screen_rect(c1, r1);
         let (cx, cy) = (cell.x1, cell.y1);
         let body = self.body_rect();
-        let m = FILL_HANDLE_SIZE;
+        let m = FILL_HANDLE_SIZE * self.text_scale;
         if cx < body.x0 - m || cx > body.x1 + m || cy < body.y0 - m || cy > body.y1 + m {
             return None;
         }
-        let h = FILL_HANDLE_SIZE / 2.0;
+        let h = FILL_HANDLE_SIZE * self.text_scale / 2.0;
         Some(Rect::new(cx - h, cy - h, cx + h, cy + h))
     }
 
@@ -950,7 +982,7 @@ impl Grid {
             let mut x = self.grid_x0() - self.scroll_x;
             for c in 0..self.n_cols {
                 x += self.col_w(c);
-                if (p.x - x).abs() <= RESIZE_GRAB {
+                if (p.x - x).abs() <= RESIZE_GRAB * self.text_scale {
                     return Some(ResizeTarget::Col(c));
                 }
                 if x > self.rect.x1 {
@@ -963,7 +995,7 @@ impl Grid {
             let mut y = self.grid_y0() - self.scroll_y;
             for r in 0..self.n_rows {
                 y += self.row_h(r);
-                if (p.y - y).abs() <= RESIZE_GRAB {
+                if (p.y - y).abs() <= RESIZE_GRAB * self.text_scale {
                     return Some(ResizeTarget::Row(r));
                 }
                 if y > self.rect.y1 {
@@ -983,7 +1015,8 @@ impl Grid {
 
     /// True once the grid has a usable layout rect (post `apply_layout`).
     fn has_layout(&self) -> bool {
-        self.rect.width() > ROW_HEADER_W && self.rect.height() > COL_HEADER_H
+        self.rect.width() > ROW_HEADER_W * self.text_scale
+            && self.rect.height() > COL_HEADER_H * self.text_scale
     }
 
     fn clamp_scroll(&mut self) {
@@ -1503,12 +1536,14 @@ impl Grid {
         if let Some(drag) = &self.resize {
             match drag.target {
                 ResizeTarget::Col(c) => {
-                    let w = (drag.origin_size + (p.x - drag.origin_px)).max(MIN_COL_W);
-                    self.col_widths.insert(c, w);
+                    let w = (drag.origin_size + (p.x - drag.origin_px))
+                        .max(MIN_COL_W * self.text_scale);
+                    self.col_widths.insert(c, w / self.text_scale);
                 }
                 ResizeTarget::Row(r) => {
-                    let h = (drag.origin_size + (p.y - drag.origin_px)).max(MIN_ROW_H);
-                    self.row_heights.insert(r, h);
+                    let h = (drag.origin_size + (p.y - drag.origin_px))
+                        .max(MIN_ROW_H * self.text_scale);
+                    self.row_heights.insert(r, h / self.text_scale);
                 }
             }
             self.rebuild_geom();
@@ -1911,16 +1946,19 @@ impl Grid {
                 continue;
             }
             let (tw, _) = tr.measure(&text, size, None);
-            let want = f64::from(tw) + CELL_PAD_X * 2.0;
+            let want = f64::from(tw) + CELL_PAD_X * self.text_scale * 2.0;
             let entry = widest.entry(c).or_insert(0.0);
             if want > *entry {
                 *entry = want;
             }
         }
         for (c, want) in widest {
-            let fitted = want.clamp(DEFAULT_COL_W, MAX_AUTOFIT_W);
+            let fitted = want.clamp(
+                DEFAULT_COL_W * self.text_scale,
+                MAX_AUTOFIT_W * self.text_scale,
+            );
             // Only record a widening; narrower columns fall back to the default.
-            if fitted > DEFAULT_COL_W {
+            if fitted > DEFAULT_COL_W * self.text_scale {
                 self.auto_col_w.insert(c, fitted);
             }
         }
@@ -2057,7 +2095,7 @@ impl Grid {
                     } else {
                         colors.text_primary
                     };
-                    Self::draw_cell_text(
+                    self.draw_cell_text(
                         scene,
                         transform,
                         tr,
@@ -2065,9 +2103,9 @@ impl Grid {
                         &CellTextStyle {
                             size: text_size,
                             color,
+                            right_align: false,
                         },
                         cell,
-                        false,
                     );
                     continue;
                 }
@@ -2086,7 +2124,7 @@ impl Grid {
                         colors.text_primary
                     };
                     let right_align = val.is_numeric() && fmt != CellFormat::Text;
-                    Self::draw_cell_text(
+                    self.draw_cell_text(
                         scene,
                         transform,
                         tr,
@@ -2094,9 +2132,9 @@ impl Grid {
                         &CellTextStyle {
                             size: text_size,
                             color,
+                            right_align,
                         },
                         cell,
-                        right_align,
                     );
                 }
             }
@@ -2254,13 +2292,13 @@ impl Grid {
     }
 
     fn draw_cell_text(
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         text: &str,
         style: &CellTextStyle,
         cell: Rect,
-        right_align: bool,
     ) {
         let inner = Rect::new(cell.x0 + 1.0, cell.y0, cell.x1 - 1.0, cell.y1);
         if inner.width() <= 2.0 {
@@ -2268,10 +2306,10 @@ impl Grid {
         }
         let (tw, _) = tr.measure(text, style.size, None);
         let ty = cell.y0 + (cell.height() - f64::from(style.size)) / 2.0;
-        let tx = if right_align {
-            cell.x1 - CELL_PAD_X - f64::from(tw)
+        let tx = if style.right_align {
+            cell.x1 - CELL_PAD_X * self.text_scale - f64::from(tw)
         } else {
-            cell.x0 + CELL_PAD_X
+            cell.x0 + CELL_PAD_X * self.text_scale
         };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &inner);
         tr.draw_text(
@@ -2353,7 +2391,7 @@ impl Grid {
             let label = crate::model::col_to_letters(c);
             let (lw, _) = tr.measure(&label, size, None);
             let tx = hrect.center().x - f64::from(lw) / 2.0;
-            let ty = self.rect.y0 + (COL_HEADER_H - f64::from(size)) / 2.0;
+            let ty = self.rect.y0 + (COL_HEADER_H * self.text_scale - f64::from(size)) / 2.0;
             let color = if selected {
                 colors.text_primary
             } else {
@@ -2469,7 +2507,8 @@ impl Grid {
         let (tw, _) = tr.measure(text, size, None);
         // Text width + padding on both sides + caret room, never narrower
         // than the cell itself.
-        (f64::from(tw) + CELL_PAD_X * 2.0 + 8.0).max(self.col_w(0))
+        (f64::from(tw) + CELL_PAD_X * self.text_scale * 2.0 + 8.0 * self.text_scale)
+            .max(self.col_w(0))
     }
 
     /// Compute how far the floating editor for cell `addr` may extend to the
@@ -2548,7 +2587,7 @@ impl Grid {
         // Text + caret, clipped to the editor box. A formula draws each cell
         // reference in its own colour; anything else draws in the body colour.
         let ty = edit_rect.y0 + (edit_rect.height() - f64::from(size)) / 2.0;
-        let tx = edit_rect.x0 + CELL_PAD_X;
+        let tx = edit_rect.x0 + CELL_PAD_X * self.text_scale;
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),

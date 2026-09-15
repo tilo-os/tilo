@@ -48,8 +48,8 @@ use crate::model::{
 use crate::settings::{DocSettings, EffectiveLocale, GlobalSettings};
 
 const MENUBAR_H: f64 = 44.0;
-const FORMULA_H: f64 = 34.0;
-const TABS_H: f64 = 34.0;
+const FORMULA_H: f64 = 40.0;
+const TABS_H: f64 = 40.0;
 const NAME_BOX_W: f64 = 92.0;
 /// Every painted chart/comment command gets a normal touch target, not a
 /// text-baseline-sized link. Kept as a shared constant so the renderer and
@@ -294,6 +294,38 @@ struct SettingChip {
     kind: SettingKind,
 }
 
+/// Cursor for laying out wrapped rows of document-convention chips.
+struct SettingsChipFlow {
+    x: f64,
+    y: f64,
+    start_x: f64,
+    wrap_x: f64,
+    chip_h: f64,
+    gap: f64,
+}
+
+impl SettingsChipFlow {
+    fn start_section(&mut self) {
+        self.x = self.start_x;
+    }
+
+    fn push(&mut self, chips: &mut Vec<SettingChip>, width: f64, kind: SettingKind) {
+        if self.x + width > self.wrap_x {
+            self.x = self.start_x;
+            self.y += self.chip_h + self.gap;
+        }
+        chips.push(SettingChip {
+            rect: Rect::new(self.x, self.y, self.x + width, self.y + self.chip_h),
+            kind,
+        });
+        self.x += width + self.gap;
+    }
+
+    fn next_section(&mut self) {
+        self.y += self.chip_h + 18.0;
+    }
+}
+
 /// Highlight state for one [`SheetsApp::draw_chip`] call: `active` fills
 /// solid accent; `accent` (when not active) tints the background lightly.
 #[derive(Clone, Copy)]
@@ -430,6 +462,10 @@ fn tab_action_label(act: TabAction) -> &'static str {
 )]
 pub struct SheetsApp {
     grid: Grid,
+    /// The custom chrome has no toolkit layout primitives to inherit type
+    /// sizing from, so keep its touch targets and modal spacing aligned with
+    /// the current accessibility text preference.
+    text_scale: f64,
     rect: Rect,
     menubar_rect: Rect,
     formula_rect: Rect,
@@ -611,6 +647,7 @@ impl SheetsApp {
     pub fn new() -> Self {
         Self {
             grid: Grid::new(),
+            text_scale: 1.0,
             rect: Rect::ZERO,
             menubar_rect: Rect::ZERO,
             formula_rect: Rect::ZERO,
@@ -3253,23 +3290,26 @@ impl SheetsApp {
 
     fn relayout(&mut self) {
         let r = self.rect;
-        self.menubar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + MENUBAR_H);
+        let scale = self.text_scale;
+        self.menubar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + MENUBAR_H * scale);
         self.formula_rect = Rect::new(
             r.x0,
             self.menubar_rect.y1,
             r.x1,
-            self.menubar_rect.y1 + FORMULA_H,
+            self.menubar_rect.y1 + FORMULA_H * scale,
         );
-        self.tabs_rect = Rect::new(r.x0, r.y1 - TABS_H, r.x1, r.y1);
+        self.tabs_rect = Rect::new(r.x0, r.y1 - TABS_H * scale, r.x1, r.y1);
         self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.tabs_rect.y0);
         self.grid.rect = self.grid_rect;
 
         // Menu bar: File ▾  Format ▾  Σ Sum  Settings ▾  ...  [type indicator]
         self.menu_buttons.clear();
-        let bh = 30.0;
-        let by = self.menubar_rect.y0 + (MENUBAR_H - bh) / 2.0;
-        let mut x = self.menubar_rect.x0 + 10.0;
-        let pad = 6.0;
+        // Fine-pointer controls still honour the shared 32 px minimum; the
+        // same geometry grows for accessibility text and coarse input.
+        let bh = 32.0 * scale;
+        let by = self.menubar_rect.y0 + (MENUBAR_H * scale - bh) / 2.0;
+        let mut x = self.menubar_rect.x0 + 10.0 * scale;
+        let pad = 6.0 * scale;
         let mk = |label: &str,
                   x: &mut f64,
                   w: f64,
@@ -3285,59 +3325,64 @@ impl SheetsApp {
                 opens,
             }
         };
+        let (file_w, format_w, sum_w, settings_w) = if scale > 1.25 {
+            (72.0, 104.0, 62.0, 156.0)
+        } else {
+            (56.0, 70.0, 66.0, 104.0)
+        };
         self.menu_buttons
-            .push(mk("File", &mut x, 56.0, None, Some(OpenMenu::File)));
+            .push(mk("File", &mut x, file_w, None, Some(OpenMenu::File)));
         self.menu_buttons
-            .push(mk("Format", &mut x, 70.0, None, Some(OpenMenu::Format)));
+            .push(mk("Format", &mut x, format_w, None, Some(OpenMenu::Format)));
         self.menu_buttons.push(mk(
             "\u{03A3} Sum",
             &mut x,
-            66.0,
+            sum_w,
             Some(MenuItem::AutoSum),
             None,
         ));
         self.menu_buttons.push(mk(
             "Doc settings",
             &mut x,
-            104.0,
+            settings_w,
             Some(MenuItem::OpenDocSettings),
             None,
         ));
 
         // Formula bar field (after the name box + fx label).
-        let fx_w = 30.0;
+        let fx_w = 30.0 * scale;
         self.name_box_rect = Rect::new(
-            self.formula_rect.x0 + 6.0,
-            self.formula_rect.y0 + 4.0,
-            self.formula_rect.x0 + NAME_BOX_W,
-            self.formula_rect.y1 - 4.0,
+            self.formula_rect.x0 + 6.0 * scale,
+            self.formula_rect.y0 + 4.0 * scale,
+            self.formula_rect.x0 + NAME_BOX_W * scale,
+            self.formula_rect.y1 - 4.0 * scale,
         );
         // The clickable "fx" affordance spans the gap between the name box and
         // the formula field.
         self.fx_rect = Rect::new(
-            self.formula_rect.x0 + NAME_BOX_W,
-            self.formula_rect.y0 + 4.0,
-            self.formula_rect.x0 + NAME_BOX_W + fx_w + 8.0,
-            self.formula_rect.y1 - 4.0,
+            self.formula_rect.x0 + NAME_BOX_W * scale,
+            self.formula_rect.y0 + 4.0 * scale,
+            self.formula_rect.x0 + NAME_BOX_W * scale + fx_w + 8.0 * scale,
+            self.formula_rect.y1 - 4.0 * scale,
         );
         self.formula_field_rect = Rect::new(
-            self.formula_rect.x0 + NAME_BOX_W + fx_w + 8.0,
-            self.formula_rect.y0 + 4.0,
-            self.formula_rect.x1 - 8.0,
-            self.formula_rect.y1 - 4.0,
+            self.formula_rect.x0 + NAME_BOX_W * scale + fx_w + 8.0 * scale,
+            self.formula_rect.y0 + 4.0 * scale,
+            self.formula_rect.x1 - 8.0 * scale,
+            self.formula_rect.y1 - 4.0 * scale,
         );
 
         // Sheet tabs.
         self.tab_rects.clear();
-        let mut tx = self.tabs_rect.x0 + 8.0;
-        let ty = self.tabs_rect.y0 + 4.0;
-        let th = TABS_H - 6.0;
+        let mut tx = self.tabs_rect.x0 + 8.0 * scale;
+        let ty = self.tabs_rect.y0 + 4.0 * scale;
+        let th = TABS_H * scale - 6.0 * scale;
         for (i, name) in self.sheet_names.iter().enumerate() {
-            let w = tab_width(name);
+            let w = tab_width(name).max(58.0 * scale);
             self.tab_rects.push((Rect::new(tx, ty, tx + w, ty + th), i));
-            tx += w + 4.0;
+            tx += w + 4.0 * scale;
         }
-        self.add_tab_rect = Rect::new(tx, ty, tx + 30.0, ty + th);
+        self.add_tab_rect = Rect::new(tx, ty, tx + 30.0 * scale, ty + th);
 
         self.relayout_overlays();
     }
@@ -3425,7 +3470,7 @@ impl SheetsApp {
             TabAction::Delete,
         ];
         let width = 188.0_f64;
-        let row_h = 30.0;
+        let row_h = 34.0;
         let pad = 6.0;
         let swatch = 20.0;
         let color_block = 18.0 + swatch + 8.0; // "Colour" label + swatch row
@@ -3461,7 +3506,7 @@ impl SheetsApp {
     }
 
     fn layout_dropdown(&mut self, anchor: Rect, items: &[(&str, MenuItem)], width: f64) {
-        let row_h = 30.0;
+        let row_h = 34.0;
         let pad = 6.0;
         let x0 = anchor.x0;
         let y0 = anchor.y1 + 4.0;
@@ -3482,97 +3527,100 @@ impl SheetsApp {
     fn layout_settings_panel(&mut self) {
         // Centered modal panel, sized to fit even the narrow viewport. Chip
         // rows start under the section label and wrap within the panel width.
-        let pw = 440.0_f64.min(self.rect.width() - 32.0).max(300.0);
-        let ph = 268.0;
+        let large_text = self.text_scale > 1.25;
+        let pw = (if large_text { 528.0_f64 } else { 440.0 })
+            .min(self.rect.width() - 32.0)
+            .max(300.0);
+        let ph = if large_text { 388.0 } else { 290.0 };
         let cx = self.rect.center().x;
         let cy = self.rect.center().y;
         self.panel_rect = Rect::new(cx - pw / 2.0, cy - ph / 2.0, cx + pw / 2.0, cy + ph / 2.0);
 
-        let chip_h = 26.0;
+        let chip_h = if large_text { 38.0 } else { 32.0 };
         let left = self.panel_rect.x0 + 20.0;
         let row_start = left + 96.0; // clears the section label column
         let chip_gap = 6.0;
         let wrap_x = self.panel_rect.x1 - 20.0;
-        let mut y = self.panel_rect.y0 + 64.0;
+        let default_w = if large_text { 102.0 } else { 74.0 };
+        let currency_w = if large_text { 58.0 } else { 48.0 };
+        let mut flow = SettingsChipFlow {
+            x: row_start,
+            y: self.panel_rect.y0 + if large_text { 76.0 } else { 64.0 },
+            start_x: row_start,
+            wrap_x,
+            chip_h,
+            gap: chip_gap,
+        };
 
-        // Row: currency. First an explicit "Default" (inherit global) chip.
-        self.settings_section_y[0] = y;
-        {
-            let mut x = row_start;
-            let push = |chips: &mut Vec<SettingChip>, x: &mut f64, y: &mut f64, w: f64, kind| {
-                if *x + w > wrap_x {
-                    *x = row_start;
-                    *y += chip_h + chip_gap;
-                }
-                chips.push(SettingChip {
-                    rect: Rect::new(*x, *y, *x + w, *y + chip_h),
-                    kind,
-                });
-                *x += w + chip_gap;
-            };
-            push(
+        self.settings_section_y[0] = flow.y;
+        self.layout_currency_chips(&mut flow, default_w, currency_w);
+        flow.next_section();
+
+        self.settings_section_y[1] = flow.y;
+        self.layout_date_chips(&mut flow, large_text, default_w);
+        flow.next_section();
+
+        self.settings_section_y[2] = flow.y;
+        self.layout_time_chips(&mut flow, large_text, default_w);
+    }
+
+    fn layout_currency_chips(
+        &mut self,
+        flow: &mut SettingsChipFlow,
+        default_w: f64,
+        currency_w: f64,
+    ) {
+        flow.start_section();
+        flow.push(
+            &mut self.setting_chips,
+            default_w,
+            SettingKind::Currency(None),
+        );
+        for currency in Currency::ALL {
+            flow.push(
                 &mut self.setting_chips,
-                &mut x,
-                &mut y,
-                74.0,
-                SettingKind::Currency(None),
+                currency_w,
+                SettingKind::Currency(Some(currency)),
             );
-            for c in Currency::ALL {
-                push(
-                    &mut self.setting_chips,
-                    &mut x,
-                    &mut y,
-                    48.0,
-                    SettingKind::Currency(Some(c)),
-                );
-            }
         }
-        y += chip_h + 18.0;
+    }
 
-        // Row: date style.
-        self.settings_section_y[1] = y;
-        {
-            let mut x = row_start;
-            let rect = Rect::new(x, y, x + 74.0, y + chip_h);
-            self.setting_chips.push(SettingChip {
-                rect,
-                kind: SettingKind::Date(None),
-            });
-            x += 74.0 + chip_gap;
-            for (label, d) in [
-                ("ISO", DateStyle::Iso),
-                ("US", DateStyle::Us),
-                ("EU", DateStyle::Eu),
-                ("Long", DateStyle::Long),
-            ] {
-                let w = (count_f64(label.len()) * 8.0 + 24.0).max(48.0);
-                self.setting_chips.push(SettingChip {
-                    rect: Rect::new(x, y, x + w, y + chip_h),
-                    kind: SettingKind::Date(Some(d)),
-                });
-                x += w + chip_gap;
-            }
+    fn layout_date_chips(&mut self, flow: &mut SettingsChipFlow, large_text: bool, default_w: f64) {
+        flow.start_section();
+        flow.push(&mut self.setting_chips, default_w, SettingKind::Date(None));
+        for (label, style) in [
+            ("ISO", DateStyle::Iso),
+            ("US", DateStyle::Us),
+            ("EU", DateStyle::Eu),
+            ("Long", DateStyle::Long),
+        ] {
+            let width = if large_text {
+                if label == "Long" { 80.0 } else { 62.0 }
+            } else {
+                (count_f64(label.len()) * 8.0 + 24.0).max(48.0)
+            };
+            flow.push(
+                &mut self.setting_chips,
+                width,
+                SettingKind::Date(Some(style)),
+            );
         }
-        y += chip_h + 18.0;
+    }
 
-        // Row: time style.
-        self.settings_section_y[2] = y;
-        {
-            let mut x = row_start;
-            let rect = Rect::new(x, y, x + 74.0, y + chip_h);
-            self.setting_chips.push(SettingChip {
-                rect,
-                kind: SettingKind::Time(None),
-            });
-            x += 74.0 + chip_gap;
-            for (label, t) in [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)] {
-                let w = count_f64(label.len()) * 8.0 + 24.0;
-                self.setting_chips.push(SettingChip {
-                    rect: Rect::new(x, y, x + w, y + chip_h),
-                    kind: SettingKind::Time(Some(t)),
-                });
-                x += w + chip_gap;
-            }
+    fn layout_time_chips(&mut self, flow: &mut SettingsChipFlow, large_text: bool, default_w: f64) {
+        flow.start_section();
+        flow.push(&mut self.setting_chips, default_w, SettingKind::Time(None));
+        for (label, style) in [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)] {
+            let width = if large_text {
+                102.0
+            } else {
+                count_f64(label.len()) * 8.0 + 24.0
+            };
+            flow.push(
+                &mut self.setting_chips,
+                width,
+                SettingKind::Time(Some(style)),
+            );
         }
     }
 
@@ -5381,9 +5429,14 @@ impl Widget for SheetsApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Unlike toolkit tables, this virtualised canvas owns its geometry.
+        // Keep its row/header metrics in step with accessibility typography
+        // before the subsequent layout + hit-test pass.
+        self.text_scale = f64::from(theme.text_scale);
+        self.grid.set_text_scale(self.text_scale);
         // `new_leaf` on a freshly created tree never fails.
         #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
@@ -5665,6 +5718,11 @@ impl Widget for SheetsApp {
         rows.push(
             AccessNode::new(Role::Row)
                 .with_name("Column headers")
+                // The virtual table's data rows are keyed by their durable
+                // row coordinate. Give the fixed header row its own reserved
+                // key too: mixing keyed and positional synthetic siblings
+                // makes AccessKit node identity shift as the viewport moves.
+                .with_key(u64::MAX)
                 .with_children(header_cells),
         );
         rows.extend(window.rows.into_iter().map(|row| {
@@ -7802,6 +7860,42 @@ mod tests {
         assert!(
             (app.grid_rect.width() - wide_grid_w).abs() < 0.5,
             "reflows back to wide"
+        );
+    }
+
+    /// Custom-painted controls have no toolkit button wrapper to enforce the
+    /// interaction minimum. Keep their hit geometry aligned with the shared
+    /// fine-pointer contract, and prove the same surfaces expand at 2× type.
+    #[test]
+    fn chrome_targets_meet_the_pointer_minimum_and_scale_with_type() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
+        app.relayout();
+        let minimum = f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
+        assert!(
+            app.menu_buttons
+                .iter()
+                .all(|button| button.rect.height() >= minimum)
+        );
+        assert!(app.name_box_rect.height() >= minimum);
+        assert!(app.formula_field_rect.height() >= minimum);
+        assert!(
+            app.tab_rects
+                .iter()
+                .all(|(rect, _)| rect.height() >= minimum)
+        );
+
+        app.text_scale = 2.0;
+        app.grid.set_text_scale(2.0);
+        app.relayout();
+        assert!(
+            app.menu_buttons
+                .iter()
+                .all(|button| button.rect.height() >= minimum * 2.0)
+        );
+        assert!(
+            app.grid.accessibility_window().rows[0].bounds.height()
+                >= crate::grid::DEFAULT_ROW_H * 2.0
         );
     }
 
