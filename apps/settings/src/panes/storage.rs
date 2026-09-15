@@ -21,10 +21,10 @@ use crate::widgets::{El, caption, card, card_with_action, rows, value_row};
 // These are edge-triggered, machine-local command latches, not settings.
 // Buttons may mutate them directly because the `.edit` namespace is never
 // exported or replayed; durable settings go through SettingsAction instead.
-const CLEAN_KEY: &str = "storage.cleanup.confirmed.edit";
-const DISKS_KEY: &str = "storage.open.disks.edit";
-const BACKUPS_KEY: &str = "storage.open.backups.edit";
-const SYNC_FREE_KEY: &str = "storage.sync.free.edit";
+pub const CLEAN_KEY: &str = "storage.cleanup.confirmed.edit";
+pub const DISKS_KEY: &str = "storage.open.disks.edit";
+pub const BACKUPS_KEY: &str = "storage.open.backups.edit";
+pub const SYNC_FREE_KEY: &str = "storage.sync.free.edit";
 
 pub struct StoragePane {
     roots: StorageRoots,
@@ -35,6 +35,7 @@ pub struct StoragePane {
     sync_busy: bool,
     sync_result: Option<std::sync::mpsc::Receiver<Result<EvictionReport, String>>>,
     snapshot_result: Option<std::sync::mpsc::Receiver<Result<SyncStorageSnapshot, String>>>,
+    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -62,6 +63,7 @@ impl StoragePane {
             sync_busy: false,
             sync_result: None,
             snapshot_result: None,
+            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -79,6 +81,36 @@ impl StoragePane {
             self.sync_message = Some("Loading synced storage…".into());
         }
         self.snapshot_result = Some(receiver);
+    }
+
+    #[must_use]
+    pub fn with_operation_status(
+        mut self,
+        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
+    ) -> Self {
+        self.operation_status = status.clone();
+        self
+    }
+
+    fn finish_local_operation(
+        &self,
+        operation: crate::actions::StorageOperation,
+        result: Result<String, String>,
+    ) {
+        let token = crate::actions::local_operation_token_for(
+            crate::actions::STORAGE_OPERATION_TYPE,
+            &operation,
+        );
+        if !matches!(
+            self.operation_status.get(),
+            crate::actions::LocalOperationStatus::Running { token: running } if running == token
+        ) {
+            return;
+        }
+        self.operation_status.set(match result {
+            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
+            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
+        });
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -353,11 +385,19 @@ impl Widget for StoragePane {
                             )
                         },
                     );
+                    self.finish_local_operation(
+                        crate::actions::StorageOperation::FreeSyncedFiles,
+                        Ok("Synced-file reclamation completed.".into()),
+                    );
                 }
                 Ok(Err(error)) => {
                     self.sync_busy = false;
                     self.sync_result = None;
                     self.sync_message = Some(format!("Nothing was removed: {error}"));
+                    self.finish_local_operation(
+                        crate::actions::StorageOperation::FreeSyncedFiles,
+                        Err(format!("Nothing was removed: {error}")),
+                    );
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     self.sync_busy = false;
@@ -365,6 +405,10 @@ impl Widget for StoragePane {
                     self.sync_message = Some(
                         "The sync storage request ended unexpectedly; nothing was assumed removed."
                             .into(),
+                    );
+                    self.finish_local_operation(
+                        crate::actions::StorageOperation::FreeSyncedFiles,
+                        Err("Sync storage service ended unexpectedly.".into()),
                     );
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -374,14 +418,29 @@ impl Widget for StoragePane {
             let _ = state.put(root, CLEAN_KEY, false);
             if let Some(preview) = &self.cleanup {
                 let selected: Vec<usize> = (0..preview.items.len()).collect();
-                if desktop_policy::apply_cleanup(preview, &selected).is_ok() {
-                    self.snapshot = desktop_policy::scan_storage(&self.roots);
-                    self.cleanup = self
-                        .roots
-                        .app_cache
-                        .as_deref()
-                        .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
+                match desktop_policy::apply_cleanup(preview, &selected) {
+                    Ok(_) => {
+                        self.snapshot = desktop_policy::scan_storage(&self.roots);
+                        self.cleanup = self
+                            .roots
+                            .app_cache
+                            .as_deref()
+                            .and_then(|p| desktop_policy::preview_cache_cleanup(p).ok());
+                        self.finish_local_operation(
+                            crate::actions::StorageOperation::CleanupCaches,
+                            Ok("Application caches cleaned.".into()),
+                        );
+                    }
+                    Err(error) => self.finish_local_operation(
+                        crate::actions::StorageOperation::CleanupCaches,
+                        Err(format!("Could not clean application caches: {error}")),
+                    ),
                 }
+            } else {
+                self.finish_local_operation(
+                    crate::actions::StorageOperation::CleanupCaches,
+                    Err("No reclaimable application cache is available.".into()),
+                );
             }
         }
         if Self::pressed(state, root, SYNC_FREE_KEY) {
@@ -399,19 +458,36 @@ impl Widget for StoragePane {
                 });
                 self.sync_busy = true;
                 self.sync_result = Some(receiver);
+            } else {
+                self.finish_local_operation(
+                    crate::actions::StorageOperation::FreeSyncedFiles,
+                    Err("No reclaimable synced files are available.".into()),
+                );
             }
         }
         if Self::pressed(state, root, DISKS_KEY) {
             let _ = state.put(root, DISKS_KEY, false);
-            let _ = os_actions::open_tool(ToolIntent::Disks {
+            let result = os_actions::open_tool(ToolIntent::Disks {
                 route: DisksRoute::Overview,
             });
+            self.finish_local_operation(
+                crate::actions::StorageOperation::OpenDisks,
+                result
+                    .map(|()| "Opened Disks.".into())
+                    .map_err(|error| error.to_string()),
+            );
         }
         if Self::pressed(state, root, BACKUPS_KEY) {
             let _ = state.put(root, BACKUPS_KEY, false);
-            let _ = os_actions::open_tool(ToolIntent::Backups {
+            let result = os_actions::open_tool(ToolIntent::Backups {
                 route: BackupsRoute::Overview,
             });
+            self.finish_local_operation(
+                crate::actions::StorageOperation::OpenBackups,
+                result
+                    .map(|()| "Opened Backups.".into())
+                    .map_err(|error| error.to_string()),
+            );
         }
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
