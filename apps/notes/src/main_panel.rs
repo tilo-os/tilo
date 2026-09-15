@@ -67,6 +67,14 @@ const TITLE_HEIGHT: f64 = 44.0;
 /// body, so they are scannable without stealing the first editable block.
 const TAG_ROW_HEIGHT: f64 = 28.0;
 
+/// Notes is a prose editor, so ordinary blocks must reflow to the available
+/// column width. Keeping construction behind one helper prevents a page bind,
+/// remote rebind, or empty-state reset from silently returning to the shared
+/// editor's single-line (code/editor) default.
+fn notes_editor() -> BlockEditor {
+    BlockEditor::new().with_wrap_lines(true)
+}
+
 fn block_kind_wire(kind: &ui::widget::BlockKind) -> String {
     use ui::widget::BlockKind;
     match kind {
@@ -149,6 +157,10 @@ pub struct MainPanel {
     /// Mirrors the renderer's global text scale so title and tag geometry
     /// reserves the same physical height as the glyphs it contains.
     text_scale: f64,
+    /// Space reserved below the scroll viewport for app-level transient
+    /// chrome (the compact save bubble on phones). Content can still scroll
+    /// fully above it instead of being hidden underneath.
+    bottom_inset: f64,
 }
 
 impl MainPanel {
@@ -163,7 +175,7 @@ impl MainPanel {
             last_pointer: Point::ZERO,
             pending_rename: None,
             tags: Vec::new(),
-            editor: BlockEditor::new(),
+            editor: notes_editor(),
             body: String::new(),
             rect: Rect::ZERO,
             editor_node: None,
@@ -176,6 +188,7 @@ impl MainPanel {
             empty_action_focused: false,
             pending_block_ops: Vec::new(),
             text_scale: 1.0,
+            bottom_inset: 0.0,
         }
     }
 
@@ -226,7 +239,7 @@ impl MainPanel {
         self.set_title_value(title);
         let specs = crate::markdown::parse(&body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = BlockEditor::new();
+        self.editor = notes_editor();
         self.editor.set_blocks(blocks);
         // Focus the editor's first block so the user can start
         // typing immediately. The App will route keystrokes through
@@ -264,7 +277,7 @@ impl MainPanel {
         let mut specs = crate::markdown::parse(&body);
         crate::markdown::resolve_link_ids(&mut specs, resolver);
         let blocks = crate::markdown::specs_to_blocks(&specs);
-        self.editor = BlockEditor::new();
+        self.editor = notes_editor();
         self.editor.set_blocks(blocks);
         self.editor.set_focus(true);
         self.editor
@@ -302,7 +315,7 @@ impl MainPanel {
             .iter()
             .map(|block| block.line.marks().to_vec())
             .collect::<Vec<_>>();
-        self.editor = BlockEditor::new();
+        self.editor = notes_editor();
         self.editor.set_blocks(blocks);
         self.editor.set_local_author(self.local_author.clone());
         self.editor.set_action_interception(true);
@@ -331,7 +344,7 @@ impl MainPanel {
     pub fn clear(&mut self) {
         self.page_id = None;
         self.set_title_value("");
-        self.editor = BlockEditor::new();
+        self.editor = notes_editor();
         self.body = String::new();
         self.scroll_y = 0.0;
         self.empty_action_rect = Rect::ZERO;
@@ -364,6 +377,14 @@ impl MainPanel {
     pub fn set_tags(&mut self, tags: Vec<String>) {
         if self.tags != tags {
             self.tags = tags;
+            self.dirty = true;
+        }
+    }
+
+    pub fn set_bottom_inset(&mut self, inset: f64) {
+        let inset = inset.max(0.0);
+        if (self.bottom_inset - inset).abs() > f64::EPSILON {
+            self.bottom_inset = inset;
             self.dirty = true;
         }
     }
@@ -669,6 +690,18 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
+        // Preserve hierarchy without forcing a phone at 200% text to wrap a
+        // short page title underneath its metadata. This is responsive type
+        // sizing, not cancellation of the accessibility scale: 20 logical px
+        // still paints at 40 px at 2× (larger than the normal 30 px title).
+        let title_size = if self.text_scale >= 1.5 && self.rect.width() < 420.0 {
+            20.0
+        } else if self.text_scale >= 1.5 && self.rect.width() < 600.0 {
+            26.0
+        } else {
+            TITLE_SIZE
+        };
+        self.title_label.set_font_size(title_size);
         // Title band pinned to the top of the panel, above the scrolled body.
         self.title_rect = Rect::new(
             self.rect.x0 + PADDING_PX,
@@ -691,7 +724,9 @@ impl Widget for MainPanel {
             // for flex-column overflow (same kludge ui::Scrollable uses
             // in its apply_layout).
             let content_h = (last_block_bottom - editor_rect.y0).max(0.0);
-            let viewport_h = (self.rect.height() - PADDING_PX - self.editor_top_inset()).max(0.0);
+            let viewport_h =
+                (self.rect.height() - PADDING_PX - self.bottom_inset - self.editor_top_inset())
+                    .max(0.0);
             let max_scroll = (content_h - viewport_h).max(0.0);
             // A layout pass can land before the editor's text has been shaped.
             // Every block rect is then degenerate, `content_h` collapses, and
@@ -797,7 +832,7 @@ impl Widget for MainPanel {
                 self.rect.x0,
                 self.rect.y0 + self.editor_top_inset(),
                 self.rect.x1,
-                self.rect.y1 - PADDING_PX,
+                self.rect.y1 - PADDING_PX - self.bottom_inset,
             );
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
