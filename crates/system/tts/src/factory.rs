@@ -26,7 +26,9 @@ pub fn default_speaker() -> Box<dyn Speaker> {
 /// Like [`default_speaker`] but also returns the chosen backend's name, for
 /// diagnostics/tests.
 pub fn select_speaker() -> (Box<dyn Speaker>, &'static str) {
-    // 1. speech-dispatcher.
+    // 1. speech-dispatcher uses a Unix-domain socket. Other platforms retain
+    // the portable subprocess backend below.
+    #[cfg(unix)]
     match crate::speechd::SpeechDispatcherSpeaker::new() {
         Ok(s) => {
             log::info!("qos-tts: using speech-dispatcher backend");
