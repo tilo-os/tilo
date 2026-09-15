@@ -25,6 +25,8 @@ pub const MAX_SEALED_SECRET_BYTES: usize = 16 * 1024;
 pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
 /// Aggregate state is metadata and small clipboard payloads, never media data.
 pub const MAX_FABRIC_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
+pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FabricStamp {
@@ -141,6 +143,100 @@ pub struct MediaHandoff {
     pub position_ms: u64,
     pub resume_playing: bool,
     pub pause_source: bool,
+}
+
+/// A locator usable on another qOS device. Workspace paths hydrate through
+/// Files; stream URLs travel only in an ephemeral exact-target action and are
+/// never persisted in the fabric snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaSourceLocator {
+    Workspace { path: String },
+    RemoteStream { url: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonalFabricAction {
+    ResumeMedia {
+        session_id: String,
+        app_id: String,
+        title: String,
+        locator: MediaSourceLocator,
+        position_ms: u64,
+        resume_playing: bool,
+        has_video: bool,
+    },
+    MediaAccepted {
+        request_id: [u8; 16],
+        session_id: String,
+    },
+}
+
+/// Ephemeral action envelope authenticated by the exact QUIC device route.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonalFabricActionEnvelope {
+    pub request_id: [u8; 16],
+    pub source: DeviceId,
+    pub target: DeviceId,
+    pub issued_unix_ms: u64,
+    pub action: PersonalFabricAction,
+}
+
+impl PersonalFabricActionEnvelope {
+    /// Validate transport-bound authorship, target, freshness, and payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a replay-shaped, misaddressed, oversized, or
+    /// semantically invalid action.
+    pub fn validate_at(
+        &self,
+        transport_source: &DeviceId,
+        local_target: &DeviceId,
+        now_unix_ms: u64,
+    ) -> Result<(), FabricError> {
+        if self.request_id == [0; 16]
+            || &self.source != transport_source
+            || &self.target != local_target
+            || self.source == self.target
+            || self.issued_unix_ms > now_unix_ms.saturating_add(30_000)
+            || now_unix_ms.saturating_sub(self.issued_unix_ms) > MAX_FABRIC_ACTION_AGE_MS
+        {
+            return Err(FabricError::InvalidAction);
+        }
+        match &self.action {
+            PersonalFabricAction::ResumeMedia {
+                session_id,
+                app_id,
+                title,
+                locator,
+                ..
+            } => {
+                if !valid_identifier(session_id, 256)
+                    || !valid_identifier(app_id, 256)
+                    || title.len() > 512
+                    || title.chars().any(char::is_control)
+                    || !valid_media_locator(locator)
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::MediaAccepted {
+                request_id,
+                session_id,
+            } => {
+                if request_id == &[0; 16] || !valid_identifier(session_id, 256) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+        }
+        let bytes = postcard::to_allocvec(self).map_err(|_| FabricError::InvalidAction)?;
+        if bytes.len() > MAX_FABRIC_ACTION_BYTES {
+            return Err(FabricError::ActionTooLarge);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -735,6 +831,37 @@ fn valid_mime(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
 }
 
+fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
+    match locator {
+        MediaSourceLocator::Workspace { path } => {
+            !path.is_empty()
+                && path.len() <= 4096
+                && std::path::Path::new(path).is_relative()
+                && std::path::Path::new(path).components().all(|component| {
+                    matches!(
+                        component,
+                        std::path::Component::Normal(_) | std::path::Component::CurDir
+                    )
+                })
+        }
+        MediaSourceLocator::RemoteStream { url } => {
+            let Some(rest) = url
+                .strip_prefix("https://")
+                .or_else(|| url.strip_prefix("http://"))
+            else {
+                return false;
+            };
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            !authority.is_empty()
+                && !authority.contains('@')
+                && url.len() <= 8192
+                && !url
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || byte == b'\\')
+        }
+    }
+}
+
 fn valid_setting_key(key: &str) -> bool {
     valid_identifier(key, 256)
         && key.starts_with("qos.")
@@ -808,6 +935,10 @@ pub enum FabricError {
     UnknownDevice,
     #[error("target device cannot play this media")]
     IncompatibleMediaTarget,
+    #[error("invalid personal-fabric action")]
+    InvalidAction,
+    #[error("personal-fabric action exceeds its wire bound")]
+    ActionTooLarge,
 }
 
 #[cfg(test)]
@@ -1080,5 +1211,75 @@ mod tests {
             DeviceFabric::decode_checkpoint(&trailing),
             Err(FabricError::InvalidCheckpoint)
         );
+    }
+
+    #[test]
+    fn ephemeral_actions_are_transport_bound_and_fresh() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action: PersonalFabricAction::ResumeMedia {
+                session_id: "player:one".into(),
+                app_id: "dev.qos.music".into(),
+                title: "Track".into(),
+                locator: MediaSourceLocator::Workspace {
+                    path: "Music/track.flac".into(),
+                },
+                position_ms: 42,
+                resume_playing: true,
+                has_video: false,
+            },
+        };
+        assert_eq!(envelope.validate_at(&source, &target, 10_100), Ok(()));
+        assert_eq!(
+            envelope.validate_at(&id("intruder"), &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope.validate_at(&source, &id("other-target"), 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope.validate_at(&source, &target, 10_000 + MAX_FABRIC_ACTION_AGE_MS + 1),
+            Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
+    fn media_action_locators_reject_host_paths_and_url_credentials() {
+        let source = id("source");
+        let target = id("target");
+        for locator in [
+            MediaSourceLocator::Workspace {
+                path: "../private/song.flac".into(),
+            },
+            MediaSourceLocator::RemoteStream {
+                url: "https://secret@example.com/song".into(),
+            },
+        ] {
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [4; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10_000,
+                action: PersonalFabricAction::ResumeMedia {
+                    session_id: "player:one".into(),
+                    app_id: "dev.qos.music".into(),
+                    title: "Track".into(),
+                    locator,
+                    position_ms: 0,
+                    resume_playing: true,
+                    has_video: false,
+                },
+            };
+            assert_eq!(
+                envelope.validate_at(&source, &target, 10_000),
+                Err(FabricError::InvalidAction)
+            );
+        }
     }
 }
