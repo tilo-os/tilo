@@ -216,7 +216,7 @@ pub use widget::command_palette::{
 };
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::{AppShell, NarrowScreen, ShellLayout};
-pub use widget::{Card, CardGrid, card_column_width, card_columns};
+pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
 pub use widget::{EditOutcome, EditableLabel};
 pub use widget::{Element, Widget};
 pub use widget::{
