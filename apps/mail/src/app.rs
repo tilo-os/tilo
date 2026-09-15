@@ -283,6 +283,12 @@ pub struct MailApp {
 
     overlay_hits: Vec<(Rect, OverlayHit)>,
     rect: Rect,
+    /// The host theme captured during the outer layout pass.  Mail owns a
+    /// small inner layout tree for its navigation shell; retaining this makes
+    /// that second pass use the exact same text scale as the host renderer.
+    /// Without it, 200% text painted correctly but was measured as 100%,
+    /// causing the custom mail chrome to collide with its enlarged labels.
+    layout_theme: Theme,
     /// The shell's reveal flap starts fully open (its docked default); the
     /// first real layout snaps it to the resting state for the current width so
     /// a narrow launch doesn't flash the drawer open before easing it closed.
@@ -386,6 +392,7 @@ impl MailApp {
             toast_deadline: None,
             overlay_hits: Vec::new(),
             rect: Rect::ZERO,
+            layout_theme: Theme::dark(),
             first_layout: true,
             dirty: true,
         }
@@ -568,9 +575,15 @@ impl MailApp {
     /// Lay the shell out into the app's rect via a throwaway sub-taffy, the
     /// same shape the offscreen renderer uses for the whole tree.
     fn layout_nav(&mut self) {
+        // Reflow to the narrow, one-task-at-a-time shell before 200% type can
+        // squeeze three desktop panes into unreadable slivers.  The selected
+        // pane remains local and Back still restores the list, exactly as on a
+        // physically narrow window.
+        self.nav
+            .set_breakpoint(BREAKPOINT * f64::from(self.layout_theme.text_scale));
         self.publish_shell_flags();
         let (w, h) = (self.rect.width() as f32, self.rect.height() as f32);
-        let theme = Theme::dark();
+        let theme = self.layout_theme.clone();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let child = self.nav.build_layout(&mut taffy, &theme, &mut map);
@@ -590,6 +603,7 @@ impl MailApp {
             return;
         };
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let measure_map = map.clone();
         let _ = taffy.compute_layout_with_measure(
             root,
@@ -3081,6 +3095,10 @@ impl Widget for MailApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `apply_layout` has no theme parameter, yet Mail has an inner
+        // NavShell layout pass after its outer rect is known. Preserve the
+        // host theme so both layout trees and their text measurement agree.
+        self.layout_theme = theme.clone();
         // `Widget::build_layout` returns a bare `NodeId`, so the retained
         // first-run child and its full-size parent are inserted together.
         let first_run_node = self.first_run.build_layout(taffy, theme, node_map);
