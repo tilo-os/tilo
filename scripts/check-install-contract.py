@@ -104,6 +104,9 @@ assert "cmp -- \"$expected_repo\" \"$release_dir/qos-fedora-44.repo\"" in rpm_re
 assert "Select native release lanes" in session_workflow
 assert 'QOS_DESKTOP_ARM64_RELEASES: "0"' in session_workflow
 assert '[[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]]' in session_workflow
+for desktop in contract["desktopSession"]:
+    assert len(desktop["architectures"]) == 1
+    assert len(desktop["plannedArchitectures"]) == 1
 assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
 assert '{arch:"amd64",runner:"runner",targets:$targets}' in session_workflow
 assert '{arch:"arm64",runner:"runner-arm64",targets:$targets}' in session_workflow
@@ -129,8 +132,8 @@ assert "stage=docker-health" in rpm_job
 targets = {item["distribution"]: item for item in contract["desktopSession"]}
 assert list(targets) == ["Ubuntu", "Debian", "Fedora", "Arch Linux", "NixOS"]
 for item in targets.values():
-    assert len(item["architectures"]) == 2
-    assert item["plannedArchitectures"] == []
+    assert len(item["architectures"]) == 1
+    assert len(item["plannedArchitectures"]) == 1
     assert item["package"] == "qos-session"
 
 print("install contract matches the current Imager and desktop-session release lanes")
