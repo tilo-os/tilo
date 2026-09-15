@@ -2,6 +2,7 @@
 """Exercise the image builder's profile gates and build arguments without a build."""
 
 import os
+import json
 import subprocess
 import tempfile
 import unittest
@@ -27,6 +28,8 @@ class ImageBuildProfileTests(unittest.TestCase):
         # Run the complete production script, normalizing a Windows checkout's
         # line endings only. All profile/ref decisions remain production code.
         self.write("os/dev/build-image.sh", (REPO / "os/dev/build-image.sh").read_text())
+        self.write("os/dev/hardware_profile.py", (REPO / "os/dev/hardware_profile.py").read_text())
+        self.write("os/hardware/profiles/lenovo-83ed.json", (REPO / "os/hardware/profiles/lenovo-83ed.json").read_text())
         self.write("os/dev/_common.sh", """\
 set -euo pipefail
 QOS_REPO="$QOS_TEST_REPO"
@@ -140,10 +143,22 @@ exit {BUILD_INTERCEPTED}
         result = self.run_builder(QOS_HARDWARE_PROFILE="unknown-board")
         self.assert_rejected_before_build(result, "unsupported hardware profile: unknown-board")
 
+    def test_registered_profiles_are_not_limited_to_one_board_or_architecture(self):
+        for architecture in ("x86_64", "aarch64"):
+            with self.subTest(architecture=architecture):
+                self.write("os/hardware/profiles/other-board.json", json.dumps({
+                    "schema_version": 1, "id": "other-board", "architecture": architecture,
+                    "devicetree": None, "firmware": {},
+                }))
+                result = self.run_builder(QOS_HARDWARE_PROFILE="other-board", QOS_TEST_ARCH=architecture)
+                self.assertEqual(self.build_arguments(result)["QOS_HARDWARE_PROFILE"], "other-board")
+                result = self.run_builder(QOS_HARDWARE_PROFILE="other-board", QOS_TEST_ARCH=architecture, QOS_SKIP_BUILD="1")
+                self.assert_rejected_before_build(result, "QOS_SKIP_BUILD cannot apply a hardware profile")
+
     def test_lenovo_on_x86_builder_fails_even_when_manifest_exists(self):
         self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
         result = self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed", QOS_TEST_ARCH="x86_64")
-        self.assert_rejected_before_build(result, "lenovo-83ed requires a native ARM64 builder")
+        self.assert_rejected_before_build(result, "lenovo-83ed requires a native aarch64 builder")
 
     def test_lenovo_requires_a_nonempty_manifest_before_build(self):
         for content in (None, ""):
@@ -151,12 +166,12 @@ exit {BUILD_INTERCEPTED}
                 if content is not None:
                     self.write("os/hardware/firmware/lenovo-83ed/manifest.json", content)
                 result = self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed")
-                self.assert_rejected_before_build(result, "stage the Lenovo firmware manifest first")
+                self.assert_rejected_before_build(result, "stage the lenovo-83ed firmware manifest first")
 
     def test_lenovo_profile_cannot_be_ignored_by_skipping_the_build(self):
         self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
         result = self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed", QOS_SKIP_BUILD="1")
-        self.assert_rejected_before_build(result, "QOS_SKIP_BUILD cannot apply the lenovo-83ed hardware profile")
+        self.assert_rejected_before_build(result, "QOS_SKIP_BUILD cannot apply a hardware profile")
 
     def test_installer_layers_on_the_exact_machine_specific_base(self):
         self.script = self.write(

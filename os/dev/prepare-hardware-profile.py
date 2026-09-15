@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Stage verified, local Lenovo firmware and its image-owned boot profile.
+"""Stage verified local firmware and an image-owned hardware profile.
 
-Run inside the native ARM64 image builder before dracut. All inputs and output
+Run inside the native image builder before dracut. All inputs and output
 paths are validated before any writes. Generic images need no local firmware.
 """
 
@@ -16,17 +16,10 @@ import re
 import stat
 import struct
 from pathlib import Path
+from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, PROFILES_DIR, load_definition
 
 
-FIRMWARE_NAMES = (
-    "qcdxkmsuc8380.mbn",
-    "qcvss8380.mbn",
-    "qcadsp8380.mbn",
-    "adsp_dtbs.elf",
-    "qccdsp8380.mbn",
-    "cdsp_dtbs.elf",
-)
-FIRMWARE_PATH = Path("usr/lib/firmware/qcom/x1e80100/LENOVO/83ED")
+FIRMWARE_PATH = Path("usr/lib/firmware")
 PROFILE_PATH = Path("usr/lib/qos/hardware-profile.json")
 DRACUT_PATH = Path("etc/dracut.conf.d/41-qos-hardware.conf")
 
@@ -55,13 +48,14 @@ def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
     return current
 
 
-def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir: Path) -> None:
+def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir: Path,
+                    profiles_dir: Path = PROFILES_DIR) -> None:
     if profile == "generic":
         return
-    if profile != "lenovo-83ed":
-        raise ValueError(f"unsupported hardware profile: {profile}")
-    if platform.machine() != "aarch64":
-        raise ValueError("Lenovo 83ED hardware profile requires a native aarch64 builder")
+    definition = load_definition(profile, profiles_dir)
+    architecture = definition["architecture"]
+    if platform.machine() != architecture:
+        raise ValueError(f"{profile} hardware profile requires a native {architecture} builder")
     if os.geteuid() != 0:
         raise ValueError("hardware profile preparation must run as root inside the image builder")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", kernel_version):
@@ -69,17 +63,22 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
 
     kernel = Path(f"usr/lib/modules/{kernel_version}")
     config = checked_path(root, kernel / "config", required=True)
-    if "CONFIG_ARM64=y" not in config.read_text(encoding="utf-8").splitlines():
-        raise ValueError("hardware profile requires an ARM64 kernel configuration")
-    dtb_relative = kernel / "dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb"
-    dtb = checked_path(root, dtb_relative, required=True).read_bytes()
-    if len(dtb) < 40 or struct.unpack_from(">II", dtb) != (0xD00DFEED, len(dtb)):
-        raise ValueError("hardware profile device tree has an invalid flattened-device-tree header")
+    if ARCH_CONFIG[architecture] not in config.read_text(encoding="utf-8").splitlines():
+        raise ValueError(f"hardware profile requires a matching {architecture} kernel configuration")
+    dtb_relative = kernel / "dtb" / definition["devicetree"] if definition["devicetree"] else None
+    dtb = None
+    if dtb_relative is not None:
+        dtb = checked_path(root, dtb_relative, required=True).read_bytes()
+        if len(dtb) < 40 or struct.unpack_from(">II", dtb) != (0xD00DFEED, len(dtb)):
+            raise ValueError("hardware profile device tree has an invalid flattened-device-tree header")
 
-    manifest_path = checked_path(firmware_dir, Path("manifest.json"), required=True)
-    if manifest_path.stat().st_size > 16384:
+    firmware_names = definition["firmware"]
+    manifest_path = checked_path(firmware_dir, Path("manifest.json"), required=True) if firmware_names else None
+    manifest = {"schema_version": 1, "profile": profile, "files": {}}
+    if manifest_path and manifest_path.stat().st_size > 16384:
         raise ValueError("firmware manifest is too large")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest_path:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict) or set(manifest) != {"schema_version", "profile", "files"}:
         raise ValueError("firmware manifest has missing or unknown fields")
     if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
@@ -87,30 +86,31 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
     if manifest["profile"] != profile:
         raise ValueError("firmware manifest belongs to another hardware profile")
     hashes = manifest["files"]
-    if not isinstance(hashes, dict) or set(hashes) != set(FIRMWARE_NAMES):
-        raise ValueError("firmware manifest must name exactly the six Lenovo 83ED firmware files")
+    if not isinstance(hashes, dict) or set(hashes) != set(firmware_names):
+        raise ValueError("firmware manifest must name exactly the hardware definition's firmware files")
 
     outputs: dict[Path, bytes] = {}
-    for name in FIRMWARE_NAMES:
+    for name, destination in firmware_names.items():
         digest = hashes[name]
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"firmware manifest has no valid SHA-256 for {name}")
         payload = checked_path(firmware_dir, Path(name), required=True).read_bytes()
         if not payload or hashlib.sha256(payload).hexdigest() != digest:
             raise ValueError(f"firmware does not match its pinned SHA-256: {name}")
-        outputs[FIRMWARE_PATH / name] = payload
+        outputs[FIRMWARE_PATH / destination] = payload
 
     document = {
         "schema_version": 1,
         "id": profile,
-        "architecture": "aarch64",
-        "devicetree": f"/{dtb_relative.as_posix()}",
-        "devicetree_sha256": hashlib.sha256(dtb).hexdigest(),
+        "architecture": architecture,
+        "devicetree": f"/{dtb_relative.as_posix()}" if dtb_relative else None,
+        "devicetree_sha256": hashlib.sha256(dtb).hexdigest() if dtb else None,
     }
     outputs[PROFILE_PATH] = (json.dumps(document, indent=2) + "\n").encode("utf-8")
-    firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in FIRMWARE_NAMES)
+    outputs[DEFINITION_PATH] = (json.dumps(definition, indent=2) + "\n").encode("utf-8")
+    firmware_paths = " ".join(f"/{(FIRMWARE_PATH / name).as_posix()}" for name in firmware_names.values())
     outputs[DRACUT_PATH] = (
-        "# Lenovo 83ED firmware needed before the encrypted root is unlocked.\n"
+        "# Hardware-profile firmware needed before the encrypted root is unlocked.\n"
         f'install_items+=" {firmware_paths} "\n'
     ).encode("utf-8")
     # Check every destination before creating directories or installing bytes.
@@ -128,13 +128,14 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("generic", "lenovo-83ed"), required=True)
+    parser.add_argument("--profile", required=True)
+    parser.add_argument("--profiles-dir", type=Path, default=PROFILES_DIR)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--kernel-version", required=True)
     parser.add_argument("--firmware-dir", type=Path, required=True)
     args = parser.parse_args()
     try:
-        prepare_profile(args.profile, args.root, args.kernel_version, args.firmware_dir)
+        prepare_profile(args.profile, args.root, args.kernel_version, args.firmware_dir, args.profiles_dir)
     except (OSError, ValueError, TypeError) as error:
         parser.exit(1, f"hardware profile rejected: {error}\n")
 
