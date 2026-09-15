@@ -150,6 +150,26 @@ pub struct ActivityGlance {
     pub focus: Option<ActivityFocus>,
 }
 
+#[derive(Debug)]
+struct PendingNotificationHistoryClear {
+    notifications: Vec<Notification>,
+    deadline: std::time::Instant,
+}
+
+const NOTIFICATION_CLEAR_UNDO_WINDOW: std::time::Duration = std::time::Duration::from_secs(8);
+
+fn retain_newest_history(history: &mut Vec<Notification>) {
+    let excess = history.len().saturating_sub(MAX_HISTORY);
+    if excess != 0 {
+        history.drain(..excess);
+    }
+}
+
+fn notification_clear_deadline(now: std::time::Instant) -> std::time::Instant {
+    now.checked_add(NOTIFICATION_CLEAR_UNDO_WINDOW)
+        .unwrap_or(now)
+}
+
 /// Intent-addressable destination inside History. Kept device-local; links
 /// from chrome/search/agents all resolve through the same shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -386,7 +406,7 @@ pub struct ChromeState {
     notification_history: Vec<Notification>,
     /// History removed by the most recent Clear all action. Kept only long
     /// enough to make that destructive-looking action safely reversible.
-    pending_notification_history_clear: Option<(Vec<Notification>, std::time::Instant)>,
+    pending_notification_history_clear: Option<PendingNotificationHistoryClear>,
     /// Exact unread counts accepted only from launcher-verified senders.
     /// The top-bar tray consumes the aggregate; a future dock can consume the
     /// same per-package map without inventing another badge protocol.
@@ -1228,15 +1248,15 @@ impl ChromeState {
     fn clear_notification_history_at(&mut self, now: std::time::Instant) {
         if !self.notification_history.is_empty() {
             let mut removed = std::mem::take(&mut self.notification_history);
-            if let Some((original, deadline)) = self.pending_notification_history_clear.as_mut() {
-                original.append(&mut removed);
-                if original.len() > MAX_HISTORY {
-                    original.drain(..original.len() - MAX_HISTORY);
-                }
-                *deadline = now + std::time::Duration::from_secs(8);
+            if let Some(pending) = self.pending_notification_history_clear.as_mut() {
+                pending.notifications.append(&mut removed);
+                retain_newest_history(&mut pending.notifications);
+                pending.deadline = notification_clear_deadline(now);
             } else {
-                self.pending_notification_history_clear =
-                    Some((removed, now + std::time::Duration::from_secs(8)));
+                self.pending_notification_history_clear = Some(PendingNotificationHistoryClear {
+                    notifications: removed,
+                    deadline: notification_clear_deadline(now),
+                });
             }
             self.bump();
         }
@@ -1250,14 +1270,12 @@ impl ChromeState {
     /// Restore the cleared oldest-first snapshot ahead of notifications that
     /// arrived during the undo window, preserving exact chronological order.
     pub fn undo_notification_history_clear(&mut self) -> bool {
-        let Some((mut restored, _)) = self.pending_notification_history_clear.take() else {
+        let Some(mut pending) = self.pending_notification_history_clear.take() else {
             return false;
         };
-        restored.append(&mut self.notification_history);
-        if restored.len() > MAX_HISTORY {
-            restored.drain(..restored.len() - MAX_HISTORY);
-        }
-        self.notification_history = restored;
+        pending.notifications.append(&mut self.notification_history);
+        retain_newest_history(&mut pending.notifications);
+        self.notification_history = pending.notifications;
         self.bump();
         true
     }
@@ -1267,7 +1285,7 @@ impl ChromeState {
         let expired = self
             .pending_notification_history_clear
             .as_ref()
-            .is_some_and(|(_, deadline)| now >= *deadline);
+            .is_some_and(|pending| now >= pending.deadline);
         if expired {
             self.pending_notification_history_clear = None;
             self.bump();
