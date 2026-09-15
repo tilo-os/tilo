@@ -782,6 +782,11 @@ pub struct ContactsApp {
     push: PushNav,
     /// Whether the last layout resolved to the narrow single-pane mode.
     narrow: bool,
+    /// Last theme text scale seen by layout. Contacts owns a hand-laid-out
+    /// master/detail surface, so it must enlarge hit targets, rows and form
+    /// fields together with the renderer instead of merely drawing larger
+    /// glyphs into 1× rectangles.
+    text_scale: f64,
 
     last_mouse: Point,
     dirty: bool,
@@ -902,6 +907,7 @@ impl ContactsApp {
             last_detail_click: None,
             push: PushNav::default(),
             narrow: false,
+            text_scale: 1.0,
             last_mouse: Point::ZERO,
             dirty: true,
             relayout: true,
@@ -1023,6 +1029,28 @@ impl ContactsApp {
         self.form = None;
         self.relayout = true;
         self.dirty = true;
+    }
+
+    /// Populate a deterministic filtered-result state for visual review.
+    pub fn shots_show_search(&mut self) {
+        self.search.set_text("Grace");
+        self.selected = self.visible_ids().first().copied();
+        self.dirty = true;
+        self.relayout = true;
+    }
+
+    /// Keep an inert parser receiver alive for one screenshot frame so the
+    /// toolbar exposes the real busy copy and accessibility state without
+    /// opening a host file portal.
+    pub fn shots_show_loading(&mut self) {
+        let (_sender, receiver) = mpsc::channel();
+        self.import_parse_rx = Some(receiver);
+        self.dirty = true;
+    }
+
+    /// Show the non-blocking failure feedback used by import/export errors.
+    pub fn shots_show_error(&mut self) {
+        self.show_toast("Import failed: this vCard could not be read");
     }
 
     /// Snap a right-click context menu open on the selected contact row for
@@ -1473,8 +1501,9 @@ impl ContactsApp {
         if total == 0 || self.list_body.height() <= 0.0 {
             return;
         }
-        let row_top = index as f64 * ROW_H;
-        let row_bottom = row_top + ROW_H;
+        let row_h = self.row_h();
+        let row_top = index as f64 * row_h;
+        let row_bottom = row_top + row_h;
         let viewport_top = self.list_scroll;
         let viewport_bottom = viewport_top + self.list_body.height();
         if row_top < viewport_top {
@@ -1482,7 +1511,7 @@ impl ContactsApp {
         } else if row_bottom > viewport_bottom {
             self.list_scroll = row_bottom - self.list_body.height();
         }
-        let max_scroll = (total as f64 * ROW_H - self.list_body.height()).max(0.0);
+        let max_scroll = (total as f64 * row_h - self.list_body.height()).max(0.0);
         self.list_scroll = self.list_scroll.clamp(0.0, max_scroll);
     }
 
@@ -1931,29 +1960,52 @@ impl Default for ContactsApp {
 // =====================================================================
 
 impl ContactsApp {
+    fn layout_scale(&self) -> f64 {
+        self.text_scale.clamp(1.0, 2.0)
+    }
+
+    fn toolbar_h(&self) -> f64 {
+        TOOLBAR_H * self.layout_scale()
+    }
+
+    fn row_h(&self) -> f64 {
+        ROW_H * self.layout_scale()
+    }
+
+    fn field_h(&self) -> f64 {
+        FIELD_H * self.layout_scale()
+    }
+
+    fn layout_toolbar_actions(&mut self, r: Rect, scale: f64) {
+        let button_h = 32.0 * scale;
+        let btn_y = r.y0 + (self.toolbar_h() - button_h) / 2.0;
+        let compact = self.toolbar_is_compact();
+        let gap = if compact { 6.0 } else { 10.0 };
+        let mut x = r.x1 - PAD;
+        let new_w = if compact { 40.0 } else { 104.0 };
+        self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + button_h);
+        x -= new_w + gap;
+        let export_w = if compact { 40.0 } else { 86.0 };
+        self.hit.export = Rect::new(x - export_w, btn_y, x, btn_y + button_h);
+        x -= export_w + gap;
+        let import_w = if compact { 40.0 } else { 86.0 };
+        self.hit.import = Rect::new(x - import_w, btn_y, x, btn_y + button_h);
+    }
+
     fn layout(&mut self) {
         let r = self.rect;
         // Toolbar across the top.
-        let content_top = r.y0 + TOOLBAR_H;
+        let scale = self.layout_scale();
+        let content_top = r.y0 + self.toolbar_h();
         let content = Rect::new(r.x0, content_top, r.x1, r.y1);
 
         // Toolbar buttons (right-aligned).
-        let btn_y = r.y0 + (TOOLBAR_H - 32.0) / 2.0;
-        let compact_toolbar = self.toolbar_is_compact();
-        let mut x = r.x1 - PAD;
-        let new_w = if compact_toolbar { 40.0 } else { 104.0 };
-        self.hit.new = Rect::new(x - new_w, btn_y, x, btn_y + 32.0);
-        x -= new_w + if compact_toolbar { 6.0 } else { 10.0 };
-        let exp_w = if compact_toolbar { 40.0 } else { 86.0 };
-        self.hit.export = Rect::new(x - exp_w, btn_y, x, btn_y + 32.0);
-        x -= exp_w + if compact_toolbar { 6.0 } else { 10.0 };
-        let imp_w = if compact_toolbar { 40.0 } else { 86.0 };
-        self.hit.import = Rect::new(x - imp_w, btn_y, x, btn_y + 32.0);
+        self.layout_toolbar_actions(r, scale);
 
         // Responsive split: side-by-side when wide, single-pane push when
         // narrow. The choice is driven purely from the allocated width.
         let avail_w = content.width();
-        self.narrow = PushNav::is_narrow(avail_w);
+        self.narrow = PushNav::is_narrow(avail_w) || self.text_scale >= 1.75;
         if self.narrow {
             // Single-pane push: the list and detail each fill the whole
             // content width and slide horizontally as one swaps for the
@@ -1969,9 +2021,9 @@ impl ContactsApp {
             // pane (the master-detail return-to-list affordance).
             self.hit.back = Rect::new(
                 self.detail_rect.x0 + PAD,
-                self.detail_rect.y0 + 14.0,
-                self.detail_rect.x0 + PAD + 92.0,
-                self.detail_rect.y0 + 14.0 + 30.0,
+                self.detail_rect.y0 + 14.0 * scale,
+                self.detail_rect.x0 + PAD + 92.0 * scale.min(1.35),
+                self.detail_rect.y0 + 14.0 * scale + 34.0 * scale,
             );
         } else {
             // Wide: the classic list (left) + detail (right) split with a
@@ -1991,7 +2043,7 @@ impl ContactsApp {
             self.list_rect.x0 + PAD,
             search_y,
             self.list_rect.x1 - PAD,
-            search_y + FIELD_H,
+            search_y + self.field_h(),
         );
         self.search.apply_layout_external(self.hit.search);
         let filt_y = self.hit.search.y1 + 10.0;
@@ -2000,13 +2052,13 @@ impl ContactsApp {
             self.list_rect.x0 + PAD,
             filt_y,
             self.list_rect.x0 + PAD + half,
-            filt_y + 30.0,
+            filt_y + 30.0 * scale,
         );
         self.hit.group = Rect::new(
             self.hit.sort.x1 + 8.0,
             filt_y,
             self.list_rect.x1 - PAD,
-            filt_y + 30.0,
+            filt_y + 30.0 * scale,
         );
 
         // List body (scroll region).
@@ -2024,12 +2076,13 @@ impl ContactsApp {
         let ids = self.visible_ids();
         self.visible_row_count = ids.len();
         self.empty_list_action = self.empty_list_action_for(ids.is_empty());
-        let content_h = ids.len() as f64 * ROW_H;
+        let row_h = self.row_h();
+        let content_h = ids.len() as f64 * row_h;
         let max_scroll = (content_h - self.list_body.height()).max(0.0);
         self.list_scroll = self.list_scroll.clamp(0.0, max_scroll);
         self.list_rows.clear();
-        let first_visible = (self.list_scroll / ROW_H).floor().max(0.0) as usize;
-        let visible_rows = (self.list_body.height() / ROW_H).ceil().max(1.0) as usize;
+        let first_visible = (self.list_scroll / row_h).floor().max(0.0) as usize;
+        let visible_rows = (self.list_body.height() / row_h).ceil().max(1.0) as usize;
         let start = first_visible
             .saturating_sub(LIST_OVERSCAN_ROWS)
             .min(ids.len());
@@ -2038,16 +2091,16 @@ impl ContactsApp {
             .saturating_add(LIST_OVERSCAN_ROWS)
             .min(ids.len());
         self.list_row_start = start;
-        let mut ry = self.list_body.y0 - self.list_scroll + start as f64 * ROW_H;
+        let mut ry = self.list_body.y0 - self.list_scroll + start as f64 * row_h;
         for id in ids
             .iter()
             .skip(start)
             .take(end.saturating_sub(start))
             .copied()
         {
-            let rr = Rect::new(self.list_body.x0, ry, self.list_body.x1, ry + ROW_H);
+            let rr = Rect::new(self.list_body.x0, ry, self.list_body.x1, ry + row_h);
             self.list_rows.push((id, rr));
-            ry += ROW_H;
+            ry += row_h;
         }
 
         // Detail / form layout.
@@ -2062,14 +2115,18 @@ impl ContactsApp {
     /// narrow single-pane push layout is active, so the pushed detail's
     /// header (action buttons, avatar) clears the Back affordance pill.
     fn detail_top_offset(&self) -> f64 {
-        if self.narrow { 44.0 } else { 0.0 }
+        if self.narrow {
+            44.0 * self.layout_scale()
+        } else {
+            0.0
+        }
     }
 
     /// At phone-sized widths, preserve all three toolbar actions without
     /// letting fixed English labels overlap.  The compact glyph labels have
     /// explicit accessible names and host tooltips (see [`Widget::tooltip`]).
     fn toolbar_is_compact(&self) -> bool {
-        self.rect.width() < 520.0
+        self.rect.width() < 520.0 || self.text_scale >= 1.75
     }
 
     fn empty_list_action_for(&self, is_empty: bool) -> EmptyListAction {
@@ -2087,20 +2144,22 @@ impl ContactsApp {
     /// moves (window resize, and every frame of the narrow push slide). On a
     /// narrow window they shift down to clear the Back affordance pill.
     fn layout_detail_actions(&mut self) {
+        let scale = self.layout_scale();
         let ax1 = self.detail_rect.x1 - 24.0;
-        let by = self.detail_rect.y0 + 30.0 + self.detail_top_offset();
-        self.hit.delete = Rect::new(ax1 - 84.0, by, ax1, by + 32.0);
+        let by = self.detail_rect.y0 + 30.0 * scale + self.detail_top_offset();
+        let button_h = 32.0 * scale;
+        self.hit.delete = Rect::new(ax1 - 84.0, by, ax1, by + button_h);
         self.hit.edit = Rect::new(
             self.hit.delete.x0 - 8.0 - 72.0,
             by,
             self.hit.delete.x0 - 8.0,
-            by + 32.0,
+            by + button_h,
         );
         self.hit.fav = Rect::new(
             self.hit.edit.x0 - 8.0 - 32.0,
             by,
             self.hit.edit.x0 - 8.0,
-            by + 32.0,
+            by + button_h,
         );
     }
 
@@ -2113,6 +2172,8 @@ impl ContactsApp {
     /// length; the geometry (and thus the rendered layout) is unchanged
     /// from one flat function.
     fn layout_form(&mut self) {
+        let scale = self.layout_scale();
+        let large_text = self.text_scale >= 1.75;
         let area = self.detail_rect;
         let off = self.detail_top_offset();
         let x0 = area.x0 + PAD;
@@ -2127,23 +2188,26 @@ impl ContactsApp {
         // Action order matches this app's dialogs (delete-confirm, unsaved
         // guard, export): the primary action sits at the far right and the
         // secondary just left of it — one convention everywhere.
-        let title_y = area.y0 + FORM_TITLE_TOP + off;
-        let by = title_y + FORM_TITLE_H + FORM_ROW_GAP; // controls row top
-        let top = by + 32.0 + FORM_ROW_GAP; // first field row top
+        let title_y = area.y0 + FORM_TITLE_TOP * scale + off;
+        let title_h = FORM_TITLE_H * scale;
+        let row_gap = FORM_ROW_GAP * scale;
+        let button_h = 32.0 * scale;
+        let by = title_y + title_h + row_gap; // controls row top
+        let top = by + button_h + row_gap; // first field row top
         let mut y = top - self.detail_scroll;
 
-        self.hit.save = Rect::new(x1 - 96.0, by, x1, by + 32.0);
+        self.hit.save = Rect::new(x1 - 96.0, by, x1, by + button_h);
         self.hit.cancel = Rect::new(
             self.hit.save.x0 - 8.0 - 88.0,
             by,
             self.hit.save.x0 - 8.0,
-            by + 32.0,
+            by + button_h,
         );
-        self.hit.fav_toggle = Rect::new(x0, by, x0 + 120.0, by + 32.0);
+        self.hit.fav_toggle = Rect::new(x0, by, x0 + 120.0, by + button_h);
 
-        let label_h = 18.0;
-        let gap = 12.0;
-        let nh = FIELD_H;
+        let label_h = 18.0 * scale;
+        let gap = 12.0 * scale;
+        let nh = self.field_h();
         let half = (w - 10.0) / 2.0;
 
         let (n_phones, n_emails, n_addr) = {
@@ -2156,17 +2220,40 @@ impl ContactsApp {
 
         let mut plan: Vec<(Slot, Rect)> = Vec::new();
 
-        // Name row: First | Last
+        // Name row: First | Last. At 200% each field gets a full line so its
+        // text and caret are never squeezed into a half-width phone column.
         y += label_h;
-        plan.push((Slot::First, Rect::new(x0, y, x0 + half, y + nh)));
-        plan.push((Slot::Last, Rect::new(x0 + half + 10.0, y, x1, y + nh)));
+        plan.push((
+            Slot::First,
+            Rect::new(x0, y, if large_text { x1 } else { x0 + half }, y + nh),
+        ));
         y += nh + gap;
+        if large_text {
+            plan.push((Slot::Last, Rect::new(x0, y, x1, y + nh)));
+            y += nh + gap;
+        } else {
+            plan.push((
+                Slot::Last,
+                Rect::new(x0 + half + 10.0, y - nh - gap, x1, y - gap),
+            ));
+        }
 
         // Org | Title
         y += label_h;
-        plan.push((Slot::Org, Rect::new(x0, y, x0 + half, y + nh)));
-        plan.push((Slot::Title, Rect::new(x0 + half + 10.0, y, x1, y + nh)));
+        plan.push((
+            Slot::Org,
+            Rect::new(x0, y, if large_text { x1 } else { x0 + half }, y + nh),
+        ));
         y += nh + gap;
+        if large_text {
+            plan.push((Slot::Title, Rect::new(x0, y, x1, y + nh)));
+            y += nh + gap;
+        } else {
+            plan.push((
+                Slot::Title,
+                Rect::new(x0 + half + 10.0, y - nh - gap, x1, y - gap),
+            ));
+        }
 
         self.layout_form_phones(x0, x1, n_phones, &mut y, &mut plan);
         self.layout_form_emails(x0, x1, n_emails, &mut y, &mut plan);
@@ -2174,11 +2261,21 @@ impl ContactsApp {
 
         // Birthday (input + calendar button) | Website
         y += label_h;
-        let bday_w = half - 40.0;
+        let birthday_span = if large_text { w } else { half };
+        let bday_w = birthday_span - 40.0;
         plan.push((Slot::Birthday, Rect::new(x0, y, x0 + bday_w, y + nh)));
-        self.hit.cal_btn = Rect::new(x0 + bday_w + 6.0, y, x0 + half, y + nh);
-        plan.push((Slot::Website, Rect::new(x0 + half + 10.0, y, x1, y + nh)));
+        self.hit.cal_btn = Rect::new(x0 + bday_w + 6.0, y, x0 + birthday_span, y + nh);
         y += nh + gap;
+        if large_text {
+            y += label_h;
+            plan.push((Slot::Website, Rect::new(x0, y, x1, y + nh)));
+            y += nh + gap;
+        } else {
+            plan.push((
+                Slot::Website,
+                Rect::new(x0 + half + 10.0, y - nh - gap, x1, y - gap),
+            ));
+        }
 
         // Notes (full width)
         y += label_h;
@@ -2212,12 +2309,14 @@ impl ContactsApp {
         y: &mut f64,
         plan: &mut Vec<(Slot, Rect)>,
     ) {
-        let label_h = 18.0;
-        let gap = 12.0;
-        let nh = FIELD_H;
+        let scale = self.layout_scale();
+        let label_h = 18.0 * scale;
+        let gap = 12.0 * scale;
+        let nh = self.field_h();
         *y += label_h;
         for i in 0..n {
-            let chip = Rect::new(x0, *y, x0 + 78.0, *y + nh);
+            let chip_w = if self.text_scale >= 1.75 { 116.0 } else { 78.0 };
+            let chip = Rect::new(x0, *y, x0 + chip_w, *y + nh);
             let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
             plan.push((
                 Slot::Phone(i),
@@ -2227,8 +2326,9 @@ impl ContactsApp {
             self.hit.remove_btns.push((TypeTarget::Phone(i), rm));
             *y += nh + 8.0;
         }
-        self.hit.add_phone = Rect::new(x0, *y, x0 + 130.0, *y + 28.0);
-        *y += 28.0 + gap;
+        let add_h = 28.0 * scale;
+        self.hit.add_phone = Rect::new(x0, *y, x0 + 130.0, *y + add_h);
+        *y += add_h + gap;
     }
 
     /// Email rows: `[chip][value][remove]` per email, then the "+ Add
@@ -2241,12 +2341,14 @@ impl ContactsApp {
         y: &mut f64,
         plan: &mut Vec<(Slot, Rect)>,
     ) {
-        let label_h = 18.0;
-        let gap = 12.0;
-        let nh = FIELD_H;
+        let scale = self.layout_scale();
+        let label_h = 18.0 * scale;
+        let gap = 12.0 * scale;
+        let nh = self.field_h();
         *y += label_h;
         for i in 0..n {
-            let chip = Rect::new(x0, *y, x0 + 78.0, *y + nh);
+            let chip_w = if self.text_scale >= 1.75 { 116.0 } else { 78.0 };
+            let chip = Rect::new(x0, *y, x0 + chip_w, *y + nh);
             let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
             plan.push((
                 Slot::Email(i),
@@ -2256,8 +2358,9 @@ impl ContactsApp {
             self.hit.remove_btns.push((TypeTarget::Email(i), rm));
             *y += nh + 8.0;
         }
-        self.hit.add_email = Rect::new(x0, *y, x0 + 130.0, *y + 28.0);
-        *y += 28.0 + gap;
+        let add_h = 28.0 * scale;
+        self.hit.add_email = Rect::new(x0, *y, x0 + 130.0, *y + add_h);
+        *y += add_h + gap;
     }
 
     /// Address rows: chip + street, then city/region, then postal/country,
@@ -2272,12 +2375,15 @@ impl ContactsApp {
         y: &mut f64,
         plan: &mut Vec<(Slot, Rect)>,
     ) {
-        let label_h = 18.0;
-        let gap = 12.0;
-        let nh = FIELD_H;
+        let scale = self.layout_scale();
+        let label_h = 18.0 * scale;
+        let gap = 12.0 * scale;
+        let nh = self.field_h();
+        let large_text = self.text_scale >= 1.75;
         *y += label_h;
         for i in 0..n {
-            let chip = Rect::new(x0, *y, x0 + 78.0, *y + nh);
+            let chip_w = if large_text { 116.0 } else { 78.0 };
+            let chip = Rect::new(x0, *y, x0 + chip_w, *y + nh);
             let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
             plan.push((
                 Slot::AddrStreet(i),
@@ -2286,21 +2392,38 @@ impl ContactsApp {
             self.hit.type_chips.push((TypeTarget::Addr(i), chip));
             self.hit.remove_btns.push((TypeTarget::Addr(i), rm));
             *y += nh + 8.0;
-            plan.push((Slot::AddrCity(i), Rect::new(x0, *y, x0 + half, *y + nh)));
             plan.push((
-                Slot::AddrRegion(i),
-                Rect::new(x0 + half + 10.0, *y, x1, *y + nh),
+                Slot::AddrCity(i),
+                Rect::new(x0, *y, if large_text { x1 } else { x0 + half }, *y + nh),
             ));
             *y += nh + 8.0;
-            plan.push((Slot::AddrPostal(i), Rect::new(x0, *y, x0 + half, *y + nh)));
+            if large_text {
+                plan.push((Slot::AddrRegion(i), Rect::new(x0, *y, x1, *y + nh)));
+                *y += nh + 8.0;
+            } else {
+                plan.push((
+                    Slot::AddrRegion(i),
+                    Rect::new(x0 + half + 10.0, *y - nh - 8.0, x1, *y - 8.0),
+                ));
+            }
             plan.push((
-                Slot::AddrCountry(i),
-                Rect::new(x0 + half + 10.0, *y, x1, *y + nh),
+                Slot::AddrPostal(i),
+                Rect::new(x0, *y, if large_text { x1 } else { x0 + half }, *y + nh),
             ));
             *y += nh + 12.0;
+            if large_text {
+                plan.push((Slot::AddrCountry(i), Rect::new(x0, *y, x1, *y + nh)));
+                *y += nh + 12.0;
+            } else {
+                plan.push((
+                    Slot::AddrCountry(i),
+                    Rect::new(x0 + half + 10.0, *y - nh - 12.0, x1, *y - 12.0),
+                ));
+            }
         }
-        self.hit.add_address = Rect::new(x0, *y, x0 + 150.0, *y + 28.0);
-        *y += 28.0 + gap;
+        let add_h = 28.0 * scale;
+        self.hit.add_address = Rect::new(x0, *y, x0 + 150.0, *y + add_h);
+        *y += add_h + gap;
     }
 }
 
@@ -2310,8 +2433,10 @@ impl ContactsApp {
 
 impl ContactsApp {
     fn popup_menu_geometry(&self, anchor: Rect, items: usize, width: f64) -> (Rect, Vec<Rect>) {
-        let item_h = 32.0;
-        let h = items as f64 * item_h + 8.0;
+        let scale = self.layout_scale();
+        let item_h = 32.0 * scale;
+        let width = (width * scale).min((self.rect.width() - 16.0).max(80.0));
+        let h = items as f64 * item_h + 8.0 * scale;
         let x0 = anchor
             .x0
             .min(self.rect.x1 - width - 8.0)
@@ -2323,7 +2448,7 @@ impl ContactsApp {
         let panel = Rect::new(x0, y0, x0 + width, y0 + h);
         let mut rows = Vec::new();
         for i in 0..items {
-            let ry = panel.y0 + 4.0 + i as f64 * item_h;
+            let ry = panel.y0 + 4.0 * scale + i as f64 * item_h;
             rows.push(Rect::new(panel.x0 + 4.0, ry, panel.x1 - 4.0, ry + item_h));
         }
         (panel, rows)
@@ -2335,8 +2460,9 @@ impl ContactsApp {
         year: i32,
         month: u32,
     ) -> (Rect, Rect, Rect, Vec<(u32, Rect)>) {
-        let w = 252.0;
-        let h = 250.0;
+        let scale = self.layout_scale();
+        let w = (252.0 * scale).min((self.rect.width() - 16.0).max(160.0));
+        let h = (250.0 * scale).min((self.rect.height() - 16.0).max(220.0));
         let x0 = anchor
             .x0
             .min(self.rect.x1 - w - 8.0)
@@ -2348,18 +2474,18 @@ impl ContactsApp {
         let panel = Rect::new(x0, y0, x0 + w, y0 + h);
         let prev = Rect::new(
             panel.x0 + 8.0,
-            panel.y0 + 8.0,
-            panel.x0 + 36.0,
-            panel.y0 + 36.0,
+            panel.y0 + 8.0 * scale,
+            panel.x0 + 36.0 * scale,
+            panel.y0 + 36.0 * scale,
         );
         let next = Rect::new(
-            panel.x1 - 36.0,
-            panel.y0 + 8.0,
-            panel.x1 - 8.0,
-            panel.y0 + 36.0,
+            panel.x1 - 36.0 * scale,
+            panel.y0 + 8.0 * scale,
+            panel.x1 - 8.0 * scale,
+            panel.y0 + 36.0 * scale,
         );
         // Day grid: 7 cols, start under the weekday header.
-        let grid_top = panel.y0 + 74.0;
+        let grid_top = panel.y0 + 74.0 * scale;
         let cell = (w - 16.0) / 7.0;
         let first_wd = date::weekday(year, month, 1);
         let dim = date::days_in_month(year, month);
@@ -2422,7 +2548,7 @@ impl ContactsApp {
             // past the edges, and skip whichever pane is fully off-screen.
             let content = Rect::new(
                 self.rect.x0,
-                self.rect.y0 + TOOLBAR_H,
+                self.rect.y0 + self.toolbar_h(),
                 self.rect.x1,
                 self.rect.y1,
             );
@@ -2520,15 +2646,20 @@ impl ContactsApp {
         self.search.draw(scene, transform, tr, theme, presence);
         // Placeholder hint when the search box is empty + unfocused.
         if self.search.value().is_empty() && !self.search.is_focused() {
+            let placeholder = tr.elide_to_width(
+                "Search name, email, phone…",
+                14.0,
+                (self.hit.search.width() - 24.0).max(24.0) as f32,
+            );
             tr.draw_text(
                 scene,
-                "Search name, email, phone…",
+                &placeholder,
                 14.0,
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((
                         self.hit.search.x0 + 12.0,
-                        self.hit.search.center().y - 9.0,
+                        self.hit.search.center().y - 9.0 * self.layout_scale(),
                     )),
                 None,
             );
@@ -2602,11 +2733,13 @@ impl ContactsApp {
     fn draw_toolbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         let compact = self.toolbar_is_compact();
+        let importing = self.import_rx.is_some() || self.import_parse_rx.is_some();
+        let exporting = self.export_rx.is_some();
         let bar = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1,
-            self.rect.y0 + TOOLBAR_H,
+            self.rect.y0 + self.toolbar_h(),
         );
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &bar);
         scene.stroke(
@@ -2637,7 +2770,10 @@ impl ContactsApp {
                 &count,
                 14.0,
                 c.text_primary,
-                t * Affine::translate((count_x, self.rect.y0 + (TOOLBAR_H - 14.0) / 2.0)),
+                t * Affine::translate((
+                    count_x,
+                    self.rect.y0 + (self.toolbar_h() - 14.0 * self.layout_scale()) / 2.0,
+                )),
                 None,
                 TextWeight::Semibold,
             );
@@ -2650,7 +2786,13 @@ impl ContactsApp {
             tr,
             theme,
             self.hit.import,
-            if compact { "↓" } else { "Import" },
+            if importing {
+                if compact { "…" } else { "Importing…" }
+            } else if compact {
+                "↓"
+            } else {
+                "Import"
+            },
             false,
             hov(self.hit.import),
             false,
@@ -2665,7 +2807,13 @@ impl ContactsApp {
                 tr,
                 theme,
                 self.hit.export,
-                if compact { "↑" } else { "Export" },
+                if exporting {
+                    if compact { "…" } else { "Exporting…" }
+                } else if compact {
+                    "↑"
+                } else {
+                    "Export"
+                },
                 false,
                 hov(self.hit.export),
                 false,
@@ -2695,7 +2843,7 @@ impl ContactsApp {
     ) {
         let area = Rect::new(
             self.rect.x0,
-            self.rect.y0 + TOOLBAR_H,
+            self.rect.y0 + self.toolbar_h(),
             self.rect.x1,
             self.rect.y1,
         );
@@ -2792,6 +2940,7 @@ impl ContactsApp {
         selected: bool,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
         if selected {
             let bg = RoundedRect::from_rect(rr.inset(-0.0), f64::from(theme.tokens.radii.md));
             scene.fill(
@@ -2813,9 +2962,9 @@ impl ContactsApp {
         // Avatar.
         let av = Rect::new(
             rr.x0 + 14.0,
-            rr.y0 + 11.0,
-            rr.x0 + 14.0 + 40.0,
-            rr.y0 + 11.0 + 40.0,
+            rr.y0 + 11.0 * scale,
+            rr.x0 + 14.0 + 40.0 * scale.min(1.35),
+            rr.y0 + 11.0 * scale + 40.0 * scale.min(1.35),
         );
         draw_avatar(scene, t, tr, theme, av, &contact.initials());
         let tx = av.x1 + 12.0;
@@ -2830,7 +2979,7 @@ impl ContactsApp {
             &name,
             15.0,
             c.text_primary,
-            t * Affine::translate((tx, rr.y0 + 13.0)),
+            t * Affine::translate((tx, rr.y0 + 13.0 * scale)),
             None,
             TextWeight::Semibold,
         );
@@ -2842,7 +2991,7 @@ impl ContactsApp {
                 &sub,
                 12.0,
                 c.text_dim,
-                t * Affine::translate((tx, rr.y0 + 33.0)),
+                t * Affine::translate((tx, rr.y0 + 34.0 * scale)),
                 None,
             );
         }
@@ -2850,7 +2999,7 @@ impl ContactsApp {
             draw_star(
                 scene,
                 t,
-                Point::new(rr.x1 - 18.0, rr.y0 + 20.0),
+                Point::new(rr.x1 - 18.0, rr.y0 + 22.0 * scale),
                 6.0,
                 theme.accent_primary,
                 true,
@@ -3021,6 +3170,56 @@ impl ContactsApp {
     /// group badges on their own rows beneath it. Returns `(name_top, y)`:
     /// the name row's top (for the header's double-click-to-edit hit rect)
     /// and the y cursor for the field sections that follow.
+    fn draw_detail_actions(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        contact: &Contact,
+    ) {
+        draw_star(
+            scene,
+            t,
+            self.hit.fav.center(),
+            11.0,
+            theme.accent_primary,
+            contact.favorite,
+        );
+        for (rect, label, primary) in [
+            (
+                self.hit.edit,
+                if theme.text_scale >= 1.75 {
+                    "edit-icon"
+                } else {
+                    "Edit"
+                },
+                true,
+            ),
+            (
+                self.hit.delete,
+                if theme.text_scale >= 1.75 {
+                    "delete-icon"
+                } else {
+                    "Delete"
+                },
+                false,
+            ),
+        ] {
+            toolbar_button(
+                scene,
+                t,
+                tr,
+                theme,
+                rect,
+                label,
+                primary,
+                rect.contains(self.last_mouse),
+                false,
+            );
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "a draw helper's scene/transform/text-renderer/theme plus the geometry it paints are each independently meaningful, matching detail_field/toolbar_button/menu_item elsewhere in this file"
@@ -3037,44 +3236,17 @@ impl ContactsApp {
         y: f64,
     ) -> (f64, f64) {
         let c = &theme.tokens.colors;
-        let av = Rect::new(x0, y, x0 + 72.0, y + 72.0);
+        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        let avatar = 72.0 * scale.min(1.25);
+        let av = Rect::new(x0, y, x0 + avatar, y + avatar);
         draw_avatar(scene, t, tr, theme, av, &contact.initials());
 
         // Action buttons (favorite star, Edit, Delete) — top right.
-        draw_star(
-            scene,
-            t,
-            self.hit.fav.center(),
-            11.0,
-            theme.accent_primary,
-            contact.favorite,
-        );
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            self.hit.edit,
-            "Edit",
-            true,
-            self.hit.edit.contains(self.last_mouse),
-            false,
-        );
-        toolbar_button(
-            scene,
-            t,
-            tr,
-            theme,
-            self.hit.delete,
-            "Delete",
-            false,
-            self.hit.delete.contains(self.last_mouse),
-            false,
-        );
+        self.draw_detail_actions(scene, t, tr, theme, contact);
 
         // Name + subtitle on their own full-width rows beneath the avatar.
         let head_w = (x1 - x0).max(40.0) as f32;
-        let name_y = y + 88.0;
+        let name_y = y + avatar + 16.0 * scale;
         let name =
             tr.elide_to_width_weighted(&contact.display_name(), 26.0, head_w, TextWeight::Bold);
         tr.draw_text_weighted(
@@ -3086,7 +3258,7 @@ impl ContactsApp {
             None,
             TextWeight::Bold,
         );
-        let mut hy = name_y + 36.0;
+        let mut hy = name_y + 36.0 * scale;
         let sub = contact.subtitle();
         if !sub.is_empty() {
             let sub = tr.elide_to_width(&sub, 14.0, head_w);
@@ -3098,7 +3270,7 @@ impl ContactsApp {
                 t * Affine::translate((x0, hy)),
                 None,
             );
-            hy += 26.0;
+            hy += 26.0 * scale;
         }
         // Group badges below the name/subtitle.
         if !contact.groups.is_empty() {
@@ -3106,8 +3278,8 @@ impl ContactsApp {
             let by = hy;
             for g in &contact.groups {
                 let tw = f64::from(tr.measure(&g.value, 11.0, None).0);
-                let bw = tw + 18.0;
-                let br = Rect::new(bx, by, bx + bw, by + 20.0);
+                let bw = tw + 18.0 * scale;
+                let br = Rect::new(bx, by, bx + bw, by + 20.0 * scale);
                 let shape = RoundedRect::from_rect(br, 10.0);
                 scene.fill(
                     Fill::NonZero,
@@ -3121,19 +3293,19 @@ impl ContactsApp {
                     &g.value,
                     11.0,
                     theme.accent_primary,
-                    t * Affine::translate((bx + 9.0, by + 4.0)),
+                    t * Affine::translate((bx + 9.0 * scale, by + 4.0 * scale)),
                     None,
                 );
-                bx += bw + 8.0;
+                bx += bw + 8.0 * scale;
                 if bx > x1 - 60.0 {
                     break;
                 }
             }
-            hy += 28.0;
+            hy += 28.0 * scale;
         }
 
         // Start of the field sections below the header block.
-        (name_y, hy + 12.0)
+        (name_y, hy + 12.0 * scale)
     }
 
     /// Phone/email/address/birthday/website/notes sections, in order, each
@@ -3156,6 +3328,7 @@ impl ContactsApp {
         mut y: f64,
     ) -> (Vec<(Slot, Rect)>, f64) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
         let mut hits: Vec<(Slot, Rect)> = Vec::new();
 
         // Sections (free helpers avoid closures double-borrowing scene/tr).
@@ -3208,7 +3381,11 @@ impl ContactsApp {
             // The website is a live hyperlink (ui `Link` widget), not plain
             // text: single-click opens it via the OS handler. Rebuilt only when
             // the URL changes so its hover/press state survives across frames.
-            let vx = x0 + 78.0;
+            let stacked = theme.text_scale >= 1.75;
+            if stacked {
+                y += 22.0 * scale;
+            }
+            let vx = if stacked { x0 } else { x0 + 78.0 };
             let vw = (x1 - vx).max(40.0);
             let needs_new = self
                 .website_link
@@ -3225,7 +3402,7 @@ impl ContactsApp {
                 link.apply_layout_external(lrect);
                 link.draw(scene, t, tr, theme, presence);
             }
-            y += lh + 8.0;
+            y += lh + 8.0 * scale;
         }
         if !contact.notes.is_empty() {
             detail_section(scene, t, tr, theme, x0, &mut y, "NOTES");
@@ -3239,7 +3416,7 @@ impl ContactsApp {
                 t * Affine::translate((x0, y)),
                 Some((x1 - x0) as f32),
             );
-            y += h + 8.0;
+            y += h + 8.0 * scale;
             hits.push((Slot::Notes, Rect::new(x0, y0 - 4.0, x1, y)));
         }
 
@@ -3261,6 +3438,7 @@ impl ContactsApp {
     ) {
         let area = self.detail_rect;
         let off = self.detail_top_offset();
+        let scale = self.layout_scale();
 
         // Header band (not scrolled), two stacked rows. Row 1 is the identity
         // anchor: a compact avatar chip + the record's name, the same shape the
@@ -3273,7 +3451,8 @@ impl ContactsApp {
         // Scrollable body, clipped below the two-row header band (title row +
         // controls row). Derived from the same constants as `layout_form` so
         // the clip starts exactly under the Favorite/Save/Cancel row.
-        let body_top = area.y0 + FORM_TITLE_TOP + FORM_TITLE_H + FORM_ROW_GAP + 32.0 + off;
+        let body_top =
+            area.y0 + (FORM_TITLE_TOP + FORM_TITLE_H + FORM_ROW_GAP + 32.0) * scale + off;
         let body = Rect::new(area.x0, body_top, area.x1, area.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
 
@@ -3306,6 +3485,7 @@ impl ContactsApp {
         let c = &theme.tokens.colors;
         let area = self.detail_rect;
         let off = self.detail_top_offset();
+        let scale = self.layout_scale();
         let x0 = area.x0 + PAD;
 
         let Some(f) = self.form.as_ref() else {
@@ -3320,10 +3500,11 @@ impl ContactsApp {
                 d.first.trim().is_empty() && d.last.trim().is_empty() && d.org.trim().is_empty();
             (f.is_new && blank, d.display_name(), d.initials())
         };
-        let title_y = area.y0 + FORM_TITLE_TOP + off;
+        let title_y = area.y0 + FORM_TITLE_TOP * scale + off;
         // Avatar chip, vertically centred in the identity row.
-        let av_y = title_y + (FORM_TITLE_H - FORM_AVATAR) / 2.0;
-        let av = Rect::new(x0, av_y, x0 + FORM_AVATAR, av_y + FORM_AVATAR);
+        let avatar = FORM_AVATAR * scale.min(1.35);
+        let av_y = title_y + (FORM_TITLE_H * scale - avatar) / 2.0;
+        let av = Rect::new(x0, av_y, x0 + avatar, av_y + avatar);
         draw_avatar(scene, t, tr, theme, av, &initials);
         // Heading: the forming name, or a clear "New Contact" while it is blank
         // so a fresh record never reads as the "No Name" placeholder.
@@ -3347,7 +3528,7 @@ impl ContactsApp {
             &heading,
             20.0,
             c.text_primary,
-            t * Affine::translate((av.x1 + 12.0, av.center().y - 13.0)),
+            t * Affine::translate((av.x1 + 12.0, av.center().y - 13.0 * scale)),
             None,
             TextWeight::Bold,
         );
@@ -3383,7 +3564,7 @@ impl ContactsApp {
                 } else {
                     c.text_dim
                 },
-                t * Affine::translate((r.x0 + 30.0, r.center().y - 7.0)),
+                t * Affine::translate((r.x0 + 30.0, r.center().y - 7.0 * scale)),
                 None,
             );
         }
@@ -3423,6 +3604,7 @@ impl ContactsApp {
         inputs_snapshot: &[(Slot, Rect)],
     ) {
         let c = &theme.tokens.colors;
+        let scale = self.layout_scale();
         let x0 = self.detail_rect.x0 + PAD;
         let label = |scene: &mut Scene, tr: &mut TextRenderer, text: &str, rect: Rect| {
             tr.draw_text_weighted(
@@ -3430,7 +3612,7 @@ impl ContactsApp {
                 text,
                 11.0,
                 c.text_dim,
-                t * Affine::translate((rect.x0, rect.y0 - 18.0)),
+                t * Affine::translate((rect.x0, rect.y0 - 18.0 * scale)),
                 None,
                 TextWeight::Semibold,
             );
@@ -3684,6 +3866,7 @@ impl ContactsApp {
         month: u32,
     ) {
         let c = &theme.tokens.colors;
+        let scale = self.layout_scale();
         let (panel, prev, next, cells) = self.calendar_geometry(anchor, year, month);
         menu_panel(scene, t, theme, panel);
         // Header: < Month Year >
@@ -3694,7 +3877,7 @@ impl ContactsApp {
             &title,
             14.0,
             c.text_primary,
-            t * Affine::translate((panel.center().x - tw / 2.0, panel.y0 + 14.0)),
+            t * Affine::translate((panel.center().x - tw / 2.0, panel.y0 + 14.0 * scale)),
             None,
             TextWeight::Semibold,
         );
@@ -3709,7 +3892,7 @@ impl ContactsApp {
                 wd,
                 11.0,
                 c.text_dim,
-                t * Affine::translate((cx + cell / 2.0 - 4.0, panel.y0 + 50.0)),
+                t * Affine::translate((cx + cell / 2.0 - 4.0 * scale, panel.y0 + 50.0 * scale)),
                 None,
             );
         }
@@ -3738,7 +3921,7 @@ impl ContactsApp {
                 &s,
                 12.0,
                 col,
-                t * Affine::translate((r.center().x - dw / 2.0, r.center().y - 8.0)),
+                t * Affine::translate((r.center().x - dw / 2.0, r.center().y - 8.0 * scale)),
                 None,
             );
             // Calendar focus indexes reserve 0/1 for previous/next month;
@@ -3813,6 +3996,7 @@ impl ContactsApp {
         theme: &Theme,
     ) {
         let c = &theme.tokens.colors;
+        let scale = self.layout_scale();
         scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
         let g = self.unsaved_geometry();
         menu_panel(scene, t, theme, g.panel);
@@ -3821,7 +4005,7 @@ impl ContactsApp {
             "Save changes?",
             16.0,
             c.text_primary,
-            t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 20.0)),
+            t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 20.0 * scale)),
             None,
             TextWeight::Bold,
         );
@@ -3835,7 +4019,7 @@ impl ContactsApp {
             &format!("You have unsaved changes to \u{201C}{name}\u{201D}."),
             13.0,
             c.text_dim,
-            t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 48.0)),
+            t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 48.0 * scale)),
             Some((g.panel.width() - 40.0) as f32),
         );
         let m = self.last_mouse;
@@ -3989,15 +4173,17 @@ struct UnsavedGeom {
 
 impl ContactsApp {
     fn unsaved_geometry(&self) -> UnsavedGeom {
-        let w = 420.0;
-        let h = 156.0;
+        let scale = self.layout_scale();
+        let w = (420.0 * scale).min((self.rect.width() - 32.0).max(280.0));
+        let h = (156.0 * scale).min((self.rect.height() - 32.0).max(220.0));
         let cx = self.rect.center().x;
         let cy = self.rect.center().y;
         let panel = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-        let by = panel.y1 - 48.0;
-        let save = Rect::new(panel.x1 - 16.0 - 96.0, by, panel.x1 - 16.0, by + 32.0);
-        let discard = Rect::new(save.x0 - 8.0 - 96.0, by, save.x0 - 8.0, by + 32.0);
-        let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 16.0 + 88.0, by + 32.0);
+        let button_h = 32.0 * scale;
+        let by = panel.y1 - (16.0 * scale + button_h);
+        let save = Rect::new(panel.x1 - 16.0 - 96.0, by, panel.x1 - 16.0, by + button_h);
+        let discard = Rect::new(save.x0 - 8.0 - 96.0, by, save.x0 - 8.0, by + button_h);
+        let cancel = Rect::new(panel.x0 + 16.0, by, panel.x0 + 16.0 + 88.0, by + button_h);
         UnsavedGeom {
             panel,
             save,
@@ -4026,7 +4212,8 @@ fn detail_section(
     y: &mut f64,
     title: &str,
 ) {
-    *y += 10.0;
+    let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+    *y += 10.0 * scale;
     tr.draw_text_weighted(
         scene,
         title,
@@ -4036,7 +4223,7 @@ fn detail_section(
         None,
         TextWeight::Semibold,
     );
-    *y += 22.0;
+    *y += 22.0 * scale;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4052,6 +4239,30 @@ fn detail_field(
     value: &str,
 ) {
     let c = &theme.tokens.colors;
+    let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+    if theme.text_scale >= 1.75 {
+        tr.draw_text(
+            scene,
+            label,
+            12.0,
+            c.text_dim,
+            t * Affine::translate((x0, *y)),
+            Some((x1 - x0).max(40.0) as f32),
+        );
+        *y += 22.0 * scale;
+        let width = (x1 - x0).max(40.0);
+        let h = f64::from(tr.measure(value, 14.0, Some(width as f32)).1);
+        tr.draw_text(
+            scene,
+            value,
+            14.0,
+            c.text_primary,
+            t * Affine::translate((x0, *y)),
+            Some(width as f32),
+        );
+        *y += h.max(20.0 * scale) + 8.0 * scale;
+        return;
+    }
     tr.draw_text(
         scene,
         label,
@@ -4070,7 +4281,7 @@ fn detail_field(
         t * Affine::translate((x0 + 78.0, *y)),
         Some(vw as f32),
     );
-    *y += h.max(20.0) + 8.0;
+    *y += h.max(20.0 * scale) + 8.0 * scale;
 }
 
 fn type_label(draft: &Contact, target: TypeTarget) -> &str {
@@ -4115,19 +4326,25 @@ pub(crate) fn toolbar_button(
     } else {
         ButtonStyle::Neutral
     };
-    Button::paint(
-        scene,
-        t,
-        tr,
-        theme,
-        &ButtonFace::new(rect, label)
-            .style(style)
-            .radius(f64::from(theme.tokens.radii.md))
-            .text_size(13.0)
-            .weight(TextWeight::Medium)
-            .hovered(hovered)
-            .pressed(pressed),
-    );
+    let icon = match label {
+        "↓" => Some(Icon::Download),
+        "↑" => Some(Icon::ArrowUp),
+        "+" => Some(Icon::Plus),
+        "edit-icon" => Some(Icon::Pencil),
+        "delete-icon" => Some(Icon::Trash),
+        _ => None,
+    };
+    let mut face = ButtonFace::new(rect, if icon.is_some() { "" } else { label })
+        .style(style)
+        .radius(f64::from(theme.tokens.radii.md))
+        .text_size(13.0)
+        .weight(TextWeight::Medium)
+        .hovered(hovered)
+        .pressed(pressed);
+    if let Some(icon) = icon {
+        face = face.icon(icon);
+    }
+    Button::paint(scene, t, tr, theme, &face);
 }
 
 fn add_button(
@@ -4151,7 +4368,10 @@ fn add_button(
         label,
         12.0,
         theme.accent_primary,
-        t * Affine::translate((rect.x0 + 10.0, rect.center().y - 7.0)),
+        t * Affine::translate((
+            rect.x0 + 10.0,
+            rect.center().y - 7.0 * f64::from(theme.text_scale),
+        )),
         None,
         TextWeight::Medium,
     );
@@ -4241,7 +4461,10 @@ fn menu_item(
         label,
         13.0,
         col,
-        t * Affine::translate((rect.x0 + 12.0, rect.center().y - 8.0)),
+        t * Affine::translate((
+            rect.x0 + 12.0,
+            rect.center().y - 8.0 * f64::from(theme.text_scale),
+        )),
         Some((rect.width() - 20.0) as f32),
     );
 }
@@ -4253,7 +4476,7 @@ fn menu_item_colored(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
-    _theme: &Theme,
+    theme: &Theme,
     rect: Rect,
     label: &str,
     color: Color,
@@ -4263,7 +4486,10 @@ fn menu_item_colored(
         label,
         13.0,
         color,
-        t * Affine::translate((rect.x0 + 12.0, rect.center().y - 8.0)),
+        t * Affine::translate((
+            rect.x0 + 12.0,
+            rect.center().y - 8.0 * f64::from(theme.text_scale),
+        )),
         Some((rect.width() - 20.0) as f32),
     );
 }
@@ -4797,9 +5023,10 @@ impl Widget for ContactsApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
         // cannot actually return `Err` for a fresh leaf (see the
         // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
@@ -5277,20 +5504,40 @@ impl Widget for ContactsApp {
             return Some(dialog);
         }
 
+        let importing = self.import_rx.is_some() || self.import_parse_rx.is_some();
+        let exporting = self.export_rx.is_some();
         let mut toolbar_actions = vec![
             AccessNode::new(Role::Button)
-                .with_name("Import contacts")
+                .with_name(if importing {
+                    "Importing contacts"
+                } else {
+                    "Import contacts"
+                })
                 .with_action_target("contacts.import")
                 .with_bounds(self.hit.import)
-                .with_state(AccessState::new().focusable(true)),
+                .with_state(
+                    AccessState::new()
+                        .focusable(!importing)
+                        .disabled(importing)
+                        .busy(importing),
+                ),
         ];
         if !self.store.is_empty() {
             toolbar_actions.extend([
                 AccessNode::new(Role::Button)
-                    .with_name("Export contacts")
+                    .with_name(if exporting {
+                        "Exporting contacts"
+                    } else {
+                        "Export contacts"
+                    })
                     .with_action_target("contacts.export")
                     .with_bounds(self.hit.export)
-                    .with_state(AccessState::new().focusable(true)),
+                    .with_state(
+                        AccessState::new()
+                            .focusable(!exporting)
+                            .disabled(exporting)
+                            .busy(exporting),
+                    ),
                 AccessNode::new(Role::Button)
                     .with_name("Create contact")
                     .with_action_target("contacts.new")
@@ -6622,8 +6869,9 @@ impl ContactsApp {
             return;
         }
         let off = self.detail_top_offset();
-        let body_top =
-            self.detail_rect.y0 + FORM_TITLE_TOP + FORM_TITLE_H + FORM_ROW_GAP + 32.0 + off;
+        let body_top = self.detail_rect.y0
+            + (FORM_TITLE_TOP + FORM_TITLE_H + FORM_ROW_GAP + 32.0) * self.layout_scale()
+            + off;
         let body_bot = self.detail_rect.y1;
         // The focused field's last-laid-out rect (reflecting the current
         // scroll). `Rect` is `Copy`, so the borrow of `self.form` ends here.
@@ -7887,16 +8135,20 @@ mod tests {
     /// encoding the scene on the CPU so any panic in sync/layout/draw
     /// surfaces. (GPU rasterization is verified separately by `--shots`.)
     fn drive_frame(app: &mut ContactsApp, w: u32, h: u32) {
-        let theme = Theme::dark();
+        drive_frame_with_theme(app, w, h, &Theme::dark());
+    }
+
+    fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) {
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let mut doc = AutoCommit::new();
 
         app.sync(&mut doc, &ROOT);
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let child = app.build_layout(&mut taffy, theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 Style {
@@ -7936,7 +8188,7 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
-            &theme,
+            theme,
             &presence,
             &permission,
         );
@@ -7974,6 +8226,48 @@ mod tests {
             Pane::List,
             "a fresh narrow frame opens to the list"
         );
+    }
+
+    #[test]
+    fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
+        let mut app = ContactsApp::sample();
+        let large_text = Theme::dark().with_text_scale(2.0);
+        drive_frame_with_theme(&mut app, 1440, 900, &large_text);
+        assert!(app.narrow, "large text reflows master/detail to one pane");
+        assert_eq!(app.toolbar_h(), TOOLBAR_H * 2.0);
+        assert_eq!(app.row_h(), ROW_H * 2.0);
+        assert_eq!(app.hit.search.height(), FIELD_H * 2.0);
+
+        app.shots_edit_contact();
+        drive_frame_with_theme(&mut app, 1440, 900, &large_text);
+        let form = app.form.as_ref().expect("edit form");
+        let first = form
+            .inputs
+            .iter()
+            .find(|field| field.slot == Slot::First)
+            .expect("first name")
+            .ti_rect();
+        let last = form
+            .inputs
+            .iter()
+            .find(|field| field.slot == Slot::Last)
+            .expect("last name")
+            .ti_rect();
+        assert!(last.y0 > first.y1, "paired fields stack at large text");
+        assert_eq!(first.height(), FIELD_H * 2.0);
+    }
+
+    #[test]
+    fn importing_state_is_visible_and_announced_as_busy() {
+        let mut app = ContactsApp::sample();
+        drive_frame(&mut app, 1280, 800);
+        app.shots_show_loading();
+        let tree = app.accessibility().expect("contacts accessibility tree");
+        let import = access_target(&tree, "contacts.import").expect("import action");
+        assert_eq!(import.name.as_deref(), Some("Importing contacts"));
+        assert!(import.state.busy);
+        assert!(import.state.disabled);
+        assert!(!import.state.focusable);
     }
 
     #[test]
