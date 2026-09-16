@@ -154,8 +154,16 @@ impl WebViewEngine for TestEngine {
                 inner.index = inner.history.len().saturating_sub(1);
                 self.emit_navigation_locked(&mut inner);
             }
-            WebViewCommand::RequestNavigationHistory { request_id } => {
-                let indices: Vec<_> = (0..inner.index).rev().take(12).collect();
+            WebViewCommand::RequestNavigationHistory {
+                request_id,
+                direction,
+            } => {
+                let indices: Vec<_> = match direction {
+                    super::NavigationDirection::Back => (0..inner.index).rev().take(12).collect(),
+                    super::NavigationDirection::Forward => {
+                        ((inner.index + 1)..inner.history.len()).take(12).collect()
+                    }
+                };
                 let entries = indices
                     .iter()
                     .filter_map(|&index| {
@@ -169,6 +177,7 @@ impl WebViewEngine for TestEngine {
                 inner.history_snapshot = Some((request_id, indices));
                 inner.events.push(WebViewEvent::NavigationHistory {
                     request_id,
+                    direction,
                     entries,
                 });
             }

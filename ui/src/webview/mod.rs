@@ -99,12 +99,37 @@ pub struct NavigationEntry {
     pub title: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NavigationDirection {
+    #[default]
+    Back,
+    Forward,
+}
+
+impl NavigationDirection {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Back => "back",
+            Self::Forward => "forward",
+        }
+    }
+
+    pub fn from_wire(value: Option<&str>) -> Option<Self> {
+        match value {
+            None | Some("back") => Some(Self::Back),
+            Some("forward") => Some(Self::Forward),
+            Some(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// Load the given (already normalised) URL.
     Navigate(String),
     RequestNavigationHistory {
         request_id: u32,
+        direction: NavigationDirection,
     },
     NavigateToHistoryEntry {
         request_id: u32,
@@ -240,6 +265,7 @@ pub enum WebViewEvent {
     ZoomChanged(f64),
     NavigationHistory {
         request_id: u32,
+        direction: NavigationDirection,
         entries: Vec<NavigationEntry>,
     },
     PermissionRequested {

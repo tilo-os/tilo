@@ -16,8 +16,8 @@ class NavigationHistory final : public CefDevToolsMessageObserver {
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
   void Detach() { registration_=nullptr;browser_=nullptr; }
   void Invalidate() { allowed_.clear();snapshot_=0;pending_=0; }
-  void Request(int request) {
-    Invalidate();request_=request;
+  void Request(int request,bool forward=false) {
+    Invalidate();request_=request;forward_=forward;
     pending_=browser_->GetHost()->ExecuteDevToolsMethod(0,"Page.getNavigationHistory",nullptr);
     if(!pending_) Publish(nullptr);
   }
@@ -47,7 +47,7 @@ class NavigationHistory final : public CefDevToolsMessageObserver {
     auto entries=CefListValue::Create();allowed_.clear();snapshot_=request_;
     if(result && result->GetType("currentIndex")==VTYPE_INT && result->GetType("entries")==VTYPE_LIST) {
       auto all=result->GetList("entries");int current=result->GetInt("currentIndex");
-      if(current>=0 && size_t(current)<all->GetSize()) for(int i=current-1;i>=0 && entries->GetSize()<12;--i) {
+      if(current>=0 && size_t(current)<all->GetSize()) for(int i=forward_?current+1:current-1;i>=0 && size_t(i)<all->GetSize() && entries->GetSize()<12;i+=forward_?1:-1) {
         auto entry=all->GetDictionary(i);
         if(!entry || entry->GetType("id")!=VTYPE_INT || entry->GetInt("id")<=0 || entry->GetType("url")!=VTYPE_STRING || entry->GetType("title")!=VTYPE_STRING) continue;
         if(entry->GetString("url").ToString().size()>8192 || entry->GetString("title").ToString().size()>4096) continue;
@@ -56,10 +56,10 @@ class NavigationHistory final : public CefDevToolsMessageObserver {
         allowed_.insert(id);entries->SetDictionary(entries->GetSize(),row);
       }
     }
-    auto event=CefDictionaryValue::Create();event->SetInt("request_id",request_);event->SetList("entries",entries);emit_("navigation_history",event);
+    auto event=CefDictionaryValue::Create();event->SetInt("request_id",request_);event->SetString("direction",forward_?"forward":"back");event->SetList("entries",entries);emit_("navigation_history",event);
   }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;Emit emit_;
-  int pending_=0,request_=0,snapshot_=0;std::set<int> allowed_;
+  int pending_=0,request_=0,snapshot_=0;bool forward_=false;std::set<int> allowed_;
   IMPLEMENT_REFCOUNTING(NavigationHistory);
 };
 }

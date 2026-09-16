@@ -667,6 +667,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             value["request_id"]
                 .as_u64()
                 .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+                && super::NavigationDirection::from_wire(value["direction"].as_str()).is_some()
                 && value["entries"].as_array().is_some_and(|entries| {
                     entries.len() <= 12
                         && entries.iter().all(|entry| {
@@ -696,7 +697,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             *id > 0 && *id <= i32::MAX as u32 && text.len() <= 4096
         }
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
-        WebViewCommand::RequestNavigationHistory { request_id } => {
+        WebViewCommand::RequestNavigationHistory { request_id, .. } => {
             *request_id > 0 && *request_id <= i32::MAX as u32
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
@@ -853,6 +854,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         },
         "navigation_history" => WebViewEvent::NavigationHistory {
             request_id: value["request_id"].as_u64()? as u32,
+            direction: super::NavigationDirection::from_wire(value["direction"].as_str())?,
             entries: value["entries"]
                 .as_array()?
                 .iter()
@@ -881,8 +883,11 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
 fn encode_command(command: WebViewCommand) -> Option<Value> {
     Some(match command {
         WebViewCommand::Navigate(url) => json!({"op":"navigate","url":url}),
-        WebViewCommand::RequestNavigationHistory { request_id } => {
-            json!({"op":"navigation_history","request_id":request_id})
+        WebViewCommand::RequestNavigationHistory {
+            request_id,
+            direction,
+        } => {
+            json!({"op":"navigation_history","request_id":request_id,"direction":direction.as_str()})
         }
         WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
             json!({"op":"history_entry","request_id":request_id,"id":id})

@@ -245,18 +245,26 @@ fn capability_commands_and_events_round_trip() {
 
 #[test]
 fn session_history_payloads_are_bounded_and_keep_snapshot_identity() {
-    let snapshot = json!({"event":"navigation_history","request_id":7,"entries":[{"id":42,"url":"https://a.test","title":"A"}]});
+    let snapshot = json!({"event":"navigation_history","request_id":7,"direction":"forward","entries":[{"id":42,"url":"https://a.test","title":"A"}]});
     assert!(validate_event(&snapshot).is_ok());
     assert_eq!(
         decode_event(&snapshot),
         Some(WebViewEvent::NavigationHistory {
             request_id: 7,
+            direction: super::super::NavigationDirection::Forward,
             entries: vec![super::super::NavigationEntry {
                 id: 42,
                 url: "https://a.test".into(),
                 title: "A".into()
             }],
         })
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::RequestNavigationHistory {
+            request_id: 7,
+            direction: super::super::NavigationDirection::Forward,
+        }),
+        Some(json!({"op":"navigation_history","request_id":7,"direction":"forward"}))
     );
     assert_eq!(
         encode_command(WebViewCommand::NavigateToHistoryEntry {
@@ -277,6 +285,20 @@ fn session_history_payloads_are_bounded_and_keep_snapshot_identity() {
             id: 42
         }
     ));
+    let mut legacy = snapshot;
+    legacy.as_object_mut().unwrap().remove("direction");
+    assert_eq!(
+        decode_event(&legacy),
+        Some(WebViewEvent::NavigationHistory {
+            request_id: 7,
+            direction: super::super::NavigationDirection::Back,
+            entries: vec![super::super::NavigationEntry {
+                id: 42,
+                url: "https://a.test".into(),
+                title: "A".into()
+            }],
+        })
+    );
 }
 
 #[test]

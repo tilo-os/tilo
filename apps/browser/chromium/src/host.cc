@@ -269,7 +269,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="try_close_tab") { if(downloads->Busy(id_)) Event("close_blocked");else {host->CloseDevTools();host->CloseBrowser(true);} }
     else if(op=="close_tab") {host->CloseDevTools();host->CloseBrowser(true);}
     else if(op=="navigate") frame->LoadURL(d->GetString("url"));
-    else if(op=="navigation_history") navigation_history_->Request(d->GetInt("request_id"));
+    else if(op=="navigation_history") navigation_history_->Request(d->GetInt("request_id"),d->GetString("direction") == "forward");
     else if(op=="history_entry") navigation_history_->Navigate(d->GetInt("request_id"),d->GetInt("id"));
     else if(op=="back") browser_->GoBack();
     else if(op=="forward") browser_->GoForward();
@@ -407,7 +407,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto number=[&](const char* key){auto t=d->GetType(key);return t==VTYPE_INT || (t==VTYPE_DOUBLE && std::isfinite(d->GetDouble(key)));};
   if(op=="create_tab" || op=="close_tab" || op=="try_close_tab") return d->HasKey("tab");
   if(op=="visibility") return type("visible",VTYPE_BOOL);
-  if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" || (type("id",VTYPE_INT) && d->GetInt("id")>0));
+  if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" ? (!d->HasKey("direction") || (type("direction",VTYPE_STRING) && (d->GetString("direction")=="back" || d->GetString("direction")=="forward"))) : (type("id",VTYPE_INT) && d->GetInt("id")>0));
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
