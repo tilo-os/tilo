@@ -1713,7 +1713,7 @@ fn context_menu_is_keyboard_navigable_and_semantically_complete() {
 }
 
 #[test]
-fn context_menu_stays_reachable_at_a_narrow_viewport_edge() {
+fn context_menu_clamps_to_top_when_taller_than_viewport() {
     use vello::kurbo::{Point, Rect};
 
     let (mut widget, _writes) = build_test_widget();
@@ -1724,7 +1724,11 @@ fn context_menu_stays_reachable_at_a_narrow_viewport_edge() {
 
     let menu = widget.context_menu_rect();
     assert!(menu.x0 >= viewport.x0 && menu.x1 <= viewport.x1);
-    assert!(menu.y0 >= viewport.y0 && menu.y1 <= viewport.y1);
+    assert!((menu.y0 - viewport.y0).abs() <= f64::EPSILON);
+    assert!(
+        menu.height() > viewport.height(),
+        "this fixture must remain shorter than the accessible menu"
+    );
 }
 
 // ---------------------------------------------------------------
