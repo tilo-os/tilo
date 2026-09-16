@@ -327,6 +327,46 @@ registers, instruction bytes and mapped guest state are the next discriminator.
 All diagnostic results remain failures, and both owned image mounts and the
 VM processes were released after each run. No workaround was installed.
 
+### First Wineserver illegal instruction
+
+The existing GDB 17.2 from an additional read-only tools image ran outside the
+capsule in `kernel-arm-capsule-namespace-gdb-observer-02`. It attached only after
+the persistent Wineserver was adopted by the retained native helper, caught
+the first `SIGILL`, recorded registers and memory, then passed the signal.
+The earlier `-01` attempt selected the short-lived launcher and reported
+`ptrace: No such process`; it captured no fault evidence.
+
+The first captured signal has `si_code=1` (`ILL_ILLOPC`) and fault address/native
+PC `0x80006a62f7f0`, inside anonymous executable JIT memory
+`0x80006a584000..0x80006b583000`. Its actual instruction word is `0xfffffc40`
+(bytes `40 fc ff ff`), an undefined native instruction. The following sequence
+was read directly from that process:
+
+```text
+add  x20, x10, x7
+.inst 0xfffffc40
+ld1b {z17.b}, p7/z, [x20, x0]
+add  x20, x11, x7
+.inst 0xfffffc40
+st1b {z17.b}, p7, [x20, x0]
+```
+
+This first fault is an undefined instruction in generated native code; its
+sampled word is not the documented guest-SIGILL `hlt(0)` trampoline. Whether
+the word was emitted incorrectly or altered later remains unproven. The
+captured `vg=4` corresponds to the unchanged 256-bit SVE control.
+
+The saved guest RIP, `0x423700`, maps to an ordinary function prologue in the
+stripped x86-64 Wineserver ELF, whose SHA-256 is
+`ddf8f1d7b1df04b7688358d81fce66148ba44d67fbb7942dd7645f059db4c968`.
+It can lag the native fault and is not asserted to be the faulting guest
+instruction; no function name was recovered. The run retains
+`gdb-first-sigill.txt`, `guest-wineserver-disassembly.txt` and
+`first-sigill-evidence.json` beside its raw serial log. Kernel, modules, native
+image and all saved runtime input hashes matched the previous control.
+Preparation still failed after 138.51 seconds. All three owned image mounts
+and the VM were released; no production code, deadline or policy changed.
+
 ### Running the harness
 
 Use `python3 os/tests/kernel-arm-capsule-smoke.py --help` for the explicit kernel,
