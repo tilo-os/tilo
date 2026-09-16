@@ -109,18 +109,21 @@ fn network_demo_pane() -> Box<dyn Widget> {
             ssid: "Home_Network".into(),
             signal: 4,
             secure: true,
+            security: os_actions::WifiSecurity::Wpa3,
             connected: true,
         },
         WifiNetworkInfo {
             ssid: "Cafe_Guest".into(),
             signal: 3,
             secure: false,
+            security: os_actions::WifiSecurity::Open,
             connected: false,
         },
         WifiNetworkInfo {
             ssid: "Office_5G".into(),
             signal: 2,
             secure: true,
+            security: os_actions::WifiSecurity::Wpa2,
             connected: false,
         },
     ];

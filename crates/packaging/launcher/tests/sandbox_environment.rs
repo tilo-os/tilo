@@ -97,6 +97,7 @@ fn manifest() -> MinimalManifest {
         opens_ext: Vec::new(),
         opens_mime: Vec::new(),
         opens_schemes: Vec::new(),
+        continuity: launcher::manifest::ContinuityContract::default(),
     }
 }
 
