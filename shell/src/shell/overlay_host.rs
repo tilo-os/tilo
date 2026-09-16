@@ -13389,8 +13389,12 @@ impl Widget for ShellOverlayHost {
             // hidden desktop chrome. Leave the one standard Tab path
             // unclaimed, though: FrameBuilder owns global focus traversal,
             // and must be allowed to advance between the onboarding
-            // controls. Modified Tab remains a shell/application chord and
-            // is consumed here with every other event.
+            // controls. Enter/Space similarly stay unclaimed when the
+            // focused widget did not consume them: native FrameBuilder owns
+            // the standard focused-control activation fallback that
+            // `ui::App` normally supplies. Modified Tab remains a
+            // shell/application chord and is consumed here with every other
+            // event.
             let is_unmodified_tab = matches!(
                 event,
                 WindowEvent::KeyboardInput { event, .. }
@@ -13400,7 +13404,19 @@ impl Widget for ShellOverlayHost {
                         && !modifiers.state().alt_key()
                         && !modifiers.state().super_key()
             );
-            if !is_unmodified_tab {
+            let is_unmodified_activation = matches!(
+                event,
+                WindowEvent::KeyboardInput { event, .. }
+                    if event.state == ElementState::Pressed
+                        && matches!(
+                            event.logical_key,
+                            Key::Named(NamedKey::Enter | NamedKey::Space)
+                        )
+                        && !modifiers.state().control_key()
+                        && !modifiers.state().alt_key()
+                        && !modifiers.state().super_key()
+            );
+            if !is_unmodified_tab && !is_unmodified_activation {
                 *handled = true;
             }
             return;
