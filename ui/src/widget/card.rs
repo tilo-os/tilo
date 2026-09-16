@@ -175,7 +175,9 @@ impl Widget for Card {
                 },
                 min_size: Size {
                     width: length(0.0_f32),
-                    height: length(0.0_f32),
+                    // Intrinsic Grid rows need this item's automatic block minimum;
+                    // `flex_shrink` does not protect an item in Grid sizing.
+                    height: taffy::Dimension::auto(),
                 },
                 ..Default::default()
             },
@@ -414,7 +416,9 @@ impl CardGrid {
             },
             min_size: Size {
                 width: length(0.0_f32),
-                height: length(0.0_f32),
+                // Intrinsic Grid rows need this item's automatic block minimum;
+                // `flex_shrink` does not protect an item in Grid sizing.
+                height: taffy::Dimension::auto(),
             },
             flex_shrink: 0.0,
             align_self: Some(taffy::AlignSelf::Start),
