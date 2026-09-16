@@ -233,6 +233,79 @@ impl Default for DbClientApp {
 }
 
 impl DbClientApp {
+    fn perform_navigator_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        if let Some(id) = target
+            .strip_prefix("db.connection.remove:")
+            .filter(|_| matches!(action, Action::Activate))
+            .and_then(|id| Uuid::parse_str(id).ok())
+        {
+            let Some(index) = self
+                .session
+                .connections
+                .iter()
+                .position(|item| item.id == id)
+            else {
+                return false;
+            };
+            self.remove_connection(index, state);
+            return true;
+        }
+        if let Some(id) = target
+            .strip_prefix("db.connection:")
+            .filter(|_| matches!(action, Action::Activate | Action::Focus))
+            .and_then(|id| Uuid::parse_str(id).ok())
+        {
+            return self
+                .execute_operation(DbClientOperation::Connect {
+                    connection_id: id.to_string(),
+                })
+                .is_ok();
+        }
+        if let Some(name) = target
+            .strip_prefix("db.schema:")
+            .filter(|_| matches!(action, Action::Activate))
+        {
+            if self
+                .session
+                .schema
+                .schemas
+                .iter()
+                .any(|schema| schema.name == name)
+            {
+                self.tree.toggle_schema(name);
+                return true;
+            }
+            return false;
+        }
+        let Some((schema, name)) = target
+            .strip_prefix("db.table:")
+            .filter(|_| matches!(action, Action::Activate | Action::Focus))
+            .and_then(|address| address.split_once('\0'))
+        else {
+            return false;
+        };
+        if self.session.schema.find_relation(schema, name).is_none() {
+            return false;
+        }
+        let relation = crate::model::RelationRef {
+            schema: schema.to_string(),
+            name: name.to_string(),
+        };
+        self.session.select_relation(relation.clone());
+        self.tree.set_selected(relation);
+        if self.split_layout() == SplitLayout::Overlay {
+            self.flap.close();
+        }
+        true
+    }
+
     /// The live app: starts on the user's saved connections (empty on a fresh
     /// machine) and never fabricates a sample database or profiles.
     pub fn new() -> Self {
@@ -1723,6 +1796,14 @@ impl Widget for DbClientApp {
             self.dirty = true;
             return true;
         }
+        if target.starts_with("db.connection")
+            || target.starts_with("db.schema:")
+            || target.starts_with("db.table:")
+        {
+            let handled = self.perform_navigator_semantic_action(target, action, state);
+            self.dirty |= handled;
+            return handled;
+        }
         match target {
             "db.new-connection" if matches!(action, Action::Activate | Action::Focus) => {
                 self.modal.open_new();
@@ -1749,82 +1830,6 @@ impl Widget for DbClientApp {
             }
             "db.tab:structure" if matches!(action, Action::Activate) => {
                 self.select_accessible_tab(MainTab::Structure);
-            }
-            _ if target.starts_with("db.connection.remove:")
-                && matches!(action, Action::Activate) =>
-            {
-                let Some(id) = target
-                    .strip_prefix("db.connection.remove:")
-                    .and_then(|id| Uuid::parse_str(id).ok())
-                else {
-                    return false;
-                };
-                let Some(index) = self
-                    .session
-                    .connections
-                    .iter()
-                    .position(|connection| connection.id == id)
-                else {
-                    return false;
-                };
-                self.remove_connection(index, state);
-            }
-            _ if target.starts_with("db.connection:")
-                && matches!(action, Action::Activate | Action::Focus) =>
-            {
-                let Some(id) = target
-                    .strip_prefix("db.connection:")
-                    .and_then(|id| Uuid::parse_str(id).ok())
-                else {
-                    return false;
-                };
-                if self
-                    .execute_operation(DbClientOperation::Connect {
-                        connection_id: id.to_string(),
-                    })
-                    .is_err()
-                {
-                    return false;
-                }
-            }
-            _ if target.starts_with("db.schema:") && matches!(action, Action::Activate) => {
-                let Some(name) = target.strip_prefix("db.schema:") else {
-                    return false;
-                };
-                if !self
-                    .session
-                    .schema
-                    .schemas
-                    .iter()
-                    .any(|schema| schema.name == name)
-                {
-                    return false;
-                }
-                self.tree.toggle_schema(name);
-            }
-            _ if target.starts_with("db.table:")
-                && matches!(action, Action::Activate | Action::Focus) =>
-            {
-                let Some((schema, name)) = target
-                    .strip_prefix("db.table:")
-                    .and_then(|address| address.split_once('\0'))
-                else {
-                    return false;
-                };
-                if self.session.schema.find_relation(schema, name).is_none() {
-                    return false;
-                }
-                self.session.select_relation(crate::model::RelationRef {
-                    schema: schema.to_string(),
-                    name: name.to_string(),
-                });
-                self.tree.set_selected(crate::model::RelationRef {
-                    schema: schema.to_string(),
-                    name: name.to_string(),
-                });
-                if self.split_layout() == SplitLayout::Overlay {
-                    self.flap.close();
-                }
             }
             _ => return false,
         }
