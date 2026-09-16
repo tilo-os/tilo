@@ -9694,9 +9694,19 @@ impl BooksApp {
                     y: start_y,
                 },
             ),
-            SettingsTab::Fonts => {
-                self.draw_fonts_manager(scene, t, tr, theme, &c, col_x, col_w, start_y)
-            }
+            SettingsTab::Fonts => self.draw_fonts_manager(
+                &mut EbookPaintCtx {
+                    scene: &mut *scene,
+                    transform: t,
+                    text: &mut *tr,
+                    theme,
+                },
+                SettingsColumnView {
+                    x: col_x,
+                    width: col_w,
+                    y: start_y,
+                },
+            ),
             SettingsTab::Colours => {
                 self.draw_schemes_manager(scene, t, tr, theme, &c, col_x, col_w, start_y)
             }
@@ -10201,19 +10211,7 @@ impl BooksApp {
         y
     }
 
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_fonts_manager(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_fonts_manager(&mut self, ctx: &mut EbookPaintCtx<'_>, view: SettingsColumnView) -> f64 {
         let fonts = self.fonts.clone();
         let default_id = if self.default_font_id.is_empty() {
             fonts.first().map(|f| f.id.clone()).unwrap_or_default()
@@ -10221,26 +10219,40 @@ impl BooksApp {
             self.default_font_id.clone()
         };
 
-        let (mut y, dd_bottom) =
-            self.draw_default_font_dropdown(scene, t, tr, theme, c, x, w, y, &fonts, &default_id);
+        let (mut y, dd_bottom) = self.draw_default_font_dropdown(ctx, view, &fonts, &default_id);
 
-        y = Self::draw_font_rows_header(scene, t, tr, c, x, w, y);
+        y = Self::draw_font_rows_header(ctx, SettingsColumnView { y, ..view });
         for f in &fonts {
-            y = self.draw_font_row(scene, t, tr, theme, c, x, w, y, f);
+            y = self.draw_font_row(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &ctx.theme.tokens.colors,
+                view.x,
+                view.width,
+                y,
+                f,
+            );
         }
-        y = self.draw_add_font_button(scene, t, tr, theme, c, x, y);
+        y = self.draw_add_font_button(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            &ctx.theme.tokens.colors,
+            view.x,
+            y,
+        );
 
         // The default-font dropdown menu (drawn last so it floats over the rows).
         if self.default_font_menu {
             self.draw_default_font_menu(
-                scene,
-                t,
-                tr,
-                theme,
-                c,
-                x,
-                w,
-                dd_bottom + 4.0,
+                ctx,
+                SettingsColumnView {
+                    y: dd_bottom + 4.0,
+                    ..view
+                },
                 &fonts,
                 &default_id,
             );
@@ -10251,41 +10263,36 @@ impl BooksApp {
     /// The default-font dropdown control: label + box showing the current
     /// default's name in its own face. Returns `(y_below, dropdown_bottom)`
     /// — `dropdown_bottom` anchors the flyout menu.
-    #[allow(clippy::too_many_arguments)]
     fn draw_default_font_dropdown(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        mut y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: SettingsColumnView,
         fonts: &[FontEntry],
         default_id: &str,
     ) -> (f64, f64) {
-        let radii_md = f64::from(theme.tokens.radii.md);
-        tr.draw_text_weighted(
-            scene,
+        let c = &ctx.theme.tokens.colors;
+        let mut y = view.y;
+        let radii_md = f64::from(ctx.theme.tokens.radii.md);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "DEFAULT FONT",
             11.0,
             c.text_dim,
-            t * Affine::translate((x, y)),
+            ctx.transform * Affine::translate((view.x, y)),
             None,
             TextWeight::Semibold,
         );
         y += 20.0;
         let dd_h = 46.0;
-        let dd = Rect::new(x, y, x + w, y + dd_h);
-        paint::fill_round(scene, t, dd, radii_md, c.surfaces.raised);
+        let dd = Rect::new(view.x, y, view.x + view.width, y + dd_h);
+        paint::fill_round(ctx.scene, ctx.transform, dd, radii_md, c.surfaces.raised);
         paint::stroke_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             dd,
             radii_md,
             if self.default_font_menu {
-                theme.border_focus
+                ctx.theme.border_focus
             } else {
                 c.border_standard
             },
@@ -10294,12 +10301,12 @@ impl BooksApp {
         let cur = fonts.iter().find(|f| f.id == default_id);
         if let Some(f) = cur {
             // Draw the current default's name in its own face.
-            tr.draw_text_font(
-                scene,
+            ctx.text.draw_text_font(
+                ctx.scene,
                 &f.name,
                 16.0,
                 c.text_primary,
-                t * Affine::translate((x + 16.0, y + dd_h / 2.0 - 10.0)),
+                ctx.transform * Affine::translate((view.x + 16.0, y + dd_h / 2.0 - 10.0)),
                 None,
                 TextWeight::Semibold,
                 false,
@@ -10307,17 +10314,12 @@ impl BooksApp {
             );
         }
         self.icon_button(
-            &mut EbookPaintCtx {
-                scene: &mut *scene,
-                transform: t,
-                text: &mut *tr,
-                theme,
-            },
+            ctx,
             IconButtonView {
                 rect: Rect::new(
-                    x + w - 34.0,
+                    view.x + view.width - 34.0,
                     y + dd_h / 2.0 - 14.0,
-                    x + w - 6.0,
+                    view.x + view.width - 6.0,
                     y + dd_h / 2.0 + 14.0,
                 ),
                 icon: Ico::ChevDown,
@@ -10333,26 +10335,20 @@ impl BooksApp {
 
     /// "READING FONTS" section title + description. Returns the y just
     /// below it, where the row list starts.
-    fn draw_font_rows_header(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        mut y: f64,
-    ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
+    fn draw_font_rows_header(ctx: &mut EbookPaintCtx<'_>, view: SettingsColumnView) -> f64 {
+        let c = &ctx.theme.tokens.colors;
+        let mut y = view.y;
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "READING FONTS",
             11.0,
             c.text_dim,
-            t * Affine::translate((x, y)),
+            ctx.transform * Affine::translate((view.x, y)),
             None,
             TextWeight::Semibold,
         );
         y += 18.0;
-        tr.draw_text(scene, "Each row previews its own face — tap a name to rename, toggle whether it appears in the quick settings, and tune its size.", 12.5, c.text_dim, t * Affine::translate((x, y)), Some(w as f32));
+        ctx.text.draw_text(ctx.scene, "Each row previews its own face — tap a name to rename, toggle whether it appears in the quick settings, and tune its size.", 12.5, c.text_dim, ctx.transform * Affine::translate((view.x, y)), Some(view.width as f32));
         y + 34.0
     }
 
@@ -10552,67 +10548,72 @@ impl BooksApp {
     }
 
     /// The default-font dropdown list, floating under the dropdown control.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
     fn draw_default_font_menu(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        top: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: SettingsColumnView,
         fonts: &[FontEntry],
         default_id: &str,
     ) {
+        let c = &ctx.theme.tokens.colors;
+        let top = view.y;
         let row_h = 40.0;
         let menu_h = fonts.len() as f64 * row_h + 8.0;
-        let menu = Rect::new(x, top, x + w, top + menu_h);
+        let menu = Rect::new(view.x, top, view.x + view.width, top + menu_h);
         let shadow = Rect::new(menu.x0 - 1.0, menu.y0 + 3.0, menu.x1 + 1.0, menu.y1 + 6.0);
-        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 80));
         paint::fill_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
+            shadow,
+            12.0,
+            Color::from_rgba8(0, 0, 0, 80),
+        );
+        paint::fill_round(
+            ctx.scene,
+            ctx.transform,
             menu,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             menu,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             c.border_standard,
             1.0,
         );
         self.push_hit(menu, Action::Swallow);
         let mut my = top + 4.0;
         for f in fonts {
-            let row = Rect::new(x + 6.0, my, x + w - 6.0, my + row_h - 4.0);
+            let row = Rect::new(
+                view.x + 6.0,
+                my,
+                view.x + view.width - 6.0,
+                my + row_h - 4.0,
+            );
             let sel = f.id == default_id;
             if sel {
                 paint::fill_round(
-                    scene,
-                    t,
+                    ctx.scene,
+                    ctx.transform,
                     row,
                     8.0,
-                    theme.accent_primary.with_alpha_factor(0.16),
+                    ctx.theme.accent_primary.with_alpha_factor(0.16),
                 );
             } else if self.is_hover(row) {
-                paint::fill_round(scene, t, row, 8.0, theme.bg_hover);
+                paint::fill_round(ctx.scene, ctx.transform, row, 8.0, ctx.theme.bg_hover);
             }
-            tr.draw_text_font(
-                scene,
+            ctx.text.draw_text_font(
+                ctx.scene,
                 &f.name,
                 15.0,
                 if sel {
-                    theme.accent_primary
+                    ctx.theme.accent_primary
                 } else {
                     c.text_primary
                 },
-                t * Affine::translate((x + 18.0, my + 9.0)),
+                ctx.transform * Affine::translate((view.x + 18.0, my + 9.0)),
                 None,
                 TextWeight::Medium,
                 false,
