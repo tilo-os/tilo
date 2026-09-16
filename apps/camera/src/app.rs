@@ -2529,12 +2529,25 @@ impl Widget for CameraApp {
     }
 
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = Vec::new();
-        if let Some(handoff) = self.photos_handoff.as_ref() {
-            bindings.push(handoff.metadata("camera.open-recent-in-photos"));
-        }
-        if let Some(handoff) = self.video_handoff.as_ref() {
-            bindings.push(handoff.metadata("camera.open-recent-in-video-player"));
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        // The visible recent-capture tile is one control whose canonical
+        // cross-app destination depends on the current capture type. Preserve
+        // that one semantic identity while attaching the same emitter the
+        // pointer path uses; do not inventory two invisible destination
+        // controls.
+        let recent_handoff = self.captures.first().and_then(|capture| {
+            if capture.is_video() {
+                self.video_handoff.as_ref()
+            } else {
+                self.photos_handoff.as_ref()
+            }
+        });
+        if let Some(handoff) = recent_handoff
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "camera.open-recent-capture")
+        {
+            *binding = handoff.metadata("camera.open-recent-capture");
         }
         bindings
     }
