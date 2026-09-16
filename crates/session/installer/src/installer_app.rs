@@ -1988,6 +1988,11 @@ impl InstallerApp {
         }
         self.install_state = InstallState::Failed;
         self.reset_viewport();
+        // Running progress has no focusable controls. Failure replaces it
+        // with recovery-key actions and Review storage, so keyboard and
+        // assistive-technology users need a fresh focus target just as they
+        // do on successful completion.
+        self.focus_reset = true;
         self.dirty_structure = true;
     }
 
@@ -5019,6 +5024,10 @@ mod tests {
             app.status_lines.last().map(String::as_str),
             Some("error: no space left on device"),
             "the useful backend failure must remain the newest visible log line"
+        );
+        assert!(
+            app.take_focus_reset(),
+            "failure must focus the first recovery action on the new error surface"
         );
     }
 
