@@ -119,11 +119,9 @@ class Session:
             "NIRIOS_HEADLESS_SIZE": "1280x800",
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
-            # Makes a `ui` app say on the session log when a peer's
-            # arrival reached it. That line is this rig's witness that
-            # presence actually crossed between the two apps — see
-            # `presence_traffic`.
-            "QUICK_COLLAB_DEBUG": "1",
+            # Capture the toolkit's structured state/presence events. The
+            # self-filter event is this rig's witness that presence crossed.
+            "RUST_LOG": "qos.state=debug",
         }
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
