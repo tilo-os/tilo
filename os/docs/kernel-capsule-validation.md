@@ -225,12 +225,46 @@ because `ldd` headings were mistaken for paths. Neither reached the guest
 matrix and neither is runtime evidence. The completed third run retains its
 shell trace, copy hashes, input identities, and diagnostic result.
 
+### SVE vector-length controls
+
+The unchanged native-RAM/guest-SquashFS reproduction now distinguishes CPU
+feature configurations. All rows use QEMU 10.2.2, the same kernel, native FEX
+image, guest bytes and read-only `od` matrix. These are diagnostics, not full
+capsule acceptance:
+
+| QEMU CPU | FEX override | Result |
+| --- | --- | --- |
+| `max` | none | Heap corruption persists |
+| `max,sme=off` | none | Heap corruption persists |
+| `max,sve=off,sme=off` | none | All four guest reads, `true` and `getconf` pass |
+| `max,sve-max-vq=2,sme=off` | none | All checks pass with SVE retained at at most 256 bits |
+| `max` | `FEX_HOSTFEATURES=disablesve,disablesvebitperm`, `FEX_FORCESVEWIDTH=0` | All checks pass |
+
+Results are retained under `kernel-arm-capsule-native-ram-{nosme,nosve,sve256,fexnosve}-01`.
+The FEX-only control leaves native ARM userspace's CPU capabilities unchanged
+and retains FEX's guest AVX advertisement. Thus changing native libc dispatch
+is not necessary to avoid this reproduction. No override was installed in the
+production runtime.
+
+At FEX commit `91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20`, host feature detection
+reads the active SVE width with `RDVL` and enables its 256-bit path at widths
+of at least 256 bits. `GenerateSVEMemOperand` in `JIT/MemoryOps.cpp` scales
+constant offsets by 32 bytes before emitting a `MUL VL` address. The failing
+VM's kernel reports a default vector length of 64 bytes. This is a concrete
+candidate for incorrect addresses at wider lengths; the observed failing
+guest instruction has not yet been traced through that helper, so this is
+not a confirmed root-cause attribution to a particular instruction.
+
 ### Running the harness
 
 Use `python3 os/tests/kernel-arm-capsule-smoke.py --help` for the explicit kernel,
 module archive, native image, guest rootfs, pinned runtimes and binary inputs.
 Start with `--mode probe`, then use a new output directory for `--mode console`.
 An optional `--qemu` selects an explicitly recorded emulator or loader wrapper.
+`--cpu` selects a QEMU CPU model/features and defaults to `max`. The selected
+value is retained in both input and result metadata, and the guest logs its
+native CPU features. A passing restricted-feature run does not establish
+acceptance for the default or for hardware exposing different vector widths.
 
 Every run retains `inputs.json`, `qemu-command.json`, `serial.log` and
 `result.json`. Inputs include kernel/module hashes and executable identities.
