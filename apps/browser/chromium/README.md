@@ -45,7 +45,9 @@ key, scripts, clear_data, devtools, shutdown. `filter_rules` currently reports
 an explicit error because this development host does not yet link the native
 blocker. The shared protocol specification is in the browser implementation
 plan. Invalid packets or command fields and stdin EOF close the browser.
-Diagnostics use stderr or the profile's `cef.log`.
+Diagnostics use stderr or the profile's `cef.log`. Resize dimensions, pointer
+coordinates and wheel deltas are physical pixels; the host converts them to CEF
+logical coordinates using `scale_factor`.
 
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only the newest pending CPU frame is kept. Frames are copied during OnPaint;
@@ -81,18 +83,34 @@ HTTPS page. Lifecycle cases test EOF, truncated framing, invalid lengths,
 malformed JSON, wrong packet kinds and malformed command fields. Startup-time
 shutdown may take several seconds while Chromium's subprocesses unwind.
 
+Configured scripts execute only in direct HTTP/HTTPS main-frame documents, after
+load completion or an explicit configuration update. Internal pages, extensions,
+file/data URLs, inherited about:blank/srcdoc and blob documents are excluded.
+Execution is deduplicated by V8 document context and script configuration; reload
+and cross-site renderer replacement receive the current configuration once.
+
+The runtime regression suite exercises those boundaries, key codes and editing,
+and Retina frame dimensions/pointer coordinates:
+
+```sh
+python3 apps/browser/chromium/tests/native_regressions.py \
+  'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'
+```
+
 ## Remaining integration work
 
 - Link the Rust blocker and intercept requests through a request-context handler.
 - Browser UI extension management and Chrome extension behavior remain separate
   integration work; this host does not claim extension installation support.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
-- Script updates reach the current renderer; script persistence across newly
-  created site-isolated renderer processes needs browser-to-renderer startup
-  synchronization. There are no privileged JavaScript bindings.
+- There are no privileged JavaScript bindings. Script injection currently targets
+  the main frame after load; configurable document-start/all-frame injection is
+  separate functionality.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs
   the full clear-data integration.
-- Keyboard input covers single UTF-16 characters and common named keys. IME,
-  composed text and full native shortcut handling need platform integration.
+- Keyboard input covers single UTF-16 characters and common named keys with
+  macOS native and Linux X11 key mappings. Physical codes use a US layout because
+  IPC carries logical names; IME, composed text, other layouts and full native
+  shortcut handling need platform integration.
 - Linux runtime execution and macOS release signing/notarization remain unverified.
