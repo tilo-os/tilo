@@ -64,7 +64,7 @@ assert!(setup.next().is_err());
 
 ### Task 2: Retained setup screens and executable entry
 
-**Files:** Create `apps/imager/src/setup/view.rs`; modify `setup/mod.rs`,
+**Files:** Create `apps/imager/src/setup/view.rs` and `known_folders.rs`; modify `setup/mod.rs`,
 `apps/imager/src/main.rs`, and shot routing in `apps/imager/src/lib.rs` as needed.
 
 **Interfaces:** Consume SetupController and native picker/scan workers.
@@ -84,7 +84,14 @@ for deterministic rendering. Expose a root `Widget` via `setup::app_root()`.
   show the actual unavailable reason. Do not turn model capability flags on just
   because the host OS matches.
 - [ ] Folder screen shows the three approved choices, Help me choose guidance,
-  native Add folder, counts/sizes, destination, removal, and per-folder overrides.
+  familiar Documents/Desktop/Pictures/Downloads suggestions, native Add folder,
+  counts/sizes, destination, removal, and per-folder overrides. Resolve suggested
+  locations through native known-folder lookup on Windows and `xdg-user-dir` on
+  Linux, preserving redirected/localized folders; only suggest existing folders
+  and never select them automatically. Run discovery/scanning off the UI thread.
+  A missing lookup produces an honest unavailable suggestion, not an invented
+  source directory. Isolate known-folder discovery in its own module with parser
+  tests for empty, redirected, and whitespace-containing paths.
   Mark Connected unavailable until a working connection backend can attest safe
   source access. Explain the difference without promising live cross-OS sync.
 - [ ] Review shows retained OS, experience, folder policies, space estimate,
