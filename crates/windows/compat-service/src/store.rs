@@ -632,18 +632,34 @@ impl CapsuleStore {
 
     /// Reasserts the managed Windows drive shape on every launch. Wine's
     /// default `Z:` link would reveal the entire sandbox namespace. Removing
-    /// that managed symlink and exposing only `Q:` makes granted files legible
-    /// and keeps system paths out of normal Windows file pickers.
+    /// that managed symlink, retaining the private `C:`, and exposing grants
+    /// through `Q:` keeps system paths out of normal Windows file pickers.
     fn prepare_managed_paths(&self, id: &str) -> Result<(), CapsuleError> {
         let capsule = self.capsule_directory(id, true)?;
         let data = Self::open_child_dir(&capsule, "data", true)?;
         let prefix = Self::open_child_dir(&data, "prefix", true)?;
+        let _drive_c = Self::open_child_dir(&prefix, "drive_c", true)?;
         let home = Self::open_child_dir(&data, "home", true)?;
         let dosdevices = Self::open_child_dir(&prefix, "dosdevices", true)?;
         let local = Self::open_child_dir(&home, ".local", true)?;
         let _cache = Self::open_child_dir(&home, ".cache", true)?;
         let _config = Self::open_child_dir(&home, ".config", true)?;
         let _share = Self::open_child_dir(&local, "share", true)?;
+
+        // Precreating dosdevices for Q: prevents Wine's fresh-prefix branch
+        // from creating its default C: link. Supply that invariant ourselves,
+        // including for older prefixes, without accepting a redirected drive.
+        let c = fd_path(&dosdevices).join("c:");
+        match fs::symlink_metadata(&c) {
+            Ok(metadata)
+                if metadata.file_type().is_symlink()
+                    && fs::read_link(&c)? == Path::new("../drive_c") => {}
+            Ok(_) => return Err(CapsuleError::ManagedDriveCollision("C:")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::os::unix::fs::symlink("../drive_c", c)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
 
         let z = fd_path(&dosdevices).join("z:");
         match fs::symlink_metadata(&z) {
@@ -1061,11 +1077,78 @@ mod tests {
         let store = CapsuleStore::new(directory.path()).unwrap();
         let state = store.ensure_for_plan(&plan()).unwrap();
         assert!(store.load(&state.id).unwrap().is_some());
+        assert!(store.prefix_path(&state.id).join("drive_c").is_dir());
+        assert_eq!(
+            fs::read_link(store.prefix_path(&state.id).join("dosdevices/c:")).unwrap(),
+            PathBuf::from("../drive_c")
+        );
         assert_eq!(
             fs::read_link(store.prefix_path(&state.id).join("dosdevices/q:")).unwrap(),
             PathBuf::from(SANDBOX_FILES_ROOT)
         );
         assert!(!store.prefix_path(&state.id).join("state.json").exists());
+    }
+
+    #[test]
+    fn missing_c_mapping_is_repaired_without_changing_prefix_content() {
+        let directory = TempDir::new().unwrap();
+        let store = CapsuleStore::new(directory.path()).unwrap();
+        let state = store.ensure_for_plan(&plan()).unwrap();
+        let prefix = store.prefix_path(&state.id);
+        fs::write(prefix.join("drive_c/document.txt"), "retained").unwrap();
+        fs::remove_file(prefix.join("dosdevices/c:")).unwrap();
+        store.ensure_for_plan(&plan()).unwrap();
+        assert_eq!(
+            fs::read_link(prefix.join("dosdevices/c:")).unwrap(),
+            PathBuf::from("../drive_c")
+        );
+        assert_eq!(
+            fs::read_to_string(prefix.join("drive_c/document.txt")).unwrap(),
+            "retained"
+        );
+    }
+
+    #[test]
+    fn replaced_c_mapping_is_rejected_without_overwriting_it() {
+        for replacement in ["symlink", "file", "directory"] {
+            let directory = TempDir::new().unwrap();
+            let store = CapsuleStore::new(directory.path()).unwrap();
+            let state = store.ensure_for_plan(&plan()).unwrap();
+            let mapping = store.prefix_path(&state.id).join("dosdevices/c:");
+            fs::remove_file(&mapping).unwrap();
+            match replacement {
+                "symlink" => symlink("/outside", &mapping).unwrap(),
+                "file" => fs::write(&mapping, "retained").unwrap(),
+                _ => fs::create_dir(&mapping).unwrap(),
+            }
+            assert!(matches!(
+                store.ensure_for_plan(&plan()),
+                Err(CapsuleError::ManagedDriveCollision("C:"))
+            ));
+            match replacement {
+                "symlink" => assert_eq!(fs::read_link(&mapping).unwrap(), Path::new("/outside")),
+                "file" => assert_eq!(fs::read_to_string(&mapping).unwrap(), "retained"),
+                _ => assert!(mapping.is_dir()),
+            }
+        }
+    }
+
+    #[test]
+    fn symlinked_c_directory_is_rejected_without_touching_its_target() {
+        let directory = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("value"), "retained").unwrap();
+        let store = CapsuleStore::new(directory.path()).unwrap();
+        let state = store.ensure_for_plan(&plan()).unwrap();
+        let drive = store.prefix_path(&state.id).join("drive_c");
+        fs::remove_dir(&drive).unwrap();
+        symlink(outside.path(), &drive).unwrap();
+        assert!(store.ensure_for_plan(&plan()).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.path().join("value")).unwrap(),
+            "retained"
+        );
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
     }
 
     #[test]
