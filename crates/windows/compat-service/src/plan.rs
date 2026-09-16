@@ -382,7 +382,13 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             launcher::profile::landlock_ro_paths(network == NetworkShape::Unrestricted);
         let mut landlock_write = launcher::profile::landlock_rw_device_paths();
         landlock_read.extend(runtime.binds.iter().map(|binding| binding.sandbox.clone()));
-        landlock_write.extend([PathBuf::from(PREFIX_MOUNT), PathBuf::from(HOME_MOUNT)]);
+        // This names the private tmpfs mounted above, never the host's /tmp.
+        // Wine and translated runtimes need temporary files and local sockets.
+        landlock_write.extend([
+            PathBuf::from(PREFIX_MOUNT),
+            PathBuf::from(HOME_MOUNT),
+            PathBuf::from("/tmp"),
+        ]);
         map_granted_files(
             &mut argv,
             capabilities,
@@ -879,6 +885,43 @@ mod tests {
                 .iter()
                 .any(|arg| arg.starts_with(&format!("/proc/{}/fd/", std::process::id())))
         );
+    }
+
+    #[test]
+    fn capsule_temporary_storage_is_private_and_writable() {
+        for layer in [Layer::Wine, Layer::Proton] {
+            let route = route(layer);
+            let (_directory, store, state, program) = setup(&route);
+            let registry = SystemRuntimeRegistry::new();
+            let host = session();
+            let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+            let command = planner
+                .plan(
+                    &route,
+                    &state,
+                    &program,
+                    &CapabilityPlan::empty(),
+                    "workspace",
+                    &LaunchLease::deny_all("lease"),
+                )
+                .unwrap();
+            let shim_position = command
+                .bwrap_argv
+                .iter()
+                .position(|arg| arg == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND)
+                .unwrap();
+            let shim =
+                launcher::landlock_shim::ShimArgs::parse(&command.bwrap_argv[shim_position + 1..])
+                    .unwrap();
+            assert!(shim.rw.contains(&PathBuf::from("/tmp")));
+            assert!(!shim.no_landlock);
+            assert!(shim.net_restricted);
+            let mounts = &command.bwrap_argv[..shim_position];
+            assert!(mounts.windows(2).any(|args| args == ["--tmpfs", "/tmp"]));
+            assert!(!mounts.windows(3).any(|args| {
+                args[0].contains("bind") && (args[1] == "/tmp" || args[2] == "/tmp")
+            }));
+        }
     }
 
     #[test]
