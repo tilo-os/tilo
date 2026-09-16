@@ -69,7 +69,18 @@ case folding, mount safety, and authorization remain execution responsibilities.
   wording and an opaque theme background. The corrected compact folder view and
   review view were inspected successfully.
 - Screenshots are in the task's local visualization directory under
-  `guided-setup/`. Task-scoped code review is still pending.
+  `guided-setup/`. Task-scoped review and fix re-review are approved.
+
+## Guided setup review fixes
+
+Commit `2fdba6dbc` preserves explicit folder overrides when the common policy is
+Later, rejects protected or overlapping sources before scanning, recovers from
+worker-launch failures, and labels inherited versus explicit folder policies.
+Real Enter/Space widget tests exposed and corrected a headless/live activation
+mismatch. macOS controller tests (6), view tests (12), and focused headless
+activation tests (2) passed. Native Fedora setup tests excluding the separately
+in-progress migration module passed all 43 tests with no warnings. Scoped
+re-review found no remaining issues. Native Windows runtime testing is pending.
 
 ## Existing installer baseline
 
