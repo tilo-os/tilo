@@ -64,7 +64,10 @@ Helper app variant and the framework's versioned symlinks. The helper initialize
 `CefScopedSandboxContext` before `CefScopedLibraryLoader::LoadInHelper`, as
 required by modern CEF. The browser process uses an NSApplication subclass
 implementing CefAppProtocol. An explicit subprocess path accommodates the
-intentional difference between the app name and executable name. Local builds
+intentional difference between the app name and executable name. Explicit
+`main_bundle_path` and `framework_dir_path` resolve from the native executable,
+so embedding the engine under the Rust Browser.app does not make CEF search the
+outer application for its resources. Local builds
 are ad hoc signed; distribution signing/notarization is separate. The generated
 framework copy is recreated on each link to keep upstream symlink creation
 idempotent. Verify a built/rebuilt bundle with
@@ -136,6 +139,16 @@ This is not a claim of complete uBlock Origin compatibility: procedural cosmetic
 actions are not executed, generic class/id collection is bounded, and the initial
 cosmetic/scriptlet configuration may arrive after parser scripts in a new renderer.
 The separate custom `scripts` command has verified document-start behavior.
+
+The packaged nesting regression is separate from standalone runtime checks:
+
+```sh
+python3 apps/browser/chromium/tests/nested_bundle.py \
+  'target/browser-package/Browser.app/Contents/Frameworks/Browser Engine.app/Contents/MacOS/qos-chromium-host'
+```
+
+It requires the nested location and verifies initialization, local HTTP navigation,
+frame delivery, and clean shutdown using the packaged executable.
 
 ## Remaining integration work
 
