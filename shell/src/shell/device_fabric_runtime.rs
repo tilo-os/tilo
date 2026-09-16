@@ -16,14 +16,23 @@ use crate::compositor::selection::{
 };
 use crate::shell::device_fabric::{
     ClipboardEntry, ClipboardPayload, DeviceFabricSnapshot, DeviceKind, DevicePresence,
-    DisplayPlacement, DisplayRect, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricInputEvent,
-    FabricStamp, InputLease, MAX_INPUT_LEASE_MS, MediaSession, MediaSourceLocator,
-    PersonalFabricAction, RoamingSetting,
+    DisplayEdge, DisplayPlacement, DisplayRect, FABRIC_SCHEMA_VERSION, FabricCapabilities,
+    FabricInputEvent, FabricStamp, InputLease, MAX_INPUT_LEASE_MS, MediaSession,
+    MediaSourceLocator, PersonalFabricAction, RoamingSetting,
 };
 use crate::shell::network::ShellNetwork;
 
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const PRESENCE_HEARTBEAT: Duration = Duration::from_secs(10);
+const MAX_QUEUED_SPATIAL_INPUT: usize = 256;
+const MAX_SPATIAL_INPUT_FLUSH_PER_FRAME: usize = 32;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OutboundSpatialInput {
+    target: crate::shell::personal_continuity::DeviceId,
+    lease_nonce: [u8; 16],
+    event: FabricInputEvent,
+}
 
 #[derive(Default)]
 struct SpatialInputState {
@@ -35,7 +44,28 @@ struct SpatialInputState {
         crate::shell::personal_continuity::DeviceId,
         FabricInputEvent,
     )>,
+    release_controllers: VecDeque<crate::shell::personal_continuity::DeviceId>,
+    outbound: VecDeque<OutboundSpatialInput>,
     placement_override: Option<DisplayRect>,
+}
+
+impl SpatialInputState {
+    fn queue_outbound(&mut self, input: OutboundSpatialInput) -> Result<(), String> {
+        if matches!(input.event, FabricInputEvent::PointerMotion { .. })
+            && let Some(last) = self.outbound.back_mut()
+            && last.target == input.target
+            && last.lease_nonce == input.lease_nonce
+            && matches!(last.event, FabricInputEvent::PointerMotion { .. })
+        {
+            *last = input;
+            return Ok(());
+        }
+        if self.outbound.len() >= MAX_QUEUED_SPATIAL_INPUT {
+            return Err("spatial input queue is full".into());
+        }
+        self.outbound.push_back(input);
+        Ok(())
+    }
 }
 
 fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
@@ -88,6 +118,7 @@ impl DeviceFabricRuntime {
         local: LocalFabricCapabilities,
     ) {
         self.handle_fabric_actions(network);
+        flush_spatial_input(network);
         self.acknowledge_opened_media(network);
         let now = Instant::now();
         if self
@@ -207,7 +238,7 @@ impl DeviceFabricRuntime {
     }
 
     fn handle_fabric_actions(&mut self, network: &ShellNetwork) {
-        prune_spatial_leases();
+        prune_spatial_leases(network);
         for envelope in network.take_personal_fabric_actions() {
             match envelope.action {
                 PersonalFabricAction::ResumeMedia {
@@ -287,15 +318,47 @@ impl DeviceFabricRuntime {
     }
 }
 
-fn prune_spatial_leases() {
+fn prune_spatial_leases(network: &ShellNetwork) {
     if let Ok(mut spatial) = spatial_input_state().lock() {
         let now = unix_ms();
-        spatial
+        let fabric = network.device_fabric();
+        let issued_to_release = spatial
             .issued
-            .retain(|_, lease| lease.validate_at(now).is_ok());
-        spatial
-            .received
-            .retain(|_, lease| lease.validate_at(now).is_ok());
+            .values()
+            .filter(|lease| {
+                lease.validate_at(now).is_err()
+                    || fabric
+                        .snapshots()
+                        .get(&lease.controller)
+                        .is_none_or(|snapshot| !snapshot.presence.online)
+            })
+            .map(|lease| lease.controller.clone())
+            .collect::<Vec<_>>();
+        spatial.issued.retain(|_, lease| {
+            lease.validate_at(now).is_ok()
+                && fabric
+                    .snapshots()
+                    .get(&lease.controller)
+                    .is_some_and(|snapshot| snapshot.presence.online)
+        });
+        spatial.received.retain(|target, lease| {
+            lease.validate_at(now).is_ok()
+                && fabric
+                    .snapshots()
+                    .get(target)
+                    .is_some_and(|snapshot| snapshot.presence.online)
+        });
+        for controller in issued_to_release {
+            if !spatial.release_controllers.contains(&controller) {
+                spatial.release_controllers.push_back(controller);
+            }
+        }
+        let received = spatial.received.clone();
+        spatial.outbound.retain(|input| {
+            received.get(&input.target).is_some_and(|lease| {
+                lease.nonce == input.lease_nonce && lease.validate_at(now).is_ok()
+            })
+        });
     }
 }
 
@@ -313,6 +376,7 @@ fn handle_spatial_action(
         }
         PersonalFabricAction::InputLeaseGranted { lease } => {
             if lease.validate_at(unix_ms()).is_ok() {
+                spatial.outbound.retain(|input| input.target != source);
                 spatial.received.insert(source, lease);
             }
         }
@@ -320,6 +384,9 @@ fn handle_spatial_action(
             spatial
                 .received
                 .retain(|device, lease| device != &source || lease.nonce != nonce);
+            spatial
+                .outbound
+                .retain(|input| input.target != source || input.lease_nonce != nonce);
         }
         PersonalFabricAction::Input { lease_nonce, event } => {
             let accepted = spatial.issued.get(&lease_nonce).is_some_and(|lease| {
@@ -520,16 +587,17 @@ pub fn route_local_audio(node_id: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Place a certified display immediately to the right of this device. The
+/// Place a certified display immediately beside the requested edge. The
 /// receiving device authors the resulting placement in its own next snapshot.
 ///
 /// # Errors
 ///
 /// Returns an error if either display is unavailable or the exact-target send
 /// fails.
-pub fn place_device_right(
+pub fn place_device(
     network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
+    edge: DisplayEdge,
 ) -> Result<(), String> {
     let (local, _) = network
         .local_device_fabric_identity()
@@ -541,21 +609,74 @@ pub fn place_device_right(
         .and_then(|snapshot| snapshot.display.as_ref())
         .map(|display| display.rect)
         .ok_or_else(|| "this device has no published display placement".to_string())?;
-    let target_rect = fabric
+    let target_snapshot = fabric
         .snapshots()
         .get(target)
-        .and_then(|snapshot| snapshot.display.as_ref())
+        .ok_or_else(|| "the target is not an enrolled device".to_string())?;
+    if !target_snapshot.presence.online
+        || !target_snapshot.presence.capabilities.display
+        || !target_snapshot.presence.capabilities.pointer
+    {
+        return Err("the target is not an online controllable display".into());
+    }
+    let target_rect = target_snapshot
+        .display
+        .as_ref()
         .map(|display| display.rect)
         .ok_or_else(|| "the target has no published display".to_string())?;
-    let rect = DisplayRect {
-        x: local_rect.x.saturating_add_unsigned(local_rect.width),
-        y: local_rect.y,
-        width: target_rect.width,
-        height: target_rect.height,
+    let target_width = i32::try_from(target_rect.width).unwrap_or(i32::MAX);
+    let target_height = i32::try_from(target_rect.height).unwrap_or(i32::MAX);
+    let rect = match edge {
+        DisplayEdge::Left => DisplayRect {
+            x: local_rect.x.saturating_sub(target_width),
+            y: local_rect.y,
+            width: target_rect.width,
+            height: target_rect.height,
+        },
+        DisplayEdge::Right => DisplayRect {
+            x: local_rect.x.saturating_add_unsigned(local_rect.width),
+            y: local_rect.y,
+            width: target_rect.width,
+            height: target_rect.height,
+        },
+        DisplayEdge::Top => DisplayRect {
+            x: local_rect.x,
+            y: local_rect.y.saturating_sub(target_height),
+            width: target_rect.width,
+            height: target_rect.height,
+        },
+        DisplayEdge::Bottom => DisplayRect {
+            x: local_rect.x,
+            y: local_rect.y.saturating_add_unsigned(local_rect.height),
+            width: target_rect.width,
+            height: target_rect.height,
+        },
     };
+    if fabric.snapshots().iter().any(|(device, snapshot)| {
+        device != &local
+            && device != target
+            && snapshot
+                .display
+                .as_ref()
+                .is_some_and(|display| rect.intersects(display.rect))
+    }) {
+        return Err("another enrolled display already occupies that side".into());
+    }
     network
         .send_personal_fabric_action(target, PersonalFabricAction::SetDisplayPlacement { rect })
         .map(|_| ())
+}
+
+/// Compatibility helper for callers that use the original right-edge action.
+///
+/// # Errors
+///
+/// Returns the same placement or delivery errors as [`place_device`].
+pub fn place_device_right(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<(), String> {
+    place_device(network, target, DisplayEdge::Right)
 }
 
 /// Explicitly allow one certified device to control this device until the
@@ -605,9 +726,16 @@ pub fn grant_input_control(
         },
     )?;
     if let Ok(mut spatial) = spatial_input_state().lock() {
+        let replaced = spatial
+            .issued
+            .values()
+            .any(|current| current.controller == *controller);
         spatial
             .issued
             .retain(|_, current| current.controller != *controller);
+        if replaced && !spatial.release_controllers.contains(controller) {
+            spatial.release_controllers.push_back(controller.clone());
+        }
         spatial.issued.insert(nonce, lease.clone());
     }
     Ok(lease)
@@ -618,7 +746,8 @@ pub fn grant_input_control(
 ///
 /// # Errors
 ///
-/// Returns an error if no lease exists or a revoke cannot be delivered.
+/// Returns an error if no lease exists or a revoke cannot be delivered. Local
+/// access is still revoked immediately if the peer cannot be reached.
 pub fn revoke_input_control(
     network: &ShellNetwork,
     controller: &crate::shell::personal_continuity::DeviceId,
@@ -634,18 +763,24 @@ pub fn revoke_input_control(
     if leases.is_empty() {
         return Err("that device does not have an active control lease".into());
     }
+    let mut delivery_error = None;
     for lease in &leases {
-        network.send_personal_fabric_action(
+        if let Err(error) = network.send_personal_fabric_action(
             controller,
             PersonalFabricAction::InputLeaseRevoked { nonce: lease.nonce },
-        )?;
+        ) {
+            delivery_error.get_or_insert(error);
+        }
     }
     if let Ok(mut spatial) = spatial_input_state().lock() {
         spatial
             .issued
             .retain(|_, lease| &lease.controller != controller);
+        if !spatial.release_controllers.contains(controller) {
+            spatial.release_controllers.push_back(controller.clone());
+        }
     }
-    Ok(())
+    delivery_error.map_or(Ok(()), Err)
 }
 
 /// Send one lease-bound input event to an adjacent certified target.
@@ -655,7 +790,7 @@ pub fn revoke_input_control(
 /// Returns an error if the target has not granted control, the lease expired,
 /// its capability excludes the event, or transport delivery fails.
 pub fn send_spatial_input(
-    network: &ShellNetwork,
+    _network: &ShellNetwork,
     target: &crate::shell::personal_continuity::DeviceId,
     event: FabricInputEvent,
 ) -> Result<(), String> {
@@ -678,15 +813,39 @@ pub fn send_spatial_input(
     if !allowed {
         return Err("the active lease does not allow that input device".into());
     }
-    network
-        .send_personal_fabric_action(
-            target,
+    spatial_input_state()
+        .lock()
+        .map_err(|_| "spatial input state is unavailable".to_string())?
+        .queue_outbound(OutboundSpatialInput {
+            target: target.clone(),
+            lease_nonce: lease.nonce,
+            event,
+        })
+}
+
+fn flush_spatial_input(network: &ShellNetwork) {
+    for _ in 0..MAX_SPATIAL_INPUT_FLUSH_PER_FRAME {
+        let input = spatial_input_state()
+            .lock()
+            .ok()
+            .and_then(|mut spatial| spatial.outbound.pop_front());
+        let Some(input) = input else {
+            return;
+        };
+        let result = network.send_personal_fabric_action(
+            &input.target,
             PersonalFabricAction::Input {
-                lease_nonce: lease.nonce,
-                event,
+                lease_nonce: input.lease_nonce,
+                event: input.event,
             },
-        )
-        .map(|_| ())
+        );
+        if result.is_err() {
+            if let Ok(mut spatial) = spatial_input_state().lock() {
+                spatial.outbound.push_front(input);
+            }
+            return;
+        }
+    }
 }
 
 /// Drain input that already passed exact-route, lease, expiry, and capability
@@ -698,6 +857,16 @@ pub fn take_spatial_input() -> Vec<(
     spatial_input_state().lock().map_or_else(
         |_| Vec::new(),
         |mut spatial| spatial.inbound.drain(..).collect(),
+    )
+}
+
+/// Drain controllers whose target-issued lease was revoked, expired, or lost
+/// with the device. The compositor releases only input actually attributed to
+/// that controller, so cleanup cannot release a sibling controller's keys.
+pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::DeviceId> {
+    spatial_input_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut spatial| spatial.release_controllers.drain(..).collect(),
     )
 }
 
@@ -1049,5 +1218,39 @@ mod tests {
             &next_stamp,
         );
         assert!(bootstrap.is_empty());
+    }
+
+    #[test]
+    fn pointer_bursts_coalesce_without_crossing_discrete_input() {
+        let target = DeviceId::new("tablet").unwrap();
+        let motion = |x| OutboundSpatialInput {
+            target: target.clone(),
+            lease_nonce: [7; 16],
+            event: FabricInputEvent::PointerMotion { x, y: 20 },
+        };
+        let mut state = SpatialInputState::default();
+        state.queue_outbound(motion(10)).unwrap();
+        state.queue_outbound(motion(11)).unwrap();
+        assert_eq!(state.outbound.len(), 1);
+        assert_eq!(state.outbound.front(), Some(&motion(11)));
+
+        state
+            .queue_outbound(OutboundSpatialInput {
+                target: target.clone(),
+                lease_nonce: [7; 16],
+                event: FabricInputEvent::PointerButton {
+                    button: 0x110,
+                    pressed: true,
+                },
+            })
+            .unwrap();
+        state.queue_outbound(motion(12)).unwrap();
+        state.queue_outbound(motion(13)).unwrap();
+        assert_eq!(state.outbound.len(), 3);
+        assert_eq!(state.outbound.back(), Some(&motion(13)));
+        assert!(matches!(
+            state.outbound.get(1).map(|input| input.event),
+            Some(FabricInputEvent::PointerButton { pressed: true, .. })
+        ));
     }
 }

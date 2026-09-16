@@ -2733,6 +2733,7 @@ fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
 #[derive(Clone, Debug)]
 struct SpatialControlSession {
     target: crate::shell::personal_continuity::DeviceId,
+    return_edge: crate::shell::device_fabric::DisplayEdge,
     x: f64,
     y: f64,
     pressed_keys: std::collections::BTreeSet<u32>,
@@ -2797,24 +2798,30 @@ fn move_spatial_pointer(
     if let Some(session) = active.as_mut() {
         session.x += dx;
         session.y += dy;
-        if session.x < 0.0 {
-            end_spatial_control(network, active);
-            return true;
-        }
         let fabric = network.device_fabric();
-        if let Some(rect) = fabric
+        let Some(rect) = fabric
             .snapshots()
             .get(&session.target)
             .and_then(|snapshot| snapshot.display.as_ref())
             .map(|display| display.rect)
-        {
-            session.x = session
-                .x
-                .clamp(0.0, f64::from(rect.width.saturating_sub(1)));
-            session.y = session
-                .y
-                .clamp(0.0, f64::from(rect.height.saturating_sub(1)));
+        else {
+            end_spatial_control(network, active);
+            return true;
+        };
+        let max_x = f64::from(rect.width.saturating_sub(1));
+        let max_y = f64::from(rect.height.saturating_sub(1));
+        let crossed_back = match session.return_edge {
+            crate::shell::device_fabric::DisplayEdge::Left => session.x < 0.0,
+            crate::shell::device_fabric::DisplayEdge::Right => session.x > max_x,
+            crate::shell::device_fabric::DisplayEdge::Top => session.y < 0.0,
+            crate::shell::device_fabric::DisplayEdge::Bottom => session.y > max_y,
+        };
+        if crossed_back {
+            end_spatial_control(network, active);
+            return true;
         }
+        session.x = session.x.clamp(0.0, max_x);
+        session.y = session.y.clamp(0.0, max_y);
         if crate::shell::device_fabric_runtime::send_spatial_input(
             network,
             &session.target,
@@ -2825,12 +2832,9 @@ fn move_spatial_pointer(
         )
         .is_err()
         {
-            *active = None;
+            end_spatial_control(network, active);
         }
         return true;
-    }
-    if dx <= 0.0 {
-        return false;
     }
     let Some((cursor_x, cursor_y)) = state.client_input.pointer_position() else {
         return false;
@@ -2847,16 +2851,25 @@ fn move_spatial_pointer(
     else {
         return false;
     };
-    if cursor_x < f64::from(local_rect.width.saturating_sub(1)) {
+    let Some(edge) = spatial_departure_edge(
+        cursor_x,
+        cursor_y,
+        local_rect.width,
+        local_rect.height,
+        dx,
+        dy,
+    ) else {
         return false;
-    }
-    let local_y = spatial_coord(cursor_y - f64::from(local_rect.y));
-    let Some(transition) = fabric.cross_right_edge(&local, local_y) else {
+    };
+    let local_x = spatial_coord(cursor_x);
+    let local_y = spatial_coord(cursor_y);
+    let Some(transition) = fabric.cross_edge(&local, edge, local_x, local_y) else {
         return false;
     };
     let session = SpatialControlSession {
         target: transition.to,
-        x: f64::from(transition.target_x) + dx.max(1.0),
+        return_edge: edge.opposite(),
+        x: f64::from(transition.target_x) + dx,
         y: f64::from(transition.target_y) + dy,
         pressed_keys: std::collections::BTreeSet::new(),
         pressed_buttons: std::collections::BTreeSet::new(),
@@ -2875,6 +2888,80 @@ fn move_spatial_pointer(
     }
     *active = Some(session);
     true
+}
+
+fn spatial_departure_edge(
+    cursor_x: f64,
+    cursor_y: f64,
+    width: u32,
+    height: u32,
+    dx: f64,
+    dy: f64,
+) -> Option<crate::shell::device_fabric::DisplayEdge> {
+    use crate::shell::device_fabric::DisplayEdge;
+    let max_x = f64::from(width.saturating_sub(1));
+    let max_y = f64::from(height.saturating_sub(1));
+    let horizontal = if cursor_x <= 0.0 && dx < 0.0 {
+        Some(DisplayEdge::Left)
+    } else if cursor_x >= max_x && dx > 0.0 {
+        Some(DisplayEdge::Right)
+    } else {
+        None
+    };
+    let vertical = if cursor_y <= 0.0 && dy < 0.0 {
+        Some(DisplayEdge::Top)
+    } else if cursor_y >= max_y && dy > 0.0 {
+        Some(DisplayEdge::Bottom)
+    } else {
+        None
+    };
+    match (horizontal, vertical) {
+        (Some(edge), Some(_)) if dx.abs() >= dy.abs() => Some(edge),
+        (Some(_) | None, Some(edge)) | (Some(edge), None) => Some(edge),
+        (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod spatial_edge_tests {
+    use super::spatial_departure_edge;
+    use crate::shell::device_fabric::DisplayEdge;
+
+    #[test]
+    fn pointer_can_depart_through_all_four_edges() {
+        assert_eq!(
+            spatial_departure_edge(0.0, 400.0, 1_000, 800, -2.0, 0.0),
+            Some(DisplayEdge::Left)
+        );
+        assert_eq!(
+            spatial_departure_edge(999.0, 400.0, 1_000, 800, 2.0, 0.0),
+            Some(DisplayEdge::Right)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 0.0, 1_000, 800, 0.0, -2.0),
+            Some(DisplayEdge::Top)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 799.0, 1_000, 800, 0.0, 2.0),
+            Some(DisplayEdge::Bottom)
+        );
+    }
+
+    #[test]
+    fn corner_departure_follows_the_dominant_motion_axis() {
+        assert_eq!(
+            spatial_departure_edge(999.0, 799.0, 1_000, 800, 8.0, 3.0),
+            Some(DisplayEdge::Right)
+        );
+        assert_eq!(
+            spatial_departure_edge(999.0, 799.0, 1_000, 800, 3.0, 8.0),
+            Some(DisplayEdge::Bottom)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 400.0, 1_000, 800, 8.0, 8.0),
+            None
+        );
+    }
 }
 
 fn forward_spatial_window_event(
@@ -3397,8 +3484,8 @@ fn install_device_fabric_bridge(
                 DeviceFabricUiAction::RouteLocalAudio { node_id } => {
                     crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
                 }
-                DeviceFabricUiAction::PlaceRight { device } => {
-                    crate::shell::device_fabric_runtime::place_device_right(&fabric_net, &device)?;
+                DeviceFabricUiAction::Place { device, edge } => {
+                    crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
                 DeviceFabricUiAction::GrantControl { controller } => {
                     let _ = crate::shell::device_fabric_runtime::grant_input_control(
@@ -5584,6 +5671,14 @@ pub fn run() -> ! {
         }
         if session.is_locked() != prev_locked {
             crate::portal::inhibit::publish_screensaver_state(session.is_locked());
+            if session.is_locked() {
+                let _ = state.release_all_personal_fabric_input();
+                if let Some(network) = peer_sync.as_ref() {
+                    end_spatial_control(network, &mut spatial_control);
+                } else {
+                    spatial_control = None;
+                }
+            }
         }
         prev_locked = session.is_locked();
 
@@ -5756,8 +5851,11 @@ pub fn run() -> ! {
                     audio_output: system_audio,
                 },
             );
-            for (_controller, event) in crate::shell::device_fabric_runtime::take_spatial_input() {
-                let _ = state.apply_personal_fabric_input(event);
+            for (controller, event) in crate::shell::device_fabric_runtime::take_spatial_input() {
+                let _ = state.apply_personal_fabric_input(&controller, event);
+            }
+            for controller in crate::shell::device_fabric_runtime::take_spatial_input_releases() {
+                let _ = state.release_personal_fabric_input(&controller);
             }
             let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();

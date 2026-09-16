@@ -508,8 +508,40 @@ pub struct DisplayRect {
 }
 
 impl DisplayRect {
+    fn contains_x(&self, x: i32) -> bool {
+        x >= self.x && x < self.x.saturating_add_unsigned(self.width)
+    }
+
     fn contains_y(&self, y: i32) -> bool {
         y >= self.y && y < self.y.saturating_add_unsigned(self.height)
+    }
+
+    pub fn intersects(&self, other: Self) -> bool {
+        self.x < other.x.saturating_add_unsigned(other.width)
+            && self.x.saturating_add_unsigned(self.width) > other.x
+            && self.y < other.y.saturating_add_unsigned(other.height)
+            && self.y.saturating_add_unsigned(self.height) > other.y
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayEdge {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl DisplayEdge {
+    #[must_use]
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+            Self::Top => Self::Bottom,
+            Self::Bottom => Self::Top,
+        }
     }
 }
 
@@ -821,13 +853,26 @@ impl DeviceFabric {
         })
     }
 
-    pub fn cross_right_edge(&self, from: &DeviceId, local_y: i32) -> Option<EdgeTransition> {
+    pub fn cross_edge(
+        &self,
+        from: &DeviceId,
+        edge: DisplayEdge,
+        local_x: i32,
+        local_y: i32,
+    ) -> Option<EdgeTransition> {
         let source = self.snapshots.get(from)?.display.as_ref()?;
+        let max_local_x = i32::try_from(source.rect.width)
+            .unwrap_or(i32::MAX)
+            .saturating_sub(1);
         let max_local_y = i32::try_from(source.rect.height)
             .unwrap_or(i32::MAX)
             .saturating_sub(1);
+        let global_x = source.rect.x.saturating_add(local_x.clamp(0, max_local_x));
         let global_y = source.rect.y.saturating_add(local_y.clamp(0, max_local_y));
+        let source_left = source.rect.x;
         let source_right = source.rect.x.saturating_add_unsigned(source.rect.width);
+        let source_top = source.rect.y;
+        let source_bottom = source.rect.y.saturating_add_unsigned(source.rect.height);
         let target = self
             .snapshots
             .values()
@@ -837,14 +882,47 @@ impl DeviceFabric {
                 caps.display && caps.pointer && snapshot.owner != *from
             })
             .filter_map(|snapshot| snapshot.display.as_ref())
-            .filter(|display| display.rect.x == source_right && display.rect.contains_y(global_y))
-            .min_by_key(|display| display.rect.y)?;
+            .filter(|display| match edge {
+                DisplayEdge::Left => {
+                    display.rect.x.saturating_add_unsigned(display.rect.width) == source_left
+                        && display.rect.contains_y(global_y)
+                }
+                DisplayEdge::Right => {
+                    display.rect.x == source_right && display.rect.contains_y(global_y)
+                }
+                DisplayEdge::Top => {
+                    display.rect.y.saturating_add_unsigned(display.rect.height) == source_top
+                        && display.rect.contains_x(global_x)
+                }
+                DisplayEdge::Bottom => {
+                    display.rect.y == source_bottom && display.rect.contains_x(global_x)
+                }
+            })
+            .min_by_key(|display| display.device.clone())?;
+        let target_x = match edge {
+            DisplayEdge::Left => i32::try_from(target.rect.width)
+                .unwrap_or(i32::MAX)
+                .saturating_sub(1),
+            DisplayEdge::Right => 0,
+            DisplayEdge::Top | DisplayEdge::Bottom => global_x.saturating_sub(target.rect.x),
+        };
+        let target_y = match edge {
+            DisplayEdge::Top => i32::try_from(target.rect.height)
+                .unwrap_or(i32::MAX)
+                .saturating_sub(1),
+            DisplayEdge::Bottom => 0,
+            DisplayEdge::Left | DisplayEdge::Right => global_y.saturating_sub(target.rect.y),
+        };
         Some(EdgeTransition {
             from: from.clone(),
             to: target.device.clone(),
-            target_x: 0,
-            target_y: global_y.saturating_sub(target.rect.y),
+            target_x,
+            target_y,
         })
+    }
+
+    pub fn cross_right_edge(&self, from: &DeviceId, local_y: i32) -> Option<EdgeTransition> {
+        self.cross_edge(from, DisplayEdge::Right, 0, local_y)
     }
 
     /// Resolve each roaming key to its newest authenticated authored record.
@@ -1281,6 +1359,79 @@ mod tests {
         let transition = fabric.cross_right_edge(&id("laptop"), 417).unwrap();
         assert_eq!(transition.to, id("tablet"));
         assert_eq!(transition.target_y, 417);
+    }
+
+    #[test]
+    fn every_touching_display_edge_maps_into_the_adjacent_screen() {
+        let caps = FabricCapabilities {
+            display: true,
+            pointer: true,
+            ..FabricCapabilities::default()
+        };
+        let mut center = snapshot("center", 1, 0, caps);
+        center.display.as_mut().unwrap().rect = DisplayRect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 800,
+        };
+        let mut left = snapshot("left", 1, -600, caps);
+        left.display.as_mut().unwrap().rect = DisplayRect {
+            x: -600,
+            y: 200,
+            width: 600,
+            height: 600,
+        };
+        let mut right = snapshot("right", 1, 1000, caps);
+        right.display.as_mut().unwrap().rect = DisplayRect {
+            x: 1000,
+            y: 100,
+            width: 700,
+            height: 700,
+        };
+        let mut top = snapshot("top", 1, 100, caps);
+        top.display.as_mut().unwrap().rect = DisplayRect {
+            x: 100,
+            y: -500,
+            width: 700,
+            height: 500,
+        };
+        let mut bottom = snapshot("bottom", 1, 200, caps);
+        bottom.display.as_mut().unwrap().rect = DisplayRect {
+            x: 200,
+            y: 800,
+            width: 800,
+            height: 400,
+        };
+        let mut fabric = DeviceFabric::default();
+        for display in [center, left, right, top, bottom] {
+            fabric.upsert(display).unwrap();
+        }
+        let left = fabric
+            .cross_edge(&id("center"), DisplayEdge::Left, 0, 417)
+            .unwrap();
+        assert_eq!(
+            (left.to, left.target_x, left.target_y),
+            (id("left"), 599, 217)
+        );
+        let right = fabric
+            .cross_edge(&id("center"), DisplayEdge::Right, 999, 417)
+            .unwrap();
+        assert_eq!(
+            (right.to, right.target_x, right.target_y),
+            (id("right"), 0, 317)
+        );
+        let top = fabric
+            .cross_edge(&id("center"), DisplayEdge::Top, 417, 0)
+            .unwrap();
+        assert_eq!((top.to, top.target_x, top.target_y), (id("top"), 317, 499));
+        let bottom = fabric
+            .cross_edge(&id("center"), DisplayEdge::Bottom, 417, 799)
+            .unwrap();
+        assert_eq!(
+            (bottom.to, bottom.target_x, bottom.target_y),
+            (id("bottom"), 217, 0)
+        );
     }
 
     #[test]
