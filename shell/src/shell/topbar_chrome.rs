@@ -2396,6 +2396,9 @@ impl TopBarChrome {
         }
         if self.avatar_stack_rect.contains(p) {
             state.overlays.collaborators = !state.overlays.collaborators;
+            if state.overlays.collaborators {
+                state.overlays.room_activity = false;
+            }
             state.bump();
             *handled = true;
         }
@@ -2751,6 +2754,9 @@ impl TopBarChrome {
                     }
                     Self::CONTROL_COLLABORATORS => {
                         state.overlays.collaborators = !state.overlays.collaborators;
+                        if state.overlays.collaborators {
+                            state.overlays.room_activity = false;
+                        }
                     }
                     _ => return false,
                 }

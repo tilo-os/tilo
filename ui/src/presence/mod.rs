@@ -1,6 +1,6 @@
 use crate::permissions::UserId;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 mod geom;
 mod interaction;
@@ -469,6 +469,9 @@ pub struct PresenceCtx {
     /// use this in addition to colour so an agent cannot be mistaken for a
     /// person when names are hidden, elided, or inaccessible.
     participant_kinds: HashMap<UserId, ParticipantKind>,
+    /// Short room-level intentions, separate from pointer/caret state. The
+    /// origin remains visible so inferred prose is never presented as a quote.
+    statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
     /// Broker-authenticated semantic activity, keyed by invocation. Unlike
     /// pointer/caret presence this never pretends an action caller has an
     /// input device: applications may project its stable resource anchor to
@@ -1203,7 +1206,7 @@ impl PresenceCtx {
         payload: crate::collaboration::PresencePayload,
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
-            Arrived, Caret, Following, Interaction, Left, Pointer, Selection, Typing,
+            Arrived, Caret, Following, Interaction, Left, Pointer, Selection, Status, Typing,
         };
 
         // A frame this session published, handed back: another app the same
@@ -1320,6 +1323,30 @@ impl PresenceCtx {
                     return RemotePresenceEffect::InteractionAdvanced;
                 }
             }
+            Status { text, automatic } => {
+                // Status is room presence, never document/widget presence.
+                if matches!(key, PresenceKey::Workspace { .. }) {
+                    let uid = UserId(user_id);
+                    if text.trim().is_empty() {
+                        self.statuses.remove(&uid);
+                    } else if text.chars().count() <= crate::MAX_STATUS_CHARS {
+                        self.statuses.insert(
+                            uid,
+                            crate::live_collaboration::LiveStatus {
+                                text,
+                                origin: if automatic {
+                                    crate::live_collaboration::StatusOrigin::Inferred {
+                                        generator: "remote-local-model".into(),
+                                    }
+                                } else {
+                                    crate::live_collaboration::StatusOrigin::Manual
+                                },
+                                updated_at: SystemTime::now(),
+                            },
+                        );
+                    }
+                }
+            }
             Following { target } => {
                 // A follow relationship is only meaningful within a room.
                 // Reject narrower scopes rather than letting a document or
@@ -1385,7 +1412,30 @@ impl PresenceCtx {
             .retain(|(_, follower), target| follower != &uid && target != &uid);
         self.views.remove(&uid);
         self.names.remove(&uid);
+        self.statuses.remove(&uid);
+        self.remove_interactions_for_actor(user_id);
         self.remove_remote_cursor(user_id);
+    }
+
+    /// Current status for a room participant. Inferred statuses apply their
+    /// normal expiry even if a peer vanished without a clean disconnect.
+    pub fn status_for(
+        &self,
+        user: &UserId,
+        now: SystemTime,
+    ) -> Option<&crate::live_collaboration::LiveStatus> {
+        let status = self.statuses.get(user)?;
+        match status.origin {
+            crate::live_collaboration::StatusOrigin::Manual => Some(status),
+            crate::live_collaboration::StatusOrigin::Inferred { .. }
+                if now
+                    .duration_since(status.updated_at)
+                    .is_ok_and(|age| age <= crate::INFERRED_STATUS_TTL) =>
+            {
+                Some(status)
+            }
+            crate::live_collaboration::StatusOrigin::Inferred { .. } => None,
+        }
     }
 }
 

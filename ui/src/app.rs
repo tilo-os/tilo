@@ -3977,6 +3977,37 @@ impl App {
             .send(CollabRequest::Presence { key, payload });
     }
 
+    /// Publish the collaboration rail's current status through the real room
+    /// presence path. `None` is an explicit clear. Only workspace keys are
+    /// accepted, preventing an intention from being accidentally scoped to a
+    /// single widget and disappearing as the participant navigates.
+    pub fn broadcast_status(
+        &mut self,
+        workspace: crate::presence::PresenceKey,
+        status: Option<&crate::live_collaboration::LiveStatus>,
+    ) -> bool {
+        if !matches!(workspace, crate::presence::PresenceKey::Workspace { .. }) {
+            return false;
+        }
+        let (text, automatic) = status.map_or_else(
+            || (String::new(), false),
+            |status| {
+                (
+                    status.text.clone(),
+                    matches!(
+                        status.origin,
+                        crate::live_collaboration::StatusOrigin::Inferred { .. }
+                    ),
+                )
+            },
+        );
+        self.broadcast_presence(
+            workspace,
+            crate::collaboration::PresencePayload::Status { text, automatic },
+        );
+        true
+    }
+
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if self.collab_manager.is_connected() {

@@ -124,14 +124,45 @@ pub fn run_with_full_options(opts: HostedOptions) {
         }));
     }
     if let Some(network) = peer_sync.as_ref() {
-        let network = Arc::clone(network);
+        let follow_network = Arc::clone(network);
+        let status_network = Arc::clone(network);
         host.set_follow_presence_bridge(std::rc::Rc::new(move |room, target| {
             let key = ui::presence::PresenceKey::Workspace {
                 id: room.to_string(),
             };
             let payload = ui::collaboration::PresencePayload::Following { target };
             if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
-                network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+                follow_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+            }
+        }));
+        host.set_status_presence_bridge(std::rc::Rc::new(move |room, status| {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: room.to_string(),
+            };
+            let payload = ui::collaboration::PresencePayload::Status {
+                text: status
+                    .as_ref()
+                    .map_or_else(String::new, |status| status.text.clone()),
+                automatic: status.as_ref().is_some_and(|status| {
+                    matches!(status.origin, ui::StatusOrigin::Inferred { .. })
+                }),
+            };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                status_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+            }
+        }));
+        let tab_network = Arc::clone(network);
+        host.set_active_tab_presence_bridge(std::rc::Rc::new(move |room, tab, present| {
+            let key = ui::presence::PresenceKey::Tab {
+                id: format!("{tab:x}"),
+            };
+            let payload = if present {
+                ui::collaboration::PresencePayload::Arrived
+            } else {
+                ui::collaboration::PresencePayload::Left
+            };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                tab_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
             }
         }));
     }

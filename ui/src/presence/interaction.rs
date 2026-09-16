@@ -50,6 +50,11 @@ pub struct InteractionCardPlacement {
 }
 
 impl PresenceCtx {
+    pub(super) fn remove_interactions_for_actor(&mut self, actor_id: &str) {
+        self.interactions
+            .retain(|_, entry| entry.interaction.actor.id != actor_id);
+    }
+
     /// Apply one broker-normalized interaction update.
     ///
     /// Returns `Ok(true)` only when visible state advanced. Replays, older
@@ -62,6 +67,18 @@ impl PresenceCtx {
     /// Returns the interaction contract's validation error when the incoming
     /// update is malformed or exceeds its wire bounds.
     pub fn apply_interaction(
+        &mut self,
+        interaction: SemanticInteraction,
+    ) -> Result<bool, qos_actions::InteractionViolation> {
+        self.apply_interaction_at(interaction, Instant::now())
+    }
+
+    /// Observe semantic work without claiming its resource belongs to this
+    /// rendering surface. The shell People roster uses this after the room
+    /// broker has authenticated and routed the event; app canvases continue
+    /// to use `apply_remote_presence`, whose resource-key check prevents an
+    /// interaction from painting in unrelated applications.
+    pub fn observe_interaction(
         &mut self,
         interaction: SemanticInteraction,
     ) -> Result<bool, qos_actions::InteractionViolation> {
@@ -139,6 +156,21 @@ impl PresenceCtx {
     pub fn visible_interactions(&self, now: Instant) -> Vec<SemanticInteraction> {
         self.visible_entries(now)
             .into_iter()
+            .map(|entry| entry.interaction.clone())
+            .collect()
+    }
+
+    /// Visible semantic work whose authenticated action catalogue names this
+    /// application as its owner. Missing ownership is intentionally excluded:
+    /// a compositor must never guess which foreign window may display it.
+    pub fn visible_interactions_for_app(
+        &self,
+        app_id: &str,
+        now: Instant,
+    ) -> Vec<SemanticInteraction> {
+        self.visible_entries(now)
+            .into_iter()
+            .filter(|entry| entry_belongs_to_app(entry, app_id))
             .map(|entry| entry.interaction.clone())
             .collect()
     }
@@ -245,6 +277,59 @@ impl PresenceCtx {
         let placements = self.interaction_card_layout(viewport, now);
         for (entry, placement) in entries.iter().zip(&placements) {
             self.draw_interaction_card(scene, transform, text_renderer, theme, entry, placement);
+        }
+    }
+
+    /// Draw the generic rail only for semantic work explicitly owned by one
+    /// application. Compositors use this for foreign surfaces: an external
+    /// client gets collaboration by default, while activity from a different
+    /// app can never be painted over its pixels.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "the result is bounded to three cards and viewport dimensions are UI-sized"
+    )]
+    pub fn draw_interactions_for_app(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        viewport: Rect,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        now: Instant,
+        app_id: &str,
+    ) {
+        let entries = self
+            .visible_entries(now)
+            .into_iter()
+            .filter(|entry| entry_belongs_to_app(entry, app_id))
+            .collect::<Vec<_>>();
+        if entries.is_empty() || viewport.width() < 96.0 || viewport.height() < 32.0 {
+            return;
+        }
+        let vertical_room = (viewport.height() - CARD_MARGIN * 2.0).max(0.0);
+        let fit = ((vertical_room + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)).floor() as usize;
+        let visible = entries.len().min(MAX_VISIBLE_CARDS).min(fit);
+        let width = CARD_WIDTH.min((viewport.width() - CARD_MARGIN * 2.0).max(80.0));
+        for (index, entry) in entries.iter().take(visible).enumerate() {
+            let y = viewport.y0 + CARD_MARGIN + index as f64 * (CARD_HEIGHT + CARD_GAP);
+            let placement = InteractionCardPlacement {
+                invocation: entry.interaction.invocation,
+                rect: Rect::new(
+                    viewport.x1 - CARD_MARGIN - width,
+                    y,
+                    viewport.x1 - CARD_MARGIN,
+                    y + CARD_HEIGHT,
+                ),
+                additional: if index + 1 == visible {
+                    entries.len().saturating_sub(visible)
+                } else {
+                    0
+                },
+            };
+            self.draw_interaction_card(scene, transform, text_renderer, theme, entry, &placement);
         }
     }
 
@@ -447,6 +532,15 @@ fn actor_label(presence: &PresenceCtx, user: &UserId, is_agent: bool) -> String 
     }
 }
 
+fn entry_belongs_to_app(entry: &InteractionPresenceEntry, app_id: &str) -> bool {
+    entry
+        .interaction
+        .action
+        .app
+        .as_ref()
+        .is_some_and(|app| app.id == app_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +619,35 @@ mod tests {
         let mut moved = interaction(2, 2, InteractionPhase::Committed);
         moved.resource.id = "file:secret".into();
         assert!(!presence.apply_interaction_at(moved, at).unwrap());
+    }
+
+    #[test]
+    fn foreign_app_fallback_is_strictly_scoped_to_catalogue_owner() {
+        let at = Instant::now();
+        let mut presence = PresenceCtx::empty();
+        let mut writer = interaction(20, 1, InteractionPhase::Applying);
+        writer.action.app = Some(qos_actions::ActionApp {
+            id: "org.qos.Writer".into(),
+            label: "Writer".into(),
+        });
+        let mut files = interaction(21, 1, InteractionPhase::Applying);
+        files.action.app = Some(qos_actions::ActionApp {
+            id: "org.qos.Files".into(),
+            label: "Files".into(),
+        });
+        let unowned = interaction(22, 1, InteractionPhase::Applying);
+        assert!(presence.apply_interaction_at(writer, at).unwrap());
+        assert!(presence.apply_interaction_at(files, at).unwrap());
+        assert!(presence.apply_interaction_at(unowned, at).unwrap());
+
+        let writer = presence.visible_interactions_for_app("org.qos.Writer", at);
+        assert_eq!(writer.len(), 1);
+        assert_eq!(writer[0].action.label, "Rename");
+        assert!(
+            presence
+                .visible_interactions_for_app("org.qos.Calendar", at)
+                .is_empty()
+        );
     }
 
     #[test]
