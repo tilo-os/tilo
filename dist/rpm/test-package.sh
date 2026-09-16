@@ -25,9 +25,18 @@ rpm -q --requires tilo-session | grep -Fxq dbus-tools
 rpm -q --requires tilo-session | grep -Fxq upower
 rpm -q --recommends tilo-session | grep -Fxq mesa-vulkan-drivers
 rpm -q --requires tilo-session | grep -Eq '^tilo-session-apps(\([^)]*\))? = '
+! rpm -q --requires tilo-session-apps | grep -Eq \
+    '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
+! rpm -q --provides tilo-session-apps | grep -Eq \
+    '^(ld-linux|libc\.so|libstd-|libruntime_dylib\.so)'
 test -s /usr/share/tilo-apps/registry.toml
 grep -Fxq 'id = "dev.tilo.settings"' /usr/share/tilo-apps/registry.toml
+grep -q '^payload_root = "/usr/lib/tilo-apps/' /usr/share/tilo-apps/registry.toml
+test -d /usr/lib/tilo-apps/payloads
+test ! -e /usr/share/tilo-apps/payloads
 test -f /usr/lib/tilo-runtime/2026.07/bundle.toml
+test "$(stat -c %a /usr/lib/tilo-runtime/2026.07/bundle.toml)" = 644
+grep -q '/usr/lib/tilo-apps/bin' /etc/profile.d/tilo-apps.sh
 test -s /etc/tilo/runtime-bundle-trusted-publishers.txt
 tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
     --require-publisher "$(head -n 1 /etc/tilo/runtime-bundle-trusted-publishers.txt)"

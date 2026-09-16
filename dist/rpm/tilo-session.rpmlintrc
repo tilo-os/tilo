@@ -1,0 +1,7 @@
+# The signed runtime is a private bubblewrap root, not a host library tree.
+# Its stable, unversioned Rust dylib name is consumed only through the
+# bundle's private LD_LIBRARY_PATH; changing it would invalidate the signed
+# app/runtime contract. The bundled glibc necessarily contains its own mktemp
+# compatibility symbol; no Tilo package script or executable calls mktemp.
+addFilter(r"tilo-session-apps.*invalid-soname /usr/lib/tilo-runtime/2026\.07/lib/libruntime_dylib\.so libruntime_dylib\.so")
+addFilter(r"tilo-session-apps.*call-to-mktemp /usr/lib/tilo-runtime/2026\.07/lib/lib64/libc\.so\.6")

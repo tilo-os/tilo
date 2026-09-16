@@ -10,6 +10,7 @@ trap cleanup EXIT
 release=$work/release
 mkdir -p "$release"/{qpkg,tilo-runtime/2026.07,bin}
 printf 'fixture package\n' > "$release/qpkg/settings-0.1.0-x86_64.qpkg"
+printf '\177ELFfixture\n' > "$release/tilo-runtime/2026.07/libfixture.so"
 cat > "$release/tilo-runtime/2026.07/bundle.toml" <<'EOF'
 version = "2026.07"
 publisher_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -31,8 +32,10 @@ cat > "$release/bin/tilo-install" <<'EOF'
 set -euo pipefail
 [[ ${1:-} == install && -n ${TILO_APPS_DATA_DIR:-} && -n ${TILO_RUNTIME_BUNDLE_DIR:-} ]]
 root=$TILO_APPS_DATA_DIR
-mkdir -p "$root/payloads/dev.tilo.settings/bin" "$root/integrity/dev.tilo.settings"
+mkdir -p "$root/payloads/dev.tilo.settings/bin" "$root/integrity/dev.tilo.settings" "$root/bin"
 printf '#!/bin/true\n' > "$root/payloads/dev.tilo.settings/bin/settings"
+cp "$TILO_CLI_SHIM_PATH" "$root/bin/settings-cli"
+printf 'dev.tilo.settings\n' > "$root/bin/settings-cli.tilo-shim"
 cat > "$root/registry.toml" <<TOML
 [[entry]]
 id = "dev.tilo.settings"
@@ -49,10 +52,16 @@ stage=$work/stage
 
 registry=$stage/usr/share/tilo-apps/registry.toml
 grep -Fqx 'id = "dev.tilo.settings"' "$registry"
-grep -Fqx 'payload_root = "/usr/share/tilo-apps/payloads/dev.tilo.settings"' "$registry"
-grep -Fqx 'manifest_path = "/usr/share/tilo-apps/payloads/dev.tilo.settings/manifest.toml"' "$registry"
+grep -Fqx 'payload_root = "/usr/lib/tilo-apps/payloads/dev.tilo.settings"' "$registry"
+grep -Fqx 'manifest_path = "/usr/lib/tilo-apps/payloads/dev.tilo.settings/manifest.toml"' "$registry"
 ! grep -Fq "$stage" "$registry"
-test -x "$stage/usr/share/tilo-apps/payloads/dev.tilo.settings/bin/settings"
+test -x "$stage/usr/lib/tilo-apps/payloads/dev.tilo.settings/bin/settings"
+test ! -e "$stage/usr/share/tilo-apps/payloads"
+test "$(stat -c %a "$stage/usr/share/tilo-apps/registry.toml")" = 644
+test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07/bundle.toml")" = 644
+test "$(stat -c %a "$stage/usr/lib/tilo-runtime/2026.07/libfixture.so")" = 755
+test -x "$stage/usr/lib/tilo-apps/bin/settings-cli"
+test "$(stat -c %a "$stage/usr/lib/tilo-apps/bin/settings-cli.tilo-shim")" = 644
 grep -Fqx '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
     "$stage/etc/tilo/runtime-bundle-trusted-publishers.txt"
 

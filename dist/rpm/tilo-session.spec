@@ -32,6 +32,12 @@
 # chain, but make its strip helpers no-ops for this prebuilt, signed payload.
 %global __strip /bin/true
 
+# These signature-covered application trees are private sandbox payloads, not
+# libraries exposed to the host. Keep RPM's automatic dependency generation
+# for package binaries and exclude only these two private stores.
+%global __provides_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
+%global __requires_exclude_from ^/usr/lib/tilo-(apps|runtime)/.*$
+
 Name:           tilo-session
 Version:        %{tilo_version}
 Release:        1%{?dist}
@@ -203,6 +209,8 @@ for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo
 done
 install -Dpm 0644 apps/user-tmpfiles/tilo-model-manager.conf \
                   %{buildroot}%{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+install -Dpm 0644 apps/profile.d/tilo-apps.sh \
+                  %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 install -Dpm 0644 apps/license/LICENSE \
                   %{buildroot}%{_datadir}/licenses/%{name}-apps/LICENSE
 
@@ -254,7 +262,12 @@ test ! -e %{buildroot}%{_userunitdir}/tilo-portal.service
 # notification, so prove the real app and signed runtime are present.
 test -s %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^id = "dev.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.toml
+grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml
+test -d %{buildroot}%{_prefix}/lib/tilo-apps/payloads
+test ! -e %{buildroot}%{_datadir}/tilo-apps/payloads
 test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
+test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
+grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh
 test -s %{buildroot}%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo-ush; do
     test -f %{buildroot}%{_userunitdir}/$unit.service
@@ -287,8 +300,10 @@ done
 %{_userunitdir}/tilo-model-gateway.service
 %{_userunitdir}/tilo-ush.service
 %{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
+%config %{_sysconfdir}/profile.d/tilo-apps.sh
 %config(noreplace) %{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 %{_datadir}/tilo-apps
+%{_prefix}/lib/tilo-apps
 %{_prefix}/lib/tilo-runtime
 %license %{_datadir}/licenses/%{name}-apps/LICENSE
 
