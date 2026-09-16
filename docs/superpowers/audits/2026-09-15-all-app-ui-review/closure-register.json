@@ -170,8 +170,15 @@
       {
         "id": "code_editor-1",
         "title": "P2 — empty Problems panel consumes editing height on launch.",
-        "status": "open",
-        "evidence": []
+        "status": "closed",
+        "evidence": [
+          "implementation/composition-task-10-report.md",
+          "implementation/composition-task-10-review.md",
+          "implementation/composition-task-10-fix-1-review.md",
+          "task10-controller-visual.md",
+          "task10-code-final-20260916/capture-results.json",
+          "task10-code-editor/capture-manifest.json"
+        ]
       },
       {
         "id": "code_editor-2",
@@ -192,7 +199,7 @@
         ]
       }
     ],
-    "closure": "fixes and final verification pending",
+    "closure": "empty dock composition verified; app-local scaled metrics and final matrix pending",
     "capture_fidelity": "verified for standard CLI route in corrected visual review; batch Imager fallback verified by focused tests and code review",
     "assigned_work": "Composition 10 + 13 (Task1 umbrella)"
   },

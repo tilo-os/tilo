@@ -27,3 +27,6 @@ These archived reports preserve implementation and independent review evidence f
 - [shared-task-6-report](shared-task-6-report.md)
 - [shared-task-6-review](shared-task-6-review.md)
 - [shared-final-review](shared-final-review.md)
+- [composition-task-10-report](composition-task-10-report.md)
+- [composition-task-10-review](composition-task-10-review.md)
+- [composition-task-10-fix-1-review](composition-task-10-fix-1-review.md)
