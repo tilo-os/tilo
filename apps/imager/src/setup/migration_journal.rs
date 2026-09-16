@@ -20,6 +20,76 @@ use std::{
 
 const MAX_JOURNAL: u64 = 16 * 1024 * 1024;
 
+/// Internal classification travels with I/O errors; callers never infer
+/// persistence state from an error message or ordinary per-file conflicts.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum PersistenceBoundary {
+    JournalUnavailable,
+    PreviousCheckpoint,
+    JournalReplacementUncertain,
+    OutputUnpublished,
+    OutputPublicationUncertain,
+    OutputUnrecorded,
+}
+impl PersistenceBoundary {
+    fn description(self) -> &'static str {
+        match self {
+            Self::JournalUnavailable => {
+                "journal is unavailable or replaced; reopen and revalidate before trusting any prior checkpoint"
+            }
+            Self::PreviousCheckpoint => {
+                "previous journal checkpoint retained; output without a saved receipt requires review"
+            }
+            Self::JournalReplacementUncertain => {
+                "journal replacement is visible but its persistence is uncertain; reopen and revalidate before resuming"
+            }
+            Self::OutputUnpublished => {
+                "output persistence failed before publication; previous journal checkpoint retained"
+            }
+            Self::OutputPublicationUncertain => {
+                "output publication or metadata persistence is uncertain; previous journal checkpoint retained"
+            }
+            Self::OutputUnrecorded => {
+                "published output has no saved receipt; previous journal checkpoint retained"
+            }
+        }
+    }
+}
+#[derive(Debug)]
+struct PersistenceError {
+    boundary: PersistenceBoundary,
+    cause: io::Error,
+}
+impl std::fmt::Display for PersistenceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(formatter)
+    }
+}
+impl std::error::Error for PersistenceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+pub(super) fn persistence_result<T>(
+    result: io::Result<T>,
+    boundary: PersistenceBoundary,
+) -> io::Result<T> {
+    result.map_err(|cause| {
+        if cause
+            .get_ref()
+            .is_some_and(|error| error.is::<PersistenceError>())
+        {
+            cause
+        } else {
+            io::Error::other(PersistenceError { boundary, cause })
+        }
+    })
+}
+struct JournalFailure {
+    path: PathBuf,
+    message: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "platform", content = "units", deny_unknown_fields)]
 enum NativeName {
@@ -147,6 +217,10 @@ impl FileReceipt {
         digest: [u8; 32],
         durable: bool,
     ) -> io::Result<Self> {
+        #[cfg(test)]
+        if durable {
+            persistence_injection::fail_at("file_receipt_construct")?;
+        }
         Ok(Self {
             bytes,
             accessed: original.accessed()?.into_std(),
@@ -221,6 +295,7 @@ pub struct MigrationJournal {
     identity: Metadata,
     resume: bool,
     seen: BTreeSet<PathBuf>,
+    failure: Option<JournalFailure>,
 }
 
 fn directory_identity(directory: &PinnedDirectory) -> io::Result<Identity> {
@@ -309,6 +384,7 @@ impl MigrationJournal {
             identity,
             resume: false,
             seen: BTreeSet::new(),
+            failure: None,
         })
     }
     fn open(path: &Path) -> io::Result<Self> {
@@ -362,6 +438,7 @@ impl MigrationJournal {
             identity,
             resume: true,
             seen: BTreeSet::new(),
+            failure: None,
         };
         result.validate()?;
         Ok(result)
@@ -379,29 +456,87 @@ impl MigrationJournal {
         }
         Ok(())
     }
-    fn save(&mut self) -> io::Result<()> {
-        self.validate()?;
-        let bytes = serde_json::to_vec(&self.document)?;
-        if bytes.len() as u64 > MAX_JOURNAL {
-            return Err(changed("journal capacity exceeded"));
+    pub(super) fn has_failed(&self) -> bool {
+        self.failure.is_some()
+    }
+
+    pub(super) fn observe_persistence_failure(&mut self, path: &Path, error: &io::Error) {
+        if self.failure.is_none()
+            && let Some(failure) = error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<PersistenceError>())
+        {
+            self.failure = Some(JournalFailure {
+                path: path.to_path_buf(),
+                message: format!(
+                    "Copy stopped because persistence failed: {}; {}",
+                    failure.boundary.description(),
+                    error
+                ),
+            });
         }
-        let mut temporary = OwnedTemporary::create(&self.parent, &self.name)?;
-        temporary.file.write_all(&bytes)?;
-        durability::sync_file(&temporary.file)?;
-        self.validate()?;
-        #[cfg(test)]
-        crash_injection::boundary("journal_before_replace");
-        cap_primitives::fs::rename(
-            &self.parent.file,
-            Path::new(&temporary.name),
-            &self.parent.file,
-            Path::new(&self.name),
-        )?;
-        #[cfg(test)]
-        crash_injection::boundary("journal_after_replace");
-        self.file = temporary.file.try_clone()?;
-        self.identity = Metadata::from_file(&self.file)?;
-        durability::sync_directory(&self.parent.file)
+    }
+
+    pub(super) fn retain_failure_in(&self, report: &mut CopyReport) {
+        if let Some(failure) = &self.failure {
+            report
+                .failed
+                .push((failure.path.clone(), failure.message.clone()));
+        }
+    }
+
+    fn checkpoint<T>(
+        &mut self,
+        path: &Path,
+        boundary: PersistenceBoundary,
+        operation: impl FnOnce(&mut Self) -> io::Result<T>,
+    ) -> io::Result<T> {
+        if self.has_failed() {
+            return Err(changed(
+                "journal persistence already failed; no further checkpoint attempted",
+            ));
+        }
+        let result = persistence_result(operation(self), boundary);
+        if let Err(error) = &result {
+            self.observe_persistence_failure(path, error);
+        }
+        result
+    }
+
+    fn save(&mut self) -> io::Result<()> {
+        let mut boundary = PersistenceBoundary::PreviousCheckpoint;
+        let result = (|| {
+            persistence_result(self.validate(), PersistenceBoundary::JournalUnavailable)?;
+            #[cfg(test)]
+            persistence_injection::fail_at("before_encode")?;
+            let bytes = serde_json::to_vec(&self.document)?;
+            if bytes.len() as u64 > MAX_JOURNAL {
+                return Err(changed("journal capacity exceeded"));
+            }
+            let mut temporary = OwnedTemporary::create(&self.parent, &self.name)?;
+            temporary.file.write_all(&bytes)?;
+            durability::sync_file(&temporary.file)?;
+            persistence_result(self.validate(), PersistenceBoundary::JournalUnavailable)?;
+            #[cfg(test)]
+            crash_injection::boundary("journal_before_replace");
+            #[cfg(test)]
+            persistence_injection::fail_at("before_replace")?;
+            cap_primitives::fs::rename(
+                &self.parent.file,
+                Path::new(&temporary.name),
+                &self.parent.file,
+                Path::new(&self.name),
+            )?;
+            boundary = PersistenceBoundary::JournalReplacementUncertain;
+            #[cfg(test)]
+            crash_injection::boundary("journal_after_replace");
+            #[cfg(test)]
+            persistence_injection::fail_at("after_replace")?;
+            self.file = temporary.file.try_clone()?;
+            self.identity = Metadata::from_file(&self.file)?;
+            durability::sync_directory(&self.parent.file)
+        })();
+        persistence_result(result, boundary)
     }
     pub(super) fn validate_relative(&self, path: &Path) -> io::Result<()> {
         RelativePath::encode(path).map(|_| ())
@@ -445,11 +580,19 @@ impl MigrationJournal {
             Ok(directory)
         } else {
             let directory = parent.create_child(name)?;
-            durability::sync_directory(&directory.file)?;
-            durability::sync_directory(&parent.file)?;
-            #[cfg(test)]
-            crash_injection::boundary("root_published");
-            self.enter_directory(Path::new(""), source, &directory)?;
+            self.checkpoint(
+                Path::new(""),
+                PersistenceBoundary::OutputPublicationUncertain,
+                |journal| {
+                    #[cfg(test)]
+                    persistence_injection::fail_at("root_publication_flush")?;
+                    durability::sync_directory(&directory.file)?;
+                    durability::sync_directory(&parent.file)?;
+                    #[cfg(test)]
+                    crash_injection::boundary("root_published");
+                    journal.enter_directory(Path::new(""), source, &directory)
+                },
+            )?;
             Ok(directory)
         }
     }
@@ -487,15 +630,17 @@ impl MigrationJournal {
         if self.lookup(path).is_some() {
             self.check_directory(path, source, destination)?;
         } else {
-            self.document.receipts.push(Receipt::Directory {
-                path: RelativePath::encode(path)?,
-                source: directory_identity(source)?,
-                destination: directory_identity(destination)?,
-                accessed: Metadata::from_file(&source.file)?.accessed()?.into_std(),
-                modified: Metadata::from_file(&source.file)?.modified()?.into_std(),
-                completed: false,
-            });
-            self.save()?;
+            self.checkpoint(path, PersistenceBoundary::OutputUnrecorded, |journal| {
+                journal.document.receipts.push(Receipt::Directory {
+                    path: RelativePath::encode(path)?,
+                    source: directory_identity(source)?,
+                    destination: directory_identity(destination)?,
+                    accessed: Metadata::from_file(&source.file)?.accessed()?.into_std(),
+                    modified: Metadata::from_file(&source.file)?.modified()?.into_std(),
+                    completed: false,
+                });
+                journal.save()
+            })?;
         }
         self.seen.insert(path.to_path_buf());
         Ok(())
@@ -516,9 +661,17 @@ impl MigrationJournal {
             Ok(child)
         } else {
             let child = destination.create_child(name)?;
-            durability::sync_directory(&child.file)?;
-            durability::sync_directory(&destination.file)?;
-            self.enter_directory(path, &child_source, &child)?;
+            self.checkpoint(
+                path,
+                PersistenceBoundary::OutputPublicationUncertain,
+                |journal| {
+                    #[cfg(test)]
+                    persistence_injection::fail_at("directory_publication_flush")?;
+                    durability::sync_directory(&child.file)?;
+                    durability::sync_directory(&destination.file)?;
+                    journal.enter_directory(path, &child_source, &child)
+                },
+            )?;
             Ok(child)
         }
     }
@@ -530,26 +683,41 @@ impl MigrationJournal {
             _ => Err(changed("directory receipt missing")),
         }
     }
-    pub(super) fn complete_directory(&mut self, path: &Path) -> io::Result<()> {
-        for receipt in &mut self.document.receipts {
-            if let Receipt::Directory {
-                path: p, completed, ..
-            } = receipt
-                && p.decode()? == path
-            {
-                *completed = true;
-            }
-        }
-        self.save()
+    pub(super) fn complete_directory(
+        &mut self,
+        path: &Path,
+        destination: &PinnedDirectory,
+    ) -> io::Result<()> {
+        self.checkpoint(
+            path,
+            PersistenceBoundary::OutputPublicationUncertain,
+            |journal| {
+                #[cfg(test)]
+                persistence_injection::fail_at("directory_completion_flush")?;
+                durability::sync_directory(&destination.file)?;
+                for receipt in &mut journal.document.receipts {
+                    if let Receipt::Directory {
+                        path: p, completed, ..
+                    } = receipt
+                        && p.decode()? == path
+                    {
+                        *completed = true;
+                    }
+                }
+                journal.save()
+            },
+        )
     }
     pub(super) fn record_file(&mut self, path: &Path, facts: FileReceipt) -> io::Result<()> {
-        self.document.receipts.push(Receipt::File {
-            path: RelativePath::encode(path)?,
-            facts,
-        });
-        self.save()?;
-        self.seen.insert(path.to_path_buf());
-        Ok(())
+        self.checkpoint(path, PersistenceBoundary::OutputUnrecorded, |journal| {
+            journal.document.receipts.push(Receipt::File {
+                path: RelativePath::encode(path)?,
+                facts,
+            });
+            journal.save()?;
+            journal.seen.insert(path.to_path_buf());
+            Ok(())
+        })
     }
     pub(super) fn revalidate_file(
         &mut self,
@@ -613,7 +781,10 @@ impl MigrationJournal {
                     ));
                 }
                 migration::preserve_time_values(&file, facts.accessed, facts.source.modified)?;
-                durability::sync_file(&file)?;
+                persistence_result(
+                    durability::sync_file(&file),
+                    PersistenceBoundary::OutputPublicationUncertain,
+                )?;
             }
         }
         let bytes = facts.bytes;
@@ -621,6 +792,13 @@ impl MigrationJournal {
         Ok(Some(bytes))
     }
     pub(super) fn finish(&mut self, report: &mut CopyReport) -> io::Result<()> {
+        self.checkpoint(
+            Path::new(""),
+            PersistenceBoundary::PreviousCheckpoint,
+            |journal| journal.finish_inner(report),
+        )
+    }
+    fn finish_inner(&mut self, report: &mut CopyReport) -> io::Result<()> {
         report.metadata_limitations.push("Automatic resume across boots requires stable filesystem identities. If only a boot-bound identity is available, reselect the folders and review conflicts after reboot.".into());
         for receipt in &self.document.receipts {
             let path = receipt.path().decode()?;
@@ -982,7 +1160,21 @@ mod tests {
                     fs::write(&journal, b"replacement").unwrap();
                 }
             });
-        assert!(result.is_err());
+        let report = result.expect("persistence failures retain the incomplete report");
+        assert!(!report.complete());
+        assert_eq!(report.verified_files, [PathBuf::from("a")]);
+        assert!(
+            report
+                .failed
+                .iter()
+                .any(|(_, message)| message.contains("journal replaced"))
+        );
+        assert!(
+            !report
+                .failed
+                .iter()
+                .any(|(_, message)| message.contains("previous journal checkpoint retained"))
+        );
         assert!(replaced);
         assert_eq!(fs::read(&journal).unwrap(), b"replacement");
         assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
@@ -1143,6 +1335,206 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+    #[test]
+    fn failed_file_receipt_stops_before_later_files_or_directories() {
+        for boundary in ["before_encode", "before_replace", "after_replace"] {
+            let (_temp, source, output, journal) = fixture();
+            fs::create_dir(source.join("later-directory")).unwrap();
+            let failure = persistence_injection::Failure::at(boundary, 2);
+            let result = copy_folder_with_journal(
+                &source,
+                &output,
+                &journal,
+                &AtomicBool::new(false),
+                |_| {},
+            );
+            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+            assert!(
+                !output.join("b").exists(),
+                "later file published after {boundary} failure"
+            );
+            assert!(!output.join("later-directory").exists());
+            let report =
+                result.expect("post-publication failure must retain the incomplete report");
+            assert!(!report.complete());
+            assert!(!report.scan_completed);
+            assert!(
+                report.verified_files.is_empty(),
+                "unsaved receipt counted as persisted"
+            );
+            assert!(report.failed.iter().any(|(p, _)| p == Path::new("a")));
+            let diagnostic = &report
+                .failed
+                .iter()
+                .find(|(p, _)| p == Path::new("a"))
+                .unwrap()
+                .1;
+            assert!(diagnostic.contains(if boundary == "after_replace" {
+                "replacement is visible but its persistence is uncertain"
+            } else {
+                "previous journal checkpoint retained"
+            }));
+            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+            assert_eq!(fs::read(source.join("b")).unwrap(), b"world");
+            drop(failure);
+            let checkpoint: Document =
+                serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+            if boundary != "after_replace" {
+                assert_eq!(
+                    checkpoint.receipts.len(),
+                    1,
+                    "checkpoint advanced after persistence failed"
+                );
+            }
+            let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+            if boundary == "after_replace" {
+                assert!(resumed.complete(), "{resumed:?}");
+            } else {
+                assert!(!resumed.complete());
+                assert!(!resumed.verified_files.contains(&PathBuf::from("a")));
+            }
+            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+        }
+    }
+    #[test]
+    fn failed_directory_receipt_or_completion_stops_parent_traversal() {
+        for (boundary, save) in [
+            ("before_replace", 2),
+            ("before_replace", 3),
+            ("directory_publication_flush", 1),
+            ("directory_completion_flush", 1),
+        ] {
+            let (_temp, source, output, journal) = fixture();
+            fs::create_dir(source.join("0-directory")).unwrap();
+            let failure = persistence_injection::Failure::at(boundary, save);
+            let result = copy_folder_with_journal(
+                &source,
+                &output,
+                &journal,
+                &AtomicBool::new(false),
+                |_| {},
+            );
+            assert!(output.join("0-directory").is_dir());
+            assert!(
+                !output.join("a").exists(),
+                "parent traversal continued after directory checkpoint failure"
+            );
+            assert!(!output.join("b").exists());
+            let report = result.expect("directory persistence failure must retain report");
+            assert!(!report.complete());
+            assert!(!report.scan_completed);
+            assert!(
+                report
+                    .failed
+                    .iter()
+                    .any(|(p, _)| p == Path::new("0-directory"))
+            );
+            drop(failure);
+            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+            let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+            if (boundary == "before_replace" && save == 2)
+                || boundary == "directory_publication_flush"
+            {
+                assert!(!resumed.complete());
+            } else {
+                assert!(resumed.complete(), "{resumed:?}");
+            }
+            assert!(output.join("0-directory").is_dir());
+        }
+    }
+    #[test]
+    fn failed_final_outcome_save_retains_verified_report_and_prior_checkpoint() {
+        for boundary in ["before_encode", "before_replace", "after_replace"] {
+            let (_temp, source, output, journal) = fixture();
+            let failure = persistence_injection::Failure::at(boundary, 5);
+            let report = copy_folder_with_journal(
+                &source,
+                &output,
+                &journal,
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .expect("final persistence failure must retain accumulated results");
+            assert!(!report.complete());
+            assert_eq!(report.verified_files.len(), 2);
+            assert_eq!(report.verified_bytes, 10);
+            assert_eq!(report.failed.len(), 1);
+            assert!(report.failed[0].1.contains(if boundary == "after_replace" {
+                "replacement is visible but its persistence is uncertain"
+            } else {
+                "previous journal checkpoint retained"
+            }));
+            let checkpoint: Document =
+                serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+            if boundary != "after_replace" {
+                assert!(checkpoint.outcome.is_none());
+            }
+            drop(failure);
+            assert!(
+                resume_folder(&journal, &AtomicBool::new(false), |_| {})
+                    .unwrap()
+                    .complete()
+            );
+            for base in [&source, &output] {
+                assert_eq!(fs::read(base.join("a")).unwrap(), b"hello");
+                assert_eq!(fs::read(base.join("b")).unwrap(), b"world");
+            }
+        }
+    }
+    #[test]
+    fn failed_initial_root_receipt_returns_incomplete_report_without_traversal() {
+        for boundary in ["root_publication_flush", "before_replace"] {
+            let (_temp, source, output, journal) = fixture();
+            let failure = persistence_injection::Failure::at(boundary, 1);
+            let report = copy_folder_with_journal(
+                &source,
+                &output,
+                &journal,
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .expect("root receipt failed after mkdir; retain report");
+            assert!(!report.complete());
+            assert!(output.is_dir());
+            assert!(!output.join("a").exists());
+            assert!(!report.failed.is_empty());
+            drop(failure);
+            assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+            assert!(output.is_dir());
+            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+        }
+    }
+    #[test]
+    fn failed_post_publication_flush_or_receipt_construction_stops_later_entries() {
+        for boundary in ["file_publication_flush", "file_receipt_construct"] {
+            let (_temp, source, output, journal) = fixture();
+            let failure = persistence_injection::Failure::at(boundary, 1);
+            let report = copy_folder_with_journal(
+                &source,
+                &output,
+                &journal,
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .unwrap();
+            assert!(!report.complete());
+            assert!(!report.scan_completed);
+            assert!(report.verified_files.is_empty());
+            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+            assert!(!output.join("b").exists());
+            assert!(report.failed.iter().any(|(path, _)| path == Path::new("a")));
+            let checkpoint: Document =
+                serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+            assert_eq!(checkpoint.receipts.len(), 1);
+            drop(failure);
+            let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+            assert!(!resumed.complete());
+            assert!(!resumed.verified_files.contains(&PathBuf::from("a")));
+            assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+            assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
+            assert_eq!(fs::read(source.join("b")).unwrap(), b"world");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1197,5 +1589,48 @@ mod race_injection {
                 action();
             }
         });
+    }
+}
+
+#[cfg(test)]
+pub(super) mod persistence_injection {
+    use std::{cell::RefCell, io};
+    thread_local! { static FAILURE: RefCell<Option<(&'static str,usize)>> = const { RefCell::new(None) }; }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    pub(super) struct Failure;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    impl Failure {
+        pub(super) fn at(boundary: &'static str, nth: usize) -> Self {
+            FAILURE.with(|f| *f.borrow_mut() = Some((boundary, nth)));
+            Self
+        }
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    impl Drop for Failure {
+        fn drop(&mut self) {
+            FAILURE.with(|f| *f.borrow_mut() = None);
+        }
+    }
+    pub(crate) fn fail_at(boundary: &str) -> io::Result<()> {
+        FAILURE.with(|f| {
+            let mut f = f.borrow_mut();
+            if let Some((target, nth)) = &mut *f
+                && *target == boundary
+            {
+                *nth -= 1;
+                if *nth == 0 {
+                    *f = None;
+                    return Err(io::Error::new(
+                        if boundary == "before_encode" {
+                            io::ErrorKind::InvalidData
+                        } else {
+                            io::ErrorKind::WriteZero
+                        },
+                        "injected checkpoint failure",
+                    ));
+                }
+            }
+            Ok(())
+        })
     }
 }

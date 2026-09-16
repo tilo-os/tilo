@@ -18,7 +18,9 @@ use sha2::{Digest, Sha256};
 
 use super::destination_security;
 use super::migration_durability;
-use super::migration_journal::{FileReceipt, MigrationJournal};
+use super::migration_journal::{
+    FileReceipt, MigrationJournal, PersistenceBoundary, persistence_result,
+};
 pub use super::migration_journal::{copy_folder_with_journal, resume_folder};
 use super::nofollow::{metadata_nofollow, open_directory_nofollow, same_directory_identity};
 
@@ -463,9 +465,13 @@ impl StagedFile {
             ));
         }
         preserve_times(&self.temporary.file, &self.original)?;
-        self.temporary.file.sync_all()?;
         if durable {
-            migration_durability::sync_file(&self.temporary.file)?;
+            persistence_result(
+                migration_durability::sync_file(&self.temporary.file),
+                PersistenceBoundary::OutputUnpublished,
+            )?;
+        } else {
+            self.temporary.file.sync_all()?;
         }
         check_cancel(cancelled)?;
         self.temporary.validate()?;
@@ -478,26 +484,39 @@ impl StagedFile {
             &self.temporary.parent.file,
             Path::new(&self.name),
         )?;
-        let published = metadata_nofollow(&self.temporary.parent.file, Path::new(&self.name))?;
-        if !published.is_file() || !same_directory_identity(&published, &self.temporary.identity) {
-            return Err(changed("published destination identity changed"));
-        }
-        self.temporary.remove_owned()?;
+        let mut boundary = PersistenceBoundary::OutputPublicationUncertain;
+        let receipt = (|| {
+            let published = metadata_nofollow(&self.temporary.parent.file, Path::new(&self.name))?;
+            if !published.is_file()
+                || !same_directory_identity(&published, &self.temporary.identity)
+            {
+                return Err(changed("published destination identity changed"));
+            }
+            self.temporary.remove_owned()?;
+            if durable {
+                #[cfg(test)]
+                super::migration_journal::persistence_injection::fail_at("file_publication_flush")?;
+                migration_durability::sync_directory(&self.temporary.parent.file)?;
+                boundary = PersistenceBoundary::OutputUnrecorded;
+            }
+            #[cfg(test)]
+            if durable {
+                super::migration_journal::crash_injection::boundary("file_published");
+            }
+            FileReceipt::new(
+                &self.source,
+                &self.original,
+                &self.temporary.file,
+                self.bytes,
+                self.digest,
+                durable,
+            )
+        })();
         if durable {
-            migration_durability::sync_directory(&self.temporary.parent.file)?;
+            persistence_result(receipt, boundary)
+        } else {
+            receipt
         }
-        #[cfg(test)]
-        if durable {
-            super::migration_journal::crash_injection::boundary("file_published");
-        }
-        FileReceipt::new(
-            &self.source,
-            &self.original,
-            &self.temporary.file,
-            self.bytes,
-            self.digest,
-            durable,
-        )
     }
 }
 
@@ -591,7 +610,15 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
             source.validate()?;
             destination.validate_destination()?;
             if let Err(error) = self.copy_entry(source, destination, &name, &path, depth) {
-                if self.cancelled.load(Ordering::Relaxed) {
+                if let Some(journal) = &mut self.journal {
+                    journal.observe_persistence_failure(&path, &error);
+                }
+                if self.cancelled.load(Ordering::Relaxed)
+                    || self
+                        .journal
+                        .as_ref()
+                        .is_some_and(MigrationJournal::has_failed)
+                {
                     return Err(error);
                 }
                 self.report.failed.push((path, error.to_string()));
@@ -611,8 +638,7 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
             preserve_directory_times(destination, &before)?;
         }
         if let Some(journal) = &mut self.journal {
-            migration_durability::sync_directory(&destination.file)?;
-            journal.complete_directory(relative)?;
+            journal.complete_directory(relative, destination)?;
         }
         Ok(())
     }
@@ -744,9 +770,14 @@ pub(super) fn copy_folder_internal(
     }
     source.validate().map_err(|error| error.to_string())?;
     let destination = if let Some(journal) = &mut copier.journal {
-        journal
-            .root(&source, &parent, name)
-            .map_err(|error| error.to_string())?
+        match journal.root(&source, &parent, name) {
+            Ok(destination) => destination,
+            Err(_) if journal.has_failed() => {
+                journal.retain_failure_in(&mut copier.report);
+                return Ok(copier.report);
+            }
+            Err(error) => return Err(error.to_string()),
+        }
     } else {
         parent
             .create_child(name)
@@ -754,16 +785,28 @@ pub(super) fn copy_folder_internal(
     };
     match copier.walk(&source, &destination, Path::new(""), 0) {
         Ok(()) => copier.report.scan_completed = true,
-        Err(error) => copier
-            .report
-            .failed
-            .push((PathBuf::new(), error.to_string())),
+        Err(error) => {
+            if let Some(journal) = &mut copier.journal {
+                journal.observe_persistence_failure(Path::new(""), &error);
+            }
+            if !copier
+                .journal
+                .as_ref()
+                .is_some_and(MigrationJournal::has_failed)
+            {
+                copier
+                    .report
+                    .failed
+                    .push((PathBuf::new(), error.to_string()));
+            }
+        }
     }
     copier.report.cancelled = cancelled.load(Ordering::Relaxed);
     if let Some(journal) = &mut copier.journal {
-        journal
-            .finish(&mut copier.report)
-            .map_err(|error| error.to_string())?;
+        if !journal.has_failed() {
+            let _ = journal.finish(&mut copier.report);
+        }
+        journal.retain_failure_in(&mut copier.report);
     }
     Ok(copier.report)
 }
