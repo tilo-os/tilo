@@ -8,6 +8,64 @@ pub use collab::{CollaborationState, RemoteCursor};
 pub mod revision;
 pub use revision::{Revision, RevisionHistory, RevisionId, UnknownRevision};
 
+/// An explicit outbound synchronization frontier for one document route.
+///
+/// Automerge's `save_incremental` cursor is process-global to an `AutoCommit`:
+/// any full save, debug export, or second transport consumer may advance it.
+/// A frontier instead names the exact heads one destination is known to have,
+/// so serialization is independent of unrelated callers and can later be
+/// advanced from an acknowledgement rather than merely from a send attempt.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DocumentFrontier {
+    heads: Vec<ChangeHash>,
+}
+
+impl DocumentFrontier {
+    /// Start at the document's current heads. Existing content is treated as
+    /// the baseline; late joiners acquire it through the snapshot handshake.
+    pub fn at_document(doc: &mut AutoCommit) -> Self {
+        Self {
+            heads: doc.get_heads(),
+        }
+    }
+
+    /// Serialize everything after this frontier and advance it to the heads
+    /// represented by that payload. Unlike `save_incremental`, this does not
+    /// share hidden mutable cursor state with persistence or snapshot export.
+    pub fn take_delta(&mut self, doc: &mut AutoCommit) -> Vec<u8> {
+        let (delta, current) = self.pending_delta(doc);
+        self.heads = current;
+        delta
+    }
+
+    /// Build a delta without advancing the frontier. Call [`Self::advance`]
+    /// only after the durable transport accepts it; a saturated/disconnected
+    /// queue can then be retried instead of silently losing the mutation.
+    pub fn pending_delta(&self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
+        let current = doc.get_heads();
+        if current == self.heads {
+            return (Vec::new(), current);
+        }
+        (doc.save_after(&self.heads), current)
+    }
+
+    /// Advance to heads whose delta a durable destination accepted.
+    pub fn advance(&mut self, heads: Vec<ChangeHash>) {
+        self.heads = heads;
+    }
+
+    /// Treat the document's current state as already observed on this route.
+    /// Used after applying inbound data so it is not echoed back as a new
+    /// outbound mutation.
+    pub fn rebase(&mut self, doc: &mut AutoCommit) {
+        self.heads = doc.get_heads();
+    }
+
+    pub fn heads(&self) -> &[ChangeHash] {
+        &self.heads
+    }
+}
+
 /// One reversible action on the undo/redo stacks.
 ///
 /// **Collab-safe, change-based undo.** Rather than snapshotting the whole
@@ -1035,6 +1093,53 @@ fn live_insert_boundary(
 mod tests {
     use super::*;
     use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
+
+    #[test]
+    fn explicit_frontier_is_independent_of_automerge_save_cursor() {
+        let mut doc = AutoCommit::new();
+        let mut frontier = DocumentFrontier::at_document(&mut doc);
+        doc.put(automerge::ROOT, "body", "draft").unwrap();
+        let _snapshot = doc.save();
+
+        let delta = frontier.take_delta(&mut doc);
+        assert!(
+            !delta.is_empty(),
+            "a full snapshot must not consume this route's delta"
+        );
+        assert!(frontier.take_delta(&mut doc).is_empty());
+    }
+
+    #[test]
+    fn rebased_frontier_does_not_echo_inbound_changes() {
+        let mut source = AutoCommit::new();
+        source.put(automerge::ROOT, "remote", true).unwrap();
+        source.commit();
+        let bytes = source.save();
+
+        let mut target = AutoCommit::new();
+        let mut frontier = DocumentFrontier::at_document(&mut target);
+        let mut incoming = AutoCommit::load(&bytes).unwrap();
+        target.merge(&mut incoming).unwrap();
+        frontier.rebase(&mut target);
+        assert!(frontier.take_delta(&mut target).is_empty());
+
+        target.put(automerge::ROOT, "local", true).unwrap();
+        assert!(!frontier.take_delta(&mut target).is_empty());
+    }
+
+    #[test]
+    fn pending_delta_is_retryable_until_transport_accepts_it() {
+        let mut doc = AutoCommit::new();
+        let mut frontier = DocumentFrontier::at_document(&mut doc);
+        doc.put(automerge::ROOT, "body", "retry me").unwrap();
+
+        let (first, heads) = frontier.pending_delta(&mut doc);
+        let (retry, _) = frontier.pending_delta(&mut doc);
+        assert_eq!(retry, first);
+
+        frontier.advance(heads);
+        assert!(frontier.pending_delta(&mut doc).0.is_empty());
+    }
 
     #[test]
     fn history_stack_keeps_only_the_newest_bounded_window() {

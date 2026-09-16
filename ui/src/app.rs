@@ -741,10 +741,15 @@ pub struct App {
     fullscreen_active: bool,
 
     autosave: Option<crate::persist::Autosave>,
+    /// Explicit frontier for the primary app/record collaboration route.
+    /// Never shares Automerge's implicit save cursor with snapshots or disk.
+    document_frontier: crate::state::DocumentFrontier,
     /// When present the live document is one record's, named by the root
     /// widget via [`crate::widget::Widget::record_intent`].
     records: Option<crate::record::RecordSet>,
     room_index: Option<automerge::AutoCommit>,
+    /// Independent frontier for the unqualified room-index route.
+    room_index_frontier: Option<crate::state::DocumentFrontier>,
 
     action_palette: Option<crate::action_palette::ActionPalette>,
     action_registry: qos_actions::ActionRegistry,
@@ -856,11 +861,12 @@ impl App {
         reason = "construction explicitly initializes all retained application state before applying startup projections"
     )]
     pub fn with_collaboration_manager(
-        state: State,
+        mut state: State,
         root_widget: Box<dyn Widget>,
         collab_manager: CollaborationManager,
     ) -> Self {
         let configured_theme = Theme::configured();
+        let document_frontier = crate::state::DocumentFrontier::at_document(&mut state.doc);
         let mut app = Self {
             state,
             root_widget,
@@ -925,8 +931,10 @@ impl App {
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
+            document_frontier,
             records: None,
             room_index: None,
+            room_index_frontier: None,
             action_palette: None,
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
@@ -3871,13 +3879,17 @@ impl App {
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if self.collab_manager.is_connected() {
-            let delta = self.state.save_incremental();
+            let (delta, heads) = self.document_frontier.pending_delta(&mut self.state.doc);
             if !delta.is_empty() {
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                     crate::diag!("[app] broadcast doc delta {}B", delta.len());
                 }
-                self.collab_manager
-                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
+                if self
+                    .collab_manager
+                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+                {
+                    self.document_frontier.advance(heads);
+                }
             }
         }
         self.broadcast_room_index_delta();
@@ -3897,21 +3909,30 @@ impl App {
         let Some(room) = self.room_index.as_mut() else {
             return;
         };
-        let delta = room.save_incremental();
+        let frontier = self
+            .room_index_frontier
+            .get_or_insert_with(|| crate::state::DocumentFrontier::at_document(room));
+        let (delta, heads) = frontier.pending_delta(room);
         if delta.is_empty() {
             return;
         }
         if let Some(manager) = self.room_collab_manager.as_mut() {
-            if manager.is_connected() {
-                manager
-                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
+            if manager.is_connected()
+                && manager
+                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+            {
+                frontier.advance(heads);
             }
         } else if self.records.is_some() && self.collab_manager.is_connected() {
             // Before the first record checkout the primary manager is the
             // room route. It becomes `room_collab_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
-            self.collab_manager
-                .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
+            if self
+                .collab_manager
+                .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+            {
+                frontier.advance(heads);
+            }
         }
     }
 
@@ -4056,6 +4077,7 @@ impl App {
             }
         };
         if applied {
+            self.document_frontier.rebase(&mut self.state.doc);
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout_dirty = true;
@@ -4094,6 +4116,12 @@ impl App {
         {
             records.discover_room(room);
             self.invalidate_widget_resource_cache();
+        }
+        if applied
+            && let (Some(frontier), Some(room)) =
+                (self.room_index_frontier.as_mut(), self.room_index.as_mut())
+        {
+            frontier.rebase(room);
         }
         applied
     }
@@ -5474,12 +5502,14 @@ impl App {
     pub fn with_records(
         mut self,
         mut records: crate::record::RecordSet,
-        room_index: automerge::AutoCommit,
+        mut room_index: automerge::AutoCommit,
     ) -> Self {
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
         records.discover_room(&room_index);
+        self.room_index_frontier =
+            Some(crate::state::DocumentFrontier::at_document(&mut room_index));
         self.records = Some(records);
         self.room_index = Some(room_index);
         self
@@ -5508,6 +5538,8 @@ impl App {
         );
         match switched {
             Some(id) => {
+                self.document_frontier =
+                    crate::state::DocumentFrontier::at_document(&mut self.state.doc);
                 // Preserve the launcher's unqualified route for the room
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
