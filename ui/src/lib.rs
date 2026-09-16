@@ -177,7 +177,8 @@ pub use search::{
 };
 pub use selection::{KeySelection, SelectionModel};
 pub use state::{
-    Revision, RevisionHistory, RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
+    DocumentFrontier, Revision, RevisionHistory, RevisionId, State, UndoEntry, UndoLog,
+    UnknownRevision,
 };
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
