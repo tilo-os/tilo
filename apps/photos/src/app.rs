@@ -1539,10 +1539,7 @@ impl PhotosApp {
             crate::actions::PhotosOperation::ShareReference { resource_id } => {
                 let exists = PhotosDoc::image(doc)
                     .is_some_and(|image| crate::actions::resource_id(&image) == resource_id)
-                    || PhotosDoc::library(doc)
-                        .photos
-                        .iter()
-                        .any(|photo| photo.id == resource_id);
+                    || PhotosDoc::photo(doc, &resource_id).is_some();
                 if exists {
                     // This is deliberately a local clipboard handoff, not an
                     // invented upload or recipient-delivery success. The
@@ -1561,8 +1558,13 @@ impl PhotosApp {
                     self.save_to(path.as_deref().unwrap_or(&Self::suggested_save_path(&open)));
                 }
             }
-            crate::actions::PhotosOperation::View
-            | crate::actions::PhotosOperation::ViewAlbum { .. }
+            crate::actions::PhotosOperation::View => {
+                self.library_mode = false;
+                self.album_editor = false;
+                self.metadata_editor = false;
+            }
+            crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
+            crate::actions::PhotosOperation::ViewAlbum { .. }
             | crate::actions::PhotosOperation::ViewFolder { .. }
             | crate::actions::PhotosOperation::ViewPerson { .. }
             | crate::actions::PhotosOperation::ViewTag { .. }
@@ -1577,7 +1579,7 @@ impl PhotosApp {
     /// photographs if a collaborator removed the album after search indexed
     /// it.
     fn view_album(&mut self, doc: &AutoCommit, album_id: &str) -> Result<(), String> {
-        if PhotosDoc::library(doc).album(album_id).is_none() {
+        if PhotosDoc::album(doc, album_id).is_none() {
             return Err("that album is no longer in the library".to_owned());
         }
         self.library_mode = true;
@@ -1716,12 +1718,7 @@ impl PhotosApp {
                     self.perform_effect(crate::actions::PhotosOperation::Open { path: None }, doc);
             }
             Hit::Library => {
-                self.library_mode = true;
-                self.active_album = None;
-                self.active_folder = None;
-                self.active_person = None;
-                self.active_tag = None;
-                self.notice = None;
+                let _ = self.perform_effect(crate::actions::PhotosOperation::ViewLibrary, doc);
             }
             Hit::RotateLeft => self.commit_edits(doc, edits.rotated_left()),
             Hit::RotateRight => self.commit_edits(doc, edits.rotated_right()),
@@ -2790,7 +2787,14 @@ impl PhotosApp {
             self.draw_album_editor(scene, transform, text_renderer, theme, presence);
             return;
         }
-        let bounds = self.canvas_rect;
+        let mut bounds = self.canvas_rect;
+        // On a desktop the details sheet is a persistent side panel, not a
+        // transient popover. Give it an actual layout lane so filters, cards,
+        // and destructive controls never continue underneath an opaque sheet
+        // and emerge as clipped half-targets at its edge.
+        if self.metadata_editor && theme.text_scale <= 1.25 && bounds.width() >= 620.0 {
+            bounds.x1 = (bounds.x1 - 432.0).max(bounds.x0);
+        }
         // Enlarged text needs its own density rule. Five desktop cards leave
         // only a few words of metadata per card at 200%, which makes labels
         // overlap their independent destructive controls.
@@ -4643,6 +4647,12 @@ impl Widget for PhotosApp {
             return Ok(false);
         };
         match operation {
+            crate::actions::PhotosOperation::View => {
+                self.library_mode = false;
+                self.album_editor = false;
+                self.metadata_editor = false;
+            }
+            crate::actions::PhotosOperation::ViewLibrary => self.show_library(),
             crate::actions::PhotosOperation::ViewAlbum { album_id } => {
                 self.view_album(doc, &album_id)?;
             }
@@ -4825,7 +4835,9 @@ impl Widget for PhotosApp {
         let heads = doc.get_heads();
         let document_changed = heads != self.search_heads;
         if document_changed {
-            self.search_provider = crate::search::PhotosSearchProvider::new(doc);
+            if self.search_provider.sync(doc).is_err() {
+                self.search_provider = crate::search::PhotosSearchProvider::empty();
+            }
             self.search_heads = heads;
             self.thumbnail_unavailable.clear();
         }
@@ -5543,6 +5555,13 @@ impl Widget for PhotosApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         use qos_actions::ResourceProvider;
         crate::actions::PhotosResources.resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        use qos_actions::ResourceProvider;
+        self.search_provider
+            .resource(id)
+            .or_else(|| crate::actions::PhotosResources.resource(doc, id))
     }
 
     /// Keep the palette projection derived from the same fresh document
