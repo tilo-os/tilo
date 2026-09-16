@@ -3,6 +3,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
 
+pub mod diagnostics;
+pub use diagnostics::{DocumentDiagnostics, FrontierDiagnostics};
 pub mod revision;
 pub use revision::{Revision, RevisionHistory, RevisionId, UnknownRevision};
 
