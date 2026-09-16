@@ -89,6 +89,12 @@ impl TemplatePicker {
             .filter_map(MenuItem::label)
             .collect()
     }
+
+    #[cfg(test)]
+    pub(crate) fn item_center(&self, template: Template) -> Option<Point> {
+        let index = self.templates.iter().position(|item| *item == template)?;
+        self.menu.item_rect(index).map(|rect| rect.center())
+    }
 }
 
 #[cfg(test)]
@@ -107,8 +113,7 @@ mod tests {
     fn click_returns_a_typed_template_and_closes() {
         let mut picker = TemplatePicker::default();
         picker.open_at(Point::new(10.0, 20.0));
-        // ContextMenu rows begin after 6 px padding and are 28 px tall.
-        let report_row = Point::new(20.0, 20.0 + 6.0 + 28.0 * 2.0 + 1.0);
+        let report_row = picker.item_center(Template::Report).unwrap();
         assert_eq!(picker.click(report_row), Some(Template::Report));
         assert!(!picker.is_open());
     }

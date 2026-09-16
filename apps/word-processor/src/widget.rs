@@ -16268,18 +16268,12 @@ mod tests {
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
         assert!(wp.template_picker.is_open(), "the New ▾ picker opens");
 
-        // Select "Report" (its first heading is a known, stable string). Shared
-        // ContextMenu rows start after 6 px padding and are 28 px tall.
-        let report_idx = crate::Template::all()
-            .iter()
-            .position(|t| *t == crate::Template::Report)
-            .unwrap();
-        let anchor_x = wp.toolbar.first().map(|(_, rect)| rect.x0).unwrap();
-        let anchor_y = wp.rect.y0 + wp.toolbar_height(wp.rect.width());
-        wp.pointer = Point::new(
-            anchor_x + 10.0,
-            anchor_y + 6.0 + num::f64_of_usize(report_idx) * 28.0 + 1.0,
-        );
+        // Select "Report" (its first heading is a known, stable string) using
+        // the shared menu's current layout rather than copied row metrics.
+        wp.pointer = wp
+            .template_picker
+            .item_center(crate::Template::Report)
+            .expect("Report row is laid out while the picker is open");
         let mut handled = false;
         assert!(wp.handle_left_press_menu_routing(&mut state.doc, &mut handled));
         assert!(handled);
