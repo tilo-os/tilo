@@ -1211,9 +1211,7 @@ impl GitClientApp {
         if list_visible {
             let msg = self.commit_input.value().to_string();
             let out = ChangesColumn::draw(
-                scene,
-                tr,
-                t,
+                &mut draw::PaintCtx::new(scene, tr, t),
                 theme,
                 col,
                 &self.model,
@@ -1427,17 +1425,17 @@ impl GitClientApp {
         };
         if let Some(diff) = key.and_then(|k| self.diffs.get(k)) {
             self.diff_hunk_buttons = DiffView::draw(
-                scene,
-                tr,
-                t,
+                &mut draw::PaintCtx::new(scene, tr, t),
                 theme,
                 viewport,
                 diff,
                 self.diff_scroll,
                 &self.settings,
-                self.hover_hunk,
-                staged,
-                armed_hunk,
+                crate::diffview::HunkInteraction {
+                    hovered: self.hover_hunk,
+                    staged_side: staged,
+                    armed_discard: armed_hunk,
+                },
             );
         } else {
             draw::fill_rect(scene, t, viewport, c.surfaces.base);
@@ -1472,9 +1470,7 @@ impl GitClientApp {
                 let detail = Rect::new(split, body.y0, body.x1, body.y1);
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
                     HistoryView::draw_detail(
-                        scene,
-                        tr,
-                        t,
+                        &mut draw::PaintCtx::new(scene, tr, t),
                         theme,
                         detail,
                         commit,
@@ -1484,9 +1480,7 @@ impl GitClientApp {
                 if self.flap.reveal() > 0.001 {
                     let list = Rect::new(body.x0, body.y0, split, body.y1);
                     self.history_rows = HistoryView::draw_list(
-                        scene,
-                        tr,
-                        t,
+                        &mut draw::PaintCtx::new(scene, tr, t),
                         theme,
                         list,
                         &self.model,
@@ -1504,9 +1498,7 @@ impl GitClientApp {
                 let detail = body;
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
                     HistoryView::draw_detail(
-                        scene,
-                        tr,
-                        t,
+                        &mut draw::PaintCtx::new(scene, tr, t),
                         theme,
                         detail,
                         commit,
@@ -1519,9 +1511,7 @@ impl GitClientApp {
                     let x0 = body.x0 - FLAP_W * (1.0 - slide);
                     let list = Rect::new(x0, body.y0, x0 + FLAP_W, body.y1);
                     self.history_rows = HistoryView::draw_list(
-                        scene,
-                        tr,
-                        t,
+                        &mut draw::PaintCtx::new(scene, tr, t),
                         theme,
                         list,
                         &self.model,

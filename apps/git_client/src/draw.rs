@@ -18,6 +18,32 @@ use ui::widget::Avatar;
 
 use crate::model::ChangeKind;
 
+/// The mutable resources shared by one immediate-mode paint pass.
+///
+/// Views previously threaded these three values through every entry point and
+/// helper independently. Keeping them together makes it impossible to pair a
+/// scene with the wrong text renderer or transform while a view is split into
+/// smaller drawing responsibilities.
+pub struct PaintCtx<'a> {
+    pub scene: &'a mut Scene,
+    pub text: &'a mut TextRenderer,
+    pub transform: Affine,
+}
+
+impl<'a> PaintCtx<'a> {
+    pub fn new(scene: &'a mut Scene, text: &'a mut TextRenderer, transform: Affine) -> Self {
+        Self {
+            scene,
+            text,
+            transform,
+        }
+    }
+
+    pub fn parts(&mut self) -> (&mut Scene, &mut TextRenderer, Affine) {
+        (self.scene, self.text, self.transform)
+    }
+}
+
 /// Fill a plain rectangle.
 pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &rect);
