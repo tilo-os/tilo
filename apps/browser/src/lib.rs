@@ -39,6 +39,7 @@
 pub mod actions;
 pub mod address_overlay;
 pub mod blocker;
+mod native_blocker;
 pub mod browser_widget;
 /// Zero-copy WebView compositor — needs the WPE engine's dmabuf import.
 #[cfg(feature = "wpe")]

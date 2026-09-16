@@ -31,7 +31,7 @@ Commands: `navigate {url}`, `back`, `forward`, `reload`, `stop`,
 `resize {width,height,scale_factor}`, `focus {focused}`,
 `mouse_move {x,y}`, `mouse_button {button,down,x,y}` (left/middle/right),
 `scroll {x,y,dx,dy}`, `key {key,down,ctrl,shift,alt,meta}`,
-`scripts {scripts:[string]}`, `filter_rules {rules:string,enabled:bool}`,
+`scripts {scripts:[string]}`, `filter_rules {rules:string,enabled:bool|null} (null preserves enabled state)`,
 `clear_data`, `devtools`, `shutdown`.
 
 Events: `ready {cef_version,chromium_version}`, `uri {url}`, `title {title}`,
