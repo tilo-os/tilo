@@ -96,6 +96,89 @@ struct Hotspot {
     action: OverAction,
 }
 
+/// Painting resources shared by every weather section in one pane draw.
+/// Keeping these together makes section helpers describe only their own
+/// geometry and data instead of repeating the renderer's ambient inputs.
+struct DrawCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text_renderer: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
+impl DrawCtx<'_> {
+    fn text_left(
+        &mut self,
+        text: &str,
+        x: f64,
+        y_top: f64,
+        size: f32,
+        weight: TextWeight,
+        color: Color,
+    ) {
+        self.text_renderer.draw_text_weighted(
+            self.scene,
+            text,
+            size,
+            color,
+            self.transform * Affine::translate((x, y_top)),
+            None,
+            weight,
+        );
+    }
+
+    fn text_right(
+        &mut self,
+        text: &str,
+        x_right: f64,
+        y_top: f64,
+        size: f32,
+        weight: TextWeight,
+        color: Color,
+    ) {
+        let (width, _) = self
+            .text_renderer
+            .measure_weighted(text, size, None, weight);
+        self.text_left(text, x_right - f64::from(width), y_top, size, weight, color);
+    }
+
+    fn text_center(
+        &mut self,
+        text: &str,
+        x_center: f64,
+        y_top: f64,
+        size: f32,
+        weight: TextWeight,
+        color: Color,
+    ) {
+        let (width, _) = self
+            .text_renderer
+            .measure_weighted(text, size, None, weight);
+        self.text_left(
+            text,
+            x_center - f64::from(width) / 2.0,
+            y_top,
+            size,
+            weight,
+            color,
+        );
+    }
+}
+
+/// The `Widget::handle_event` inputs the overview and its embedded search
+/// field share. The pane constructs this once at the trait boundary; internal
+/// routing then adds only the state specific to each gesture.
+pub(crate) struct OverviewEventCtx<'a> {
+    pub(crate) event: &'a WindowEvent,
+    pub(crate) scale_factor: f64,
+    pub(crate) modifiers: winit::event::Modifiers,
+    pub(crate) state: &'a mut AutoCommit,
+    pub(crate) path: &'a ObjId,
+    pub(crate) focus_target: &'a mut Option<NodeId>,
+    pub(crate) node_id: NodeId,
+    pub(crate) taffy: &'a TaffyTree<()>,
+}
+
 #[derive(Clone, Copy)]
 enum OverAction {
     SelectLocation(usize),
@@ -776,11 +859,17 @@ impl Core {
         theme: &Theme,
     ) {
         self.over_rect = rect;
+        let mut ctx = DrawCtx {
+            scene,
+            transform: t,
+            text_renderer: tr,
+            theme,
+        };
         // Below the rail threshold the overview collapses to a glanceable
         // icon column. The mode is re-derived from the allocated width every
         // frame, so a resize between side-by-side and rail reflows on its own.
         if rect.width() < RAIL_MAX_WIDTH {
-            self.draw_overview_rail(rect, scene, t, tr, theme);
+            self.draw_overview_rail(&mut ctx, rect);
             return;
         }
 
@@ -788,12 +877,13 @@ impl Core {
         let mut hot: Vec<Hotspot> = Vec::new();
 
         // Solid surface — this is a content panel, not a floating drawer.
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &rect);
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, c.surfaces.base, None, &rect);
 
         let left = rect.x0 + RP;
         let width = (rect.width() - 2.0 * RP).max(80.0);
-        let list_top = self.draw_overview_search(scene, t, tr, theme, left, width, &mut hot);
-        self.draw_overview_list(rect, scene, t, tr, theme, left, width, list_top, &mut hot);
+        let list_top = self.draw_overview_search(&mut ctx, left, width, &mut hot);
+        self.draw_overview_list(&mut ctx, rect, left, width, list_top, &mut hot);
         self.over_hotspots = hot;
     }
 
@@ -801,20 +891,17 @@ impl Core {
     /// self-drawn app-name header — the compositor owns window chrome, so
     /// this panel opens straight into its content. Returns the y the saved-
     /// place list starts at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus left/width/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_overview_search(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         left: f64,
         width: f64,
         hot: &mut Vec<Hotspot>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let large_text = theme.text_scale >= 1.5;
         let sy = self.over_rect.y0 + 16.0;
@@ -863,9 +950,7 @@ impl Core {
         // matches render as a floating dropdown over it (drawn last), so the
         // list never jumps around while typing.
         let mut y = sy + sh + 16.0;
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             "SAVED PLACES",
             left,
             y,
@@ -881,22 +966,16 @@ impl Core {
     /// delete drop zone while reordering, the scroll indicator, and finally
     /// the context menu + suggestion overlay (which must paint last so they
     /// sit above the chips).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/left/width/list_top/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_overview_list(
         &mut self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         left: f64,
         width: f64,
         list_top: f64,
         hot: &mut Vec<Hotspot>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
 
         // The chip list scrolls within the region below the header. While a
@@ -924,14 +1003,18 @@ impl Core {
 
         // Clip the scrolling list to its region.
         let clip = Rect::new(rect.x0, list_top - 2.0, rect.x1, list_bottom + 2.0);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-        self.draw_chips(scene, t, tr, theme, left, width, hot);
-        scene.pop_layer();
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip,
+        );
+        self.draw_chips(ctx, left, width, hot);
+        ctx.scene.pop_layer();
 
         if self.model.locations.is_empty() {
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 "No places yet — search above",
                 left,
                 list_top + 8.0,
@@ -943,7 +1026,7 @@ impl Core {
 
         // Foot: Delete drop zone while reordering.
         if reorder {
-            self.draw_delete_dropzone(scene, t, tr, theme, rect);
+            self.draw_delete_dropzone(ctx, rect);
         }
 
         // Scroll indicator.
@@ -953,16 +1036,16 @@ impl Core {
             let thumb_h = (track_h * (view_h / content_h)).clamp(24.0, track_h);
             let thumb_y =
                 list_top + (self.over_scroll / self.over_max_scroll) * (track_h - thumb_h);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 c.neutral[2].with_alpha_factor(0.6),
                 None,
                 &RoundedRect::new(track_x, list_top, track_x + 3.0, list_bottom, 1.5),
             );
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 c.text_dim.with_alpha_factor(0.7),
                 None,
                 &RoundedRect::new(track_x, thumb_y, track_x + 3.0, thumb_y + thumb_h, 1.5),
@@ -971,13 +1054,19 @@ impl Core {
 
         // Context menu paints last so it sits above the chips.
         if self.menu.is_some() {
-            self.draw_context_menu(scene, t, tr, theme, hot);
+            self.draw_context_menu(ctx, hot);
         }
 
         // The shared suggestion overlay floats over the list, topmost.
         if self.search.is_editing() {
             let presence = PresenceCtx::empty();
-            self.search.draw_overlay(scene, t, tr, theme, &presence);
+            self.search.draw_overlay(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                theme,
+                &presence,
+            );
         }
     }
 
@@ -985,36 +1074,27 @@ impl Core {
     /// (condition icon + temperature) plus an expand chip at the top. Clicking
     /// a city selects it; clicking the chip restores the full list. Rendered
     /// whenever the overview is allocated less than [`RAIL_MAX_WIDTH`].
-    fn draw_overview_rail(
-        &mut self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_overview_rail(&mut self, ctx: &mut DrawCtx<'_>, rect: Rect) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mut hot: Vec<Hotspot> = Vec::new();
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &rect);
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, c.surfaces.base, None, &rect);
         // The rail has no search field; drop any stale rect so a press can't
         // land on a phantom field from the previous (wide) layout.
         self.search_field_rect = Rect::ZERO;
 
-        let list_top = self.draw_rail_header(scene, t, theme, rect, &mut hot);
-        self.draw_rail_list(scene, t, tr, theme, rect, list_top, &mut hot);
+        let list_top = self.draw_rail_header(ctx, rect, &mut hot);
+        self.draw_rail_list(ctx, rect, list_top, &mut hot);
         self.over_hotspots = hot;
     }
 
     /// The rail's expand chip + the separator beneath it. Returns the y the
     /// scrolling city column starts at.
-    fn draw_rail_header(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        rect: Rect,
-        hot: &mut Vec<Hotspot>,
-    ) -> f64 {
+    fn draw_rail_header(&self, ctx: &mut DrawCtx<'_>, rect: Rect, hot: &mut Vec<Hotspot>) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = f64::midpoint(rect.x0, rect.x1);
 
@@ -1060,22 +1140,15 @@ impl Core {
 
     /// The scrolling city column: one slot per saved place (icon + temp),
     /// the selection/hover highlight, and the scroll indicator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/list_top/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_rail_list(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
         list_top: f64,
         hot: &mut Vec<Hotspot>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let cx = f64::midpoint(rect.x0, rect.x1);
         let list_bottom = rect.y1 - 10.0;
         let view_h = (list_bottom - list_top).max(0.0);
         let count = self.model.locations.len();
@@ -1086,12 +1159,18 @@ impl Core {
         self.over_list_top = scrolled_top;
 
         let clip = Rect::new(rect.x0, list_top - 2.0, rect.x1, list_bottom + 2.0);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip,
+        );
         for (i, loc) in self.model.locations.iter().enumerate() {
             let sy = scrolled_top + i as f64 * RAIL_SLOT_H;
-            self.draw_rail_slot(scene, t, tr, theme, rect, cx, sy, i, loc, hot);
+            self.draw_rail_slot(ctx, rect, sy, i, loc, hot);
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
 
         if self.over_max_scroll > 1.0 {
             let track_x = rect.x1 - 4.0;
@@ -1099,9 +1178,9 @@ impl Core {
             let thumb_h = (track_h * (view_h / content_h)).clamp(20.0, track_h);
             let thumb_y =
                 list_top + (self.over_scroll / self.over_max_scroll) * (track_h - thumb_h);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 c.text_dim.with_alpha_factor(0.6),
                 None,
                 &RoundedRect::new(track_x, thumb_y, track_x + 2.5, thumb_y + thumb_h, 1.25),
@@ -1112,24 +1191,20 @@ impl Core {
     /// One rail slot: the selection/hover highlight, the condition icon
     /// (or a dash before the first fetch), the rounded temperature, and its
     /// hit region.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/cx/sy/i/loc/hot identify where and what to paint and where to record the hit region — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_rail_slot(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        cx: f64,
         sy: f64,
         i: usize,
         loc: &SavedLocation,
         hot: &mut Vec<Hotspot>,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
+        let cx = f64::midpoint(rect.x0, rect.x1);
         let slot = Rect::new(
             rect.x0 + 6.0,
             sy + 4.0,
@@ -1174,9 +1249,7 @@ impl Core {
                 theme,
             );
             let temp = snap.temp_in(snap.current.temperature, self.units).round() as i64;
-            text_center(
-                scene,
-                tr,
+            ctx.text_center(
                 &format!("{temp}°"),
                 cx,
                 slot.y1 - 18.0,
@@ -1185,9 +1258,7 @@ impl Core {
                 c.text_primary,
             );
         } else {
-            text_center(
-                scene,
-                tr,
+            ctx.text_center(
                 "—",
                 cx,
                 slot.y0 + 14.0,
@@ -1202,17 +1273,8 @@ impl Core {
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_chips(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        w: f64,
-        hot: &mut Vec<Hotspot>,
-    ) {
+    fn draw_chips(&self, ctx: &mut DrawCtx<'_>, x: f64, w: f64, hot: &mut Vec<Hotspot>) {
+        let theme = ctx.theme;
         let units = self.units;
         let metrics = self.list_metrics();
         let dragging = self.reorder.from_index();
@@ -1227,9 +1289,9 @@ impl Core {
         // reflowed gap (the live target slot) to mark where the chip will drop.
         if let Some(gap) = self.reorder.insertion() {
             let gy = slot_y(gap) - self.over_item_gap / 2.0;
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 self.accent(theme),
                 None,
                 &RoundedRect::new(x, gy - 1.5, x + w, gy + 1.5, 1.5),
@@ -1244,10 +1306,10 @@ impl Core {
             let chip = Rect::new(x, y, x + w, y + self.over_item_h);
             let swipe_dx = self.swipe_dx_for(i);
             if swipe_dx > 0.0 {
-                Self::draw_swipe_backing(scene, t, theme, chip);
+                Self::draw_swipe_backing(ctx, chip);
             }
-            let chip_t = t * Affine::translate((-swipe_dx, 0.0));
-            self.draw_chip(scene, chip_t, tr, theme, chip, loc, i, units);
+            let chip_t = ctx.transform * Affine::translate((-swipe_dx, 0.0));
+            self.draw_chip(ctx, chip_t, chip, loc, i, units);
             hot.push(Hotspot {
                 rect: chip,
                 action: OverAction::PressChip(i),
@@ -1264,8 +1326,15 @@ impl Core {
         {
             let sh =
                 RoundedRect::from_rect(chip.inset(-2.0), f64::from(theme.tokens.radii.md) + 2.0);
-            scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
-            self.draw_chip(scene, t, tr, theme, chip, loc, i, units);
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                Color::from_rgba8(0, 0, 0, 60),
+                None,
+                &sh,
+            );
+            let transform = ctx.transform;
+            self.draw_chip(ctx, transform, chip, loc, i, units);
         }
     }
 
@@ -1281,18 +1350,17 @@ impl Core {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_chip(
         &self,
-        scene: &mut Scene,
+        ctx: &mut DrawCtx<'_>,
         t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         chip: Rect,
         loc: &SavedLocation,
         index: usize,
         units: Units,
     ) {
+        let scene = &mut *ctx.scene;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let selected = index == self.model.selected;
         let hovered = chip.contains(self.last_mouse);
@@ -1333,9 +1401,7 @@ impl Core {
                 theme,
             );
         }
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &loc.name,
             chip.x0 + 58.0,
             chip.y0 + if large_text { 13.0 } else { 12.0 },
@@ -1355,9 +1421,7 @@ impl Core {
         } else {
             loc.country.clone()
         };
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &sub,
             chip.x0 + 58.0,
             chip.y0 + if large_text { 58.0 } else { 35.0 },
@@ -1367,9 +1431,7 @@ impl Core {
         );
         if let Some(snap) = self.model.snapshot_for(loc.id) {
             let temp = snap.temp_in(snap.current.temperature, units).round() as i64;
-            text_right(
-                scene,
-                tr,
+            ctx.text_right(
                 &format!("{temp}°"),
                 chip.x1 - 14.0,
                 chip.y0 + if large_text { 27.0 } else { 16.0 },
@@ -1378,9 +1440,7 @@ impl Core {
                 c.text_primary,
             );
         } else {
-            text_right(
-                scene,
-                tr,
+            ctx.text_right(
                 "—",
                 chip.x1 - 16.0,
                 chip.y0 + 20.0,
@@ -1391,7 +1451,10 @@ impl Core {
         }
     }
 
-    fn draw_swipe_backing(scene: &mut Scene, t: Affine, theme: &Theme, chip: Rect) {
+    fn draw_swipe_backing(ctx: &mut DrawCtx<'_>, chip: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, t, c.semantic.danger, None, &shape);
@@ -1404,14 +1467,10 @@ impl Core {
         Icon::Trash.draw(scene, t, icon_r, Color::WHITE);
     }
 
-    fn draw_delete_dropzone(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
+    fn draw_delete_dropzone(&self, ctx: &mut DrawCtx<'_>, rect: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let zone = self.delete_zone_rect();
         let w = (rect.width() - 2.0 * RP).max(80.0);
@@ -1442,9 +1501,7 @@ impl Core {
         } else {
             c.semantic.danger
         };
-        text_center(
-            scene,
-            tr,
+        ctx.text_center(
             "Delete",
             zone.x0 + w / 2.0,
             zone.y1 - 26.0,
@@ -1454,14 +1511,9 @@ impl Core {
         );
     }
 
-    fn draw_context_menu(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hot: &mut Vec<Hotspot>,
-    ) {
+    fn draw_context_menu(&self, ctx: &mut DrawCtx<'_>, hot: &mut Vec<Hotspot>) {
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let Some(menu) = self.menu.as_ref() else {
             return;
         };
@@ -1476,21 +1528,22 @@ impl Core {
         let my = menu.anchor.y.min(area.y1 - mh - 4.0).max(area.y0 + 4.0);
         let panel = Rect::new(mx, my, mx + mw, my + mh);
         let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
             t,
             Color::from_rgba8(0, 0, 0, 80),
             None,
             &RoundedRect::from_rect(panel.inset(-3.0), f64::from(theme.tokens.radii.md) + 3.0),
         );
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
             t,
             c.surfaces.overlay.with_alpha_factor(0.98),
             None,
             &shape,
         );
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+        ctx.scene
+            .stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
         for (i, action) in menu.items.iter().enumerate() {
             let ry = my + pad + i as f64 * row_h;
             let row = Rect::new(mx + pad, ry, mx + mw - pad, ry + row_h);
@@ -1500,7 +1553,7 @@ impl Core {
                 } else {
                     c.neutral[2]
                 };
-                scene.fill(
+                ctx.scene.fill(
                     Fill::NonZero,
                     t,
                     hl,
@@ -1522,13 +1575,11 @@ impl Core {
                 icon_top + icon_size,
             );
             match action {
-                EntryAction::Delete => Icon::Trash.draw(scene, t, icon_r, text_color),
-                EntryAction::MoveToTop => Icon::ChevronUp.draw(scene, t, icon_r, text_color),
-                EntryAction::Refresh => Icon::Refresh.draw(scene, t, icon_r, text_color),
+                EntryAction::Delete => Icon::Trash.draw(ctx.scene, t, icon_r, text_color),
+                EntryAction::MoveToTop => Icon::ChevronUp.draw(ctx.scene, t, icon_r, text_color),
+                EntryAction::Refresh => Icon::Refresh.draw(ctx.scene, t, icon_r, text_color),
             }
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 action.label(),
                 row.x0 + if large_text { 44.0 } else { 32.0 },
                 row.y0 + row_h / 2.0 - if large_text { 14.0 } else { 8.0 },
@@ -1601,38 +1652,15 @@ impl Core {
     }
 
     /// Handle an event routed to the overview pane. Returns true if consumed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
-    )]
-    pub fn handle_overview_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    pub(crate) fn handle_overview_event(&mut self, mut ctx: OverviewEventCtx<'_>) -> bool {
         // Keep the shared field placed so its overlay hit-tests correctly.
         self.search.apply_layout_external(self.search_field_rect);
 
-        if let Some(consumed) = self.route_overview_search_field(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if let Some(consumed) = self.route_overview_search_field(&mut ctx) {
             return consumed;
         }
 
-        let (handled, _changed) = self.dispatch_overview_event(event, scale_factor);
+        let (handled, _changed) = self.dispatch_overview_event(ctx.event, ctx.scale_factor);
         handled
     }
 
@@ -1642,21 +1670,7 @@ impl Core {
     /// `Some(consumed)` when the field fully handled the event (the caller
     /// should return immediately), or `None` to fall through to the list's
     /// own gesture handling.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
-    )]
-    fn route_overview_search_field(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> Option<bool> {
+    fn route_overview_search_field(&mut self, ctx: &mut OverviewEventCtx<'_>) -> Option<bool> {
         use winit::event::{ElementState, MouseButton};
 
         // A press over the field while not editing begins an edit.
@@ -1664,7 +1678,7 @@ impl Core {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = ctx.event
             && !self.search.is_editing()
             && self.search_field_rect.contains(self.last_mouse)
         {
@@ -1679,15 +1693,15 @@ impl Core {
         let before = self.search.text().to_string();
         let mut ac_handled = false;
         self.search.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
+            ctx.event,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.path,
             &mut ac_handled,
-            focus_target,
-            node_id,
-            taffy,
+            ctx.focus_target,
+            ctx.node_id,
+            ctx.taffy,
         );
         match self.search.take_outcome() {
             AutocompleteOutcome::Accepted(value) => {
@@ -1964,23 +1978,29 @@ impl Core {
         theme: &Theme,
     ) {
         self.detail_rect = rect;
-        self.draw_sky_background(scene, t, theme, rect);
+        let mut ctx = DrawCtx {
+            scene,
+            transform: t,
+            text_renderer: tr,
+            theme,
+        };
+        self.draw_sky_background(&mut ctx, rect);
 
         let Some(loc) = self.model.selected_location().cloned() else {
-            self.draw_detail_zero_state(rect, scene, t, tr, theme);
+            self.draw_detail_zero_state(&mut ctx, rect);
             return;
         };
         let snap_opt = self.model.selected_snapshot().cloned();
-        let hy = self.draw_detail_header(rect, scene, t, tr, theme, &loc, snap_opt.as_ref());
+        let hy = self.draw_detail_header(&mut ctx, rect, &loc, snap_opt.as_ref());
 
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let right = rect.x1 - PAD;
         let large_text = theme.text_scale >= 1.5;
         let body_top = hy + if large_text { 142.0 } else { 74.0 };
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            t,
+            ctx.transform,
             c.border_standard.with_alpha_factor(0.6),
             None,
             &Rect::new(mx, body_top - 10.0, right, body_top - 9.0),
@@ -1988,9 +2008,7 @@ impl Core {
 
         let Some(snap) = snap_opt else {
             self.max_scroll = 0.0;
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 "Fetching current conditions…",
                 mx,
                 body_top + 24.0,
@@ -2008,26 +2026,22 @@ impl Core {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
 
         let clip = Rect::new(rect.x0, body_top - 8.0, rect.x1, rect.y1);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-        let mut y = body_top - self.scroll;
-        y = self.draw_detail_hero(rect, scene, t, tr, theme, y, &snap);
-        y = self.draw_detail_tiles(rect, scene, t, tr, theme, y, &snap, &layout);
-        y = self.draw_detail_hourly(rect, scene, t, tr, theme, y, &snap);
-        y = self.draw_detail_days(rect, scene, t, tr, theme, y, &snap, &layout);
-        self.draw_detail_air_quality_section(rect, scene, t, tr, theme, y, &layout);
-        scene.pop_layer();
-
-        self.draw_detail_footer(
-            rect,
-            scene,
-            t,
-            tr,
-            theme,
-            mx,
-            body_top,
-            view_h,
-            layout.body_h,
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip,
         );
+        let mut y = body_top - self.scroll;
+        y = self.draw_detail_hero(&mut ctx, rect, y, &snap);
+        y = self.draw_detail_tiles(&mut ctx, rect, y, &snap, &layout);
+        y = self.draw_detail_hourly(&mut ctx, rect, y, &snap);
+        y = self.draw_detail_days(&mut ctx, rect, y, &snap, &layout);
+        self.draw_detail_air_quality_section(&mut ctx, rect, y, &layout);
+        ctx.scene.pop_layer();
+
+        self.draw_detail_footer(&mut ctx, rect, mx, body_top, view_h, layout.body_h);
     }
 
     /// Composed zero-state: a friendly weather glyph over an inviting
@@ -2035,14 +2049,10 @@ impl Core {
     /// empty gradient (HIG §7). The copy differs by whether the user has
     /// any saved places: a fresh vault points at the search; an existing
     /// roster asks them to pick a city.
-    fn draw_detail_zero_state(
-        &mut self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_detail_zero_state(&mut self, ctx: &mut DrawCtx<'_>, rect: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = rect.center().x;
         let anchor = rect.y0 + rect.height() * 0.34;
@@ -2066,9 +2076,7 @@ impl Core {
                 "Choose a saved place on the left to see its forecast.",
             )
         };
-        text_center(
-            scene,
-            tr,
+        ctx.text_center(
             headline,
             cx,
             anchor + glyph + 20.0,
@@ -2076,9 +2084,7 @@ impl Core {
             TextWeight::Bold,
             c.text_primary,
         );
-        text_center(
-            scene,
-            tr,
+        ctx.text_center(
             sub,
             cx,
             anchor + glyph + 54.0,
@@ -2093,58 +2099,56 @@ impl Core {
     /// Place name/subtitle, the refresh button, and (once a snapshot has
     /// landed) its fetch date/local time. Returns the y the divider under
     /// the header sits at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/loc/snap identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_header(
         &mut self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         loc: &SavedLocation,
         snap: Option<&WeatherSnapshot>,
     ) -> f64 {
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let top_pad = if self.detail_reserve_back {
             PAD + BACK_RESERVE
         } else {
             PAD
         };
-        let mx = rect.x0 + PAD;
-        let right = rect.x1 - PAD;
-        let hy = rect.y0 + top_pad;
-
         let large_text = theme.text_scale >= 1.5;
-        text_left(
-            scene,
-            tr,
+        let header = DetailHeaderLayout {
+            left: rect.x0 + PAD,
+            right: rect.x1 - PAD,
+            top: rect.y0 + top_pad,
+            refresh_width: if large_text { 44.0 } else { 34.0 },
+            large_text,
+        };
+        ctx.text_left(
             &loc.name,
-            mx,
-            hy,
+            header.left,
+            header.top,
             if large_text { 20.0 } else { 26.0 },
             TextWeight::Bold,
             c.text_primary,
         );
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &loc.subtitle(),
-            mx,
-            hy + if large_text { 48.0 } else { 32.0 },
+            header.left,
+            header.top + if large_text { 48.0 } else { 32.0 },
             if large_text { 12.0 } else { 13.0 },
             TextWeight::Regular,
             c.text_dim,
         );
 
         // Refresh button (top-right) — re-fetches this city's forecast.
-        let rb = if large_text { 44.0 } else { 34.0 };
-        let refresh = Rect::new(right - rb, hy - 2.0, right, hy - 2.0 + rb);
+        let refresh = Rect::new(
+            header.right - header.refresh_width,
+            header.top - 2.0,
+            header.right,
+            header.top - 2.0 + header.refresh_width,
+        );
         let rshape = RoundedRect::from_rect(refresh, f64::from(theme.tokens.radii.md));
         let rhover = refresh.contains(self.last_mouse);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
             t,
             if rhover {
@@ -2155,42 +2159,48 @@ impl Core {
             None,
             &rshape,
         );
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &rshape);
-        Icon::Refresh.draw(scene, t, refresh.inset(-8.0), c.text_primary);
+        ctx.scene
+            .stroke(&Stroke::new(1.0), t, c.border_standard, None, &rshape);
+        Icon::Refresh.draw(ctx.scene, t, refresh.inset(-8.0), c.text_primary);
         self.refresh_btn = refresh;
 
+        self.draw_detail_header_status(ctx, snap, &header);
+        header.top
+    }
+
+    fn draw_detail_header_status(
+        &self,
+        ctx: &mut DrawCtx<'_>,
+        snap: Option<&WeatherSnapshot>,
+        header: &DetailHeaderLayout,
+    ) {
+        let c = &ctx.theme.tokens.colors;
         if let Some(snap) = snap {
             let cur = &snap.current;
             let date_str = fmt_date(&cur.time);
             let time_str = hhmm(&cur.time);
-            if large_text {
-                text_left(
-                    scene,
-                    tr,
+            if header.large_text {
+                ctx.text_left(
                     &format!("{date_str} · Local time {time_str}"),
-                    mx,
-                    hy + 82.0,
+                    header.left,
+                    header.top + 82.0,
                     11.0,
                     TextWeight::Medium,
                     c.text_dim,
                 );
             } else {
-                text_right(
-                    scene,
-                    tr,
+                ctx.text_right(
                     &date_str,
-                    right - rb - 12.0,
-                    hy + 2.0,
+                    header.right - header.refresh_width - 12.0,
+                    header.top + 2.0,
                     14.0,
                     TextWeight::Medium,
                     c.text_primary,
                 );
-                text_right(
-                    scene,
-                    tr,
+                ctx.text_right(
                     &format!("Local time {time_str}"),
-                    right - rb - 12.0,
-                    hy + 24.0,
+                    header.right - header.refresh_width - 12.0,
+                    header.top + 24.0,
                     12.0,
                     TextWeight::Regular,
                     c.text_dim,
@@ -2198,34 +2208,31 @@ impl Core {
             }
         }
         if self.status.starts_with("Couldn't") || self.status.starts_with("Offline") {
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 &self.status,
-                mx,
-                hy + if large_text { 112.0 } else { 51.0 },
-                if large_text { 10.0 } else { 11.0 },
+                header.left,
+                header.top + if header.large_text { 112.0 } else { 51.0 },
+                if header.large_text { 10.0 } else { 11.0 },
                 TextWeight::Medium,
                 c.semantic.warning,
             );
         }
-        hy
     }
 
     /// The hero card: condition glyph, big temperature, condition label,
     /// "feels like", and the sunrise/sunset arc (or a compact fallback on a
     /// narrow pane). Returns the y cursor for the next section.
-    #[allow(clippy::too_many_arguments)]
     fn draw_detail_hero(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2264,9 +2271,7 @@ impl Core {
             TextWeight::Bold,
         );
         let (tnw, _) = tr.measure_weighted(&temp_str, temp_size, None, TextWeight::Bold);
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             units.degree_glyph(),
             temp_x + f64::from(tnw) + 4.0,
             hero.y0 + if large_text { 32.0 } else { 40.0 },
@@ -2275,9 +2280,7 @@ impl Core {
             c.text_dim,
         );
         let cond = Sky::label(cur.weather_code);
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             cond,
             temp_x + 2.0,
             hero.y0 + if large_text { 140.0 } else { 114.0 },
@@ -2286,9 +2289,7 @@ impl Core {
             c.text_primary,
         );
         let feels = snap.temp_in(cur.apparent, units).round() as i64;
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &format!("Feels like {feels}{}", units.temp_suffix()),
             temp_x + 2.0,
             hero.y0 + if large_text { 184.0 } else { 140.0 },
@@ -2298,7 +2299,7 @@ impl Core {
         );
 
         if let Some(today) = snap.daily.first() {
-            Self::draw_hero_sun(scene, t, tr, theme, hero, mw, cur, today);
+            Self::draw_hero_sun(ctx, hero, mw, cur, today);
         }
 
         y + hero_h + if large_text { 18.0 } else { SECTION_GAP }
@@ -2306,30 +2307,21 @@ impl Core {
 
     /// The sunrise/sunset arc on a wide pane, or the compact Sunrise/Sunset
     /// label fallback on a narrow one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus hero/mw/cur/today identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_hero_sun(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         hero: Rect,
         mw: f64,
         cur: &CurrentConditions,
         today: &DayForecast,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let sr = hhmm(&today.sunrise);
         let ss = hhmm(&today.sunset);
         let large_text = theme.text_scale >= 1.5;
         if mw >= 560.0 && !large_text {
             Self::draw_sun_arc(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx,
                 Rect::new(
                     hero.x1 - 226.0,
                     hero.y0 + 22.0,
@@ -2347,72 +2339,66 @@ impl Core {
             } else {
                 hero.x1 - 18.0
             };
-            let draw = if large_text { text_left } else { text_right };
-            draw(
-                scene,
-                tr,
-                "Sunrise",
-                sx,
-                hero.y1 - if large_text { 70.0 } else { 60.0 },
-                10.0,
-                TextWeight::Semibold,
-                c.text_dim,
-            );
-            draw(
-                scene,
-                tr,
-                &sr,
-                sx,
-                hero.y1 - if large_text { 42.0 } else { 46.0 },
-                14.0,
-                TextWeight::Medium,
-                c.text_primary,
-            );
             let sunset_x = if large_text {
                 hero.center().x + 14.0
             } else {
                 sx
             };
-            draw(
-                scene,
-                tr,
-                "Sunset",
-                sunset_x,
-                hero.y1 - if large_text { 70.0 } else { 26.0 },
-                10.0,
-                TextWeight::Semibold,
-                c.text_dim,
-            );
-            draw(
-                scene,
-                tr,
-                &ss,
-                sunset_x,
-                hero.y1 - if large_text { 42.0 } else { 12.0 },
-                14.0,
-                TextWeight::Medium,
-                c.text_primary,
-            );
+            for (text, x, y, size, weight, color) in [
+                (
+                    "Sunrise",
+                    sx,
+                    hero.y1 - if large_text { 70.0 } else { 60.0 },
+                    10.0,
+                    TextWeight::Semibold,
+                    c.text_dim,
+                ),
+                (
+                    sr.as_str(),
+                    sx,
+                    hero.y1 - if large_text { 42.0 } else { 46.0 },
+                    14.0,
+                    TextWeight::Medium,
+                    c.text_primary,
+                ),
+                (
+                    "Sunset",
+                    sunset_x,
+                    hero.y1 - if large_text { 70.0 } else { 26.0 },
+                    10.0,
+                    TextWeight::Semibold,
+                    c.text_dim,
+                ),
+                (
+                    ss.as_str(),
+                    sunset_x,
+                    hero.y1 - if large_text { 42.0 } else { 12.0 },
+                    14.0,
+                    TextWeight::Medium,
+                    c.text_primary,
+                ),
+            ] {
+                if large_text {
+                    ctx.text_left(text, x, y, size, weight, color);
+                } else {
+                    ctx.text_right(text, x, y, size, weight, color);
+                }
+            }
         }
     }
 
     /// The metric-tile grid (wind/humidity/precip/pressure/UV). Returns the
     /// y cursor for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/snap/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_tiles(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
         layout: &DetailBodyLayout,
     ) -> f64 {
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2466,10 +2452,8 @@ impl Core {
             let ty = y + row as f64 * (layout.tile_h + gap);
             let tile = Rect::new(tx, ty, tx + tw, ty + layout.tile_h);
             let large_text = theme.text_scale >= 1.5;
-            card(scene, t, tile, theme);
-            text_left(
-                scene,
-                tr,
+            card(ctx.scene, t, tile, theme);
+            ctx.text_left(
                 label,
                 tile.x0 + 12.0,
                 tile.y0 + if large_text { 14.0 } else { 12.0 },
@@ -2477,9 +2461,7 @@ impl Core {
                 TextWeight::Semibold,
                 c.text_dim,
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 value,
                 tile.x0 + 12.0,
                 tile.y0 + if large_text { 44.0 } else { 30.0 },
@@ -2487,9 +2469,7 @@ impl Core {
                 TextWeight::Bold,
                 c.text_primary,
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 sub,
                 tile.x0 + 12.0,
                 tile.y1 - if large_text { 32.0 } else { 22.0 },
@@ -2504,17 +2484,14 @@ impl Core {
 
     /// The 24-hour scrollable strip card. Returns the y cursor for the
     /// next section.
-    #[allow(clippy::too_many_arguments)]
     fn draw_detail_hourly(
         &mut self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2524,10 +2501,8 @@ impl Core {
         let large_text = theme.text_scale >= 1.5;
         let hourly_h = if large_text { 286.0 } else { HOURLY_CARD_H };
         let hcard = Rect::new(mx, y, mx + mw, y + hourly_h);
-        card(scene, t, hcard, theme);
-        text_left(
-            scene,
-            tr,
+        card(ctx.scene, ctx.transform, hcard, theme);
+        ctx.text_left(
             "Next 24 hours",
             hcard.x0 + 16.0,
             hcard.y0 + 12.0,
@@ -2536,9 +2511,7 @@ impl Core {
             c.text_primary,
         );
         if self.hourly_max_scroll > 1.0 {
-            text_right(
-                scene,
-                tr,
+            ctx.text_right(
                 "scroll →",
                 hcard.x1 - 16.0,
                 hcard.y0 + 16.0,
@@ -2579,19 +2552,23 @@ impl Core {
         self.hourly_scroll_x = self.hourly_scroll_x.clamp(0.0, self.hourly_max_scroll);
 
         chart::draw_hourly_strip(
-            scene,
-            t,
-            band,
-            &cols,
-            col_w,
-            self.hourly_scroll_x,
-            accent,
-            theme,
-            tr,
-            "°",
+            &mut chart::ChartPaintCtx {
+                scene: ctx.scene,
+                transform: ctx.transform,
+                theme,
+                text_renderer: ctx.text_renderer,
+            },
+            &chart::HourlyStrip {
+                band,
+                columns: &cols,
+                column_width: col_w,
+                scroll_x: self.hourly_scroll_x,
+                accent,
+                temperature_suffix: "°",
+            },
         );
 
-        self.draw_hourly_scrollbar(scene, t, theme, hcard, band, content_w);
+        self.draw_hourly_scrollbar(ctx, hcard, band, content_w);
 
         y + hourly_h + if large_text { 18.0 } else { SECTION_GAP }
     }
@@ -2600,13 +2577,14 @@ impl Core {
     /// when the 24 columns overflow the band.
     fn draw_hourly_scrollbar(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         hcard: Rect,
         band: Rect,
         content_w: f64,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let hmetrics = ScrollMetrics::new(content_w, band.width(), self.hourly_scroll_x);
         let track = Rect::new(band.x0, hcard.y1 - 12.0, band.x1, hcard.y1 - 6.0);
@@ -2638,31 +2616,23 @@ impl Core {
 
     /// The 7-day forecast card: header + one row per day. Returns the y
     /// cursor for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/snap/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_days(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
         layout: &DetailBodyLayout,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
         let units = self.units;
 
         let dcard = Rect::new(mx, y, mx + mw, y + layout.days_block_h);
-        card(scene, t, dcard, theme);
-        text_left(
-            scene,
-            tr,
+        card(ctx.scene, ctx.transform, dcard, theme);
+        ctx.text_left(
             "7-day forecast",
             dcard.x0 + 16.0,
             dcard.y0 + 12.0,
@@ -2685,21 +2655,18 @@ impl Core {
         let rows_top = dcard.y0 + layout.days_header_h;
         for (i, d) in snap.daily.iter().enumerate() {
             let ry = rows_top + i as f64 * layout.day_row_h;
-            Self::draw_day_row(
-                scene,
-                t,
-                tr,
-                theme,
-                &geo,
-                i,
-                d,
-                ry,
-                layout.day_row_h,
-                snap,
+            let row = DayRowPaint {
+                geometry: &geo,
+                index: i,
+                forecast: d,
+                y: ry,
+                height: layout.day_row_h,
+                snapshot: snap,
                 units,
-                wmin,
-                wmax,
-            );
+                week_min: wmin,
+                week_max: wmax,
+            };
+            Self::draw_day_row(ctx, &row);
         }
 
         y + layout.days_block_h + SECTION_GAP
@@ -2708,58 +2675,31 @@ impl Core {
     /// One row of the 7-day forecast: day label, condition icon (+ label
     /// when there's room), UV/wind extras (when there's room), precip
     /// probability (when there's room), and the lo/hi temperature bar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row, needing scene/t/theme/tr (the universal draw-context) plus geo/i/d/ry/snap/units/wmin/wmax — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        i: usize,
-        d: &DayForecast,
-        ry: f64,
-        row_h: f64,
-        snap: &WeatherSnapshot,
-        units: Units,
-        wmin: f64,
-        wmax: f64,
-    ) {
-        let cy = ry + row_h / 2.0;
-        Self::draw_day_row_label(scene, t, tr, theme, geo, i, d, ry, cy);
-        if geo.show_extras {
-            Self::draw_day_row_extras(scene, t, tr, theme, geo, d, snap, units, cy);
+    fn draw_day_row(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>) {
+        let cy = row.y + row.height / 2.0;
+        Self::draw_day_row_label(ctx, row, cy);
+        if row.geometry.show_extras {
+            Self::draw_day_row_extras(ctx, row, cy);
         }
-        Self::draw_day_row_temps(scene, t, tr, theme, geo, d, snap, units, cy, wmin, wmax);
+        Self::draw_day_row_temps(ctx, row, cy);
     }
 
     /// The row divider, the "Today"/"Tomorrow"/weekday label, the condition
     /// icon, and (when there's room) the condition text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's leading label cluster, needing scene/t/theme/tr (the universal draw-context) plus geo/i/d/ry/cy — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_label(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        i: usize,
-        d: &DayForecast,
-        ry: f64,
-        cy: f64,
-    ) {
+    fn draw_day_row_label(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let geo = row.geometry;
+        let i = row.index;
+        let d = row.forecast;
         let c = &theme.tokens.colors;
         if i > 0 {
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 t,
                 c.border_standard.with_alpha_factor(0.5),
                 None,
-                &Rect::new(geo.inner_l, ry, geo.inner_r, ry + 1.0),
+                &Rect::new(geo.inner_l, row.y, geo.inner_r, row.y + 1.0),
             );
         }
         let day_label = match i {
@@ -2767,9 +2707,7 @@ impl Core {
             1 => "Tomorrow".to_string(),
             _ => weekday(&d.date),
         };
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &day_label,
             geo.inner_l,
             cy - 8.0,
@@ -2779,7 +2717,7 @@ impl Core {
         );
         let dsky = Sky::from_code(d.weather_code);
         icon::draw_icon(
-            scene,
+            ctx.scene,
             t,
             dsky,
             true,
@@ -2787,9 +2725,7 @@ impl Core {
             theme,
         );
         if geo.show_cond {
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 Sky::label(d.weather_code),
                 geo.cond_x,
                 cy - 7.0,
@@ -2802,23 +2738,14 @@ impl Core {
 
     /// The UV-index and wind-max extras column, shown only when the row is
     /// wide enough to fit them without crowding the condition text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's extras column, needing scene/t/theme/tr (the universal draw-context) plus geo/d/snap/units/cy — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_extras(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        d: &DayForecast,
-        snap: &WeatherSnapshot,
-        units: Units,
-        cy: f64,
-    ) {
+    fn draw_day_row_extras(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let geo = row.geometry;
+        let d = row.forecast;
         let c = &theme.tokens.colors;
-        let (uv_label, wind_label) = day_extra_labels(d, snap, units);
+        let (uv_label, wind_label) = day_extra_labels(d, row.snapshot, row.units);
         // UV dot tinted by severity so the number reads at a glance.
         let uv_dot = if d.uv_index_max < 3.0 {
             c.semantic.info
@@ -2834,9 +2761,7 @@ impl Core {
             None,
             &Circle::new(Point::new(geo.extras_x + 4.0, cy), 3.0),
         );
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &uv_label,
             geo.extras_x + 12.0,
             cy - 7.0,
@@ -2844,9 +2769,7 @@ impl Core {
             TextWeight::Medium,
             c.text_dim,
         );
-        text_right(
-            scene,
-            tr,
+        ctx.text_right(
             &wind_label,
             geo.extras_right,
             cy - 7.0,
@@ -2858,35 +2781,21 @@ impl Core {
 
     /// The precip-probability read-out (when there's room) and the lo/hi
     /// temperature bar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's precip + temperature bar, needing scene/t/theme/tr (the universal draw-context) plus geo/d/snap/units/cy/wmin/wmax — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_temps(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        d: &DayForecast,
-        snap: &WeatherSnapshot,
-        units: Units,
-        cy: f64,
-        wmin: f64,
-        wmax: f64,
-    ) {
+    fn draw_day_row_temps(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let geo = row.geometry;
+        let d = row.forecast;
         let c = &theme.tokens.colors;
         if geo.show_precip {
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 t,
                 c.semantic.info,
                 None,
                 &Circle::new(Point::new(geo.precip_left, cy), 3.0),
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 &format!("{}%", d.precip_probability.round() as i64),
                 geo.precip_left + 8.0,
                 cy - 7.0,
@@ -2895,11 +2804,9 @@ impl Core {
                 c.semantic.info,
             );
         }
-        let lo = snap.temp_in(d.temp_min, units).round() as i64;
-        let hi = snap.temp_in(d.temp_max, units).round() as i64;
-        text_right(
-            scene,
-            tr,
+        let lo = row.snapshot.temp_in(d.temp_min, row.units).round() as i64;
+        let hi = row.snapshot.temp_in(d.temp_max, row.units).round() as i64;
+        ctx.text_right(
             &format!("{lo}°"),
             geo.lo_x,
             cy - 8.0,
@@ -2908,18 +2815,19 @@ impl Core {
             c.text_dim,
         );
         let track = RoundedRect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0, 3.0);
-        scene.fill(Fill::NonZero, t, c.neutral[2], None, &track);
-        let f0 = ((d.temp_min - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
-        let f1 = ((d.temp_max - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
+        ctx.scene.fill(Fill::NonZero, t, c.neutral[2], None, &track);
+        let week_min = row.week_min;
+        let week_span = row.week_max - week_min;
+        let f0 = ((d.temp_min - week_min) / week_span).clamp(0.0, 1.0);
+        let f1 = ((d.temp_max - week_min) / week_span).clamp(0.0, 1.0);
         let seg_x0 = geo.bar_x0 + f0 * (geo.bar_x1 - geo.bar_x0);
         let seg_x1 = geo.bar_x0 + f1 * (geo.bar_x1 - geo.bar_x0);
         let seg = RoundedRect::new(seg_x0, cy - 3.0, seg_x1.max(seg_x0 + 4.0), cy + 3.0, 3.0);
         let grad = Gradient::new_linear(Point::new(geo.bar_x0, cy), Point::new(geo.bar_x1, cy))
             .with_stops([(0.0_f32, c.semantic.info), (1.0_f32, c.semantic.warning)]);
-        scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &seg);
-        text_left(
-            scene,
-            tr,
+        ctx.scene
+            .fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &seg);
+        ctx.text_left(
             &format!("{hi}°"),
             geo.bar_x1 + 8.0,
             cy - 8.0,
@@ -2930,20 +2838,14 @@ impl Core {
     }
 
     /// The air-quality card: header + the AQI hero and pollutant tiles.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_air_quality_section(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         layout: &DetailBodyLayout,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2953,10 +2855,8 @@ impl Core {
         let aq = self.model.selected_air_quality().cloned();
 
         let acard = Rect::new(mx, y, mx + mw, y + layout.aq_block_h);
-        card(scene, t, acard, theme);
-        text_left(
-            scene,
-            tr,
+        card(ctx.scene, ctx.transform, acard, theme);
+        ctx.text_left(
             "Air quality",
             acard.x0 + 16.0,
             acard.y0 + 12.0,
@@ -2965,10 +2865,7 @@ impl Core {
             c.text_primary,
         );
         self.draw_air_quality(
-            scene,
-            t,
-            tr,
-            theme,
+            ctx,
             acard,
             aq.as_ref(),
             layout.aq_cols,
@@ -2978,22 +2875,17 @@ impl Core {
     }
 
     /// The status line + the body's vertical scroll indicator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/mx/body_top/view_h/body_h identify the scroll geometry — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_footer(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         mx: f64,
         body_top: f64,
         view_h: f64,
         body_h: f64,
     ) {
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         // Connection/update problems are called out beside the city name,
         // where they remain visible even when the forecast body scrolls.
@@ -3002,9 +2894,7 @@ impl Core {
             && !self.status.starts_with("Couldn't")
             && !self.status.starts_with("Offline")
         {
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 &self.status,
                 mx,
                 rect.y1 - 20.0,
@@ -3020,14 +2910,14 @@ impl Core {
             let track_h = track_bot - track_top;
             let thumb_h = (track_h * (view_h / body_h)).clamp(28.0, track_h);
             let thumb_y = track_top + (self.scroll / self.max_scroll) * (track_h - thumb_h);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 t,
                 c.neutral[2].with_alpha_factor(0.6),
                 None,
                 &RoundedRect::new(tx, track_top, tx + 3.0, track_bot, 1.5),
             );
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 t,
                 c.text_dim.with_alpha_factor(0.7),
@@ -3037,7 +2927,10 @@ impl Core {
         }
     }
 
-    fn draw_sky_background(&self, scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect) {
+    fn draw_sky_background(&self, ctx: &mut DrawCtx<'_>, rect: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let base = c.surfaces.base;
         let top = if self.is_day() {
@@ -3053,12 +2946,8 @@ impl Core {
         scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &rect);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_sun_arc(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         area: Rect,
         // Current observation time ("YYYY-MM-DDTHH:MM"); positions the sun dot.
         now_iso: &str,
@@ -3066,6 +2955,9 @@ impl Core {
         sunset: &str,
         is_day: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = f64::midpoint(area.x0, area.x1);
         let baseline = area.y1 - 24.0;
@@ -3119,9 +3011,7 @@ impl Core {
             None,
             &Circle::new(Point::new(sx, sy), 7.0),
         );
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             "Sunrise",
             area.x0 + 4.0,
             baseline + 6.0,
@@ -3129,9 +3019,7 @@ impl Core {
             TextWeight::Semibold,
             c.text_dim,
         );
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             sunrise,
             area.x0 + 4.0,
             baseline + 20.0,
@@ -3139,9 +3027,7 @@ impl Core {
             TextWeight::Medium,
             c.text_primary,
         );
-        text_right(
-            scene,
-            tr,
+        ctx.text_right(
             "Sunset",
             area.x1 - 4.0,
             baseline + 6.0,
@@ -3149,9 +3035,7 @@ impl Core {
             TextWeight::Semibold,
             c.text_dim,
         );
-        text_right(
-            scene,
-            tr,
+        ctx.text_right(
             sunset,
             area.x1 - 4.0,
             baseline + 20.0,
@@ -3165,19 +3049,16 @@ impl Core {
     /// pollutant tiles, or an honest loading / unavailable message when there
     /// is no reading yet. Real data only — a missing value shows an em-dash,
     /// never a fabricated zero.
-    #[allow(clippy::too_many_arguments)]
     fn draw_air_quality(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         area: Rect,
         aq: Option<&AirQuality>,
         cols: usize,
         gap: f64,
         tile_h: f64,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let ix = area.x0 + 16.0;
         let iw = area.width() - 32.0;
@@ -3190,9 +3071,7 @@ impl Core {
             } else {
                 "Air quality unavailable"
             };
-            text_center(
-                scene,
-                tr,
+            ctx.text_center(
                 msg,
                 area.center().x,
                 hero_top + 22.0,
@@ -3211,21 +3090,26 @@ impl Core {
             area.x1 - 16.0,
             hero_top + if large_text { 104.0 } else { 64.0 },
         );
-        Self::draw_aqi_hero(scene, t, tr, theme, hero, aq);
-        Self::draw_aq_tiles(scene, t, tr, theme, ix, iw, hero, aq, cols, gap, tile_h);
+        Self::draw_aqi_hero(ctx, hero, aq);
+        let tile_layout = AqTileLayout {
+            x: ix,
+            width: iw,
+            hero,
+            columns: cols,
+            gap,
+            tile_height: tile_h,
+        };
+        Self::draw_aq_tiles(ctx, &tile_layout, aq);
     }
 
     /// The AQI hero: a severity-tinted chip with the big index number, the
     /// band word and a caption naming the scale (European AQI when
     /// available, else a rough US-AQI fallback).
-    fn draw_aqi_hero(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hero: Rect,
-        aq: &AirQuality,
-    ) {
+    fn draw_aqi_hero(ctx: &mut DrawCtx<'_>, hero: Rect, aq: &AirQuality) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         if let Some(aqi) = aq.european_aqi {
             let sev = aqi_band_color(aqi, theme);
@@ -3255,9 +3139,7 @@ impl Core {
             );
             let number_size = if large_text { 28.0 } else { 34.0 };
             let (nw, _) = tr.measure_weighted(&num, number_size, None, TextWeight::Bold);
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 "AQI",
                 hero.x0 + 24.0 + f64::from(nw),
                 hero.y0 + if large_text { 58.0 } else { 30.0 },
@@ -3265,9 +3147,7 @@ impl Core {
                 TextWeight::Semibold,
                 c.text_dim,
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 api::european_aqi_band(aqi),
                 hero.x0 + if large_text { 166.0 } else { 132.0 },
                 hero.y0 + 12.0,
@@ -3275,9 +3155,7 @@ impl Core {
                 TextWeight::Semibold,
                 sev,
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 "European AQI · now",
                 hero.x0 + if large_text { 166.0 } else { 132.0 },
                 hero.y0 + if large_text { 58.0 } else { 40.0 },
@@ -3287,9 +3165,7 @@ impl Core {
             );
         } else if let Some(us) = aq.us_aqi {
             let sev = aqi_band_color(us / 2.0, theme); // rough EU-equivalent tint
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 &format!("{} US AQI", us.round() as i64),
                 hero.x0,
                 hero.y0 + 18.0,
@@ -3301,23 +3177,9 @@ impl Core {
     }
 
     /// The key pollutant tiles (µg/m³) below the AQI hero.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus ix/iw/hero/aq/cols/gap identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
-    fn draw_aq_tiles(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        ix: f64,
-        iw: f64,
-        hero: Rect,
-        aq: &AirQuality,
-        cols: usize,
-        gap: f64,
-        tile_h: f64,
-    ) {
+    fn draw_aq_tiles(ctx: &mut DrawCtx<'_>, layout: &AqTileLayout, aq: &AirQuality) {
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let tiles: [(&str, Option<f64>); 4] = [
             ("PM2.5", aq.pm2_5),
@@ -3325,20 +3187,18 @@ impl Core {
             ("NO₂", aq.nitrogen_dioxide),
             ("O₃", aq.ozone),
         ];
-        let tiles_top = hero.y1 + 12.0;
-        let cols = cols.max(1);
-        let tw = (iw - (cols as f64 - 1.0) * gap) / cols as f64;
+        let tiles_top = layout.hero.y1 + 12.0;
+        let cols = layout.columns.max(1);
+        let tw = (layout.width - (cols as f64 - 1.0) * layout.gap) / cols as f64;
         for (i, (label, val)) in tiles.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
-            let tx = ix + col as f64 * (tw + gap);
-            let ty = tiles_top + row as f64 * (tile_h + gap);
-            let tile = Rect::new(tx, ty, tx + tw, ty + tile_h);
+            let tx = layout.x + col as f64 * (tw + layout.gap);
+            let ty = tiles_top + row as f64 * (layout.tile_height + layout.gap);
+            let tile = Rect::new(tx, ty, tx + tw, ty + layout.tile_height);
             let large_text = theme.text_scale >= 1.5;
-            card(scene, t, tile, theme);
-            text_left(
-                scene,
-                tr,
+            card(ctx.scene, t, tile, theme);
+            ctx.text_left(
                 label,
                 tile.x0 + 12.0,
                 tile.y0 + 12.0,
@@ -3348,9 +3208,7 @@ impl Core {
             );
             match val {
                 Some(v) => {
-                    text_left(
-                        scene,
-                        tr,
+                    ctx.text_left(
                         &format!("{}", v.round() as i64),
                         tile.x0 + 12.0,
                         tile.y0 + if large_text { 42.0 } else { 26.0 },
@@ -3358,9 +3216,7 @@ impl Core {
                         TextWeight::Bold,
                         c.text_primary,
                     );
-                    text_left(
-                        scene,
-                        tr,
+                    ctx.text_left(
                         "µg/m³",
                         tile.x0 + 12.0,
                         tile.y1 - if large_text { 30.0 } else { 18.0 },
@@ -3370,9 +3226,7 @@ impl Core {
                     );
                 }
                 None => {
-                    text_left(
-                        scene,
-                        tr,
+                    ctx.text_left(
                         "—",
                         tile.x0 + 12.0,
                         tile.y0 + 26.0,
@@ -3753,6 +3607,41 @@ struct DayRowGeometry {
     show_cond: bool,
 }
 
+/// Data and geometry shared by the three paint passes for one forecast row.
+/// Keeping the row contract intact avoids long, order-sensitive parameter
+/// trains and makes every pass consume the same snapshot and temperature span.
+struct DayRowPaint<'a> {
+    geometry: &'a DayRowGeometry,
+    index: usize,
+    forecast: &'a DayForecast,
+    y: f64,
+    height: f64,
+    snapshot: &'a WeatherSnapshot,
+    units: Units,
+    week_min: f64,
+    week_max: f64,
+}
+
+/// Geometry for the pollutant grid beneath the AQI hero.
+struct AqTileLayout {
+    x: f64,
+    width: f64,
+    hero: Rect,
+    columns: usize,
+    gap: f64,
+    tile_height: f64,
+}
+
+/// Shared positions for the detail title, refresh control, timestamp and
+/// connection status. Both header passes consume the same measured geometry.
+struct DetailHeaderLayout {
+    left: f64,
+    right: f64,
+    top: f64,
+    refresh_width: f64,
+    large_text: bool,
+}
+
 impl DayRowGeometry {
     fn new(dcard: Rect, text_scale: f32) -> Self {
         let inner_l = dcard.x0 + 18.0;
@@ -3835,74 +3724,6 @@ fn card(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
         c.border_standard.with_alpha_factor(0.7),
         None,
         &shape,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn text_left(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    s: &str,
-    x: f64,
-    y_top: f64,
-    size: f32,
-    weight: TextWeight,
-    color: Color,
-) {
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        Affine::translate((x, y_top)),
-        None,
-        weight,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn text_right(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    s: &str,
-    x_right: f64,
-    y_top: f64,
-    size: f32,
-    weight: TextWeight,
-    color: Color,
-) {
-    let (w, _) = tr.measure_weighted(s, size, None, weight);
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        Affine::translate((x_right - f64::from(w), y_top)),
-        None,
-        weight,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn text_center(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    s: &str,
-    x_center: f64,
-    y_top: f64,
-    size: f32,
-    weight: TextWeight,
-    color: Color,
-) {
-    let (w, _) = tr.measure_weighted(s, size, None, weight);
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        Affine::translate((x_center - f64::from(w) / 2.0, y_top)),
-        None,
-        weight,
     );
 }
 
