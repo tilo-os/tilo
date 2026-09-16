@@ -346,20 +346,23 @@ impl NavRow {
         tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
-        y: f64,
+        _y: f64,
         inner_w: f64,
         label: &str,
         expanded: bool,
         count: usize,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
+        let base_y =
+            r.y0 + (r.height() - f64::from(theme.tokens.typography.scale.base) * scale) / 2.0;
         let caret = if expanded { "\u{25BE}" } else { "\u{25B8}" };
         tr.draw_text(
             scene,
             caret,
             12.0,
             c.text_dim,
-            t * Affine::translate((r.x0 + 6.0, y + 7.0)),
+            t * Affine::translate((r.x0 + 6.0, base_y)),
             None,
         );
         tr.draw_text_weighted(
@@ -367,7 +370,7 @@ impl NavRow {
             label,
             theme.tokens.typography.scale.base,
             c.text_primary,
-            t * Affine::translate((r.x0 + 24.0, y + 6.0)),
+            t * Affine::translate((r.x0 + 24.0, base_y)),
             Some((inner_w - 60.0) as f32),
             TextWeight::Semibold,
         );
@@ -378,7 +381,7 @@ impl NavRow {
             &cs,
             11.0,
             c.text_dim,
-            t * Affine::translate((r.x1 - f64::from(cw) - 6.0, y + 8.0)),
+            t * Affine::translate((r.x1 - f64::from(cw) - 6.0, base_y)),
             None,
         );
     }
@@ -391,13 +394,17 @@ impl NavRow {
         tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
-        y: f64,
+        _y: f64,
         inner_w: f64,
         label: &str,
         method: HttpMethod,
         selected: bool,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
+        let label_y =
+            r.y0 + (r.height() - f64::from(theme.tokens.typography.scale.sm) * scale) / 2.0;
+        let method_y = r.y0 + (r.height() - 10.0 * scale) / 2.0;
         if selected {
             let shape = RoundedRect::from_rect(
                 Rect::new(r.x0, r.y0 + 2.0, r.x1, r.y1 - 2.0),
@@ -416,7 +423,7 @@ impl NavRow {
             method_short(method),
             10.0,
             method_color(theme, method),
-            t * Affine::translate((r.x0 + 28.0, y + 9.0)),
+            t * Affine::translate((r.x0 + 28.0, method_y)),
             None,
             TextWeight::Bold,
         );
@@ -425,7 +432,7 @@ impl NavRow {
             label,
             theme.tokens.typography.scale.sm,
             if selected { c.text_primary } else { c.text_dim },
-            t * Affine::translate((r.x0 + 64.0, y + 8.0)),
+            t * Affine::translate((r.x0 + 64.0, label_y)),
             Some((inner_w - 72.0) as f32),
         );
     }
@@ -438,19 +445,23 @@ impl NavRow {
         tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
-        y: f64,
+        _y: f64,
         inner_w: f64,
         label: &str,
         method: HttpMethod,
         status: u16,
     ) {
         let c = &theme.tokens.colors;
+        let scale = f64::from(theme.text_scale);
+        let label_y =
+            r.y0 + (r.height() - f64::from(theme.tokens.typography.scale.sm) * scale) / 2.0;
+        let small_y = r.y0 + (r.height() - 11.0 * scale) / 2.0;
         tr.draw_text_weighted(
             scene,
             method_short(method),
             10.0,
             method_color(theme, method),
-            t * Affine::translate((r.x0 + 6.0, y + 9.0)),
+            t * Affine::translate((r.x0 + 6.0, small_y)),
             None,
             TextWeight::Bold,
         );
@@ -459,7 +470,7 @@ impl NavRow {
             label,
             theme.tokens.typography.scale.sm,
             c.text_dim,
-            t * Affine::translate((r.x0 + 46.0, y + 8.0)),
+            t * Affine::translate((r.x0 + 46.0, label_y)),
             Some((inner_w - 90.0) as f32),
         );
         let st = status.to_string();
@@ -469,7 +480,7 @@ impl NavRow {
             &st,
             11.0,
             status_color(theme, status_class(status)),
-            t * Affine::translate((r.x1 - f64::from(sw) - 6.0, y + 8.0)),
+            t * Affine::translate((r.x1 - f64::from(sw) - 6.0, small_y)),
             None,
             TextWeight::Semibold,
         );
