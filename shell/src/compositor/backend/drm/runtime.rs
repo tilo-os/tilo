@@ -1950,6 +1950,10 @@ impl DrmDispatchState {
                 let y = (self.pointer.1 + event.delta_y()).clamp(0.0, max_y);
                 self.pointer = (x, y);
                 self.hw_cursor.move_to(x, y);
+                self.push(BackendEvent::RelativePointerMotion {
+                    dx: event.delta_x(),
+                    dy: event.delta_y(),
+                });
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             InputEvent::PointerButton { event } => {

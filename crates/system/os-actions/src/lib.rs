@@ -143,6 +143,24 @@ pub trait Dispatcher {
     /// Returns an error message if the Bluetooth stack is unavailable or the underlying call
     /// fails.
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String>;
+    /// Connect an accessory that is already paired on this machine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the address is unknown locally or `BlueZ` cannot
+    /// establish the requested profiles.
+    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::bt_connect(address)
+    }
+    /// Disconnect an accessory without forgetting its local bond.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the address is unknown locally or `BlueZ` rejects
+    /// the disconnect.
+    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::bt_disconnect(address)
+    }
     /// Enable or disable wired (ethernet) networking.
     ///
     /// # Errors
@@ -241,6 +259,12 @@ impl Dispatcher for RealDispatcher {
     }
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
         bluez::set_powered(enabled)
+    }
+    fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::bt_connect(address)
+    }
+    fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
+        bluetooth::bt_disconnect(address)
     }
     fn set_wired(&self, enabled: bool) -> Result<(), String> {
         network::set_wired(enabled)

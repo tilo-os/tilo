@@ -439,6 +439,25 @@ impl ChannelHandle {
         Ok(())
     }
 
+    /// Replace this process's private media handoff descriptors. The shell
+    /// authenticates the channel route and never relays `reports_json` as room
+    /// collaboration state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker request fails.
+    pub async fn report_playback(
+        &self,
+        app_id: &str,
+        reports_json: &[u8],
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.report_playback_request();
+        req.get().set_app_id(app_id);
+        req.get().set_reports_json(reports_json);
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Submit a single signed op into the channel. The op blob is
     /// a postcard-encoded `collab-types::SignedOp`.
     ///
