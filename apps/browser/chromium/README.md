@@ -13,7 +13,8 @@ python3 scripts/browser/build-host.py
 ```
 
 Alternatively configure CMake with `CEF_ROOT` pointing to the extracted pinned
-SDK and `QOS_OUTPUT_DIR` to the desired runtime directory. C++20 and CMake 3.21+
+SDK, `QOS_BLOCKER_LIBRARY` pointing to the Rust blocker static library, and
+`QOS_OUTPUT_DIR` to the desired runtime directory. C++20 and CMake 3.21+
 are required. macOS uses the Apple command line tools; Linux needs a supported
 CEF distribution and the system runtime dependencies listed in its README.
 
@@ -41,9 +42,10 @@ The limit is 64 MiB per packet, with dimensions 1–8192 and checked frame sizes
 
 JSON commands use `op`; events use `event`. Supported operations are navigate,
 back, forward, reload, stop, resize, focus, mouse_move, mouse_button, scroll,
-key, scripts, clear_data, devtools, shutdown. `filter_rules` currently reports
-an explicit error because this development host does not yet link the native
-blocker. The shared protocol specification is in the browser implementation
+key, scripts, filter_rules, clear_data, devtools, shutdown. `filter_rules` takes
+`rules` text and `enabled`: a boolean replaces the toggle, while null preserves
+the current toggle. Compilation failure retains the previous rules and reports
+an error. The shared protocol specification is in the browser implementation
 plan. Invalid packets or command fields and stdin EOF close the browser.
 Diagnostics use stderr or the profile's `cef.log`. Resize dimensions, pointer
 coordinates and wheel deltas are physical pixels; the host converts them to CEF
@@ -63,7 +65,10 @@ Helper app variant and the framework's versioned symlinks. The helper initialize
 required by modern CEF. The browser process uses an NSApplication subclass
 implementing CefAppProtocol. An explicit subprocess path accommodates the
 intentional difference between the app name and executable name. Local builds
-are ad hoc signed; distribution signing/notarization is separate.
+are ad hoc signed; distribution signing/notarization is separate. The generated
+framework copy is recreated on each link to keep upstream symlink creation
+idempotent. Verify a built/rebuilt bundle with
+`python3 apps/browser/chromium/tests/macos_bundle.py <app-path>`.
 
 ## Tests
 
@@ -83,10 +88,12 @@ HTTPS page. Lifecycle cases test EOF, truncated framing, invalid lengths,
 malformed JSON, wrong packet kinds and malformed command fields. Startup-time
 shutdown may take several seconds while Chromium's subprocesses unwind.
 
-Configured scripts execute only in direct HTTP/HTTPS main-frame documents, after
-load completion or an explicit configuration update. Internal pages, extensions,
+Configured scripts execute at document start in direct HTTP/HTTPS documents.
+The host enables the DevTools Page domain and waits for document-start script
+registration acknowledgments before executing queued navigation commands.
+Explicit configuration updates also apply to the current document. Internal pages, extensions,
 file/data URLs, inherited about:blank/srcdoc and blob documents are excluded.
-Execution is deduplicated by V8 document context and script configuration; reload
+Execution is deduplicated by document and script configuration; reload
 and cross-site renderer replacement receive the current configuration once.
 
 The runtime regression suite exercises those boundaries, key codes and editing,
@@ -97,15 +104,44 @@ python3 apps/browser/chromium/tests/native_regressions.py \
   'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'
 ```
 
+## Native blocking
+
+A request-context handler checks HTTP(S) resources, including dedicated-worker
+and service-worker requests, against a local adblock-rust instance. Source URL
+and resource type are retained. Compiled snapshots are published atomically;
+requests already in flight retain their original snapshot. No request waits for
+Rust UI IPC. Exceptions, replacements and rewritten URLs use the engine result.
+Redirect resources are served from owned bytes at the original request URL.
+
+Renderer-local matchers hide domain-specific and generic CSS selectors, observing
+class/id changes and newly inserted nodes. Disabling protection disconnects the
+observer and removes its sheet. Cosmetic native callbacks are held in private
+closures and expose no privileged global binding. Cosmetic/scriptlet code runs
+only in direct HTTP(S) documents. Scriptlets use the bundled upstream resources,
+with required dependencies and the upstream `scriptletGlobals` lexical state.
+
+The resource bundle is regenerated and verified using:
+
+```sh
+python3 scripts/browser/update-blocker-resources.py --check
+python3 apps/browser/chromium/tests/blocking_regressions.py \
+  'target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host'
+```
+
+The committed bundle includes pinned source hashes, licenses and provenance in
+`crates/browser/chromium-blocker/resources/`. It has 214 resources. The
+parameterized `click2load.html` redirect is unsupported; 34 upstream trusted-only
+resources retain permission mask 1 and cannot be invoked by ordinary lists.
+This is not a claim of complete uBlock Origin compatibility: procedural cosmetic
+actions are not executed, generic class/id collection is bounded, and the initial
+cosmetic/scriptlet configuration may arrive after parser scripts in a new renderer.
+The separate custom `scripts` command has verified document-start behavior.
+
 ## Remaining integration work
 
-- Link the Rust blocker and intercept requests through a request-context handler.
 - Browser UI extension management and Chrome extension behavior remain separate
   integration work; this host does not claim extension installation support.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
-- There are no privileged JavaScript bindings. Script injection currently targets
-  the main frame after load; configurable document-start/all-frame injection is
-  separate functionality.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs
   the full clear-data integration.

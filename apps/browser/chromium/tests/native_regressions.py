@@ -13,6 +13,7 @@ import time
 import unittest
 
 HOST = Path(sys.argv.pop(1)).resolve()
+COUNTER = "(()=>{window.reviewCount=(window.reviewCount||0)+1;const publish=()=>document.title='script-count-'+window.reviewCount;if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',publish,{once:true});else publish()})()"
 PAGE = b'''<!doctype html><title>fixture</title><input id="first" autofocus><input id="second">
 <script>
 let keys=[];
@@ -118,7 +119,7 @@ class NativeRegressions(unittest.TestCase):
         self.addCleanup(self.host.close)
         self.host.navigate(self.url)
     def install_counter(self):
-        self.host.send(op='scripts',scripts=["document.title='script-count-'+(window.reviewCount=(window.reviewCount||0)+1)"])
+        self.host.send(op='scripts',scripts=[COUNTER])
         self.host.until(lambda e:e['event']=='title' and e['title'].startswith('script-count-'))
         self.host.settle()
     def test_physical_resize_at_retina_scale(self):
@@ -172,10 +173,10 @@ class NativeRegressions(unittest.TestCase):
         self.assertEqual(self.host.latest_title(),'script-count-1')
         self.host.navigate(self.url)
         self.assertEqual(self.host.latest_title(),'script-count-1')
-        self.host.send(op='scripts',scripts=["document.title='script-count-'+(window.reviewCount=(window.reviewCount||0)+1)"])
+        self.host.send(op='scripts',scripts=[COUNTER])
         self.host.settle()
         self.assertEqual(self.host.latest_title(),'script-count-1')
-        self.host.send(op='scripts',scripts=["document.title='script-count-'+(window.reviewCount=(window.reviewCount||0)+1);void 0"])
+        self.host.send(op='scripts',scripts=[COUNTER+";void 0"])
         self.host.until(lambda e:e['event']=='title' and e['title']=='script-count-2')
         self.host.settle()
         self.assertEqual(self.host.latest_title(),'script-count-2')
