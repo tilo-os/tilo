@@ -1096,11 +1096,13 @@ impl ShellDriver {
             st.quick_settings.bt_devices = vec![
                 shell::shell::quick_settings::BtDevice {
                     name: "Studio-headphones-with-a-very-long-pairing-name".into(),
+                    address: "02:00:00:00:00:01".into(),
                     battery: 73,
                     connected: true,
                 },
                 shell::shell::quick_settings::BtDevice {
                     name: "Wohnzimmer-Lautsprecher außerordentlich lang".into(),
+                    address: "02:00:00:00:00:02".into(),
                     battery: 18,
                     connected: false,
                 },

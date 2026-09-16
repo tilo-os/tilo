@@ -58,7 +58,7 @@ pub use crate::shell::peer_sync_overlay::{
 use crate::shell::portal_dialog::PortalDialogController;
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
-use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
+use crate::shell::quick_settings_bluetooth::{BluetoothOutcome, QuickSettingsBluetoothPane};
 use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
 use crate::shell::quick_settings_root::{QuickSettingsRoot, RootAction, SliderCommit};
 use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
@@ -258,6 +258,47 @@ mod device_fabric_ui_tests {
                 .borrow()
                 .iter()
                 .any(|action| matches!(action, DeviceFabricUiAction::HandoffMedia { .. }))
+        );
+    }
+
+    #[test]
+    fn bluetooth_details_routes_exact_accessory_to_exact_certified_device() {
+        let (view, remote) = fixture();
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.bt_devices = vec![crate::shell::quick_settings::BtDevice {
+                name: "Headphones".into(),
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                battery: 80,
+                connected: true,
+            }];
+            state.quick_settings.push_level(
+                crate::shell::quick_settings::QsLevel::BluetoothDetails("AA:BB:CC:DD:EE:FF".into()),
+            );
+        }
+        let mut host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome);
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        host.handle_qs_bluetooth_details_click(
+            host.qs_device_row_rect(1).center(),
+            "AA:BB:CC:DD:EE:FF",
+        );
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::HandoffBluetooth {
+                    address: "AA:BB:CC:DD:EE:FF".into(),
+                    name: "Headphones".into(),
+                    target: remote,
+                })
         );
     }
 
@@ -499,6 +540,11 @@ pub enum DeviceFabricUiAction {
     },
     RouteLocalAudio {
         node_id: u32,
+    },
+    HandoffBluetooth {
+        address: String,
+        name: String,
+        target: crate::shell::personal_continuity::DeviceId,
     },
     Place {
         device: crate::shell::personal_continuity::DeviceId,
@@ -6664,6 +6710,7 @@ impl ShellOverlayHost {
                 .into_iter()
                 .map(|d| BtDevice {
                     name: d.name,
+                    address: d.mac,
                     battery: d.battery,
                     connected: d.connected,
                 })
@@ -6812,11 +6859,18 @@ impl ShellOverlayHost {
                         .clamp(192.0, 552.0)
                 }
             }
-            QsLevel::Bluetooth | QsLevel::BluetoothDetails(_) => {
+            QsLevel::Bluetooth => {
                 let rows = state.quick_settings.bt_devices.len();
                 (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
                     .clamp(160.0, 552.0)
             }
+            QsLevel::BluetoothDetails(_) => self
+                .device_fabric_call(DeviceFabricUiAction::Snapshot)
+                .map_or(216.0, |view| {
+                    let rows = view.devices.len().saturating_add(1);
+                    (78.0 + 58.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                        .clamp(216.0, 552.0)
+                }),
             QsLevel::Vpn => {
                 let rows = state.quick_settings.vpns.len();
                 (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -7097,7 +7151,19 @@ impl ShellOverlayHost {
     fn scroll_qs_device_fabric(&mut self, movement: isize) -> bool {
         let row_count = self
             .device_fabric_call(DeviceFabricUiAction::Snapshot)
-            .map_or(0, |view| device_fabric_pane_rows(&view).len());
+            .map_or(0, |view| {
+                let bluetooth_details = self.chrome.as_ref().is_some_and(|chrome| {
+                    matches!(
+                        chrome.borrow().quick_settings.current_level(),
+                        crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
+                    )
+                });
+                if bluetooth_details {
+                    view.devices.len().saturating_add(1)
+                } else {
+                    device_fabric_pane_rows(&view).len()
+                }
+            });
         let max_start = row_count.saturating_sub(self.qs_device_fabric_visible_rows());
         let current = self.qs_device_fabric_start.min(max_start);
         let next = if movement.is_negative() {
@@ -7127,6 +7193,7 @@ impl ShellOverlayHost {
                 && matches!(
                     state.quick_settings.current_level(),
                     crate::shell::quick_settings::QsLevel::Devices
+                        | crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
                 )
         });
         if !devices_open
@@ -10074,16 +10141,30 @@ impl ShellOverlayHost {
             if let Some(chrome) = self.chrome.clone() {
                 let panel = self.quick_settings_rect();
                 let mut st = chrome.borrow_mut();
-                let outcome =
-                    self.qs_bluetooth_pane
-                        .handle_click(p, panel, &st.quick_settings.bt_devices);
+                let outcome = self.qs_bluetooth_pane.handle_click(
+                    p,
+                    panel,
+                    &mut st.quick_settings.bt_devices,
+                    self.qs_actions.as_ref(),
+                );
                 match outcome {
-                    DrillInOutcome::Back => st.quick_settings.pop_level(),
-                    DrillInOutcome::Changed => {}
-                    DrillInOutcome::None => return,
+                    BluetoothOutcome::Back => st.quick_settings.pop_level(),
+                    BluetoothOutcome::Changed => {}
+                    BluetoothOutcome::OpenDetails { address } => {
+                        st.quick_settings.push_level(
+                            crate::shell::quick_settings::QsLevel::BluetoothDetails(address),
+                        );
+                        self.qs_device_fabric_start = 0;
+                        self.qs_device_fabric_wheel_remainder = 0.0;
+                    }
+                    BluetoothOutcome::None => return,
                 }
                 st.bump();
             }
+        } else if let crate::shell::quick_settings::QsLevel::BluetoothDetails(address) =
+            current_level
+        {
+            self.handle_qs_bluetooth_details_click(p, address);
         } else if matches!(current_level, crate::shell::quick_settings::QsLevel::Vpn) {
             if let Some(chrome) = self.chrome.clone() {
                 let panel = self.quick_settings_rect();
@@ -10184,6 +10265,73 @@ impl ShellOverlayHost {
         self.finish_qs_device_action(action, success);
     }
 
+    fn handle_qs_bluetooth_details_click(&mut self, point: Point, address: &str) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let accessory = chrome
+            .borrow()
+            .quick_settings
+            .bt_devices
+            .iter()
+            .find(|device| device.address.eq_ignore_ascii_case(address))
+            .cloned();
+        let Some(accessory) = accessory else {
+            return;
+        };
+        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+            return;
+        };
+        let rows = std::iter::once(None)
+            .chain(view.devices.into_iter().map(Some))
+            .collect::<Vec<_>>();
+        let _ = self.clamp_qs_device_fabric_start(rows.len());
+        let selected = rows
+            .into_iter()
+            .skip(self.qs_device_fabric_start)
+            .take(self.qs_device_fabric_visible_rows())
+            .enumerate()
+            .find(|(index, _)| self.qs_device_row_rect(*index).contains(point))
+            .map(|(_, row)| row);
+        match selected {
+            Some(None) => {
+                let result = self.qs_actions.disconnect_bluetooth(&accessory.address);
+                if result.is_ok() {
+                    let mut state = chrome.borrow_mut();
+                    if let Some(device) = state
+                        .quick_settings
+                        .bt_devices
+                        .iter_mut()
+                        .find(|device| device.address.eq_ignore_ascii_case(&accessory.address))
+                    {
+                        device.connected = false;
+                    }
+                    state.quick_settings.pop_level();
+                    state.push_notification(
+                        "Bluetooth",
+                        format!("Disconnected {} from this device", accessory.name),
+                    );
+                    state.bump();
+                }
+                crate::shell::qs_actions::log_qs_result("disconnect_bluetooth", result);
+            }
+            Some(Some(device)) if !device.is_local && device.online => {
+                self.finish_qs_device_action(
+                    DeviceFabricUiAction::HandoffBluetooth {
+                        address: accessory.address,
+                        name: accessory.name.clone(),
+                        target: device.id,
+                    },
+                    format!(
+                        "Moving {} to {}; it stays here until that device confirms its pairing",
+                        accessory.name, device.label
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
     fn qs_device_secondary_action(
         &self,
         point: Point,
@@ -10255,7 +10403,7 @@ impl ShellOverlayHost {
             let mut state = chrome.borrow_mut();
             match result {
                 Ok(_) => state.push_notification("Devices & media", success),
-                Err(error) => state.push_notification("Could not route media", error),
+                Err(error) => state.push_notification("Could not complete device action", error),
             };
             state.bump();
         }
@@ -10361,7 +10509,10 @@ impl ShellOverlayHost {
         }
         if matches!(
             history_level,
-            Some(crate::shell::quick_settings::QsLevel::Devices)
+            Some(
+                crate::shell::quick_settings::QsLevel::Devices
+                    | crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
+            )
         ) {
             let consumed = self.handle_qs_device_fabric_keyboard(logical_key);
             *handled = consumed;
@@ -12499,6 +12650,67 @@ impl Widget for ShellOverlayHost {
                                     .with_children(vec![
                                         AccessNode::new(Role::List)
                                             .with_name("Retained clipboard items")
+                                            .with_children(items),
+                                    ]),
+                            );
+                        } else if let crate::shell::quick_settings::QsLevel::BluetoothDetails(
+                            address,
+                        ) = state.quick_settings.current_level()
+                        {
+                            let accessory = state
+                                .quick_settings
+                                .bt_devices
+                                .iter()
+                                .find(|device| device.address.eq_ignore_ascii_case(address));
+                            let accessory_name = accessory
+                                .map_or("Bluetooth accessory", |device| device.name.as_str());
+                            let view = self
+                                .device_fabric_call(DeviceFabricUiAction::Snapshot)
+                                .unwrap_or_default();
+                            let rows = std::iter::once(None)
+                                .chain(view.devices.into_iter().map(Some))
+                                .collect::<Vec<_>>();
+                            let visible = self.qs_device_fabric_visible_rows();
+                            let start = self
+                                .qs_device_fabric_start
+                                .min(rows.len().saturating_sub(visible));
+                            let shown = visible.min(rows.len().saturating_sub(start));
+                            let items = rows
+                                .into_iter()
+                                .skip(start)
+                                .take(shown)
+                                .enumerate()
+                                .map(|(index, device)| match device {
+                                    None => AccessNode::new(Role::Button)
+                                        .with_name(format!(
+                                            "Disconnect {accessory_name} from this device"
+                                        ))
+                                        .with_position(index.saturating_add(1), shown),
+                                    Some(device) => AccessNode::new(Role::Button)
+                                        .with_name(format!("Move to {}", device.label))
+                                        .with_description(if device.is_local {
+                                            "This is the current certified device"
+                                        } else if device.online {
+                                            "The destination confirms its own local pairing before this device disconnects"
+                                        } else {
+                                            "Offline certified device"
+                                        })
+                                        .with_state(AccessState::new().disabled(
+                                            device.is_local || !device.online,
+                                        ))
+                                        .with_position(index.saturating_add(1), shown),
+                                })
+                                .collect();
+                            root.children.push(
+                                AccessNode::new(Role::Dialog)
+                                    .with_name(format!("Move {accessory_name}"))
+                                    .with_description(
+                                        "Choose a certified destination already paired with this accessory. Bond keys never leave either device. Use Up and Down, Page Up and Page Down, Home, or End to reach every destination.",
+                                    )
+                                    .with_state(AccessState::new().modal(true))
+                                    .with_children(vec![
+                                        AccessNode::new(Role::List)
+                                            .with_name("Bluetooth destinations")
                                             .with_children(items),
                                     ]),
                             );
@@ -16321,8 +16533,7 @@ impl ShellOverlayHost {
                 }
                 true
             }
-            crate::shell::quick_settings::QsLevel::Bluetooth
-            | crate::shell::quick_settings::QsLevel::BluetoothDetails(_) => {
+            crate::shell::quick_settings::QsLevel::Bluetooth => {
                 let panel = self.quick_settings_rect();
                 let cursor = self.last_cursor;
                 self.qs_bluetooth_pane.draw(
@@ -16334,6 +16545,10 @@ impl ShellOverlayHost {
                     cursor,
                     &qs.bt_devices,
                 );
+                true
+            }
+            crate::shell::quick_settings::QsLevel::BluetoothDetails(address) => {
+                self.draw_qs_bluetooth_details(scene, transform, text_renderer, theme, qs, address);
                 true
             }
             crate::shell::quick_settings::QsLevel::Vpn => {
@@ -16735,6 +16950,136 @@ impl ShellOverlayHost {
             Some(_) if !device.audio_output => "Online · no media output".into(),
             Some(_) => "Online · unavailable for this media".into(),
             None => "Online · identity-certified".into(),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded device rows share paint geometry with their capability and transport status"
+    )]
+    fn draw_qs_bluetooth_details(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        qs: &crate::shell::chrome_state::QuickSettingsState,
+        address: &str,
+    ) {
+        let accessory = qs
+            .bt_devices
+            .iter()
+            .find(|device| device.address.eq_ignore_ascii_case(address));
+        let name = accessory.map_or("Bluetooth accessory", |device| device.name.as_str());
+        self.draw_qs_drill_in_header(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &format!("Move {name}"),
+        );
+        let panel = self.quick_settings_rect();
+        text_renderer.draw_text(
+            scene,
+            "The destination must already have its own pairing · bond keys never leave a device",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 24.0)),
+        );
+        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Personal device fabric is unavailable",
+            );
+            return;
+        };
+        let rows = std::iter::once(None)
+            .chain(view.devices.into_iter().map(Some))
+            .collect::<Vec<_>>();
+        let _ = self.clamp_qs_device_fabric_start(rows.len());
+        let visible_rows = self.qs_device_fabric_visible_rows();
+        for (index, item) in rows
+            .iter()
+            .skip(self.qs_device_fabric_start)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let row = self.qs_device_row_rect(index);
+            let (title, detail, icon, enabled) = match item {
+                None => (
+                    "This device".to_string(),
+                    format!("Disconnect {name} without forgetting it"),
+                    ui::icons::Icon::Bluetooth,
+                    accessory.is_some_and(|device| device.connected),
+                ),
+                Some(device) => (
+                    device.label.clone(),
+                    if device.is_local {
+                        "This certified device".into()
+                    } else if device.online {
+                        "Move here after its local pairing is confirmed".into()
+                    } else {
+                        "Offline · identity-certified".into()
+                    },
+                    ui::icons::Icon::Monitor,
+                    !device.is_local && device.online,
+                ),
+            };
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(row, "")
+                    .hovered(enabled && self.last_cursor.is_some_and(|point| row.contains(point)))
+                    .disabled(!enabled)
+                    .accessible_name(&format!("{title}. {detail}")),
+            );
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
+                icon,
+                theme.tokens.colors.text_primary,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &title,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
+                Some(f64_to_f32_lossy(row.width() - 54.0)),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
+                Some(f64_to_f32_lossy(row.width() - 54.0)),
+            );
+        }
+        if rows.len() > visible_rows {
+            let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
+            text_renderer.draw_text(
+                scene,
+                &format!(
+                    "Showing {}–{} of {} · scroll for more",
+                    self.qs_device_fabric_start.saturating_add(1),
+                    self.qs_device_fabric_start.saturating_add(shown),
+                    rows.len()
+                ),
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((panel.x0 + 12.0, panel.y1 - 14.0).into()),
+                Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            );
         }
     }
 

@@ -3484,6 +3484,18 @@ fn install_device_fabric_bridge(
                 DeviceFabricUiAction::RouteLocalAudio { node_id } => {
                     crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
                 }
+                DeviceFabricUiAction::HandoffBluetooth {
+                    address,
+                    name,
+                    target,
+                } => {
+                    let _ = crate::shell::device_fabric_runtime::request_bluetooth_handoff(
+                        &fabric_net,
+                        &address,
+                        &name,
+                        &target,
+                    )?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
