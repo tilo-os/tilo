@@ -1,5 +1,7 @@
 //! Compact, secret-free API workspace search projection.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use qos_actions::{ActionAddress, ActionSpec, ExecutionLocus, Resource};
@@ -10,10 +12,11 @@ use ui::search::{
 
 use crate::{
     actions::{
-        encode, rename_collection_action, rename_environment_action, send_request_operation,
-        set_variable_action,
+        delete_collection_action, delete_environment_action, delete_request_action, encode,
+        immediate, rename_collection_action, rename_environment_action, rename_request_action,
+        save_request_action, send_request_operation, set_variable_action, variable_resource,
     },
-    model::{Collection, Environment},
+    model::{Collection, Environment, Request},
 };
 
 pub const KIND: &str = "API workspace";
@@ -25,6 +28,8 @@ pub struct ApiSearchProvider {
     catalog: SearchCatalog,
     indexed: BTreeSet<String>,
     entries: BTreeMap<String, CompactEntry>,
+    #[cfg(test)]
+    last_exact_inspected: Cell<usize>,
 }
 
 /// The resolver's retained projection.  It intentionally contains no request
@@ -50,7 +55,6 @@ enum CompactEntry {
         environment_id: uuid::Uuid,
         id: String,
         key: String,
-        label: String,
     },
 }
 
@@ -60,6 +64,8 @@ impl ApiSearchProvider {
             catalog: SearchCatalog::new(KIND),
             indexed: BTreeSet::new(),
             entries: BTreeMap::new(),
+            #[cfg(test)]
+            last_exact_inspected: Cell::new(0),
         }
     }
     pub fn refresh(&mut self, collections: &[Collection], environments: &[Environment]) {
@@ -127,7 +133,6 @@ impl ApiSearchProvider {
                         environment_id: environment.id,
                         id: variable.id.clone(),
                         key: variable.key.clone(),
-                        label,
                     },
                 );
             }
@@ -153,6 +158,130 @@ impl ApiSearchProvider {
         );
         ids.insert(id);
     }
+
+    /// Materialize exactly one durable resource from the retained public
+    /// lookup row. This does not read the document or traverse workspace
+    /// collections; the only lookup is the collision-safe address map.
+    pub fn resource(&self, id: &str) -> Option<Resource> {
+        #[cfg(test)]
+        self.last_exact_inspected.set(1);
+        match self.entries.get(id)? {
+            CompactEntry::Collection { id, label } => Some(collection_resource(*id, label)),
+            CompactEntry::Request {
+                collection_id,
+                id,
+                label,
+            } => Some(request_resource(*collection_id, *id, label)),
+            CompactEntry::Environment { id, label } => Some(environment_resource(*id, label)),
+            CompactEntry::Variable {
+                environment_id,
+                id,
+                key,
+                ..
+            } => Some(variable_resource(*environment_id, id, key)),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn last_exact_inspected(&self) -> usize {
+        self.last_exact_inspected.get()
+    }
+}
+
+fn id_string(kind: &str, id: uuid::Uuid) -> String {
+    format!("api_tester.{kind}:{id}")
+}
+
+fn collection_resource(id: uuid::Uuid, label: &str) -> Resource {
+    Resource::new(id_string("collection", id), "api_tester.collection", label)
+        .with_action(ActionSpec::prompted(
+            "rename",
+            "Rename collection",
+            "Collection name",
+            "new name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&rename_collection_action(id, name.trim())),
+        ))
+        .with_action(immediate(
+            "delete",
+            "Delete collection",
+            &delete_collection_action(id),
+        ))
+        .with_action(ActionSpec::prompted(
+            "add-request",
+            "Add request",
+            "Request name",
+            "e.g. List users",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let mut request = Request::new(name.trim());
+                request.id = uuid::Uuid::new_v4();
+                encode(&save_request_action(id, request))
+            },
+        ))
+}
+
+fn request_resource(collection_id: uuid::Uuid, id: uuid::Uuid, label: &str) -> Resource {
+    let mut resource = Resource::new(id_string("request", id), "api_tester.request", label)
+        .with_action(ActionSpec::prompted(
+            "rename",
+            "Rename request",
+            "Request name",
+            "new name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&rename_request_action(collection_id, id, name.trim())),
+        ))
+        .with_action(immediate(
+            "delete",
+            "Delete request",
+            &delete_request_action(collection_id, id),
+        ));
+    if let Ok(send) = send_request_operation(collection_id, id) {
+        resource = resource.with_action(send);
+    }
+    resource
+}
+
+fn environment_resource(id: uuid::Uuid, label: &str) -> Resource {
+    Resource::new(
+        id_string("environment", id),
+        "api_tester.environment",
+        label,
+    )
+    .with_action(immediate(
+        "activate",
+        format!("Use environment “{label}”"),
+        &crate::actions::set_active_environment_action(Some(id)),
+    ))
+    .with_action(ActionSpec::prompted(
+        "rename",
+        "Rename environment",
+        "Environment name",
+        "new name…",
+        ExecutionLocus::ClientLocal,
+        move |name: &str| encode(&rename_environment_action(id, name.trim())),
+    ))
+    .with_action(immediate(
+        "delete",
+        "Delete environment",
+        &delete_environment_action(id),
+    ))
+    .with_action(ActionSpec::prompted(
+        "set-variable",
+        "Set variable",
+        "key=value",
+        "e.g. base_url=https://api.example.com",
+        ExecutionLocus::ClientLocal,
+        move |arg: &str| {
+            let (key, value) = arg.split_once('=').unwrap_or((arg, ""));
+            encode(&set_variable_action(
+                id,
+                uuid::Uuid::new_v4().to_string(),
+                key.trim(),
+                value.trim(),
+            ))
+        },
+    ))
 }
 impl SearchProvider for ApiSearchProvider {
     fn name(&self) -> &str {
@@ -182,98 +311,12 @@ impl SearchProvider for ApiSearchProvider {
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        let entry = self.entries.get(address.resource.as_str())?;
-        match (entry, address.action.as_str()) {
-            (CompactEntry::Collection { id, label }, "rename") => {
-                let id = *id;
-                Some(
-                    Resource::new(
-                        address.resource.clone(),
-                        "api_tester.collection",
-                        label.clone(),
-                    )
-                    .with_action(ActionSpec::prompted(
-                        "rename",
-                        "Rename collection",
-                        "Collection name",
-                        "new name…",
-                        ExecutionLocus::ClientLocal,
-                        move |name: &str| encode(&rename_collection_action(id, name.trim())),
-                    )),
-                )
-            }
-            (
-                CompactEntry::Request {
-                    collection_id,
-                    id,
-                    label,
-                },
-                "send",
-            ) => send_request_operation(*collection_id, *id)
-                .ok()
-                .map(|action| {
-                    Resource::new(
-                        address.resource.clone(),
-                        "api_tester.request",
-                        label.clone(),
-                    )
-                    .with_action(action)
-                }),
-            (CompactEntry::Environment { id, label }, "rename") => {
-                let id = *id;
-                Some(
-                    Resource::new(
-                        address.resource.clone(),
-                        "api_tester.environment",
-                        label.clone(),
-                    )
-                    .with_action(ActionSpec::prompted(
-                        "rename",
-                        "Rename environment",
-                        "Environment name",
-                        "new name…",
-                        ExecutionLocus::ClientLocal,
-                        move |name: &str| encode(&rename_environment_action(id, name.trim())),
-                    )),
-                )
-            }
-            (
-                CompactEntry::Variable {
-                    environment_id,
-                    id,
-                    key,
-                    label,
-                },
-                "set-value",
-            ) => {
-                let environment_id = *environment_id;
-                let id = id.clone();
-                let key = key.clone();
-                Some(
-                    Resource::new(
-                        address.resource.clone(),
-                        "api_tester.variable",
-                        label.clone(),
-                    )
-                    .with_action(ActionSpec::prompted(
-                        "set-value",
-                        "Set variable value",
-                        "Variable value",
-                        "new value…",
-                        ExecutionLocus::ClientLocal,
-                        move |next_value: &str| {
-                            encode(&set_variable_action(
-                                environment_id,
-                                id.clone(),
-                                &key,
-                                next_value,
-                            ))
-                        },
-                    )),
-                )
-            }
-            _ => None,
-        }
+        let resource = self.resource(address.resource.as_str())?;
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == address.action)
+            .then_some(resource)
     }
 }
 
@@ -335,12 +378,12 @@ mod tests {
             let resource = provider
                 .resolve_action_resource(&address)
                 .expect("exact variable action");
-            assert!(
-                resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == "set-value")
-            );
+            let actions: BTreeSet<_> = resource
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            assert!(actions.is_superset(&BTreeSet::from(["rename", "set-value", "delete"])));
             assert!(!format!("{:?}", resource.label).contains("secret"));
         }
         assert!(provider.search("first-secret").is_empty());
