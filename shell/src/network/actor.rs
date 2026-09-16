@@ -57,6 +57,9 @@ pub enum PersonalFabricPayload {
     /// Shell-owned display session traffic. Frames are exact-target and
     /// ephemeral; authorization is rechecked against saved placement state.
     Display(crate::shell::device_fabric::PersonalDisplayMessage),
+    /// Resumable generic Nearby object data. Offers and resume checkpoints
+    /// travel as authenticated actions; this lane carries bounded bytes only.
+    NearbyTransfer(PersonalNearbyTransferFrame),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -77,6 +80,25 @@ pub enum PersonalMediaTransferFrame {
     },
     Abort {
         transfer_id: [u8; 16],
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PersonalNearbyTransferFrame {
+    Chunk {
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    Finish {
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        content_hash: [u8; 32],
+    },
+    Abort {
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
     },
 }
 
@@ -223,6 +245,18 @@ pub enum NetCmd {
         total_bytes: u64,
         file: std::fs::File,
     },
+    PublishNearbyTransfer {
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        total_bytes: u64,
+        resume_offset: u64,
+        prefix_hash: [u8; 32],
+        content_hash: [u8; 32],
+        file: std::fs::File,
+    },
     Connect {
         addr: EndpointAddr,
     },
@@ -275,6 +309,13 @@ pub enum NetEvent {
         payload: PersonalFabricPayload,
     },
     PersonalMediaTransfer {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        sent_bytes: u64,
+        total_bytes: u64,
+        status: PersonalMediaTransferStatus,
+    },
+    NearbyTransferProgress {
         target: EndpointId,
         transfer_id: [u8; 16],
         sent_bytes: u64,
@@ -634,6 +675,31 @@ impl ActorState {
                     file,
                 );
             }
+            Some(NetCmd::PublishNearbyTransfer {
+                ws,
+                user_public_key,
+                target,
+                transfer_id,
+                request_id,
+                total_bytes,
+                resume_offset,
+                prefix_hash,
+                content_hash,
+                file,
+            }) => {
+                self.publish_nearby_transfer(
+                    ws,
+                    user_public_key,
+                    target,
+                    transfer_id,
+                    request_id,
+                    total_bytes,
+                    resume_offset,
+                    prefix_hash,
+                    content_hash,
+                    file,
+                );
+            }
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
                 self.lookup.add_endpoint_info(addr.clone());
@@ -939,6 +1005,83 @@ impl ActorState {
                         sent_bytes: sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
                         total_bytes,
                         status,
+                    })
+                    .await;
+            }
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_nearby_transfer(
+        &self,
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        total_bytes: u64,
+        resume_offset: u64,
+        prefix_hash: [u8; 32],
+        content_hash: [u8; 32],
+        file: std::fs::File,
+    ) {
+        let progress = self.subscribers.get(&ws).cloned();
+        let report = |status, sent_bytes| {
+            if let Some(progress) = progress.as_ref() {
+                let _ = progress.try_send(NetEvent::NearbyTransferProgress {
+                    target,
+                    transfer_id,
+                    sent_bytes,
+                    total_bytes,
+                    status,
+                });
+            }
+        };
+        if transfer_id == [0; 16]
+            || request_id == [0; 16]
+            || resume_offset > total_bytes
+            || !self.peers_seen.contains_key(&(ws, target))
+        {
+            report(PersonalMediaTransferStatus::Failed, resume_offset);
+            return;
+        }
+        let Some(addr) = self.peers.get(&target).cloned() else {
+            report(PersonalMediaTransferStatus::Failed, resume_offset);
+            return;
+        };
+        let endpoint = self.endpoint.clone();
+        report(PersonalMediaTransferStatus::Started, resume_offset);
+        tokio::spawn(async move {
+            let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(resume_offset));
+            let result = stream_nearby_transfer(
+                endpoint,
+                addr,
+                ws,
+                user_public_key,
+                target,
+                transfer_id,
+                request_id,
+                total_bytes,
+                resume_offset,
+                prefix_hash,
+                content_hash,
+                file,
+                progress.clone(),
+                std::sync::Arc::clone(&sent),
+            )
+            .await;
+            if let Some(progress) = progress {
+                let _ = progress
+                    .send(NetEvent::NearbyTransferProgress {
+                        target,
+                        transfer_id,
+                        sent_bytes: sent.load(std::sync::atomic::Ordering::Relaxed),
+                        total_bytes,
+                        status: if result.is_ok() {
+                            PersonalMediaTransferStatus::Completed
+                        } else {
+                            PersonalMediaTransferStatus::Failed
+                        },
                     })
                     .await;
             }
@@ -1392,6 +1535,165 @@ async fn send_personal_media_frame(
     tokio::time::timeout(Duration::from_secs(30), send)
         .await
         .map_err(|_| ())?
+}
+
+async fn send_nearby_transfer_frame(
+    connection: &iroh::endpoint::Connection,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    frame: PersonalNearbyTransferFrame,
+) -> Result<(), ()> {
+    let wire = PersonalFabricWireFrame {
+        workspace,
+        user_public_key,
+        payload: PersonalFabricPayload::NearbyTransfer(frame),
+    };
+    let bytes = postcard::to_allocvec(&wire).map_err(|_| ())?;
+    if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+        return Err(());
+    }
+    let send = async {
+        let mut stream = connection.open_uni().await.map_err(|_| ())?;
+        stream.write_all(&bytes).await.map_err(|_| ())?;
+        stream.finish().map_err(|_| ())?;
+        match stream.stopped().await.map_err(|_| ())? {
+            None => Ok(()),
+            Some(_) => Err(()),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), send)
+        .await
+        .map_err(|_| ())?
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one audited streaming state machine keeps prefix verification, bounded chunks, progress, and the authenticated finish together"
+)]
+async fn stream_nearby_transfer(
+    endpoint: Endpoint,
+    addr: EndpointAddr,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    target: EndpointId,
+    transfer_id: [u8; 16],
+    request_id: [u8; 16],
+    total_bytes: u64,
+    resume_offset: u64,
+    prefix_hash: [u8; 32],
+    content_hash: [u8; 32],
+    mut file: std::fs::File,
+    progress: Option<mpsc::Sender<NetEvent>>,
+    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
+) -> Result<(), ()> {
+    use std::io::{Read as _, Seek as _};
+    use tokio::io::AsyncReadExt as _;
+
+    let mut hasher = blake3::Hasher::new();
+    let mut verify = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
+    let mut verified = 0_u64;
+    while verified < resume_offset {
+        let want = usize::try_from(
+            resume_offset
+                .saturating_sub(verified)
+                .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
+        )
+        .map_err(|_| ())?;
+        let read = file
+            .read(verify.get_mut(..want).ok_or(())?)
+            .map_err(|_| ())?;
+        if read == 0 {
+            return Err(());
+        }
+        hasher.update(verify.get(..read).ok_or(())?);
+        verified = verified.saturating_add(u64::try_from(read).map_err(|_| ())?);
+    }
+    if hasher.finalize().as_bytes() != &prefix_hash {
+        return Err(());
+    }
+    file.seek(std::io::SeekFrom::Start(resume_offset))
+        .map_err(|_| ())?;
+    let connection = tokio::time::timeout(
+        Duration::from_secs(10),
+        endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    let mut file = tokio::fs::File::from_std(file);
+    let mut offset = resume_offset;
+    let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
+    while offset < total_bytes {
+        let want = usize::try_from(
+            total_bytes
+                .saturating_sub(offset)
+                .min(PERSONAL_MEDIA_CHUNK_BYTES as u64),
+        )
+        .map_err(|_| ())?;
+        let read = file
+            .read(buffer.get_mut(..want).ok_or(())?)
+            .await
+            .map_err(|_| ())?;
+        if read == 0 {
+            return Err(());
+        }
+        hasher.update(buffer.get(..read).ok_or(())?);
+        send_nearby_transfer_frame(
+            &connection,
+            workspace,
+            user_public_key,
+            PersonalNearbyTransferFrame::Chunk {
+                transfer_id,
+                request_id,
+                offset,
+                bytes: buffer.get(..read).ok_or(())?.to_vec(),
+            },
+        )
+        .await?;
+        offset = offset.saturating_add(u64::try_from(read).map_err(|_| ())?);
+        sent_bytes.store(offset, std::sync::atomic::Ordering::Relaxed);
+        if let Some(progress) = progress.as_ref() {
+            let _ = progress.try_send(NetEvent::NearbyTransferProgress {
+                target,
+                transfer_id,
+                sent_bytes: offset,
+                total_bytes,
+                status: PersonalMediaTransferStatus::Progress,
+            });
+        }
+    }
+    let mut tail = [0_u8; 1];
+    if file.read(&mut tail).await.map_err(|_| ())? != 0 {
+        return Err(());
+    }
+    if hasher.finalize().as_bytes() != &content_hash {
+        return Err(());
+    }
+    let result = send_nearby_transfer_frame(
+        &connection,
+        workspace,
+        user_public_key,
+        PersonalNearbyTransferFrame::Finish {
+            transfer_id,
+            request_id,
+            content_hash,
+        },
+    )
+    .await;
+    if result.is_err() {
+        let _ = send_nearby_transfer_frame(
+            &connection,
+            workspace,
+            user_public_key,
+            PersonalNearbyTransferFrame::Abort {
+                transfer_id,
+                request_id,
+            },
+        )
+        .await;
+    }
+    result
 }
 
 #[allow(
@@ -2182,6 +2484,36 @@ mod tests {
             .await
             .unwrap();
         (endpoint, lookup)
+    }
+
+    #[test]
+    fn nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk() {
+        let wire = PersonalFabricWireFrame {
+            workspace: 42,
+            user_public_key: [3; 32],
+            payload: PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
+                transfer_id: [4; 16],
+                request_id: [5; 16],
+                offset: 99,
+                bytes: vec![7; PERSONAL_MEDIA_CHUNK_BYTES],
+            }),
+        };
+        let encoded = postcard::to_allocvec(&wire).unwrap();
+        assert!(encoded.len() < crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES);
+        let decoded: PersonalFabricWireFrame = postcard::from_bytes(&encoded).unwrap();
+        let PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
+            transfer_id,
+            request_id,
+            offset,
+            bytes,
+        }) = decoded.payload
+        else {
+            panic!("wrong nearby transfer frame");
+        };
+        assert_eq!(transfer_id, [4; 16]);
+        assert_eq!(request_id, [5; 16]);
+        assert_eq!(offset, 99);
+        assert_eq!(bytes.len(), PERSONAL_MEDIA_CHUNK_BYTES);
     }
 
     async fn identified_endpoint(key: &ed25519_dalek::SigningKey) -> (Endpoint, MemoryLookup) {
