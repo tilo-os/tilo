@@ -217,11 +217,22 @@ fn render_shot_to_png(
         &presence,
     );
 
-    if let Some(parent) = out.parent() {
+    let parent = out.parent().unwrap_or_else(|| std::path::Path::new("."));
+    if !parent.as_os_str().is_empty() {
         std::fs::create_dir_all(parent).ok();
     }
+    // Render into a sibling temp path and publish only after PNG encoding
+    // returns. A killed headless renderer must leave no valid-looking but
+    // truncated screenshot at the requested path for visual review tools to
+    // mistake for an inspected frame.
+    let name = out
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("chat.png");
+    let tmp = parent.join(format!(".{name}.partial-{}", std::process::id()));
     let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    renderer.render_png(&scene, Color::TRANSPARENT, &tmp);
+    std::fs::rename(&tmp, out)?;
     println!("chat: wrote shot to {}", out.display());
     Ok(())
 }
