@@ -807,11 +807,51 @@ fn add_environment_children(
         ));
 
         for v in &e.variables {
+            let rename_id = v.id.clone();
+            let set_value_id = v.id.clone();
+            let variable_key = v.key.clone();
+            let variable_value = v.value.clone();
             let child = Resource::new(
-                format!("api_tester.variable:{eid}:{}", v.key),
+                // A visible variable key can be renamed and duplicated.  The
+                // resource id must retain the durable row UUID so palette / agent
+                // references remain valid across a rename and never collide.
+                format!("api_tester.variable:{eid}:{}", v.id),
                 "api_tester.variable",
-                format!("{} = {}", v.key, v.value),
+                // Environment values commonly hold bearer tokens.  They are
+                // addressable through an action, but never copied into a
+                // searchable resource label or palette row.
+                format!("Variable {}", v.key),
             )
+            .with_action(ActionSpec::prompted(
+                "rename",
+                "Rename variable",
+                "Variable key",
+                "new key…",
+                ExecutionLocus::ClientLocal,
+                move |key: &str| {
+                    encode(&set_variable_action(
+                        eid,
+                        rename_id.clone(),
+                        key.trim(),
+                        &variable_value,
+                    ))
+                },
+            ))
+            .with_action(ActionSpec::prompted(
+                "set-value",
+                "Set variable value",
+                "Variable value",
+                "new value…",
+                ExecutionLocus::ClientLocal,
+                move |value: &str| {
+                    encode(&set_variable_action(
+                        eid,
+                        set_value_id.clone(),
+                        &variable_key,
+                        value,
+                    ))
+                },
+            ))
             .with_action(immediate(
                 "delete",
                 "Delete variable",
@@ -886,7 +926,7 @@ mod tests {
     /// create actions. Drives the real resource path.
     #[test]
     fn ctrl_k_publishes_the_workspace_tree() {
-        let (doc, _cid, _rid, _eid) = seeded();
+        let (doc, _cid, _rid, eid) = seeded();
         let resources = provide_resources(&doc);
         assert_eq!(resources.len(), 1, "one workspace root");
         let root = &resources[0];
@@ -950,6 +990,27 @@ mod tests {
             .iter()
             .find(|r| r.kind == "api_tester.variable")
             .expect("a variable nested under the environment");
+        let variable_id = ApiDoc::environments(&doc, &ROOT)[0].variables[0].id.clone();
+        assert_eq!(
+            var.id.0,
+            format!("api_tester.variable:{eid}:{variable_id}"),
+            "the discoverable resource uses the immutable row id, not its editable key"
+        );
+        assert_eq!(var.label, "Variable base_url");
+        assert!(
+            !var.label.contains("https://api.example.com"),
+            "environment values are not leaked into searchable resource labels"
+        );
+        let variable_actions: Vec<&str> = var
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert!(variable_actions.contains(&"rename"), "{variable_actions:?}");
+        assert!(
+            variable_actions.contains(&"set-value"),
+            "{variable_actions:?}"
+        );
         assert!(
             var.actions.iter().any(|a| a.id == "delete"),
             "variable exports delete"
@@ -973,6 +1034,37 @@ mod tests {
             labels.iter().any(|l| l.contains("Add request")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn duplicate_or_renamed_variable_keys_keep_distinct_resource_ids() {
+        let root: ObjId = ROOT;
+        let mut doc = AutoCommit::new();
+        let mut env = Environment::new("Shared");
+        let first = KeyValue::new("token", "one");
+        let second = KeyValue::new("token", "two");
+        let expected_ids = [first.id.clone(), second.id.clone()];
+        let env_id = env.id;
+        env.variables = vec![first, second];
+        ApiDoc::set_environments(&mut doc, &root, &[env]);
+
+        let resources = provide_resources(&doc);
+        let environment = resources[0]
+            .children
+            .iter()
+            .find(|node| node.kind == "api_tester.environments")
+            .and_then(|node| node.children.first())
+            .expect("environment resource");
+        let ids: std::collections::BTreeSet<_> = environment
+            .children
+            .iter()
+            .map(|node| node.id.0.clone())
+            .collect();
+        let expected: std::collections::BTreeSet<_> = expected_ids
+            .into_iter()
+            .map(|id| format!("api_tester.variable:{env_id}:{id}"))
+            .collect();
+        assert_eq!(ids, expected, "same display keys must not collide");
     }
 
     /// An empty document still publishes the workspace root with the create
