@@ -7,6 +7,7 @@
 //! `AppWidget` for each placeholder. The two mirror each other's field
 //! layout so shell UI can treat them uniformly — only `tile` differs.
 
+use std::collections::HashMap;
 use ui::widget::{AppKind as UiAppKind, AppWidget};
 
 use crate::shell::state::{GroupId, StripId, TabId, WindowWidth, WorkspaceId};
@@ -123,12 +124,28 @@ impl Workspace {
 pub struct WorkspaceTree {
     pub workspaces: Vec<Workspace>,
     pub active: WorkspaceId,
+    /// Focused strip per workspace. The runtime tree mirrors the persisted
+    /// tree's navigation state instead of making chrome guess the first strip.
+    pub active_strip: HashMap<WorkspaceId, StripId>,
 }
 
 impl WorkspaceTree {
     pub fn new(workspaces: Vec<Workspace>) -> Self {
         let active = workspaces.first().map(|w| w.id).unwrap_or_default();
-        Self { workspaces, active }
+        let active_strip = workspaces
+            .iter()
+            .filter_map(|workspace| {
+                workspace
+                    .strips
+                    .first()
+                    .map(|strip| (workspace.id, strip.id))
+            })
+            .collect();
+        Self {
+            workspaces,
+            active,
+            active_strip,
+        }
     }
 }
 
