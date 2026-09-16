@@ -73,6 +73,7 @@ use crate::install::{InstallOptions, PowerAction};
 use crate::installer_network::{InstallerNetwork, NETWORK_WAKE_EVENT, NetworkPhase};
 use crate::keyboard_view::KeyboardView;
 use crate::layouts;
+use crate::power_readiness::current_insufficient_battery_percent;
 use crate::seg_choice::SegChoice;
 use crate::status_log::StatusLog;
 use crate::step_indicator::StepIndicator;
@@ -142,6 +143,12 @@ const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
 pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
 const WINDOWS_ALONGSIDE_PREPARATION: &str = "Windows or NTFS storage was detected on this disk. Before continuing, boot Windows, save its BitLocker recovery key, and turn off Fast Startup. If you still need unallocated space, shrink Windows with Disk Management. qOS cannot make these Windows changes and will not resize NTFS.";
+
+fn connect_power_message(percent: u8) -> String {
+    format!(
+        "Connect this computer to power before installing — the battery is at {percent}%. Installation has not started."
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallMethod {
@@ -1112,6 +1119,9 @@ pub struct InstallerApp {
     profile_completion: Option<ProfileCompletion>,
     /// Wired by `main` so the worker thread can pump progress back.
     proxy_slot: Option<ProxySlot>,
+    /// Live power probe. Tests and deterministic screenshots use a no-op;
+    /// [`Self::new`] replaces it with the shared sysfs-backed qOS reader.
+    power_probe: fn() -> Option<u8>,
     /// Scroll position survives incidental composition rebuilds (network
     /// status, validation, progress). Deliberate step changes reset it.
     viewport_offset: Rc<Cell<(f32, f32)>>,
@@ -1128,6 +1138,7 @@ impl InstallerApp {
     /// the live time-zone list from the system.
     pub fn new() -> Self {
         let mut s = Self::with_disks(read_disks());
+        s.power_probe = current_insufficient_battery_percent;
         s.timezones = crate::timezones::list_timezones();
         match crate::media_profile::load() {
             Ok(Some(profile)) => s.apply_media_profile(profile),
@@ -1191,6 +1202,7 @@ impl InstallerApp {
             storage_preflight_passed: false,
             profile_completion: None,
             proxy_slot: None,
+            power_probe: || None,
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
@@ -1879,6 +1891,14 @@ impl InstallerApp {
             self.set_status("Select a disk to continue");
             return;
         };
+        // Check immediately before consuming secrets or starting the worker.
+        // The Review warning is advisory because plugging in does not rebuild
+        // this static wizard page; pressing Begin probes again and proceeds as
+        // soon as the machine is safely powered.
+        if let Some(percent) = (self.power_probe)() {
+            self.set_status(&connect_power_message(percent));
+            return;
+        }
         if !self.destructive_confirmation_ready() {
             let expected = self
                 .destructive_confirmation_target()
@@ -1988,6 +2008,11 @@ impl InstallerApp {
         }
         self.install_state = InstallState::Failed;
         self.reset_viewport();
+        // Running progress has no focusable controls. Failure replaces it
+        // with recovery-key actions and Review storage, so keyboard and
+        // assistive-technology users need a fresh focus target just as they
+        // do on successful completion.
+        self.focus_reset = true;
         self.dirty_structure = true;
     }
 
@@ -2673,6 +2698,14 @@ impl InstallerApp {
                 .with_size(sm)
                 .with_color(dim),
         ));
+
+        if let Some(percent) = (self.power_probe)() {
+            children.push(Box::new(
+                Text::new(&connect_power_message(percent))
+                    .with_size(base)
+                    .with_color(theme.tokens.colors.semantic.warning),
+            ));
+        }
 
         let impact = if self.install_method == InstallMethod::Alongside {
             if self.uses_guided_alongside() {
@@ -4771,6 +4804,31 @@ mod tests {
     }
 
     #[test]
+    fn low_discharging_battery_is_visible_and_blocks_launch_before_secrets_move() {
+        let mut app = InstallerApp::for_shot(Step::Review);
+        app.power_probe = || Some(7);
+        let (_taffy, _root) = build(&mut app);
+        let message = connect_power_message(7);
+        assert!(
+            find_accessible(&app, &message).is_some(),
+            "Review must explain why destructive work cannot start"
+        );
+
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.begin_install(&doc, &root);
+        assert_eq!(app.step, Step::Review);
+        assert_eq!(app.install_state, InstallState::Idle);
+        assert!(!app.install_launched);
+        assert_eq!(app.status, message);
+        assert_eq!(
+            &*secret_copy(&app.password),
+            "correct horse battery staple",
+            "the account secret stays editable because installation never started"
+        );
+    }
+
+    #[test]
     fn failed_install_recovery_returns_to_unselected_storage_review() {
         let mut app = InstallerApp::with_disks(sample());
         let old_efi_partuuid = app.guided_efi_partuuid.clone();
@@ -5019,6 +5077,10 @@ mod tests {
             app.status_lines.last().map(String::as_str),
             Some("error: no space left on device"),
             "the useful backend failure must remain the newest visible log line"
+        );
+        assert!(
+            app.take_focus_reset(),
+            "failure must focus the first recovery action on the new error surface"
         );
     }
 
