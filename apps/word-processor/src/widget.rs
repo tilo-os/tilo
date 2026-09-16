@@ -320,6 +320,9 @@ enum ToolAction {
     Super,
     /// Toggle subscript (`sub` run mark) over the selection; clears `super`.
     Sub,
+    /// Open the shared action argument surface for a hyperlink over the current
+    /// non-empty selection.
+    Hyperlink,
     // NB: paragraph-level controls (alignment, line spacing) are NOT toolbar
     // actions — they live in the side panel's "This paragraph" section, so the
     // toolbar carries only direct character formatting + structural actions.
@@ -1822,6 +1825,7 @@ pub struct WordProcessorWidget {
     /// The compact toolbar's labeled, keyboard/semantic shared swatch grid.
     /// It is local view state; selecting a colour routes through `ToolAction`.
     compact_swatch_palette: CompactSwatchPalette,
+    action_palette_request: Option<qos_actions::ActionAddress>,
     /// Comment/tracked-change visibility, materialized items, card drawing, and
     /// frame-local action hit targets. Document mutation remains editor policy.
     review: ReviewOverlay,
@@ -1969,6 +1973,7 @@ impl WordProcessorWidget {
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
             compact_swatch_palette: CompactSwatchPalette::default(),
+            action_palette_request: None,
             review: ReviewOverlay::default(),
             thread_comment: None,
             thread_snapshot: None,
@@ -5440,6 +5445,7 @@ fn tool_action_id(action: ToolAction) -> String {
         ToolAction::Strike => "strike".into(),
         ToolAction::Super => "superscript".into(),
         ToolAction::Sub => "subscript".into(),
+        ToolAction::Hyperlink => "hyperlink".into(),
         ToolAction::FontCycle => "font-family".into(),
         ToolAction::FontSizeDec => "font-size-decrease".into(),
         ToolAction::FontSizeInc => "font-size-increase".into(),
@@ -5479,6 +5485,7 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::Strike => "a11y-strikethrough",
         ToolAction::Super => "a11y-superscript",
         ToolAction::Sub => "a11y-subscript",
+        ToolAction::Hyperlink => "a11y-hyperlink",
         ToolAction::FontCycle => "a11y-font",
         ToolAction::FontSizeDec => "a11y-size-down",
         ToolAction::FontSizeInc => "a11y-size-up",
@@ -10017,6 +10024,9 @@ impl Widget for WordProcessorWidget {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
+    fn take_action_palette_request(&mut self) -> Option<qos_actions::ActionAddress> {
+        self.action_palette_request.take()
+    }
     /// Publish the resource tree Ctrl+K walks (delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
     /// [`crate::actions`]).
@@ -10473,6 +10483,14 @@ impl WordProcessorWidget {
             ToolAction::Highlight(None) => self.dispatch_clear_mark(state, "highlight"),
             ToolAction::Super => self.dispatch_exclusive_mark(state, "super", "sub"),
             ToolAction::Sub => self.dispatch_exclusive_mark(state, "sub", "super"),
+            ToolAction::Hyperlink => {
+                if !self.selection_blocks_cached().is_empty() {
+                    self.action_palette_request = Some(qos_actions::ActionAddress::new(
+                        "word-processor.document",
+                        "set-hyperlink",
+                    ));
+                }
+            }
             ToolAction::FontSizeInc => {
                 let next =
                     num::i64_of_f32((self.current_font_size() + 1.0).round().clamp(6.0, 200.0));
@@ -11852,7 +11870,7 @@ impl WordProcessorWidget {
 
     /// Controls shared by both responsive toolbar compositions.
     fn primary_toolbar_specs(&self) -> Vec<(ToolAction, ToolbarItem)> {
-        vec![
+        let mut specs = vec![
             toolbar_item(
                 ToolAction::NewMenu,
                 t("toolbar-new"),
@@ -11877,7 +11895,16 @@ impl WordProcessorWidget {
                 32.0,
                 self.mark_active_in_selection("underline"),
             ),
-        ]
+        ];
+        if !self.selection_blocks_cached().is_empty() {
+            specs.push(toolbar_item(
+                ToolAction::Hyperlink,
+                t("toolbar-link"),
+                52.0,
+                false,
+            ));
+        }
+        specs
     }
 
     /// Desktop-only direct formatting, contextual table, and view controls.
@@ -13086,6 +13113,7 @@ mod tests {
                     | ToolAction::Strike
                     | ToolAction::Super
                     | ToolAction::Sub
+                    | ToolAction::Hyperlink
                     | ToolAction::FontCycle
                     | ToolAction::FontSizeInc
                     | ToolAction::FontSizeDec
@@ -13113,6 +13141,42 @@ mod tests {
                 "unexpected paragraph-level control on the toolbar: {a:?}"
             );
         }
+    }
+
+    #[test]
+    fn selected_text_link_button_requests_the_canonical_argument_flow() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Read this");
+        wp.sync(&mut state.doc, &state.root);
+
+        assert!(
+            wp.primary_toolbar_specs()
+                .iter()
+                .all(|(action, _)| *action != ToolAction::Hyperlink),
+            "an empty selection cannot author a link"
+        );
+        select_range(&mut wp, 0, 4);
+        assert!(
+            wp.primary_toolbar_specs()
+                .iter()
+                .any(|(action, _)| *action == ToolAction::Hyperlink),
+            "a non-empty selection exposes the Link affordance"
+        );
+
+        wp.apply_tool(&mut state.doc, ToolAction::Hyperlink);
+        assert_eq!(
+            Widget::take_action_palette_request(&mut wp),
+            Some(qos_actions::ActionAddress::new(
+                "word-processor.document",
+                "set-hyperlink"
+            ))
+        );
+        assert!(
+            Widget::take_action_palette_request(&mut wp).is_none(),
+            "the host request is edge-triggered"
+        );
     }
 
     /// Compact mode keeps More concise: two labelled entries open the shared
