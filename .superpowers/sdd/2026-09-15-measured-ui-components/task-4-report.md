@@ -92,3 +92,39 @@ b9b87e5052b19b95137fc0cdfadbd982730c44164685e50a3f730696cbaa5e36  ui/src/widget/
 ## Commit discipline
 
 Commit only `ui/src/widget/toolbar.rs`, `ui/src/widget/context_menu.rs`, and this report with `git commit --only`. Verify the resulting commit file list; preserve all unrelated working-tree and index content. The returned task status records the resulting commit ID.
+
+## Fix round 1 — accepted review findings
+
+Verified starting HEAD `2aff2e6c7` and read `task-4-fix-1.md` plus `task-4-review.md`. Used receiving-code-review/systematic-debugging to check the named event branches and AccessKit export contract before implementing the accepted fixes. Production scope for this round is **Toolbar only**; ContextMenu, the Widget trait and AccessKit bridge are unchanged. Concurrent non-owned work was preserved.
+
+### Resolutions
+
+1. **Exported accessibility geometry:** visible command/overflow nodes now use `with_bounds` from their authoritative painted rects. The menu node exports its popup rect; menu items export the clipped ContextMenu row rect. Scrolled-out actions export `Rect::ZERO`, remain semantically focusable/visible, and receive real clipped bounds when semantic focus reveals them. The regression asserts the emitted AccessNode fields themselves, including a partially clipped row, zero-area offscreen row and focus-to-reveal transition.
+2. **Stale pointer targets after popup routing:** Toolbar stores the current logical pointer position even while ContextMenu consumes events. Opening clears its old hover/armed target; closing and relayout re-hit-test the stored position. Press/release also re-hit-test before arming/activating. Regression covers keyboard opening from hovered A and pointer opening from hovered Overflow, selection of hidden B, a same-position second click with no CursorMoved, and variants with/without intervening layout. Only B fires once and Overflow stays closed.
+3. **Non-left release suppression:** only a left press routed through the popup arms its matching release suppression. Right/middle press-release followed by Escape leaves no pointer capture. A regression uses a real Row with two retained Toolbars, admitted shared layout and Row event dispatch; the subsequent sibling left click reaches its callback once. Existing outside-left-dismiss suppression remains covered by the full Toolbar group.
+
+### Focused RED / GREEN and final verification
+
+Every Cargo command retained the repository target cache and used `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`.
+
+- `cargo test -p ui --lib widget::toolbar::lifecycle_tests::review_ -- --nocapture`
+  - **RED: 0 passed, 3 failed** for the exact accepted defects: exported bounds `None` versus painted rect; callback counts `[1,1,0,…]` versus `[0,1,0,…]`; stuck capture after a right press-release and Escape.
+  - **GREEN: 3 passed** after the fixes. All requested variants are contained in those tests, including real Row sibling routing.
+- `cargo test -p ui --lib widget::toolbar -- --nocapture`: **18 passed, 1 existing manual GPU fixture ignored**.
+- `cargo test -p ui --lib context_menu -- --nocapture`: **15 passed**, including legacy TextInput copy/cut routes.
+- `cargo test -p ui --lib widget::layout -- --nocapture`: **7 passed**.
+- `cargo check -p ui --lib`: **passed**.
+- `rustfmt --edition 2024 --check ui/src/widget/toolbar.rs`: **passed**.
+- `git diff --check -- ui/src/widget/toolbar.rs`: **passed**.
+
+The known macOS `__eh_frame` lib-test linker warning remains. Shared-target/package-cache lock waits and recompilation of concurrent vendor changes occurred; no build cache isolation or dependency changes were introduced by this worker. The current lib-test binary path is `target/debug/deps/ui-c93bc6d5c202339c`.
+
+Validated Toolbar source SHA-256: `ce4f839a59fb02e1ba0ddf0785722af0c25b1476dd5ffe9d10c17b03a618585e`.
+
+### Self-review and limits
+
+Checked that platform-exported bounds now come from AccessNode output, while fallback click bounds and semantic action routes remain intact. Checked that popup cursor events update the same pointer used after close/layout, and every left press/release activation revalidates geometry. Verified that right/middle events cannot create unmatched release suppression and that the host regression actually reaches the sibling callback through Row.
+
+No layout, typography, popup paint or callback ownership changes were made in this fix round; the accepted rendered captures/provenance above remain retained and were not regenerated. No broad suite or live macOS accessibility/focus acceptance claim is added. Independent scoped re-review remains the next gate.
+
+Round-1 commit is restricted with `git commit --only` to `ui/src/widget/toolbar.rs` and this report; verify its exact file list after committing. Returned worker status records the commit ID.
