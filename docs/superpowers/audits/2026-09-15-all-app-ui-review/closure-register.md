@@ -32,7 +32,7 @@ Assigned work: [Shared](../../plans/2026-09-15-measured-ui-components.md), [Comp
 | maps | [visual-reviewed](review-2.md) | 2 | Text/geometry 10 | fixes and final verification pending |
 | monitor | [visual-reviewed](review-2.md) | 1 | Text/geometry 11 | fixes and final verification pending |
 | music | [visual-reviewed](review-2.md) | 2 | Text/geometry 4 | fixes and final verification pending |
-| notes | [visual-reviewed](review-2.md) | 2 | Shared 2 + Shared 6 + app verification | fixes and final verification pending |
+| notes | [visual-reviewed](review-2.md) | 0 | Shared 2 + Shared 6 + app verification | shared scale and rich-mark fixes verified; final all-app matrix pending |
 | osk | [visual-reviewed](review-2.md) | 1 | Text/geometry 6 | fixes and final verification pending |
 | pdf_viewer | [visual-reviewed](review-2.md) | 1 | Composition 6 | fixes and final verification pending |
 | photos | [visual-reviewed](review-2.md) | 1 | Text/geometry 19 | fixes and final verification pending |

@@ -282,6 +282,12 @@ multiline form fields remain content-sized by default, and a child's explicit
 fixed height stays authoritative. Scratchpad uses this composition with its
 existing editor and Save action.
 
+For inline rich text, use `RichTextLine` marks so measurement, glyphs, caret,
+selection and links share one shaped layout. Do not paint styled words over a
+plain text field: their different advances create doubled glyphs and misplaced
+interaction targets. Code chips and rules are decorations around those shaped
+ranges, not separately positioned text.
+
 For a long command strip, let `Toolbar` choose the visible commands from
 renderer measurements and put the remainder in its owned overflow menu. The
 same original callbacks remain available through pointer, keyboard and semantic
