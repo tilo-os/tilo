@@ -46,6 +46,7 @@ pub mod display;
 pub mod firmware;
 pub mod modem;
 pub mod network;
+pub mod peripheral_forwarding;
 pub mod power;
 pub mod printing;
 pub mod privacy;
@@ -91,6 +92,11 @@ pub use network::{
     list_hotspot_clients, list_saved_network_profiles, list_vpn_connections, list_wifi_networks,
     set_airplane_mode, set_hotspot, set_mobile_broadband, set_network_autoconnect,
     set_vpn_connection, set_vpn_connection_uuid, set_wifi, set_wired,
+};
+pub use peripheral_forwarding::{
+    ForwardedGamepadEvent, ForwardedPeripheralBroker, ForwardedPeripheralIdentity, GamepadAxis,
+    GamepadButton, PeripheralAuditEvent, PeripheralDeviceId, PeripheralLeaseId,
+    PeripheralRevocation, VirtualGamepad, VirtualGamepadFactory, VirtualGamepadPlan,
 };
 pub use power::{PowerProfile, available_power_profiles, get_power_profile, set_power_profile};
 pub use printing::{DiscoveredPrinter, PrintJob, PrinterQueue, QueueState, Scanner};
