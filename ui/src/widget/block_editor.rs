@@ -1565,12 +1565,15 @@ impl BlockEditor {
                 let Mark::Link(id) = &span.mark else {
                     continue;
                 };
-                let x0 = line.pixel_x_for_byte(theme, span.range.start);
-                let x1 = line.pixel_x_for_byte(theme, span.range.end);
-                if x1 > x0 {
-                    let rect = line.get_rect();
-                    self.live_link_hits
-                        .push((Rect::new(x0, rect.y0, x1, rect.y1), *id));
+                for band in line
+                    .inner()
+                    .selection_rects(theme, span.range.start, span.range.end)
+                {
+                    if band.width() > 0.0 {
+                        let rect = line.get_rect();
+                        self.live_link_hits
+                            .push((Rect::new(band.x0, rect.y0, band.x1, rect.y1), *id));
+                    }
                 }
             }
         }
@@ -3835,7 +3838,6 @@ impl Widget for BlockEditor {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        self.refresh_live_link_hits(theme);
 
         // Painted BEFORE block content so the live caret stays on top.
         if self.blocks.len() == 1
@@ -3930,6 +3932,8 @@ impl Widget for BlockEditor {
         for (i, b) in self.blocks.iter().enumerate() {
             self.draw_block_presence(i, b, &mut ctx);
         }
+        // Link routing must use the same freshly shaped advances as paint.
+        self.refresh_live_link_hits(theme);
     }
 
     fn handle_event(
@@ -5619,6 +5623,78 @@ mod tests {
             &mut renderer,
             theme,
             &PresenceCtx::empty(),
+        );
+    }
+
+    #[test]
+    fn rich_link_hits_follow_current_draw_on_first_frame_style_and_scale_changes() {
+        let target = PageId::from_u128(42);
+        let mut block = Block::paragraph("WWW end");
+        block
+            .line
+            .set_marks(vec![MarkSpan::new(0..3, Mark::Link(target))]);
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![block]);
+        for (scale, bold) in [(1.0, false), (1.0, true), (2.0, true), (1.0, false)] {
+            let mut marks = vec![MarkSpan::new(0..3, Mark::Link(target))];
+            if bold {
+                marks.push(MarkSpan::new(0..3, Mark::Bold));
+            }
+            editor.blocks[0].line.set_marks(marks);
+            let theme = Theme::dark().with_text_scale(scale);
+            layout_and_draw_editor(&mut editor, &theme);
+            let line = &editor.blocks[0].line;
+            let right = line.pixel_x_for_byte(&theme, 3);
+            let y = line.get_rect().center().y;
+            assert_eq!(
+                editor.link_at_point(Point::new(right - 0.1, y)),
+                Some(target),
+                "the final painted sliver must link on this frame at {scale}x, bold={bold}"
+            );
+            assert_eq!(editor.link_at_point(Point::new(right + 0.1, y)), None);
+        }
+    }
+
+    #[test]
+    fn rich_link_hits_cover_the_shaped_rtl_range() {
+        let target = PageId::from_u128(43);
+        let mut block = Block::paragraph("אבג rest");
+        block.line.set_marks(vec![
+            MarkSpan::new(0..6, Mark::Link(target)),
+            MarkSpan::new(0..6, Mark::Bold),
+        ]);
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![block]);
+        let theme = Theme::dark();
+        layout_and_draw_editor(&mut editor, &theme);
+        let band = editor.blocks[0].line.selection_rect(&theme, 0, 6);
+        assert_eq!(editor.link_at_point(band.center()), Some(target));
+    }
+
+    #[test]
+    fn rich_link_hits_exclude_the_gap_between_mixed_direction_segments() {
+        let target = PageId::from_u128(44);
+        let mut block = Block::paragraph("ab אבג cd");
+        block.line.set_marks(vec![
+            MarkSpan::new(0..2, Mark::Link(target)),
+            MarkSpan::new(10..12, Mark::Link(target)),
+            MarkSpan::new(0..12, Mark::Bold),
+        ]);
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![block]);
+        let theme = Theme::dark();
+        layout_and_draw_editor(&mut editor, &theme);
+        let line = &editor.blocks[0].line;
+        let first = line.selection_rect(&theme, 0, 2);
+        let last = line.selection_rect(&theme, 10, 12);
+        assert_eq!(editor.link_at_point(first.center()), Some(target));
+        assert_eq!(editor.link_at_point(last.center()), Some(target));
+        let gap = line.selection_rect(&theme, 3, 9);
+        assert!(gap.x0 >= first.x1 && gap.x1 <= last.x0);
+        assert_eq!(
+            editor.link_at_point(gap.center()),
+            None,
+            "unmarked Hebrew remains outside the link"
         );
     }
 
