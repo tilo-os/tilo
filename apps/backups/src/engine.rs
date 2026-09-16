@@ -509,21 +509,67 @@ fn publish_restored_snapshot(stage: &Path, target: &Path, overwrite: bool) -> Re
                 "Restore destination changed while recovery was running".into(),
             ))
         }
-        Ok(_) => {
-            if overwrite {
-                fs::remove_dir_all(target)?;
-            } else {
-                fs::remove_dir(target)?;
-            }
-            fs::rename(stage, target)?;
-            Ok(())
-        }
+        Ok(_) => publish_restore_swap(stage, target, overwrite, &mut |from, to| {
+            fs::rename(from, to)
+        }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             fs::rename(stage, target)?;
             Ok(())
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Replace an existing target only after the staged recovery point is ready.
+/// If publishing the stage fails, put the original target back before
+/// returning the error.  This matters for explicit `overwrite` callers, but
+/// also makes the empty-folder UI promise robust against a full disk or a
+/// concurrent rename at exactly the wrong moment.
+fn publish_restore_swap(
+    stage: &Path,
+    target: &Path,
+    overwrite: bool,
+    rename: &mut impl FnMut(&Path, &Path) -> io::Result<()>,
+) -> Result<()> {
+    let previous = reserve_previous_restore_path(target)?;
+    rename(target, &previous)?;
+    if let Err(publish_error) = rename(stage, target) {
+        return match rename(&previous, target) {
+            Ok(()) => Err(publish_error.into()),
+            Err(rollback_error) => Err(BackupError::UnsafeDestination(format!(
+                "Restore publish failed ({publish_error}); could not restore the previous target ({rollback_error})"
+            ))),
+        };
+    }
+    // The new tree is now published. A failed cleanup leaves a sibling the
+    // user can still recover from; it must not turn a completed restore into
+    // a misleading failure.
+    let _ = if overwrite {
+        fs::remove_dir_all(previous)
+    } else {
+        fs::remove_dir(previous)
+    };
+    Ok(())
+}
+
+fn reserve_previous_restore_path(target: &Path) -> Result<PathBuf> {
+    let parent = target.parent().ok_or_else(|| {
+        BackupError::UnsafeDestination("Restore destination has no parent folder".into())
+    })?;
+    for suffix in 0_u32..1024 {
+        let previous = parent.join(format!(
+            ".qos-restore-{}-{suffix}.previous",
+            std::process::id()
+        ));
+        match fs::symlink_metadata(&previous) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(previous),
+            Ok(_) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(BackupError::UnsafeDestination(
+        "Could not reserve a rollback location for the restore target".into(),
+    ))
 }
 
 fn read_manifest(snapshot: &Path) -> Result<BackupManifest> {
@@ -796,6 +842,29 @@ mod tests {
         assert_eq!(fs::read(restored.join("file")).unwrap(), b"existing");
     }
 
+    #[test]
+    fn failed_stage_publish_restores_the_previous_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("restore");
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&stage).unwrap();
+        fs::write(target.join("previous"), b"keep me").unwrap();
+        fs::write(stage.join("restored"), b"new data").unwrap();
+        let mut calls = 0_u8;
+        let result = publish_restore_swap(&stage, &target, true, &mut |from, to| {
+            calls = calls.saturating_add(1);
+            if calls == 2 {
+                return Err(io::Error::other("injected stage publish failure"));
+            }
+            fs::rename(from, to)
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(target.join("previous")).unwrap(), b"keep me");
+        assert!(stage.join("restored").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn source_symlinks_are_preserved_without_following_them() {
@@ -825,7 +894,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn malicious_symlink_ancestor_cannot_escape_restore_root() {
+    fn overwrite_replaces_a_malicious_symlink_ancestor_without_following_it() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         let destination = temp.path().join("destination");
@@ -837,8 +906,9 @@ mod tests {
         fs::create_dir_all(&outside).unwrap();
         let manifest = create_snapshot(&source, &destination, |_| {}).unwrap();
         std::os::unix::fs::symlink(&outside, restore.join("folder")).unwrap();
-        assert!(restore_snapshot(&destination, &manifest.id, &restore, true, |_| {}).is_err());
+        restore_snapshot(&destination, &manifest.id, &restore, true, |_| {}).unwrap();
         assert!(!outside.join("file").exists());
+        assert_eq!(fs::read(restore.join("folder/file")).unwrap(), b"safe");
     }
 
     #[cfg(unix)]
