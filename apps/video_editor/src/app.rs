@@ -8733,11 +8733,7 @@ impl Widget for VideoEditorApp {
                 // just above populated, so a peer's caret is this field's
                 // caret in another colour rather than a second guess at it.
                 crate::presence::draw_peer_field_carets(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    presence,
+                    &mut crate::presence::PeerPaintCtx::new(scene, transform, tr, theme, presence),
                     crate::presence::FIELD_TITLE_WORDS,
                     mid,
                     |byte| field.caret_rect(theme, byte),
@@ -18076,11 +18072,7 @@ impl VideoEditorApp {
         // to stay legible on a lane that is greyed back -- knowing someone
         // else is working on a locked clip is exactly when it matters.
         crate::presence::draw_peer_clips(
-            scene,
-            tf,
-            tr,
-            theme,
-            presence,
+            &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
             &drawn,
             Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
         );
@@ -18139,11 +18131,7 @@ impl VideoEditorApp {
         // mapping, so a peer's line lands on the pixel the local one would at
         // the same instant under the same zoom and scroll.
         crate::presence::draw_peer_playheads(
-            scene,
-            tf,
-            tr,
-            theme,
-            presence,
+            &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
             r.lanes,
             r.timeline.y1,
             |t| self.time_to_x(t, &r.lanes),
