@@ -122,22 +122,28 @@ class NativeRegressions(unittest.TestCase):
         self.host.send(op='scripts',scripts=[COUNTER])
         self.host.until(lambda e:e['event']=='title' and e['title'].startswith('script-count-'))
         self.host.settle()
-    def test_session_history_jump_preserves_forward_entries(self):
+    def test_session_history_is_directional_and_uses_real_entry_ids(self):
         self.host.navigate(self.url+'b')
         self.host.navigate(self.url+'c')
-        self.host.send(op='navigation_history',request_id=7)
+        self.host.send(op='back')
+        self.host.until(lambda e:e['event']=='loaded' and e['url']==self.url+'b')
+        self.host.send(op='navigation_history',request_id=7,direction='back')
         try:
-            snapshot=self.host.until(lambda e:e['event']=='navigation_history',timeout=5)
+            back=self.host.until(lambda e:e['event']=='navigation_history',timeout=5)
         except queue.Empty:
             self.host.log.seek(0)
             self.fail(self.host.log.read().decode(errors='replace')[-5000:])
-        self.assertEqual(snapshot['request_id'],7)
-        self.assertEqual([e['url'] for e in snapshot['entries'][:2]],[self.url+'b',self.url])
-        self.host.send(op='history_entry',request_id=7,id=snapshot['entries'][1]['id'])
-        self.host.until(lambda e:e['event']=='loaded' and e['url']==self.url)
-        self.host.send(op='forward')
-        self.host.until(lambda e:e['event']=='loaded' and e['url']==self.url+'b')
-        self.host.send(op='forward')
+        self.assertEqual(back['direction'],'back')
+        self.assertEqual(back['entries'][0]['url'],self.url)
+        self.assertNotIn(self.url+'b',[e['url'] for e in back['entries']])
+        self.assertNotIn(self.url+'c',[e['url'] for e in back['entries']])
+
+        self.host.send(op='navigation_history',request_id=8,direction='forward')
+        forward=self.host.until(lambda e:e['event']=='navigation_history',timeout=5)
+        self.assertEqual(forward['request_id'],8)
+        self.assertEqual(forward['direction'],'forward')
+        self.assertEqual([e['url'] for e in forward['entries']],[self.url+'c'])
+        self.host.send(op='history_entry',request_id=8,id=forward['entries'][0]['id'])
         self.host.until(lambda e:e['event']=='loaded' and e['url']==self.url+'c')
 
     def test_physical_resize_at_retina_scale(self):
