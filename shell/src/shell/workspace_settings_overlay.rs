@@ -19,7 +19,8 @@ use crate::shell::state::{CapRole, UserId, WorkspaceTree};
 use crate::shell::workspace_settings::{
     DefaultAppsCtx, agents_add_rect, agents_pane_rows, default_app_rows, draw_agents_pane,
     draw_default_apps_pane, draw_members_pane, draw_permissions_pane, members_pane_rows,
-    ownership_action_rect, ownership_transfer_resource, permissions_pane_layout,
+    ownership_action_rect, ownership_transfer_resource, permission_profiles_rect,
+    permissions_pane_layout,
 };
 
 /// Duration shared by the workspace-settings lens and the global-search
@@ -45,6 +46,8 @@ pub enum EventOutcome {
     ComposerCapability,
     ComposerExpiry(usize),
     ComposerSubmit,
+    /// Opens the canonical reusable-role actions in global search.
+    ManagePermissionProfiles,
     MemberRole(UserId),
     RemoveMember(UserId),
     /// Opens the canonical, resource-addressed ownership actions.
@@ -110,6 +113,7 @@ pub struct WorkspaceSettingsOverlay {
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
+    permission_profiles_rect: Rect,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
     ownership_action_rect: Rect,
     agent_add_rect: Rect,
@@ -128,6 +132,7 @@ impl Default for WorkspaceSettingsOverlay {
             default_app_rects: Vec::new(),
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
+            permission_profiles_rect: Rect::ZERO,
             member_control_rects: Vec::new(),
             ownership_action_rect: Rect::ZERO,
             agent_add_rect: Rect::ZERO,
@@ -369,6 +374,7 @@ impl WorkspaceSettingsOverlay {
         self.default_app_rects.clear();
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
+        self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
@@ -523,6 +529,12 @@ impl WorkspaceSettingsOverlay {
                     return EventOutcome::ComposerExpiry(index);
                 }
             }
+        }
+        if matches!(active_tab, WsTab::Permissions)
+            && self.permission_profiles_rect.area() > 0.0
+            && self.permission_profiles_rect.contains(point)
+        {
+            return EventOutcome::ManagePermissionProfiles;
         }
         for (user, role, remove) in &self.member_control_rects {
             if role.area() > 0.0 && role.contains(point) {
@@ -1287,6 +1299,7 @@ impl WorkspaceSettingsOverlay {
     ) {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
+        self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
@@ -1384,10 +1397,14 @@ impl WorkspaceSettingsOverlay {
         let draft = state.ws_grant_draft;
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
+        self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
         self.ownership_action_rect = Rect::ZERO;
         self.agent_add_rect = Rect::ZERO;
         if let Some(ws) = tree.active_workspace() {
+            if is_owner {
+                self.permission_profiles_rect = permission_profiles_rect(body_rect);
+            }
             let layout = permissions_pane_layout(ws, body_rect);
             for row in &layout.rows {
                 self.revoke_rects
@@ -1937,6 +1954,22 @@ mod tests {
         assert_eq!(
             overlay.hit_test(action.center(), WsTab::Members),
             EventOutcome::ManageOwnership
+        );
+    }
+
+    #[test]
+    fn permission_roles_entry_point_opens_the_canonical_role_actions() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        let action = Rect::new(900.0, 220.0, 1_020.0, 244.0);
+        overlay.permission_profiles_rect = action;
+        assert_eq!(
+            overlay.hit_test(action.center(), WsTab::Permissions),
+            EventOutcome::ManagePermissionProfiles
+        );
+        assert_eq!(
+            overlay.hit_test(action.center(), WsTab::Members),
+            EventOutcome::CommitName,
+            "a retained Permissions hit cannot leak into another tab"
         );
     }
 
