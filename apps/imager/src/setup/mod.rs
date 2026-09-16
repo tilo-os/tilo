@@ -1,4 +1,6 @@
 pub mod controller;
+pub mod desktop_catalog;
+pub mod desktop_download;
 mod destination_security;
 pub mod folders;
 pub mod import_view;
