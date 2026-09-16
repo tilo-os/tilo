@@ -819,21 +819,33 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     Ok(())
 }
 
-fn shot_theme(args: &LaunchArgs) -> Theme {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = if let Some(scale) = args.text_scale {
-        theme.with_text_scale(scale)
-    } else {
-        theme
-    };
+/// Resolve the palette, text scale, and motion policy used by screenshot
+/// capture. An explicit `--text-scale` wins over the compatibility
+/// `QOS_SHOTS_TEXT_SCALE` environment variable.
+#[must_use]
+pub fn shot_theme(args: &LaunchArgs) -> Theme {
+    let theme = std::env::var("QOS_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark);
+    let environment_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+    let theme = theme.with_text_scale(shot_text_scale(
+        args.text_scale,
+        environment_scale.as_deref(),
+    ));
     // Screenshot review must use the same motion policy as a real app.  The
     // headless harness does not construct `ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
     theme.with_reduce_motion(shot_motion_reduced())
+}
+
+fn shot_text_scale(cli: Option<f32>, environment: Option<&str>) -> f32 {
+    cli.or_else(|| {
+        environment
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .filter(|scale| scale.is_finite())
+    })
+    .unwrap_or(1.0)
 }
 
 /// Read the user motion preference for the headless screenshot path.
@@ -842,10 +854,14 @@ fn shot_theme(args: &LaunchArgs) -> Theme {
 /// image should not claim reduced-motion support while a launched app animates
 /// (or vice versa).
 fn shot_motion_reduced() -> bool {
-    ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok())
-        .any(|value| motion_env_value_enabled(&value))
+    [
+        "QOS_SHOTS_REDUCE_MOTION",
+        "QOS_A11Y_REDUCE_MOTION",
+        "QOS_REDUCE_MOTION",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .any(|value| motion_env_value_enabled(&value))
 }
 
 fn motion_env_value_enabled(value: &str) -> bool {
@@ -1138,6 +1154,18 @@ mod tests {
                 parse_args(&args, &[], &[]),
                 Err(LaunchError::InvalidTextScale(_))
             ));
+        }
+    }
+
+    #[test]
+    fn screenshot_text_scale_prefers_cli_then_compatibility_environment() {
+        for (cli, environment, expected) in [
+            (Some(2.0), Some("1.25"), 2.0),
+            (None, Some("1.25"), 1.25),
+            (None, None, 1.0),
+            (None, Some("invalid"), 1.0),
+        ] {
+            assert_eq!(shot_text_scale(cli, environment), expected);
         }
     }
 

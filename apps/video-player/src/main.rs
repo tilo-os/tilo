@@ -116,7 +116,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         }
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
-    render_shot_to_png(Box::new(app), viewport, out)
+    render_shot_to_png(Box::new(app), viewport, ui::launch::shot_theme(args), out)
         .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
@@ -125,25 +125,13 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
+    theme: Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_reduce_motion(
-        ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
-            .into_iter()
-            .filter_map(|key| std::env::var(key).ok())
-            .any(|value| {
-                let value = value.trim();
-                !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
-            }),
-    );
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut state = ui::State::new();
     let (w, h) = viewport;
 
@@ -165,22 +153,20 @@ fn render_shot_to_png(
         },
         &[child],
     )?;
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);

@@ -101,15 +101,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .value("--height")
         .and_then(|value| value.parse().ok())
         .unwrap_or(default_height);
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => ui::Theme::light(),
-        Some("high-contrast") => ui::Theme::high_contrast(),
-        _ => ui::Theme::dark(),
-    }
-    .with_reduce_motion(matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
+    let theme = ui::launch::shot_theme(args);
     ui::headless::FrameHarness::new_with_theme(
         ui::State::new(),
         shot_root(args)?,

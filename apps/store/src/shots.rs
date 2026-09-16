@@ -207,6 +207,16 @@ pub fn render_scenario_to_path(
     out: &Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let theme = legacy_shot_theme();
+    render_scenario_to_path_with_theme(viewport, out, scenario, &theme)
+}
+
+pub fn render_scenario_to_path_with_theme(
+    viewport: (u32, u32),
+    out: &Path,
+    scenario: Option<&str>,
+    theme: &Theme,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = seeded_app();
     app.set_layout_width_hint(f64::from(viewport.0));
     match scenario {
@@ -261,7 +271,7 @@ pub fn render_scenario_to_path(
     // headless frame captures it (a still can't hover it).
     app.arm_status_bubble_for_shots();
     let mut widget: Box<dyn Widget> = Box::new(app);
-    render_widget(viewport, out, &mut widget)
+    render_widget(viewport, out, &mut widget, theme)
 }
 
 /// Guts of the render pass — mirrors what `ui::App` does for a
@@ -275,30 +285,20 @@ pub fn render_widget(
     viewport: (u32, u32),
     out: &Path,
     widget: &mut Box<dyn Widget>,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_text_scale(shot_text_scale());
-    if matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
-        Ok("1" | "true" | "yes")
-    ) {
-        theme = theme.with_reduce_motion(true);
-    }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -310,22 +310,20 @@ pub fn render_widget(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -335,7 +333,7 @@ pub fn render_widget(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
@@ -345,7 +343,7 @@ pub fn render_widget(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
     );
 
@@ -360,6 +358,22 @@ pub fn render_widget(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("store: wrote shot to {}", out.display());
     Ok(())
+}
+
+fn legacy_shot_theme() -> Theme {
+    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    }
+    .with_text_scale(shot_text_scale());
+    if matches!(
+        std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
+        Ok("1" | "true" | "yes")
+    ) {
+        theme = theme.with_reduce_motion(true);
+    }
+    theme
 }
 
 /// Parse `WxH` into `(u32, u32)`.
