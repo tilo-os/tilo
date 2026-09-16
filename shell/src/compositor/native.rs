@@ -2738,6 +2738,7 @@ struct SpatialControlSession {
     y: f64,
     pressed_keys: std::collections::BTreeSet<u32>,
     pressed_buttons: std::collections::BTreeSet<u32>,
+    nearby_drop: Option<std::path::PathBuf>,
 }
 
 fn end_spatial_control(
@@ -2786,6 +2787,25 @@ fn spatial_scroll(value: f64) -> i16 {
     value
         .clamp(f64::from(i16::MIN), f64::from(i16::MAX))
         .round() as i16
+}
+
+fn nearby_drop_candidate(
+    paths: Option<&[std::path::PathBuf]>,
+) -> Result<Option<std::path::PathBuf>, ()> {
+    let Some(paths) = paths else {
+        return Ok(None);
+    };
+    let [path] = paths else {
+        return Err(());
+    };
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
+    if !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
+    {
+        return Err(());
+    }
+    Ok(Some(path.clone()))
 }
 
 fn move_spatial_pointer(
@@ -2866,6 +2886,14 @@ fn move_spatial_pointer(
     let Some(transition) = fabric.cross_edge(&local, edge, local_x, local_y) else {
         return false;
     };
+    let pending_drag = file_explorer::external_drag::unclaimed();
+    let Ok(nearby_drop) =
+        nearby_drop_candidate(pending_drag.as_ref().map(|drag| drag.paths.as_slice()))
+    else {
+        // Keep unsupported Files drags local; crossing would otherwise swallow
+        // their release and strand the gesture on the source device.
+        return false;
+    };
     let session = SpatialControlSession {
         target: transition.to,
         return_edge: edge.opposite(),
@@ -2873,6 +2901,7 @@ fn move_spatial_pointer(
         y: f64::from(transition.target_y) + dy,
         pressed_keys: std::collections::BTreeSet::new(),
         pressed_buttons: std::collections::BTreeSet::new(),
+        nearby_drop,
     };
     if crate::shell::device_fabric_runtime::send_spatial_input(
         network,
@@ -2924,7 +2953,7 @@ fn spatial_departure_edge(
 
 #[cfg(test)]
 mod spatial_edge_tests {
-    use super::spatial_departure_edge;
+    use super::{nearby_drop_candidate, spatial_departure_edge};
     use crate::shell::device_fabric::DisplayEdge;
 
     #[test]
@@ -2962,6 +2991,47 @@ mod spatial_edge_tests {
             None
         );
     }
+
+    #[test]
+    fn only_one_bounded_regular_file_can_arm_a_nearby_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("note.txt");
+        std::fs::write(&path, b"hello").unwrap();
+        assert_eq!(
+            nearby_drop_candidate(Some(std::slice::from_ref(&path))),
+            Ok(Some(path.clone()))
+        );
+        assert!(nearby_drop_candidate(Some(&[path.clone(), path])).is_err());
+        assert!(nearby_drop_candidate(Some(&[])).is_err());
+    }
+}
+
+fn finish_nearby_drop(
+    event: &WindowEvent,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) -> Option<bool> {
+    let session = active.as_ref()?;
+    if matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        }
+    ) && let Some(path) = session.nearby_drop.clone()
+    {
+        let target = session.target.clone();
+        let matches = file_explorer::external_drag::hand_off()
+            .is_some_and(|drag| drag.paths.as_slice() == [path.as_path()]);
+        end_spatial_control(network, active);
+        if matches {
+            let _ =
+                crate::shell::device_fabric_runtime::request_nearby_drop(network, &target, &path);
+        }
+        return Some(false);
+    }
+    None
 }
 
 fn forward_spatial_window_event(
@@ -2969,6 +3039,9 @@ fn forward_spatial_window_event(
     network: &crate::shell::network::ShellNetwork,
     active: &mut Option<SpatialControlSession>,
 ) -> bool {
+    if let Some(consumed) = finish_nearby_drop(event, network, active) {
+        return consumed;
+    }
     let Some(session) = active.as_ref() else {
         return false;
     };
@@ -5910,6 +5983,43 @@ pub fn run() -> ! {
             }
             for controller in crate::shell::device_fabric_runtime::take_spatial_input_releases() {
                 let _ = state.release_personal_fabric_input(&controller);
+            }
+            for event in crate::shell::device_fabric_runtime::take_nearby_drop_events() {
+                use crate::shell::device_fabric_runtime::NearbyDropEvent;
+                let fabric = net.device_fabric();
+                let peer_label = |peer: &crate::shell::personal_continuity::DeviceId| {
+                    fabric.snapshots().get(peer).map_or_else(
+                        || "your device".to_string(),
+                        |snapshot| snapshot.presence.label.clone(),
+                    )
+                };
+                let (title, body) = match event {
+                    NearbyDropEvent::Sending { file_name, peer } => (
+                        "Sending nearby".to_string(),
+                        format!("{file_name} to {}", peer_label(&peer)),
+                    ),
+                    NearbyDropEvent::Sent { file_name, peer } => (
+                        "Sent nearby".to_string(),
+                        format!("{file_name} to {}", peer_label(&peer)),
+                    ),
+                    NearbyDropEvent::Failed { file_name, peer } => (
+                        "Nearby drop failed".to_string(),
+                        format!("{file_name} · {}", peer_label(&peer)),
+                    ),
+                    NearbyDropEvent::Received { path, peer } => (
+                        "Received nearby".to_string(),
+                        format!(
+                            "{} from {}",
+                            path.file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("File"),
+                            peer_label(&peer)
+                        ),
+                    ),
+                };
+                frame_builder.with_chrome(|chrome| {
+                    chrome.push_notification(title, body);
+                });
             }
             let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
