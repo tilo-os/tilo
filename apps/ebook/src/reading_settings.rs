@@ -34,6 +34,40 @@ pub(crate) enum ReadingSettingsAction {
     SetScheme(String),
 }
 
+/// Event-routing services shared by the quick settings' numeric editors.
+/// The host constructs this once at its widget boundary so the component API
+/// exposes one coherent interaction contract instead of mirroring every
+/// argument required by [`NumberControls`].
+pub(crate) struct ReadingSettingsEventCtx<'a> {
+    pub event: &'a WindowEvent,
+    pub scale_factor: f64,
+    pub modifiers: Modifiers,
+    pub state: &'a mut AutoCommit,
+    pub root: &'a ObjId,
+    pub node_id: NodeId,
+    pub taffy: &'a TaffyTree<()>,
+    pub handled: &'a mut bool,
+}
+
+/// Paint services supplied by the reader host for one settings frame.
+pub(crate) struct ReadingSettingsPaintCtx<'a> {
+    pub scene: &'a mut Scene,
+    pub transform: Affine,
+    pub text: &'a mut TextRenderer,
+    pub theme: &'a Theme,
+}
+
+/// Reader state and available geometry consumed by the settings popover.
+pub(crate) struct ReadingSettingsView<'a> {
+    pub viewport: Rect,
+    pub content_x0: f64,
+    pub content_x1: f64,
+    pub settings: &'a Settings,
+    pub fonts: &'a [FontEntry],
+    pub default_font_id: &'a str,
+    pub schemes: &'a [ColorScheme],
+}
+
 #[derive(Clone)]
 struct Hit {
     rect: Rect,
@@ -58,6 +92,27 @@ struct Layout {
     font_pills: Vec<(String, String, f64, bool)>,
     scheme_pills: Vec<SchemePill>,
     scheme_widths: Vec<f64>,
+}
+
+#[derive(Clone, Copy)]
+struct ControlRow {
+    x0: f64,
+    x1: f64,
+    y: f64,
+    height: f64,
+    gap: f64,
+}
+
+impl ControlRow {
+    fn at_y(self, y: f64) -> Self {
+        Self { y, ..self }
+    }
+}
+
+struct PillSpec<'a> {
+    label: &'a str,
+    active: bool,
+    action: ReadingSettingsAction,
 }
 
 #[derive(Default)]
@@ -234,28 +289,20 @@ impl ReadingSettings {
             .map(|hit| hit.action.clone())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_event(
         &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
+        ctx: &mut ReadingSettingsEventCtx<'_>,
     ) -> Vec<ReadingSettingsAction> {
         self.numbers
             .handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                node_id,
-                taffy,
-                handled,
+                ctx.event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                ctx.state,
+                ctx.root,
+                ctx.node_id,
+                ctx.taffy,
+                ctx.handled,
             )
             .into_iter()
             .filter_map(|(field, value)| match field {
@@ -278,20 +325,10 @@ impl ReadingSettings {
         ((px1 - panel_w).max(content_x0), px1)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        viewport: Rect,
-        content_x0: f64,
-        content_x1: f64,
-        settings: &Settings,
-        fonts: &[FontEntry],
-        default_font_id: &str,
-        schemes: &[ColorScheme],
+        ctx: &mut ReadingSettingsPaintCtx<'_>,
+        view: &ReadingSettingsView<'_>,
     ) {
         if !self.open {
             return;
@@ -299,86 +336,37 @@ impl ReadingSettings {
 
         // The page remains an undimmed live preview. The viewport hit below
         // is only a modal outside-click target; later panel hits win.
-        self.push_hit(viewport, ReadingSettingsAction::Dismiss);
-        let layout = Self::layout(
-            text,
-            viewport,
-            content_x0,
-            content_x1,
-            settings,
-            fonts,
-            default_font_id,
-            schemes,
-        );
-        self.draw_panel_background(scene, transform, theme, layout.panel);
+        self.push_hit(view.viewport, ReadingSettingsAction::Dismiss);
+        let layout = Self::layout(ctx.text, view);
+        self.draw_panel_background(ctx, layout.panel);
 
         let mut y = layout.panel.y0 + layout.pad;
-        y = self.draw_header(
-            scene,
-            transform,
-            text,
-            theme,
-            layout.ix0,
-            layout.ix1,
+        let header = ControlRow {
+            x0: layout.ix0,
+            x1: layout.ix1,
             y,
-            layout.header_h,
-        );
-        y = self.draw_steppers(
-            scene,
-            transform,
-            text,
-            theme,
-            layout.ix0,
-            layout.ix1,
+            height: layout.header_h,
+            gap: 0.0,
+        };
+        y = self.draw_header(ctx, header);
+        let stepper_row = ControlRow {
             y,
-            layout.row_h,
-            settings,
-        );
-        y = self.draw_layout_row(
-            scene,
-            transform,
-            text,
-            theme,
-            layout.ix0,
-            layout.ix1,
+            height: layout.row_h,
+            ..header
+        };
+        y = self.draw_steppers(ctx, stepper_row, view.settings);
+        let pill_row = ControlRow {
             y,
-            layout.pill_h,
-            layout.pill_gap,
-            settings,
-        );
-        y = self.draw_composition_row(
-            scene,
-            transform,
-            text,
-            theme,
-            layout.ix0,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-            settings,
-        );
-        y = self.draw_font_row(
-            scene,
-            transform,
-            text,
-            theme,
-            layout.ix0,
-            layout.ix1,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
-            &layout.font_pills,
-        );
+            height: layout.pill_h,
+            gap: layout.pill_gap,
+            ..header
+        };
+        y = self.draw_layout_row(ctx, pill_row, view.settings);
+        y = self.draw_composition_row(ctx, pill_row.at_y(y), view.settings);
+        y = self.draw_font_row(ctx, pill_row.at_y(y), &layout.font_pills);
         self.draw_page_row(
-            scene,
-            transform,
-            text,
-            theme,
-            layout.ix0,
-            layout.ix1,
-            y,
-            layout.pill_h,
-            layout.pill_gap,
+            ctx,
+            pill_row.at_y(y),
             &layout.scheme_pills,
             &layout.scheme_widths,
         );
@@ -387,52 +375,37 @@ impl ReadingSettings {
     /// Paint the popover's rounded panel background + border and register it
     /// as a modal "swallow" hit so a click inside the panel (but on no more
     /// specific control) doesn't fall through to the outside-dismiss hit.
-    fn draw_panel_background(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        panel: Rect,
-    ) {
-        let colors = &theme.tokens.colors;
+    fn draw_panel_background(&mut self, ctx: &mut ReadingSettingsPaintCtx<'_>, panel: Rect) {
+        let colors = &ctx.theme.tokens.colors;
         paint::fill_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             panel,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             colors.surfaces.raised,
         );
         paint::stroke_round(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             panel,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             colors.border_standard,
             1.0,
         );
         self.push_hit(panel, ReadingSettingsAction::Swallow);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn layout(
-        text: &mut TextRenderer,
-        viewport: Rect,
-        content_x0: f64,
-        content_x1: f64,
-        settings: &Settings,
-        fonts: &[FontEntry],
-        default_font_id: &str,
-        schemes: &[ColorScheme],
-    ) -> Layout {
+    fn layout(text: &mut TextRenderer, view: &ReadingSettingsView<'_>) -> Layout {
         let pad = 16.0;
         let row_h = 34.0;
         let pill_h = row_h - 4.0;
         let pill_gap = 8.0;
-        let (px0, px1) = Self::panel_x_bounds(viewport, content_x0, content_x1);
+        let (px0, px1) = Self::panel_x_bounds(view.viewport, view.content_x0, view.content_x1);
         let inner_w = px1 - px0 - pad * 2.0;
 
-        let (font_pills, font_widths) = Self::font_pills(text, fonts, settings, default_font_id);
-        let (scheme_pills, scheme_widths) = Self::scheme_pills(text, schemes, settings);
+        let (font_pills, font_widths) =
+            Self::font_pills(text, view.fonts, view.settings, view.default_font_id);
+        let (scheme_pills, scheme_widths) = Self::scheme_pills(text, view.schemes, view.settings);
 
         let font_rows = wrap_row_count(&font_widths, inner_w, pill_gap);
         let scheme_rows = wrap_row_count(&scheme_widths, inner_w, pill_gap);
@@ -455,8 +428,8 @@ impl ReadingSettings {
             + type_h
             + 22.0
             + page_h;
-        let py0 = viewport.y0 + TOP_BAR + 8.0;
-        let py1 = (py0 + panel_h).min(viewport.y1 - 12.0);
+        let py0 = view.viewport.y0 + TOP_BAR + 8.0;
+        let py1 = (py0 + panel_h).min(view.viewport.y1 - 12.0);
 
         Layout {
             pad,
@@ -560,308 +533,232 @@ impl ReadingSettings {
         (scheme_pills, scheme_widths)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_header(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        x0: f64,
-        x1: f64,
-        y: f64,
-        height: f64,
-    ) -> f64 {
-        text.draw_text_weighted(
-            scene,
+    fn draw_header(&mut self, ctx: &mut ReadingSettingsPaintCtx<'_>, row: ControlRow) -> f64 {
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "Display",
             13.5,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x0, y + 4.0)),
+            ctx.theme.tokens.colors.text_primary,
+            ctx.transform * Affine::translate((row.x0, row.y + 4.0)),
             None,
             TextWeight::Semibold,
         );
         let size = 26.0;
-        let rect = Rect::new(x1 - size, y - 2.0, x1, y - 2.0 + size);
+        let rect = Rect::new(row.x1 - size, row.y - 2.0, row.x1, row.y - 2.0 + size);
         if rect.contains(self.cursor) {
             paint::fill_round(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 rect,
-                f64::from(theme.tokens.radii.md),
-                theme.bg_hover,
+                f64::from(ctx.theme.tokens.radii.md),
+                ctx.theme.bg_hover,
             );
         }
-        paint::dots(scene, transform, rect, theme.tokens.colors.text_dim);
+        paint::dots(
+            ctx.scene,
+            ctx.transform,
+            rect,
+            ctx.theme.tokens.colors.text_dim,
+        );
         self.push_hit(rect, ReadingSettingsAction::OpenManager);
-        y + height
+        row.y + row.height
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_steppers(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        x0: f64,
-        x1: f64,
-        y: f64,
-        row_h: f64,
+        ctx: &mut ReadingSettingsPaintCtx<'_>,
+        row: ControlRow,
         settings: &Settings,
     ) -> f64 {
         self.stepper(
-            scene,
-            transform,
-            text,
-            theme,
-            x0,
-            x1,
-            y,
-            row_h,
+            ctx,
+            row,
             "Text size",
             f64::from(settings.font_scale) * 100.0,
             &NumberField::FontScale,
         );
-        let y = y + row_h + 10.0;
+        let y = row.y + row.height + 10.0;
         self.stepper(
-            scene,
-            transform,
-            text,
-            theme,
-            x0,
-            x1,
-            y,
-            row_h,
+            ctx,
+            row.at_y(y),
             "Line spacing",
             f64::from(settings.line_spacing),
             &NumberField::LineSpacing,
         );
-        y + row_h + 22.0
+        y + row.height + 22.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn stepper(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        x0: f64,
-        x1: f64,
-        y: f64,
-        height: f64,
+        ctx: &mut ReadingSettingsPaintCtx<'_>,
+        row: ControlRow,
         label: &str,
         value: f64,
         field: &NumberField,
     ) {
-        text.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             label,
             13.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x0, y + (height - 13.0) / 2.0)),
+            ctx.theme.tokens.colors.text_primary,
+            ctx.transform * Affine::translate((row.x0, row.y + (row.height - 13.0) / 2.0)),
             None,
             TextWeight::Medium,
         );
-        let width = (height * 2.0 + 62.0).min((x1 - x0) * 0.58);
+        let width = (row.height * 2.0 + 62.0).min((row.x1 - row.x0) * 0.58);
         self.numbers.draw(
             field,
             value,
-            Rect::new(x1 - width, y, x1, y + height),
-            scene,
-            transform,
-            text,
-            theme,
+            Rect::new(row.x1 - width, row.y, row.x1, row.y + row.height),
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_layout_row(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        x0: f64,
-        x1: f64,
-        mut y: f64,
-        height: f64,
-        gap: f64,
+        ctx: &mut ReadingSettingsPaintCtx<'_>,
+        row: ControlRow,
         settings: &Settings,
     ) -> f64 {
-        Self::section_label(scene, transform, text, theme, x0, y, "LAYOUT");
-        y += 16.0;
-        let mut x = x0;
+        Self::section_label(ctx, Point::new(row.x0, row.y), "LAYOUT");
+        let mut y = row.y + 16.0;
+        let mut x = row.x0;
         for mode in ReadMode::ALL {
-            let width = Self::pill_width(text, mode.label(), 12.5);
-            if x + width > x1 && x > x0 {
-                x = x0;
-                y += height + gap;
+            let width = Self::pill_width(ctx.text, mode.label(), 12.5);
+            if x + width > row.x1 && x > row.x0 {
+                x = row.x0;
+                y += row.height + row.gap;
             }
             let active = settings.mode == mode;
             self.pill(
-                scene,
-                transform,
-                text,
-                theme,
+                ctx,
                 x,
                 y,
-                height,
-                mode.label(),
-                active,
-                if active {
-                    ReadingSettingsAction::Swallow
-                } else {
-                    ReadingSettingsAction::SetMode(mode)
+                row.height,
+                PillSpec {
+                    label: mode.label(),
+                    active,
+                    action: if active {
+                        ReadingSettingsAction::Swallow
+                    } else {
+                        ReadingSettingsAction::SetMode(mode)
+                    },
                 },
             );
-            x += width + gap;
+            x += width + row.gap;
         }
-        y + height + 22.0
+        y + row.height + 22.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_composition_row(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        x0: f64,
-        mut y: f64,
-        height: f64,
-        gap: f64,
+        ctx: &mut ReadingSettingsPaintCtx<'_>,
+        row: ControlRow,
         settings: &Settings,
     ) -> f64 {
-        Self::section_label(scene, transform, text, theme, x0, y, "COMPOSITION");
-        y += 16.0;
-        let mut x = x0;
+        Self::section_label(ctx, Point::new(row.x0, row.y), "COMPOSITION");
+        let y = row.y + 16.0;
+        let mut x = row.x0;
         for composition in CompositionStyle::ALL {
             let active = settings.composition == composition;
             let width = self.pill(
-                scene,
-                transform,
-                text,
-                theme,
+                ctx,
                 x,
                 y,
-                height,
-                composition.label(),
-                active,
-                if active {
-                    ReadingSettingsAction::Swallow
-                } else {
-                    ReadingSettingsAction::SetComposition(composition)
+                row.height,
+                PillSpec {
+                    label: composition.label(),
+                    active,
+                    action: if active {
+                        ReadingSettingsAction::Swallow
+                    } else {
+                        ReadingSettingsAction::SetComposition(composition)
+                    },
                 },
             );
-            x += width + gap;
+            x += width + row.gap;
         }
-        y + height + 22.0
+        y + row.height + 22.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_font_row(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        x0: f64,
-        x1: f64,
-        mut y: f64,
-        height: f64,
-        gap: f64,
+        ctx: &mut ReadingSettingsPaintCtx<'_>,
+        row: ControlRow,
         pills: &[(String, String, f64, bool)],
     ) -> f64 {
-        Self::section_label(scene, transform, text, theme, x0, y, "TYPEFACE");
-        y += 16.0;
-        let mut x = x0;
+        Self::section_label(ctx, Point::new(row.x0, row.y), "TYPEFACE");
+        let mut y = row.y + 16.0;
+        let mut x = row.x0;
         for (id, label, width, active) in pills {
-            if x + width > x1 && x > x0 {
-                x = x0;
-                y += height + gap;
+            if x + width > row.x1 && x > row.x0 {
+                x = row.x0;
+                y += row.height + row.gap;
             }
             self.pill(
-                scene,
-                transform,
-                text,
-                theme,
+                ctx,
                 x,
                 y,
-                height,
-                label,
-                *active,
-                if *active {
-                    ReadingSettingsAction::Swallow
-                } else {
-                    ReadingSettingsAction::SetFont(id.clone())
+                row.height,
+                PillSpec {
+                    label,
+                    active: *active,
+                    action: if *active {
+                        ReadingSettingsAction::Swallow
+                    } else {
+                        ReadingSettingsAction::SetFont(id.clone())
+                    },
                 },
             );
-            x += width + gap;
+            x += width + row.gap;
         }
-        y + height + 22.0
+        y + row.height + 22.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_page_row(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        x0: f64,
-        x1: f64,
-        mut y: f64,
-        height: f64,
-        gap: f64,
+        ctx: &mut ReadingSettingsPaintCtx<'_>,
+        row: ControlRow,
         pills: &[SchemePill],
         widths: &[f64],
     ) {
-        Self::section_label(scene, transform, text, theme, x0, y, "PAGE");
-        y += 16.0;
-        let mut x = x0;
+        Self::section_label(ctx, Point::new(row.x0, row.y), "PAGE");
+        let mut y = row.y + 16.0;
+        let mut x = row.x0;
         for (pill, width) in pills.iter().zip(widths) {
-            if x + width > x1 && x > x0 {
-                x = x0;
-                y += height + gap;
+            if x + width > row.x1 && x > row.x0 {
+                x = row.x0;
+                y += row.height + row.gap;
             }
             self.pill(
-                scene,
-                transform,
-                text,
-                theme,
+                ctx,
                 x,
                 y,
-                height,
-                &pill.label,
-                pill.active,
-                if pill.active {
-                    ReadingSettingsAction::Swallow
-                } else {
-                    pill.action.clone()
+                row.height,
+                PillSpec {
+                    label: &pill.label,
+                    active: pill.active,
+                    action: if pill.active {
+                        ReadingSettingsAction::Swallow
+                    } else {
+                        pill.action.clone()
+                    },
                 },
             );
-            x += width + gap;
+            x += width + row.gap;
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn section_label(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
-        label: &str,
-    ) {
-        text.draw_text_weighted(
-            scene,
+    fn section_label(ctx: &mut ReadingSettingsPaintCtx<'_>, origin: Point, label: &str) {
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             label,
             10.0,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((x, y)),
+            ctx.theme.tokens.colors.text_dim,
+            ctx.transform * Affine::translate((origin.x, origin.y)),
             None,
             TextWeight::Semibold,
         );
@@ -874,45 +771,39 @@ impl ReadingSettings {
         ) + 24.0
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn pill(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut ReadingSettingsPaintCtx<'_>,
         x: f64,
         y: f64,
         height: f64,
-        label: &str,
-        active: bool,
-        action: ReadingSettingsAction,
+        spec: PillSpec<'_>,
     ) -> f64 {
-        let width = Self::pill_width(text, label, 12.5);
+        let width = Self::pill_width(ctx.text, spec.label, 12.5);
         let rect = Rect::new(x, y, x + width, y + height);
-        let colors = &theme.tokens.colors;
-        let background = if active {
-            theme.accent_primary
+        let colors = &ctx.theme.tokens.colors;
+        let background = if spec.active {
+            ctx.theme.accent_primary
         } else if rect.contains(self.cursor) {
-            theme.bg_hover
+            ctx.theme.bg_hover
         } else {
             colors.surfaces.overlay
         };
-        paint::fill_round(scene, transform, rect, height / 2.0, background);
-        text.draw_text_weighted(
-            scene,
-            label,
+        paint::fill_round(ctx.scene, ctx.transform, rect, height / 2.0, background);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
+            spec.label,
             12.5,
-            if active {
+            if spec.active {
                 Color::from_rgb8(248, 248, 252)
             } else {
                 colors.text_primary
             },
-            transform * Affine::translate((x + 12.0, y + (height - 12.5) / 2.0)),
+            ctx.transform * Affine::translate((x + 12.0, y + (height - 12.5) / 2.0)),
             None,
             TextWeight::Medium,
         );
-        self.push_hit(rect, action);
+        self.push_hit(rect, spec.action);
         width
     }
 
