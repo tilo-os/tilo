@@ -633,6 +633,25 @@ mod tests {
     use super::*;
     use crate::diff::parse_unified;
 
+    fn hunk_buttons(staged_side: bool) -> Vec<HunkButton> {
+        let diff = parse_unified("x.rs", "rust", "@@ -1,1 +1,1 @@\n-old\n+new\n");
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let mut paint = draw::PaintCtx::new(&mut scene, &mut text, Affine::IDENTITY);
+        DiffView::draw(
+            &mut paint,
+            &Theme::default(),
+            Rect::new(0.0, 0.0, 640.0, 320.0),
+            &diff,
+            0.0,
+            &Settings::default(),
+            HunkInteraction {
+                staged_side,
+                ..HunkInteraction::default()
+            },
+        )
+    }
+
     #[test]
     fn pair_rows_aligns_change_blocks() {
         let d = parse_unified(
@@ -657,5 +676,25 @@ mod tests {
     fn content_height_scales_with_lines() {
         let d = parse_unified("x.rs", "rust", "@@ -1,1 +1,1 @@\n+a\n+b\n");
         assert!(DiffView::content_height(&d) > ROW_H * 2.0);
+    }
+
+    #[test]
+    fn hunk_actions_match_the_side_the_diff_came_from() {
+        let worktree = hunk_buttons(false);
+        assert_eq!(worktree.len(), 2, "worktree hunks can stage or discard");
+        assert!(
+            worktree
+                .iter()
+                .any(|button| button.action == HunkAction::Toggle)
+        );
+        assert!(
+            worktree
+                .iter()
+                .any(|button| button.action == HunkAction::Discard)
+        );
+
+        let staged = hunk_buttons(true);
+        assert_eq!(staged.len(), 1, "index hunks can only be unstaged");
+        assert_eq!(staged[0].action, HunkAction::Toggle);
     }
 }
