@@ -22,8 +22,20 @@ install -pm 0644 "$repo_root/Cargo.toml" "$repo_root/Cargo.lock" \
 tar -C "$work" -czf "$work/qos-$version.tar.gz" "qos-$version"
 install -pm 0644 "$repo_root/dist/arch/PKGBUILD" "$work/PKGBUILD"
 sed -i "s/^pkgver=.*/pkgver=$version/" "$work/PKGBUILD"
+# Arch Linux ARM still defaults to xz on some images, while the release and
+# Forgejo package contracts use the modern .pkg.tar.zst format.  Pin the
+# compressor locally instead of relying on the base image's makepkg.conf.
+command -v zstd >/dev/null
+makepkg_config=$work/makepkg.conf
+cp /etc/makepkg.conf "$makepkg_config"
+if grep -q '^PKGEXT=' "$makepkg_config"; then
+  sed -i "s/^PKGEXT=.*/PKGEXT='.pkg.tar.zst'/" "$makepkg_config"
+else
+  printf "%s\n" "PKGEXT='.pkg.tar.zst'" >> "$makepkg_config"
+fi
 (
   cd "$work"
-  PKGDEST="$out" SRCDEST="$work" BUILDDIR="$work/makepkg" makepkg --syncdeps --noconfirm --cleanbuild
+  PKGDEST="$out" SRCDEST="$work" BUILDDIR="$work/makepkg" \
+    makepkg --config "$makepkg_config" --syncdeps --noconfirm --cleanbuild
 )
 printf '%s\n' "$out"/*.pkg.tar.*
