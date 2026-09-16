@@ -5344,8 +5344,17 @@ pub fn run() -> ! {
                         state.forward_client_touch(touch, target);
                     }
                 }
-                BackendEvent::Redraw | BackendEvent::Focus(_) => {
-                    // Redraw is implicit (we re-paint every tick); focus changes don't gate input dispatch here.
+                BackendEvent::Focus(focused) => {
+                    if !focused {
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
+                    }
+                }
+                BackendEvent::Redraw => {
+                    // Redraw is implicit: the native loop paints every tick.
                 }
             }
         }
