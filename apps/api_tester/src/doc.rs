@@ -752,18 +752,15 @@ impl ApiDoc {
         map: &ObjId,
         id: &str,
     ) -> Option<T> {
-        doc.get_all(map, id)
-            .ok()?
-            .into_iter()
-            .find_map(|(value, _)| {
-                if let Value::Scalar(value) = value {
-                    value
-                        .to_str()
-                        .and_then(|json| serde_json::from_str(json).ok())
-                } else {
-                    None
-                }
-            })
+        doc.get(map, id).ok()?.and_then(|(value, _)| {
+            if let Value::Scalar(value) = value {
+                value
+                    .to_str()
+                    .and_then(|json| serde_json::from_str(json).ok())
+            } else {
+                None
+            }
+        })
     }
 
     fn put_json_if_changed<T: serde::Serialize>(
@@ -775,10 +772,8 @@ impl ApiDoc {
         let Ok(json) = serde_json::to_string(value) else {
             return;
         };
-        let already_current = doc.get_all(map, key).is_ok_and(|values| {
-            values.into_iter().any(|(stored, _)| {
-                matches!(stored, Value::Scalar(stored) if stored.to_str() == Some(json.as_str()))
-            })
+        let already_current = doc.get(map, key).ok().flatten().is_some_and(|(stored, _)| {
+            matches!(stored, Value::Scalar(stored) if stored.to_str() == Some(json.as_str()))
         });
         if !already_current {
             let _ = doc.put(map, key, json);
@@ -816,9 +811,9 @@ impl ApiDoc {
                     continue;
                 }
                 if let Some(value) = Self::record_at(doc, &map, &id) {
-                    // `get_all` is ordered by Automerge op id, so this is a
-                    // stable whole-record policy for two concurrent edits of
-                    // the same collection/environment/history record.
+                    // `record_at` intentionally follows Automerge's
+                    // materialized winner, the same explicit policy used by
+                    // scalar writes above.
                     values.entry(id).or_insert(value);
                 }
             }
@@ -1389,6 +1384,59 @@ mod tests {
                 .and_then(|(value, _)| value.to_str().map(str::to_owned)),
             Some(losing),
             "requesting a value held only by a losing conflict updates the visible result"
+        );
+    }
+
+    #[test]
+    fn json_update_replaces_a_visible_conflict_winner_even_if_loser_matches() {
+        let (mut base, root) = doc();
+        let map = base
+            .put_object(&root, "records", ObjType::Map)
+            .expect("test map");
+        ApiDoc::put_json_if_changed(
+            &mut base,
+            &map,
+            "record",
+            &serde_json::json!({"name": "base"}),
+        );
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).expect("left peer");
+        let mut right = AutoCommit::load(&bytes).expect("right peer");
+        ApiDoc::put_json_if_changed(
+            &mut left,
+            &map,
+            "record",
+            &serde_json::json!({"name": "left"}),
+        );
+        ApiDoc::put_json_if_changed(
+            &mut right,
+            &map,
+            "record",
+            &serde_json::json!({"name": "right"}),
+        );
+        left.merge(&mut right).expect("merge concurrent records");
+
+        let visible = left
+            .get(&map, "record")
+            .expect("read winner")
+            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .expect("JSON winner");
+        let losing = left
+            .get_all(&map, "record")
+            .expect("read conflicts")
+            .into_iter()
+            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+            .find(|value| value != &visible)
+            .expect("a concurrent losing record");
+        let requested: serde_json::Value = serde_json::from_str(&losing).expect("valid JSON");
+
+        ApiDoc::put_json_if_changed(&mut left, &map, "record", &requested);
+        assert_eq!(
+            left.get(&map, "record")
+                .expect("read requested winner")
+                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+            Some(losing),
+            "a requested losing JSON record replaces the materialized winner"
         );
     }
 
