@@ -4,6 +4,8 @@
 //! Started by default in normal sessions; recovery sessions may disable it.
 
 use std::collections::VecDeque;
+use std::io::{Read as _, Write as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -15,7 +17,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
-use crate::network::actor::{PersonalFabricPayload, WorkspaceControlRoute};
+use crate::network::actor::{
+    PERSONAL_MEDIA_CHUNK_BYTES, PersonalFabricPayload, PersonalMediaTransferFrame,
+    WorkspaceControlRoute,
+};
 use crate::network::behaviour::load_or_create_keypair;
 use crate::network::identity::PeerIdentityStore;
 use crate::network::invite::accept_invite_into;
@@ -38,6 +43,103 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// contains no application payload.
 const PEER_DEPARTURE_HISTORY_CAPACITY: usize = 64;
 const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
+const MAX_PERSONAL_MEDIA_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+const MAX_INCOMING_PERSONAL_MEDIA_TRANSFERS: usize = 8;
+const MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS: usize = 64;
+
+fn portable_media_file_name(name: &str) -> Option<String> {
+    let sanitized = name
+        .chars()
+        .take(200)
+        .map(|character| {
+            if character.is_control() || matches!(character, '/' | '\\') {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    (!sanitized.is_empty() && sanitized != "." && sanitized != "..").then_some(sanitized)
+}
+
+fn personal_media_cache_root() -> Option<PathBuf> {
+    let root = dirs::cache_dir()?.join("qos/personal-media");
+    // A partial stream is never useful after restart and can never become
+    // authorized again because transfer ids/actions are session-local.
+    let incoming = root.join("incoming");
+    let _ = std::fs::remove_dir_all(&incoming);
+    std::fs::create_dir_all(&incoming).ok()?;
+    Some(root)
+}
+
+struct IncomingPersonalMediaTransfer {
+    file: std::fs::File,
+    part_path: PathBuf,
+    file_name: String,
+    total_bytes: u64,
+    received_bytes: u64,
+    hasher: blake3::Hasher,
+}
+
+#[derive(Default)]
+struct PersonalMediaTransferState {
+    authorized: std::collections::BTreeSet<(crate::shell::personal_continuity::DeviceId, [u8; 16])>,
+    incoming: std::collections::BTreeMap<
+        (crate::shell::personal_continuity::DeviceId, [u8; 16]),
+        IncomingPersonalMediaTransfer,
+    >,
+    completed: std::collections::BTreeMap<
+        (crate::shell::personal_continuity::DeviceId, [u8; 16]),
+        PathBuf,
+    >,
+}
+
+fn discard_personal_media_transfer(
+    state: &mut PersonalMediaTransferState,
+    key: &(crate::shell::personal_continuity::DeviceId, [u8; 16]),
+) {
+    if let Some(transfer) = state.incoming.remove(key) {
+        let _ = std::fs::remove_file(transfer.part_path);
+    }
+    state.authorized.remove(key);
+}
+
+pub(crate) struct PreparedPersonalMediaTransfer {
+    ws: u64,
+    user_public_key: [u8; 32],
+    target: iroh::EndpointId,
+    pub transfer_id: [u8; 16],
+    pub file_name: String,
+    total_bytes: u64,
+    file: std::fs::File,
+}
+
+fn personal_media_object_matches(path: &Path, total_bytes: u64, expected: [u8; 32]) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() == total_bytes)
+    {
+        return false;
+    }
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let Ok(read) = file.read(&mut buffer) else {
+            return false;
+        };
+        if read == 0 {
+            break;
+        }
+        let Some(bytes) = buffer.get(..read) else {
+            return false;
+        };
+        hasher.update(bytes);
+    }
+    *hasher.finalize().as_bytes() == expected
+}
 
 #[derive(Default)]
 struct PersonalFabricReplayWindow {
@@ -581,6 +683,10 @@ pub struct ShellNetwork {
         Mutex<VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>>,
     /// Bounded session-local replay filter for action request ids.
     personal_fabric_action_replays: Mutex<PersonalFabricReplayWindow>,
+    /// Streaming, content-verified cache for explicit device-local media
+    /// handoffs. Paths stay local and never enter fabric snapshots/actions.
+    personal_media_cache_root: Option<PathBuf>,
+    personal_media_transfers: Mutex<PersonalMediaTransferState>,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -929,6 +1035,8 @@ impl ShellNetwork {
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
             personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
+            personal_media_cache_root: personal_media_cache_root(),
+            personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
@@ -2365,6 +2473,93 @@ impl ShellNetwork {
         )
     }
 
+    /// Open and validate one local media file for a later encrypted,
+    /// exact-target stream. The descriptor, not the host path, crosses the
+    /// personal fabric.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is not certified/live, the source is
+    /// not a regular file, its size exceeds the bounded cache contract, or the
+    /// actor command queue is unavailable.
+    pub(crate) fn prepare_personal_media_transfer(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        path: &Path,
+    ) -> Result<PreparedPersonalMediaTransfer, String> {
+        let user_public_key = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let source = self
+            .personal_continuity_device
+            .as_ref()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        if source == target || !self.certified_secret_recipients().contains(target) {
+            return Err("target is not another enrolled personal device".into());
+        }
+        let target_bytes: [u8; 32] = hex::decode(target.as_str())
+            .map_err(|_| "target is not a certified transport device id".to_string())?
+            .try_into()
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+        let transport_target = iroh::EndpointId::from_bytes(&target_bytes)
+            .map_err(|_| "target is not a certified transport device id".to_string())?;
+        let raw_name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .ok_or_else(|| "media file has no portable name".to_string())?;
+        let file_name = portable_media_file_name(raw_name)
+            .ok_or_else(|| "media file has no portable name".to_string())?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|error| format!("media file cannot be opened: {error}"))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("media file cannot be inspected: {error}"))?;
+        let total_bytes = metadata.len();
+        if !metadata.is_file() || total_bytes == 0 || total_bytes > MAX_PERSONAL_MEDIA_BYTES {
+            return Err("media source is not a supported regular file".into());
+        }
+        let mut transfer_id = [0_u8; 16];
+        while transfer_id == [0; 16] {
+            rand_core::OsRng.fill_bytes(&mut transfer_id);
+        }
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if !self.join_topic(ws) {
+            return Err("personal fabric transport is unavailable".into());
+        }
+        Ok(PreparedPersonalMediaTransfer {
+            ws,
+            user_public_key,
+            target: transport_target,
+            transfer_id,
+            file_name,
+            total_bytes,
+            file,
+        })
+    }
+
+    /// Start a previously prepared transfer after its authenticated handoff
+    /// action has been queued. Command-channel ordering lets the destination
+    /// authorize the random transfer id before accepting any file bytes.
+    pub(crate) fn start_personal_media_transfer(
+        &self,
+        transfer: PreparedPersonalMediaTransfer,
+    ) -> Result<(), String> {
+        self.cmd_tx
+            .try_send(NetCmd::PublishPersonalMedia {
+                ws: transfer.ws,
+                user_public_key: transfer.user_public_key,
+                target: transfer.target,
+                transfer_id: transfer.transfer_id,
+                file_name: transfer.file_name,
+                total_bytes: transfer.total_bytes,
+                file: transfer.file,
+            })
+            .map_err(|error| error.to_string())
+    }
+
     /// Send one non-durable command to exactly one certified personal device.
     ///
     /// # Errors
@@ -2827,7 +3022,181 @@ impl ShellNetwork {
             PersonalFabricPayload::Action(bytes) => {
                 self.dispatch_personal_fabric_action(peer, identity.device_pubkey, &bytes);
             }
+            PersonalFabricPayload::MediaTransfer(frame) => {
+                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    identity.device_pubkey,
+                )) else {
+                    return;
+                };
+                self.dispatch_personal_media_transfer(source, frame);
+            }
         }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive transfer-state machine keeps authorization, offsets, hashing, cleanup, and publication auditable together"
+    )]
+    fn dispatch_personal_media_transfer(
+        &self,
+        source: crate::shell::personal_continuity::DeviceId,
+        frame: PersonalMediaTransferFrame,
+    ) {
+        let Some(root) = self.personal_media_cache_root.as_ref() else {
+            return;
+        };
+        let Ok(mut state) = self.personal_media_transfers.lock() else {
+            return;
+        };
+        match frame {
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name,
+                total_bytes,
+            } => {
+                let key = (source.clone(), transfer_id);
+                if transfer_id == [0; 16]
+                    || portable_media_file_name(&file_name).as_deref() != Some(file_name.as_str())
+                    || total_bytes == 0
+                    || total_bytes > MAX_PERSONAL_MEDIA_BYTES
+                    || state.incoming.len() >= MAX_INCOMING_PERSONAL_MEDIA_TRANSFERS
+                    || !state.authorized.contains(&key)
+                    || state.incoming.contains_key(&key)
+                    || state.completed.contains_key(&key)
+                {
+                    return;
+                }
+                let incoming_dir = root.join("incoming");
+                if std::fs::create_dir_all(&incoming_dir).is_err() {
+                    return;
+                }
+                let part_path = incoming_dir.join(format!(
+                    "{}-{}.part",
+                    source.as_str(),
+                    hex::encode(transfer_id)
+                ));
+                let Ok(file) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&part_path)
+                else {
+                    return;
+                };
+                state.incoming.insert(
+                    key,
+                    IncomingPersonalMediaTransfer {
+                        file,
+                        part_path,
+                        file_name,
+                        total_bytes,
+                        received_bytes: 0,
+                        hasher: blake3::Hasher::new(),
+                    },
+                );
+            }
+            PersonalMediaTransferFrame::Chunk {
+                transfer_id,
+                offset,
+                bytes,
+            } => {
+                let key = (source, transfer_id);
+                let invalid = bytes.is_empty()
+                    || bytes.len() > PERSONAL_MEDIA_CHUNK_BYTES
+                    || state.incoming.get(&key).is_none_or(|transfer| {
+                        offset != transfer.received_bytes
+                            || u64::try_from(bytes.len()).map_or(true, |length| {
+                                transfer.received_bytes.saturating_add(length)
+                                    > transfer.total_bytes
+                            })
+                    });
+                if invalid {
+                    discard_personal_media_transfer(&mut state, &key);
+                    return;
+                }
+                let failed = state.incoming.get_mut(&key).is_none_or(|transfer| {
+                    if transfer.file.write_all(&bytes).is_err() {
+                        return true;
+                    }
+                    transfer.hasher.update(&bytes);
+                    transfer.received_bytes = transfer
+                        .received_bytes
+                        .saturating_add(u64::try_from(bytes.len()).unwrap_or(0));
+                    false
+                });
+                if failed {
+                    discard_personal_media_transfer(&mut state, &key);
+                }
+            }
+            PersonalMediaTransferFrame::Finish {
+                transfer_id,
+                content_hash,
+            } => {
+                let key = (source, transfer_id);
+                let Some(mut transfer) = state.incoming.remove(&key) else {
+                    return;
+                };
+                state.authorized.remove(&key);
+                if transfer.received_bytes != transfer.total_bytes
+                    || *transfer.hasher.finalize().as_bytes() != content_hash
+                    || transfer.file.flush().is_err()
+                    || transfer.file.sync_all().is_err()
+                {
+                    let _ = std::fs::remove_file(transfer.part_path);
+                    return;
+                }
+                drop(transfer.file);
+                let object_dir = root.join("objects").join(hex::encode(content_hash));
+                if std::fs::create_dir_all(&object_dir).is_err() {
+                    let _ = std::fs::remove_file(transfer.part_path);
+                    return;
+                }
+                let object_path = object_dir.join(&transfer.file_name);
+                let stored = if object_path.exists() {
+                    let valid = personal_media_object_matches(
+                        &object_path,
+                        transfer.total_bytes,
+                        content_hash,
+                    );
+                    if valid {
+                        let _ = std::fs::remove_file(&transfer.part_path);
+                        true
+                    } else if std::fs::remove_file(&object_path).is_ok() {
+                        std::fs::rename(&transfer.part_path, &object_path).is_ok()
+                    } else {
+                        false
+                    }
+                } else {
+                    std::fs::rename(&transfer.part_path, &object_path).is_ok()
+                };
+                if !stored {
+                    let _ = std::fs::remove_file(transfer.part_path);
+                    return;
+                }
+                if state.completed.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS
+                    && let Some(oldest) = state.completed.keys().next().cloned()
+                {
+                    state.completed.remove(&oldest);
+                }
+                state.completed.insert(key, object_path);
+            }
+            PersonalMediaTransferFrame::Abort { transfer_id } => {
+                discard_personal_media_transfer(&mut state, &(source, transfer_id));
+            }
+        }
+    }
+
+    /// Resolve one fully verified incoming transfer to a local cache path.
+    /// Incomplete, aborted, or hash-mismatched transfers remain unavailable.
+    pub fn completed_personal_media_transfer(
+        &self,
+        source: &crate::shell::personal_continuity::DeviceId,
+        transfer_id: [u8; 16],
+    ) -> Option<PathBuf> {
+        self.personal_media_transfers
+            .lock()
+            .ok()
+            .and_then(|state| state.completed.get(&(source.clone(), transfer_id)).cloned())
     }
 
     fn dispatch_personal_fabric_action(
@@ -2873,6 +3242,24 @@ impl ShellNetwork {
             return;
         }
         drop(replays);
+        if let crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+            locator:
+                crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
+                    transfer_id, ..
+                },
+            ..
+        } = &envelope.action
+            && let Ok(mut transfers) = self.personal_media_transfers.lock()
+        {
+            if transfers.authorized.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS
+                && let Some(oldest) = transfers.authorized.iter().next().cloned()
+            {
+                discard_personal_media_transfer(&mut transfers, &oldest);
+            }
+            transfers
+                .authorized
+                .insert((envelope.source.clone(), *transfer_id));
+        }
         let Ok(mut actions) = self.personal_fabric_actions.lock() else {
             return;
         };
@@ -3932,6 +4319,8 @@ pub(crate) fn shell_network_for_test(
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
         personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
+        personal_media_cache_root: None,
+        personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),
@@ -3952,6 +4341,201 @@ pub(crate) fn shell_network_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
+        crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
+            .expect("valid test device")
+    }
+
+    #[test]
+    fn personal_media_becomes_visible_only_after_size_and_hash_verification() {
+        let (mut net, _commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA12);
+        let cache = tempfile::tempdir().expect("cache");
+        net.personal_media_cache_root = Some(cache.path().to_path_buf());
+        let source = test_device(0x22);
+        let transfer_id = [0x33; 16];
+        let bytes = vec![0x5a; PERSONAL_MEDIA_CHUNK_BYTES.saturating_add(17)];
+        net.personal_media_transfers
+            .lock()
+            .expect("transfer state")
+            .authorized
+            .insert((source.clone(), transfer_id));
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name: "concert.webm".into(),
+                total_bytes: u64::try_from(bytes.len()).expect("fixture length"),
+            },
+        );
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none(),
+            "a manifest is not playable bytes"
+        );
+        for (index, chunk) in bytes.chunks(PERSONAL_MEDIA_CHUNK_BYTES).enumerate() {
+            net.dispatch_personal_media_transfer(
+                source.clone(),
+                PersonalMediaTransferFrame::Chunk {
+                    transfer_id,
+                    offset: u64::try_from(index.saturating_mul(PERSONAL_MEDIA_CHUNK_BYTES))
+                        .expect("fixture offset"),
+                    bytes: chunk.to_vec(),
+                },
+            );
+        }
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none(),
+            "all chunks still require an authenticated finish hash"
+        );
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Finish {
+                transfer_id,
+                content_hash: *blake3::hash(&bytes).as_bytes(),
+            },
+        );
+        let path = net
+            .completed_personal_media_transfer(&source, transfer_id)
+            .expect("verified transfer");
+        assert_eq!(std::fs::read(path).expect("cached bytes"), bytes);
+    }
+
+    #[test]
+    fn malformed_personal_media_never_leaves_a_playable_cache_entry() {
+        let (mut net, _commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA13);
+        let cache = tempfile::tempdir().expect("cache");
+        net.personal_media_cache_root = Some(cache.path().to_path_buf());
+        let source = test_device(0x44);
+        let transfer_id = [0x55; 16];
+        net.personal_media_transfers
+            .lock()
+            .expect("transfer state")
+            .authorized
+            .insert((source.clone(), transfer_id));
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name: "movie.mp4".into(),
+                total_bytes: 4,
+            },
+        );
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Chunk {
+                transfer_id,
+                offset: 1,
+                bytes: b"evil".to_vec(),
+            },
+        );
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Finish {
+                transfer_id,
+                content_hash: *blake3::hash(b"evil").as_bytes(),
+            },
+        );
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none()
+        );
+        assert_eq!(
+            std::fs::read_dir(cache.path().join("incoming"))
+                .expect("incoming directory")
+                .count(),
+            0,
+            "rejected transfers remove partial bytes"
+        );
+    }
+
+    #[test]
+    fn personal_media_bytes_require_a_prior_authenticated_handoff_action() {
+        let (mut net, _commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA14);
+        let cache = tempfile::tempdir().expect("cache");
+        net.personal_media_cache_root = Some(cache.path().to_path_buf());
+        let source = test_device(0x66);
+        let transfer_id = [0x77; 16];
+        net.dispatch_personal_media_transfer(
+            source.clone(),
+            PersonalMediaTransferFrame::Start {
+                transfer_id,
+                file_name: "unsolicited.mp4".into(),
+                total_bytes: 4,
+            },
+        );
+        assert!(
+            net.personal_media_transfers
+                .lock()
+                .expect("transfer state")
+                .incoming
+                .is_empty(),
+            "an enrolled device alone cannot allocate transfer cache storage"
+        );
+        assert!(
+            net.completed_personal_media_transfer(&source, transfer_id)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn media_handoff_authorization_is_queued_before_its_file_stream() {
+        let (mut net, mut commands) =
+            shell_network_for_test(WorkspaceTree::default().shared(), 0xCA15);
+        let local = test_device(0x88);
+        let user = [0x89; 32];
+        let target_endpoint = iroh::SecretKey::generate().public();
+        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            target_endpoint.as_bytes(),
+        ))
+        .expect("target device");
+        net.personal_continuity_user = Some(user);
+        net.personal_continuity_device = Some(local);
+        net.registered_home_peer_ids
+            .lock()
+            .expect("recipients")
+            .insert(target_endpoint);
+        let dir = tempfile::tempdir().expect("media source");
+        let path = dir.path().join("song.flac");
+        std::fs::write(&path, b"audio bytes").expect("source bytes");
+        let transfer = net
+            .prepare_personal_media_transfer(&target, &path)
+            .expect("prepared transfer");
+        let transfer_id = transfer.transfer_id;
+        net.send_personal_fabric_action(
+            &target,
+            crate::shell::device_fabric::PersonalFabricAction::ResumeMedia {
+                session_id: "dev.qos.music:1".into(),
+                app_id: "dev.qos.music".into(),
+                workspace_id: "11111111-1111-1111-1111-111111111111".into(),
+                title: "Song".into(),
+                locator: crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer {
+                    transfer_id,
+                    file_name: transfer.file_name.clone(),
+                },
+                position_ms: 0,
+                resume_playing: true,
+                has_video: false,
+            },
+        )
+        .expect("handoff action");
+        net.start_personal_media_transfer(transfer)
+            .expect("stream command");
+        let commands = std::iter::from_fn(|| commands.try_recv().ok()).collect::<Vec<_>>();
+        let action_index = commands
+            .iter()
+            .position(|command| matches!(command, NetCmd::PublishPersonalFabricTarget { .. }))
+            .expect("action command");
+        let media_index = commands
+            .iter()
+            .position(|command| matches!(command, NetCmd::PublishPersonalMedia { .. }))
+            .expect("media command");
+        assert!(action_index < media_index);
+    }
 
     #[test]
     fn workspace_control_uses_exact_target_direct_and_refuses_fanout_relay() {
