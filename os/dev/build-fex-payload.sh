@@ -11,6 +11,7 @@ done
 test "$(uname -m)" = aarch64
 test ! -e /stage
 test ! -e /build
+test ! -e /source
 test -d /x86-sdk/usr/include
 test -s /usr/lib/qos/fex-buildroot-packages.txt
 export PATH=/usr/lib64/llvm21/bin:/usr/local/bin:$PATH
@@ -20,10 +21,18 @@ export CCACHE_DISABLE=1
 # confined to this disposable process; no host Git configuration is changed.
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
 mkdir -p /stage/usr/lib/qos/fex
-bash /qos/os/dev/fetch-fex-source.sh /src > /stage/usr/lib/qos/fex/source.txt
+# Never modify the caller's read-only upstream checkout. Verify the actual
+# disposable copy before applying reviewed, hash-pinned downstream changes.
+mkdir /source
+cp -a /src/. /source/
+bash /qos/os/dev/fetch-fex-source.sh /source > /stage/usr/lib/qos/fex/source.txt
+python3 /qos/os/dev/apply-fex-patches.py /source /qos/os/external-assets/fex-patches \
+    > /stage/usr/lib/qos/fex/downstream-patches.json
+mkdir -p /stage/usr/share/qos/fex
+cp -a /qos/os/external-assets/fex-patches /stage/usr/share/qos/fex/patches
 export SOURCE_DATE_EPOCH
-SOURCE_DATE_EPOCH=$(git -C /src show -s --format=%ct HEAD)
-cmake -S /src -B /build -G Ninja \
+SOURCE_DATE_EPOCH=$(git -C /source show -s --format=%ct HEAD)
+cmake -S /source -B /build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
     -DCMAKE_INSTALL_LIBDIR=lib64 \
     -DCMAKE_C_COMPILER=/usr/lib64/llvm21/bin/clang \
@@ -44,7 +53,7 @@ done
 python3 - <<'PY'
 from pathlib import Path
 import shutil
-source = Path('/src')
+source = Path('/source')
 destination = Path('/stage/usr/share/licenses/qos-fex')
 for item in source.rglob('*'):
     relative = item.relative_to(source)
