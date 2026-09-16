@@ -596,6 +596,37 @@ impl FrameHarness {
         }
     }
 
+    /// Mirror the live host's focused-control fallback for Enter and Space.
+    /// Widgets that consume the press keep ownership; releases never activate.
+    fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
+        if *handled
+            || !matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: winit::event::KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            return;
+        }
+        let Some(focused) = self.focused else {
+            return;
+        };
+        let activated = self
+            .dispatch_node(focused, |widget, doc, root| {
+                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+            })
+            .unwrap_or(false);
+        if activated {
+            *handled = true;
+        }
+    }
+
     /// Stand the app up and resolve its first observable layout.
     ///
     /// Responsive structure discovered from the real viewport is settled
@@ -1995,6 +2026,7 @@ impl FrameHarness {
         if let Some(t) = focus_target {
             self.set_focused(Some(t));
         }
+        self.handle_unconsumed_activation_key(event, &mut handled);
         self.host_tick();
         self.relayout();
     }
@@ -3444,6 +3476,124 @@ mod tests {
     use super::*;
     use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
 
+    struct ConsumingActivationControl {
+        activations: std::rc::Rc<std::cell::Cell<usize>>,
+        focused: bool,
+        rect: Rect,
+    }
+
+    impl Widget for ConsumingActivationControl {
+        fn sync(&mut self, _state: &mut automerge::AutoCommit, _path: &automerge::ObjId) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::length(120.0),
+                        height: Dimension::length(40.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x,
+                origin.y,
+                origin.x + f64::from(layout.size.width),
+                origin.y + f64::from(layout.size.height),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            _scale_factor: f64,
+            _modifiers: &winit::event::Modifiers,
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+            handled: &mut bool,
+            _focus_target: &mut Option<NodeId>,
+            _node_id: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+            if self.focused
+                && matches!(
+                    event,
+                    WindowEvent::KeyboardInput {
+                        event: winit::event::KeyEvent {
+                            logical_key: Key::Named(NamedKey::Enter | NamedKey::Space),
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                        ..
+                    }
+                )
+            {
+                self.activations
+                    .set(self.activations.get().saturating_add(1));
+                *handled = true;
+            }
+        }
+
+        fn perform_action(
+            &mut self,
+            action: &crate::a11y::Action,
+            _state: &mut automerge::AutoCommit,
+            _path: &automerge::ObjId,
+        ) -> bool {
+            if matches!(action, crate::a11y::Action::Activate) {
+                self.activations
+                    .set(self.activations.get().saturating_add(1));
+                return true;
+            }
+            false
+        }
+
+        fn name(&self) -> &'static str {
+            "ConsumingActivationControl"
+        }
+
+        fn test_id(&self) -> Option<&str> {
+            Some("consuming-activation")
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+
+        fn is_focusable(&self) -> bool {
+            true
+        }
+
+        fn set_focus(&mut self, focused: bool) {
+            self.focused = focused;
+        }
+
+        fn is_focused(&self) -> bool {
+            self.focused
+        }
+    }
+
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn synthetic_key_helper_preserves_keyboard_route_and_modifier_supplements() {
@@ -3933,6 +4083,47 @@ mod tests {
             driver.interaction_environment().pointer_precision,
             crate::PointerPrecision::Coarse,
             "keyboard use must not make a hybrid touchscreen's targets small"
+        );
+    }
+
+    #[test]
+    fn enter_and_space_activate_a_focused_button_once_per_press() {
+        let activations: std::rc::Rc<std::cell::Cell<usize>> =
+            std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = std::rc::Rc::clone(&activations);
+        let button = Button::new("save", "Save", None).on_click(move || {
+            observed.set(observed.get().saturating_add(1));
+        });
+        let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
+        driver
+            .perform_named("save", &crate::a11y::Action::Focus)
+            .expect("button accepts focus");
+
+        driver.key("Enter");
+        assert_eq!(activations.get(), 1, "Enter activates only on key press");
+        driver.key("Space");
+        assert_eq!(activations.get(), 2, "Space activates only on key press");
+    }
+
+    #[test]
+    fn consumed_enter_does_not_run_the_focused_activation_fallback() {
+        let activations = std::rc::Rc::new(std::cell::Cell::new(0));
+        let control = ConsumingActivationControl {
+            activations: std::rc::Rc::clone(&activations),
+            focused: false,
+            rect: Rect::ZERO,
+        };
+        let mut driver = Driver::new(State::new(), Box::new(control), (400, 200));
+        driver
+            .perform_named("consuming-activation", &crate::a11y::Action::Focus)
+            .expect("control accepts focus");
+
+        driver.key("Enter");
+
+        assert_eq!(
+            activations.get(),
+            1,
+            "the consumed key press must not activate a second time"
         );
     }
 

@@ -84,7 +84,8 @@ impl SetupController {
     }
 
     /// Set the common folder policy. Per-folder overrides remain intact.
-    /// `Later` hides all remembered selections from the effective plan.
+    /// Folders that inherit or explicitly choose `Later` stay remembered but
+    /// are excluded from the effective plan.
     pub fn set_mode(&mut self, mode: FolderMode) {
         self.default_mode = mode;
         for folder in &mut self.remembered_folders {
@@ -194,15 +195,16 @@ impl SetupController {
 
     /// The current effective setup estimate consumed by Review.
     ///
-    /// When the common mode is `Later`, this exposes no folders even though the
-    /// controller remembers them in case the user changes their mind.
+    /// Folders whose resulting mode is `Later` remain remembered but are not
+    /// exposed here. Explicit Copy or Connected overrides remain effective even
+    /// when the common mode is `Later`.
     #[must_use]
     pub fn plan(&self) -> &SetupPlan {
         &self.plan
     }
 
-    /// Remembered folder details for the folder screen, including scans hidden
-    /// from the effective plan while the common mode is `Later`.
+    /// Remembered folder details for the folder screen, including scans whose
+    /// resulting mode is `Later` and therefore absent from the effective plan.
     #[must_use]
     pub fn folders(&self) -> &[FolderChoice] {
         &self.remembered_folders
@@ -215,13 +217,10 @@ impl SetupController {
     }
 
     fn rebuild_effective_folders(&mut self) {
-        if self.default_mode == FolderMode::Later {
-            self.plan.folders.clear();
-            return;
-        }
         self.plan.folders = self
             .remembered_folders
             .iter()
+            .filter(|remembered| remembered.mode != FolderMode::Later)
             .map(|remembered| FolderSelection {
                 source: remembered.scan.source.clone(),
                 destination: remembered.destination.clone(),
@@ -303,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_is_default_and_common_mode_preserves_overrides() {
+    fn common_later_preserves_explicit_copy_and_connected_overrides() {
         let mut setup = SetupController::new(linux_desktop());
         assert_eq!(setup.default_mode(), FolderMode::Copy);
         assert!(setup.choose_experience(Experience::Desktop));
@@ -314,14 +313,34 @@ mod tests {
         setup
             .add_folder(scan("source/two", 2), test_path("qos/two"))
             .unwrap();
-        assert!(setup.set_folder_mode(1, FolderMode::Connected));
+        setup
+            .add_folder(scan("source/three", 3), test_path("qos/three"))
+            .unwrap();
+        setup
+            .add_folder(scan("source/four", 4), test_path("qos/four"))
+            .unwrap();
+        assert!(setup.set_folder_mode(1, FolderMode::Copy));
+        assert!(setup.set_folder_mode(2, FolderMode::Connected));
+        assert!(setup.set_folder_mode(3, FolderMode::Later));
 
         setup.set_mode(FolderMode::Later);
-        assert!(setup.plan().folders.is_empty());
+
+        assert_eq!(setup.plan().folders.len(), 2);
+        assert_eq!(setup.plan().folders[0].source, test_path("source/two"));
+        assert_eq!(setup.plan().folders[0].mode, FolderMode::Copy);
+        assert_eq!(setup.plan().folders[1].source, test_path("source/three"));
+        assert_eq!(setup.plan().folders[1].mode, FolderMode::Connected);
+        assert_eq!(setup.folders()[0].mode, FolderMode::Later);
+        assert!(!setup.folders()[0].mode_overridden);
+        assert_eq!(setup.folders()[3].mode, FolderMode::Later);
+        assert!(setup.folders()[3].mode_overridden);
+
         setup.set_mode(FolderMode::Copy);
 
-        assert_eq!(setup.plan().folders[0].mode, FolderMode::Copy);
-        assert_eq!(setup.plan().folders[1].mode, FolderMode::Connected);
+        assert_eq!(setup.plan().folders.len(), 3);
+        assert_eq!(setup.plan().folders[0].source, test_path("source/one"));
+        assert_eq!(setup.plan().folders[1].source, test_path("source/two"));
+        assert_eq!(setup.plan().folders[2].source, test_path("source/three"));
     }
 
     #[test]
