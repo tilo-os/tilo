@@ -321,7 +321,7 @@ ubuntu-24.04|debian-13)
     dist/ci/install-build-deps.sh debian
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
-    [[ ! -x /usr/local/bin/sccache ]] || export RUSTC_WRAPPER=/usr/local/bin/sccache
+    source tools/ci-sccache.sh prepare-shell
     stage=build-deb
     dist/debian/build-deb.sh
     stage=inspect-deb
@@ -345,7 +345,7 @@ fedora-44)
     dist/ci/install-build-deps.sh fedora
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
-    [[ ! -x /usr/local/bin/sccache ]] || export RUSTC_WRAPPER=/usr/local/bin/sccache
+    source tools/ci-sccache.sh prepare-shell
     stage=build-rpm
     dist/rpm/build-rpm.sh
     stage=inspect-rpm
@@ -404,7 +404,7 @@ arch)
     dist/ci/install-build-deps.sh arch
     stage=install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
-    [[ ! -x /usr/local/bin/sccache ]] || export RUSTC_WRAPPER=/usr/local/bin/sccache
+    source tools/ci-sccache.sh prepare-shell
     # Arch's rolling binutils has regressed in `ar` while BLAKE3 archives both
     # its hand-written assembly and its AVX-512 C object. `prefer_intrinsics`
     # covers SSE/AVX2 but still builds AVX-512 through `cc`, so it does not avoid
