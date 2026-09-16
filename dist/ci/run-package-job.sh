@@ -22,10 +22,13 @@ if [[ ${QOS_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         emulated=1
     fi
     # Release links use fat LTO and peak at several GiB per rustc process.
-    # Four jobs exhausted the shared generic runner during the Arch shell link,
-    # even with distribution userspaces serialized. Use the safe ceiling for
-    # both architectures.
-    cargo_jobs=2
+    # Keep direct/local invocations conservative; the workflow's explicit
+    # large runner class raises this within its per-run 16 GiB envelope.
+    cargo_jobs=${QOS_CARGO_JOBS:-2}
+    [[ $cargo_jobs =~ ^[1-9][0-9]*$ ]] || {
+        echo "invalid QOS_CARGO_JOBS: $cargo_jobs" >&2
+        exit 2
+    }
     cache_env=()
     if [[ ${QOS_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then
         # sccache hashes compiler identity, flags and native headers into every

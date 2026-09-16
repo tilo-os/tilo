@@ -124,8 +124,8 @@ assert 'echo "::endgroup::"\n              exit 1' in session_workflow
 assert "max-parallel:" not in session_workflow
 assert "QOS_BLAKE3_PURE=1" in rpm_job
 assert 'CARGO_FEATURE_PURE="$QOS_BLAKE3_PURE"' in rpm_job
-assert "cargo_jobs=2" in rpm_job
-assert "cargo_jobs=4" not in rpm_job
+assert "cargo_jobs=${QOS_CARGO_JOBS:-2}" in rpm_job
+assert 'QOS_CARGO_JOBS: "6"' in session_workflow
 assert "CARGO_PROFILE_RELEASE_LTO=thin" in rpm_job
 assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in rpm_job
 nix_package = (ROOT / "dist/nix/package.nix").read_text()
