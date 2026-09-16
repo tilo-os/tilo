@@ -3462,9 +3462,15 @@ impl PhotosApp {
         // compact bottom sheet leaves the upper grid visible instead of
         // turning “choose photographs” into an instruction with no surface.
         let panel_h = if !self.album_editor && narrow {
-            36.0
+            // Album management is an ordinary library route, not a tiny
+            // desktop-only affordance. Keep its buttons at the same 44px
+            // target as the card actions below it.
+            44.0
         } else if narrow {
-            258.0
+            // The editor has two paging controls and a footer. Their 44px
+            // targets need a real gap rather than being squeezed into the
+            // former 34px desktop rhythm.
+            280.0
         } else {
             332.0
         };
@@ -3498,8 +3504,8 @@ impl PhotosApp {
         );
         self.album_editor_rect = panel;
         if !self.album_editor {
-            let new = Rect::new(panel.x0, panel.y0, panel.x0 + 110.0, panel.y0 + 36.0);
-            let edit = Rect::new(new.x1 + 8.0, panel.y0, new.x1 + 116.0, panel.y0 + 36.0);
+            let new = Rect::new(panel.x0, panel.y0, panel.x0 + 110.0, panel.y0 + 44.0);
+            let edit = Rect::new(new.x1 + 8.0, panel.y0, new.x1 + 116.0, panel.y0 + 44.0);
             for (hit, rect, label, enabled) in [
                 (AlbumEditorHit::New, new, "New album", true),
                 (
@@ -3536,7 +3542,7 @@ impl PhotosApp {
                     } else {
                         theme.text_dim
                     },
-                    transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)),
+                    transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0)),
                     Some(100.0),
                     TextWeight::Medium,
                 );
@@ -3619,8 +3625,8 @@ impl PhotosApp {
             TextWeight::Regular,
         );
         let page_y = panel.y0 + 166.0;
-        let previous = Rect::new(panel.x0 + 16.0, page_y, panel.x0 + 108.0, page_y + 34.0);
-        let next = Rect::new(panel.x1 - 108.0, page_y, panel.x1 - 16.0, page_y + 34.0);
+        let previous = Rect::new(panel.x0 + 16.0, page_y, panel.x0 + 108.0, page_y + 44.0);
+        let next = Rect::new(panel.x1 - 108.0, page_y, panel.x1 - 16.0, page_y + 44.0);
         for (hit, rect) in [
             (AlbumEditorHit::PreviousPage, previous),
             (AlbumEditorHit::NextPage, next),
@@ -3640,10 +3646,10 @@ impl PhotosApp {
                 button.draw(scene, transform, text_renderer, theme, presence);
             }
         }
-        let y = panel.y1 - 48.0;
-        let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 88.0, y + 34.0);
-        let save = Rect::new(panel.x1 - 92.0, y, panel.x1 - 16.0, y + 34.0);
-        let delete = Rect::new(save.x0 - 88.0, y, save.x0 - 8.0, y + 34.0);
+        let y = panel.y1 - 60.0;
+        let cancel = Rect::new(panel.x0 + 16.0, y, panel.x0 + 88.0, y + 44.0);
+        let save = Rect::new(panel.x1 - 92.0, y, panel.x1 - 16.0, y + 44.0);
+        let delete = Rect::new(save.x0 - 88.0, y, save.x0 - 8.0, y + 44.0);
         for (hit, rect, label) in [
             (AlbumEditorHit::Cancel, cancel, "Cancel"),
             (AlbumEditorHit::Save, save, "Save"),
@@ -3660,7 +3666,7 @@ impl PhotosApp {
                 label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 9.0)),
+                transform * Affine::translate((rect.x0 + 10.0, rect.y0 + 14.0)),
                 Some((rect.width() - 16.0) as f32),
                 TextWeight::Medium,
             );
@@ -3696,7 +3702,7 @@ impl PhotosApp {
                 label,
                 12.0,
                 theme.text_primary,
-                transform * Affine::translate((delete.x0 + 7.0, delete.y0 + 9.0)),
+                transform * Affine::translate((delete.x0 + 7.0, delete.y0 + 14.0)),
                 Some((delete.width() - 10.0) as f32),
                 TextWeight::Medium,
             );
@@ -4491,7 +4497,7 @@ fn build_album_page_button(
 ) -> Button {
     let slot = pending.clone();
     Button::new(id, label, None)
-        .with_size(92.0, 34.0)
+        .with_size(92.0, 44.0)
         .tooltip(label)
         .with_accessible_name(label)
         .on_effect(move || slot.set(Some(hit)))
@@ -6356,5 +6362,68 @@ mod tests {
             two_column_card_width >= 600.0,
             "200% text needs a real reading measure, got {two_column_card_width}"
         );
+    }
+
+    #[test]
+    fn regular_album_management_keeps_every_visible_control_at_44px() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
+        let mut library = crate::model::PhotoLibrary::default();
+        library.photos.push(photo.clone());
+        library.albums.push(Album {
+            id: "photos.album:trip".into(),
+            name: "Trip".into(),
+            photo_ids: vec![photo.id],
+        });
+        PhotosDoc::set_library(&mut doc, &library);
+        app.sync(&mut doc, &ROOT);
+        app.show_library();
+        app.active_album = Some("photos.album:trip".into());
+        app.canvas_rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let presence = PresenceCtx::empty();
+        app.draw_album_editor(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &presence,
+        );
+        assert_eq!(app.album_editor_hits.len(), 2);
+        assert!(
+            app.album_editor_hits
+                .iter()
+                .all(|(_, rect)| rect.height() >= 44.0)
+        );
+
+        app.begin_edit_album(&doc);
+        app.draw_album_editor(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &presence,
+        );
+
+        assert!(
+            app.album_editor_hits
+                .iter()
+                .all(|(_, rect)| rect.height() >= 44.0)
+        );
+        assert!(
+            app.album_page_buttons
+                .iter()
+                .all(|(_, button)| button.get_rect().height() >= 44.0)
+        );
+        assert!(app.album_editor_hits.iter().all(|(_, rect)| {
+            rect.x0 >= app.canvas_rect.x0
+                && rect.x1 <= app.canvas_rect.x1
+                && rect.y0 >= app.canvas_rect.y0
+                && rect.y1 <= app.canvas_rect.y1
+        }));
     }
 }
