@@ -174,6 +174,11 @@ pub struct ClipboardHistorySnapshot {
     pub text_preview: Option<String>,
     pub byte_len: usize,
     pub pinned: bool,
+    /// Authenticated fabric author, or `None` when the copy originated in
+    /// this compositor. The UI receives identity metadata, never payload
+    /// bytes, until the person explicitly activates an item.
+    pub source_device: Option<crate::shell::personal_continuity::DeviceId>,
+    pub created_unix_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -187,6 +192,7 @@ struct ClipboardHistoryItem {
     /// Imported fabric entries remain selectable locally but are not
     /// re-authored and rebroadcast as if they originated on this device.
     fabric_imported: bool,
+    source_device: Option<crate::shell::personal_continuity::DeviceId>,
 }
 
 /// Payload-safe export used only by the encrypted same-person device lane.
@@ -213,6 +219,8 @@ impl ClipboardHistoryItem {
             text_preview,
             byte_len: total_bytes(&self.values),
             pinned: self.pinned,
+            source_device: self.source_device.clone(),
+            created_unix_ms: self.created_unix_ms,
         }
     }
 }
@@ -341,6 +349,7 @@ fn record_clipboard_history(store: &mut SelectionStore) {
             mime_types: slot.mime_types.clone(),
             pinned,
             fabric_imported: false,
+            source_device: None,
         });
         return;
     }
@@ -364,6 +373,7 @@ fn record_clipboard_history(store: &mut SelectionStore) {
         mime_types: slot.mime_types.clone(),
         pinned,
         fabric_imported: false,
+        source_device: None,
     });
 }
 
@@ -435,6 +445,7 @@ pub fn merge_shared_clipboard_history(
             mime_types: normalized_mimes([mime]),
             pinned: entry.pinned,
             fabric_imported: true,
+            source_device: Some(entry.origin.clone()),
         });
     }
 }
@@ -1753,7 +1764,7 @@ mod tests {
             42,
             FabricStamp {
                 counter: 7,
-                device: origin,
+                device: origin.clone(),
             },
         )
         .unwrap();
@@ -1764,6 +1775,11 @@ mod tests {
             clipboard_history(&s)[0].text_preview.as_deref(),
             Some("from the other screen")
         );
+        assert_eq!(
+            clipboard_history(&s)[0].source_device.as_ref(),
+            Some(&origin)
+        );
+        assert_eq!(clipboard_history(&s)[0].created_unix_ms, 42);
         assert!(shareable_clipboard_history(&s).is_empty());
 
         assert!(activate_history_item(&s, entry.id));
