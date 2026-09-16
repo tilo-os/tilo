@@ -116,6 +116,8 @@ pub struct Scrollable {
     /// Absorbs the parent's remaining flex height instead of claiming
     /// `percent(1.0)`. `fixed_height` wins if both are set.
     fill_parent_height: bool,
+    /// Opt-in inherited decision, consumed by the retained content wrapper.
+    content_min_viewport_height: Option<Rc<Cell<f32>>>,
     child: Option<Element>,
     /// Retained Taffy identity for `child`; refreshed with the layout tree so
     /// event and scroll-layout paths never allocate `taffy.children()`.
@@ -194,6 +196,7 @@ impl Scrollable {
             fixed_height: None,
             max_height: None,
             fill_parent_height: false,
+            content_min_viewport_height: None,
             child: None,
             child_node: None,
             rect: Rect::ZERO,
@@ -227,9 +230,32 @@ impl Scrollable {
     }
     #[must_use]
     pub fn with_child(mut self, c: Element) -> Self {
-        self.child = Some(c);
+        self.child = Some(match &self.content_min_viewport_height {
+            Some(minimum) => Box::new(ViewportContent::new(c, Rc::clone(minimum))),
+            None => c,
+        });
         self
     }
+    /// Let auto-height content fill at least the measured viewport height,
+    /// retaining its intrinsic height when it overflows. This does not change
+    /// an explicitly sized child's authored height. Ordinary form fields stay
+    /// content-sized unless their Scrollable opts in.
+    ///
+    /// Adds a presentational single-child wrapper to normal widget traversal;
+    /// the content keeps its identity, focus and action bindings. Hosts must
+    /// use the shared measured layout solver to resolve the viewport minimum.
+    #[must_use]
+    pub fn with_content_min_viewport_height(mut self) -> Self {
+        if self.content_min_viewport_height.is_none() {
+            let minimum = Rc::new(Cell::new(0.0));
+            if let Some(child) = self.child.take() {
+                self.child = Some(Box::new(ViewportContent::new(child, Rc::clone(&minimum))));
+            }
+            self.content_min_viewport_height = Some(minimum);
+        }
+        self
+    }
+
     #[must_use]
     pub fn with_sticky_header(mut self, h: f32) -> Self {
         self.sticky_header_height = h;
@@ -921,6 +947,164 @@ impl Scrollable {
     }
 }
 
+/// A presentational Grid surface. Container supplies the ordinary single-child
+/// lifecycle; we register its layout node as this wrapper's own node so only
+/// this hook adjusts its minimum. The child style is never rewritten.
+struct ViewportContent {
+    inner: crate::widget::Container,
+    minimum: Rc<Cell<f32>>,
+}
+
+impl ViewportContent {
+    fn new(child: Element, minimum: Rc<Cell<f32>>) -> Self {
+        Self {
+            inner: crate::widget::Container::new()
+                .with_no_padding()
+                .with_child(child),
+            minimum,
+        }
+    }
+}
+
+impl Widget for ViewportContent {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.inner.sync(state, path);
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.inner.update(state, path)
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        use taffy::style_helpers::{fr, length, min_content, minmax};
+        let node = self.inner.build_layout(taffy, theme, nodes);
+        let _ = taffy.set_style(
+            node,
+            Style {
+                display: taffy::Display::Grid,
+                // The flexible track fills short content; its intrinsic minimum
+                // keeps a long measured editor taller than the viewport.
+                grid_template_rows: vec![minmax(min_content(), fr(1.0_f32))],
+                grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                min_size: Size {
+                    width: Dimension::length(0.0),
+                    height: Dimension::length(self.minimum.get()),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let height = Dimension::length(self.minimum.get());
+        if style.min_size.height == height {
+            return false;
+        }
+        let mut style = style.clone();
+        style.min_size.height = height;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.inner.apply_layout(taffy, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.inner.draw(scene, transform, text, theme, presence);
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.inner
+            .draw_with_presence(scene, transform, text, theme, presence, permissions);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        mods: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.inner
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.inner.children()
+    }
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        self.inner.for_each_child(visitor);
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.inner.children_mut()
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        self.inner.take_structure_dirty()
+    }
+    fn wants_pointer_capture(&self) -> bool {
+        self.inner.wants_pointer_capture()
+    }
+    fn get_rect(&self) -> Rect {
+        self.inner.get_rect()
+    }
+    fn name(&self) -> &str {
+        "ScrollableContent"
+    }
+
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: qos_actions::InvocationId,
+        kind: qos_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.inner
+            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.inner
+            .for_each_child(&mut |child| child.collect_damage(regions));
+    }
+}
+
 /// Maximum `rect.y1` across a widget subtree, for finding the true bottom
 /// edge when taffy's `content_size` under-reports.
 fn max_bottom_edge(w: &dyn Widget) -> f64 {
@@ -1011,6 +1195,23 @@ impl Widget for Scrollable {
         };
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(minimum) = &self.content_min_viewport_height else {
+            return false;
+        };
+        let Ok(layout) = taffy.layout(node) else {
+            return false;
+        };
+        let height = layout.size.height.max(0.0);
+        if (minimum.get() - height).abs() < f32::EPSILON {
+            return false;
+        }
+        // Inherited decision only. The wrapper's hook changes its OWN style,
+        // regardless of the host's node visitation order.
+        minimum.set(height);
+        true
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1156,13 +1357,9 @@ impl Widget for Scrollable {
                 ..
             } => {
                 let cur = self.last_cursor;
-                // A child that consumes the press overwrites `focus_target`
-                // afterward, so focus still lands on the deepest target.
-                if self.content_viewport_rect().contains(cur) {
-                    *focus_target = Some(node_id);
-                }
                 // Thumb press → drag; track press → page + hold.
                 if self.on_track_or_thumb_press(cur) {
+                    *focus_target = Some(node_id);
                     *handled = true;
                     return;
                 }
@@ -1267,6 +1464,23 @@ impl Widget for Scrollable {
                 child_node,
                 taffy,
             );
+        }
+        // An already-focused editor can consume a press without requesting
+        // focus again. Only use the pane as a fallback for an unhandled
+        // background press; never displace the child's existing focus.
+        if !*handled
+            && focus_target.is_none()
+            && pointer_in_content
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            *focus_target = Some(node_id);
         }
     }
 
