@@ -63,7 +63,9 @@ use crate::model::{
     AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
     Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
 };
-use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_chapter};
+use crate::paginate::{
+    ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
+};
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
@@ -7738,15 +7740,17 @@ impl BooksApp {
         {
             self.layout = Some(layout_chapter(
                 tr,
-                &ch.blocks,
-                geom.content_w,
-                geom.content_h,
-                &self.settings,
-                self.chapter,
-                &book.language,
-                base_family,
-                font_mult,
-                font_sig,
+                &ChapterLayoutRequest {
+                    blocks: &ch.blocks,
+                    content_width: geom.content_w,
+                    content_height: geom.content_h,
+                    settings: &self.settings,
+                    chapter: self.chapter,
+                    language: &book.language,
+                    base_family,
+                    font_multiplier: font_mult,
+                    font_signature: font_sig,
+                },
             ));
         }
         self.layout.take().unwrap_or_else(|| ChapterLayout {
@@ -14567,7 +14571,7 @@ mod interaction_tests {
     #[test]
     fn page_for_block_maps_a_block_to_its_page() {
         use crate::model::{Block, Span};
-        use crate::paginate::layout_chapter;
+        use crate::paginate::{ChapterLayoutRequest, layout_chapter};
         let mut tr = TextRenderer::new();
         // Eight fat paragraphs into a small box -> several pages.
         let blocks: Vec<Block> = (0..8)
@@ -14577,15 +14581,17 @@ mod interaction_tests {
             .collect();
         let layout = layout_chapter(
             &mut tr,
-            &blocks,
-            300.0,
-            160.0,
-            &Settings::default(),
-            0,
-            "en-US",
-            &FontChoice::SansSerif,
-            1.0,
-            0,
+            &ChapterLayoutRequest {
+                blocks: &blocks,
+                content_width: 300.0,
+                content_height: 160.0,
+                settings: &Settings::default(),
+                chapter: 0,
+                language: "en-US",
+                base_family: &FontChoice::SansSerif,
+                font_multiplier: 1.0,
+                font_signature: 0,
+            },
         );
         assert!(layout.page_count() >= 2, "content spans multiple pages");
         assert_eq!(page_for_block(&layout, 0), 0, "first block is on page 0");
