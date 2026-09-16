@@ -1080,18 +1080,96 @@ fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
     }
 }
 
-fn valid_setting_key(key: &str) -> bool {
+/// Whether a settings-store leaf is deliberately part of a person's fabric.
+///
+/// This is an allowlist rather than a denylist: a newly-added setting stays
+/// local until its semantics have been reviewed. In particular, connector
+/// names, selected audio devices, display geometry/scale, radios, mounts,
+/// power policy, update state and credentials must never become convergent
+/// state merely because their key happens to begin with `qos.`.
+pub(super) fn valid_setting_key(key: &str) -> bool {
     valid_identifier(key, 256)
-        && key.starts_with("qos.")
-        && ![
-            "qos.device.",
-            "qos.display.hardware.",
-            "qos.network.interface.",
-            "qos.storage.mount.",
-            "qos.security.local_credential.",
-        ]
-        .iter()
-        .any(|prefix| key.starts_with(prefix))
+        && matches!(
+            key,
+            // Assistive preferences describe the person, not the machine.
+            "qos.accessibility.large_cursor"
+                | "qos.accessibility.cursor_size"
+                | "qos.accessibility.screen_reader"
+                | "qos.accessibility.on_screen_keyboard"
+                | "qos.accessibility.sticky_keys"
+                | "qos.accessibility.slow_keys"
+                | "qos.accessibility.visual_alerts"
+                | "qos.accessibility.color_filter"
+                | "qos.accessibility.magnifier_zoom"
+                | "qos.accessibility.cursor_crosshair"
+                | "qos.accessibility.thick_text_caret"
+                | "qos.accessibility.switch_control"
+                | "qos.accessibility.switch_key_pair"
+                | "qos.accessibility.switch_scan_ms"
+                | "qos.accessibility.screen_reader_rate"
+                | "qos.accessibility.screen_reader_voice"
+                // Theme Studio's artifact is self-contained; wallpaper media
+                // is workspace-scoped and intentionally absent.
+                | "qos.appearance.theme"
+                | "qos.appearance.high_contrast"
+                | "qos.appearance.reduce_motion"
+                | "qos.appearance.text_scale"
+                | "qos.appearance.ui_scale"
+                | "qos.appearance.studio"
+                // Locale is the canonical Settings/Sheets/Weather contract.
+                | "qos.locale.currency"
+                | "qos.locale.date_format"
+                | "qos.locale.time_format"
+                | "qos.locale.measurement"
+                | "qos.locale.number_style"
+                | "qos.locale.first_day_of_week"
+                // Notification delivery policy, including app-id keyed rules.
+                | "qos.notifications.do_not_disturb"
+                | "qos.notifications.show_banners"
+                | "qos.notifications.show_previews"
+                | "qos.notifications.play_sounds"
+                | "qos.notifications.show_on_lock_screen"
+                | "qos.notifications.show_badges"
+                | "qos.notifications.focus"
+                | "qos.notifications.per_app"
+                // Input behaviour and language roam. `pen_output` does not:
+                // it is a physical connector name on one particular device.
+                | "qos.input.natural_scroll"
+                | "qos.input.touchpad_natural_scroll"
+                | "qos.input.mouse_natural_scroll"
+                | "qos.input.tap_to_click"
+                | "qos.input.pointer_speed"
+                | "qos.input.touchpad_pointer_speed"
+                | "qos.input.mouse_pointer_speed"
+                | "qos.input.key_repeat"
+                | "qos.input.key_repeat_delay_ms"
+                | "qos.input.key_repeat_rate_hz"
+                | "qos.input.keyboard_layout"
+                | "qos.input.tap_drag"
+                | "qos.input.disable_while_typing"
+                | "qos.input.middle_emulation"
+                | "qos.input.left_handed"
+                | "qos.input.accel_profile"
+                | "qos.input.touchpad_gestures"
+                | "qos.input.compose_key"
+                | "qos.input.keyboard_layouts"
+                // Audio transforms/preferences roam; node labels do not.
+                | "qos.audio.event_sounds"
+                | "qos.audio.chat_join"
+                | "qos.audio.chat_leave"
+                | "qos.audio.balance"
+                | "qos.audio.mono_output"
+                // Night-light comfort is portable; scale and sensor policy
+                // are properties of the current panel.
+                | "qos.display.night_light"
+                | "qos.display.night_light_temperature"
+                // Personal shell and typing customisation.
+                | "qos.shortcuts.bindings"
+                | "qos.desktop_controls.vim_mode"
+                | "qos.quick_settings.controls"
+                | "qos.text_assistance.check_spelling"
+                | "qos.text_assistance.auto_correct"
+        )
 }
 
 fn unique<T: Ord>(items: impl IntoIterator<Item = T>) -> Result<(), FabricError> {
@@ -1321,8 +1399,12 @@ mod tests {
         for key in [
             "qos.device.name",
             "qos.display.hardware.edid",
+            "qos.display.scale",
             "qos.network.interface.mac",
             "qos.storage.mount.usb",
+            "qos.input.pen_output",
+            "qos.audio.output_device",
+            "qos.agent_providers.api_key",
         ] {
             let mut source = snapshot("desktop", 1, 0, FabricCapabilities::default());
             source.settings.push(RoamingSetting {
@@ -1335,16 +1417,46 @@ mod tests {
     }
 
     #[test]
+    fn only_audited_personal_setting_leaves_are_accepted() {
+        for key in [
+            "qos.accessibility.screen_reader",
+            "qos.appearance.studio",
+            "qos.locale.measurement",
+            "qos.notifications.per_app",
+            "qos.input.keyboard_layouts",
+            "qos.audio.mono_output",
+            "qos.display.night_light_temperature",
+            "qos.shortcuts.bindings",
+            "qos.desktop_controls.vim_mode",
+            "qos.quick_settings.controls",
+            "qos.text_assistance.auto_correct",
+        ] {
+            assert!(valid_setting_key(key), "expected {key} to roam");
+        }
+        for key in [
+            "qos.appearance.wallpaper_path",
+            "qos.input.future_device_serial",
+            "qos.audio.input_device",
+            "qos.display.auto_brightness",
+            "qos.power.auto_suspend",
+            "qos.updates.channel",
+            "qos.security.local_credential.pin",
+        ] {
+            assert!(!valid_setting_key(key), "expected {key} to stay local");
+        }
+    }
+
+    #[test]
     fn newest_roaming_setting_wins_deterministically() {
         let mut old = snapshot("desktop", 1, 0, FabricCapabilities::default());
         old.settings.push(RoamingSetting {
-            key: "qos.appearance.dark".into(),
+            key: "qos.appearance.theme".into(),
             value: Value::Bool(false),
             stamp: stamp("desktop", 1),
         });
         let mut new = snapshot("laptop", 2, 1000, FabricCapabilities::default());
         new.settings.push(RoamingSetting {
-            key: "qos.appearance.dark".into(),
+            key: "qos.appearance.theme".into(),
             value: Value::Bool(true),
             stamp: stamp("laptop", 2),
         });
@@ -1352,7 +1464,7 @@ mod tests {
         fabric.upsert(old).unwrap();
         fabric.upsert(new).unwrap();
         assert_eq!(
-            fabric.merged_settings()["qos.appearance.dark"],
+            fabric.merged_settings()["qos.appearance.theme"],
             Value::Bool(true)
         );
     }

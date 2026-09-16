@@ -1111,27 +1111,20 @@ fn shareable_clipboard(
 }
 
 fn roaming_setting_values() -> BTreeMap<String, Value> {
-    let document = settings_store::load();
+    roaming_setting_values_from(&settings_store::load())
+}
+
+fn roaming_setting_values_from(document: &Map<String, Value>) -> BTreeMap<String, Value> {
     let mut out = BTreeMap::new();
-    for section in [
-        "accessibility",
-        "appearance",
-        "region",
-        "notifications",
-        "input",
-        "audio",
-    ] {
-        let Some(Value::Object(values)) = document.get(section) else {
+    for (section, value) in document {
+        let Value::Object(values) = value else {
             continue;
         };
         for (key, value) in values {
-            if section == "appearance" && matches!(key.as_str(), "wallpaper" | "wallpaper_path") {
-                continue;
+            let fabric_key = format!("qos.{section}.{key}");
+            if super::device_fabric::valid_setting_key(&fabric_key) {
+                out.insert(fabric_key, value.clone());
             }
-            if section == "audio" && !matches!(key.as_str(), "balance" | "mono_output") {
-                continue;
-            }
-            out.insert(format!("qos.{section}.{key}"), value.clone());
         }
     }
     out
@@ -1178,6 +1171,10 @@ fn reconcile_roaming_settings(
 fn apply_roaming_settings(settings: &BTreeMap<String, Value>) {
     let mut sections = BTreeMap::<String, Map<String, Value>>::new();
     for (key, value) in settings {
+        if !super::device_fabric::valid_setting_key(key) {
+            tracing::warn!(key, "ignored non-roaming setting from personal fabric");
+            continue;
+        }
         let Some(rest) = key.strip_prefix("qos.") else {
             continue;
         };
@@ -1219,6 +1216,57 @@ fn unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn roaming_projection_includes_personal_preferences_and_excludes_hardware_state() {
+        let document = serde_json::json!({
+            "locale": {"currency": "EUR", "time_format": "H24"},
+            "appearance": {
+                "theme": "Nord",
+                "studio": {"id": "aurora"},
+                "wallpaper_path": "/home/person/private.png"
+            },
+            "input": {"keyboard_layouts": ["us", "de"], "pen_output": "DP-2"},
+            "audio": {"mono_output": true, "output_device": "USB DAC"},
+            "display": {
+                "night_light_temperature": 3700,
+                "scale": 1.5,
+                "auto_brightness": true
+            },
+            "shortcuts": {"bindings": {"search": {"key": "k"}}},
+            "quick_settings": {"controls": ["wifi", "bluetooth"]},
+            "text_assistance": {"auto_correct": false},
+            "power": {"auto_suspend": false},
+            "agent_providers": {"api_key": "must-not-roam"}
+        });
+        let projected = roaming_setting_values_from(document.as_object().unwrap());
+
+        for key in [
+            "qos.locale.currency",
+            "qos.locale.time_format",
+            "qos.appearance.theme",
+            "qos.appearance.studio",
+            "qos.input.keyboard_layouts",
+            "qos.audio.mono_output",
+            "qos.display.night_light_temperature",
+            "qos.shortcuts.bindings",
+            "qos.quick_settings.controls",
+            "qos.text_assistance.auto_correct",
+        ] {
+            assert!(projected.contains_key(key), "missing roaming key {key}");
+        }
+        for key in [
+            "qos.appearance.wallpaper_path",
+            "qos.input.pen_output",
+            "qos.audio.output_device",
+            "qos.display.scale",
+            "qos.display.auto_brightness",
+            "qos.power.auto_suspend",
+            "qos.agent_providers.api_key",
+        ] {
+            assert!(!projected.contains_key(key), "leaked local key {key}");
+        }
+    }
 
     #[test]
     fn snapshot_stamping_updates_every_authored_record() {
@@ -1272,7 +1320,7 @@ mod tests {
             media: Vec::new(),
             clipboard: Vec::new(),
             settings: vec![RoamingSetting {
-                key: "qos.appearance.dark".into(),
+                key: "qos.appearance.theme".into(),
                 value: Value::Bool(false),
                 stamp: old_stamp,
             }],
@@ -1280,10 +1328,10 @@ mod tests {
             display: None,
         };
         let next_stamp = FabricStamp { counter: 9, device };
-        let applied_remote = BTreeMap::from([("qos.appearance.dark".into(), Value::Bool(true))]);
+        let applied_remote = BTreeMap::from([("qos.appearance.theme".into(), Value::Bool(true))]);
 
         let received = reconcile_roaming_settings(
-            BTreeMap::from([("qos.appearance.dark".into(), Value::Bool(true))]),
+            BTreeMap::from([("qos.appearance.theme".into(), Value::Bool(true))]),
             Some(&previous),
             &applied_remote,
             &next_stamp,
@@ -1291,7 +1339,7 @@ mod tests {
         assert_eq!(received, previous.settings);
 
         let edited = reconcile_roaming_settings(
-            BTreeMap::from([("qos.appearance.dark".into(), Value::Bool(false))]),
+            BTreeMap::from([("qos.appearance.theme".into(), Value::Bool(false))]),
             Some(&previous),
             &applied_remote,
             &next_stamp,
@@ -1301,7 +1349,7 @@ mod tests {
 
         previous.settings.clear();
         let bootstrap = reconcile_roaming_settings(
-            BTreeMap::from([("qos.appearance.dark".into(), Value::Bool(true))]),
+            BTreeMap::from([("qos.appearance.theme".into(), Value::Bool(true))]),
             Some(&previous),
             &applied_remote,
             &next_stamp,
