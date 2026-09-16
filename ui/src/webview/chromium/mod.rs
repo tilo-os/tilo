@@ -105,6 +105,7 @@ struct Runtime {
     process: Arc<Shared>,
     routes: Routes,
     next_tab: AtomicU32,
+    download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
 }
 impl Drop for Runtime {
     fn drop(&mut self) {
@@ -113,6 +114,21 @@ impl Drop for Runtime {
         self.tx.close();
     }
 }
+fn queue_download_event(queue: &Mutex<VecDeque<WebViewEvent>>, event: WebViewEvent) {
+    let mut events = queue
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let WebViewEvent::DownloadUpdated { id, .. } = &event {
+        events.retain(
+            |old| !matches!(old, WebViewEvent::DownloadUpdated { id: old_id, .. } if old_id == id),
+        );
+    }
+    if events.len() >= 256 {
+        events.pop_front();
+    }
+    events.push_back(event);
+}
+
 fn fail_routes(routes: &Routes, message: String) {
     let endpoints: Vec<_> = routes
         .lock()
@@ -272,11 +288,13 @@ impl ChromiumEngine {
         });
         let tx = Arc::new(CommandQueue::default());
         let routes: Routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+        let download_events = Arc::new(Mutex::new(VecDeque::new()));
         let runtime = Arc::new(Runtime {
             tx: tx.clone(),
             process: shared.clone(),
             routes: routes.clone(),
             next_tab: AtomicU32::new(2),
+            download_events: download_events.clone(),
         });
         let rx = tx.clone();
         let (ready_tx, ready_rx) = sync_channel(1);
@@ -330,10 +348,15 @@ impl ChromiumEngine {
                             tracing::info!(cef = ?value["cef_version"], chromium = ?value["chromium_version"], "Chromium engine ready (CPU frame transport)");
                             let _ = ready_tx.try_send(());
                         }
-                        let tab = value["tab"].as_u64().unwrap_or(1) as u32;
-                        if value["event"] == "closed" {
-                            reader_routes.lock().unwrap().remove(&tab);
+                        if matches!(value["event"].as_str(), Some("download_prompt" | "download")) {
+                            if let Some(event) = decode_event(&value) {
+                                queue_download_event(&download_events, event);
+                                let endpoints: Vec<_> = reader_routes.lock().unwrap().values().filter_map(Weak::upgrade).collect();
+                                for endpoint in endpoints { endpoint.wake(); }
+                            }
+                            continue;
                         }
+                        let tab = value["tab"].as_u64().unwrap_or(1) as u32;
                         if let Some(shared) = route(&reader_routes, tab) {
                             if value["event"] == "open_tab" {
                                 if let Some(url) = value["url"].as_str() {
@@ -344,6 +367,7 @@ impl ChromiumEngine {
                             }
                             if let Some(event) = decode_event(&value) { shared.event(event); }
                         }
+                        if value["event"] == "closed" { reader_routes.lock().unwrap().remove(&tab); }
                     }
                     Ok(None) => { reader_shared.fail("Chromium engine disconnected".into()); break; }
                     Err(error) => { reader_shared.fail(format!("Invalid Chromium output: {error}")); break; }
@@ -517,6 +541,25 @@ impl WebViewEngine for ChromiumEngine {
     fn drain_events(&self) -> Vec<WebViewEvent> {
         self.shared
             .events
+            .lock()
+            .map(|mut events| events.drain(..).collect())
+            .unwrap_or_default()
+    }
+
+    fn request_close(&self) -> bool {
+        if self
+            .tx
+            .push(json!({"op":"try_close_tab","tab":self.tab}))
+            .is_err()
+        {
+            self.shared.event(WebViewEvent::TabCloseBlocked);
+        }
+        false
+    }
+
+    fn drain_download_events(&self) -> Vec<WebViewEvent> {
+        self.runtime
+            .download_events
             .lock()
             .map(|mut events| events.drain(..).collect())
             .unwrap_or_default()
@@ -761,6 +804,8 @@ impl CommandQueue {
 
 fn decode_event(value: &Value) -> Option<WebViewEvent> {
     Some(match value["event"].as_str()? {
+        "closed" => WebViewEvent::TabClosed,
+        "close_blocked" => WebViewEvent::TabCloseBlocked,
         "context_closed" => WebViewEvent::ContextMenuClosed {
             id: value["id"].as_u64()? as u32,
         },

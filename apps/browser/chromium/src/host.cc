@@ -108,11 +108,12 @@ bool closing=false;
 bool clear_on_exit=false;
 std::string downloads_directory;
 CefRefPtr<qos::RequestFilter> request_filter;
+CefRefPtr<qos::Downloads> downloads;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
                      public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler {
  public:
-  explicit Client(int id):id_(id),capabilities_(new qos::Capabilities(downloads_directory,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
+  explicit Client(int id):id_(id),capabilities_(new qos::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
     if(!fields) fields=CefDictionaryValue::Create();fields->SetInt("tab",id_);::Event(name,fields);
   }
@@ -166,7 +167,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto d=CefDictionaryValue::Create();d->SetInt("id",find_id_);d->SetInt("count",count);d->SetInt("active",active);d->SetBool("final",final_update);Event("find_result",d);
     if(final_update) { finding_=false;if(!pending_find_.empty()) { auto next=pending_find_.front();pending_find_.pop_front();CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,CefRefPtr<CefDictionaryValue> command){self->Command(command);},CefRefPtr<Client>(this),next));} }
   }
-  CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return capabilities_; }
+  CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return downloads; }
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return capabilities_; }
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
@@ -265,6 +266,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         if(command && context_commands_.count(command)) callback->Continue(command,EVENTFLAG_NONE);else callback->Cancel();
       }
     }
+    else if(op=="try_close_tab") { if(downloads->Busy(id_)) Event("close_blocked");else {host->CloseDevTools();host->CloseBrowser(true);} }
     else if(op=="close_tab") {host->CloseDevTools();host->CloseBrowser(true);}
     else if(op=="navigate") frame->LoadURL(d->GetString("url"));
     else if(op=="navigation_history") navigation_history_->Request(d->GetInt("request_id"));
@@ -290,7 +292,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!qos::FrameSize(w,h)) { CloseHost(); return; }
       // IPC sizes and pointer coordinates are physical pixels; CEF uses DIP.
-      width_=static_cast<int>(std::ceil(w/scale));height_=static_cast<int>(std::ceil(h/scale));scale_=scale;popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();
+      int width=static_cast<int>(std::ceil(w/scale)),height=static_cast<int>(std::ceil(h/scale));
+      if(width==width_ && height==height_ && scale==scale_) return;
+      width_=width;height_=height;scale_=scale;popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/scale_);event.y=static_cast<int>(Number(d,"y")/scale_);event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
@@ -302,8 +306,6 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="key") Key(d);
     else if(op=="scripts") { scripts_.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts_.push_back(list->GetString(i));document_scripts_->Configure(qos::ScriptSource(scripts_));SendScripts(); }
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
-    else if(op=="download_decision") capabilities_->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));
-    else if(op=="download_cancel") capabilities_->CancelDownload(d->GetInt("id"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
     else if(op=="devtools") { CefWindowInfo window;
       host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
@@ -378,6 +380,8 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   const auto op=d->GetString("op");int id=d->HasKey("tab")?d->GetInt("tab"):1;
   if(op=="shutdown") {CloseHost();return;}
   if(op=="create_tab") {CreateTab(id);return;}
+  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
+  if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
   auto found=clients.find(id);if(found!=clients.end()) found->second->Command(d);
 }
 class App final : public CefApp,public CefBrowserProcessHandler {
@@ -391,6 +395,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
   void OnContextInitialized() override {
     request_filter=new qos::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
     shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
+    downloads=new qos::Downloads(downloads_directory,[](const std::string& name,CefRefPtr<CefDictionaryValue> fields){ ::Event(name,fields); },[](CefRefPtr<CefBrowser> browser) { for(const auto& entry:clients) if(entry.second->browser_ && browser && entry.second->browser_->IsSame(browser)) return entry.first;return 0; });
     CreateTab(1);if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
@@ -400,7 +405,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto op=d->GetString("op").ToString();
   auto type=[&](const char* key,cef_value_type_t expected){return d->GetType(key)==expected;};
   auto number=[&](const char* key){auto t=d->GetType(key);return t==VTYPE_INT || (t==VTYPE_DOUBLE && std::isfinite(d->GetDouble(key)));};
-  if(op=="create_tab" || op=="close_tab") return d->HasKey("tab");
+  if(op=="create_tab" || op=="close_tab" || op=="try_close_tab") return d->HasKey("tab");
   if(op=="visibility") return type("visible",VTYPE_BOOL);
   if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" || (type("id",VTYPE_INT) && d->GetInt("id")>0));
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
@@ -453,6 +458,7 @@ void ReadCommands(std::atomic<bool>& stop) {
 CefRefPtr<CefApp> MakeHostApp() { return new App; }
 void CloseHost() {
   closing=true;
+  if(downloads) downloads->Close();
   if(clients.empty()) {CefQuitMessageLoop();return;}
   const auto live=clients;for(const auto& [id,client]:live) if(client->browser_) {client->browser_->GetHost()->CloseDevTools();client->browser_->GetHost()->CloseBrowser(true);}
 }

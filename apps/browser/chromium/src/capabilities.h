@@ -6,14 +6,22 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <set>
 #include <unistd.h>
 
 namespace qos {
-// All state lives on CEF's UI thread. No page can grant its own requests.
-class Capabilities final : public CefDownloadHandler, public CefPermissionHandler {
+// Runtime-owned downloads may outlive their originating browser. CEF download
+// item IDs are unique across this browser context; commands use those IDs.
+class Downloads final : public CefDownloadHandler {
  public:
   using Emit=std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
-  Capabilities(std::string downloads,Emit emit):downloads_(std::move(downloads)),emit_(std::move(emit)) {}
+  Downloads(std::string directory,Emit emit,std::function<int(CefRefPtr<CefBrowser>)> owner):downloads_(std::move(directory)),emit_(std::move(emit)),owner_(std::move(owner)) {}
+  bool Busy(int tab) {
+    std::vector<int> pending;for(const auto& entry:owners_) if(entry.second==tab && !approved_.count(entry.first)) pending.push_back(entry.first);
+    for(int id:pending) CancelDownload(id);
+    for(const auto& entry:owners_) if(entry.second==tab && approved_.count(entry.first)) return true;
+    return false;
+  }
   static std::string FileName(std::string name) {
     for(auto& c:name) if(c=='\\') c='/';
     name=std::filesystem::path(name).filename().string();
@@ -22,13 +30,14 @@ class Capabilities final : public CefDownloadHandler, public CefPermissionHandle
     if(name.size()>180) name="download";
     return name;
   }
-  bool OnBeforeDownload(CefRefPtr<CefBrowser>,CefRefPtr<CefDownloadItem> item,const CefString& suggested,CefRefPtr<CefBeforeDownloadCallback> callback) override {
+  bool OnBeforeDownload(CefRefPtr<CefBrowser> browser,CefRefPtr<CefDownloadItem> item,const CefString& suggested,CefRefPtr<CefBeforeDownloadCallback> callback) override {
     int id=item->GetId();
     if(downloads_pending_.size()>=32) return true;
+    owners_[id]=owner_(browser);
     auto name=FileName(suggested);
     downloads_pending_[id]={callback,name};
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("url",item->GetURL());d->SetString("name",name);emit_("download_prompt",d);
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Capabilities> self,int id){self->DownloadDecision(id,false);},CefRefPtr<Capabilities>(this),id),60000);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int id){self->DownloadDecision(id,false);},CefRefPtr<Downloads>(this),id),60000);
     return true;
   }
   void DownloadDecision(int id,bool allow) {
@@ -40,27 +49,50 @@ class Capabilities final : public CefDownloadHandler, public CefPermissionHandle
     // names cannot traverse or overwrite an existing file, even on repetition.
     std::string directory=downloads_+"/qos-download-XXXXXX";
     if(ec || !mkdtemp(directory.data())) { DownloadState(id,"failed","Cannot create download directory");return; }
-    pending.callback->Continue(directory+"/"+pending.name,false);
+    approved_.insert(id);pending.callback->Continue(directory+"/"+pending.name,false);
   }
   void CancelDownload(int id) {
     downloads_pending_.erase(id);
     auto it=downloads_active_.find(id);
     if(it!=downloads_active_.end()) { auto cb=it->second;downloads_active_.erase(it);cb->Cancel(); }
-    else DownloadState(id,"cancelled","");
+    DownloadState(id,"cancelled","");
   }
-  void OnDownloadUpdated(CefRefPtr<CefBrowser>,CefRefPtr<CefDownloadItem> item,CefRefPtr<CefDownloadItemCallback> callback) override {
+  void OnDownloadUpdated(CefRefPtr<CefBrowser> browser,CefRefPtr<CefDownloadItem> item,CefRefPtr<CefDownloadItemCallback> callback) override {
     if(!item->IsValid()) return;
     int id=item->GetId();
     std::string state=item->IsComplete()?"complete":item->IsCanceled()?"cancelled":item->IsInterrupted()?"failed":"progress";
     if(item->IsInProgress()) {
       if(downloads_active_.size()>=32 && !downloads_active_.count(id)) {callback->Cancel();return;}
-      downloads_active_[id]=callback;
-    } else { downloads_active_.erase(id);downloads_pending_.erase(id); }
+      downloads_active_[id]=callback;owners_[id]=owner_(browser);
+    } else { downloads_active_.erase(id);downloads_pending_.erase(id);owners_.erase(id);approved_.erase(id); }
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("state",state);d->SetString("path",item->GetFullPath());
     d->SetString("name",FileName(item->GetSuggestedFileName()));d->SetString("url",item->GetURL());
     d->SetDouble("received",item->GetReceivedBytes());d->SetDouble("total",item->GetTotalBytes());
     d->SetString("error",state=="failed"?"Chromium interrupted download ("+std::to_string(item->GetInterruptReason())+")":"");emit_("download",d);
   }
+  void Close() {
+    while(!downloads_active_.empty()) CancelDownload(downloads_active_.begin()->first);
+    downloads_pending_.clear();
+  }
+ private:
+  void DownloadState(int id,const std::string& state,const std::string& error) {
+    owners_.erase(id);approved_.erase(id);
+    auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("state",state);d->SetString("error",error);d->SetString("path","");d->SetString("name","");d->SetString("url","");d->SetDouble("received",0);d->SetDouble("total",0);emit_("download",d);
+  }
+  struct Download {CefRefPtr<CefBeforeDownloadCallback> callback;std::string name;};
+  std::string downloads_;Emit emit_;
+  std::function<int(CefRefPtr<CefBrowser>)> owner_;
+  std::map<int,int> owners_;
+  std::set<int> approved_;
+  std::map<int,Download> downloads_pending_;
+  std::map<int,CefRefPtr<CefDownloadItemCallback>> downloads_active_;
+  IMPLEMENT_REFCOUNTING(Downloads);
+};
+// Permissions remain scoped to one live page and are denied when it closes.
+class Capabilities final : public CefPermissionHandler {
+ public:
+  using Emit=std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
+  explicit Capabilities(Emit emit):emit_(std::move(emit)) {}
   bool OnShowPermissionPrompt(CefRefPtr<CefBrowser>,uint64_t prompt,const CefString& origin,uint32_t permissions,CefRefPtr<CefPermissionPromptCallback> callback) override {
     if(permissions_.size()>=32) { callback->Continue(CEF_PERMISSION_RESULT_DENY);return true; }
     int id=++sequence_;permissions_[id]={callback,nullptr,permissions,prompt};
@@ -83,8 +115,6 @@ class Capabilities final : public CefDownloadHandler, public CefPermissionHandle
   }
   void Close() {
     while(!permissions_.empty()) PermissionDecision(permissions_.begin()->first,false);
-    while(!downloads_active_.empty()) CancelDownload(downloads_active_.begin()->first);
-    downloads_pending_.clear();
   }
  private:
   static std::string PermissionNames(uint32_t mask,bool media) {
@@ -97,15 +127,9 @@ class Capabilities final : public CefDownloadHandler, public CefPermissionHandle
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Capabilities> self,int id){self->PermissionDecision(id,false);},CefRefPtr<Capabilities>(this),id),60000);
   }
   void Closed(int id) {auto d=CefDictionaryValue::Create();d->SetInt("id",id);emit_("permission_closed",d);}
-  void DownloadState(int id,const std::string& state,const std::string& error) {
-    auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("state",state);d->SetString("error",error);d->SetString("path","");d->SetString("name","");d->SetString("url","");d->SetDouble("received",0);d->SetDouble("total",0);emit_("download",d);
-  }
   struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;};
-  struct Download {CefRefPtr<CefBeforeDownloadCallback> callback;std::string name;};
-  std::string downloads_;Emit emit_;int sequence_=0;
+  Emit emit_;int sequence_=0;
   std::map<int,Permission> permissions_;
-  std::map<int,Download> downloads_pending_;
-  std::map<int,CefRefPtr<CefDownloadItemCallback>> downloads_active_;
   IMPLEMENT_REFCOUNTING(Capabilities);
 };
 }
