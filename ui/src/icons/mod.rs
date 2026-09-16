@@ -62,6 +62,7 @@ pub enum Icon {
     ArrowLeft,
     ArrowRight,
     ArrowUp,
+    ArrowDown,
     ChevronRight,
     RotateCcw,
     RotateCw,
@@ -378,6 +379,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::ArrowLeft => vec![path_from_d("m12 19-7-7 7-7"), path_from_d("M19 12H5")],
         Icon::ArrowRight => vec![path_from_d("M5 12h14"), path_from_d("m12 5 7 7-7 7")],
         Icon::ArrowUp => vec![path_from_d("m5 12 7-7 7 7"), path_from_d("M12 19V5")],
+        Icon::ArrowDown => vec![path_from_d("m5 12 7 7 7-7"), path_from_d("M12 5v14")],
         Icon::ChevronRight => vec![path_from_d("m9 18 6-6-6-6")],
         Icon::RotateCcw => vec![
             path_from_d("M3 12a9 9 0 1 0 9-9c-2.52 0-4.93 1-6.74 2.74L3 8"),
