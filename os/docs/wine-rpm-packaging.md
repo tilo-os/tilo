@@ -91,6 +91,26 @@ explicitly, including all matching exact-version dependencies. Publication
 and signing policy is still needed for these locally rebuilt RPMs; no signature
 bypass is authorized for unrelated Fedora runtime packages.
 
+## Pairing noarch outputs
+
+After publishing both architecture outputs immutably, run
+`python3 os/dev/merge-wine-rpms.py --x64 X64_ARTIFACT --x86 I686_ARTIFACT
+--x64-ref REGISTRY/X64@sha256:DIGEST --x86-ref REGISTRY/I686@sha256:DIGEST
+--pin os/dev/wine-source.json --output NEW_DIRECTORY`.
+Both extracted inputs are revalidated against their inventories and the same
+source/build identity before any output is written.
+
+Both builds must contain the same complete noarch package set. The merger
+checks RPM integrity and compares all semantic header fields, including file
+digests, modes, owners, flags, dependencies, scriptlets and triggers. Only
+explicit RPM encoding/signing/build-machine bookkeeping is ignored. Unknown
+fields are compared by default. Differences fail the merge for investigation;
+there is no architecture-based feature pruning or preferred-package fallback.
+After equivalence is established, x86-64 owns the shared noarch RPM bytes.
+All architecture-specific packages and both complete provenance directories
+are retained. `paired-contract.json` records both input digests and the selected
+bytes. This stage does not sign RPMs or publish repository metadata.
+
 ## Required acceptance before integration
 
 Install the complete paired RPM set with normal scriptlets in the frozen
