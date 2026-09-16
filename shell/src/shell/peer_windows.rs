@@ -17,7 +17,7 @@ use crate::shell::state::{
 use crate::shell::tab_binding::Placement;
 
 /// Shown while the local instance is starting.
-const OPENING: &str = "Opening here…";
+pub(crate) const OPENING: &str = "Opening here…";
 
 /// One symbolic application window, lifted out of the tree so the decision
 /// can be made without holding a borrow on it. `local` distinguishes a window
