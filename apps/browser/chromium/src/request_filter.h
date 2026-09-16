@@ -78,8 +78,14 @@ class RequestFilter final : public CefRequestContextHandler {
   CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool,const CefString& initiator,bool&) override {
     auto state=std::atomic_load(&state_);
     if(!state->enabled || !WebURL(request->GetURL())) return nullptr;
-    std::string source=frame ? frame->GetURL().ToString() : initiator.ToString();
-    if(!WebURL(source)) source=initiator.ToString();
+    // For subdocument navigation frame->GetURL() may already be the target.
+    // The initiator identifies the embedding document and preserves its party
+    // and domain context; worker requests also use this origin without a frame.
+    std::string source=initiator.ToString();
+    if(!WebURL(source) && frame && request->GetResourceType()==RT_SUB_FRAME) {
+      auto parent=frame->GetParent();if(parent) source=parent->GetURL();
+    }
+    if(!WebURL(source) && frame) source=frame->GetURL();
     if(!WebURL(source)) source=request->GetURL();
     return new FilterResource(std::move(state),std::move(source),failure_);
   }

@@ -10,6 +10,7 @@ from native_regressions import Host
 
 PAGE = b'''<!doctype html><title>blocking fixture</title>
 <script>window.earlyScript=window.docStartReady===true;setTimeout(()=>document.title="early-"+window.earlyScript,300)</script>
+<style>.csp-control { display:none }</style><div class="csp-control">CSP control</div>
 <div class="sponsor">advertisement</div><div id="domain-ad">domain advertisement</div>
 <script src="/ad.js"></script><script src="/ad.js?allow"></script>
 <script src="/replace.js" onload="window.redirectLoaded=true"></script>
@@ -32,10 +33,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path=urlsplit(self.path).path
         self.send_response(200)
         self.send_header('Cache-Control','no-store')
-        if getattr(self.server,'csp',False): self.send_header('Content-Security-Policy',"script-src 'self' 'unsafe-inline'")
-        self.send_header('Content-Type','text/html' if path=='/' else 'text/javascript')
+        if getattr(self.server,'csp',False): self.send_header('Content-Security-Policy',"style-src 'none'; script-src 'self' 'unsafe-inline'")
+        self.send_header('Content-Type','text/html' if path in ('/','/iframes','/csp') else 'text/javascript')
         self.end_headers()
         body=b"self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(fetch('/sw-ad').catch(()=>{}).then(()=>fetch('/sw-ready'))));" if path=='/sw.js' else PAGE if path=='/' else b"fetch('/worker-ad').catch(()=>{})" if path=='/worker.js' else b'window.originalReplacement=true;' if path=='/replace.js' else b'void 0;'
+        if path=='/csp':
+            body=b'''<!doctype html><style>.csp-control {display:none}</style>
+<div class="csp-control">control</div><div class="site-sheet-control">site sheet</div><div class="sponsor">ad</div><div id="domain-ad">ad</div>
+<script>
+setTimeout(()=>{const node=document.createElement('div');node.className='late-ad';document.body.append(node)},100);
+const siteSheet=new CSSStyleSheet();siteSheet.replaceSync('.site-sheet-control {display:grid}');document.adoptedStyleSheets=[...document.adoptedStyleSheets,siteSheet];
+setInterval(()=>{const late=document.querySelector('.late-ad');if(late)document.title=JSON.stringify({styles:['.sponsor','.late-ad','#domain-ad'].map(s=>getComputedStyle(document.querySelector(s)).display),control:getComputedStyle(document.querySelector('.csp-control')).display,site:getComputedStyle(document.querySelector('.site-sheet-control')).display,nonce:Date.now()})},100);
+</script>'''
+        if path=='/iframes':
+            body=b'<!doctype html><title>iframe source</title>'
+            for host,name in [('localhost','thirdparty-frame'),('localhost','firstparty-frame'),('localhost','domain-frame'),('127.0.0.1','same-first-frame'),('127.0.0.1','same-third-frame')]:
+                body+=f'<iframe src="http://{host}:{self.server.server_port}/{name}"></iframe>'.encode()
         self.wfile.write(body)
     def log_message(self,*args): pass
 
@@ -68,6 +81,35 @@ class BlockingRegressions(unittest.TestCase):
         self.assertIn('/sw-ready',self.server.requests)
         for allowed in ['/ad.js?allow','/image-only.js','/first.js','/worker.js']:
             self.assertIn(allowed,self.server.requests)
+    def test_subdocument_navigation_uses_initiator_context(self):
+        self.config(rules='\n'.join(['/thirdparty-frame$subdocument,third-party',
+            '/firstparty-frame$subdocument,~third-party',
+            '/domain-frame$subdocument,domain=127.0.0.1',
+            '/same-first-frame$subdocument,~third-party',
+            '/same-third-frame$subdocument,third-party']))
+        self.host.navigate(self.url+'iframes')
+        for blocked in ['/thirdparty-frame','/domain-frame','/same-first-frame']:
+            with self.subTest(blocked=blocked): self.assertNotIn(blocked,self.server.requests)
+        for allowed in ['/firstparty-frame','/same-third-frame']:
+            with self.subTest(allowed=allowed): self.assertIn(allowed,self.server.requests)
+    def test_strict_style_csp_keeps_cosmetics_and_page_policy(self):
+        self.server.csp=True
+        self.config()
+        self.host.navigate(self.url+'csp')
+        def state():
+            self.host.settle(.2)
+            return json.loads(self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{'))['title'])
+        initial=state()
+        self.assertEqual(initial['styles'],['none','none','none'])
+        self.assertEqual(initial['control'],'block','Page-authored inline styles must remain blocked')
+        self.assertEqual(initial['site'],'grid')
+        self.config(False)
+        disabled=state()
+        self.assertEqual(disabled['styles'],['block','block','block'])
+        self.assertEqual(disabled['control'],'block')
+        self.assertEqual(disabled['site'],'grid','Disabling protection must preserve page-owned sheets')
+        self.config(True)
+        self.assertEqual(state()['styles'],['none','none','none'])
     def test_document_start_scripts(self):
         self.host.send(op='scripts',scripts=['window.docStartReady=true'])
         self.loaded()
