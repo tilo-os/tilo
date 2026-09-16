@@ -596,8 +596,7 @@ fn terminal_draw_reflows_to_resolved_monospace_at_large_text_scale() {
 
 #[test]
 fn disconnected_badge_keeps_a_complete_concise_state_at_large_text_scale() {
-    let (widget, _) = build_test_widget();
-    assert_eq!(widget.disconnected_badge_label(), "Session ended");
+    assert_eq!(TerminalWidget::disconnected_badge_label(), "Session ended");
 }
 
 #[test]
