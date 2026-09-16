@@ -8358,6 +8358,33 @@ struct ExportLayout {
     confirm: Rect,
 }
 
+impl VideoEditorApp {
+    /// Advance frame-owned state and resolve geometry once before painting.
+    /// Keeping this lifecycle work separate makes the draw pass read as the
+    /// actual visual stacking order.
+    fn prepare_draw_frame(&mut self, theme: &Theme) -> Regions {
+        self.advance_playback();
+        #[cfg(any(feature = "gst", feature = "decode"))]
+        self.pump_monitor();
+        self.advance_flap_with_motion(theme.reduce_motion);
+        self.poll_export();
+        #[cfg(feature = "decode")]
+        self.pump_preview_decode();
+
+        let mut regions = self.regions();
+        if !self.shot_lifecycle.interaction_applied
+            && self.shot_scenario.is_interaction()
+            && self.rect.width() > 1.0
+        {
+            self.apply_shot_interaction(&regions);
+            self.shot_lifecycle.interaction_applied = true;
+            // The scenario may move a side flap, invalidating the first pass.
+            regions = self.regions();
+        }
+        regions
+    }
+}
+
 // ==========================================================================
 // Widget impl
 // ==========================================================================
@@ -8612,30 +8639,7 @@ impl Widget for VideoEditorApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.advance_playback();
-        #[cfg(any(feature = "gst", feature = "decode"))]
-        self.pump_monitor();
-        self.advance_flap_with_motion(theme.reduce_motion);
-        // Destination round-trip + render progress, every frame.
-        self.poll_export();
-        // Track the decoded frame to the (possibly advancing) playhead.
-        #[cfg(feature = "decode")]
-        self.pump_preview_decode();
-        let mut r = self.regions();
-        // Arrange a rect-dependent interaction scenario once (for --shots).
-        if !self.shot_lifecycle.interaction_applied
-            && self.shot_scenario.is_interaction()
-            && self.rect.width() > 1.0
-        {
-            self.apply_shot_interaction(&r);
-            self.shot_lifecycle.interaction_applied = true;
-            // A scenario can move a side flap, and the regions were resolved
-            // before it ran — so re-resolve them, or the frame paints the
-            // panel into the slot it occupied a moment ago (an inspector
-            // opened by the scenario drew itself off the right edge).
-            r = self.regions();
-        }
-        let r = r;
+        let r = self.prepare_draw_frame(theme);
         // Everything below draws the room from here. In the live app that is
         // the host's own context, fed by the collaboration socket; a capture
         // scenario can stage one instead (see `seed_shot_collaborators`).
