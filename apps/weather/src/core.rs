@@ -96,6 +96,16 @@ struct Hotspot {
     action: OverAction,
 }
 
+/// Painting resources shared by every weather section in one pane draw.
+/// Keeping these together makes section helpers describe only their own
+/// geometry and data instead of repeating the renderer's ambient inputs.
+struct DrawCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text_renderer: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
 #[derive(Clone, Copy)]
 enum OverAction {
     SelectLocation(usize),
@@ -776,11 +786,17 @@ impl Core {
         theme: &Theme,
     ) {
         self.over_rect = rect;
+        let mut ctx = DrawCtx {
+            scene,
+            transform: t,
+            text_renderer: tr,
+            theme,
+        };
         // Below the rail threshold the overview collapses to a glanceable
         // icon column. The mode is re-derived from the allocated width every
         // frame, so a resize between side-by-side and rail reflows on its own.
         if rect.width() < RAIL_MAX_WIDTH {
-            self.draw_overview_rail(rect, scene, t, tr, theme);
+            self.draw_overview_rail(&mut ctx, rect);
             return;
         }
 
@@ -788,12 +804,13 @@ impl Core {
         let mut hot: Vec<Hotspot> = Vec::new();
 
         // Solid surface — this is a content panel, not a floating drawer.
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &rect);
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, c.surfaces.base, None, &rect);
 
         let left = rect.x0 + RP;
         let width = (rect.width() - 2.0 * RP).max(80.0);
-        let list_top = self.draw_overview_search(scene, t, tr, theme, left, width, &mut hot);
-        self.draw_overview_list(rect, scene, t, tr, theme, left, width, list_top, &mut hot);
+        let list_top = self.draw_overview_search(&mut ctx, left, width, &mut hot);
+        self.draw_overview_list(&mut ctx, rect, left, width, list_top, &mut hot);
         self.over_hotspots = hot;
     }
 
@@ -801,20 +818,17 @@ impl Core {
     /// self-drawn app-name header — the compositor owns window chrome, so
     /// this panel opens straight into its content. Returns the y the saved-
     /// place list starts at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus left/width/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_overview_search(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         left: f64,
         width: f64,
         hot: &mut Vec<Hotspot>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let large_text = theme.text_scale >= 1.5;
         let sy = self.over_rect.y0 + 16.0;
@@ -881,22 +895,16 @@ impl Core {
     /// delete drop zone while reordering, the scroll indicator, and finally
     /// the context menu + suggestion overlay (which must paint last so they
     /// sit above the chips).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/left/width/list_top/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_overview_list(
         &mut self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         left: f64,
         width: f64,
         list_top: f64,
         hot: &mut Vec<Hotspot>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
 
         // The chip list scrolls within the region below the header. While a
@@ -924,14 +932,20 @@ impl Core {
 
         // Clip the scrolling list to its region.
         let clip = Rect::new(rect.x0, list_top - 2.0, rect.x1, list_bottom + 2.0);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-        self.draw_chips(scene, t, tr, theme, left, width, hot);
-        scene.pop_layer();
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip,
+        );
+        self.draw_chips(ctx, left, width, hot);
+        ctx.scene.pop_layer();
 
         if self.model.locations.is_empty() {
             text_left(
-                scene,
-                tr,
+                ctx.scene,
+                ctx.text_renderer,
                 "No places yet — search above",
                 left,
                 list_top + 8.0,
@@ -943,7 +957,7 @@ impl Core {
 
         // Foot: Delete drop zone while reordering.
         if reorder {
-            self.draw_delete_dropzone(scene, t, tr, theme, rect);
+            self.draw_delete_dropzone(ctx, rect);
         }
 
         // Scroll indicator.
@@ -953,16 +967,16 @@ impl Core {
             let thumb_h = (track_h * (view_h / content_h)).clamp(24.0, track_h);
             let thumb_y =
                 list_top + (self.over_scroll / self.over_max_scroll) * (track_h - thumb_h);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 c.neutral[2].with_alpha_factor(0.6),
                 None,
                 &RoundedRect::new(track_x, list_top, track_x + 3.0, list_bottom, 1.5),
             );
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 c.text_dim.with_alpha_factor(0.7),
                 None,
                 &RoundedRect::new(track_x, thumb_y, track_x + 3.0, thumb_y + thumb_h, 1.5),
@@ -971,13 +985,19 @@ impl Core {
 
         // Context menu paints last so it sits above the chips.
         if self.menu.is_some() {
-            self.draw_context_menu(scene, t, tr, theme, hot);
+            self.draw_context_menu(ctx, hot);
         }
 
         // The shared suggestion overlay floats over the list, topmost.
         if self.search.is_editing() {
             let presence = PresenceCtx::empty();
-            self.search.draw_overlay(scene, t, tr, theme, &presence);
+            self.search.draw_overlay(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                theme,
+                &presence,
+            );
         }
     }
 
@@ -985,36 +1005,27 @@ impl Core {
     /// (condition icon + temperature) plus an expand chip at the top. Clicking
     /// a city selects it; clicking the chip restores the full list. Rendered
     /// whenever the overview is allocated less than [`RAIL_MAX_WIDTH`].
-    fn draw_overview_rail(
-        &mut self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_overview_rail(&mut self, ctx: &mut DrawCtx<'_>, rect: Rect) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mut hot: Vec<Hotspot> = Vec::new();
-        scene.fill(Fill::NonZero, t, c.surfaces.base, None, &rect);
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, c.surfaces.base, None, &rect);
         // The rail has no search field; drop any stale rect so a press can't
         // land on a phantom field from the previous (wide) layout.
         self.search_field_rect = Rect::ZERO;
 
-        let list_top = self.draw_rail_header(scene, t, theme, rect, &mut hot);
-        self.draw_rail_list(scene, t, tr, theme, rect, list_top, &mut hot);
+        let list_top = self.draw_rail_header(ctx, rect, &mut hot);
+        self.draw_rail_list(ctx, rect, list_top, &mut hot);
         self.over_hotspots = hot;
     }
 
     /// The rail's expand chip + the separator beneath it. Returns the y the
     /// scrolling city column starts at.
-    fn draw_rail_header(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        rect: Rect,
-        hot: &mut Vec<Hotspot>,
-    ) -> f64 {
+    fn draw_rail_header(&self, ctx: &mut DrawCtx<'_>, rect: Rect, hot: &mut Vec<Hotspot>) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = f64::midpoint(rect.x0, rect.x1);
 
@@ -1060,22 +1071,15 @@ impl Core {
 
     /// The scrolling city column: one slot per saved place (icon + temp),
     /// the selection/hover highlight, and the scroll indicator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/list_top/hot identify where to paint and where to record hit regions — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_rail_list(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
         list_top: f64,
         hot: &mut Vec<Hotspot>,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let cx = f64::midpoint(rect.x0, rect.x1);
         let list_bottom = rect.y1 - 10.0;
         let view_h = (list_bottom - list_top).max(0.0);
         let count = self.model.locations.len();
@@ -1086,12 +1090,18 @@ impl Core {
         self.over_list_top = scrolled_top;
 
         let clip = Rect::new(rect.x0, list_top - 2.0, rect.x1, list_bottom + 2.0);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip,
+        );
         for (i, loc) in self.model.locations.iter().enumerate() {
             let sy = scrolled_top + i as f64 * RAIL_SLOT_H;
-            self.draw_rail_slot(scene, t, tr, theme, rect, cx, sy, i, loc, hot);
+            self.draw_rail_slot(ctx, rect, sy, i, loc, hot);
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
 
         if self.over_max_scroll > 1.0 {
             let track_x = rect.x1 - 4.0;
@@ -1099,9 +1109,9 @@ impl Core {
             let thumb_h = (track_h * (view_h / content_h)).clamp(20.0, track_h);
             let thumb_y =
                 list_top + (self.over_scroll / self.over_max_scroll) * (track_h - thumb_h);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 c.text_dim.with_alpha_factor(0.6),
                 None,
                 &RoundedRect::new(track_x, thumb_y, track_x + 2.5, thumb_y + thumb_h, 1.25),
@@ -1112,24 +1122,21 @@ impl Core {
     /// One rail slot: the selection/hover highlight, the condition icon
     /// (or a dash before the first fetch), the rounded temperature, and its
     /// hit region.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/cx/sy/i/loc/hot identify where and what to paint and where to record the hit region — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
     fn draw_rail_slot(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        cx: f64,
         sy: f64,
         i: usize,
         loc: &SavedLocation,
         hot: &mut Vec<Hotspot>,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
+        let cx = f64::midpoint(rect.x0, rect.x1);
         let slot = Rect::new(
             rect.x0 + 6.0,
             sy + 4.0,
@@ -1202,17 +1209,8 @@ impl Core {
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_chips(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        w: f64,
-        hot: &mut Vec<Hotspot>,
-    ) {
+    fn draw_chips(&self, ctx: &mut DrawCtx<'_>, x: f64, w: f64, hot: &mut Vec<Hotspot>) {
+        let theme = ctx.theme;
         let units = self.units;
         let metrics = self.list_metrics();
         let dragging = self.reorder.from_index();
@@ -1227,9 +1225,9 @@ impl Core {
         // reflowed gap (the live target slot) to mark where the chip will drop.
         if let Some(gap) = self.reorder.insertion() {
             let gy = slot_y(gap) - self.over_item_gap / 2.0;
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
-                t,
+                ctx.transform,
                 self.accent(theme),
                 None,
                 &RoundedRect::new(x, gy - 1.5, x + w, gy + 1.5, 1.5),
@@ -1244,10 +1242,10 @@ impl Core {
             let chip = Rect::new(x, y, x + w, y + self.over_item_h);
             let swipe_dx = self.swipe_dx_for(i);
             if swipe_dx > 0.0 {
-                Self::draw_swipe_backing(scene, t, theme, chip);
+                Self::draw_swipe_backing(ctx, chip);
             }
-            let chip_t = t * Affine::translate((-swipe_dx, 0.0));
-            self.draw_chip(scene, chip_t, tr, theme, chip, loc, i, units);
+            let chip_t = ctx.transform * Affine::translate((-swipe_dx, 0.0));
+            self.draw_chip(ctx, chip_t, chip, loc, i, units);
             hot.push(Hotspot {
                 rect: chip,
                 action: OverAction::PressChip(i),
@@ -1264,8 +1262,15 @@ impl Core {
         {
             let sh =
                 RoundedRect::from_rect(chip.inset(-2.0), f64::from(theme.tokens.radii.md) + 2.0);
-            scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 60), None, &sh);
-            self.draw_chip(scene, t, tr, theme, chip, loc, i, units);
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                Color::from_rgba8(0, 0, 0, 60),
+                None,
+                &sh,
+            );
+            let transform = ctx.transform;
+            self.draw_chip(ctx, transform, chip, loc, i, units);
         }
     }
 
@@ -1281,18 +1286,18 @@ impl Core {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_chip(
         &self,
-        scene: &mut Scene,
+        ctx: &mut DrawCtx<'_>,
         t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         chip: Rect,
         loc: &SavedLocation,
         index: usize,
         units: Units,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let selected = index == self.model.selected;
         let hovered = chip.contains(self.last_mouse);
@@ -1391,7 +1396,10 @@ impl Core {
         }
     }
 
-    fn draw_swipe_backing(scene: &mut Scene, t: Affine, theme: &Theme, chip: Rect) {
+    fn draw_swipe_backing(ctx: &mut DrawCtx<'_>, chip: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let shape = RoundedRect::from_rect(chip, f64::from(theme.tokens.radii.md));
         scene.fill(Fill::NonZero, t, c.semantic.danger, None, &shape);
@@ -1404,14 +1412,11 @@ impl Core {
         Icon::Trash.draw(scene, t, icon_r, Color::WHITE);
     }
 
-    fn draw_delete_dropzone(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
+    fn draw_delete_dropzone(&self, ctx: &mut DrawCtx<'_>, rect: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let zone = self.delete_zone_rect();
         let w = (rect.width() - 2.0 * RP).max(80.0);
@@ -1454,14 +1459,11 @@ impl Core {
         );
     }
 
-    fn draw_context_menu(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hot: &mut Vec<Hotspot>,
-    ) {
+    fn draw_context_menu(&self, ctx: &mut DrawCtx<'_>, hot: &mut Vec<Hotspot>) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let Some(menu) = self.menu.as_ref() else {
             return;
         };
