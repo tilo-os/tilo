@@ -273,9 +273,12 @@ pub struct BrowserWidget {
     /// resource operation crosses the browser/engine boundary.
     address: ui::LocalState<String>,
     daily: crate::daily_controls::DailyControls,
+    page_menu: crate::page_menu::PageMenu,
+    pending_chrome_focus: Option<(NodeId, &'static str)>,
 
     // Chrome state mirrored from engine events.
     can_go_back: bool,
+    loading_stopped: bool,
     can_go_forward: bool,
     /// `1.0` when idle; anything below shows the progress bar.
     progress: f64,
@@ -438,8 +441,46 @@ impl BrowserWidget {
         self.history_paused
             .load(std::sync::atomic::Ordering::Relaxed)
     }
-    pub(crate) fn focus_tab_address(&mut self) -> bool {
-        self.focus_address_input()
+    pub(crate) fn focus_tab_address_with_caret(&mut self, buffered: bool) -> bool {
+        let focused = self.focus_address_input();
+        if buffered {
+            fn caret(widget: &mut dyn Widget) {
+                if widget.test_id() == Some(URL_INPUT_ID) {
+                    if let Some((_, text)) = widget.text_review() {
+                        widget.set_state(&text.len().to_string());
+                    }
+                }
+                for child in widget.children_mut() {
+                    caret(child);
+                }
+            }
+            if let Some(composed) = self.composed.as_mut() {
+                caret(composed.as_mut());
+            }
+        }
+        focused
+    }
+    pub(crate) fn buffer_tab_address(&mut self, key: &WKey, replace: bool) -> bool {
+        match key {
+            WKey::Character(text) => {
+                if replace {
+                    self.address.set(String::new());
+                }
+                self.address.update(|address| address.push_str(text));
+                true
+            }
+            WKey::Named(WNamedKey::Backspace) => {
+                self.address.update(|address| {
+                    address.pop();
+                });
+                true
+            }
+            WKey::Named(WNamedKey::Enter) => {
+                self.navigate_to_input();
+                true
+            }
+            _ => false,
+        }
     }
     pub(crate) fn refresh_shared_history(&mut self) {
         if !self.headless {
@@ -481,8 +522,11 @@ impl BrowserWidget {
             headless,
             address: ui::LocalState::new(initial_url.clone()),
             daily: Default::default(),
+            page_menu: Default::default(),
+            pending_chrome_focus: None,
             initial_url,
             can_go_back: false,
+            loading_stopped: false,
             can_go_forward: false,
             progress: if headless { 1.0 } else { 0.0 },
             title: String::new(),
@@ -691,6 +735,16 @@ impl BrowserWidget {
     }
 
     fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
+        if matches!(
+            &operation,
+            BrowserOperation::Back
+                | BrowserOperation::Forward
+                | BrowserOperation::Reload
+                | BrowserOperation::Navigate { .. }
+        ) {
+            self.loading_stopped = false;
+            self.structure_dirty |= self.daily.navigation_started(&self.engine);
+        }
         match operation {
             BrowserOperation::Back => {
                 self.clear_address_error();
@@ -708,6 +762,7 @@ impl BrowserWidget {
                 self.engine.send(WebViewCommand::Reload);
             }
             BrowserOperation::Stop => {
+                self.loading_stopped = true;
                 self.engine.send(WebViewCommand::StopLoading);
                 self.set_loading_progress(1.0);
                 if let Some(invocation) = self.resource_navigation_invocation.take() {
@@ -1445,7 +1500,7 @@ impl BrowserWidget {
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(pip_btn));
         }
-        if !self.compact_chrome {
+        if !self.compact_chrome && self.rect.width() >= 1100.0 {
             let developer_engine = self.engine.clone();
             toolbar = toolbar.push(Box::new(
                 Button::new("browser.devtools", "DevTools", None)
@@ -1453,7 +1508,7 @@ impl BrowserWidget {
                     .on_effect(move || developer_engine.send(WebViewCommand::ShowDeveloperTools)),
             ));
         }
-        if !self.compact_chrome {
+        if !self.compact_chrome && self.rect.width() >= 1100.0 {
             toolbar = toolbar.push(Box::new(self.daily.launcher()));
             toolbar = toolbar.push(Box::new(self.daily.zoom_reset()));
         }
@@ -2095,6 +2150,22 @@ impl BrowserWidget {
         let editing = self.url_input_focused();
         for event in self.engine.drain_events() {
             match event {
+                WebViewEvent::ContextMenu {
+                    id,
+                    x,
+                    y,
+                    link,
+                    items,
+                } => {
+                    if let Some(surface) = self.find_rect("browser.surface") {
+                        self.page_menu
+                            .open(id, x, y, link, items, surface, self.rect);
+                    } else {
+                        self.engine
+                            .send(WebViewCommand::ContextMenuAction { id, command: 0 });
+                    }
+                }
+                WebViewEvent::ContextMenuClosed { id } => self.page_menu.dismiss(id),
                 event @ (WebViewEvent::FindResult { .. } | WebViewEvent::ZoomChanged(_)) => {
                     self.structure_dirty |= self.daily.apply(event);
                 }
@@ -2115,6 +2186,10 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                 }
                 WebViewEvent::UriChanged(uri) => {
+                    if uri != self.current_uri {
+                        self.loading_stopped = false;
+                        self.structure_dirty |= self.daily.navigation_started(&self.engine);
+                    }
                     self.pending_history = None;
                     self.back_menu.close();
                     // Deterministic visual-audit states own their displayed
@@ -2142,7 +2217,7 @@ impl BrowserWidget {
                 {
                     self.title = title;
                 }
-                WebViewEvent::LoadProgress(p) if !self.forced_loading => {
+                WebViewEvent::LoadProgress(p) if !self.forced_loading && !self.loading_stopped => {
                     self.set_loading_progress(p);
                 }
                 WebViewEvent::TitleChanged(_) | WebViewEvent::LoadProgress(_) => {}
@@ -2508,7 +2583,11 @@ impl BrowserWidget {
             if widget.test_id() == Some(id) {
                 widget.set_focus(true);
                 if let Some((_, text)) = widget.text_review() {
-                    widget.set_state(&format!("{}:b:0", text.len()));
+                    if text.is_empty() {
+                        widget.set_state("0");
+                    } else {
+                        widget.set_state(&format!("{}:b:0", text.len()));
+                    }
                 }
                 return true;
             }
@@ -2523,6 +2602,31 @@ impl BrowserWidget {
             clear(composed.as_mut());
             focus(composed.as_mut(), id)
         })
+    }
+
+    fn focus_control_preserving_selection(&mut self, id: &str) {
+        fn state(widget: &dyn Widget, id: &str) -> Option<String> {
+            if widget.test_id() == Some(id) {
+                return widget.get_state();
+            }
+            widget.children().iter().find_map(|child| state(*child, id))
+        }
+        fn restore(widget: &mut dyn Widget, id: &str, value: &str) {
+            if widget.test_id() == Some(id) {
+                widget.set_state(value);
+            }
+            for child in widget.children_mut() {
+                restore(child, id, value);
+            }
+        }
+        let saved = self
+            .composed
+            .as_ref()
+            .and_then(|widget| state(widget.as_ref(), id));
+        self.focus_control(id);
+        if let (Some(value), Some(widget)) = (saved, self.composed.as_mut()) {
+            restore(widget.as_mut(), id, &value);
+        }
     }
 
     fn handle_address_shortcut(
@@ -2712,7 +2816,11 @@ impl Widget for BrowserWidget {
                 BROWSER_OPERATION_TYPE,
                 &payload,
             ) {
-                let spec = spec.with_contract(navigation_contract());
+                let spec = if id == "stop" {
+                    spec
+                } else {
+                    spec.with_contract(navigation_contract())
+                };
                 page.actions.push(if available {
                     spec
                 } else {
@@ -3100,11 +3208,16 @@ impl Widget for BrowserWidget {
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        doc: &AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
-            return Ok(None);
+            return match self.composed.as_mut() {
+                Some(composed) => {
+                    composed.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+                }
+                None => Ok(None),
+            };
         }
         let operation = decode_browser_operation(payload)?;
         let is_navigation = matches!(
@@ -3318,6 +3431,7 @@ impl Widget for BrowserWidget {
                 restore_address(child, id, state);
             }
         }
+        self.pending_chrome_focus = None;
         let page_focused = self.control_focused("browser.surface");
         let address_state = self
             .composed
@@ -3332,8 +3446,22 @@ impl Widget for BrowserWidget {
         self.composed = Some(composed);
         if let Some(id) = self.daily.focus_pending.take() {
             self.focus_control(id);
+            if id == crate::daily_controls::FIND_INPUT {
+                if let Some(cursor) = self.daily.take_buffered_cursor() {
+                    if let Some(composed) = self.composed.as_mut() {
+                        restore_address(composed.as_mut(), id, &cursor.to_string());
+                    }
+                }
+            }
+            self.pending_chrome_focus = node_map.iter().find_map(|(node, widget)| {
+                (unsafe { &**widget }.test_id() == Some(id)).then_some((*node, id))
+            });
         } else if page_focused {
             self.focus_control("browser.surface");
+            self.pending_chrome_focus = node_map.iter().find_map(|(node, widget)| {
+                (unsafe { &**widget }.test_id() == Some("browser.surface"))
+                    .then_some((*node, "browser.surface"))
+            });
         }
 
         let style = Style {
@@ -3422,6 +3550,9 @@ impl Widget for BrowserWidget {
         self.suggestions
             .draw_overlay(scene, transform, text_renderer, theme, presence);
 
+        self.page_menu
+            .menu
+            .draw(scene, transform, text_renderer, theme, presence);
         self.back_menu
             .draw(scene, transform, text_renderer, theme, presence);
         let feedback_hovered = self.pip_feedback_rect.contains(self.cursor);
@@ -3593,6 +3724,37 @@ impl Widget for BrowserWidget {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
+        if let Some((node, id)) = self.pending_chrome_focus.take() {
+            self.focus_control_preserving_selection(id);
+            *focus_target = Some(node);
+        }
+        if self.page_menu.menu.is_open() {
+            self.page_menu.menu.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if let Some(index) = self.page_menu.menu.take_selection() {
+                self.page_menu.choose(index, &self.engine);
+            } else if !self.page_menu.menu.is_open() {
+                self.page_menu.cancel(&self.engine);
+            }
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+            ) {
+                *handled = true;
+                return;
+            }
+        }
         let back_hit = self.can_go_back
             && self
                 .find_rect("browser.back")
@@ -3738,6 +3900,27 @@ impl Widget for BrowserWidget {
             return;
         }
 
+        // Cmd/Ctrl+F can be followed by text before the host rebuilds the bar.
+        // Retain those characters and place the caret after them on first layout.
+        if self.daily.focus_pending == Some(crate::daily_controls::FIND_INPUT) {
+            if let WindowEvent::KeyboardInput { event: key, .. } = event {
+                if key.state == ElementState::Pressed
+                    && !modifiers.state().super_key()
+                    && !modifiers.state().control_key()
+                {
+                    if key.logical_key == WKey::Named(WNamedKey::Enter) {
+                        *handled = true;
+                        return;
+                    }
+                    if let WKey::Character(text) = &key.logical_key {
+                        self.daily.buffer_text(text);
+                        *handled = true;
+                        return;
+                    }
+                }
+            }
+        }
+
         // The suggestion dropdown gets first crack at input while it's up
         // (address bar focused): arrow keys move the selection, Enter/click
         // pick a suggestion, Escape dismisses — ahead of the text field.
@@ -3800,6 +3983,9 @@ impl Widget for BrowserWidget {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        if self.page_menu.menu.is_open() {
+            return self.page_menu.accessibility();
+        }
         if !self.back_menu.is_open() {
             return None;
         }
@@ -3838,6 +4024,11 @@ impl Widget for BrowserWidget {
         _state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if matches!(action, ui::a11y::Action::Activate)
+            && self.page_menu.activate(target, &self.engine)
+        {
+            return true;
+        }
         if !self.back_menu.is_open() || !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -3862,7 +4053,10 @@ impl Widget for BrowserWidget {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.back_menu.modal_capture()
+        self.page_menu
+            .menu
+            .modal_capture()
+            .or_else(|| self.back_menu.modal_capture())
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -4061,12 +4255,118 @@ mod architecture_tests {
         assert!(widget.focus_control("browser.surface"));
         compose(&mut widget);
         assert!(widget.control_focused("browser.surface"));
-        widget.daily.act(crate::daily_controls::Action::Open, &widget.engine);
+        widget
+            .daily
+            .act(crate::daily_controls::Action::Open, &widget.engine);
         compose(&mut widget);
         assert!(widget.control_focused(crate::daily_controls::FIND_INPUT));
-        widget.daily.act(crate::daily_controls::Action::Close, &widget.engine);
+        widget
+            .daily
+            .act(crate::daily_controls::Action::Close, &widget.engine);
         compose(&mut widget);
         assert!(widget.control_focused("browser.surface"));
+    }
+
+    #[test]
+    fn find_handoff_restores_focus_before_first_character_dispatch() {
+        let capture = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(capture.clone(), true);
+        compose(&mut widget);
+        widget.daily.act(crate::daily_controls::Action::Open, &widget.engine);
+        let mut tree = TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        // The host restores its previous focus after rebuilding. The next
+        // event must reapply the pending find focus before dispatching text.
+        widget.focus_control("browser.surface");
+        let mut doc = AutoCommit::new();
+        let mut target = None;
+        for letter in ["N", "e", "e", "d", "l", "e"] {
+            let mut event = key(WNamedKey::Enter);
+            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                event.logical_key = WKey::Character(letter.into());
+                event.text = Some(letter.into());
+            }
+            widget.handle_event(&event, 1.0, &Default::default(), &mut doc,
+                &automerge::ROOT, &mut false, &mut target, node, &tree);
+            widget.daily.sync(&widget.engine);
+        }
+        widget.daily.sync(&widget.engine);
+        assert!(widget.control_focused(crate::daily_controls::FIND_INPUT));
+        assert!(capture.commands().iter().any(|command| matches!(command,
+            WebViewCommand::Find { text, .. } if text == "Needle")), "{:?}", capture.commands());
+    }
+
+    #[test]
+    fn stop_contract_completes_and_queued_progress_cannot_restart_loading() {
+        struct QueuedEngine {
+            events: std::sync::Mutex<Vec<WebViewEvent>>,
+            capture: std::sync::Arc<TestEngine>,
+        }
+        impl WebViewEngine for QueuedEngine {
+            fn send(&self, command: WebViewCommand) { self.capture.send(command); }
+            fn frames(&self) -> ui::webview::FrameSlot { self.capture.frames() }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.events.lock().unwrap())
+            }
+        }
+        let capture = TestEngine::new();
+        let engine = std::sync::Arc::new(QueuedEngine {
+            events: std::sync::Mutex::new(Vec::new()), capture: capture.clone(),
+        });
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        let invocation = ui::qos_actions::InvocationId::new();
+        widget.resource_navigation_invocation = Some(invocation);
+        widget.set_loading_progress(0.2);
+        let doc = AutoCommit::new();
+        let resources = widget.resources(&doc);
+        let stop = resources[0].children.iter().find(|r| r.id.0 == "browser.page")
+            .unwrap().actions.iter().find(|a| a.id == "stop").unwrap();
+        let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
+        let result = widget.start_resource_operation(ui::qos_actions::InvocationId::new(),
+            stop.kind, &encoded.type_id, &encoded.payload, &doc, &automerge::ROOT).unwrap();
+        let Some(ui::widget::ResourceOperationStart::Completed(output)) = result else {
+            panic!("Stop must complete immediately");
+        };
+        assert!(stop.contract.result.validate(&output).is_ok());
+        assert!(matches!(widget.resource_navigation_result,
+            Some(ui::qos_actions::InvocationUpdate::Failed { .. })));
+        engine.events.lock().unwrap().push(WebViewEvent::LoadProgress(0.4));
+        widget.apply_engine_events();
+        assert_eq!(widget.progress, 1.0);
+        assert!(capture.commands().contains(&WebViewCommand::StopLoading));
+        widget.perform_browser_operation(BrowserOperation::Reload).unwrap();
+        engine.events.lock().unwrap().push(WebViewEvent::LoadProgress(0.6));
+        widget.apply_engine_events();
+        assert_eq!(widget.progress, 0.6);
+    }
+
+    #[test]
+    fn composed_download_save_action_reaches_native_callback() {
+        let capture = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(capture.clone(), true);
+        widget.capabilities.apply(WebViewEvent::DownloadRequested {
+            id: 1,
+            url: "https://test.example/file".into(),
+            name: "file.txt".into(),
+        });
+        compose(&mut widget);
+        let result = widget
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                OperationKind::Effect,
+                "qos.ui.control.invoke",
+                &serde_json::to_vec("browser.decision.false.1.true").unwrap(),
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert!(result.is_some());
+        assert!(
+            capture
+                .commands()
+                .contains(&WebViewCommand::DownloadDecision { id: 1, allow: true })
+        );
     }
 
     #[test]

@@ -121,6 +121,10 @@ pub enum WebViewCommand {
         next: bool,
     },
     StopFinding,
+    ContextMenuAction {
+        id: u32,
+        command: u32,
+    },
     SetZoomLevel(f64),
     /// Viewport size in physical pixels plus the display scale factor.
     Resize {
@@ -215,6 +219,16 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    ContextMenu {
+        id: u32,
+        x: f64,
+        y: f64,
+        link: String,
+        items: Vec<(u32, String)>,
+    },
+    ContextMenuClosed {
+        id: u32,
+    },
     FindResult {
         id: u32,
         count: i32,
