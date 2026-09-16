@@ -5723,6 +5723,83 @@ mod tests {
     }
 
     #[test]
+    fn populated_site_panels_render_at_narrow_width() {
+        let mut widget = BrowserWidget::new_headless();
+        let (doc, root) = synced(&mut widget);
+        widget.site.navigation("https://example.com");
+        widget.site.open = true;
+        widget.site.sync(&widget.engine);
+        assert!(
+            widget
+                .site
+                .apply(WebViewEvent::SiteStatus(ui::webview::SiteStatus {
+                    request_id: 1,
+                    origin: "https://example.com".into(),
+                    generation: 2,
+                    blocked: 4,
+                    global_enabled: true,
+                    excepted: false,
+                    effective: true,
+                    security: "secure".into(),
+                    certificate_status: 0,
+                    tls_version: 6,
+                    content_status: 0,
+                    subject: "example.com".into(),
+                    issuer: "Cloudflare TLS Issuing ECC CA 3".into(),
+                    expires: 13_437_613_041_000_000.0,
+                    permissions: ["camera", "microphone", "location", "notifications"]
+                        .into_iter()
+                        .map(|name| (name.into(), "ask".into()))
+                        .collect(),
+                }))
+        );
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        for information in [false, true] {
+            layout_at(&mut widget, 390.0, 700.0);
+            // Match the retained app layout after its first parent size is known.
+            layout_at(&mut widget, 390.0, 700.0);
+            if information {
+                assert!(
+                    widget
+                        .start_resource_operation(
+                            ui::qos_actions::InvocationId::new(),
+                            OperationKind::Effect,
+                            "qos.ui.control.invoke",
+                            &serde_json::to_vec("browser.site.connection").unwrap(),
+                            &doc,
+                            &root,
+                        )
+                        .unwrap()
+                        .is_some()
+                );
+                widget.site.sync(&widget.engine);
+                layout_at(&mut widget, 390.0, 700.0);
+            }
+            let rect = widget.site_panel.as_ref().unwrap().get_rect();
+            assert!(
+                rect.x0 >= 0.0 && rect.x1 <= 390.0 && rect.height() > 100.0,
+                "{rect:?}"
+            );
+            let mut scene = Scene::new();
+            widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            if let Some(directory) = std::env::var_os("QOS_SITE_RENDER_EVIDENCE") {
+                let path = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&path).unwrap();
+                let mut renderer = ui::offscreen::OffscreenRenderer::new(390, 700);
+                let name = if information {
+                    "narrow-site-info.png"
+                } else {
+                    "narrow-protection.png"
+                };
+                renderer.render_png(&scene, theme.bg_app, &path.join(name));
+            }
+        }
+    }
+
+    #[test]
     fn site_panel_resource_actions_reach_the_retained_panel() {
         let mut widget = BrowserWidget::new_headless();
         let (mut doc, root) = synced(&mut widget);
