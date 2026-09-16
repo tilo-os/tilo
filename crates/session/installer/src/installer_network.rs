@@ -390,6 +390,11 @@ mod tests {
             ssid: ssid.to_string(),
             signal,
             secure,
+            security: if secure {
+                os_actions::WifiSecurity::Wpa2
+            } else {
+                os_actions::WifiSecurity::Open
+            },
             connected,
         }
     }
