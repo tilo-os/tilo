@@ -189,6 +189,10 @@ jobs:
         env:
           # Runner-level cache credentials must never enter pull-request code.
           QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
+          # The explicit large runner class has enough CPU/RAM for six native
+          # compiler processes. Direct/local invocations retain the helper's
+          # conservative two-job default.
+          QOS_CARGO_JOBS: "6"
           QOS_LANE_TARGETS: ${{ matrix.targets }}
           # RPM signing is restricted to protected desktop tags and happens in
           # the Fedora packaging userspace, where rpm-sign is installed. The
