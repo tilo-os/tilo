@@ -317,6 +317,7 @@ pub struct ApiTesterApp {
     /// applied through this host, which brackets the undo boundary and remembers
     /// the last action — the same path a Ctrl+K palette dispatch takes.
     actions: ui::ActionHost,
+    search_provider: crate::search_provider::ApiSearchProvider,
 
     // --- Worker plumbing ---
     tx: Sender<SendOutcome>,
@@ -507,6 +508,7 @@ impl ApiTesterApp {
             nav_meta: Vec::new(),
             sink: widgets.sink,
             actions: ui::ActionHost::new(),
+            search_provider: crate::search_provider::ApiSearchProvider::new(),
             tx,
             rx,
             resource_send_invocation: None,
@@ -527,6 +529,7 @@ impl ApiTesterApp {
             persisted_once: false,
         };
         app.rebuild_nav();
+        app.refresh_search();
         app
     }
 
@@ -951,6 +954,12 @@ impl ApiTesterApp {
         self.active_env = ApiDoc::active_env(state, path).and_then(|id| id.parse().ok());
         self.rebuild_env_dropdown();
         self.rebuild_nav();
+        self.refresh_search();
+    }
+
+    fn refresh_search(&mut self) {
+        self.search_provider
+            .refresh(&self.collections, &self.environments);
     }
 
     /// Number shown on a request-builder tab badge (kept for the tests + the
@@ -3152,6 +3161,10 @@ impl Widget for ApiTesterApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 
     /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
