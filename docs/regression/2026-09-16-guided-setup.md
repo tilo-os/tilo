@@ -219,6 +219,27 @@ The single scoped final rereview passed: all three Important findings and nine
 minor diagnostics were addressed, with no new actionable issues. This accepts
 the copy component, subject to relevant CI; the overall app remains incomplete.
 
+## Desktop package catalog and download
+
+Commit `fe27e5ab0` adds an embedded, strict Desktop release catalog and an
+unprivileged verified package cache. Selectors match exact distro/version and
+architecture; runtime evidence is bound to the package digest. The production
+catalog remains explicitly unreleased and empty. The generator measures actual
+local package bytes and requires supplied native-session evidence.
+
+Downloads use private exclusive staging, same-origin transport, bounded resume,
+size/digest verification and no-replacement publication. Cached content is
+revalidated, and a replaced cache directory is refused before returning a path.
+The later privileged helper must independently validate the package again.
+
+All 18 focused Rust tests and five generator tests passed on macOS and native
+Fedora ARM64. The host Imager library suite passed 281 tests with one explicit
+ignore, including all nine unchanged media-download tests. An exact-source
+Windows check passed for the catalog and non-Unix refusal branch only; it
+excluded TLS transport and does not establish a full native Windows build.
+Independent Task 1 review approved spec compliance and code quality with no
+findings. Host readiness, installation and graphical-session proof remain open.
+
 ## Existing installer baseline
 
 Native Fedora ARM64 ran `bash os/tests/installer_target_invariants.sh` and
