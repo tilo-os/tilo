@@ -102,14 +102,27 @@ The setup suites passed 59 tests on macOS and 58 on Fedora after the shared
 no-follow helper extraction. Native Fedora session `48855` exited zero without
 warnings. This is not yet the resumable engine or the UI import flow.
 
-Independent task review found two unresolved destination-namespace issues:
+Independent task review found two destination-namespace issues:
 a writable parent can allow substitution before the newly created directory's
 identity is recorded, and name-based publication/cleanup can race destination
-writers. Fixes are required before accepting this component. Passing existing
-tests does not establish those untested guarantees.
+writers. Commit `c66ec996c` adds full-ancestry permission checks, private creation
+and platform-specific ACL/filesystem validation. Scoped re-review approved both
+fixes with no new important regressions.
+The protection excludes malicious same-account and administrator processes;
+unknown destination security semantics fail closed without changing permissions
+on existing parents or source folders.
+
+After these fixes, macOS setup tests passed 69 tests, with one explicitly ignored
+root-only fixture. Native Fedora setup passed 65 tests before that fixture was
+added. The exact-source copy suite passed 19 tests each on XFS and a disposable
+Btrfs loop volume. The root-only foreign-owned sticky-child test separately
+passed on Fedora; its only ownership change was inside a disposable fixture.
+All loop mounts and fixtures were cleaned up. Scoped native and Windows-target
+Clippy checks passed; repository lint retains documented unrelated warnings.
 
 The exact migration and no-follow modules, including Windows-gated tests,
-compile for `x86_64-pc-windows-msvc` in an isolated temporary crate. Its 41
+compile for `x86_64-pc-windows-msvc` in an isolated temporary crate. After adding
+the security modules and three Windows ACL tests, its 77
 dependency identities/checksums were compared against repository lock entries.
 This proves only the isolated Windows Rust compilation. A full locked Imager
 cross-check failed in the `ring` C build because the macOS host lacks Windows
