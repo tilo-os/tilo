@@ -4,7 +4,7 @@
 //! installation authority; platform workers must revalidate every path and
 //! capability before doing work.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::folders::FolderScan;
 use super::model::{Capabilities, Experience, FolderMode, FolderSelection, SetupPlan};
@@ -104,10 +104,14 @@ impl SetupController {
     ///
     /// # Errors
     ///
-    /// Returns an error when `destination` is empty.
+    /// Returns an error when `destination` is empty, duplicates another
+    /// remembered destination, or contains/is contained by one.
     pub fn add_folder(&mut self, scan: FolderScan, destination: PathBuf) -> Result<(), String> {
         if destination.as_os_str().is_empty() {
             return Err("folder destination cannot be empty".to_string());
+        }
+        if self.destination_conflicts(&destination) {
+            return Err("folder destination overlaps another selected destination".to_string());
         }
         self.remembered_folders.push(FolderChoice {
             scan,
@@ -118,6 +122,16 @@ impl SetupController {
         self.invalidate_folder_review();
         self.rebuild_effective_folders();
         Ok(())
+    }
+
+    /// Whether a proposed destination duplicates or nests with a remembered
+    /// destination. This is a lexical planning guard, not a filesystem grant.
+    #[must_use]
+    pub fn destination_conflicts(&self, destination: &Path) -> bool {
+        self.remembered_folders.iter().any(|folder| {
+            folder.destination.starts_with(destination)
+                || destination.starts_with(&folder.destination)
+        })
     }
 
     /// Remove a remembered folder by the index shown in the folder screen.
@@ -404,5 +418,26 @@ mod tests {
         assert_eq!(setup.folders().len(), 1);
         assert_eq!(setup.folders()[0].scan.bytes, 9);
         assert!(!setup.remove_folder(4));
+    }
+
+    #[test]
+    fn duplicate_and_nested_destinations_are_rejected() {
+        let mut setup = SetupController::new(linux_desktop());
+        setup
+            .add_folder(scan("source/one", 1), test_path("qos/Documents"))
+            .unwrap();
+
+        for (source, destination) in [
+            ("source/two", "qos/Documents"),
+            ("source/three", "qos/Documents/Projects"),
+            ("source/four", "qos"),
+        ] {
+            let error = setup
+                .add_folder(scan(source, 1), test_path(destination))
+                .unwrap_err();
+            assert!(error.contains("destination overlaps"), "{error}");
+        }
+
+        assert_eq!(setup.folders().len(), 1);
     }
 }
