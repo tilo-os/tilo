@@ -1293,10 +1293,22 @@ impl CalendarApp {
     /// already-current note projection.
     fn refresh_search_catalog(&mut self, heads: &[ChangeHash]) {
         let calendars = self.calendar_projection_snapshot.clone();
-        self.search_provider
-            .refresh_with_calendars(&self.model, &self.note_search, &calendars);
-        self.search_catalog_heads = heads.to_vec();
-        self.search_catalog_projection_revision = self.calendar_projection_revision;
+        match self.search_provider.refresh_with_calendars(
+            &self.model,
+            &self.note_search,
+            &calendars,
+        ) {
+            Ok(()) => {
+                self.search_catalog_heads = heads.to_vec();
+                self.search_catalog_projection_revision = self.calendar_projection_revision;
+            }
+            Err(error) => {
+                // Keep the last complete revision searchable, but make a
+                // failed catalogue rebuild visible rather than silently
+                // advertising a partial/stale corpus as current.
+                self.status = Some(format!("Calendar search update failed: {error}"));
+            }
+        }
         #[cfg(test)]
         {
             self.search_catalog_refreshes = self.search_catalog_refreshes.saturating_add(1);

@@ -190,7 +190,7 @@ fn calendar_operation(
     }
 }
 
-fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resource {
+pub(crate) fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resource {
     let open = calendar_operation(
         "open",
         "Open calendar",
@@ -205,6 +205,65 @@ fn calendar_collection_resource(calendar: &CalendarCollectionResource) -> Resour
         calendar.label.clone(),
     )
     .with_action(open)
+}
+
+/// Minimal, exact event resource used by the retained global-search provider.
+/// It deliberately materialises only the action named by a search result, so a
+/// late search hit never has to construct the root resource tree (or an
+/// event's attendees, notes, reminders and recurrence children) just to open
+/// its stable address.
+pub(crate) fn search_event_resource(event: &Event) -> Resource {
+    Resource::new(
+        event_resource_id(event.id),
+        "calendar.event",
+        event.display_title(),
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open event",
+        OperationKind::View,
+        &CalendarOperation::OpenEvent {
+            id: event.id.to_string(),
+        },
+    ))
+}
+
+/// Minimal, exact task resource used by the retained global-search provider.
+pub(crate) fn search_task_resource(task: &Task) -> Resource {
+    Resource::new(
+        task_resource_id(task.id),
+        "calendar.task",
+        if task.title.trim().is_empty() {
+            "Untitled task".to_string()
+        } else {
+            task.title.clone()
+        },
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open task",
+        OperationKind::View,
+        &CalendarOperation::OpenTask {
+            id: task.id.to_string(),
+        },
+    ))
+}
+
+/// Minimal, exact project resource used by the retained global-search provider.
+pub(crate) fn search_project_resource(project: &Project) -> Resource {
+    Resource::new(
+        project_resource_id(project.id),
+        "calendar.project",
+        project.name.clone(),
+    )
+    .with_action(calendar_operation(
+        "open",
+        "Open project tasks",
+        OperationKind::View,
+        &CalendarOperation::OpenProject {
+            id: project.id.to_string(),
+        },
+    ))
 }
 
 /// Encode an app-local operation without allowing a serialization fault to
@@ -1605,6 +1664,26 @@ pub struct CalendarResourceCtx {
     pub next_project_order: u32,
 }
 
+/// Whether an event may be exposed to the global resource/action surface.
+///
+/// Calendar visibility is a Settings-owned policy, so it is deliberately
+/// evaluated from the current context rather than persisted into a replicated
+/// event. Unknown owners remain available: an imported local record can
+/// outlive its account configuration. A known hidden collection, however,
+/// suppresses every descendant resource so its title, attendees, reminder and
+/// notes cannot be discovered by search, agents, or action history.
+fn event_visible_to_resource_surface(ctx: &CalendarResourceCtx, event: &EventResource) -> bool {
+    let owner = if event.data.calendar_id.is_empty() {
+        "local"
+    } else {
+        event.data.calendar_id.as_str()
+    };
+    ctx.calendars
+        .iter()
+        .find(|calendar| calendar.id == owner)
+        .is_none_or(|calendar| calendar.visible)
+}
+
 /// Return an explicit invalid-arguments envelope rather than silently turning
 /// a malformed agent request into a no-op document action.
 fn invalid_arguments(reason: impl Into<String>) -> EncodedAction {
@@ -1997,7 +2076,11 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         root = root.with_child(child);
     }
 
-    for ev in &ctx.events {
+    for ev in ctx
+        .events
+        .iter()
+        .filter(|event| event_visible_to_resource_surface(ctx, event))
+    {
         if eager_remaining == 0 {
             break;
         }
@@ -2919,6 +3002,9 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
             .iter()
             .find(|event| event.data.id == event_raw)?
             .clone();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
         let attendee = event
             .data
             .attendees
@@ -2944,6 +3030,9 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
             .iter()
             .find(|event| event.data.id == event_raw && event.data.reminder >= 0)?
             .clone();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
         scoped.calendars.clear();
         scoped.events.push(event);
         return find_resource(provide_resources(&scoped, doc), id);
@@ -2961,6 +3050,9 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
             .iter()
             .find(|event| event.data.id == event_raw)?
             .clone();
+        if !event_visible_to_resource_surface(ctx, &event) {
+            return None;
+        }
         let mut base = event.data.to_event()?;
         base.recurrence_exdates.clear();
         base.occurrence_overrides.clear();
@@ -2994,6 +3086,9 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
             return None;
         }
         let event = ctx.events.iter().find(|event| event.data.id == raw)?;
+        if !event_visible_to_resource_surface(ctx, event) {
+            return None;
+        }
         let owner = if event.data.calendar_id.is_empty() {
             "local"
         } else {
@@ -3301,6 +3396,51 @@ mod tests {
                 .count()
                 .min(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
         );
+    }
+
+    #[test]
+    fn hidden_collection_withholds_event_resources_and_all_descendants() {
+        let (app, doc) = seeded();
+        let mut ctx = app.calendar_resource_ctx();
+        let event = &mut ctx.events[0];
+        let event_id = event.data.id.parse::<Id>().unwrap();
+        event.data.title = "Private planning session".into();
+        event.data.calendar_id = "work/private".into();
+        event.data.reminder = 30;
+        let attendee = AttendeeData {
+            id: Uuid::new_v4().to_string(),
+            name: "Private guest".into(),
+            email: "guest@example.test".into(),
+            status: "NEEDS-ACTION".into(),
+        };
+        let attendee_id = attendee.id.parse::<Id>().unwrap();
+        event.data.attendees = vec![attendee];
+        ctx.calendars = vec![CalendarCollectionResource {
+            id: "work/private".into(),
+            label: "Private work".into(),
+            color: None,
+            visible: false,
+        }];
+
+        let root = provide_resources(&ctx, &doc).remove(0);
+        let private_collection = root
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == calendar_resource_id("work/private"))
+            .expect("the collection remains available to re-enable");
+        assert!(private_collection.children.is_empty());
+
+        for resource_id in [
+            event_resource_id(event_id),
+            format!("{}:notes", event_resource_id(event_id)),
+            reminder_resource_id(event_id),
+            attendee_resource_id(event_id, attendee_id),
+        ] {
+            assert!(
+                resource_from_ctx(&ctx, &doc, &resource_id).is_none(),
+                "hidden collection leaked {resource_id}"
+            );
+        }
     }
 
     /// Search activation stays entirely inside the resource/action door for
