@@ -5,6 +5,9 @@
 //! history, not the live Wayland selection, until explicitly activated.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io::{Read as _, Write as _};
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -31,6 +34,43 @@ const INCOMING_MEDIA_WAIT: Duration = Duration::from_secs(60 * 60);
 const BLUETOOTH_HANDOFF_WAIT: Duration = Duration::from_secs(75);
 const BLUETOOTH_HANDOFF_DISCOVERY: Duration = Duration::from_secs(6);
 const MAX_BLUETOOTH_HANDOFFS: usize = 32;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NearbyDropEvent {
+    Sending {
+        file_name: String,
+        peer: crate::shell::personal_continuity::DeviceId,
+    },
+    Sent {
+        file_name: String,
+        peer: crate::shell::personal_continuity::DeviceId,
+    },
+    Failed {
+        file_name: String,
+        peer: crate::shell::personal_continuity::DeviceId,
+    },
+    Received {
+        path: PathBuf,
+        peer: crate::shell::personal_continuity::DeviceId,
+    },
+}
+
+#[derive(Default)]
+struct NearbyDropState {
+    events: VecDeque<NearbyDropEvent>,
+    pending: BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String)>,
+}
+
+fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
+    static STATE: OnceLock<Mutex<NearbyDropState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(NearbyDropState::default()))
+}
+
+pub fn take_nearby_drop_events() -> Vec<NearbyDropEvent> {
+    nearby_drop_state()
+        .lock()
+        .map_or_else(|_| Vec::new(), |mut state| state.events.drain(..).collect())
+}
 
 #[derive(Clone)]
 struct PendingIncomingMedia {
@@ -442,6 +482,15 @@ impl DeviceFabricRuntime {
                         let _ = crate::shell::mpris::pause_named(&controller);
                     }
                 }
+                action @ (PersonalFabricAction::NearbyDrop { .. }
+                | PersonalFabricAction::NearbyDropResult { .. }) => {
+                    handle_nearby_drop_action(
+                        network,
+                        envelope.request_id,
+                        envelope.source,
+                        action,
+                    );
+                }
                 action @ (PersonalFabricAction::BluetoothHandoffPrepare { .. }
                 | PersonalFabricAction::BluetoothHandoffPrepared { .. }
                 | PersonalFabricAction::BluetoothHandoffCommit { .. }
@@ -592,6 +641,61 @@ fn prune_spatial_leases(network: &ShellNetwork) {
     }
 }
 
+fn handle_nearby_drop_action(
+    network: &ShellNetwork,
+    envelope_request_id: [u8; 16],
+    source: crate::shell::personal_continuity::DeviceId,
+    action: PersonalFabricAction,
+) {
+    match action {
+        PersonalFabricAction::NearbyDrop {
+            file_name,
+            content_hash,
+            bytes,
+        } => {
+            let accepted = install_nearby_drop(&file_name, &bytes, content_hash).ok();
+            if let Some(path) = accepted.as_ref()
+                && let Ok(mut state) = nearby_drop_state().lock()
+            {
+                state.events.push_back(NearbyDropEvent::Received {
+                    path: path.clone(),
+                    peer: source.clone(),
+                });
+            }
+            let _ = network.send_personal_fabric_action(
+                &source,
+                PersonalFabricAction::NearbyDropResult {
+                    request_id: envelope_request_id,
+                    file_name,
+                    accepted: accepted.is_some(),
+                },
+            );
+        }
+        PersonalFabricAction::NearbyDropResult {
+            request_id,
+            file_name,
+            accepted,
+        } => {
+            if let Ok(mut state) = nearby_drop_state().lock()
+                && state.pending.remove(&request_id) == Some((source.clone(), file_name.clone()))
+            {
+                state.events.push_back(if accepted {
+                    NearbyDropEvent::Sent {
+                        file_name,
+                        peer: source,
+                    }
+                } else {
+                    NearbyDropEvent::Failed {
+                        file_name,
+                        peer: source,
+                    }
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
 fn handle_spatial_action(
     source: crate::shell::personal_continuity::DeviceId,
     target: &crate::shell::personal_continuity::DeviceId,
@@ -641,7 +745,9 @@ fn handle_spatial_action(
         | PersonalFabricAction::BluetoothHandoffFinished { .. }
         | PersonalFabricAction::BluetoothHandoffAccepted { .. }
         | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
-        | PersonalFabricAction::BluetoothHandoffPairingCommit { .. } => {}
+        | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
+        | PersonalFabricAction::NearbyDrop { .. }
+        | PersonalFabricAction::NearbyDropResult { .. } => {}
     }
 }
 
@@ -1357,6 +1463,135 @@ pub fn request_media_handoff(
     }
     media::handoff::remember_outbound_handoff(request_id, report);
     Ok(request_id)
+}
+
+/// Send one bounded regular file over the authenticated exact-target fast path.
+///
+/// # Errors
+///
+/// Returns an error for an unsafe/oversized source or unavailable fabric route.
+pub fn request_nearby_drop(
+    network: &ShellNetwork,
+    target: &crate::shell::personal_continuity::DeviceId,
+    path: &Path,
+) -> Result<[u8; 16], String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| super::device_fabric::valid_nearby_file_name(name))
+        .ok_or_else(|| "file name is not portable".to_string())?
+        .to_string();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| format!("file cannot be opened: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("file cannot be inspected: {error}"))?;
+    if !metadata.is_file()
+        || metadata.len() == 0
+        || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
+    {
+        return Err(
+            "nearby drop fast path requires one non-empty regular file up to 48 KiB".into(),
+        );
+    }
+    let mut bytes = Vec::new();
+    file.take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("file cannot be read: {error}"))?;
+    if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
+        return Err("file changed while being read".into());
+    }
+    let request = network.send_personal_fabric_action(
+        target,
+        PersonalFabricAction::NearbyDrop {
+            content_hash: *blake3::hash(&bytes).as_bytes(),
+            bytes,
+            file_name: file_name.clone(),
+        },
+    )?;
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        if state.pending.len() >= 256
+            && let Some(oldest) = state.pending.keys().next().copied()
+        {
+            state.pending.remove(&oldest);
+        }
+        state
+            .pending
+            .insert(request, (target.clone(), file_name.clone()));
+        state.events.push_back(NearbyDropEvent::Sending {
+            file_name,
+            peer: target.clone(),
+        });
+    }
+    Ok(request)
+}
+
+fn install_nearby_drop(
+    file_name: &str,
+    bytes: &[u8],
+    expected: [u8; 32],
+) -> Result<PathBuf, String> {
+    if !super::device_fabric::valid_nearby_file_name(file_name)
+        || bytes.is_empty()
+        || bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES
+        || blake3::hash(bytes).as_bytes() != &expected
+    {
+        return Err("invalid nearby drop".into());
+    }
+    let root = dirs::download_dir()
+        .ok_or_else(|| "Downloads is unavailable".to_string())?
+        .join("qOS Nearby");
+    install_nearby_drop_at(&root, file_name, bytes)
+}
+
+fn install_nearby_drop_at(root: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    if root.exists() {
+        if !std::fs::symlink_metadata(root).is_ok_and(|metadata| metadata.file_type().is_dir()) {
+            return Err("nearby drop folder is unsafe".into());
+        }
+    } else {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(root)
+            .map_err(|error| error.to_string())?;
+    }
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| error.to_string())?;
+    for suffix in 0..1000 {
+        let name = if suffix == 0 {
+            file_name.to_string()
+        } else {
+            let path = Path::new(file_name);
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
+            path.extension().and_then(|e| e.to_str()).map_or_else(
+                || format!("{stem} ({suffix})"),
+                |ext| format!("{stem} ({suffix}).{ext}"),
+            )
+        };
+        let path = root.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                if file.write_all(bytes).and_then(|()| file.sync_all()).is_ok() {
+                    return Ok(path);
+                }
+                let _ = std::fs::remove_file(&path);
+                return Err("nearby drop could not be saved".into());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("nearby drop folder has too many name collisions".into())
 }
 
 fn fabric_transfer_views(
@@ -2101,6 +2336,22 @@ fn unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn nearby_drop_never_overwrites_and_rejects_a_symlinked_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("nearby");
+        let first = install_nearby_drop_at(&root, "note.txt", b"one").unwrap();
+        let second = install_nearby_drop_at(&root, "note.txt", b"two").unwrap();
+        assert_eq!(std::fs::read(first).unwrap(), b"one");
+        assert_eq!(
+            second.file_name().and_then(|name| name.to_str()),
+            Some("note (1).txt")
+        );
+        let unsafe_root = temp.path().join("unsafe");
+        std::os::unix::fs::symlink(&root, &unsafe_root).unwrap();
+        assert!(install_nearby_drop_at(&unsafe_root, "other.txt", b"no").is_err());
+    }
 
     #[test]
     fn bluetooth_handoff_phases_bind_peer_direction_and_accessory() {
