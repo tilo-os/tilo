@@ -289,6 +289,14 @@ struct Regions {
     inspector_overlay: bool,
 }
 
+struct BinPaintCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    scale: f64,
+}
+
 /// How a standing notice reads: an ordinary outcome, a partial one, or a
 /// failure.
 ///
@@ -14970,20 +14978,12 @@ impl VideoEditorApp {
         }
     }
 
-    fn draw_bin(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: &Regions,
-    ) {
-        let c = &theme.tokens.colors;
-        let bin_scale = self.bin_ui_scale();
-        fill_rect(scene, tf, c.surfaces.raised, r.bin);
+    fn draw_bin_header(&self, ctx: &mut BinPaintCtx<'_>, r: &Regions) {
+        let c = &ctx.theme.tokens.colors;
+        fill_rect(ctx.scene, ctx.transform, c.surfaces.raised, r.bin);
         stroke_line(
-            scene,
-            tf,
+            ctx.scene,
+            ctx.transform,
             c.border_standard,
             r.bin.x1,
             r.bin.y0,
@@ -14991,30 +14991,22 @@ impl VideoEditorApp {
             r.bin.y1,
             1.0,
         );
-        // The drop invitation is NOT drawn here any more — see
-        // `draw_file_drop_invite`. It used to highlight only this pane, which
-        // promised less than the app accepts (a drop lands anywhere in the
-        // window) and vanished entirely when the bin was a closed flap, so on
-        // a narrow window a drop that would have worked looked impossible.
         text_w(
-            scene,
-            tr,
-            tf,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             "MEDIA BIN",
             11.0,
             c.text_dim,
-            r.bin.x0 + 14.0 * bin_scale,
-            r.bin.y0 + 14.0 * bin_scale,
+            r.bin.x0 + 14.0 * ctx.scale,
+            r.bin.y0 + 14.0 * ctx.scale,
             TextWeight::Semibold,
         );
-        // A title is the one source you make rather than import, so the bin
-        // offers it beside the count instead of leaving `MediaKind::Text`
-        // reachable only from the palette.
         let add = self.add_title_rect(r);
         let add_hover = add.contains(self.last_mouse);
         fill_rrect(
-            scene,
-            tf,
+            ctx.scene,
+            ctx.transform,
             if add_hover {
                 c.lift(0.72)
             } else {
@@ -15023,12 +15015,12 @@ impl VideoEditorApp {
             add,
             5.0,
         );
-        stroke_rrect(scene, tf, c.border_standard, add, 5.0, 1.0);
-        let at = text_centre(add, "+ Title", 10.5, TextWeight::Medium, tr);
+        stroke_rrect(ctx.scene, ctx.transform, c.border_standard, add, 5.0, 1.0);
+        let at = text_centre(add, "+ Title", 10.5, TextWeight::Medium, ctx.text);
         text_w(
-            scene,
-            tr,
-            tf,
+            ctx.scene,
+            ctx.text,
+            ctx.transform,
             "+ Title",
             10.5,
             c.text_primary,
@@ -15037,13 +15029,13 @@ impl VideoEditorApp {
             TextWeight::Medium,
         );
         let count = format!("{} clips", self.project.media.len());
-        let (cw, _) = tr.measure(&count, 11.0, None);
-        let count_x = r.bin.x1 - 14.0 * bin_scale - f64::from(cw);
-        if count_x > add.x1 + 8.0 * bin_scale {
+        let (count_width, _) = ctx.text.measure(&count, 11.0, None);
+        let count_x = r.bin.x1 - 14.0 * ctx.scale - f64::from(count_width);
+        if count_x > add.x1 + 8.0 * ctx.scale {
             text(
-                scene,
-                tr,
-                tf,
+                ctx.scene,
+                ctx.text,
+                ctx.transform,
                 &count,
                 11.0,
                 c.text_dim,
@@ -15051,6 +15043,248 @@ impl VideoEditorApp {
                 r.bin.y0 + 14.0,
             );
         }
+    }
+
+    fn draw_bin_row_visual(
+        &self,
+        ctx: &mut BinPaintCtx<'_>,
+        media_id: MediaId,
+        media: &MediaItem,
+        rect: Rect,
+    ) -> Rect {
+        let colors = &ctx.theme.tokens.colors;
+        if self.selected_media == Some(media_id) {
+            fill_rrect(
+                ctx.scene,
+                ctx.transform,
+                with_alpha(colors.accent[5], 0.22),
+                rect,
+                8.0,
+            );
+            stroke_rrect(ctx.scene, ctx.transform, colors.accent[5], rect, 8.0, 1.5);
+        } else if self.hover_media == Some(media_id) {
+            fill_rrect(ctx.scene, ctx.transform, colors.lift(0.35), rect, 8.0);
+        }
+
+        let row_inset = 8.0 * ctx.scale;
+        let thumb_height = (rect.height() - 2.0 * row_inset).clamp(0.0, 64.0);
+        let thumb_y0 = rect.center().y - thumb_height / 2.0;
+        let thumb = Rect::new(
+            rect.x0 + row_inset,
+            thumb_y0,
+            rect.x0 + row_inset + 64.0,
+            thumb_y0 + thumb_height,
+        );
+        let base = clip_color(ctx.theme, media.palette);
+        fill_rrect(ctx.scene, ctx.transform, darken(base, 0.25), thumb, 5.0);
+        if media.kind.is_visual() {
+            if let Some(thumbnail) = self.thumbnails.get(media_id) {
+                blit_thumb(ctx.scene, ctx.transform, thumbnail, thumb, 5.0);
+            } else {
+                for index in 0..3 {
+                    let x = thumb.x0 + 6.0 + f64::from(index) * 18.0;
+                    let block = Rect::new(x, thumb.y0 + 6.0, x + 14.0, thumb.y1 - 6.0);
+                    fill_rrect(ctx.scene, ctx.transform, lighten(base, 0.18), block, 2.0);
+                }
+            }
+        } else {
+            let color = lighten(base, 0.25);
+            let inner = Rect::new(
+                thumb.x0 + 4.0,
+                thumb.y0 + 6.0,
+                thumb.x1 - 4.0,
+                thumb.y1 - 6.0,
+            );
+            match (
+                self.waveforms.state(media.id),
+                self.waveforms.peaks(media.id),
+            ) {
+                (crate::waveform::WaveformState::Ready, Some(peaks)) => draw_waveform(
+                    ctx.scene,
+                    ctx.transform,
+                    inner,
+                    peaks,
+                    0.0,
+                    media.duration,
+                    media.duration,
+                    1.0,
+                    color,
+                ),
+                _ => draw_flat_signal(ctx.scene, ctx.transform, inner, color),
+            }
+        }
+
+        let pending = if media.kind.is_visual() {
+            self.thumbnails.get(media_id).is_none()
+        } else {
+            matches!(
+                self.waveforms.state(media.id),
+                crate::waveform::WaveformState::Pending
+                    | crate::waveform::WaveformState::Unrequested
+            )
+        };
+        if pending {
+            for index in 0..3 {
+                let x = thumb.x0 + 10.0 + f64::from(index) * 8.0;
+                ctx.scene.fill(
+                    Fill::NonZero,
+                    ctx.transform,
+                    with_alpha(Color::WHITE, 0.35 + 0.2 * f64::from(index)),
+                    None,
+                    &Circle::new(Point::new(x, thumb.y1 - 8.0), 2.5),
+                );
+            }
+        }
+        let kind_color = match media.kind {
+            MediaKind::Video => colors.semantic.info,
+            MediaKind::Audio => colors.semantic.success,
+            MediaKind::Image => colors.semantic.warning,
+            MediaKind::Text => colors.accent[5],
+        };
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            kind_color,
+            None,
+            &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0),
+        );
+        thumb
+    }
+
+    fn draw_bin_row_text(
+        &self,
+        ctx: &mut BinPaintCtx<'_>,
+        media_id: MediaId,
+        media: &MediaItem,
+        rect: Rect,
+        thumb: Rect,
+    ) {
+        let colors = &ctx.theme.tokens.colors;
+        let text_x = thumb.x1 + 12.0 * ctx.scale;
+        let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(media_id);
+        if !renaming {
+            let available = (rect.x1 - 8.0 - text_x) as f32;
+            let shown = elide_w(&media.name, available, ctx.text);
+            text_w(
+                ctx.scene,
+                ctx.text,
+                ctx.transform,
+                &shown,
+                13.0,
+                colors.text_primary,
+                text_x,
+                rect.y0 + 10.0 * ctx.scale,
+                TextWeight::Medium,
+            );
+        }
+        let subtitle = self.bin_subtitle(media);
+        let (long, short) = if self.media_is_unreadable(media_id) {
+            (Some(MEDIA_UNREADABLE), Some(MEDIA_UNREADABLE_SHORT))
+        } else if self.media_is_projected(media_id) {
+            (Some(MEDIA_NOT_LOCAL), Some(MEDIA_NOT_LOCAL_SHORT))
+        } else {
+            (None, None)
+        };
+        let (subtitle_width, _) = ctx.text.measure(&subtitle, 11.0, None);
+        let right = rect.x1 - 8.0 * ctx.scale;
+        let chip = long.zip(short).and_then(|(long, short)| {
+            [
+                (text_x + f64::from(subtitle_width) + 8.0, long),
+                (text_x + f64::from(subtitle_width) + 8.0, short),
+                (text_x, long),
+                (text_x, short),
+            ]
+            .into_iter()
+            .find(|(x0, label)| {
+                x0 + f64::from(ctx.text.measure(label, 10.5, None).0) + 14.0 <= right
+            })
+        });
+        if chip.is_none_or(|(x0, _)| x0 > text_x) {
+            text(
+                ctx.scene,
+                ctx.text,
+                ctx.transform,
+                &subtitle,
+                11.0,
+                colors.text_dim,
+                text_x,
+                rect.y0 + 34.0 * ctx.scale,
+            );
+        }
+        if let Some((x0, label)) = chip {
+            let width = f64::from(ctx.text.measure(label, 10.5, None).0) + 14.0 * ctx.scale;
+            let top = rect.y0 + 31.0 * ctx.scale;
+            let chip = Rect::new(x0, top, x0 + width, top + 17.0 * ctx.scale);
+            fill_rrect(
+                ctx.scene,
+                ctx.transform,
+                with_alpha(colors.semantic.warning, 0.20),
+                chip,
+                4.0,
+            );
+            stroke_rrect(
+                ctx.scene,
+                ctx.transform,
+                with_alpha(colors.semantic.warning, 0.65),
+                chip,
+                4.0,
+                1.0,
+            );
+            let baseline = text_baseline(chip, 10.5, ctx.text);
+            text(
+                ctx.scene,
+                ctx.text,
+                ctx.transform,
+                label,
+                10.5,
+                colors.semantic.warning,
+                chip.x0 + 7.0 * ctx.scale,
+                baseline,
+            );
+        }
+    }
+
+    fn draw_bin_rows(&self, ctx: &mut BinPaintCtx<'_>, r: &Regions) {
+        for (media_id, rect) in self.bin_item_rects(r) {
+            let Some(media) = self.project.media(media_id) else {
+                continue;
+            };
+            let thumb = self.draw_bin_row_visual(ctx, media_id, media, rect);
+            self.draw_bin_row_text(ctx, media_id, media, rect, thumb);
+        }
+        if self.shows_focus_cursor(Pane::Bin)
+            && let Some((_, row)) = self.bin_item_rects(r).get(self.focus.bin)
+        {
+            draw_focus_ring(
+                ctx.scene,
+                ctx.transform,
+                ctx.theme,
+                row.inset(-FOCUS_RING_INSET),
+                8.0 - FOCUS_RING_INSET,
+            );
+        }
+    }
+
+    fn draw_bin(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        r: &Regions,
+    ) {
+        let bin_scale = self.bin_ui_scale();
+        self.draw_bin_header(
+            &mut BinPaintCtx {
+                scene,
+                transform: tf,
+                text: tr,
+                theme,
+                scale: bin_scale,
+            },
+            r,
+        );
+        let c = &theme.tokens.colors;
 
         // Clip bin content so a long list can't bleed over the timeline.
         scene.push_layer(
@@ -15090,205 +15324,16 @@ impl VideoEditorApp {
                 );
             }
         }
-        for (mid, rect) in self.bin_item_rects(r) {
-            let Some(m) = self.project.media(mid) else {
-                continue;
-            };
-            let selected = self.selected_media == Some(mid);
-            let hover = self.hover_media == Some(mid);
-            if selected {
-                fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), rect, 8.0);
-                stroke_rrect(scene, tf, c.accent[5], rect, 8.0, 1.5);
-            } else if hover {
-                fill_rrect(scene, tf, c.lift(0.35), rect, 8.0);
-            }
-            // Thumbnail swatch.
-            let row_inset = 8.0 * bin_scale;
-            // Keep the thumbnail close to its familiar 64px visual size:
-            // only the text rhythm needs to expand. Letting it grow with the
-            // row would turn a 200% bin into a wall of poster-sized swatches.
-            let thumb_h = (rect.height() - 2.0 * row_inset).clamp(0.0, 64.0);
-            let thumb_y0 = rect.center().y - thumb_h / 2.0;
-            let thumb = Rect::new(
-                rect.x0 + row_inset,
-                thumb_y0,
-                rect.x0 + row_inset + 64.0,
-                thumb_y0 + thumb_h,
-            );
-            let base = clip_color(theme, m.palette);
-            fill_rrect(scene, tf, darken(base, 0.25), thumb, 5.0);
-            // Visual media: the cached thumbnail frame (representative, or real
-            // under decode). Audio: a real waveform.
-            if m.kind.is_visual() {
-                if let Some(t) = self.thumbnails.get(mid) {
-                    blit_thumb(scene, tf, t, thumb, 5.0);
-                } else {
-                    for i in 0..3 {
-                        let bx = thumb.x0 + 6.0 + f64::from(i) * 18.0;
-                        let block = Rect::new(bx, thumb.y0 + 6.0, bx + 14.0, thumb.y1 - 6.0);
-                        fill_rrect(scene, tf, lighten(base, 0.18), block, 2.0);
-                    }
-                }
-            } else {
-                let color = lighten(base, 0.25);
-                let inner = Rect::new(
-                    thumb.x0 + 4.0,
-                    thumb.y0 + 6.0,
-                    thumb.x1 - 4.0,
-                    thumb.y1 - 6.0,
-                );
-                match (self.waveforms.state(m.id), self.waveforms.peaks(m.id)) {
-                    (crate::waveform::WaveformState::Ready, Some(peaks)) => draw_waveform(
-                        scene, tf, inner, peaks, 0.0, m.duration, m.duration, 1.0, color,
-                    ),
-                    _ => draw_flat_signal(scene, tf, inner, color),
-                }
-            }
-            // A source whose picture or waveform has not landed yet says so,
-            // rather than looking identical to one that is simply blank.
-            let pending = if m.kind.is_visual() {
-                self.thumbnails.get(mid).is_none()
-            } else {
-                matches!(
-                    self.waveforms.state(m.id),
-                    crate::waveform::WaveformState::Pending
-                        | crate::waveform::WaveformState::Unrequested
-                )
-            };
-            if pending {
-                let dot_r = 2.5;
-                let cy = thumb.y1 - 8.0;
-                for i in 0..3 {
-                    let cx = thumb.x0 + 10.0 + i as f64 * 8.0;
-                    scene.fill(
-                        Fill::NonZero,
-                        tf,
-                        with_alpha(Color::WHITE, 0.35 + 0.2 * i as f64),
-                        None,
-                        &Circle::new(Point::new(cx, cy), dot_r),
-                    );
-                }
-            }
-            // kind dot.
-            let kc = match m.kind {
-                MediaKind::Video => c.semantic.info,
-                MediaKind::Audio => c.semantic.success,
-                MediaKind::Image => c.semantic.warning,
-                MediaKind::Text => c.accent[5],
-            };
-            scene.fill(
-                Fill::NonZero,
-                tf,
-                kc,
-                None,
-                &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0),
-            );
-            // text (the name is drawn by the inline rename field while editing).
-            let tx = thumb.x1 + 12.0 * bin_scale;
-            let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(mid);
-            if !renaming {
-                // Pixel-accurate elision: a character budget cuts "IMG_0001.MOV"
-                // and "Wwwwwwwwwwww.mov" at the same place though one is half
-                // again as wide.
-                let avail = (rect.x1 - 8.0 - tx) as f32;
-                let shown = elide_w(&m.name, avail, tr);
-                text_w(
-                    scene,
-                    tr,
-                    tf,
-                    &shown,
-                    13.0,
-                    c.text_primary,
-                    tx,
-                    rect.y0 + 10.0 * bin_scale,
-                    TextWeight::Medium,
-                );
-            }
-            let sub = self.bin_subtitle(m);
-            // A source the editor cannot use says which kind of "cannot": the
-            // bytes are not here (fetchable), or they are here and are not
-            // media (not fetchable — the file itself is the problem). The row
-            // still shows whatever metadata the CRDT genuinely carries.
-            //
-            // The chip shares the sub-line: where both do not fit, the state
-            // wins and the metadata is dropped, because a user who cannot play
-            // the clip does not need to know its height first.
-            let (long, short) = if self.media_is_unreadable(mid) {
-                (Some(MEDIA_UNREADABLE), Some(MEDIA_UNREADABLE_SHORT))
-            } else if self.media_is_projected(mid) {
-                (Some(MEDIA_NOT_LOCAL), Some(MEDIA_NOT_LOCAL_SHORT))
-            } else {
-                (None, None)
-            };
-            let (sw, _) = tr.measure(&sub, 11.0, None);
-            let right = rect.x1 - 8.0 * bin_scale;
-            // Longest wording that fits, rather than one that fits nowhere and
-            // elides to "Not on this devi…". Beside the metadata when there is
-            // room; in its place when there is not.
-            let chip = long.zip(short).and_then(|(long, short)| {
-                [
-                    (tx + f64::from(sw) + 8.0, long),
-                    (tx + f64::from(sw) + 8.0, short),
-                    (tx, long),
-                    (tx, short),
-                ]
-                .into_iter()
-                .find(|(x0, label)| x0 + f64::from(tr.measure(label, 10.5, None).0) + 14.0 <= right)
-            });
-            // The metadata line survives unless the chip had to take its place.
-            if chip.map(|(x0, _)| x0 > tx).unwrap_or(true) {
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    &sub,
-                    11.0,
-                    c.text_dim,
-                    tx,
-                    rect.y0 + 34.0 * bin_scale,
-                );
-            }
-            if let Some((cx0, label)) = chip {
-                let w = f64::from(tr.measure(label, 10.5, None).0) + 14.0 * bin_scale;
-                let chip_top = rect.y0 + 31.0 * bin_scale;
-                let chip = Rect::new(cx0, chip_top, cx0 + w, chip_top + 17.0 * bin_scale);
-                fill_rrect(scene, tf, with_alpha(c.semantic.warning, 0.20), chip, 4.0);
-                stroke_rrect(
-                    scene,
-                    tf,
-                    with_alpha(c.semantic.warning, 0.65),
-                    chip,
-                    4.0,
-                    1.0,
-                );
-                let baseline = text_baseline(chip, 10.5, tr);
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    label,
-                    10.5,
-                    c.semantic.warning,
-                    chip.x0 + 7.0 * bin_scale,
-                    baseline,
-                );
-            }
-        }
-        // The keyboard cursor, inside the list's clip layer so a row scrolled
-        // out of view does not wear a ring over the timeline. `focus.bin`
-        // indexes `bin_order`, which is the list `bin_item_rects` walks, so the
-        // ring and the row a reader is told about are the same row.
-        if self.shows_focus_cursor(Pane::Bin)
-            && let Some((_, row)) = self.bin_item_rects(r).get(self.focus.bin)
-        {
-            draw_focus_ring(
+        self.draw_bin_rows(
+            &mut BinPaintCtx {
                 scene,
-                tf,
+                transform: tf,
+                text: tr,
                 theme,
-                row.inset(-FOCUS_RING_INSET),
-                8.0 - FOCUS_RING_INSET,
-            );
-        }
+                scale: bin_scale,
+            },
+            r,
+        );
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Bin, r);
         scene.pop_layer();
         // Last import outcome, pinned to the foot of the pane. It used to be
