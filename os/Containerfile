@@ -1853,6 +1853,7 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation
 # dracut drop-ins (/usr/lib/dracut/dracut.conf.d/*bootc*) already add the
 # crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
 ARG QOS_HARDWARE_PROFILE=generic
+ARG QOS_TARGET_IMGREF=
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
     --mount=type=bind,source=os/hardware/firmware,target=/run/qos-hardware-firmware \
@@ -1919,10 +1920,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     done; \
     # Stage model firmware and the hashed device-tree profile before dracut and
     # the rootfs split. The UKI builder then embeds that exact device tree.
+    install -Dm0644 /run/hardware_profile.py /usr/lib/qos/hardware_profile.py; \
     python3 /run/qos-prepare-hardware-profile.py \
         --profile "$QOS_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/qos-hardware-profiles \
-        --firmware-dir "/run/qos-hardware-firmware/$QOS_HARDWARE_PROFILE"; \
+        --firmware-dir "/run/qos-hardware-firmware/$QOS_HARDWARE_PROFILE" \
+        --target-update-ref "$QOS_TARGET_IMGREF"; \
     # --add rather than trusting the base's drop-ins to pull these in: the same
     # invocation produced an initramfs WITH the crypt modules locally and WITHOUT
     # them under the CI builder, silently, and a missing module here is a root

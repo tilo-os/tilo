@@ -57,6 +57,7 @@ if [ "$QOS_HARDWARE_PROFILE" != generic ]; then
       || die "QOS_SKIP_BUILD cannot apply a hardware profile; rebuild the image with its firmware and device tree"
     python3 "$QOS_OS_DIR/dev/hardware_profile.py" "$QOS_HARDWARE_PROFILE" \
       "$QOS_OS_DIR/hardware/profiles" "$(uname -m)" "$QOS_OS_DIR/hardware/firmware" \
+      "${QOS_TARGET_IMGREF:-}" \
       || die "hardware-profile build inputs are invalid; see os/hardware/README.md"
 fi
 
@@ -228,6 +229,7 @@ build_image() {
     --build-arg "WPE_BUILD_JOBS=${QOS_WPE_BUILD_JOBS:-8}" \
     --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
     --build-arg "QOS_HARDWARE_PROFILE=$QOS_HARDWARE_PROFILE" \
+    --build-arg "QOS_TARGET_IMGREF=${QOS_TARGET_IMGREF:-}" \
     --build-arg "QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY=$QOS_OFFICIAL_REGISTRY_OWNER_PUBKEY" \
     --build-arg "QOS_GENERATION=$QOS_GENERATION" \
     --build-arg "QOS_SEAL_GENERATION=$QOS_SEAL_GENERATION" \

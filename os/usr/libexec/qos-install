@@ -67,15 +67,16 @@
 # This is intentionally an OFFLINE, self-install model: the live system
 # installs *itself* onto the disk — no network pull needed for the OS bits.
 # The target image *reference* recorded in the install (so future
-# `bootc upgrade` knows where to pull from) defaults to
-# code.podesta.ai/qos/qos:latest and is overridable via $QOS_TARGET_IMGREF.
+# `bootc upgrade` knows where to pull from) is bound by a hardware profile.
+# Generic images retain the official latest default and trusted overrides.
 set -euo pipefail
 
 # Where the installed system will look for updates (the "origin" imgref
 # baked into the deployment). NOT where the bits come from now — those come
-# from the booted image we copy to storage. Override via the environment;
-# the sudoers drop-in env_keep's this name so it survives the sudo re-exec.
-QOS_TARGET_IMGREF="${QOS_TARGET_IMGREF:-code.podesta.ai/qos/qos:latest}"
+# from the booted image we copy to storage. Resolve the immutable profile on
+# every re-exec; an environment override may not change its reviewed origin.
+QOS_TARGET_IMGREF="$(python3 /usr/lib/qos/hardware_profile.py \
+  --install-update-origin "${QOS_TARGET_IMGREF:-}")" || exit 1
 
 # The local-storage tag `bootc image copy-to-storage` writes to by default.
 LOCAL_IMG="localhost/bootc"

@@ -110,6 +110,15 @@ else
   bad "installer can record an update origin outside the signature-required policy"
 fi
 
+if grep -Fq 'QOS_TARGET_IMGREF="$(python3 /usr/lib/qos/hardware_profile.py' "$backend" \
+   && grep -Fq -- '--install-update-origin "${QOS_TARGET_IMGREF:-}")" || exit 1' "$backend" \
+   && grep -Fq 'install -Dm0644 /run/hardware_profile.py /usr/lib/qos/hardware_profile.py' "$production_containerfile" \
+   && grep -Fq -- '--target-update-ref "$QOS_TARGET_IMGREF"' "$production_containerfile"; then
+  ok "installer resolves the image-owned hardware update origin and stops on conflicts"
+else
+  bad "hardware-profile update-origin selection or runtime helper is missing"
+fi
+
 if grep -Fq 'TARGET_MAJ_MIN=' "$backend" \
    && grep -Fq 'LIVE_MAJ_MIN=' "$backend" \
    && grep -Fq 'lsblk -srpno NAME,TYPE' "$backend" \
@@ -153,17 +162,30 @@ else
   bad "installer target identity is not bound across discovery and destructive execution"
 fi
 
-identity_error="$(
+installer_identity_fixture() (
   id() { printf 0; }
-  export -f id
-  QOS_INSTALL_TRANSIENT=1 "$backend" \
+  # The installed helper lives in /usr; execute the same production Python
+  # from this checkout when exercising the backend outside a qOS image.
+  python3() {
+    if [ "$1" = /usr/lib/qos/hardware_profile.py ]; then
+      shift
+      command python3 "$repo_root/os/dev/hardware_profile.py" "$@"
+    else
+      command python3 "$@"
+    fi
+  }
+  export -f id python3
+  export repo_root
+  QOS_INSTALL_TRANSIENT=1 "$backend" "$@"
+)
+
+identity_error="$(
+  installer_identity_fixture \
     --disk /dev/qos-test-missing --confirm-erase /dev/qos-test-missing \
     --user identitytest --pin --yes </dev/null 2>&1 || true
 )"
 stable_error="$(
-  id() { printf 0; }
-  export -f id
-  QOS_INSTALL_TRANSIENT=1 "$backend" \
+  installer_identity_fixture \
     --disk /dev/qos-test-missing --confirm-erase /dev/qos-test-missing \
     --expect-disk-size-bytes 68719476736 --expect-disk-devnum 252:0 \
     --user identitytest --pin --yes </dev/null 2>&1 || true

@@ -18,6 +18,7 @@ from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "os/dev"))
+from hardware_profile import DEFAULT_TARGET_IMGREF, install_update_origin
 
 
 def load(name, path):
@@ -59,6 +60,7 @@ class HardwareProfileTests(unittest.TestCase):
             "schema_version": 1, "id": "lenovo-83ed", "architecture": "aarch64",
             "devicetree": "/" + self.dtb.relative_to(self.root).as_posix(),
             "devicetree_sha256": hashlib.sha256(self.dtb.read_bytes()).hexdigest(),
+            "target_update_ref": "code.podesta.ai/qos/qos:board-fixture",
         }
         self.write_profile()
         # Model Linux image metadata even on Windows/non-root test hosts. File
@@ -86,7 +88,46 @@ class HardwareProfileTests(unittest.TestCase):
 
     def test_generic_image_has_no_device_tree(self):
         self.metadata.unlink()
+        (self.root / "usr/lib/qos/hardware-profile-definition.json").unlink()
         self.assertIsNone(self.resolve("x86_64"))
+
+    def test_installer_uses_bound_origin_and_rejects_conflicting_override(self):
+        bound = self.data["target_update_ref"]
+        self.assertEqual(install_update_origin(self.root), bound)
+        self.assertEqual(install_update_origin(self.root, bound), bound)
+        for override in (DEFAULT_TARGET_IMGREF, "registry.invalid/qos:fixture", bound + "\n"):
+            with self.subTest(override=override), self.assertRaisesRegex(ValueError, "conflicts"):
+                install_update_origin(self.root, override)
+
+    def test_generic_installer_keeps_default_and_validated_overrides(self):
+        self.metadata.unlink()
+        (self.root / "usr/lib/qos/hardware-profile-definition.json").unlink()
+        self.assertEqual(install_update_origin(self.root), DEFAULT_TARGET_IMGREF)
+        for value in ("code.podesta.ai/qos/qos:fixture", "code.podesta.ai/qos/qos@sha256:" + "a" * 64):
+            self.assertEqual(install_update_origin(self.root, value), value)
+        for value in ("registry.invalid/qos:fixture", "code.podesta.ai/qos/qos:",
+                      "code.podesta.ai/qos/qos:fixture/elsewhere", "code.podesta.ai/qos/qos@sha256:x"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                install_update_origin(self.root, value)
+
+    def test_missing_bound_metadata_cannot_fall_back_to_generic_origin(self):
+        del self.data["target_update_ref"]
+        self.write_profile()
+        with self.assertRaisesRegex(ValueError, "missing or unknown fields"):
+            install_update_origin(self.root)
+        self.metadata.unlink()
+        with self.assertRaisesRegex(ValueError, "no generated hardware profile"):
+            install_update_origin(self.root)
+
+    def test_untrusted_bound_origin_is_rejected_by_installer_and_uki_builder(self):
+        for value in (None, "", "registry.invalid/qos:fixture", "code.podesta.ai/qos/qos:"):
+            self.data["target_update_ref"] = value
+            self.write_profile()
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "QOS_TARGET_IMGREF"):
+                    install_update_origin(self.root)
+                with self.assertRaisesRegex(ValueError, "QOS_TARGET_IMGREF"):
+                    self.resolve()
 
     def test_valid_profile_resolves_exact_kernel_device_tree(self):
         self.assertEqual(self.resolve(), self.dtb)
@@ -154,6 +195,17 @@ class HardwareProfileTests(unittest.TestCase):
                     self.metadata_overrides[path] = mutation
                     try:
                         self.resolve()
+                    finally:
+                        self.metadata_overrides.clear()
+
+    def test_installer_rejects_writable_unowned_and_redirected_metadata(self):
+        for path in (self.metadata, self.metadata.parent,
+                     self.root / "usr/lib/qos/hardware-profile-definition.json"):
+            for mutation in ({0: stat.S_IFREG | 0o666}, {4: 1000}, {0: stat.S_IFLNK | 0o777}):
+                with self.subTest(path=path, mutation=mutation), self.assertRaises(ValueError):
+                    self.metadata_overrides[path] = mutation
+                    try:
+                        install_update_origin(self.root)
                     finally:
                         self.metadata_overrides.clear()
 

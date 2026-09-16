@@ -16,7 +16,7 @@ import re
 import stat
 import struct
 from pathlib import Path
-from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, PROFILES_DIR, load_definition
+from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, PROFILES_DIR, load_definition, validate_target_imgref
 
 
 FIRMWARE_PATH = Path("usr/lib/firmware")
@@ -49,10 +49,11 @@ def checked_path(root: Path, relative: Path, *, required: bool) -> Path:
 
 
 def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir: Path,
-                    profiles_dir: Path = PROFILES_DIR) -> None:
+                    profiles_dir: Path = PROFILES_DIR, *, target_update_ref: str | None = None) -> None:
     if profile == "generic":
         return
     definition = load_definition(profile, profiles_dir)
+    validate_target_imgref(target_update_ref)
     architecture = definition["architecture"]
     if platform.machine() != architecture:
         raise ValueError(f"{profile} hardware profile requires a native {architecture} builder")
@@ -105,6 +106,7 @@ def prepare_profile(profile: str, root: Path, kernel_version: str, firmware_dir:
         "architecture": architecture,
         "devicetree": f"/{dtb_relative.as_posix()}" if dtb_relative else None,
         "devicetree_sha256": hashlib.sha256(dtb).hexdigest() if dtb else None,
+        "target_update_ref": target_update_ref,
     }
     outputs[PROFILE_PATH] = (json.dumps(document, indent=2) + "\n").encode("utf-8")
     outputs[DEFINITION_PATH] = (json.dumps(definition, indent=2) + "\n").encode("utf-8")
@@ -133,9 +135,11 @@ def main() -> None:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--kernel-version", required=True)
     parser.add_argument("--firmware-dir", type=Path, required=True)
+    parser.add_argument("--target-update-ref")
     args = parser.parse_args()
     try:
-        prepare_profile(args.profile, args.root, args.kernel_version, args.firmware_dir, args.profiles_dir)
+        prepare_profile(args.profile, args.root, args.kernel_version, args.firmware_dir, args.profiles_dir,
+                        target_update_ref=args.target_update_ref)
     except (OSError, ValueError, TypeError) as error:
         parser.exit(1, f"hardware profile rejected: {error}\n")
 
