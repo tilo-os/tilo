@@ -129,6 +129,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "setup-folders-later",
     "setup-review",
     "import-progress",
+    "import-retry-progress",
     "import-partial",
     "import-conflict",
     "import-complete",

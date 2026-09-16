@@ -292,6 +292,8 @@ impl OperationRecord {
             return Err("migration cannot start without current reviewed grants".into());
         }
         self.state = OperationState::Running;
+        self.progress = None;
+        self.report = None;
         self.failure = None;
         Ok(())
     }
@@ -594,6 +596,47 @@ mod tests {
             ]
         );
         assert_eq!(reopened.metadata_limitations(), &["ACLs are not preserved"]);
+    }
+
+    // Catches a retry continuing to display the previous attempt's counts,
+    // issues and current path after the new worker reports fresh progress.
+    #[test]
+    fn retry_progress_replaces_the_prior_incomplete_attempt() {
+        let (_temp, _store, job) = fixture();
+        let mut operation = OperationRecord::new(&job);
+        operation.approve();
+        operation.mark_running().unwrap();
+        operation.apply_progress(&CopyProgress {
+            verified_files: 7,
+            verified_bytes: 70,
+            current_relative_path: "old.txt".into(),
+        });
+        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+            verified_files: vec!["old.txt".into()],
+            verified_bytes: 70,
+            skipped: vec![("old-link".into(), "symbolic link".into())],
+            failed: vec![("old-private".into(), "permission denied".into())],
+            cancelled: false,
+            scan_completed: true,
+            metadata_limitations: vec!["old limitation".into()],
+        }));
+
+        operation.mark_running().unwrap();
+        operation.apply_progress(&CopyProgress {
+            verified_files: 2,
+            verified_bytes: 12,
+            current_relative_path: "new.txt".into(),
+        });
+
+        assert_eq!(operation.state(), OperationState::Running);
+        assert_eq!(operation.verified_file_count(), 2);
+        assert_eq!(operation.verified_bytes(), 12);
+        assert_eq!(
+            operation.current_relative_path().unwrap(),
+            Some("new.txt".into())
+        );
+        assert!(operation.issues().unwrap().is_empty());
+        assert!(operation.metadata_limitations().is_empty());
     }
 
     #[cfg(unix)]
