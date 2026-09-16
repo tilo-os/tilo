@@ -132,7 +132,7 @@ first_instruction="$(grep -m1 -E '^(ARG|FROM) ' "$snapshot")"
   || bad 'BASE_REF must be declared before the first FROM'
 has "$snapshot" '/repo/qos-direct-package-specs.txt' \
   'snapshot publishes its direct package manifest'
-has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo ${PACKAGES}' \
+has "$snapshot" 'dnf install -y --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \
   'snapshot proves the frozen repo resolves the complete transaction offline'
 has "$image_workflow" './os/dev/verify-rpm-snapshot-package-set.sh docker "$RPMS_REF"' \
   'production CI rejects a stale frozen package manifest before building'
