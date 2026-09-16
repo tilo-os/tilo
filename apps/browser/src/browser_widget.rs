@@ -33,7 +33,9 @@ use ui::qos_actions::{
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::webview::test_engine::TestEngine;
-use ui::webview::{MediaElementInfo, SharedEngine, WebViewCommand, WebViewEvent};
+use ui::webview::{
+    MediaElementInfo, NavigationDirection, SharedEngine, WebViewCommand, WebViewEvent,
+};
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, ContextMenu, EmptyState, IconDescriptor,
@@ -252,6 +254,13 @@ const DEFAULT_URL: &str = "https://duckduckgo.com";
 /// deterministic flat colour, so snapshots stay byte-stable.
 const SHOTS_URL: &str = "https://example.org";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingHistory {
+    request_id: u32,
+    direction: NavigationDirection,
+    document_revision: u64,
+}
+
 /// Root widget for the browser app. See module docs.
 #[allow(
     clippy::struct_excessive_bools,
@@ -325,12 +334,14 @@ pub struct BrowserWidget {
     /// Fuzzy suggestion dropdown under the address bar (a field, not a
     /// tree child: driven here and painted in `draw_overlay`).
     suggestions: AddressSuggestions,
-    back_hold: crate::back_hold::BackHold,
-    back_pointer_down: bool,
+    navigation_hold: crate::back_hold::NavigationHold,
+    navigation_pointer_down: Option<NavigationDirection>,
     back_menu: ContextMenu,
     back_entries: Vec<ui::webview::NavigationEntry>,
+    menu_direction: Option<NavigationDirection>,
     history_request: u32,
-    pending_history: Option<u32>,
+    pending_history: Option<PendingHistory>,
+    document_revision: u64,
     /// Whether the settings pane replaces the page surface.
     show_settings: bool,
     show_library: bool,
@@ -570,12 +581,14 @@ impl BrowserWidget {
             search_index,
             projected_heads: None,
             suggestions: AddressSuggestions::new(),
-            back_hold: crate::back_hold::BackHold::default(),
-            back_pointer_down: false,
+            navigation_hold: crate::back_hold::NavigationHold::default(),
+            navigation_pointer_down: None,
             back_menu: ContextMenu::new(),
             back_entries: Vec::new(),
+            menu_direction: None,
             history_request: 0,
             pending_history: None,
+            document_revision: 0,
             show_settings: false,
             show_library: false,
             library_section: LibrarySection::History,
@@ -1351,8 +1364,8 @@ impl BrowserWidget {
         let forward = self.bind_button(
             Button::new("browser.forward", "", None)
                 .with_icon(Icon::ArrowRight)
-                .with_accessible_name("Forward")
-                .tooltip("Forward (Alt+Right)")
+                .with_accessible_name("Forward; hold or right-click for history")
+                .tooltip("Forward (Alt+Right); hold or right-click for history")
                 .with_size(NAV_BTN.0, NAV_BTN.1)
                 .with_enabled(self.can_go_forward),
             "browser.page",
@@ -2208,11 +2221,19 @@ impl BrowserWidget {
                 }
                 WebViewEvent::NavigationHistory {
                     request_id,
+                    direction,
                     entries,
                 } => {
-                    if self.pending_history == Some(request_id) {
+                    if self.pending_history.is_some_and(|pending| {
+                        pending.request_id == request_id
+                            && pending.direction == direction
+                            && pending.document_revision == self.document_revision
+                    }) && match direction {
+                        NavigationDirection::Back => self.can_go_back,
+                        NavigationDirection::Forward => self.can_go_forward,
+                    } {
                         self.pending_history = None;
-                        self.open_back_menu(entries);
+                        self.open_navigation_menu(direction, entries);
                     }
                 }
                 event @ (WebViewEvent::PermissionRequested { .. }
@@ -2223,12 +2244,14 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                 }
                 WebViewEvent::UriChanged(uri) => {
+                    self.document_revision = self.document_revision.wrapping_add(1);
                     if uri != self.current_uri {
                         self.loading_stopped = false;
                         self.structure_dirty |= self.daily.navigation_started(&self.engine);
                     }
                     self.pending_history = None;
                     self.back_menu.close();
+                    self.menu_direction = None;
                     // Deterministic visual-audit states own their displayed
                     // address.  The headless engine is pre-navigated to the
                     // flat test page, and its bootstrap event must not make
@@ -2448,18 +2471,32 @@ impl BrowserWidget {
         Some(Rect::new(x0, y0, x0 + width, y0 + height))
     }
 
-    fn request_back_history(&mut self) {
+    fn request_navigation_history(&mut self, direction: NavigationDirection) {
         self.history_request = (self.history_request % i32::MAX as u32) + 1;
-        self.pending_history = Some(self.history_request);
+        self.pending_history = Some(PendingHistory {
+            request_id: self.history_request,
+            direction,
+            document_revision: self.document_revision,
+        });
         self.back_menu.close();
+        self.menu_direction = None;
         self.suggestions.clear();
         self.engine.send(WebViewCommand::RequestNavigationHistory {
             request_id: self.history_request,
+            direction,
         });
     }
 
-    fn open_back_menu(&mut self, entries: Vec<ui::webview::NavigationEntry>) {
-        let Some(anchor) = self.find_rect("browser.back") else {
+    fn open_navigation_menu(
+        &mut self,
+        direction: NavigationDirection,
+        entries: Vec<ui::webview::NavigationEntry>,
+    ) {
+        let control = match direction {
+            NavigationDirection::Back => "browser.back",
+            NavigationDirection::Forward => "browser.forward",
+        };
+        let Some(anchor) = self.find_rect(control) else {
             return;
         };
         let rows = ((self.rect.y1 - anchor.y1 - 20.0) / 32.0)
@@ -2478,12 +2515,13 @@ impl BrowserWidget {
             self.back_menu.push(MenuItem::action(label, || {}));
         }
         if !self.back_entries.is_empty() {
+            self.menu_direction = Some(direction);
             let x = anchor.x0.min((self.rect.x1 - 220.0).max(self.rect.x0));
             self.back_menu.open_at([x as f32, (anchor.y1 + 4.0) as f32]);
         }
     }
 
-    fn choose_back_entry(&mut self, index: usize) {
+    fn choose_navigation_entry(&mut self, index: usize) {
         if let Some(entry) = self.back_entries.get(index) {
             let id = entry.id;
             self.clear_address_error();
@@ -2494,11 +2532,12 @@ impl BrowserWidget {
             });
         }
         self.back_menu.close();
+        self.menu_direction = None;
     }
 
     fn tick_back_hold(&mut self, now: std::time::Instant) {
-        if self.back_hold.tick(now) {
-            self.request_back_history();
+        if let Some(direction) = self.navigation_hold.tick(now) {
+            self.request_navigation_history(direction);
         }
     }
 
@@ -3660,7 +3699,7 @@ impl Widget for BrowserWidget {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        if self.back_hold.waiting() {
+        if self.navigation_hold.waiting() {
             return true;
         }
         if self.motion_reduced {
@@ -3799,43 +3838,68 @@ impl Widget for BrowserWidget {
                 return;
             }
         }
-        let back_hit = self.can_go_back
-            && self
-                .find_rect("browser.back")
-                .is_some_and(|r| r.contains(self.cursor));
+        let navigation_hit = [
+            (NavigationDirection::Back, self.can_go_back, "browser.back"),
+            (
+                NavigationDirection::Forward,
+                self.can_go_forward,
+                "browser.forward",
+            ),
+        ]
+        .into_iter()
+        .find_map(|(direction, enabled, id)| {
+            (enabled && self.find_rect(id).is_some_and(|r| r.contains(self.cursor)))
+                .then_some(direction)
+        });
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
-            && self.can_go_back
-            && self.control_focused("browser.back")
             && (key.logical_key == WKey::Named(WNamedKey::ContextMenu)
                 || (key.logical_key == WKey::Named(WNamedKey::F10)
                     && modifiers.state().shift_key()))
+            && let Some(direction) = [
+                (NavigationDirection::Back, self.can_go_back, "browser.back"),
+                (
+                    NavigationDirection::Forward,
+                    self.can_go_forward,
+                    "browser.forward",
+                ),
+            ]
+            .into_iter()
+            .find_map(|(direction, enabled, id)| {
+                (enabled && self.control_focused(id)).then_some(direction)
+            })
         {
-            self.request_back_history();
+            self.request_navigation_history(direction);
             *handled = true;
             return;
         }
         match event {
             WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
-                self.back_hold.cancel();
-                self.back_pointer_down = false;
+                self.navigation_hold.cancel();
+                self.navigation_pointer_down = None;
                 self.pending_history = None;
                 self.back_menu.close();
+                self.menu_direction = None;
             }
-            WindowEvent::CursorMoved { .. } if !back_hit => self.back_hold.cancel(),
+            WindowEvent::CursorMoved { .. }
+                if self.navigation_pointer_down.is_some()
+                    && navigation_hit != self.navigation_pointer_down =>
+            {
+                self.navigation_hold.cancel();
+            }
             WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == ElementState::Pressed
                     && key.logical_key == WKey::Named(WNamedKey::Escape) =>
             {
-                self.back_hold.cancel();
+                self.navigation_hold.cancel();
                 self.pending_history = None;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if back_hit => {
-                self.request_back_history();
+            } if navigation_hit.is_some() => {
+                self.request_navigation_history(navigation_hit.unwrap());
                 *handled = true;
                 return;
             }
@@ -3843,15 +3907,17 @@ impl Widget for BrowserWidget {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if back_hit && !self.back_menu.is_open() => {
-                self.back_pointer_down = true;
-                self.back_hold.press(std::time::Instant::now());
+            } if navigation_hit.is_some() && !self.back_menu.is_open() => {
+                let direction = navigation_hit.unwrap();
+                self.navigation_pointer_down = Some(direction);
+                self.navigation_hold
+                    .press(std::time::Instant::now(), direction);
                 if self.motion_reduced {
                     // Reduced motion disables the host's animation pump; this
                     // one-shot wake still recognizes a stationary long press.
                     let wake = ui::WakeHandle::new();
                     let _ = std::thread::Builder::new()
-                        .name("browser-back-hold".into())
+                        .name("browser-navigation-hold".into())
                         .spawn(move || {
                             std::thread::sleep(std::time::Duration::from_millis(450));
                             wake.wake();
@@ -3864,11 +3930,19 @@ impl Widget for BrowserWidget {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } if self.back_pointer_down => {
+            } if self.navigation_pointer_down.is_some() => {
                 self.tick_back_hold(std::time::Instant::now());
-                self.back_pointer_down = false;
-                if self.back_hold.release() && back_hit {
-                    self.queue_unit_operation("browser.page", "back");
+                self.navigation_pointer_down = None;
+                if let Some(direction) = self.navigation_hold.release()
+                    && navigation_hit == Some(direction)
+                {
+                    self.queue_unit_operation(
+                        "browser.page",
+                        match direction {
+                            NavigationDirection::Back => "back",
+                            NavigationDirection::Forward => "forward",
+                        },
+                    );
                 }
                 *handled = true;
                 return;
@@ -3888,7 +3962,7 @@ impl Widget for BrowserWidget {
                 taffy,
             );
             if let Some(index) = self.back_menu.take_selection() {
-                self.choose_back_entry(index);
+                self.choose_navigation_entry(index);
             }
             // Consume modal input so keys and pointer releases cannot reach the page.
             if matches!(
@@ -4033,6 +4107,7 @@ impl Widget for BrowserWidget {
         if !self.back_menu.is_open() {
             return None;
         }
+        let direction = self.menu_direction?;
         let rows = self
             .back_entries
             .iter()
@@ -4046,8 +4121,10 @@ impl Widget for BrowserWidget {
                 AccessNode::new(Role::MenuItem)
                     .with_name(label)
                     .with_action_target(format!(
-                        "browser.back-history:{}:{}",
-                        self.history_request, entry.id
+                        "browser.navigation-history:{}:{}:{}",
+                        self.history_request,
+                        direction.as_str(),
+                        entry.id
                     ))
                     .with_state(AccessState {
                         focusable: true,
@@ -4056,9 +4133,17 @@ impl Widget for BrowserWidget {
                     })
             })
             .collect();
-        Some(AccessNode::new(Role::Group).with_children(
-            vec![AccessNode::new(Role::Menu).with_name("Back history").with_children(rows)],
-        ))
+        let name = match direction {
+            NavigationDirection::Back => "Back history",
+            NavigationDirection::Forward => "Forward history",
+        };
+        Some(
+            AccessNode::new(Role::Group).with_children(vec![
+                AccessNode::new(Role::Menu)
+                    .with_name(name)
+                    .with_children(rows),
+            ]),
+        )
     }
 
     fn perform_semantic_action(
@@ -4076,13 +4161,19 @@ impl Widget for BrowserWidget {
         if !self.back_menu.is_open() || !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
-        let Some((request, id)) = target
-            .strip_prefix("browser.back-history:")
+        let Some((request, rest)) = target
+            .strip_prefix("browser.navigation-history:")
             .and_then(|value| value.split_once(':'))
         else {
             return false;
         };
+        let Some((direction, id)) = rest.split_once(':') else {
+            return false;
+        };
         if request.parse::<u32>().ok() != Some(self.history_request) {
+            return false;
+        }
+        if NavigationDirection::from_wire(Some(direction)) != self.menu_direction {
             return false;
         }
         let Some(index) = self
@@ -4092,7 +4183,7 @@ impl Widget for BrowserWidget {
         else {
             return false;
         };
-        self.choose_back_entry(index);
+        self.choose_navigation_entry(index);
         true
     }
 
@@ -4578,6 +4669,138 @@ mod architecture_tests {
     }
 
     #[test]
+    fn current_entry_splits_nearest_back_and_forward_history_and_forward_hold_opens_once() {
+        let engine = TestEngine::new();
+        for url in ["https://a.test", "https://b.test", "https://c.test"] {
+            engine.send(WebViewCommand::Navigate(url.into()));
+        }
+        engine.send(WebViewCommand::GoBack);
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        widget.apply_engine_events();
+        widget.cursor = widget.find_rect("browser.back").unwrap().center();
+        assert!(dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Right, ElementState::Pressed)
+        ));
+        widget.apply_engine_events();
+        assert_eq!(
+            widget
+                .back_entries
+                .iter()
+                .map(|entry| (entry.id, entry.url.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "https://a.test")]
+        );
+        assert!(dispatch_back_event(&mut widget, key(WNamedKey::Escape)));
+        widget.cursor = widget.find_rect("browser.forward").unwrap().center();
+
+        assert!(dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Left, ElementState::Pressed)
+        ));
+        widget.tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(451));
+        widget.apply_engine_events();
+
+        assert!(widget.back_menu.is_open());
+        assert_eq!(
+            widget
+                .back_entries
+                .iter()
+                .map(|entry| (entry.id, entry.url.as_str()))
+                .collect::<Vec<_>>(),
+            [(3, "https://c.test")]
+        );
+        let request_count = engine
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, WebViewCommand::RequestNavigationHistory { .. }))
+            .count();
+        widget.tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(900));
+        assert_eq!(
+            engine
+                .commands()
+                .iter()
+                .filter(|command| matches!(
+                    command,
+                    WebViewCommand::RequestNavigationHistory { .. }
+                ))
+                .count(),
+            request_count
+        );
+        assert!(dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Left, ElementState::Released)
+        ));
+        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
+    }
+
+    #[test]
+    fn stale_history_reply_after_direction_or_page_change_is_ignored() {
+        struct DelayedEngine {
+            events: std::sync::Mutex<Vec<WebViewEvent>>,
+            capture: std::sync::Arc<TestEngine>,
+        }
+        impl WebViewEngine for DelayedEngine {
+            fn send(&self, command: WebViewCommand) {
+                self.capture.send(command);
+            }
+            fn frames(&self) -> ui::webview::FrameSlot {
+                self.capture.frames()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.events.lock().unwrap())
+            }
+        }
+
+        let capture = TestEngine::new();
+        let engine = std::sync::Arc::new(DelayedEngine {
+            events: std::sync::Mutex::new(Vec::new()),
+            capture,
+        });
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        widget.can_go_back = true;
+        widget.can_go_forward = true;
+        widget.current_uri = "https://b.test".into();
+
+        widget.request_navigation_history(ui::webview::NavigationDirection::Back);
+        widget.request_navigation_history(ui::webview::NavigationDirection::Forward);
+        let stale_direction_request = widget.history_request;
+        engine
+            .events
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::NavigationHistory {
+                request_id: stale_direction_request,
+                direction: ui::webview::NavigationDirection::Back,
+                entries: vec![ui::webview::NavigationEntry {
+                    id: 11,
+                    url: "https://a.test".into(),
+                    title: "A".into(),
+                }],
+            });
+        widget.apply_engine_events();
+        assert!(!widget.back_menu.is_open());
+
+        let stale_page_request = widget.history_request;
+        engine.events.lock().unwrap().extend([
+            WebViewEvent::UriChanged("https://new.test".into()),
+            WebViewEvent::NavigationHistory {
+                request_id: stale_page_request,
+                direction: ui::webview::NavigationDirection::Forward,
+                entries: vec![ui::webview::NavigationEntry {
+                    id: 33,
+                    url: "https://c.test".into(),
+                    title: "C".into(),
+                }],
+            },
+        ]);
+        widget.apply_engine_events();
+        assert!(!widget.back_menu.is_open());
+    }
+
+    #[test]
     fn back_click_and_cancel_route_without_accidental_navigation() {
         let engine = TestEngine::new();
         engine.send(WebViewCommand::Navigate("https://a.test".into()));
@@ -4599,7 +4822,7 @@ mod architecture_tests {
             mouse(MouseButton::Left, ElementState::Released),
         );
         assert!(widget.pending_controls.is_empty());
-        assert!(!widget.back_hold.waiting());
+        assert!(!widget.navigation_hold.waiting());
         dispatch_back_event(
             &mut widget,
             mouse(MouseButton::Right, ElementState::Pressed),
@@ -4664,6 +4887,41 @@ mod architecture_tests {
             &mut AutoCommit::new(),
             &automerge::ROOT
         ));
+    }
+
+    #[test]
+    fn forward_history_keyboard_open_and_accessible_activation_use_session_entry() {
+        fn focus_forward(widget: &mut dyn Widget) {
+            widget.set_focus(widget.test_id() == Some("browser.forward"));
+            for child in widget.children_mut() {
+                focus_forward(child);
+            }
+        }
+        let engine = TestEngine::new();
+        for url in ["https://a.test", "https://b.test", "https://c.test"] {
+            engine.send(WebViewCommand::Navigate(url.into()));
+        }
+        engine.send(WebViewCommand::GoBack);
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        widget.apply_engine_events();
+        focus_forward(&mut widget);
+
+        assert!(dispatch_back_event(
+            &mut widget,
+            key(WNamedKey::ContextMenu)
+        ));
+        widget.apply_engine_events();
+        let node = widget.accessibility().unwrap();
+        let target = node.children[0].children[0].action_target.clone().unwrap();
+        assert!(target.contains(":forward:"));
+        assert!(widget.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT
+        ));
+        assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
     }
 
     #[test]
