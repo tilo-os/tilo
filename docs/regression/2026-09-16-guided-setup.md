@@ -177,8 +177,11 @@ Eight initial screenshots used real worker outcomes for progress, a skipped
 symbolic link, a modified destination followed by resume, and completion. Visual
 inspection requested simpler user wording, an optional technical-details view,
 and current import status before the empty new-import form on compact windows.
-Those corrections and the task's independent review remain in progress. These
-checks do not establish native Windows support or first-login/Files integration.
+The amended eight renders at 640×640 and 1180×820 passed visual inspection;
+the four focused import-view tests also passed natively in Fedora. Independent
+review then found an unreachable setup entry and stale counts during retry;
+those fixes are in progress. These checks do not establish native Windows
+support or first-login/Files integration.
 
 ## Existing installer baseline
 
@@ -207,6 +210,14 @@ with no failed units. Rootless Podman reports the overlay driver using the
 per-command `--cgroup-manager=cgroupfs` option for the non-login test session.
 QEMU is available, but the configured qOS disk/installer images are still absent;
 these prerequisites do not establish an actual internal boot or installation.
+The exact pinned base manifest requires private-registry authentication; the
+native manifest probe confirmed this without pulling an image.
+
+RPM build tooling is now available as ordinary-user `rpmbuild` 6.0.2. Fedora
+installed six new required packages with no upgrades or removals (541 KiB
+download, 2 MiB installed). No qOS package or desktop-session change was made;
+a fresh native payload, package installation and graphical-session proof remain
+required.
 
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
 - Linux interactive wizard, desktop-session installation, and complete boot flow.
