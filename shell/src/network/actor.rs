@@ -33,6 +33,7 @@ const MAX_GOSSIP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_SURFACE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const SURFACE_STREAM_ALPN: &[u8] = b"qos-surface-stream/1";
 const PERSONAL_FABRIC_ALPN: &[u8] = b"qos-personal-fabric/1";
+pub const PERSONAL_MEDIA_CHUNK_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SurfaceWireFrame {
@@ -49,6 +50,31 @@ pub enum PersonalFabricPayload {
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through room history.
     Action(Vec<u8>),
+    /// Bounded pieces of an explicitly requested, device-local media handoff.
+    /// The surrounding personal-fabric route authenticates the source device;
+    /// the receiver additionally verifies the final content hash before use.
+    MediaTransfer(PersonalMediaTransferFrame),
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum PersonalMediaTransferFrame {
+    Start {
+        transfer_id: [u8; 16],
+        file_name: String,
+        total_bytes: u64,
+    },
+    Chunk {
+        transfer_id: [u8; 16],
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    Finish {
+        transfer_id: [u8; 16],
+        content_hash: [u8; 32],
+    },
+    Abort {
+        transfer_id: [u8; 16],
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -182,6 +208,17 @@ pub enum NetCmd {
         user_public_key: [u8; 32],
         target: EndpointId,
         payload: PersonalFabricPayload,
+    },
+    /// Stream one local file to an exact certified personal device without
+    /// copying host paths into a durable snapshot or buffering the file.
+    PublishPersonalMedia {
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        file_name: String,
+        total_bytes: u64,
+        file: std::fs::File,
     },
     Connect {
         addr: EndpointAddr,
@@ -560,6 +597,25 @@ impl ActorState {
                 self.publish_personal_fabric_to(ws, user_public_key, payload, Some(target))
                     .await;
             }
+            Some(NetCmd::PublishPersonalMedia {
+                ws,
+                user_public_key,
+                target,
+                transfer_id,
+                file_name,
+                total_bytes,
+                file,
+            }) => {
+                self.publish_personal_media(
+                    ws,
+                    user_public_key,
+                    target,
+                    transfer_id,
+                    file_name,
+                    total_bytes,
+                    file,
+                );
+            }
             Some(NetCmd::Connect { addr }) => {
                 let id = addr.id;
                 self.lookup.add_endpoint_info(addr.clone());
@@ -790,6 +846,52 @@ impl ActorState {
                 self.personal_fabric_connections.remove(&peer);
             }
         }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the arguments are the complete authenticated transfer manifest plus its local-only file handle"
+    )]
+    fn publish_personal_media(
+        &self,
+        ws: WorkspaceId,
+        user_public_key: [u8; 32],
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        file_name: String,
+        total_bytes: u64,
+        file: std::fs::File,
+    ) {
+        if transfer_id == [0; 16] {
+            tracing::warn!(peer = %target, "refusing media transfer with an empty id");
+            return;
+        }
+        if !self.peers_seen.contains_key(&(ws, target)) {
+            tracing::warn!(ws, peer = %target, "personal media target is no longer live");
+            return;
+        }
+        let Some(addr) = self.peers.get(&target).cloned() else {
+            tracing::warn!(peer = %target, "personal media target has no dial address");
+            return;
+        };
+        let endpoint = self.endpoint.clone();
+        tokio::spawn(async move {
+            if stream_personal_media(
+                endpoint,
+                addr,
+                ws,
+                user_public_key,
+                transfer_id,
+                file_name,
+                total_bytes,
+                file,
+            )
+            .await
+            .is_err()
+            {
+                tracing::warn!(peer = %target, "personal media transfer did not complete");
+            }
+        });
     }
 
     /// Send consented input to one exact authenticated device. Gossip has no
@@ -1210,6 +1312,127 @@ impl ActorState {
             }
         }
     }
+}
+
+async fn send_personal_media_frame(
+    connection: &iroh::endpoint::Connection,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    frame: PersonalMediaTransferFrame,
+) -> Result<(), ()> {
+    let wire = PersonalFabricWireFrame {
+        workspace,
+        user_public_key,
+        payload: PersonalFabricPayload::MediaTransfer(frame),
+    };
+    let bytes = postcard::to_allocvec(&wire).map_err(|_| ())?;
+    if bytes.len() > crate::shell::device_fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
+        return Err(());
+    }
+    let send = async {
+        let mut stream = connection.open_uni().await.map_err(|_| ())?;
+        stream.write_all(&bytes).await.map_err(|_| ())?;
+        stream.finish().map_err(|_| ())?;
+        match stream.stopped().await.map_err(|_| ())? {
+            None => Ok::<(), ()>(()),
+            Some(_) => Err(()),
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), send)
+        .await
+        .map_err(|_| ())?
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the arguments mirror one immutable transfer manifest and its exact transport route"
+)]
+async fn stream_personal_media(
+    endpoint: Endpoint,
+    addr: EndpointAddr,
+    workspace: WorkspaceId,
+    user_public_key: [u8; 32],
+    transfer_id: [u8; 16],
+    file_name: String,
+    total_bytes: u64,
+    file: std::fs::File,
+) -> Result<(), ()> {
+    use tokio::io::AsyncReadExt as _;
+
+    let connection = tokio::time::timeout(
+        Duration::from_secs(10),
+        endpoint.connect(addr, PERSONAL_FABRIC_ALPN),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    send_personal_media_frame(
+        &connection,
+        workspace,
+        user_public_key,
+        PersonalMediaTransferFrame::Start {
+            transfer_id,
+            file_name,
+            total_bytes,
+        },
+    )
+    .await?;
+
+    let mut file = tokio::fs::File::from_std(file);
+    let mut offset = 0_u64;
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
+    let transfer = async {
+        while offset < total_bytes {
+            let remaining = total_bytes.saturating_sub(offset);
+            let want = usize::try_from(remaining.min(PERSONAL_MEDIA_CHUNK_BYTES as u64))
+                .map_err(|_| ())?;
+            let window = buffer.get_mut(..want).ok_or(())?;
+            let read = file.read(window).await.map_err(|_| ())?;
+            if read == 0 {
+                return Err(());
+            }
+            let bytes = buffer.get(..read).ok_or(())?.to_vec();
+            hasher.update(&bytes);
+            send_personal_media_frame(
+                &connection,
+                workspace,
+                user_public_key,
+                PersonalMediaTransferFrame::Chunk {
+                    transfer_id,
+                    offset,
+                    bytes,
+                },
+            )
+            .await?;
+            offset = offset.saturating_add(u64::try_from(read).map_err(|_| ())?);
+        }
+        let mut trailing = [0_u8; 1];
+        if file.read(&mut trailing).await.map_err(|_| ())? != 0 {
+            return Err(());
+        }
+        send_personal_media_frame(
+            &connection,
+            workspace,
+            user_public_key,
+            PersonalMediaTransferFrame::Finish {
+                transfer_id,
+                content_hash: *hasher.finalize().as_bytes(),
+            },
+        )
+        .await
+    }
+    .await;
+    if transfer.is_err() {
+        let _ = send_personal_media_frame(
+            &connection,
+            workspace,
+            user_public_key,
+            PersonalMediaTransferFrame::Abort { transfer_id },
+        )
+        .await;
+    }
+    transfer
 }
 
 async fn run(
@@ -2082,6 +2305,107 @@ mod tests {
                 break;
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn personal_media_streams_in_order_with_a_verified_finish_hash() {
+        let (a, lookup_a) = endpoint().await;
+        let (b, lookup_b) = endpoint().await;
+        let a_id = a.id();
+        let b_id = b.id();
+        let b_addr = b.addr();
+        let (cmd_a, _a_task) = Actor::spawn(a, lookup_a);
+        let (cmd_b, _b_task) = Actor::spawn(b, lookup_b);
+        let (event_a, mut rx_a) = mpsc::channel(16);
+        let (event_b, mut rx_b) = mpsc::channel(16);
+        for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b)] {
+            command
+                .send(NetCmd::JoinWorkspace {
+                    ws: 45,
+                    on_event: events,
+                })
+                .await
+                .unwrap();
+        }
+        cmd_a.send(NetCmd::Connect { addr: b_addr }).await.unwrap();
+        while !matches!(
+            timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            NetEvent::PeerJoined { peer, .. } if peer == b_id
+        ) {}
+        while !matches!(
+            timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            NetEvent::PeerJoined { peer, .. } if peer == a_id
+        ) {}
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("private-host-name.flac");
+        let bytes = vec![0x9a; PERSONAL_MEDIA_CHUNK_BYTES.saturating_add(31)];
+        std::fs::write(&path, &bytes).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let transfer_id = [0x45; 16];
+        cmd_a
+            .send(NetCmd::PublishPersonalMedia {
+                ws: 45,
+                user_public_key: [0xA6; 32],
+                target: b_id,
+                transfer_id,
+                file_name: "song.flac".into(),
+                total_bytes: u64::try_from(bytes.len()).unwrap(),
+                file,
+            })
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_b.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let NetEvent::PersonalFabric {
+                payload: PersonalFabricPayload::MediaTransfer(frame),
+                ..
+            } = event
+            else {
+                continue;
+            };
+            match frame {
+                PersonalMediaTransferFrame::Start {
+                    transfer_id: id,
+                    file_name,
+                    total_bytes,
+                } => {
+                    assert_eq!(id, transfer_id);
+                    assert_eq!(file_name, "song.flac");
+                    assert_eq!(total_bytes, u64::try_from(bytes.len()).unwrap());
+                }
+                PersonalMediaTransferFrame::Chunk {
+                    transfer_id: id,
+                    offset,
+                    bytes: chunk,
+                } => {
+                    assert_eq!(id, transfer_id);
+                    assert_eq!(offset, u64::try_from(received.len()).unwrap());
+                    received.extend_from_slice(&chunk);
+                }
+                PersonalMediaTransferFrame::Finish {
+                    transfer_id: id,
+                    content_hash,
+                } => {
+                    assert_eq!(id, transfer_id);
+                    assert_eq!(content_hash, *blake3::hash(&received).as_bytes());
+                    break;
+                }
+                PersonalMediaTransferFrame::Abort { .. } => panic!("transfer aborted"),
+            }
+        }
+        assert_eq!(received, bytes);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
