@@ -2,9 +2,14 @@
 """Reject builtin loads, wrong paths, missing exports and substituted DLLs."""
 
 import importlib.util
+import contextlib
+import io
+import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
     "dxvk_load", Path(__file__).with_name("managed-fex-dxvk-load.py"))
@@ -39,7 +44,8 @@ class EvidenceTests(unittest.TestCase):
     def test_both_widths_with_exact_native_payload_pass(self):
         for bits, directory in ((32, "system32"), (64, "system32"), (32, "syswow64")):
             with self.subTest(bits=bits, directory=directory):
-                passed, dlls = PROBE.assess(self.fixture(bits, directory), bits, self.prefix, self.dxvk)
+                prefix_bits = 64 if directory == "syswow64" else bits
+                passed, dlls = PROBE.assess(self.fixture(bits, directory), bits, self.prefix, self.dxvk, prefix_bits)
                 self.assertTrue(passed)
                 self.assertEqual(len(dlls), 5)
 
@@ -55,6 +61,66 @@ class EvidenceTests(unittest.TestCase):
     def test_64bit_module_cannot_come_from_syswow64(self):
         output = self.fixture(64, "syswow64")
         self.assertFalse(PROBE.assess(output, 64, self.prefix, self.dxvk)[0])
+
+    def test_wow64_requires_syswow64_even_with_matching_native_hashes(self):
+        output = self.fixture(32, "system32")
+        self.assertTrue(PROBE.assess(output, 32, self.prefix, self.dxvk, 32)[0])
+        self.assertFalse(PROBE.assess(output, 32, self.prefix, self.dxvk, 64)[0])
+
+    def test_win32_cannot_use_syswow64(self):
+        self.assertFalse(PROBE.assess(self.fixture(32, "syswow64"), 32, self.prefix, self.dxvk, 32)[0])
+
+    def run_simulated_cases(self, timeout_last=False):
+        base = self.prefix.parent
+        self.prefix = PROBE.prepare_capsule_root(base / "run-qos")
+        fixtures = {bits: base / f"pe{bits}.exe" for bits in (32, 64)}
+        for bits, fixture in fixtures.items():
+            fixture.write_bytes(str(bits).encode())
+        output_dir = base / "output"
+        output_dir.mkdir()
+        calls = []
+
+        def run(command, **kwargs):
+            environment = kwargs["env"]
+            bits = int((self.prefix / "drive_c/qos-dxvk-load.exe").read_bytes())
+            calls.append((command[1], bits, environment["HOME"]))
+            self.assertNotIn("WINEDLLOVERRIDES", environment)
+            self.assertEqual(kwargs["timeout"], 240)
+            self.assertEqual(environment["WINEPREFIX"], str(self.prefix))
+            if len(calls) == 3:
+                self.assertEqual(calls[1][2], calls[2][2])
+                self.assertEqual((self.prefix / "initialized-win64").read_bytes(), b"retained")
+                # The PE32 case must not replace the already provisioned PE64 DLLs.
+                self.assertEqual((self.prefix / "drive_c/windows/system32/dxgi.dll").read_bytes(), b"64 dxgi.dll")
+                if timeout_last:
+                    raise subprocess.TimeoutExpired(command, 240, output=b"partial WoW64 log")
+            if command[1] == "wine64" and bits == 64:
+                (self.prefix / "initialized-win64").write_bytes(b"retained")
+            directory = "syswow64" if command[1] == "wine64" and bits == 32 else "system32"
+            return subprocess.CompletedProcess(command, 0, self.fixture(bits, directory))
+
+        with patch.object(PROBE.subprocess, "run", side_effect=run), contextlib.redirect_stdout(io.StringIO()):
+            status = PROBE.run_cases(base / "helper", fixtures, self.dxvk, output_dir, self.prefix)
+        return status, calls, json.loads((output_dir / "result.json").read_text())
+
+    def test_three_cases_reuse_initialized_win64_prefix(self):
+        status, calls, results = self.run_simulated_cases()
+        self.assertEqual(status, 0)
+        self.assertEqual([(mode, bits) for mode, bits, _ in calls], [("wine32", 32), ("wine64", 64), ("wine64", 32)])
+        self.assertEqual([entry["prefix_architecture"] for entry in results], ["win32", "win64", "win64"])
+        self.assertEqual([entry["pe_bits"] for entry in results], [32, 64, 32])
+        self.assertEqual(results[1]["retained_prefix"], results[2]["retained_prefix"])
+        self.assertTrue(all(Path(entry["retained_prefix"]).is_dir() for entry in results))
+
+    def test_wow64_timeout_fails_and_keeps_both_win64_results_at_active_prefix(self):
+        status, _, results = self.run_simulated_cases(timeout_last=True)
+        self.assertEqual(status, 1)
+        self.assertTrue(results[1]["passed"])
+        self.assertFalse(results[2]["passed"])
+        self.assertTrue(results[2]["timed_out"])
+        self.assertEqual(results[1]["retained_prefix"], str(self.prefix))
+        self.assertEqual(results[2]["retained_prefix"], str(self.prefix))
+        self.assertTrue(self.prefix.is_dir())
 
     def test_export_or_success_marker_alone_is_insufficient(self):
         output = self.fixture(64)
