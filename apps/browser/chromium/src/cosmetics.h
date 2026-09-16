@@ -23,7 +23,11 @@ class CosmeticQuery final : public CefV8Handler {
 // inserted nodes. Queries are batched and bounded; rules remain renderer-local.
 inline constexpr char kCosmetics[]=R"JS(
 (function(query) {
-  const style=document.createElement('style');
+  // CSSOM-created sheets are independent of the page's style-src CSP. No page
+  // policy is relaxed, and existing adopted sheets are preserved on cleanup.
+  const sheet=new CSSStyleSheet();
+  document.adoptedStyleSheets=[...document.adoptedStyleSheets,sheet];
+  let previousCSS='';
   let timer=0, stopped=false;
   const selectors=new Set();
   function update() {
@@ -39,18 +43,16 @@ inline constexpr char kCosmetics[]=R"JS(
       if(selectors.has(selector))continue;
       try { document.querySelector(selector);selectors.add(selector); } catch(_) {}
     }
-    if(document.documentElement && !style.isConnected) document.documentElement.append(style);
+    if(!document.adoptedStyleSheets.includes(sheet)) document.adoptedStyleSheets=[...document.adoptedStyleSheets,sheet];
     const css=[...selectors].map(s=>s+' { display: none !important; }').join('\n');
-    if(style.textContent!==css)style.textContent=css;
+    if(previousCSS!==css) { sheet.replaceSync(css);previousCSS=css; }
   }
-  const observer=new MutationObserver(records=>{
-    if(records.every(r=>r.target===style || style.contains(r.target) ||
-      (r.type==='childList' && [...r.addedNodes,...r.removedNodes].every(n=>n===style))))return;
+  const observer=new MutationObserver(()=>{
     if(!timer)timer=setTimeout(update,25);
   });
   observer.observe(document,{subtree:true,childList:true,attributes:true,attributeFilter:['class','id']});
   update();
-  return function(){stopped=true;observer.disconnect();clearTimeout(timer);style.remove()};
+  return function(){stopped=true;observer.disconnect();clearTimeout(timer);document.adoptedStyleSheets=document.adoptedStyleSheets.filter(candidate=>candidate!==sheet)};
 })
 )JS";
 }
