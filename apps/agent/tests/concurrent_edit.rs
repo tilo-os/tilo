@@ -178,10 +178,7 @@ fn drive_peer_and_type(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 let snap = CollabRequest::document_snapshot(replica.save());
                 peer.send(&snap).unwrap();
             }

@@ -386,6 +386,16 @@ pub struct ChannelHandle {
 }
 
 impl ChannelHandle {
+    /// Ask the broker to direct one current route holder to publish a complete
+    /// document snapshot for this late joiner.
+    pub async fn request_document_snapshot(&self) -> Result<(), NotAvailable> {
+        self.inner
+            .request_document_snapshot_request()
+            .send()
+            .promise
+            .await?;
+        Ok(())
+    }
     /// Open the certified workspace-control capability for `target_device`.
     ///
     /// # Errors
@@ -2131,6 +2141,9 @@ pub struct ChannelContext {
     /// `None` means stop following; ordinary context snapshots keep this
     /// field at `None` and replace roster/permissions as before.
     pub follow_changed: Option<Option<String>>,
+    /// True only on a directed broker request to publish current document
+    /// state. It is not a roster update and must not replace local context.
+    pub snapshot_requested: bool,
 }
 
 /// Client-pulled channel-context stream.
@@ -2196,6 +2209,7 @@ impl ContextStream {
             collaborators,
             permissions,
             follow_changed,
+            snapshot_requested: ctx.get_snapshot_requested(),
         })
     }
 }

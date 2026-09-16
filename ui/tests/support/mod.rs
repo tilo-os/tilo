@@ -191,6 +191,19 @@ pub fn pump(relay: &mut MemoryRelay) {
                     });
                 }
             }
+            CollabRequest::RequestDocumentSnapshot => {
+                // Production chooses the lowest broker peer id other than the
+                // requester. This route-agnostic harness has one shared test
+                // channel, so use the lexical peer id for the same one-holder
+                // invariant.
+                if let Some(id) = peer_ids.iter().filter(|id| *id != &from).min()
+                    && let Some(inbox) = inboxes.get_mut(id)
+                {
+                    inbox.push_back(CollabEvent::DocumentSnapshotRequested {
+                        route: ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
+                    });
+                }
+            }
             CollabRequest::OpenWorkspaceControl { session_id, .. } => {
                 // This harness has no authenticated shell/network boundary;
                 // mirror production's fail-closed response to the requester
