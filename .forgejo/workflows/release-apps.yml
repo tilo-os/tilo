@@ -67,6 +67,7 @@ concurrency:
 jobs:
   plan:
     runs-on: runner
+    timeout-minutes: 15
     outputs:
       apps: ${{ steps.plan.outputs.apps }}
       packages: ${{ steps.plan.outputs.packages }}
@@ -251,6 +252,7 @@ jobs:
     if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
     needs: [plan, build]
     runs-on: runner
+    timeout-minutes: 60
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

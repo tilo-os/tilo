@@ -25,6 +25,7 @@ concurrency:
 jobs:
   build:
     runs-on: runner
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -99,6 +100,7 @@ jobs:
   cache-cold:
     needs: build
     runs-on: runner
+    timeout-minutes: 240
     container:
       # Use the immutable image produced by this run. A mutable `latest` tag
       # can resolve to a runner's stale local image even after the build job
@@ -140,6 +142,7 @@ jobs:
   cache-warm:
     needs: cache-cold
     runs-on: runner
+    timeout-minutes: 240
     container:
       image: code.podesta.ai/qos/qos-builder:${{ github.sha }}
       credentials:

@@ -36,6 +36,7 @@ concurrency:
 jobs:
   build-and-push:
     runs-on: runner
+    timeout-minutes: 120
     steps:
       - name: Checkout the monorepo
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
