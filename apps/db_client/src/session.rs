@@ -216,114 +216,135 @@ impl Session {
                 connection_id,
                 name,
                 schema,
-            } => {
-                // A connection can finish after the user has selected another
-                // profile. Never adopt an engine/schema that no longer matches
-                // the currently selected document identity.
-                if self.active_connection_id() != Some(connection_id) {
-                    return;
-                }
-                self.connected = true;
-                self.set_schema(schema);
-                self.mark_connected(true);
-                let sample = self.active_connection().is_some_and(|c| c.is_sample);
-                self.status = if sample {
-                    RunStatus::Idle
-                } else {
-                    RunStatus::Ok(format!("Connected to {name}"))
-                };
-            }
+            } => self.apply_connected_reply(connection_id, &name, schema),
             DbReply::ConnectFailed {
                 connection_id,
                 error,
                 ..
-            } => {
-                if self.active_connection_id() != Some(connection_id) {
-                    return;
-                }
-                self.connected = false;
-                self.set_schema(DatabaseSchema::default());
-                self.mark_connected(false);
-                self.status = RunStatus::Error(error);
-            }
+            } => self.apply_connect_failed_reply(connection_id, error),
             DbReply::Queried {
                 connection_id,
                 generation,
                 result,
                 schema,
-            } => {
-                let identity = (connection_id, generation);
-                if self.cancelled_query == Some(identity) {
-                    self.cancelled_query = None;
-                    let was_active = self.active_query == Some(identity);
-                    if was_active {
-                        self.active_query = None;
-                    }
-                    if was_active && self.active_connection_id() == Some(connection_id) {
-                        self.status = RunStatus::Idle;
-                    }
-                    return;
-                }
-                if self.active_query == Some(identity) {
-                    self.active_query = None;
-                }
-                if self.active_connection_id() != Some(connection_id) {
-                    return;
-                }
-                match result {
-                    Ok(r) => {
-                        let summary = r.message();
-                        self.status = RunStatus::Ok(summary.clone());
-                        self.query_result = Some(r);
-                        self.query_gen += 1;
-                        self.query_history.push(QueryHistoryEntry {
-                            connection_id,
-                            generation: self.query_gen,
-                            sql: std::mem::take(&mut self.active_query_sql),
-                            summary,
-                        });
-                        if self.query_history.len() > QUERY_HISTORY_LIMIT {
-                            self.query_history.remove(0);
-                        }
-                        if let Some(schema) = schema {
-                            self.schema = schema;
-                        }
-                    }
-                    Err(e) => self.status = RunStatus::Error(e),
-                }
-            }
+            } => self.apply_query_reply(connection_id, generation, result, schema),
             DbReply::Browsed {
                 connection_id,
                 schema,
                 table,
                 offset,
                 result,
-            } => {
-                // A table browse is scoped to both a connection and the
-                // selected table/page. Ignore any stale reply after a schema
-                // selection or page change instead of flashing old rows.
-                if self.active_connection_id() != Some(connection_id)
-                    || self.selected_relation.as_ref()
-                        != Some(&RelationRef {
-                            schema,
-                            name: table,
-                        })
-                    || self.data_offset != offset
-                {
-                    return;
-                }
-                match result {
-                    Ok(r) => {
-                        self.data_result = Some(r);
-                        self.data_gen += 1;
-                    }
-                    Err(e) => self.status = RunStatus::Error(e),
-                }
-            }
+            } => self.apply_browse_reply(connection_id, schema, table, offset, result),
             DbReply::Disconnected => {
                 self.connected = false;
                 self.mark_connected(false);
             }
+        }
+    }
+
+    fn apply_connected_reply(&mut self, connection_id: Uuid, name: &str, schema: DatabaseSchema) {
+        if self.active_connection_id() != Some(connection_id) {
+            return;
+        }
+        self.connected = true;
+        self.set_schema(schema);
+        self.mark_connected(true);
+        self.status = if self.active_connection().is_some_and(|c| c.is_sample) {
+            RunStatus::Idle
+        } else {
+            RunStatus::Ok(format!("Connected to {name}"))
+        };
+    }
+
+    fn apply_connect_failed_reply(&mut self, connection_id: Uuid, error: String) {
+        if self.active_connection_id() != Some(connection_id) {
+            return;
+        }
+        self.connected = false;
+        self.set_schema(DatabaseSchema::default());
+        self.mark_connected(false);
+        self.status = RunStatus::Error(error);
+    }
+
+    fn apply_query_reply(
+        &mut self,
+        connection_id: Uuid,
+        generation: u64,
+        result: Result<QueryResult, String>,
+        schema: Option<DatabaseSchema>,
+    ) {
+        let identity = (connection_id, generation);
+        if self.cancelled_query == Some(identity) {
+            self.cancelled_query = None;
+            let was_active = self.active_query == Some(identity);
+            if was_active {
+                self.active_query = None;
+            }
+            if was_active && self.active_connection_id() == Some(connection_id) {
+                self.status = RunStatus::Idle;
+            }
+            return;
+        }
+        if self.active_query == Some(identity) {
+            self.active_query = None;
+        }
+        if self.active_connection_id() != Some(connection_id) {
+            return;
+        }
+        match result {
+            Ok(result) => self.accept_query_result(connection_id, result, schema),
+            Err(error) => self.status = RunStatus::Error(error),
+        }
+    }
+
+    fn accept_query_result(
+        &mut self,
+        connection_id: Uuid,
+        result: QueryResult,
+        schema: Option<DatabaseSchema>,
+    ) {
+        let summary = result.message();
+        self.status = RunStatus::Ok(summary.clone());
+        self.query_result = Some(result);
+        self.query_gen += 1;
+        self.query_history.push(QueryHistoryEntry {
+            connection_id,
+            generation: self.query_gen,
+            sql: std::mem::take(&mut self.active_query_sql),
+            summary,
+        });
+        if self.query_history.len() > QUERY_HISTORY_LIMIT {
+            self.query_history.remove(0);
+        }
+        if let Some(schema) = schema {
+            self.schema = schema;
+        }
+    }
+
+    fn apply_browse_reply(
+        &mut self,
+        connection_id: Uuid,
+        schema: String,
+        table: String,
+        offset: usize,
+        result: Result<QueryResult, String>,
+    ) {
+        if self.active_connection_id() != Some(connection_id)
+            || self.selected_relation.as_ref()
+                != Some(&RelationRef {
+                    schema,
+                    name: table,
+                })
+            || self.data_offset != offset
+        {
+            return;
+        }
+        match result {
+            Ok(result) => {
+                self.data_result = Some(result);
+                self.data_gen += 1;
+            }
+            Err(error) => self.status = RunStatus::Error(error),
         }
     }
 
