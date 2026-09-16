@@ -230,6 +230,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::PermissionDecision { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
+            | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::CancelDownload { .. } => {}

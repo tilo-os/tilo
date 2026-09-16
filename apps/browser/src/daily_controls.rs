@@ -23,6 +23,7 @@ pub(crate) struct DailyControls {
     count: i32,
     active: i32,
     zoom: f64,
+    buffered: bool,
 }
 impl Default for DailyControls {
     fn default() -> Self {
@@ -36,6 +37,7 @@ impl Default for DailyControls {
             count: 0,
             active: 0,
             zoom: 0.0,
+            buffered: false,
         }
     }
 }
@@ -48,6 +50,7 @@ impl DailyControls {
                     self.count = 0;
                     self.active = 0;
                 }
+                self.buffered = false;
                 self.open = true;
                 self.focus_pending = Some(FIND_INPUT);
             }
@@ -75,6 +78,28 @@ impl DailyControls {
                 engine.send(WebViewCommand::SetZoomLevel(self.zoom));
             }
         }
+    }
+    pub fn buffer_text(&mut self, text: &str) {
+        if !self.buffered {
+            self.query.set(String::new());
+            self.buffered = true;
+        }
+        self.query.update(|query| query.push_str(text));
+    }
+    pub fn take_buffered_cursor(&mut self) -> Option<usize> {
+        std::mem::take(&mut self.buffered).then(|| self.query.get().len())
+    }
+    pub fn navigation_started(&mut self, engine: &SharedEngine) -> bool {
+        if !self.open {
+            return false;
+        }
+        self.open = false;
+        self.focus_pending = None;
+        self.count = 0;
+        self.active = 0;
+        self.id = self.id % (i32::MAX as u32) + 1;
+        engine.send(WebViewCommand::StopFinding);
+        true
     }
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
         let mut dirty = false;
@@ -211,6 +236,28 @@ mod tests {
         first.act(Action::Close, &engine);
         assert!(capture.commands().contains(&WebViewCommand::StopFinding));
     }
+    #[test]
+    fn buffered_find_text_and_navigation_reset_do_not_lose_or_reuse_matches() {
+        let capture = ui::webview::test_engine::TestEngine::new();
+        let engine: SharedEngine = capture.clone();
+        let mut controls = DailyControls::default();
+        controls.act(Action::Open, &engine);
+        controls.buffer_text("N");
+        controls.buffer_text("eedle");
+        assert_eq!(controls.take_buffered_cursor(), Some(6));
+        assert_eq!(controls.query.get(), "Needle");
+        controls.sync(&engine);
+        assert!(controls.navigation_started(&engine));
+        assert!(!controls.open);
+        assert!(!controls.apply(WebViewEvent::FindResult {
+            id: 1,
+            count: 3,
+            active: 1,
+            final_update: true
+        }));
+        assert_eq!((controls.count, controls.active), (0, 0));
+    }
+
     #[test]
     fn zoom_is_bounded_and_reset_is_explicit_per_tab() {
         let capture = ui::webview::test_engine::TestEngine::new();

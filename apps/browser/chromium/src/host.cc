@@ -28,6 +28,7 @@
 #include <iostream>
 #include <mutex>
 #include <map>
+#include <set>
 #include <poll.h>
 #include <thread>
 #include <unistd.h>
@@ -101,6 +102,7 @@ class Client;
 std::map<int,CefRefPtr<Client>> clients;
 CefRefPtr<CefRequestContext> shared_context;
 void CreateTab(int id);
+void PublishZoomLevels();
 void Dispatch(CefRefPtr<CefDictionaryValue> command);
 bool closing=false;
 bool clear_on_exit=false;
@@ -108,7 +110,7 @@ std::string downloads_directory;
 CefRefPtr<qos::RequestFilter> request_filter;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
-                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler {
+                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler {
  public:
   explicit Client(int id):id_(id),capabilities_(new qos::Capabilities(downloads_directory,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
@@ -124,6 +126,36 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   bool OnOpenURLFromTab(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,const CefString& url,WindowOpenDisposition disposition,bool) override {
     if(disposition==CEF_WOD_NEW_BACKGROUND_TAB || disposition==CEF_WOD_NEW_FOREGROUND_TAB || disposition==CEF_WOD_NEW_WINDOW) { OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true; }return false;
   }
+  CefRefPtr<CefDialogHandler> GetDialogHandler() override { return this; }
+  bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
+#if defined(OS_MAC)
+    Event("file_dialog");return ShowHostFileDialog(mode,title,extensions,callback);
+#else
+    return false;
+#endif
+  }
+  void PublishZoom() { if(browser_) { auto d=CefDictionaryValue::Create();d->SetDouble("level",browser_->GetHost()->GetZoomLevel());Event("zoom",d); } }
+  CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
+  void OnBeforeContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model) override {
+    if(!params->GetLinkUrl().empty()) { model->AddItem(26501,"Open link in new tab");model->AddItem(26502,"Copy link address"); }
+  }
+  bool RunContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model,CefRefPtr<CefRunContextMenuCallback> callback) override {
+    if(context_callback_) context_callback_->Cancel();
+    if(params->GetLinkUrl().ToString().size()>8192) { callback->Cancel();return true; }
+    context_callback_=callback;context_id_=context_id_%2147483647+1;context_commands_.clear();
+    auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);d->SetInt("x",params->GetXCoord());d->SetInt("y",params->GetYCoord());d->SetString("link",params->GetLinkUrl());
+    auto items=CefListValue::Create();
+    for(size_t i=0;i<model->GetCount() && items->GetSize()<24;++i) {
+      int command=model->GetCommandIdAt(i);if(command<=0 || !model->IsEnabledAt(i) || model->GetTypeAt(i)==MENUITEMTYPE_SUBMENU) continue;
+      if(model->GetLabelAt(i).ToString().size()>4096) continue;
+      auto item=CefDictionaryValue::Create();item->SetInt("id",command);item->SetString("label",model->GetLabelAt(i));items->SetDictionary(items->GetSize(),item);context_commands_.insert(command);
+    }
+    d->SetList("items",items);Event("context_menu",d);return true;
+  }
+  bool OnContextMenuCommand(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,int command,EventFlags) override {
+    if(command==26501) { OpenTab(params->GetLinkUrl(),false);return true; }return false;
+  }
+  void OnContextMenuDismissed(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>) override { context_callback_=nullptr;context_commands_.clear();auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);Event("context_closed",d); }
   CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
   void OnFindResult(CefRefPtr<CefBrowser>,int identifier,int count,const CefRect&,int active,bool final_update) override {
     if(final_update && count>0 && active==0 && select_initial_) {
@@ -167,7 +199,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OnLoadingProgressChange(CefRefPtr<CefBrowser>,double progress) override { auto d=CefDictionaryValue::Create();d->SetDouble("progress",progress);Event("progress",d); }
   void OnLoadingStateChange(CefRefPtr<CefBrowser>,bool,bool back,bool forward) override { auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d); }
   void OnLoadEnd(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,int status) override {
-    if(!frame->IsMain()) return; auto d=CefDictionaryValue::Create();d->SetString("url",frame->GetURL());d->SetInt("status",status);Event("loaded",d);SendScripts();
+    if(!frame->IsMain()) return; PublishZoom();auto d=CefDictionaryValue::Create();d->SetString("url",frame->GetURL());d->SetInt("status",status);Event("loaded",d);SendScripts();
   }
   void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
     if(!frame->IsMain() || code==ERR_ABORTED) return; auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetString("message",text);Event("error",d);
@@ -226,7 +258,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       pending_navigation_.push_back(d->Copy(false));return;
     }
     auto host=browser_->GetHost();auto frame=browser_->GetMainFrame();
-    if(op=="visibility") { visible_=d->GetBool("visible");host->WasHidden(!visible_);host->SetFocus(visible_);if(visible_) host->Invalidate(PET_VIEW);else {pixels_.clear();popup_.clear();} }
+    if(op=="visibility") { visible_=d->GetBool("visible");host->WasHidden(!visible_);host->SetFocus(visible_);if(!visible_ && context_callback_) context_callback_->Cancel();if(visible_) host->Invalidate(PET_VIEW);else {pixels_.clear();popup_.clear();} }
+    else if(op=="context_action") {
+      if(context_callback_ && d->GetInt("id")==context_id_) {
+        int command=d->GetInt("command");auto callback=context_callback_;context_callback_=nullptr;
+        if(command && context_commands_.count(command)) callback->Continue(command,EVENTFLAG_NONE);else callback->Cancel();
+      }
+    }
     else if(op=="close_tab") {host->CloseDevTools();host->CloseBrowser(true);}
     else if(op=="navigate") frame->LoadURL(d->GetString("url"));
     else if(op=="navigation_history") navigation_history_->Request(d->GetInt("request_id"));
@@ -240,7 +278,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       else { finding_=true;find_id_=d->GetInt("id");find_text_=d->GetString("text");select_initial_=!d->GetBool("next");host->Find(d->GetString("text"),d->GetBool("forward"),false,d->GetBool("next")); }
     }
     else if(op=="stop_find") { pending_find_.clear();finding_=false;host->StopFinding(true); }
-    else if(op=="zoom") { host->SetZoomLevel(Number(d,"level"));auto result=CefDictionaryValue::Create();result->SetDouble("level",host->GetZoomLevel());Event("zoom",result); }
+    else if(op=="zoom") {
+      host->SetZoomLevel(Number(d,"level"));
+      // Chromium zoom belongs to the origin in the shared request context.
+      // Publish every affected endpoint's actual level after propagation.
+      CefPostTask(TID_UI,base::BindOnce(&PublishZoomLevels));
+      CefPostDelayedTask(TID_UI,base::BindOnce(&PublishZoomLevels),100);
+    }
     else if(op=="focus") host->SetFocus(d->GetBool("focused"));
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
@@ -281,6 +325,19 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     key_modifiers_=e.modifiers;
     std::string key=d->GetString("key");
+#if defined(OS_MAC)
+    // Offscreen CEF has no Cocoa Edit menu to translate Command shortcuts.
+    // Execute against the focused frame, preserving native clipboard semantics.
+    if(d->GetBool("meta") && !d->GetBool("ctrl") && !d->GetBool("alt") && key.size()==1) {
+      char letter=static_cast<char>(std::tolower(static_cast<unsigned char>(key[0])));
+      if(letter=='a'||letter=='c'||letter=='x'||letter=='v'||letter=='z') {
+        if(d->GetBool("down")) { auto frame=browser_->GetFocusedFrame();if(frame) {
+          if(letter=='a') frame->SelectAll();else if(letter=='c') frame->Copy();else if(letter=='x') frame->Cut();else if(letter=='v') frame->Paste();else if(d->GetBool("shift")) frame->Redo();else frame->Undo();
+        }}
+        return;
+      }
+    }
+#endif
     const auto mapping=qos::MapKey(key);
     e.windows_key_code=mapping.windows;
     e.character=mapping.character;
@@ -305,14 +362,16 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   std::string filter_rules_;bool filter_enabled_=true;
   int width_=1280,height_=800,pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
+  CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
   float scale_=1;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
+void PublishZoomLevels() { for(auto& entry:clients) entry.second->PublishZoom(); }
 void CreateTab(int id) {
   if(closing || id<=0 || clients.count(id) || clients.size()>=32) return;
   auto client=CefRefPtr<Client>(new Client(id));clients.emplace(id,client);
-  CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=kOffscreenFrameRate;
+  CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=kOffscreenFrameRate;settings.background_color=CefColorSetARGB(255,255,255,255);
   if(!CefBrowserHost::CreateBrowserSync(window,client,"about:blank",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
 }
 void Dispatch(CefRefPtr<CefDictionaryValue> d) {
@@ -347,6 +406,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
   if(op=="stop_find") return true;
   if(op=="zoom") return number("level") && Number(d,"level")>=-5 && Number(d,"level")<=9;

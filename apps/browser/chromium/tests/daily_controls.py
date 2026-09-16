@@ -68,8 +68,11 @@ with tempfile.TemporaryDirectory(prefix='qos-tabs-') as profile:
         send(op='navigate',tab=2,url=base+'/two')
         until(lambda e:e['event']=='title' and e.get('tab')==2 and '/two|' in e['title'])
         send(op='zoom',tab=2,level=0.0)
-        result=until(lambda e:e['event']=='zoom')
+        result=until(lambda e:e['event']=='zoom' and e.get('tab')==2)
         assert result['tab']==2 and result['level']==0.0, result
+        # A shared-origin reset must update tab 1's displayed zoom too.
+        send(op='zoom',tab=2,level=1.0)
+        until(lambda e:e['event']=='zoom' and e.get('tab')==1 and e['level']==1.0)
         send(op='stop_find')
         send(op='find',id=99,text='missing',forward=True,next=False)
         result=until(lambda e:e['event']=='find_result' and e['id']==99 and e['final'])

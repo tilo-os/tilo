@@ -562,6 +562,23 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         .ok_or("missing event name")?;
     let text = |key: &str| value.get(key).is_some_and(Value::is_string);
     let valid = match event {
+        "context_closed" => valid_id(value),
+        "context_menu" => {
+            valid_id(value)
+                && value["link"].as_str().is_some_and(|s| s.len() <= 8192)
+                && ["x", "y"].iter().all(|k| {
+                    value[*k]
+                        .as_f64()
+                        .is_some_and(|v| v.is_finite() && v.abs() < 100000.0)
+                })
+                && value["items"].as_array().is_some_and(|items| {
+                    items.len() <= 24
+                        && items.iter().all(|item| {
+                            valid_id(item)
+                                && item["label"].as_str().is_some_and(|s| s.len() <= 4096)
+                        })
+                })
+        }
         "find_result" => {
             valid_id(value)
                 && ["count", "active"].iter().all(|key| {
@@ -630,6 +647,9 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
 
 fn command_within_limits(command: &WebViewCommand) -> bool {
     match command {
+        WebViewCommand::ContextMenuAction { id, command } => {
+            *id > 0 && *id <= i32::MAX as u32 && *command <= i32::MAX as u32
+        }
         WebViewCommand::Find { id, text, .. } => {
             *id > 0 && *id <= i32::MAX as u32 && text.len() <= 4096
         }
@@ -741,6 +761,20 @@ impl CommandQueue {
 
 fn decode_event(value: &Value) -> Option<WebViewEvent> {
     Some(match value["event"].as_str()? {
+        "context_closed" => WebViewEvent::ContextMenuClosed {
+            id: value["id"].as_u64()? as u32,
+        },
+        "context_menu" => WebViewEvent::ContextMenu {
+            id: value["id"].as_u64()? as u32,
+            x: value["x"].as_f64()?,
+            y: value["y"].as_f64()?,
+            link: value["link"].as_str()?.into(),
+            items: value["items"]
+                .as_array()?
+                .iter()
+                .map(|item| Some((item["id"].as_u64()? as u32, item["label"].as_str()?.into())))
+                .collect::<Option<Vec<_>>>()?,
+        },
         "find_result" => WebViewEvent::FindResult {
             id: value["id"].as_u64()? as u32,
             count: value["count"].as_i64()? as i32,
@@ -853,6 +887,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             forward,
             next,
         } => json!({"op":"find","id":id,"text":text,"forward":forward,"next":next}),
+        WebViewCommand::ContextMenuAction { id, command } => {
+            json!({"op":"context_action","id":id,"command":command})
+        }
         WebViewCommand::StopFinding => json!({"op":"stop_find"}),
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
         WebViewCommand::CancelDownload { id } => json!({"op":"download_cancel","id":id}),

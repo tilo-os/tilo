@@ -1111,6 +1111,7 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
             | WebViewCommand::PermissionDecision { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
+            | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::CancelDownload { .. }

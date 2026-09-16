@@ -30,6 +30,7 @@ pub struct BrowserTabs {
     rect: Rect,
     dirty: bool,
     focus_new_address: bool,
+    buffered_address: bool,
     layout_active_id: Option<u64>,
     address_focus_node: Option<NodeId>,
     cursor: Point,
@@ -53,6 +54,7 @@ impl BrowserTabs {
             rect: Rect::ZERO,
             dirty: true,
             focus_new_address: false,
+            buffered_address: false,
             layout_active_id: None,
             address_focus_node: None,
             cursor: Point::ORIGIN,
@@ -102,6 +104,7 @@ impl BrowserTabs {
         if !background {
             self.activate(id);
             self.focus_new_address = focus_address;
+            self.buffered_address = false;
         }
         self.dirty = true;
         Ok(())
@@ -270,7 +273,9 @@ impl Widget for BrowserTabs {
         self.layout_active_id = Some(self.active_id);
         let focus_address = self.focus_new_address || self.address_focus_node.is_some();
         self.address_focus_node = None;
-        if focus_address && self.active_mut().focus_tab_address() {
+        let buffered = self.buffered_address;
+        if focus_address && self.active_mut().focus_tab_address_with_caret(buffered) {
+            self.buffered_address = false;
             self.focus_new_address = false;
             self.address_focus_node = nodes.iter().find_map(|(id, widget)| {
                 // Nodes were built immediately above and all widgets are retained.
@@ -348,6 +353,22 @@ impl Widget for BrowserTabs {
         // A switch can be followed by another input before the host rebuilds.
         // Retained compositions still contain NodeIds from their previous tree.
         if self.layout_active_id != Some(self.active_id) {
+            if self.focus_new_address {
+                if let WindowEvent::KeyboardInput { event: key, .. } = event {
+                    if key.state == ElementState::Pressed
+                        && !modifiers.state().control_key()
+                        && !modifiers.state().super_key()
+                    {
+                        let replace = !self.buffered_address;
+                        if self
+                            .active_mut()
+                            .buffer_tab_address(&key.logical_key, replace)
+                        {
+                            self.buffered_address = true;
+                        }
+                    }
+                }
+            }
             *handled = true;
             return;
         }
@@ -685,6 +706,65 @@ mod tests {
         let tabs = workspace();
         assert!(tabs.resources(&AutoCommit::new()).is_empty());
         assert!(!tabs.active().resources(&AutoCommit::new()).is_empty());
+    }
+
+    #[test]
+    fn immediate_new_tab_typing_and_enter_survive_before_first_layout() {
+        let mut tabs = workspace();
+        let mut tree = TaffyTree::new();
+        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+        tabs.open(None, false).unwrap();
+        let mut doc = AutoCommit::new();
+        let url = "http://127.0.0.1:63921/";
+        let keys = url
+            .chars()
+            .map(|c| Key::Character(c.to_string().into()))
+            .chain(std::iter::once(Key::Named(NamedKey::Enter)));
+        for logical_key in keys {
+            let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+            key.logical_key = logical_key;
+            key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            key.location = winit::keyboard::KeyLocation::Standard;
+            key.state = ElementState::Pressed;
+            tabs.handle_event(
+                &WindowEvent::KeyboardInput {
+                    device_id: unsafe { std::mem::zeroed() },
+                    event: key,
+                    is_synthetic: false,
+                },
+                1.0,
+                &Default::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut false,
+                &mut None,
+                root,
+                &tree,
+            );
+        }
+        assert!(
+            tabs.active_mut().take_control_invocation().is_some(),
+            "Enter must queue the complete address even before layout"
+        );
+        let mut new_tree = TaffyTree::new();
+        tabs.build_layout(&mut new_tree, &Theme::dark(), &mut HashMap::new());
+        fn address(widget: &dyn Widget) -> Option<(String, String)> {
+            if widget.test_id() == Some("browser.url_input") {
+                return widget
+                    .text_review()
+                    .map(|(_, text)| (text, widget.get_state().unwrap()));
+            }
+            widget.children().iter().find_map(|child| address(*child))
+        }
+        let (text, caret) = address(&tabs).unwrap();
+        assert_eq!(text, url);
+        assert_eq!(
+            caret,
+            url.len().to_string(),
+            "buffered prefix must not be selected and replaced by remaining typing"
+        );
     }
 
     #[test]
