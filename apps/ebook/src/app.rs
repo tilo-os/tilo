@@ -6090,8 +6090,6 @@ impl BooksApp {
 
 impl BooksApp {
     /// A square icon button. Returns the x-advance (its size).
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/s/c/w are the standard transform/geometry/colour/stroke-width names \
@@ -7367,6 +7365,22 @@ struct ReaderTopbarLayout {
     type_width: f64,
     type_label_width: f32,
     control_y: f64,
+}
+
+struct ReaderRailView {
+    panel_x0: f64,
+    y0: f64,
+    y1: f64,
+}
+
+struct RailScrollbarView {
+    x: f64,
+    y0: f64,
+    y1: f64,
+    scroll: f64,
+    max_scroll: f64,
+    visible_height: f64,
+    content_height: f64,
 }
 
 impl BooksApp {
@@ -8716,11 +8730,7 @@ impl BooksApp {
     /// scrim. The shared [`FlapState`] kernel supplies `reveal`/`slide`.
     fn draw_rails(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Book], geom: &ReaderPageGeometry) {
         use vello::peniko::Fill;
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
         let body_y0 = geom.body_y0;
         let body_y1 = geom.body_y1;
         let r = self.rect;
@@ -8737,7 +8747,7 @@ impl BooksApp {
         if toc_overlay_open || notes_overlay_open {
             let a = toc_reveal.max(notes_reveal) * 0.5;
             let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(a as f32);
-            scene.fill(Fill::NonZero, t, scrim, None, &r);
+            ctx.scene.fill(Fill::NonZero, t, scrim, None, &r);
             // The scrim is a dismiss target behind the rails (recorded first so
             // the rail bodies, pushed later, win the topmost hit-test).
             self.push_hit(r, Action::DismissOverlay);
@@ -8747,7 +8757,15 @@ impl BooksApp {
         // rail slides in from off-screen by its eased `slide`.
         if toc_layout == SplitLayout::Docked {
             if toc_reveal > 0.001 {
-                self.draw_toc(scene, t, tr, theme, lib, r.x0, body_y0, body_y1, c);
+                self.draw_toc(
+                    ctx,
+                    lib,
+                    &ReaderRailView {
+                        panel_x0: r.x0,
+                        y0: body_y0,
+                        y1: body_y1,
+                    },
+                );
             }
         } else if toc_reveal > 0.001 {
             let toc_w = self.toc_width();
@@ -8755,7 +8773,15 @@ impl BooksApp {
             // Swallow taps on the rail body so they don't reach the scrim;
             // pushed first so the chapter-row hits land on top of it.
             self.push_hit(Rect::new(x0, body_y0, x0 + toc_w, body_y1), Action::Swallow);
-            self.draw_toc(scene, t, tr, theme, lib, x0, body_y0, body_y1, c);
+            self.draw_toc(
+                ctx,
+                lib,
+                &ReaderRailView {
+                    panel_x0: x0,
+                    y0: body_y0,
+                    y1: body_y1,
+                },
+            );
         }
 
         // Annotations rail: docked at the right edge, or an overlay flap that
@@ -8763,14 +8789,12 @@ impl BooksApp {
         if notes_layout == SplitLayout::Docked {
             if notes_reveal > 0.001 {
                 self.draw_notes(
-                    scene,
-                    t,
-                    tr,
-                    theme,
-                    r.x1 - self.notes_width(),
-                    body_y0,
-                    body_y1,
-                    c,
+                    ctx,
+                    &ReaderRailView {
+                        panel_x0: r.x1 - self.notes_width(),
+                        y0: body_y0,
+                        y1: body_y1,
+                    },
                 );
             }
         } else if notes_reveal > 0.001 {
@@ -8780,7 +8804,14 @@ impl BooksApp {
                 Rect::new(x0, body_y0, x0 + notes_w, body_y1),
                 Action::Swallow,
             );
-            self.draw_notes(scene, t, tr, theme, x0, body_y0, body_y1, c);
+            self.draw_notes(
+                ctx,
+                &ReaderRailView {
+                    panel_x0: x0,
+                    y0: body_y0,
+                    y1: body_y1,
+                },
+            );
         }
     }
 
@@ -9000,18 +9031,15 @@ impl BooksApp {
         clippy::too_many_lines,
         reason = "contents combines its fixed header, clipped virtual rows, and position indicator so their hit ordering stays explicit"
     )]
-    fn draw_toc(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        lib: &[Book],
-        panel_x0: f64,
-        y0: f64,
-        y1: f64,
-        c: &ui::tokens::colors::Colors,
-    ) {
+    fn draw_toc(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Book], view: &ReaderRailView) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        let panel_x0 = view.panel_x0;
+        let y0 = view.y0;
+        let y1 = view.y1;
         let panel_w = self.toc_width();
         let panel = Rect::new(panel_x0, y0, panel_x0 + panel_w, y1);
         paint::fill_rect(scene, t, panel, c.surfaces.base);
@@ -9119,16 +9147,16 @@ impl BooksApp {
         }
         scene.pop_layer();
         Self::draw_rail_scrollbar(
-            scene,
-            t,
-            c,
-            panel_x0 + panel_w - 9.0,
-            list_y0,
-            list_y1,
-            self.toc_scroll,
-            self.toc_max_scroll,
-            visible_h,
-            content_h,
+            ctx,
+            &RailScrollbarView {
+                x: panel_x0 + panel_w - 9.0,
+                y0: list_y0,
+                y1: list_y1,
+                scroll: self.toc_scroll,
+                max_scroll: self.toc_max_scroll,
+                visible_height: visible_h,
+                content_height: content_h,
+            },
         );
     }
 
@@ -9136,50 +9164,41 @@ impl BooksApp {
     /// draggable pseudo-scrollbar: wheel, touchpad and screen-reader focus
     /// remain the consistent interaction model, while the thumb preserves
     /// orientation in a large table of contents or annotation history.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_rail_scrollbar(
-        scene: &mut Scene,
-        t: Affine,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        y0: f64,
-        y1: f64,
-        scroll: f64,
-        max_scroll: f64,
-        visible_h: f64,
-        content_h: f64,
-    ) {
+    fn draw_rail_scrollbar(ctx: &mut EbookPaintCtx<'_>, view: &RailScrollbarView) {
+        let max_scroll = view.max_scroll;
+        let content_h = view.content_height;
         if max_scroll <= 1.0 || content_h <= 0.0 {
             return;
         }
-        let track_h = (y1 - y0).max(1.0);
-        let thumb_h = (track_h * visible_h / content_h).clamp(28.0, track_h);
-        let progress = (scroll / max_scroll).clamp(0.0, 1.0);
-        let thumb_y = y0 + progress * (track_h - thumb_h);
+        let track_h = (view.y1 - view.y0).max(1.0);
+        let thumb_h = (track_h * view.visible_height / content_h).clamp(28.0, track_h);
+        let progress = (view.scroll / max_scroll).clamp(0.0, 1.0);
+        let thumb_y = view.y0 + progress * (track_h - thumb_h);
         paint::fill_round(
-            scene,
-            t,
-            Rect::new(x, thumb_y, x + RAIL_SCROLLBAR_W, thumb_y + thumb_h),
+            ctx.scene,
+            ctx.transform,
+            Rect::new(
+                view.x,
+                thumb_y,
+                view.x + RAIL_SCROLLBAR_W,
+                thumb_y + thumb_h,
+            ),
             RAIL_SCROLLBAR_W / 2.0,
-            c.text_dim.with_alpha_factor(0.5),
+            ctx.theme.tokens.colors.text_dim.with_alpha_factor(0.5),
         );
     }
 
     /// `panel_x0` is the rail's left edge — `r.x1 - NOTES_W` when docked, or a
     /// slid position when it floats as an overlay flap from the right.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_notes(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        panel_x0: f64,
-        y0: f64,
-        y1: f64,
-        c: &ui::tokens::colors::Colors,
-    ) {
+    fn draw_notes(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &ReaderRailView) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        let panel_x0 = view.panel_x0;
+        let y0 = view.y0;
+        let y1 = view.y1;
         let annos = self.annotations.clone();
         let x0 = panel_x0;
         let panel_x1 = panel_x0 + self.notes_width();
@@ -9247,16 +9266,16 @@ impl BooksApp {
         }
         scene.pop_layer();
         Self::draw_rail_scrollbar(
-            scene,
-            t,
-            c,
-            panel_x1 - 9.0,
-            list_y0,
-            list_y1,
-            self.notes_scroll,
-            self.notes_max_scroll,
-            visible_h,
-            content_h,
+            ctx,
+            &RailScrollbarView {
+                x: panel_x1 - 9.0,
+                y0: list_y0,
+                y1: list_y1,
+                scroll: self.notes_scroll,
+                max_scroll: self.notes_max_scroll,
+                visible_height: visible_h,
+                content_height: content_h,
+            },
         );
     }
 
