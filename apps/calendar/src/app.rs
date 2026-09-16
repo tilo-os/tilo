@@ -1717,6 +1717,7 @@ impl CalendarApp {
             event_positions: HashMap::new(),
             task_positions: HashMap::new(),
             project_positions: HashMap::new(),
+            calendar_positions: HashMap::new(),
         }
         .with_resource_indices()
     }
@@ -1768,6 +1769,7 @@ impl CalendarApp {
             event_positions: HashMap::new(),
             task_positions: HashMap::new(),
             project_positions: HashMap::new(),
+            calendar_positions: HashMap::new(),
         }
         .with_resource_indices()
     }
@@ -6520,6 +6522,38 @@ impl Widget for CalendarApp {
             );
             let area = self.view_rect();
             match self.view {
+                View::Month if self.text_scale >= LARGE_TEXT_SCALE && area.width() < 520.0 => {
+                    // A seven-column grid turns events into indistinguishable
+                    // dots at phone width/200% text. Keep the Month navigation
+                    // identity in the top bar, but present the selected day and
+                    // following dates as the readable, focusable shared agenda.
+                    let hidden = self.hidden_calendar_ids();
+                    hits.extend(
+                        self.agenda
+                            .draw(
+                                scene,
+                                t,
+                                text_renderer,
+                                theme,
+                                area,
+                                &self.model,
+                                self.anchor,
+                                self.today,
+                                &hidden,
+                                self.calendar_filter.as_deref(),
+                                self.last_mouse,
+                            )
+                            .into_iter()
+                            .map(|(rect, action)| {
+                                let action = match action {
+                                    AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
+                                    AgendaAction::OpenTask(id) => Action::OpenTask(id),
+                                    AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
+                                };
+                                (rect, action)
+                            }),
+                    );
+                }
                 View::Month => hits.extend(self.draw_month(scene, t, text_renderer, theme, area)),
                 View::Week | View::Day => {
                     let days = self.timeline_days();
