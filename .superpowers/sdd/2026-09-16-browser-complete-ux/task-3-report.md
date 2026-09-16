@@ -44,3 +44,15 @@ Final build PID57582 at new `final-history` root showed saved Alpha/Gamma URLs a
 Malformed process fixtures passed for version999 (PID61232), 33tabs (PID61285), and javascript URL (PID61325). Each rejected the snapshot, persisted one safe local fallback URL and fetched that local fixture. Results: `target/browser-session-worker/invalid-process-results.json`. Each process was terminated by its owned subprocess handle after assertions (exit-15); these termination tests intentionally leave dirty markers. The initial harness mistakenly used shot-only `--url`, producing the normal default homepage; it was corrected to the supported positional URL before the three successful fixture runs. No unsafe saved-page request occurred.
 
 All worker browser app processes have exited. The task-only HTTP fixture can remain available for review; it does not access user data. Test artifacts live under ignored `target/browser-session-worker` and temporary logs under `/tmp`, while this report is committed.
+
+## Review fix round 1
+
+Review found recovery input was swallowed by the normal tab-layout guard, while the recovery layout bypassed the workspace rectangle and root identity. The recovery branch now builds a full-window workspace root with the panel as its child, applies workspace bounds before child layout, and delegates ordinary input before normal tab dispatch.
+
+New composed regressions first failed for zero workspace bounds and missing pointer invocation (`/tmp/browser-session-round1-red.log`). They verify workspace/node identity and both Restore/Start fresh through ordinary pointer events and Enter passed through `BrowserTabs::handle_event` to the host's unconsumed activation fallback. The existing canonical AX test remains.
+
+Commands/results: `cargo test -p browser --lib recovery_` 3passed (`/tmp/browser-session-round1-green.log`); `cargo test -p browser --lib` 160passed,1ignored (`/tmp/browser-session-round1-all.log`); `cargo build -p browser --bin browser` passed3.84s (`/tmp/browser-session-round1-build.log`).
+
+Live app PID97700 (`round1-pointer` isolated root) rendered the full visible heading, explanatory text and both buttons at800x632. Ordinary coordinate click at(96,162) selected Restore and showed all three saved tabs with Beta-next active. Separate dirty profile PID99094 (`round1-keyboard`) visibly rendered the same prompt; Tab focused Restore with a visible focus ring, secondTab focused Start fresh, Return produced one unpinned blank tab. Both apps were closed normally and left clean snapshots. No AX activation was used for either decision; AX was used only to inspect state and close the test windows. Parent was notified that the rebuilt binary was ready for independent pointer/keyboard acceptance.
+
+Only `apps/browser/src/browser_tabs.rs` and this report changed in this round.
