@@ -568,6 +568,43 @@ mod device_fabric_ui_tests {
     }
 }
 
+#[cfg(test)]
+mod idle_io_animation_tests {
+    use super::*;
+
+    #[test]
+    fn blocked_quick_settings_read_does_not_turn_waiting_into_animation() {
+        let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        host.qs_refresh.kick_fast_with(move || {
+            let _ = release_rx.recv();
+            crate::shell::qs_refresh::QsReading::Fast(Box::new(
+                crate::shell::qs_refresh::FastReading {
+                    brightness: None,
+                    volume: None,
+                    wifi: None,
+                    bluetooth: None,
+                    bluetooth_available: false,
+                    power: None,
+                    wired: None,
+                    battery: crate::shell::qs_actions::BatteryInfo::from_root(
+                        std::path::Path::new("/nonexistent"),
+                    ),
+                    radios: None,
+                    privacy: crate::shell::qs_actions::PrivacyStatus::default(),
+                    vpns: None,
+                },
+            ))
+        });
+        assert!(host.qs_refresh.is_in_flight());
+        assert!(
+            !host.needs_animation_frame(),
+            "waiting on an OS command is not visual motion and must not repaint the desktop"
+        );
+        release_tx.send(()).expect("release test worker");
+    }
+}
+
 fn notification_history_relative_time(notification: &Notification, now: Instant) -> String {
     let seconds = now
         .saturating_duration_since(notification.created_at)
@@ -7248,11 +7285,11 @@ impl ShellOverlayHost {
                     true
                 }
                 "settings.open" => {
-                    st.overlays.ws_settings = true;
+                    st.open_workspace_settings(WsTab::General);
                     true
                 }
                 "quick-settings.open" => {
-                    st.overlays.quick_settings = true;
+                    st.open_quick_settings();
                     true
                 }
                 "projection.open" => {
@@ -9648,9 +9685,7 @@ impl ShellOverlayHost {
         }
         if shortcut_pressed(ShortcutAction::QuickSettings) {
             if !repeat && let Some(chrome) = self.chrome.clone() {
-                let mut st = chrome.borrow_mut();
-                st.overlays.quick_settings = !st.overlays.quick_settings;
-                st.bump();
+                chrome.borrow_mut().toggle_quick_settings();
             }
             *handled = true;
             return true;
@@ -14382,9 +14417,6 @@ impl ShellOverlayHost {
             || mirror_frame
             || markup_frame
             || notification_frame
-            // A reading landing after the open animation settles still
-            // has to reach the screen.
-            || self.qs_refresh.is_in_flight()
     }
 }
 
@@ -20572,6 +20604,24 @@ mod palette_dispatch_tests {
             winit::event::Modifiers::from(winit::keyboard::ModifiersState::SUPER),
             &chord
         ));
+    }
+
+    #[test]
+    fn palette_panel_routes_replace_the_other_top_right_panel() {
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().open_workspace_settings(WsTab::General);
+
+        assert!(host.dispatch_palette_command("quick-settings.open"));
+        {
+            let state = chrome.borrow();
+            assert!(state.overlays.quick_settings);
+            assert!(!state.overlays.ws_settings);
+        }
+
+        assert!(host.dispatch_palette_command("settings.open"));
+        let state = chrome.borrow();
+        assert!(state.overlays.ws_settings);
+        assert!(!state.overlays.quick_settings);
     }
 
     #[test]
