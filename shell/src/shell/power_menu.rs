@@ -208,13 +208,24 @@ impl PowerMenu {
         // This is a compact flyout rooted in the status area, not a modal
         // task. Its bounds are the click-dismiss surface; the rest of the
         // desktop stays visually present so the power button and result read
-        // as one continuous interaction.
+        // as one continuous interaction. The panel itself must nevertheless
+        // be opaque: this renderer has no backdrop blur, so a translucent
+        // dark fill turns bright terminal text behind it into illegible noise.
+        let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
+        ui::chrome::shell::panel_shadow(scene, transform, panel, radius, theme, 1.0);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.neutral[1],
+            ui::chrome::shell::panel_ground(theme),
             None,
-            &RoundedRect::from_rect(panel, 24.0),
+            &RoundedRect::from_rect(panel, radius),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            ui::chrome::shell::panel_border(theme),
+            None,
+            &RoundedRect::from_rect(panel, radius),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -367,6 +378,7 @@ fn at(transform: Affine, xy: (f64, f64)) -> Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::ColorCompat;
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
@@ -476,5 +488,16 @@ mod tests {
         let mut menu = PowerMenu::default();
         menu.open();
         assert!(menu.is_animating(Instant::now()));
+    }
+
+    #[test]
+    fn power_flyout_surface_is_opaque_on_every_shipped_contrast_mode() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            assert_eq!(
+                ui::chrome::shell::panel_ground(&theme).a(),
+                255,
+                "power flyout must fully cover bright app content"
+            );
+        }
     }
 }
