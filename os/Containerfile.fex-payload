@@ -4,7 +4,8 @@
 # metadata; it is mounted read-only and checked again before compilation.
 ARG FEX_BUILDROOT_REF
 ARG FEX_X86_SDK_REF
-FROM ${FEX_X86_SDK_REF} AS x86-sdk
+# This stage supplies files to the ARM compiler; it never executes x86 code.
+FROM --platform=linux/amd64 ${FEX_X86_SDK_REF} AS x86-sdk
 FROM ${FEX_BUILDROOT_REF} AS build
 ARG FEX_BUILDROOT_REF
 ARG FEX_X86_SDK_REF
