@@ -29,6 +29,7 @@
 
 mod audio_proxy;
 mod catalogue;
+mod dxvk;
 mod execute;
 mod installer;
 mod plan;
