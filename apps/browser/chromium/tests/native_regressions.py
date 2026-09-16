@@ -122,6 +122,24 @@ class NativeRegressions(unittest.TestCase):
         self.host.send(op='scripts',scripts=[COUNTER])
         self.host.until(lambda e:e['event']=='title' and e['title'].startswith('script-count-'))
         self.host.settle()
+    def test_session_history_jump_preserves_forward_entries(self):
+        self.host.navigate(self.url+'b')
+        self.host.navigate(self.url+'c')
+        self.host.send(op='navigation_history',request_id=7)
+        try:
+            snapshot=self.host.until(lambda e:e['event']=='navigation_history',timeout=5)
+        except queue.Empty:
+            self.host.log.seek(0)
+            self.fail(self.host.log.read().decode(errors='replace')[-5000:])
+        self.assertEqual(snapshot['request_id'],7)
+        self.assertEqual([e['url'] for e in snapshot['entries'][:2]],[self.url+'b',self.url])
+        self.host.send(op='history_entry',request_id=7,id=snapshot['entries'][1]['id'])
+        self.host.until(lambda e:e['event']=='loaded' and e['url']==self.url)
+        self.host.send(op='forward')
+        self.host.until(lambda e:e['event']=='loaded' and e['url']==self.url+'b')
+        self.host.send(op='forward')
+        self.host.until(lambda e:e['event']=='loaded' and e['url']==self.url+'c')
+
     def test_physical_resize_at_retina_scale(self):
         self.host.send(op='resize',width=1920,height=1080,scale_factor=2.0)
         deadline=time.monotonic()+10

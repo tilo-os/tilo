@@ -36,8 +36,9 @@ use ui::webview::test_engine::TestEngine;
 use ui::webview::{MediaElementInfo, SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::toast::{ToastCard, ToastKind, paint_card};
 use ui::widget::{
-    AppKind, AppWidget, Button, Column, Container, EmptyState, IconDescriptor, ProgressBar, Row,
-    ScrollAxis, Scrollable, Spacer, Text, TextInput, TextInputKind, WebView, Widget,
+    AppKind, AppWidget, Button, Column, Container, ContextMenu, EmptyState, IconDescriptor,
+    MenuItem, ProgressBar, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, TextInputKind,
+    WebView, Widget,
 };
 
 use crate::actions::{
@@ -115,6 +116,7 @@ enum BrowserOperation {
     Back,
     Forward,
     Reload,
+    Stop,
     Navigate { url: String },
     ShowLibrary { section: LibrarySection },
     ShowSettings,
@@ -130,6 +132,7 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
         BrowserOperation::Back => serde_json::json!({ "operation": "back" }),
         BrowserOperation::Forward => serde_json::json!({ "operation": "forward" }),
         BrowserOperation::Reload => serde_json::json!({ "operation": "reload" }),
+        BrowserOperation::Stop => serde_json::json!({ "operation": "stop" }),
         BrowserOperation::Navigate { url } => {
             serde_json::json!({ "operation": "navigate", "url": url })
         }
@@ -173,6 +176,7 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
         Some("back") => Ok(BrowserOperation::Back),
         Some("forward") => Ok(BrowserOperation::Forward),
         Some("reload") => Ok(BrowserOperation::Reload),
+        Some("stop") => Ok(BrowserOperation::Stop),
         Some("navigate") => value
             .get("url")
             .and_then(serde_json::Value::as_str)
@@ -309,9 +313,16 @@ pub struct BrowserWidget {
     /// Retained full-corpus index. Provider handles are cheap and unchanged
     /// frames compare only the durable corpus revision tokens.
     search_index: crate::search_provider::BrowserSearchIndex,
+    projected_heads: Option<Vec<automerge::ChangeHash>>,
     /// Fuzzy suggestion dropdown under the address bar (a field, not a
     /// tree child: driven here and painted in `draw_overlay`).
     suggestions: AddressSuggestions,
+    back_hold: crate::back_hold::BackHold,
+    back_pointer_down: bool,
+    back_menu: ContextMenu,
+    back_entries: Vec<ui::webview::NavigationEntry>,
+    history_request: u32,
+    pending_history: Option<u32>,
     /// Whether the settings pane replaces the page surface.
     show_settings: bool,
     show_library: bool,
@@ -426,7 +437,7 @@ impl BrowserWidget {
             initial_url,
             can_go_back: false,
             can_go_forward: false,
-            progress: 1.0,
+            progress: if headless { 1.0 } else { 0.0 },
             title: String::new(),
             current_uri: String::new(),
             load_error: None,
@@ -449,7 +460,14 @@ impl BrowserWidget {
             history,
             bookmarks,
             search_index,
+            projected_heads: None,
             suggestions: AddressSuggestions::new(),
+            back_hold: crate::back_hold::BackHold::default(),
+            back_pointer_down: false,
+            back_menu: ContextMenu::new(),
+            back_entries: Vec::new(),
+            history_request: 0,
+            pending_history: None,
             show_settings: false,
             show_library: false,
             library_section: LibrarySection::History,
@@ -614,19 +632,47 @@ impl BrowserWidget {
     /// permitted to hand to the web engine.  In particular, a browser window
     /// is not a file picker: its package declares only the web schemes, and
     /// passing `file:` through would bypass the portal boundary.
+    fn set_loading_progress(&mut self, progress: f64) {
+        let progress = progress.clamp(0.0, 1.0);
+        if (self.progress < 1.0) != (progress < 1.0) {
+            self.structure_dirty = true;
+        }
+        self.progress = progress;
+    }
+
     fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
         match operation {
             BrowserOperation::Back => {
                 self.clear_address_error();
+                self.set_loading_progress(0.0);
                 self.engine.send(WebViewCommand::GoBack);
             }
             BrowserOperation::Forward => {
                 self.clear_address_error();
+                self.set_loading_progress(0.0);
                 self.engine.send(WebViewCommand::GoForward);
             }
             BrowserOperation::Reload => {
                 self.clear_address_error();
+                self.set_loading_progress(0.0);
                 self.engine.send(WebViewCommand::Reload);
+            }
+            BrowserOperation::Stop => {
+                self.engine.send(WebViewCommand::StopLoading);
+                self.set_loading_progress(1.0);
+                if let Some(invocation) = self.resource_navigation_invocation.take() {
+                    self.resource_navigation_deadline = None;
+                    self.resource_navigation_result =
+                        Some(ui::qos_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: ui::qos_actions::ActionFailure {
+                                code: "browser.navigation_stopped".into(),
+                                message: "Page loading stopped.".into(),
+                                details: None,
+                                retryable: true,
+                            },
+                        });
+                }
             }
             BrowserOperation::Navigate { url } => {
                 let target = self.navigation_target(url.trim())?;
@@ -634,6 +680,7 @@ impl BrowserWidget {
                 self.show_library = false;
                 self.show_settings = false;
                 self.structure_dirty = true;
+                self.set_loading_progress(0.0);
                 self.engine.send(WebViewCommand::Navigate(target));
             }
             BrowserOperation::ShowLibrary { section } => {
@@ -1172,8 +1219,8 @@ impl BrowserWidget {
         let back = self.bind_button(
             Button::new("browser.back", "", None)
                 .with_icon(Icon::ArrowLeft)
-                .with_accessible_name("Back")
-                .tooltip("Back (Alt+Left)")
+                .with_accessible_name("Back; hold or right-click for history")
+                .tooltip("Back (Alt+Left); hold or right-click for history")
                 .with_size(NAV_BTN.0, NAV_BTN.1)
                 .with_enabled(self.can_go_back),
             "browser.page",
@@ -1189,14 +1236,27 @@ impl BrowserWidget {
             "browser.page",
             "forward",
         );
+        let loading = self.progress < 1.0;
         let reload = self.bind_button(
-            Button::new("browser.reload", "", None)
-                .with_icon(Icon::Refresh)
-                .with_accessible_name("Reload")
-                .tooltip("Reload (Ctrl+R)")
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+            Button::new(
+                if loading {
+                    "browser.stop"
+                } else {
+                    "browser.reload"
+                },
+                "",
+                None,
+            )
+            .with_icon(if loading { Icon::X } else { Icon::Refresh })
+            .with_accessible_name(if loading { "Stop loading" } else { "Reload" })
+            .tooltip(if loading {
+                "Stop loading"
+            } else {
+                "Reload (Ctrl+R)"
+            })
+            .with_size(NAV_BTN.0, NAV_BTN.1),
             "browser.page",
-            "reload",
+            if loading { "stop" } else { "reload" },
         );
         let url_input = TextInput::from_state(&self.address)
             .with_kind(TextInputKind::Url)
@@ -1403,7 +1463,7 @@ impl BrowserWidget {
                     .with_gap(0.0)
                     .with_fill_remaining_height()
                     .push(Box::new(
-                        ProgressBar::new(self.progress as f32).with_label("Page loading"),
+                        ProgressBar::indeterminate().with_label("Page loading"),
                     ))
                     .push(content),
             ) as Box<dyn Widget>
@@ -1946,12 +2006,16 @@ impl BrowserWidget {
     /// Whether the address input currently holds keyboard focus (the
     /// user is editing — engine URI updates must not stomp their text).
     fn url_input_focused(&self) -> bool {
-        fn walk(w: &dyn Widget) -> Option<bool> {
-            if w.test_id() == Some(URL_INPUT_ID) {
+        self.control_focused(URL_INPUT_ID)
+    }
+
+    fn control_focused(&self, id: &str) -> bool {
+        fn walk(w: &dyn Widget, id: &str) -> Option<bool> {
+            if w.test_id() == Some(id) {
                 return Some(w.is_focused());
             }
             for c in w.children() {
-                if let Some(f) = walk(c) {
+                if let Some(f) = walk(c, id) {
                     return Some(f);
                 }
             }
@@ -1959,16 +2023,29 @@ impl BrowserWidget {
         }
         self.composed
             .as_ref()
-            .and_then(|c| walk(c.as_ref()))
+            .and_then(|c| walk(c.as_ref(), id))
             .unwrap_or(false)
     }
 
     /// Fold engine events into this window's chrome state. Engine state is a
     /// device-local external boundary, never a collaborative document write.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Engine events are folded in delivery order."
+    )]
     fn apply_engine_events(&mut self) {
         let editing = self.url_input_focused();
         for event in self.engine.drain_events() {
             match event {
+                WebViewEvent::NavigationHistory {
+                    request_id,
+                    entries,
+                } => {
+                    if self.pending_history == Some(request_id) {
+                        self.pending_history = None;
+                        self.open_back_menu(entries);
+                    }
+                }
                 event @ (WebViewEvent::PermissionRequested { .. }
                 | WebViewEvent::PermissionClosed { .. }
                 | WebViewEvent::DownloadRequested { .. }
@@ -1977,6 +2054,8 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                 }
                 WebViewEvent::UriChanged(uri) => {
+                    self.pending_history = None;
+                    self.back_menu.close();
                     // Deterministic visual-audit states own their displayed
                     // address.  The headless engine is pre-navigated to the
                     // flat test page, and its bootstrap event must not make
@@ -2002,14 +2081,16 @@ impl BrowserWidget {
                 {
                     self.title = title;
                 }
-                WebViewEvent::LoadProgress(p) if !self.forced_loading => self.progress = p,
+                WebViewEvent::LoadProgress(p) if !self.forced_loading => {
+                    self.set_loading_progress(p);
+                }
                 WebViewEvent::TitleChanged(_) | WebViewEvent::LoadProgress(_) => {}
                 WebViewEvent::LoadFinished => {
                     if !self.forced_load_error && !self.address_error_active {
                         self.load_error = None;
                     }
                     if !self.forced_loading {
-                        self.progress = 1.0;
+                        self.set_loading_progress(1.0);
                     }
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
@@ -2035,7 +2116,7 @@ impl BrowserWidget {
                     }
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
-                    self.progress = 1.0;
+                    self.set_loading_progress(1.0);
                     tracing::warn!("load failed for {uri}: {error}");
                     self.title = format!("Failed to load {uri}");
                     self.load_error = Some(error.chars().take(240).collect());
@@ -2191,6 +2272,60 @@ impl BrowserWidget {
         let bottom_bound = (viewport.y1 - INSET - height).max(top_bound);
         let y0 = (anchor.y1 + 8.0).clamp(top_bound, bottom_bound);
         Some(Rect::new(x0, y0, x0 + width, y0 + height))
+    }
+
+    fn request_back_history(&mut self) {
+        self.history_request = (self.history_request % i32::MAX as u32) + 1;
+        self.pending_history = Some(self.history_request);
+        self.back_menu.close();
+        self.suggestions.clear();
+        self.engine.send(WebViewCommand::RequestNavigationHistory {
+            request_id: self.history_request,
+        });
+    }
+
+    fn open_back_menu(&mut self, entries: Vec<ui::webview::NavigationEntry>) {
+        let Some(anchor) = self.find_rect("browser.back") else {
+            return;
+        };
+        let rows = ((self.rect.y1 - anchor.y1 - 20.0) / 32.0)
+            .floor()
+            .clamp(0.0, 12.0) as usize;
+        self.back_entries = entries.into_iter().take(rows).collect();
+        self.back_menu = ContextMenu::new();
+        for entry in &self.back_entries {
+            let label = if entry.title.trim().is_empty() {
+                &entry.url
+            } else {
+                &entry.title
+            };
+            // ContextMenu paints one line; cap graphemes to keep labels inside its fixed width.
+            let label: String = label.chars().take(28).collect();
+            self.back_menu.push(MenuItem::action(label, || {}));
+        }
+        if !self.back_entries.is_empty() {
+            let x = anchor.x0.min((self.rect.x1 - 220.0).max(self.rect.x0));
+            self.back_menu.open_at([x as f32, (anchor.y1 + 4.0) as f32]);
+        }
+    }
+
+    fn choose_back_entry(&mut self, index: usize) {
+        if let Some(entry) = self.back_entries.get(index) {
+            let id = entry.id;
+            self.clear_address_error();
+            self.set_loading_progress(0.0);
+            self.engine.send(WebViewCommand::NavigateToHistoryEntry {
+                request_id: self.history_request,
+                id,
+            });
+        }
+        self.back_menu.close();
+    }
+
+    fn tick_back_hold(&mut self, now: std::time::Instant) {
+        if self.back_hold.tick(now) {
+            self.request_back_history();
+        }
     }
 
     fn sync_search_and_suggestions(&mut self) {
@@ -2427,6 +2562,13 @@ impl Widget for BrowserWidget {
                 "No next page",
             ),
             ("reload", "Reload", BrowserOperation::Reload, true, ""),
+            (
+                "stop",
+                "Stop loading",
+                BrowserOperation::Stop,
+                self.progress < 1.0,
+                "Page is idle",
+            ),
         ] {
             let payload = browser_operation_payload(&operation);
             if let Ok(spec) = ActionSpec::operation(
@@ -2988,9 +3130,14 @@ impl Widget for BrowserWidget {
             self.extension_notice = Some(message);
             self.structure_dirty = true;
         }
+        self.tick_back_hold(std::time::Instant::now());
         self.apply_engine_events();
-        self.sync_settings_from_document(state, path);
-        self.sync_bookmarks(state, path);
+        let heads = state.get_heads();
+        if self.projected_heads.as_ref() != Some(&heads) {
+            self.sync_settings_from_document(state, path);
+            self.sync_bookmarks(state, path);
+            self.projected_heads = Some(heads);
+        }
         self.sync_search_and_suggestions();
 
         if let Some(c) = &mut self.composed {
@@ -3007,6 +3154,7 @@ impl Widget for BrowserWidget {
     ) -> NodeId {
         let mut composed = self.build_composition();
         let child_node = composed.build_layout(taffy, theme, node_map);
+        composed.set_motion_reduced(self.motion_reduced);
         self.composed = Some(composed);
 
         let style = Style {
@@ -3095,6 +3243,8 @@ impl Widget for BrowserWidget {
         self.suggestions
             .draw_overlay(scene, transform, text_renderer, theme, presence);
 
+        self.back_menu
+            .draw(scene, transform, text_renderer, theme, presence);
         let feedback_hovered = self.pip_feedback_rect.contains(self.cursor);
         let float_page_hovered = self.pip_float_page_rect.contains(self.cursor);
         let select_area_hovered = self.pip_select_area_rect.contains(self.cursor);
@@ -3157,6 +3307,9 @@ impl Widget for BrowserWidget {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        if self.back_hold.waiting() {
+            return true;
+        }
         if self.motion_reduced {
             return self
                 .composed
@@ -3239,6 +3392,10 @@ impl Widget for BrowserWidget {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Chrome and modal input must precede page dispatch."
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -3253,6 +3410,108 @@ impl Widget for BrowserWidget {
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        let back_hit = self.can_go_back
+            && self
+                .find_rect("browser.back")
+                .is_some_and(|r| r.contains(self.cursor));
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+            && self.can_go_back
+            && self.control_focused("browser.back")
+            && (key.logical_key == WKey::Named(WNamedKey::ContextMenu)
+                || (key.logical_key == WKey::Named(WNamedKey::F10)
+                    && modifiers.state().shift_key()))
+        {
+            self.request_back_history();
+            *handled = true;
+            return;
+        }
+        match event {
+            WindowEvent::Focused(false) | WindowEvent::CursorLeft { .. } => {
+                self.back_hold.cancel();
+                self.back_pointer_down = false;
+                self.pending_history = None;
+                self.back_menu.close();
+            }
+            WindowEvent::CursorMoved { .. } if !back_hit => self.back_hold.cancel(),
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && key.logical_key == WKey::Named(WNamedKey::Escape) =>
+            {
+                self.back_hold.cancel();
+                self.pending_history = None;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if back_hit => {
+                self.request_back_history();
+                *handled = true;
+                return;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if back_hit && !self.back_menu.is_open() => {
+                self.back_pointer_down = true;
+                self.back_hold.press(std::time::Instant::now());
+                if self.motion_reduced {
+                    // Reduced motion disables the host's animation pump; this
+                    // one-shot wake still recognizes a stationary long press.
+                    let wake = ui::WakeHandle::new();
+                    let _ = std::thread::Builder::new()
+                        .name("browser-back-hold".into())
+                        .spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(450));
+                            wake.wake();
+                        });
+                }
+                *handled = true;
+                return;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.back_pointer_down => {
+                self.tick_back_hold(std::time::Instant::now());
+                self.back_pointer_down = false;
+                if self.back_hold.release() && back_hit {
+                    self.queue_unit_operation("browser.page", "back");
+                }
+                *handled = true;
+                return;
+            }
+            _ => {}
+        }
+        if self.back_menu.is_open() {
+            self.back_menu.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if let Some(index) = self.back_menu.take_selection() {
+                self.choose_back_entry(index);
+            }
+            // Consume modal input so keys and pointer releases cannot reach the page.
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+            ) {
+                *handled = true;
+                return;
+            }
         }
         if matches!(
             event,
@@ -3357,6 +3616,73 @@ impl Widget for BrowserWidget {
         }
     }
 
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        if !self.back_menu.is_open() {
+            return None;
+        }
+        let rows = self
+            .back_entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let label = if entry.title.is_empty() {
+                    &entry.url
+                } else {
+                    &entry.title
+                };
+                AccessNode::new(Role::MenuItem)
+                    .with_name(label)
+                    .with_action_target(format!(
+                        "browser.back-history:{}:{}",
+                        self.history_request, entry.id
+                    ))
+                    .with_state(AccessState {
+                        focusable: true,
+                        focused: self.back_menu.hovered() == Some(index),
+                        ..Default::default()
+                    })
+            })
+            .collect();
+        Some(AccessNode::new(Role::Group).with_children(
+            vec![AccessNode::new(Role::Menu).with_name("Back history").with_children(rows)],
+        ))
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !self.back_menu.is_open() || !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some((request, id)) = target
+            .strip_prefix("browser.back-history:")
+            .and_then(|value| value.split_once(':'))
+        else {
+            return false;
+        };
+        if request.parse::<u32>().ok() != Some(self.history_request) {
+            return false;
+        }
+        let Some(index) = self
+            .back_entries
+            .iter()
+            .position(|entry| Some(entry.id) == id.parse::<u32>().ok())
+        else {
+            return false;
+        };
+        self.choose_back_entry(index);
+        true
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.back_menu.modal_capture()
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
             .as_ref()
@@ -3426,6 +3752,7 @@ impl AppWidget for BrowserWidget {
 #[cfg(test)]
 mod architecture_tests {
     use super::*;
+    use ui::webview::WebViewEngine;
 
     fn compose(widget: &mut BrowserWidget) {
         let mut doc = AutoCommit::new();
@@ -3462,6 +3789,334 @@ mod architecture_tests {
             }),
             "{control_id} must retain its canonical {resource}/{action} address"
         );
+    }
+
+    #[test]
+    #[ignore = "manual hot-path benchmark"]
+    fn bookmark_projection_benchmark() {
+        use automerge::transaction::Transactable;
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "browser.bookmarks.v2.migrated", true)
+            .unwrap();
+        for i in 0..1000 {
+            let row = doc
+                .put_object(
+                    automerge::ROOT,
+                    format!("browser.bookmarks.v2.add:{i}"),
+                    automerge::ObjType::Map,
+                )
+                .unwrap();
+            doc.put(&row, "url", format!("https://example.test/{i}"))
+                .unwrap();
+            doc.put(&row, "title", format!("Page {i}")).unwrap();
+        }
+        let mut widget = BrowserWidget::new_headless();
+        widget.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(widget.bookmarks.entries().len(), 1000);
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            widget.sync(&mut doc, &automerge::ROOT);
+        }
+        let elapsed = started.elapsed();
+        eprintln!("100 browser syncs / 1000 bookmarks: {elapsed:?}");
+        let reference = std::time::Instant::now();
+        for _ in 0..100 {
+            std::hint::black_box(crate::actions::bookmarks_from_doc(&doc));
+        }
+        let uncached = reference.elapsed();
+        assert!(
+            elapsed < uncached / 5,
+            "unchanged frame sync {elapsed:?} should avoid full projection {uncached:?}"
+        );
+    }
+
+    fn dispatch_back_event(widget: &mut BrowserWidget, event: WindowEvent) -> bool {
+        let mut tree = TaffyTree::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        widget.handle_event(
+            &event,
+            1.0,
+            &Default::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut None,
+            node,
+            &tree,
+        );
+        handled
+    }
+
+    fn mouse(button: MouseButton, state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            button,
+            state,
+        }
+    }
+
+    fn key(named: WNamedKey) -> WindowEvent {
+        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = WKey::Named(named);
+        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        event.location = winit::keyboard::KeyLocation::Standard;
+        event.state = ElementState::Pressed;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
+    #[test]
+    fn hold_back_requests_real_session_history_and_release_does_not_navigate() {
+        let engine = TestEngine::new();
+        for url in ["https://a.test", "https://b.test", "https://c.test"] {
+            engine.send(WebViewCommand::Navigate(url.into()));
+        }
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        widget.cursor = widget.find_rect("browser.back").unwrap().center();
+        assert!(dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Left, ElementState::Pressed)
+        ));
+        assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
+        widget.tick_back_hold(std::time::Instant::now() + std::time::Duration::from_millis(451));
+        widget.apply_engine_events();
+        assert!(widget.back_menu.is_open());
+        assert_eq!(
+            widget
+                .back_entries
+                .iter()
+                .map(|e| e.url.as_str())
+                .collect::<Vec<_>>(),
+            ["https://b.test", "https://a.test"]
+        );
+        assert!(dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Left, ElementState::Released)
+        ));
+        assert!(widget.pending_controls.is_empty());
+        assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
+        let accessible = widget.back_menu.accessibility().unwrap();
+        assert_eq!(accessible.children.len(), 2);
+        assert!(dispatch_back_event(&mut widget, key(WNamedKey::ArrowDown)));
+        assert!(dispatch_back_event(&mut widget, key(WNamedKey::ArrowDown)));
+        assert!(dispatch_back_event(&mut widget, key(WNamedKey::Enter)));
+        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+        engine.send(WebViewCommand::GoForward);
+        assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
+    }
+
+    #[test]
+    fn back_click_and_cancel_route_without_accidental_navigation() {
+        let engine = TestEngine::new();
+        engine.send(WebViewCommand::Navigate("https://a.test".into()));
+        engine.send(WebViewCommand::Navigate("https://b.test".into()));
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        widget.cursor = widget.find_rect("browser.back").unwrap().center();
+        dispatch_back_event(&mut widget, mouse(MouseButton::Left, ElementState::Pressed));
+        dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Left, ElementState::Released),
+        );
+        assert_eq!(widget.pending_controls.len(), 1);
+        widget.pending_controls.clear();
+        dispatch_back_event(&mut widget, mouse(MouseButton::Left, ElementState::Pressed));
+        dispatch_back_event(&mut widget, WindowEvent::Focused(false));
+        dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Left, ElementState::Released),
+        );
+        assert!(widget.pending_controls.is_empty());
+        assert!(!widget.back_hold.waiting());
+        dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Right, ElementState::Pressed),
+        );
+        widget.apply_engine_events();
+        assert!(widget.back_menu.is_open());
+        assert!(dispatch_back_event(&mut widget, key(WNamedKey::Escape)));
+        assert!(!widget.back_menu.is_open());
+        dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Right, ElementState::Pressed),
+        );
+        widget.apply_engine_events();
+        assert!(widget.back_menu.is_open());
+        widget.cursor = Point::new(850.0, 650.0);
+        dispatch_back_event(
+            &mut widget,
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(850.0, 650.0),
+            },
+        );
+        assert!(dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Left, ElementState::Pressed)
+        ));
+        assert!(!widget.back_menu.is_open());
+    }
+
+    #[test]
+    fn history_keyboard_open_and_accessible_activation_use_session_entry() {
+        fn focus_back(widget: &mut dyn Widget) {
+            widget.set_focus(widget.test_id() == Some("browser.back"));
+            for child in widget.children_mut() {
+                focus_back(child);
+            }
+        }
+        let engine = TestEngine::new();
+        engine.send(WebViewCommand::Navigate("https://a.test".into()));
+        engine.send(WebViewCommand::Navigate("https://b.test".into()));
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        focus_back(&mut widget);
+        assert!(dispatch_back_event(
+            &mut widget,
+            key(WNamedKey::ContextMenu)
+        ));
+        widget.apply_engine_events();
+        assert!(widget.back_menu.is_open());
+        let node = widget.accessibility().unwrap();
+        let target = node.children[0].children[0].action_target.clone().unwrap();
+        assert!(widget.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT
+        ));
+        assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
+        assert!(!widget.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut AutoCommit::new(),
+            &automerge::ROOT
+        ));
+    }
+
+    #[test]
+    fn missing_release_after_window_exit_does_not_capture_the_next_click() {
+        let engine = TestEngine::new();
+        engine.send(WebViewCommand::Navigate("https://a.test".into()));
+        engine.send(WebViewCommand::Navigate("https://b.test".into()));
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        super::tests::layout_at(&mut widget, 900.0, 700.0);
+        widget.cursor = widget.find_rect("browser.back").unwrap().center();
+        dispatch_back_event(&mut widget, mouse(MouseButton::Left, ElementState::Pressed));
+        dispatch_back_event(&mut widget, WindowEvent::Focused(false));
+        widget.cursor = Point::new(800.0, 600.0);
+        assert!(!dispatch_back_event(
+            &mut widget,
+            mouse(MouseButton::Left, ElementState::Released)
+        ));
+    }
+
+    #[test]
+    fn stopped_and_reduced_motion_loading_do_not_schedule_animation() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        widget
+            .perform_browser_operation(BrowserOperation::Navigate {
+                url: "https://a.test".into(),
+            })
+            .unwrap();
+        let mut composed = widget.build_composition();
+        composed.set_motion_reduced(true);
+        let mut theme = Theme::dark();
+        theme.reduce_motion = true;
+        composed.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            &PresenceCtx::default(),
+        );
+        assert!(!composed.needs_animation_frame());
+        widget
+            .perform_browser_operation(BrowserOperation::Stop)
+            .unwrap();
+        assert_eq!(widget.progress, 1.0);
+        assert!(engine.commands().contains(&WebViewCommand::StopLoading));
+        assert!(widget.take_structure_dirty());
+    }
+
+    #[test]
+    fn cached_document_projection_observes_new_bookmark_actions() {
+        use automerge::transaction::Transactable;
+        let mut widget = BrowserWidget::new_headless();
+        let mut doc = AutoCommit::new();
+        widget.sync(&mut doc, &automerge::ROOT);
+        let row = doc
+            .put_object(
+                automerge::ROOT,
+                "browser.bookmarks.v2.add:one",
+                automerge::ObjType::Map,
+            )
+            .unwrap();
+        doc.put(&row, "url", "https://new.test").unwrap();
+        doc.put(&row, "title", "New").unwrap();
+        widget.sync(&mut doc, &automerge::ROOT);
+        assert!(widget.bookmarks.contains("https://new.test"));
+        doc.put(automerge::ROOT, "browser.bookmarks.v2.remove:one", true)
+            .unwrap();
+        widget.sync(&mut doc, &automerge::ROOT);
+        assert!(!widget.bookmarks.contains("https://new.test"));
+    }
+
+    #[test]
+    fn navigation_starts_loading_before_engine_callbacks() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        widget
+            .perform_browser_operation(BrowserOperation::Navigate {
+                url: "https://a.test".into(),
+            })
+            .unwrap();
+        assert!(
+            widget.progress < 1.0,
+            "navigation must paint loading before callbacks"
+        );
+        let composed = widget.build_composition();
+        assert!(
+            composed.needs_animation_frame(),
+            "loading indicator animates immediately"
+        );
+        widget.apply_engine_events();
+        assert_eq!(widget.progress, 1.0);
+        // Paint the new engine frame once before checking idle scheduling.
+        let mut composed = widget.build_composition();
+        composed.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert!(!composed.needs_animation_frame());
+    }
+
+    #[test]
+    fn fresh_live_surface_starts_loading_and_failure_stops_it() {
+        let engine = ui::webview::chromium::UnavailableEngine::new("offline".into());
+        let mut widget = BrowserWidget::with_engine(engine, false);
+        assert!(
+            widget.progress < 1.0,
+            "new tab is visibly loading before bootstrap"
+        );
+        widget
+            .engine
+            .send(WebViewCommand::Navigate("https://a.test".into()));
+        widget.apply_engine_events();
+        assert_eq!(widget.progress, 1.0);
+        assert!(!widget.build_composition().needs_animation_frame());
     }
 
     #[test]
@@ -3580,7 +4235,7 @@ mod tests {
         ))
     }
 
-    fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
+    pub(super) fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
         let theme = Theme::dark();
@@ -3965,7 +4620,7 @@ mod tests {
         )
         .unwrap();
         widget.apply_layout(&tree, child, Point::ORIGIN);
-        let toolbar = widget.find_rect("browser.reload").unwrap();
+        let toolbar = widget.find_rect("browser.stop").unwrap();
         let viewport = widget.find_rect("browser.surface").unwrap();
         assert!(toolbar.height() > 0.0);
         assert!(

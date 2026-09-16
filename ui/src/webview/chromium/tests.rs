@@ -242,3 +242,39 @@ fn capability_commands_and_events_round_trip() {
     );
     assert!(validate_event(&json!({"event":"download","id":1,"state":"invented"})).is_err());
 }
+
+#[test]
+fn session_history_payloads_are_bounded_and_keep_snapshot_identity() {
+    let snapshot = json!({"event":"navigation_history","request_id":7,"entries":[{"id":42,"url":"https://a.test","title":"A"}]});
+    assert!(validate_event(&snapshot).is_ok());
+    assert_eq!(
+        decode_event(&snapshot),
+        Some(WebViewEvent::NavigationHistory {
+            request_id: 7,
+            entries: vec![super::super::NavigationEntry {
+                id: 42,
+                url: "https://a.test".into(),
+                title: "A".into()
+            }],
+        })
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::NavigateToHistoryEntry {
+            request_id: 7,
+            id: 42
+        }),
+        Some(json!({"op":"history_entry","request_id":7,"id":42}))
+    );
+    let mut invalid = snapshot.clone();
+    invalid["entries"][0]["id"] = json!(-1);
+    assert!(validate_event(&invalid).is_err());
+    invalid = snapshot.clone();
+    invalid["entries"] = json!(vec![snapshot["entries"][0].clone(); 13]);
+    assert!(validate_event(&invalid).is_err());
+    assert!(!command_within_limits(
+        &WebViewCommand::NavigateToHistoryEntry {
+            request_id: 0,
+            id: 42
+        }
+    ));
+}
