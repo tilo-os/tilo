@@ -751,16 +751,19 @@ mod tests {
             EventLoop::try_new().expect("calloop event loop");
         let display: Display<State> = Display::new().expect("wayland display");
         let mut state = State::new(event_loop.handle(), display.handle());
-        assert!(
-            state.apply_personal_fabric_input(FabricInputEvent::PointerMotion { x: 320, y: 180 })
-        );
+        let controller = crate::shell::personal_continuity::DeviceId::new("controller").unwrap();
+        assert!(state.apply_personal_fabric_input(
+            &controller,
+            FabricInputEvent::PointerMotion { x: 320, y: 180 }
+        ));
         let loc = state.seat.get_pointer().unwrap().current_location();
         assert_eq!((loc.x, loc.y), (320.0, 180.0));
 
         state.remote_input_firewall.engage_kill_switch();
-        assert!(
-            !state.apply_personal_fabric_input(FabricInputEvent::PointerMotion { x: 640, y: 360 })
-        );
+        assert!(!state.apply_personal_fabric_input(
+            &controller,
+            FabricInputEvent::PointerMotion { x: 640, y: 360 }
+        ));
         let unchanged = state.seat.get_pointer().unwrap().current_location();
         assert_eq!((unchanged.x, unchanged.y), (320.0, 180.0));
     }

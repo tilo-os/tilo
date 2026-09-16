@@ -217,9 +217,11 @@ mod device_fabric_ui_tests {
         );
 
         host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
-        let (place, control) = ShellOverlayHost::qs_device_row_actions(host.qs_device_row_rect(2));
-        host.handle_qs_device_fabric_click(place.center());
+        let device_row = host.qs_device_row_rect(2);
+        host.handle_qs_device_fabric_click(Point::new(device_row.x0 + 44.0, device_row.center().y));
+        let (placements, control) =
+            ShellOverlayHost::qs_device_row_actions(host.qs_device_row_rect(2));
+        host.handle_qs_device_fabric_click(placements[1].center());
         host.handle_qs_device_fabric_click(control.center());
         let actions = actions.borrow();
         assert!(actions.contains(&DeviceFabricUiAction::RouteLocalAudio { node_id: 41 }));
@@ -227,8 +229,9 @@ mod device_fabric_ui_tests {
             session_id: "dev.qos.video:7".into(),
             target: remote,
         }));
-        assert!(actions.contains(&DeviceFabricUiAction::PlaceRight {
+        assert!(actions.contains(&DeviceFabricUiAction::Place {
             device: DeviceId::new("certified-laptop").unwrap(),
+            edge: crate::shell::device_fabric::DisplayEdge::Right,
         }));
         assert!(actions.contains(&DeviceFabricUiAction::GrantControl {
             controller: DeviceId::new("certified-laptop").unwrap(),
@@ -457,8 +460,9 @@ pub enum DeviceFabricUiAction {
     RouteLocalAudio {
         node_id: u32,
     },
-    PlaceRight {
+    Place {
         device: crate::shell::personal_continuity::DeviceId,
+        edge: crate::shell::device_fabric::DisplayEdge,
     },
     GrantControl {
         controller: crate::shell::personal_continuity::DeviceId,
@@ -9988,37 +9992,7 @@ impl ShellOverlayHost {
         else {
             return;
         };
-        let secondary = if let DeviceFabricPaneRow::Device(device) = &item {
-            let (place, control) = Self::qs_device_row_actions(self.qs_device_row_rect(row_index));
-            if place.contains(point) && !device.is_local && device.online && device.display {
-                Some((
-                    DeviceFabricUiAction::PlaceRight {
-                        device: device.id.clone(),
-                    },
-                    format!("{} will sit to the right after it confirms", device.label),
-                ))
-            } else if control.contains(point) && !device.is_local && device.online {
-                if device.controls_local {
-                    Some((
-                        DeviceFabricUiAction::RevokeControl {
-                            controller: device.id.clone(),
-                        },
-                        format!("{} can no longer control this device", device.label),
-                    ))
-                } else {
-                    Some((
-                        DeviceFabricUiAction::GrantControl {
-                            controller: device.id.clone(),
-                        },
-                        format!("{} may control this device for 15 minutes", device.label),
-                    ))
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let secondary = self.qs_device_secondary_action(point, row_index, &item);
         if let Some((action, success)) = secondary {
             self.finish_qs_device_action(action, success);
             return;
@@ -10060,6 +10034,71 @@ impl ShellOverlayHost {
             return;
         };
         self.finish_qs_device_action(action, success);
+    }
+
+    fn qs_device_secondary_action(
+        &self,
+        point: Point,
+        row_index: usize,
+        item: &DeviceFabricPaneRow,
+    ) -> Option<(DeviceFabricUiAction, String)> {
+        let DeviceFabricPaneRow::Device(device) = item else {
+            return None;
+        };
+        let (placements, control) = Self::qs_device_row_actions(self.qs_device_row_rect(row_index));
+        let edge = placements
+            .iter()
+            .position(|rect| rect.contains(point))
+            .and_then(|index| {
+                [
+                    crate::shell::device_fabric::DisplayEdge::Left,
+                    crate::shell::device_fabric::DisplayEdge::Right,
+                    crate::shell::device_fabric::DisplayEdge::Top,
+                    crate::shell::device_fabric::DisplayEdge::Bottom,
+                ]
+                .get(index)
+                .copied()
+            });
+        if let Some(edge) = edge
+            && !device.is_local
+            && device.online
+            && device.display
+        {
+            return Some((
+                DeviceFabricUiAction::Place {
+                    device: device.id.clone(),
+                    edge,
+                },
+                format!(
+                    "{} will sit {} this display after it confirms",
+                    device.label,
+                    match edge {
+                        crate::shell::device_fabric::DisplayEdge::Left => "left of",
+                        crate::shell::device_fabric::DisplayEdge::Right => "right of",
+                        crate::shell::device_fabric::DisplayEdge::Top => "above",
+                        crate::shell::device_fabric::DisplayEdge::Bottom => "below",
+                    }
+                ),
+            ));
+        }
+        if !control.contains(point) || device.is_local || !device.online {
+            return None;
+        }
+        if device.controls_local {
+            Some((
+                DeviceFabricUiAction::RevokeControl {
+                    controller: device.id.clone(),
+                },
+                format!("{} can no longer control this device", device.label),
+            ))
+        } else {
+            Some((
+                DeviceFabricUiAction::GrantControl {
+                    controller: device.id.clone(),
+                },
+                format!("{} may control this device for 15 minutes", device.label),
+            ))
+        }
     }
 
     fn finish_qs_device_action(&self, action: DeviceFabricUiAction, success: String) {
@@ -12327,7 +12366,7 @@ impl Widget for ShellOverlayHost {
                                 .into_iter()
                                 .enumerate()
                                 .map(|(index, item)| {
-                                    let (name, description) = match item {
+                                    let (name, description, children) = match item {
                                         DeviceFabricPaneRow::Media(media) => (
                                             media.title,
                                             if media.playing {
@@ -12336,6 +12375,7 @@ impl Widget for ShellOverlayHost {
                                                 "Paused; choose this media for routing"
                                             }
                                             .to_string(),
+                                            Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::LocalOutput(output) => (
                                             output.label,
@@ -12344,10 +12384,32 @@ impl Widget for ShellOverlayHost {
                                             } else {
                                                 "Route current and future local audio here".into()
                                             },
+                                            Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::Device(device) => (
                                             device.label.clone(),
                                             Self::fabric_device_detail(&device, selected),
+                                            if device.is_local {
+                                                Vec::new()
+                                            } else {
+                                                vec![
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Place display to the left"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Place display to the right"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Place display above"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Place display below"),
+                                                    AccessNode::new(Role::Button).with_name(
+                                                        if device.controls_local {
+                                                            "Revoke control of this device"
+                                                        } else {
+                                                            "Allow this device to control this device for 15 minutes"
+                                                        },
+                                                    ),
+                                                ]
+                                            },
                                         ),
                                     };
                                     AccessNode::new(Role::Button)
@@ -12355,6 +12417,7 @@ impl Widget for ShellOverlayHost {
                                         .with_description(description)
                                         .with_position(index.saturating_add(1), total)
                                         .with_state(AccessState::new().focusable(true))
+                                        .with_children(children)
                                 })
                                 .collect();
                             root.children.push(
@@ -16456,10 +16519,15 @@ impl ShellOverlayHost {
         Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 52.0)
     }
 
-    fn qs_device_row_actions(row: Rect) -> (Rect, Rect) {
+    fn qs_device_row_actions(row: Rect) -> ([Rect; 4], Rect) {
         (
-            Rect::new(row.x1 - 70.0, row.y0 + 10.0, row.x1 - 38.0, row.y1 - 10.0),
-            Rect::new(row.x1 - 34.0, row.y0 + 10.0, row.x1 - 2.0, row.y1 - 10.0),
+            [
+                Rect::new(row.x1 - 78.0, row.y0 + 5.0, row.x1 - 54.0, row.y0 + 24.0),
+                Rect::new(row.x1 - 52.0, row.y0 + 5.0, row.x1 - 28.0, row.y0 + 24.0),
+                Rect::new(row.x1 - 78.0, row.y1 - 24.0, row.x1 - 54.0, row.y1 - 5.0),
+                Rect::new(row.x1 - 52.0, row.y1 - 24.0, row.x1 - 28.0, row.y1 - 5.0),
+            ],
+            Rect::new(row.x1 - 26.0, row.y0 + 10.0, row.x1 - 2.0, row.y1 - 10.0),
         )
     }
 
@@ -16616,7 +16684,7 @@ impl ShellOverlayHost {
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
             let trailing = if matches!(item, DeviceFabricPaneRow::Device(_)) {
-                78.0
+                86.0
             } else {
                 0.0
             };
@@ -16659,23 +16727,46 @@ impl ShellOverlayHost {
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
             );
             if let DeviceFabricPaneRow::Device(device) = item {
-                let (place, control) = Self::qs_device_row_actions(row);
-                Button::paint(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    &ButtonFace::new(place, "")
-                        .ghost()
-                        .icon(ui::icons::Icon::ArrowRight)
-                        .hovered(
-                            device.online
-                                && device.display
-                                && self.last_cursor.is_some_and(|point| place.contains(point)),
-                        )
-                        .disabled(device.is_local || !device.online || !device.display)
-                        .accessible_name("Place this display to the right"),
-                );
+                let (placements, control) = Self::qs_device_row_actions(row);
+                for (rect, icon, name) in [
+                    (
+                        placements[0],
+                        ui::icons::Icon::ArrowLeft,
+                        "Place this display to the left",
+                    ),
+                    (
+                        placements[1],
+                        ui::icons::Icon::ArrowRight,
+                        "Place this display to the right",
+                    ),
+                    (
+                        placements[2],
+                        ui::icons::Icon::ArrowUp,
+                        "Place this display above",
+                    ),
+                    (
+                        placements[3],
+                        ui::icons::Icon::ArrowDown,
+                        "Place this display below",
+                    ),
+                ] {
+                    Button::paint(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        &ButtonFace::new(rect, "")
+                            .ghost()
+                            .icon(icon)
+                            .hovered(
+                                device.online
+                                    && device.display
+                                    && self.last_cursor.is_some_and(|point| rect.contains(point)),
+                            )
+                            .disabled(device.is_local || !device.online || !device.display)
+                            .accessible_name(name),
+                    );
+                }
                 let mut control_face = ButtonFace::new(control, "")
                     .ghost()
                     .icon(ui::icons::Icon::Mouse)
