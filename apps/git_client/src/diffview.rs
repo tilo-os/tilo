@@ -207,7 +207,7 @@ impl DiffView {
                     let mut right = row.x1 - 8.0;
                     let toggle = Self::draw_hunk_button(
                         ctx,
-                        HunkButtonSpec {
+                        &HunkButtonSpec {
                             row,
                             right_x: right,
                             hunk: line.hunk,
@@ -223,7 +223,7 @@ impl DiffView {
                         let dlabel = if armed { "Discard?" } else { "Discard" };
                         let discard = Self::draw_hunk_button(
                             ctx,
-                            HunkButtonSpec {
+                            &HunkButtonSpec {
                                 row,
                                 right_x: right,
                                 hunk: line.hunk,
@@ -485,7 +485,7 @@ impl DiffView {
     /// Draw one hunk-action button whose right edge sits at `right_x`, and
     /// return its hit rect. Discard buttons read in the danger hue when hovered
     /// so the destructive action is visually distinct from stage/unstage.
-    fn draw_hunk_button(ctx: &mut DiffPaintCtx<'_>, spec: HunkButtonSpec<'_>) -> HunkButton {
+    fn draw_hunk_button(ctx: &mut DiffPaintCtx<'_>, spec: &HunkButtonSpec<'_>) -> HunkButton {
         let scene = &mut *ctx.scene;
         let tr = &mut *ctx.text;
         let t = ctx.transform;
