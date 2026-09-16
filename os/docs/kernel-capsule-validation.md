@@ -255,6 +255,39 @@ candidate for incorrect addresses at wider lengths; the observed failing
 guest instruction has not yet been traced through that helper, so this is
 not a confirmed root-cause attribution to a particular instruction.
 
+The unchanged upstream `unittests/ASM/VEX/vmovups_mem.asm` subsequently gave
+a smaller semantic reproduction. The existing portable `TestHarnessRunner`
+and upstream-generated binary/config were run with `FEX_MAXINST=1`,
+`FEX_MULTIBLOCK=0`, `FEX_TSOENABLED=0` and no host-feature override. With
+`max,sme=off`, the kernel's default vector length was 64 bytes: the test's
+scalar reads after a 256-bit store at offset 32 returned `eeeeeeeeeeeeeeee`
+and `ffffffffffffffff` instead of `6162636465666768` and `7172737475767778`.
+The runner reported `I Faulted? No` and `I Passed? No`. The same artifacts
+passed with `max,sve-max-vq=2,sme=off` and a 32-byte default vector length.
+This independently proves incorrect emulated memory results at the wider
+length; it is not just an inference from Wine or guest libc failing.
+
+The two runs are `kernel-upstream-vmovups-{sve512,sve256}-01`. Artifact SHA-256:
+
+- Runner: `cb815c11adcf4c605144b36ec9d875263b8afc8d1149d3ded47e2770cb2b17c0`
+- ASM binary: `d4a8f74c2e44fafa5cbb3ce50695a40176887992ba0116208929da27c9e6ce19`
+- ASM config: `a461e65f91de8bcd420e588379c6f478fbecad24353904c17a4e0b412f27e08a`
+
+A launch-only vector-length clamp is insufficient: this FEX pin forwards
+unrecognized guest `prctl` options to the host, which can change a thread's
+SVE length and exec-inheritance flags. It also has other fixed-width address
+calculations. No such workaround has been installed in qOS.
+
+### Current-helper initialization follow-up
+
+At 256-bit maximum SVE, `kernel-arm-capsule-console-sve256-01` used the current
+managed Wine/DXVK helper and reached fully enforced Landlock ABI 10. Wine64
+then hit its existing preparation deadline; Wine32 and Proton were not reached.
+The same binaries and guest payload in `kernel-arm-capsule-namespace-sve256-01`
+also timed out without the executable shim. These are failures, not capsule
+acceptance. The original heap assertion was absent, but that does not establish
+why initialization timed out or prove every SVE operation correct at 256 bits.
+
 ### Running the harness
 
 Use `python3 os/tests/kernel-arm-capsule-smoke.py --help` for the explicit kernel,
