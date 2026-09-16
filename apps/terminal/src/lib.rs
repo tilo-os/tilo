@@ -48,9 +48,7 @@ pub use crate::inner::{
 /// without taking a direct dependency on `portable-pty`.
 pub use portable_pty::CommandBuilder;
 
-// The existing `main.rs` content becomes `inner.rs` in Task 5. For this task
-// we only need the re-export scaffolding. Until Task 5, we temporarily
-// `include!` the binary source — replaced by a proper module split next.
+// Keep the large implementation private while exposing the stable types above.
 mod inner {
     include!("main_body.rs");
 }

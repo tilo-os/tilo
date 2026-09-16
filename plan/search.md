@@ -96,36 +96,18 @@ content.
 
 ## Architecture
 
-- **Registry (in-process)** — a `ui`-level resource/action registry. Providers
-  `query(&str, ctx) -> [Hit]`; renderers `render(&Hit) -> Scene`; activators
-  `activate(Hit | Action, args)`.
-- **Shell aggregator (global)** — the compositor collects providers from all
-  running apps over the existing collab/IPC channel (a `Search` request/response,
-  like the `CollabRequest` socket), plus an FS full-text index over
-  `/var/workspace`. Merges + ranks. The larger, later phase.
+- **App providers** implement `ui::search::SearchProvider` and are exposed by
+  the app widget. Providers return bounded, paged results with stable resource
+  addresses and activation data.
+- **Shell aggregation** lives in `shell/src/shell/search/`. Built-in providers
+  cover applications, files, editor state, notes, actions, and records; the
+  live-app provider obtains registered resources and actions through the
+  collaboration broker.
+- **Actions** use the descriptors and invocation path in
+  `crates/collab/actions`, so palette activation and automation share the same
+  validation and permission boundary.
 - CRDT actions apply through the app's normal mutation path (remote/collab-safe;
   subject to the per-workspace sandbox boundary when invoked cross-app).
-
-## Registration API (illustrative)
-
-```rust
-app.register_resource_type(ResourceType {
-    name: "book",
-    context: Context::Workspace,
-    provider: |q, ctx| /* search books */,
-    render:   |hit| /* cover + title */,
-    activate: |hit| Open(hit),
-    children: &["annotation", "bookmark", "highlight"],
-    actions:  &[Action::constructor("New book", ...)],
-});
-app.register_instance_actions("book", |book| &[
-    Action::instance("Add annotation", book, arg = "text", |b, a| crdt.add_annotation(b, a)),
-    Action::instance("List annotations", book, |b| Scope(children(b, "annotation"))),
-    // bookmarks, highlights, delete, …
-]);
-```
-
-The real API lives in `ui` plus a manifest for the qapp/shell split.
 
 ## Concrete resources
 
@@ -146,12 +128,3 @@ The real API lives in `ui` plus a manifest for the qapp/shell split.
 - **Cross-app action safety** — permissions + the workspace sandbox when running
   another app's action from global search.
 - **Ranking** — the exact context-proximity function.
-
-## Phasing
-
-1. Per-app registry + Ctrl+K overlay + resource providers + inline render +
-   navigate. Adopters: totp, weather, sheets, ebook (book + its CRUD actions).
-2. Instance-level + contextual actions (ebook annotations/bookmarks/highlights
-   when a book is open).
-3. Global Super+Space + shell aggregation + FS full-text + context ranking.
-4. Nested-resource drill-down — gated on the UX prototype.

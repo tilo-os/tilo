@@ -1,8 +1,7 @@
 //! `MainPanel` — the right-hand pane that renders the currently
 //! selected page.
 //!
-//! Phase 1 showed only the page's title. Phase 2 replaces that with
-//! a [`BlockEditor`] over the page body. The panel owns:
+//! The panel owns:
 //!
 //! - the currently displayed page's id (or `None` if nothing's
 //!   selected),
@@ -229,10 +228,8 @@ impl MainPanel {
     /// Load a page into the panel. The body is parsed and handed to
     /// a fresh `BlockEditor`. The previous editor's state (focus,
     /// caret) is discarded — switching pages is a hard cut.
-    ///
-    /// Phase 4: the parse path goes through `notes::markdown` so the
-    /// inline-mark grammar is the canonical one (the widget's own
-    /// `BlockEditor::from_markdown` doesn't see inline marks).
+    /// Parsing goes through `notes::markdown`, which owns the inline-mark
+    /// grammar that `BlockEditor::from_markdown` does not handle.
     pub fn load_page(&mut self, id: PageId, title: &str, body: String) {
         self.page_id = Some(id);
         self.empty_action_focused = false;
@@ -535,10 +532,8 @@ impl MainPanel {
     /// Re-serialise the editor's content into the cached `body` and
     /// return a clone for persistence. Called by the app's tick when
     /// `editor_is_dirty()` came back true.
-    ///
-    /// Phase 4: serialisation goes through `notes::markdown` so
-    /// inline marks survive the round-trip. The editor's own
-    /// `to_markdown` only emits plain-text bodies.
+    /// Serialization goes through `notes::markdown` so inline marks survive;
+    /// the editor's own `to_markdown` only emits plain text.
     pub fn take_body_snapshot(&mut self) -> String {
         let specs = crate::markdown::blocks_to_specs(self.editor.blocks());
         let md = crate::markdown::serialize(&specs);
