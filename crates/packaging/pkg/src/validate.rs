@@ -46,6 +46,8 @@ pub enum ManifestError {
     DuplicateContinuityFacet(ContinuityFacet),
     #[error("continuity.required semantic state also requires presentation state")]
     SemanticContinuityWithoutPresentation,
+    #[error("kind=app requires presentation in continuity.required")]
+    AppContinuityMissingPresentation,
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -113,6 +115,9 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         && !facets.contains(&ContinuityFacet::Presentation)
     {
         return Err(ManifestError::SemanticContinuityWithoutPresentation);
+    }
+    if m.package.kind == Kind::App && !facets.contains(&ContinuityFacet::Presentation) {
+        return Err(ManifestError::AppContinuityMissingPresentation);
     }
 
     Version::parse(&m.package.version)
@@ -365,6 +370,25 @@ mode = "off"
             Err(ManifestError::DuplicateContinuityFacet(
                 ContinuityFacet::Presentation
             ))
+        );
+    }
+
+    #[test]
+    fn apps_cannot_opt_out_of_structural_presentation() {
+        let mut m = minimal_runtime_manifest();
+        m.package.kind = Kind::App;
+        m.entrypoint = Some(crate::manifest::Entrypoint {
+            bin: "bin/app".into(),
+            r#type: EntrypointType::Gui,
+            gui_bin: None,
+            cli_bin: None,
+            splash_segments: Vec::new(),
+            splash_budget_ms: 400,
+        });
+        m.continuity.required.clear();
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::AppContinuityMissingPresentation)
         );
     }
 }
