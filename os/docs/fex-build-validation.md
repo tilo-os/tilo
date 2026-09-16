@@ -541,6 +541,10 @@ The resulting files were verified as x86-64 and i386 ELF libraries respectively.
 The complete local validation image is
 `localhost/qos-fex-clang21-runtime:arm64-guests`, ID
 `6213032510a9da2cb348976c9900228ac8b8c7f8bed5c88c3bcf2a41f7483a2b`.
-Runtime acceptance must be repeated against this artifact. A passing unseeded
+All 19 targeted generator and installed-thunk tests passed against this image
+in 4.90 seconds, including `thunk_testlib.64`, `thunk_testlib.32`, and
+`vulkan_procaddr.64`. The log is `fex-clang21-installed-thunks-validation.log`.
+Graphics application acceptance and a full corrected run remain required.
+A passing unseeded
 CPU-count test in the full suite does not supersede the failing controlled
 CPU-list regression fixture documented above.
