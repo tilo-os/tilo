@@ -22,6 +22,8 @@ serde_json.workspace = true
 zeroize.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true
+libc.workspace = true
+nix = { version = "0.30.1", features = ["ioctl"] }
 # Bluetooth is the one control here that cannot be a shell-out: a scan lives
 # as long as its D-Bus connection, and pairing needs an agent object BlueZ
 # calls back into. See src/bluez.rs.

@@ -44,6 +44,7 @@ pub mod bluetooth;
 pub mod bluez;
 pub mod display;
 pub mod firmware;
+pub mod linux_virtual_gamepad;
 pub mod modem;
 pub mod network;
 pub mod peripheral_forwarding;
@@ -76,6 +77,10 @@ pub use display::{
 pub use firmware::{
     FirmwareEvent, FirmwareHistoryEntry, FirmwareInstallOutcome, FirmwareUpdate,
     get_firmware_history, get_firmware_updates, refresh_firmware_metadata, start_firmware_install,
+};
+pub use linux_virtual_gamepad::{
+    LinuxGamepadDevice, LinuxGamepadDeviceProvider, LinuxVirtualGamepadFactory,
+    UinputGamepadDeviceProvider,
 };
 pub use modem::{SimInfo, list_mobile_sims, unlock_mobile_sim, unlock_mobile_sim_on};
 pub use network::{
