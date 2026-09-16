@@ -440,7 +440,71 @@ impl Widget for NavRow {
 }
 
 impl NavRow {
-    /// A foldable collection header: disclosure caret + name + request count.
+    /// Navigation stays one line: measure the exact elided label, then paint
+    /// without a wrapping width. The retained accessibility name is untouched.
+    fn single_line_label(
+        tr: &mut TextRenderer,
+        label: &str,
+        width: f64,
+        style: &TextStyle,
+    ) -> String {
+        let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+        let fits = |tr: &mut TextRenderer, text: &str| {
+            f64::from(tr.measure_style(text, None, style).0) <= width.max(0.0)
+        };
+        if fits(tr, &label) {
+            return label;
+        }
+        if !fits(tr, "…") {
+            return String::new();
+        }
+        let boundaries: Vec<_> = label
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(label.len()))
+            .collect();
+        let (mut low, mut high) = (0, boundaries.len() - 1);
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            if fits(tr, &format!("{}…", &label[..boundaries[mid]])) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        format!("{}…", &label[..boundaries[low]])
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_label(
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        r: Rect,
+        label: &str,
+        color: Color,
+        style: &TextStyle,
+    ) {
+        let label = Self::single_line_label(tr, label, r.width(), style);
+        let (_, height) = tr.measure_style(&label, None, style);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &r,
+        );
+        tr.draw_style(
+            scene,
+            &label,
+            color,
+            t * Affine::translate((r.x0, r.center().y - f64::from(height) / 2.0)),
+            None,
+            style,
+        );
+        scene.pop_layer();
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn draw_collection_row(
         scene: &mut Scene,
@@ -448,45 +512,50 @@ impl NavRow {
         tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
-        y: f64,
-        inner_w: f64,
+        _y: f64,
+        _inner_w: f64,
         label: &str,
         expanded: bool,
         count: usize,
     ) {
         let c = &theme.tokens.colors;
-        let caret = if expanded { "\u{25BE}" } else { "\u{25B8}" };
+        let caret = if expanded { "▾" } else { "▸" };
+        let (_, caret_h) = tr.measure(caret, 12.0, None);
         tr.draw_text(
             scene,
             caret,
             12.0,
             c.text_dim,
-            t * Affine::translate((r.x0 + 6.0, y + 7.0)),
+            t * Affine::translate((r.x0 + 6.0, r.center().y - f64::from(caret_h) / 2.0)),
             None,
         );
-        tr.draw_text_weighted(
-            scene,
-            label,
-            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base))
-                .size,
-            c.text_primary,
-            t * Affine::translate((r.x0 + 24.0, y + 6.0)),
-            Some((inner_w - 60.0) as f32),
-            TextWeight::Semibold,
+        let count = count.to_string();
+        let (cw, ch) = tr.measure(&count, 11.0, None);
+        let style = tr.renderer_input_style(
+            &TextStyle::new(theme.tokens.typography.scale.base).with_weight(TextWeight::Semibold),
         );
-        let cs = count.to_string();
-        let (cw, _) = tr.measure(&cs, 11.0, None);
+        Self::draw_label(
+            scene,
+            t,
+            tr,
+            Rect::new(r.x0 + 24.0, r.y0, r.x1 - f64::from(cw) - 14.0, r.y1),
+            label,
+            c.text_primary,
+            &style,
+        );
         tr.draw_text(
             scene,
-            &cs,
+            &count,
             11.0,
             c.text_dim,
-            t * Affine::translate((r.x1 - f64::from(cw) - 6.0, y + 8.0)),
+            t * Affine::translate((
+                r.x1 - f64::from(cw) - 6.0,
+                r.center().y - f64::from(ch) / 2.0,
+            )),
             None,
         );
     }
 
-    /// A saved request: coloured method tag + name, highlighted when active.
     #[allow(clippy::too_many_arguments)]
     fn draw_request_row(
         scene: &mut Scene,
@@ -514,34 +583,29 @@ impl NavRow {
                 &shape,
             );
         }
-        let (method_w, method_h) =
-            tr.measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
-        let label_size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
-        let (_, label_h) = tr.measure(label, label_size, None);
-        let label_x = r.x0 + 28.0 + f64::from(method_w).max(24.0) + 12.0;
+        let (mw, mh) = tr.measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
+        let label_x = r.x0 + 28.0 + f64::from(mw).max(24.0) + 12.0;
         tr.draw_text_weighted(
             scene,
             method_short(method),
             10.0,
             method_color(theme, method),
-            t * Affine::translate((r.x0 + 28.0, r.center().y - f64::from(method_h) / 2.0)),
+            t * Affine::translate((r.x0 + 28.0, r.center().y - f64::from(mh) / 2.0)),
             None,
             TextWeight::Bold,
         );
-        tr.draw_text(
+        let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        Self::draw_label(
             scene,
+            t,
+            tr,
+            Rect::new(label_x, r.y0, r.x1 - 8.0, r.y1),
             label,
-            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                .size,
             if selected { c.text_primary } else { c.text_dim },
-            t * Affine::translate((label_x, r.center().y - f64::from(label_h) / 2.0)),
-            Some((r.x1 - label_x - 8.0).max(0.0) as f32),
+            &style,
         );
     }
 
-    /// A history entry: coloured method tag + path + coloured status code.
     #[allow(clippy::too_many_arguments)]
     fn draw_history_row(
         scene: &mut Scene,
@@ -556,43 +620,37 @@ impl NavRow {
         status: u16,
     ) {
         let c = &theme.tokens.colors;
-        let (method_w, method_h) =
-            tr.measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
-        let (status_w, status_h) =
-            tr.measure_weighted(&status.to_string(), 11.0, None, TextWeight::Semibold);
-        let label_size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
-        let (_, label_h) = tr.measure(label, label_size, None);
-        let label_x = r.x0 + 6.0 + f64::from(method_w).max(28.0) + 12.0;
+        let (mw, mh) = tr.measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
+        let status_text = status.to_string();
+        let (sw, sh) = tr.measure_weighted(&status_text, 11.0, None, TextWeight::Semibold);
+        let label_x = r.x0 + 6.0 + f64::from(mw).max(28.0) + 12.0;
         tr.draw_text_weighted(
             scene,
             method_short(method),
             10.0,
             method_color(theme, method),
-            t * Affine::translate((r.x0 + 6.0, r.center().y - f64::from(method_h) / 2.0)),
+            t * Affine::translate((r.x0 + 6.0, r.center().y - f64::from(mh) / 2.0)),
             None,
             TextWeight::Bold,
         );
-        tr.draw_text(
+        let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        Self::draw_label(
             scene,
+            t,
+            tr,
+            Rect::new(label_x, r.y0, r.x1 - f64::from(sw) - 14.0, r.y1),
             label,
-            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                .size,
             c.text_dim,
-            t * Affine::translate((label_x, r.center().y - f64::from(label_h) / 2.0)),
-            Some((r.x1 - label_x - f64::from(status_w) - 14.0).max(0.0) as f32),
+            &style,
         );
-        let st = status.to_string();
-        let (sw, _) = tr.measure(&st, 11.0, None);
         tr.draw_text_weighted(
             scene,
-            &st,
+            &status_text,
             11.0,
             status_color(theme, status_class(status)),
             t * Affine::translate((
                 r.x1 - f64::from(sw) - 6.0,
-                r.center().y - f64::from(status_h) / 2.0,
+                r.center().y - f64::from(sh) / 2.0,
             )),
             None,
             TextWeight::Semibold,
@@ -617,4 +675,55 @@ fn draw_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, expande
     }
     p.close_path();
     scene.fill(Fill::NonZero, t, color, None, &p);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composition_long_navigation_glyphs_fit_their_row() {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+            let height =
+                (f64::from(tr.measure_style("Ag", None, &style).1).ceil() + 12.0).max(ROW_H);
+            let rect = Rect::new(0.0, 0.0, 240.0, height);
+            for kind in [
+                NavKind::Request {
+                    method: HttpMethod::Post,
+                    selected: true,
+                },
+                NavKind::History {
+                    method: HttpMethod::Get,
+                    status: 200,
+                },
+            ] {
+                let label = "a very long saved request or history path with Unicode café and many more words";
+                let mut row = NavRow::new("long", kind, label, label);
+                row.apply_layout_external(rect);
+                let mut scene = Scene::new();
+                row.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                assert_eq!(row.accessibility().unwrap().name.as_deref(), Some(label));
+                for run in &scene.encoding().resources.glyph_runs {
+                    for glyph in &scene.encoding().resources.glyphs[run.glyphs.clone()] {
+                        let baseline = f64::from(run.transform.translation[1] + glyph.y);
+                        assert!(
+                            baseline < rect.y1,
+                            "{scale}x row ends at {}, glyph baseline {baseline} escapes",
+                            rect.y1
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
