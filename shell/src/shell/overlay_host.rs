@@ -1349,7 +1349,7 @@ const SIDEBAR_TOP_OFFSET_PX: f32 = 40.0;
 /// Clamp range for the viewport-driven sidebar width, so the disc's
 /// `apply_layout` keeps the visible-arc curvature identical across
 /// widths. `SIDEBAR_WIDTH_MAX_PX` also caps the extra left padding the
-/// content column reserves (`sidebar_wheel_chrome::SIDEBAR_WIDTH_PX`).
+/// content column reserves (`sidebar_wheel_disc::SIDEBAR_RESERVE_PX`).
 const SIDEBAR_WIDTH_MIN_PX: f32 = 220.0;
 const SIDEBAR_WIDTH_MAX_PX: f32 = 320.0;
 const SIDEBAR_WIDTH_VIEWPORT_FRACTION: f32 = 0.26;
