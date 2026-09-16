@@ -37,6 +37,24 @@ pub struct HourColumn {
     pub is_now: bool,
 }
 
+/// Rendering services shared by every pass over an hourly strip.
+pub(crate) struct ChartPaintCtx<'a> {
+    pub scene: &'a mut Scene,
+    pub transform: Affine,
+    pub theme: &'a Theme,
+    pub text_renderer: &'a mut TextRenderer,
+}
+
+/// The laid-out data and presentation choices for one hourly strip.
+pub(crate) struct HourlyStrip<'a> {
+    pub band: Rect,
+    pub columns: &'a [HourColumn],
+    pub column_width: f64,
+    pub scroll_x: f64,
+    pub accent: Color,
+    pub temperature_suffix: &'a str,
+}
+
 /// Precomputed column layout + the temperature-to-y mapping, shared by
 /// every drawing pass over the strip so they agree pixel-for-pixel.
 struct StripGeometry {
@@ -95,35 +113,39 @@ impl StripGeometry {
 /// Draw the scrollable hourly strip into `band`. Columns are `col_w` wide and
 /// laid out left-to-right from `band.x0 - scroll_x`; content wider than the
 /// band is clipped to it (the caller supplies the scrollbar).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one strip-drawing entry point taking scene/t/theme/tr (the universal draw-context) plus the strip's own band/cols/col_w/scroll_x/accent/temp_suffix — a context struct would just move the same count into a constructor call at the one call site"
-)]
-pub fn draw_hourly_strip(
-    scene: &mut Scene,
-    t: Affine,
-    band: Rect,
-    cols: &[HourColumn],
-    col_w: f64,
-    scroll_x: f64,
-    accent: Color,
-    theme: &Theme,
-    tr: &mut TextRenderer,
-    temp_suffix: &str,
-) {
-    if cols.is_empty() {
+pub(crate) fn draw_hourly_strip(ctx: &mut ChartPaintCtx<'_>, strip: &HourlyStrip<'_>) {
+    if strip.columns.is_empty() {
         return;
     }
-    let geo = StripGeometry::new(band, cols, col_w, scroll_x, theme.text_scale);
+    let geo = StripGeometry::new(
+        strip.band,
+        strip.columns,
+        strip.column_width,
+        strip.scroll_x,
+        ctx.theme.text_scale,
+    );
 
     // Clip everything to the band so scrolled-off columns don't bleed out.
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &band);
+    ctx.scene.push_layer(
+        Fill::NonZero,
+        BlendMode::default(),
+        1.0,
+        ctx.transform,
+        &strip.band,
+    );
 
-    draw_now_highlight(scene, t, cols, &geo, accent);
-    let pts = draw_trend_curve(scene, t, band, cols, &geo, accent);
-    draw_column_marks(scene, t, cols, &pts, &geo, theme, tr, temp_suffix, accent);
+    draw_now_highlight(ctx.scene, ctx.transform, strip.columns, &geo, strip.accent);
+    let pts = draw_trend_curve(
+        ctx.scene,
+        ctx.transform,
+        strip.band,
+        strip.columns,
+        &geo,
+        strip.accent,
+    );
+    draw_column_marks(ctx, strip, &pts, &geo);
 
-    scene.pop_layer();
+    ctx.scene.pop_layer();
 }
 
 /// The "Now" column's highlight pill, painted behind everything else.
@@ -196,23 +218,19 @@ fn draw_trend_curve(
 /// Per-column temperature value, curve dot, weather glyph, precipitation
 /// read-out and hour label. Columns scrolled entirely outside the band are
 /// culled before any of it is painted.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one drawing pass over every per-column mark, needing scene/t/theme/tr (the universal draw-context) plus cols/pts/geo/temp_suffix/accent — splitting further would just thread the same values through more calls"
-)]
 fn draw_column_marks(
-    scene: &mut Scene,
-    t: Affine,
-    cols: &[HourColumn],
+    ctx: &mut ChartPaintCtx<'_>,
+    strip: &HourlyStrip<'_>,
     pts: &[Point],
     geo: &StripGeometry,
-    theme: &Theme,
-    tr: &mut TextRenderer,
-    temp_suffix: &str,
-    accent: Color,
 ) {
+    let scene = &mut *ctx.scene;
+    let t = ctx.transform;
+    let theme = ctx.theme;
+    let tr = &mut *ctx.text_renderer;
+    let accent = strip.accent;
     let c = &theme.tokens.colors;
-    for (i, p) in cols.iter().enumerate() {
+    for (i, p) in strip.columns.iter().enumerate() {
         let cx = geo.x_center(i);
         // Cull columns entirely outside the band.
         if cx + geo.col_w / 2.0 < geo.band.x0 - 1.0 || cx - geo.col_w / 2.0 > geo.band.x1 + 1.0 {
@@ -223,7 +241,7 @@ fn draw_column_marks(
         };
 
         // Temperature value.
-        let val = format!("{}{}", p.temp.round() as i64, temp_suffix);
+        let val = format!("{}{}", p.temp.round() as i64, strip.temperature_suffix);
         let value_size = if geo.large_text { 11.0 } else { 13.0 };
         let (vw, _) = tr.measure_weighted(&val, value_size, None, TextWeight::Semibold);
         tr.draw_text_weighted(
@@ -334,4 +352,49 @@ fn catmull_rom_path(pts: &[Point]) -> BezPath {
         path.curve_to(c1, c2, p2);
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HourColumn, StripGeometry};
+    use vello::kurbo::Rect;
+
+    fn column(temp: f64) -> HourColumn {
+        HourColumn {
+            hour: "12".to_string(),
+            temp,
+            precip: 0.0,
+            code: 0,
+            is_day: true,
+            is_now: false,
+        }
+    }
+
+    #[test]
+    fn geometry_applies_horizontal_scroll_to_every_column() {
+        let columns = [column(10.0), column(20.0)];
+        let geometry = StripGeometry::new(
+            Rect::new(100.0, 0.0, 300.0, 180.0),
+            &columns,
+            80.0,
+            30.0,
+            1.0,
+        );
+
+        assert!((geometry.x_center(0) - 110.0).abs() < f64::EPSILON);
+        assert!((geometry.x_center(1) - 190.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn flat_temperature_series_still_has_a_finite_curve_range() {
+        let columns = [column(12.0), column(12.0)];
+        let geometry =
+            StripGeometry::new(Rect::new(0.0, 0.0, 200.0, 180.0), &columns, 80.0, 0.0, 1.0);
+
+        let y = geometry.y_at(12.0);
+        assert!(y.is_finite());
+        assert!(
+            (y - f64::midpoint(geometry.curve_top, geometry.curve_bottom)).abs() < f64::EPSILON
+        );
+    }
 }
