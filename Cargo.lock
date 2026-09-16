@@ -6574,6 +6574,7 @@ dependencies = [
  "taffy",
  "tempfile",
  "vello",
+ "windows-sys 0.61.2",
  "winit",
  "zbus 4.4.0",
  "zstd",
