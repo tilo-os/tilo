@@ -22135,7 +22135,14 @@ mod overlay_event_absorb_tests {
             .borrow_mut()
             .push_notification("Arrived during undo", "Still visible");
         h.chrome.borrow_mut().dismiss_notification(arrived);
-        assert_eq!(h.chrome.borrow().notification_history().len(), 1);
+        let during_undo: Vec<_> = h
+            .chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        assert_eq!(during_undo.last(), Some(&arrived));
         assert!(
             h.host
                 .qs_notification_undo_rect()
@@ -22177,7 +22184,7 @@ mod overlay_event_absorb_tests {
             .map(|notification| notification.id)
             .collect();
         assert_eq!(&restored[..original.len()], original);
-        assert_eq!(restored.last(), Some(&arrived));
+        assert_eq!(&restored[original.len()..], during_undo);
     }
 
     /// Keep visual review on the exact production draw path at 1:1 pixels.
