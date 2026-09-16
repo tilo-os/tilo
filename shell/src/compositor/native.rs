@@ -151,6 +151,64 @@ use crate::compositor::test_control::{
 use crate::compositor::{BackendKind, parse_backend_from_args};
 use crate::shell::overlay_host::PeerSyncRequest;
 
+/// The lock surface hides the complete desktop tree.  Its background widgets
+/// may legitimately keep animating (an opening app, a video, a closing
+/// notification), but none of that motion is visible and therefore must not
+/// keep repainting the full-screen lock scene.  State which can change the
+/// lock surface itself remains an ordinary redraw edge.
+#[derive(Clone, Copy, Debug, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "named redraw edges keep the native loop's existing independent causes explicit and make lock filtering directly testable"
+)]
+struct NativeRedrawReasons {
+    force: bool,
+    backend_event: bool,
+    session: bool,
+    accessibility: bool,
+    revision: bool,
+    hidden_desktop_animation: bool,
+    apps: bool,
+    peers: bool,
+    presentation: bool,
+    capture: bool,
+    keepalive: bool,
+    lock_clock: bool,
+}
+
+impl NativeRedrawReasons {
+    fn content_changed(self, session_locked: bool) -> bool {
+        self.force
+            || self.backend_event
+            || self.session
+            || self.accessibility
+            || self.revision
+            || (!session_locked
+                && (self.hidden_desktop_animation
+                    || self.apps
+                    || self.peers
+                    || self.presentation
+                    || self.capture))
+            || (!session_locked && self.keepalive)
+            || (session_locked && self.lock_clock)
+    }
+}
+
+const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
+
+fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut Instant) -> bool {
+    if !session_locked {
+        *last_refresh = now;
+        return false;
+    }
+    if now.saturating_duration_since(*last_refresh) >= LOCK_CLOCK_REFRESH {
+        *last_refresh = now;
+        true
+    } else {
+        false
+    }
+}
+
 fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
     let mut credentials = libc::ucred {
         pid: 0,
@@ -4889,6 +4947,7 @@ pub fn run() -> ! {
     // elapsed (safety net, refresh within a second). Layout still runs every tick for hit-testing; only paint+submit are gated.
     let keepalive = Duration::from_secs(1);
     let mut last_paint = Instant::now();
+    let mut last_lock_clock_refresh = last_paint;
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
     // `output_presentation_frame_changed` observes live foreign-frame
@@ -6157,6 +6216,8 @@ pub fn run() -> ! {
             state.output_presentation_frame_changed(),
         );
         let keepalive_due = last_paint.elapsed() >= keepalive;
+        let lock_clock_due =
+            lock_clock_refresh_due(session.is_locked(), iter_t0, &mut last_lock_clock_refresh);
         metrics.mark_pump(
             iter_t0
                 .elapsed()
@@ -6165,24 +6226,28 @@ pub fn run() -> ! {
         );
         // Is there anything new to show? This redraw gating lets a static desktop
         // idle at near-zero CPU, orthogonal to *when* a frame may show (the clock's job below).
-        let content_changed = force_first_paint
-            || had_backend_events
-            || session_changed
-            || accessibility_changed
-            || revision_changed
-            || animating
-            || apps_changed
-            || peers_moved
-            || presentation_frame_changed
-            || capture_executor.has_live_mirrors()
-            || capture_executor.is_recording()
-            || portal_backend
-                .as_ref()
-                .is_some_and(PortalBackend::capture_pending)
-            || portal_backend
-                .as_ref()
-                .is_some_and(|portal| portal.screencast.has_streams())
-            || keepalive_due;
+        let content_changed = NativeRedrawReasons {
+            force: force_first_paint,
+            backend_event: had_backend_events,
+            session: session_changed,
+            accessibility: accessibility_changed,
+            revision: revision_changed,
+            hidden_desktop_animation: animating,
+            apps: apps_changed,
+            peers: peers_moved,
+            presentation: presentation_frame_changed,
+            capture: capture_executor.has_live_mirrors()
+                || capture_executor.is_recording()
+                || portal_backend
+                    .as_ref()
+                    .is_some_and(PortalBackend::capture_pending)
+                || portal_backend
+                    .as_ref()
+                    .is_some_and(|portal| portal.screencast.has_streams()),
+            keepalive: keepalive_due,
+            lock_clock: lock_clock_due,
+        }
+        .content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
         // test-control, input) would submit inside a discarded interval; first frame is exempt.
         let cadence_due = force_first_paint || frame_clock.due(iter_t0);
@@ -6865,6 +6930,111 @@ mod tests {
     //! `#[ignore]` by default; these exercise the same `execute_planned_action`
     //! → `FrameBuilder::dispatch_event` wire without a process, so CI without winit still gates here.
     use super::*;
+
+    #[test]
+    fn locked_redraw_ignores_hidden_desktop_work_but_keeps_lock_edges() {
+        for hidden in [
+            NativeRedrawReasons {
+                hidden_desktop_animation: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                apps: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                peers: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                presentation: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                capture: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                keepalive: true,
+                ..NativeRedrawReasons::default()
+            },
+        ] {
+            assert!(!hidden.content_changed(true));
+            assert!(
+                hidden.content_changed(false),
+                "unlocked redraw behaviour must remain unchanged"
+            );
+        }
+
+        for visible_lock_edge in [
+            NativeRedrawReasons {
+                backend_event: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                session: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                accessibility: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                revision: true,
+                ..NativeRedrawReasons::default()
+            },
+            NativeRedrawReasons {
+                lock_clock: true,
+                ..NativeRedrawReasons::default()
+            },
+        ] {
+            assert!(visible_lock_edge.content_changed(true));
+        }
+    }
+
+    #[test]
+    fn locked_clock_gets_an_explicit_minute_refresh_edge() {
+        let start = Instant::now();
+        let mut last = start;
+        assert!(!lock_clock_refresh_due(true, start, &mut last));
+        assert!(!lock_clock_refresh_due(
+            true,
+            start + Duration::from_millis(59_999),
+            &mut last,
+        ));
+        assert!(lock_clock_refresh_due(
+            true,
+            start + LOCK_CLOCK_REFRESH,
+            &mut last,
+        ));
+        assert!(!lock_clock_refresh_due(
+            true,
+            start + LOCK_CLOCK_REFRESH + Duration::from_secs(1),
+            &mut last,
+        ));
+
+        let unlocked = start + Duration::from_secs(75);
+        assert!(!lock_clock_refresh_due(false, unlocked, &mut last));
+        assert_eq!(last, unlocked);
+    }
+
+    #[test]
+    fn force_and_password_feedback_edges_always_repaint_the_lock() {
+        for visible in [
+            NativeRedrawReasons {
+                force: true,
+                ..NativeRedrawReasons::default()
+            },
+            // Lock input and async verification completion both set the
+            // session edge, updating the masked field, error, or unlock.
+            NativeRedrawReasons {
+                session: true,
+                ..NativeRedrawReasons::default()
+            },
+        ] {
+            assert!(visible.content_changed(true));
+        }
+    }
 
     #[test]
     fn deferred_peer_sync_starts_in_the_session_that_finishes_onboarding() {
