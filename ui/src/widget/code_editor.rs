@@ -443,6 +443,7 @@ impl Widget for CodeEditor {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.inner.capture_layout_text_scale(theme.text_scale);
         // Registers *this* widget (not the inner input) so the host
         // drives CodeEditor's own passes.
         let node = taffy.leaf_node(Style {
@@ -452,7 +453,6 @@ impl Widget for CodeEditor {
             },
             ..Default::default()
         });
-        let _ = theme;
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -1696,6 +1696,39 @@ mod tests {
         Widget::draw(ed, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
 
+    fn lay_out_and_draw(
+        ed: &mut CodeEditor,
+        theme: &Theme,
+        renderer: &mut TextRenderer,
+        width: f32,
+    ) -> f32 {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let node = Widget::build_layout(ed, &mut taffy, theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                |known, available, id, _, _| {
+                    node_map
+                        .get(&id)
+                        .map_or(taffy::Size::ZERO, |&widget| unsafe {
+                            (*widget).measure(known, available, renderer)
+                        })
+                },
+            )
+            .expect("code editor layout computes");
+        let height = taffy.layout(node).expect("code editor layout").size.height;
+        Widget::apply_layout(ed, &taffy, node, Point::ZERO);
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        Widget::draw(ed, &mut scene, Affine::IDENTITY, renderer, theme, &presence);
+        height
+    }
+
     use crate::text_render::TextRenderer;
 
     #[test]
@@ -1995,6 +2028,53 @@ mod tests {
             large.cursor_pos(),
             second_start,
             "pointer event places the caret on the logical second line through wrapped rows"
+        );
+    }
+
+    #[test]
+    fn wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal() {
+        let text = "a long source line wraps over several visual rows while the wrapper owns the themed layout lifecycle";
+        let mut editor = CodeEditor::local().with_initial_value(text);
+        let mut renderer = TextRenderer::new();
+        assert_eq!(renderer.text_scale(), 1.0, "stale renderer precondition");
+
+        let large_theme = Theme::dark().with_text_scale(2.0);
+        let large_height = lay_out_and_draw(&mut editor, &large_theme, &mut renderer, 190.0);
+        let large_gutter = editor.gutter_width();
+        let large_font = editor
+            .inner()
+            .shaped_font_size_for_test()
+            .expect("large shaped font");
+        assert!(
+            (f64::from(large_height) - editor.inner().content_height()).abs() < 0.1,
+            "wrapper measure and draw must share the 2x paragraph height"
+        );
+
+        let normal_theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let _ = Widget::build_layout(&mut editor, &mut taffy, &normal_theme, &mut node_map);
+        assert!(
+            Widget::layout_needs_measure(&editor),
+            "the same wrapper becomes measure-dirty when theme scale returns to 1x"
+        );
+        let normal_height = lay_out_and_draw(&mut editor, &normal_theme, &mut renderer, 190.0);
+        let normal_gutter = editor.gutter_width();
+        let normal_font = editor
+            .inner()
+            .shaped_font_size_for_test()
+            .expect("normal shaped font");
+        assert!(
+            (f64::from(normal_height) - editor.inner().content_height()).abs() < 0.1,
+            "wrapper measure and draw must share the restored 1x paragraph height"
+        );
+        assert!(large_height > normal_height * 1.8);
+        assert!(large_gutter >= normal_gutter * 1.8);
+        assert!(large_font >= normal_font * 1.9);
+        assert_eq!(
+            renderer.text_scale(),
+            1.0,
+            "renderer stayed stale throughout"
         );
     }
 }
