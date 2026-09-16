@@ -12,6 +12,7 @@ use crate::shell::personal_continuity::{
     AppInstanceId, ContinuityError, LaunchIntent, ResumeMetadata, ResumeSensitivity,
 };
 use crate::shell::state::RoomId;
+use launcher::manifest::ContinuityFacet;
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -90,6 +91,18 @@ fn validate_app_semantic_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bo
     }
 }
 
+fn required_facets_for_app(app_id: &str) -> Result<Vec<ContinuityFacet>, ContinuityError> {
+    match crate::shell::launcher::installed_continuity_required_facets(app_id) {
+        crate::shell::launcher::InstalledContinuityRequirements::NotInstalled => {
+            Ok(vec![ContinuityFacet::Presentation])
+        }
+        crate::shell::launcher::InstalledContinuityRequirements::Required(required) => Ok(required),
+        crate::shell::launcher::InstalledContinuityRequirements::Invalid => {
+            Err(ContinuityError::InvalidResumePayload)
+        }
+    }
+}
+
 /// Latest safe continuation projection for one native application in a room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppContinuationReport {
@@ -136,6 +149,26 @@ impl ContinuationRegistry {
         bytes: Vec<u8>,
     ) -> Result<bool, ContinuityError> {
         let app_id = app_id.into();
+        let required = required_facets_for_app(&app_id)?;
+        self.report_with_required_facets(
+            room,
+            app_id,
+            instance_id,
+            schema_version,
+            bytes,
+            &required,
+        )
+    }
+
+    fn report_with_required_facets(
+        &mut self,
+        room: RoomId,
+        app_id: String,
+        instance_id: AppInstanceId,
+        schema_version: u16,
+        bytes: Vec<u8>,
+        required: &[ContinuityFacet],
+    ) -> Result<bool, ContinuityError> {
         // Reuse the launch target validator: a process cannot smuggle a local
         // pathname into the registry key either.
         LaunchIntent::app(app_id.clone())?;
@@ -153,6 +186,9 @@ impl ContinuationRegistry {
             }
             resume
         };
+        if !resume_has_required_facets(&resume, required) {
+            return Err(ContinuityError::InvalidResumePayload);
+        }
         let report = AppContinuationReport {
             room,
             app_id: app_id.clone(),
@@ -228,6 +264,12 @@ impl ContinuationRegistry {
         resume: ResumeMetadata,
         record_instance: AppInstanceId,
     ) {
+        let Ok(required) = required_facets_for_app(&app_id) else {
+            return;
+        };
+        if !resume_has_required_facets(&resume, &required) {
+            return;
+        }
         self.remote_resumes.insert(
             (room, app_id.clone(), tab),
             ResolvedContinuation {
@@ -318,6 +360,27 @@ impl ContinuationRegistry {
     }
 }
 
+fn resume_has_required_facets(resume: &ResumeMetadata, required: &[ContinuityFacet]) -> bool {
+    let (presentation, semantic) = match resume.schema_version() {
+        ui::app::STRUCTURAL_CONTINUATION_SCHEMA => {
+            let Some(facets) = ui::app::structural_continuation_facets(resume.bytes()) else {
+                return false;
+            };
+            (facets.presentation(), facets.semantic())
+        }
+        ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA => (true, false),
+        _ => (false, true),
+    };
+    // Presentation is a framework invariant, not an app-controlled opt-in.
+    // Even a malformed/legacy signed contract with an empty requirement list
+    // cannot downgrade the structural checkpoint back to opaque app bytes.
+    presentation
+        && required.iter().all(|facet| match facet {
+            ContinuityFacet::Presentation => presentation,
+            ContinuityFacet::Semantic => semantic,
+        })
+}
+
 /// The shell broker and network share this process-local registry. It is not
 /// persisted: authoritative app CRDT state repopulates it after launch.
 pub fn global_registry() -> Arc<Mutex<ContinuationRegistry>> {
@@ -329,31 +392,54 @@ pub fn global_registry() -> Arc<Mutex<ContinuationRegistry>> {
 mod tests {
     use super::*;
 
+    fn browser_checkpoint(url: &[u8]) -> ui::collaboration::ContinuationMetadata {
+        ui::app::compose_structural_continuation_metadata(
+            ui::view::View::default(),
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: url.to_vec(),
+            }),
+        )
+        .unwrap()
+    }
+
+    fn report_browser(
+        reports: &mut ContinuationRegistry,
+        room: RoomId,
+        instance: AppInstanceId,
+        url: &[u8],
+    ) -> Result<bool, ContinuityError> {
+        let metadata = browser_checkpoint(url);
+        reports.report(
+            room,
+            "dev.qos.browser",
+            instance,
+            metadata.schema_version,
+            metadata.bytes,
+        )
+    }
+
     #[test]
     fn replaces_only_changed_safe_reports() {
         let room = RoomId::new();
         let mut reports = ContinuationRegistry::default();
         assert!(
-            reports
-                .report(
-                    room,
-                    "dev.qos.browser",
-                    AppInstanceId(11),
-                    1,
-                    br#"{"url":"https://qos.dev"}"#.to_vec()
-                )
-                .unwrap()
+            report_browser(
+                &mut reports,
+                room,
+                AppInstanceId(11),
+                br#"{"url":"https://qos.dev"}"#,
+            )
+            .unwrap()
         );
         assert!(
-            !reports
-                .report(
-                    room,
-                    "dev.qos.browser",
-                    AppInstanceId(11),
-                    1,
-                    br#"{"url":"https://qos.dev"}"#.to_vec()
-                )
-                .unwrap()
+            !report_browser(
+                &mut reports,
+                room,
+                AppInstanceId(11),
+                br#"{"url":"https://qos.dev"}"#,
+            )
+            .unwrap()
         );
         assert_eq!(reports.len(), 1);
         assert!(
@@ -449,27 +535,75 @@ mod tests {
     }
 
     #[test]
+    fn semantic_manifest_contract_rejects_presentation_only_regression() {
+        let room = RoomId::new();
+        let instance = AppInstanceId(72);
+        let presentation_only =
+            ui::app::compose_structural_continuation_metadata(ui::view::View::default(), None)
+                .unwrap();
+        let required = [ContinuityFacet::Presentation, ContinuityFacet::Semantic];
+        let mut reports = ContinuationRegistry::default();
+        assert_eq!(
+            reports.report_with_required_facets(
+                room,
+                "dev.qos.browser".into(),
+                instance,
+                presentation_only.schema_version,
+                presentation_only.bytes,
+                &required,
+            ),
+            Err(ContinuityError::InvalidResumePayload)
+        );
+
+        let complete = browser_checkpoint(br#"{"url":"https://qos.dev"}"#);
+        assert!(
+            reports
+                .report_with_required_facets(
+                    room,
+                    "dev.qos.browser".into(),
+                    instance,
+                    complete.schema_version,
+                    complete.bytes,
+                    &required,
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn empty_manifest_contract_cannot_opt_out_of_framework_presentation() {
+        let mut reports = ContinuationRegistry::default();
+        assert_eq!(
+            reports.report_with_required_facets(
+                RoomId::new(),
+                "dev.qos.browser".into(),
+                AppInstanceId(73),
+                1,
+                br#"{"url":"https://qos.dev"}"#.to_vec(),
+                &[],
+            ),
+            Err(ContinuityError::InvalidResumePayload)
+        );
+    }
+
+    #[test]
     fn two_browser_instances_keep_distinct_urls() {
         let room = RoomId::new();
         let mut reports = ContinuationRegistry::default();
-        reports
-            .report(
-                room,
-                "dev.qos.browser",
-                AppInstanceId(11),
-                1,
-                br#"{"url":"https://a.test"}"#.to_vec(),
-            )
-            .unwrap();
-        reports
-            .report(
-                room,
-                "dev.qos.browser",
-                AppInstanceId(22),
-                1,
-                br#"{"url":"https://b.test"}"#.to_vec(),
-            )
-            .unwrap();
+        report_browser(
+            &mut reports,
+            room,
+            AppInstanceId(11),
+            br#"{"url":"https://a.test"}"#,
+        )
+        .unwrap();
+        report_browser(
+            &mut reports,
+            room,
+            AppInstanceId(22),
+            br#"{"url":"https://b.test"}"#,
+        )
+        .unwrap();
         reports.bind_tab(AppInstanceId(101), AppInstanceId(11));
         reports.bind_tab(AppInstanceId(202), AppInstanceId(22));
         let launch = LaunchIntent::app("dev.qos.browser").unwrap();
@@ -488,9 +622,7 @@ mod tests {
             (AppInstanceId(11), br#"{"url":"https://a.test"}"#.as_slice()),
             (AppInstanceId(22), br#"{"url":"https://b.test"}"#.as_slice()),
         ] {
-            reports
-                .report(room, "dev.qos.browser", instance, 1, url.to_vec())
-                .unwrap();
+            report_browser(&mut reports, room, instance, url).unwrap();
         }
 
         assert!(reports.clear(room, "dev.qos.browser", AppInstanceId(11)));
@@ -513,15 +645,13 @@ mod tests {
         let launch = LaunchIntent::app("dev.qos.browser").unwrap();
         let mut reports = ContinuationRegistry::default();
         reports.bind_tab(AppInstanceId(10), AppInstanceId(101));
-        reports
-            .report(
-                room,
-                "dev.qos.browser",
-                AppInstanceId(101),
-                1,
-                br#"{"url":"https://local.test"}"#.to_vec(),
-            )
-            .unwrap();
+        report_browser(
+            &mut reports,
+            room,
+            AppInstanceId(101),
+            br#"{"url":"https://local.test"}"#,
+        )
+        .unwrap();
         reports.store_remote_resume(
             room,
             AppInstanceId(10),
@@ -538,7 +668,12 @@ mod tests {
             .continuation_for_tab(room, AppInstanceId(10), &launch)
             .unwrap();
         assert_eq!(resolved.record_instance, AppInstanceId(101));
-        assert_eq!(resolved.resume.bytes(), br#"{"url":"https://local.test"}"#);
+        assert_eq!(
+            resolved.resume.schema_version(),
+            ui::app::STRUCTURAL_CONTINUATION_SCHEMA
+        );
+        let facets = ui::app::structural_continuation_facets(resolved.resume.bytes()).unwrap();
+        assert!(facets.presentation() && facets.semantic());
     }
 
     #[test]
@@ -547,14 +682,15 @@ mod tests {
         let tab = AppInstanceId(10);
         let launch = LaunchIntent::app("dev.qos.browser").unwrap();
         let mut reports = ContinuationRegistry::default();
+        let metadata = browser_checkpoint(br#"{"url":"https://closed.test"}"#);
         reports.store_remote_resume(
             room,
             tab,
             "dev.qos.browser".into(),
             ResumeMetadata::new(
-                1,
+                metadata.schema_version,
                 ResumeSensitivity::Syncable,
-                br#"{"url":"https://closed.test"}"#.to_vec(),
+                metadata.bytes,
             )
             .unwrap(),
             AppInstanceId(101),
