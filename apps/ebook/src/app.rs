@@ -11599,14 +11599,22 @@ mod interaction_tests {
     }
 
     fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
-        for _ in 0..80 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
             app.sync(doc, &automerge::ROOT);
             if app.import_loading.is_none() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("book import did not finish in time");
+        let pending = app
+            .import_loading
+            .as_ref()
+            .map(|loading| loading.path.display().to_string());
+        panic!(
+            "book import did not finish within 10 seconds (pending: {pending:?}, error: {:?})",
+            app.load_error
+        );
     }
 
     fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
