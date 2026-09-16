@@ -107,6 +107,15 @@ passes its sysroot and GCC toolchain to native Clang for the two x86 targets
 requested by upstream `StructPackVerifier.py`. Other targets use native headers.
 The upstream verifier and its expected layouts remain unchanged.
 
+When using the versioned Clang 21 buildroot, also set
+`QOS_FEX_CLANG=/usr/lib64/llvm21/bin/clang`. Its loader selects libclang 21 for
+the Python verifier; discovering headers with the default Clang 22 driver
+mixes resource headers from different versions. This caused all 20 AArch64
+checks to fail with missing `int8_t` and related types. Matching the driver to
+the library and using the complete SDK restored all 40 ABI checks (41.29
+seconds, zero failures). Preserve this selection separately from the compiler
+used to build guest binaries.
+
 The SDK needs both `glibc-devel.x86_64` and `glibc-devel.i686`, plus both
 `libstdc++-devel.x86_64` and `libstdc++-devel.i686`. Installing `gcc-c++` alongside
 only the i686 C++ development package can satisfy RPM dependencies while leaving
