@@ -4798,28 +4798,20 @@ impl Widget for BooksApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if self.forward_rename_event(
+        let mut input_ctx = InputEventCtx {
             event,
             scale_factor,
-            *modifiers,
-            doc,
-            path,
+            modifiers: *modifiers,
+            state: doc,
+            root: path,
             node_id,
             taffy,
             handled,
-        ) {
+        };
+        if self.forward_rename_event(&mut input_ctx) {
             return;
         }
-        if self.forward_shared_input_event(
-            event,
-            scale_factor,
-            *modifiers,
-            doc,
-            path,
-            node_id,
-            taffy,
-            handled,
-        ) {
+        if self.forward_shared_input_event(&mut input_ctx) {
             return;
         }
 
@@ -5231,101 +5223,63 @@ impl Widget for BooksApp {
 }
 
 impl BooksApp {
-    #[allow(clippy::too_many_arguments)]
-    fn forward_shared_input_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) -> bool {
+    fn forward_shared_input_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
         let mut input_handled = false;
-        let (comment_text, comment_submitted) =
-            self.comment_overlay.handle_event(&mut InputEventCtx {
-                event,
-                scale_factor,
-                modifiers,
-                state: doc,
-                root: path,
-                node_id,
-                taffy,
-                handled: &mut input_handled,
-            });
+        let (comment_text, comment_submitted) = self
+            .comment_overlay
+            .handle_event(&mut ctx.reborrow(&mut input_handled));
         if let Some((id, text)) = comment_text {
-            self.set_annotation_text(doc, id, &text);
+            self.set_annotation_text(ctx.state, id, &text);
         }
         if comment_submitted {
             input_handled = true;
         }
 
-        let (note_text, submit) = self.note_composer.handle_event(&mut InputEventCtx {
-            event,
-            scale_factor,
-            modifiers,
-            state: doc,
-            root: path,
-            node_id,
-            taffy,
-            handled: &mut input_handled,
-        });
+        let (note_text, submit) = self
+            .note_composer
+            .handle_event(&mut ctx.reborrow(&mut input_handled));
         if let Some(text) = note_text {
-            self.set_composing_text(doc, &text);
+            self.set_composing_text(ctx.state, &text);
         }
         if submit {
-            self.finish_composing(doc);
+            self.finish_composing(ctx.state);
             input_handled = true;
         }
 
-        let settings_actions = self.reading_settings.handle_event(&mut InputEventCtx {
-            event,
-            scale_factor,
-            modifiers,
-            state: doc,
-            root: path,
-            node_id,
-            taffy,
-            handled: &mut input_handled,
-        });
+        let settings_actions = self
+            .reading_settings
+            .handle_event(&mut ctx.reborrow(&mut input_handled));
         for action in settings_actions {
-            self.dispatch_reading_settings(action, doc);
+            self.dispatch_reading_settings(action, ctx.state);
         }
 
-        let changes = self.number_controls.handle_event(&mut InputEventCtx {
-            event,
-            scale_factor,
-            modifiers,
-            state: doc,
-            root: path,
-            node_id,
-            taffy,
-            handled: &mut input_handled,
-        });
+        let changes = self
+            .number_controls
+            .handle_event(&mut ctx.reborrow(&mut input_handled));
         for (field, value) in changes {
             match field {
                 NumberField::FontScale => {
-                    self.bump_setting(doc, |settings| settings.font_scale = (value / 100.0) as f32);
+                    self.bump_setting(ctx.state, |settings| {
+                        settings.font_scale = (value / 100.0) as f32;
+                    });
                 }
                 NumberField::LineSpacing => {
-                    self.bump_setting(doc, |settings| settings.line_spacing = value as f32);
+                    self.bump_setting(ctx.state, |settings| settings.line_spacing = value as f32);
                 }
                 NumberField::FontMult(id) => {
                     let mut fonts = self.fonts.clone();
                     if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                         font.size_mult = value as f32;
                         let font = font.clone();
-                        self.perform_action(doc, &crate::actions::upsert_font_action(font));
+                        self.perform_action(ctx.state, &crate::actions::upsert_font_action(font));
                     }
                 }
             }
         }
         if input_handled {
-            self.refresh_from_doc(doc);
+            self.refresh_from_doc(ctx.state);
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
         }
         input_handled
     }
@@ -5335,18 +5289,7 @@ impl BooksApp {
     /// `true` when the field consumed the event (the caller stops there); a
     /// press outside the field blur-commits and falls through to the rest of
     /// `handle_event`.
-    #[allow(clippy::too_many_arguments)]
-    fn forward_rename_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) -> bool {
+    fn forward_rename_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
         if self.renaming.is_none() {
             return false;
         }
@@ -5354,22 +5297,22 @@ impl BooksApp {
         let mut field_focus = None;
         if let Some(rn) = self.renaming.as_mut() {
             rn.field.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                doc,
-                path,
+                ctx.event,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.root,
                 &mut field_handled,
                 &mut field_focus,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
-        self.poll_rename_outcome(doc);
+        self.poll_rename_outcome(ctx.state);
         if field_handled {
-            self.refresh_from_doc(doc);
+            self.refresh_from_doc(ctx.state);
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
