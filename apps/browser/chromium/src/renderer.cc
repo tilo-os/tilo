@@ -59,8 +59,8 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     auto& applied=applied_[frame->GetIdentifier().ToString()];
     if(applied.context && applied.context->IsSame(context) && applied.scripts==scripts) return;
     applied={context,scripts};
-    // Eval is synchronous in OnContextCreated: cached configuration runs before
-    // parser scripts. Queued frame configuration covers new renderer processes.
+    // Live updates evaluate trusted host source directly. The source does not
+    // call page eval(), so CSP remains enforced for the page's own scripts.
     context->Enter();
     for(const auto& script:scripts) {
       if(!IsWebDocument(frame)) break;

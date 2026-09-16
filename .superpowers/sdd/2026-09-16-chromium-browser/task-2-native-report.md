@@ -104,3 +104,21 @@ The new CSP fixture deliberately observes computed styles from its own permitted
 script. During its creation, a separate limitation was discovered: late custom
 script updates can be blocked by CSP due to the wrapper's indirect eval, despite
 working at document start. A separate fix and regression are required next.
+
+## Follow-up: late custom scripts under script CSP
+
+The new late-update test reproduced the remaining CSP defect: after loading a
+page with `script-src 'self' 'unsafe-inline'`, the configured counter stayed at 0
+instead of 1 because the wrapper called page `eval()`. The shared document-start/
+live-update source now includes the trusted script bodies directly in individual
+try blocks. It retains the direct HTTP(S) guard and per-document configuration
+marker, without weakening the page policy or introducing native page bindings.
+
+The regression verifies a global `var` declaration still reaches the page global,
+identical configuration runs once, changed configuration runs once more, and the
+page's own eval remains prohibited by CSP. Existing document-start, reload,
+cross-site and internal-scheme boundary regressions exercise the same source.
+
+Validation: native build successful; all **12 blocker fixtures passed in
+29.109s**; all **4 existing native regressions passed in 21.448s**; macOS
+bundle symlinks and strict recursive signature verification passed.
