@@ -75,6 +75,7 @@ mod quick_settings_drill_in;
 mod quick_settings_root;
 mod quick_settings_vpn;
 mod quick_settings_wifi;
+pub mod realtime_session;
 pub mod remote_cursors;
 pub mod room_activity;
 pub mod room_records;
