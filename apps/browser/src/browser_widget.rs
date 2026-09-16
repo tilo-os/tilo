@@ -3560,6 +3560,11 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let coefficients = transform.as_coeffs();
+        let scale = coefficients[0].hypot(coefficients[1]);
+        if scale.is_finite() && scale > 0.0 {
+            self.window_scale = scale as f32;
+        }
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
         }

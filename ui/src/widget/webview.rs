@@ -224,6 +224,15 @@ impl Widget for WebView {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // First layout can precede all window/input events. The host's draw
+        // transform already carries the actual device scale at that point.
+        let coefficients = transform.as_coeffs();
+        let device_scale = coefficients[0].hypot(coefficients[1]) as f32;
+        if device_scale.is_finite() && device_scale > 0.0 && device_scale != self.scale_factor {
+            self.scale_factor = device_scale;
+            self.last_sent_size = (0, 0);
+            self.send_resize_if_needed();
+        }
         // Placeholder before the first frame, letterbox backing afterwards.
         scene.fill(
             Fill::NonZero,
@@ -554,6 +563,36 @@ mod tests {
                 scale_factor: 1.0
             }]
         );
+    }
+
+    #[test]
+    fn first_retina_draw_sets_dpi_without_an_input_event() {
+        let engine = TestEngine::new();
+        let (mut view, _, _) = laid_out(engine.clone());
+        view.draw(
+            &mut Scene::new(),
+            Affine::scale(2.0),
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(
+            engine.commands().last(),
+            Some(&WebViewCommand::Resize {
+                width: 800,
+                height: 600,
+                scale_factor: 2.0,
+            })
+        );
+        let count = engine.commands().len();
+        view.draw(
+            &mut Scene::new(),
+            Affine::scale(2.0),
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::default(),
+        );
+        assert_eq!(engine.commands().len(), count);
     }
 
     #[test]

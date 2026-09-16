@@ -461,3 +461,44 @@ fn runtime_download_queue_coalesces_progress_and_is_bounded() {
         Some(WebViewEvent::TabCloseBlocked)
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn admitted_close_does_not_reinsert_capacity_when_endpoint_drops() {
+    let mut script = String::from("profile=${1#--profile=}\n");
+    for tab in 2..42 {
+        let mut packet = Vec::new();
+        protocol::write_json(&mut packet, &json!({"event":"closed","tab":tab})).unwrap();
+        let encoded: String = packet
+            .iter()
+            .map(|byte| format!("\\{:03o}", byte))
+            .collect();
+        script.push_str(&format!(
+            "while [ ! -f \"$profile/ack-{tab}\" ]; do sleep 0.01; done\nprintf '{encoded}'\n"
+        ));
+    }
+    script.push_str("exec cat >/dev/null");
+    let (dir, host) = helper_fixture(&script);
+    let profile = dir.path().join("profile");
+    let first = ChromiumEngine::with_host(&host, &profile).unwrap();
+    for id in 2..42 {
+        let tab = first.create_tab().unwrap();
+        assert!(!tab.request_close());
+        std::fs::write(profile.join(format!("ack-{id}")), b"ack").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while first.runtime.routes.lock().unwrap().contains_key(&id) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native close acknowledgment"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(tab.drain_events().contains(&WebViewEvent::TabClosed));
+        drop(tab);
+        let count = first.runtime.routes.lock().unwrap().len();
+        assert_eq!(
+            count, 1,
+            "dropping an admitted closed tab must not reserve its capacity again"
+        );
+    }
+}
