@@ -598,6 +598,22 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     let active_request = ApiDoc::request(doc, &root_obj);
     let history = ApiDoc::history(doc, &root_obj);
 
+    let mut root = workspace_root();
+
+    root = add_collection_children(root, &collections, active_request.as_ref());
+    root = add_environment_children(root, &environments, active_env.as_deref());
+    root = add_history_children(root, &history);
+    vec![root]
+}
+
+/// Frame-by-frame directory root. Deep records arrive through search or an
+/// exact stable-id resolver, preventing palette opens from allocating every
+/// request and variable action closure.
+pub fn provide_root_resources(_doc: &AutoCommit) -> Vec<Resource> {
+    vec![workspace_root()]
+}
+
+fn workspace_root() -> Resource {
     let mut root = Resource::new(
         "api_tester.workspace",
         "api_tester.workspace",
@@ -625,11 +641,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         move |name: &str| encode(&create_environment_action(Uuid::new_v4(), name.trim())),
     ));
 
-    root = add_collection_children(root, &collections, active_request.as_ref());
-    root = add_environment_children(root, &environments, active_env.as_deref());
-    root = add_history_children(root, &history);
-
-    vec![root]
+    root
 }
 
 /// History rows are durable, addressable records. Opening one is explicitly
@@ -866,8 +878,89 @@ fn variable_resource(eid: Uuid, variable: &KeyValue) -> Resource {
 
 impl ResourceProvider for crate::app::ApiTesterApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(doc)
+        provide_root_resources(doc)
     }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        exact_resource(doc, id)
+    }
+}
+
+fn exact_resource(doc: &AutoCommit, id: &str) -> Option<Resource> {
+    let root: ObjId = ROOT;
+    if let Some(raw) = id.strip_prefix("api_tester.collection:") {
+        let mut row = ApiDoc::collections(doc, &root)
+            .into_iter()
+            .find(|row| row.id.to_string() == raw)?;
+        row.requests.clear();
+        return add_collection_children(Resource::new("exact", "exact", "exact"), &[row], None)
+            .children
+            .into_iter()
+            .next();
+    }
+    if let Some(raw) = id.strip_prefix("api_tester.request:") {
+        for mut collection in ApiDoc::collections(doc, &root) {
+            if let Some(request) = collection
+                .requests
+                .iter()
+                .find(|row| row.id.to_string() == raw)
+                .cloned()
+            {
+                collection.requests = vec![request];
+                return add_collection_children(
+                    Resource::new("exact", "exact", "exact"),
+                    &[collection],
+                    None,
+                )
+                .children
+                .into_iter()
+                .next()?
+                .children
+                .into_iter()
+                .next();
+            }
+        }
+    }
+    if let Some(raw) = id.strip_prefix("api_tester.environment:") {
+        let mut row = ApiDoc::environments(doc, &root)
+            .into_iter()
+            .find(|row| row.id.to_string() == raw)?;
+        row.variables.clear();
+        return add_environment_children(Resource::new("exact", "exact", "exact"), &[row], None)
+            .children
+            .into_iter()
+            .next()?
+            .children
+            .into_iter()
+            .next();
+    }
+    if let Some(raw) = id.strip_prefix("api_tester.variable:") {
+        for mut environment in ApiDoc::environments(doc, &root) {
+            if let Some(variable) = environment
+                .variables
+                .iter()
+                .find(|row| format!("{}:{}", environment.id, row.id) == raw)
+                .cloned()
+            {
+                environment.variables = vec![variable];
+                return add_environment_children(
+                    Resource::new("exact", "exact", "exact"),
+                    &[environment],
+                    None,
+                )
+                .children
+                .into_iter()
+                .next()?
+                .children
+                .into_iter()
+                .next()?
+                .children
+                .into_iter()
+                .next();
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
