@@ -927,6 +927,7 @@ impl ApiTesterApp {
         self.adopted = true;
         self.dirty = true;
         self.rebuild_nav();
+        self.refresh_search();
     }
 
     /// Dispatch one canonical action against the document's current projection.
