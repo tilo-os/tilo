@@ -1641,7 +1641,37 @@ pub fn launch_media_handoff(
         crate::shell::device_fabric::MediaSourceLocator::AppResource { uri } => {
             launch_with_context(package_id, room, None, Some(uri), None, Some(state))
         }
+        crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer { .. } => {
+            // Transfer identities are deliberately not paths. The fabric
+            // runtime must resolve and hash-verify one before launching.
+            Err(LaunchError::NoWorkspace)
+        }
     }
+}
+
+/// Launch media from a shell-owned, content-verified personal-transfer cache.
+/// The cache path never appears in the wire locator and is passed through the
+/// same document-capability path as a user-opened local file.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`launch_media_handoff`].
+pub fn launch_verified_media_handoff(
+    package_id: &str,
+    room: RoomId,
+    path: &Path,
+    title: &str,
+    request_id: [u8; 16],
+    position_ms: u64,
+    resume_playing: bool,
+) -> Result<InstalledApp, LaunchError> {
+    let state = MediaHandoffLaunch {
+        title: title.to_string(),
+        request_id,
+        position_ms,
+        resume_playing,
+    };
+    launch_with_context(package_id, room, Some(path), None, None, Some(state))
 }
 
 /// Launch the only package owned by a typed tool intent and pass that exact
