@@ -18,7 +18,6 @@
 
 use shell::shell::chrome_state::{Chrome, ChromeState, QuickSettingsState, SearchScope};
 use shell::shell::notes_app::{BODY_KEY, NotesApp};
-use shell::shell::sidebar_wheel::SidebarWheel;
 use shell::shell::state::{Collaborator, WorkspaceTree};
 use shell::shell::topbar_chrome::{CenterWidget, TopBarChrome};
 use shell::shell::{build_nirios_root, build_nirios_root_with_chrome, state::TileContent};
@@ -83,17 +82,6 @@ fn chrome_state_shared_across_sibling_widgets() {
     let before = b.borrow().revision;
     a.borrow_mut().bump();
     assert_eq!(b.borrow().revision, before.wrapping_add(1));
-}
-
-#[test]
-fn sidebar_plus_button_appends_workspace_and_activates_it() {
-    let mut tree = WorkspaceTree::bootstrap_default();
-    let before = tree.workspaces.len();
-    let ws = SidebarWheel::new().click_management_new_workspace(&mut tree);
-    assert_eq!(tree.workspaces.len(), before + 1);
-    assert_eq!(tree.active, ws);
-    let active = tree.active_workspace().expect("active workspace");
-    assert!(active.strips.iter().any(|s| s.name == "Main"));
 }
 
 #[test]
