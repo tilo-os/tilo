@@ -27,6 +27,7 @@ concurrency:
 
 jobs:
   build:
+    timeout-minutes: 600
     # Promotion is atomic across both native architectures. Keep automatic
     # pushes skipped until the ARM64 pool exists instead of leaving every run
     # permanently queued; enabling the pool is one repository-variable flip.
@@ -158,6 +159,7 @@ jobs:
         run: docker logout code.podesta.ai || true
 
   promote:
+    timeout-minutes: 60
     needs: build
     runs-on: runner
     env:
