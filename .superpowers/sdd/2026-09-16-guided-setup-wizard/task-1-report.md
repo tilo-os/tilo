@@ -27,7 +27,7 @@ copy or installation authority, and controller-created selections always set
 - `back()`
 - `plan() -> &SetupPlan`
 - `folders() -> &[FolderChoice]`
-- public `page: SetupPage` and `default_mode: FolderMode`
+- `page() -> SetupPage` and `default_mode() -> FolderMode` read-only getters
 - `scan_folder(&Path) -> Result<FolderScan, String>`
 - `pick_folder() -> ui::PortalChannel`
 
@@ -87,3 +87,28 @@ public API lint-clean.
   contents, totals, and changes before copying anything.
 - This component performs no file copying, synchronization, installation, disk
   mutation, or simulated success.
+
+## Round 1 review fixes
+
+Controller page and default-mode state are private and exposed through copy-only
+getters, so callers cannot bypass review invalidation by assigning fields.
+
+Folder traversal now pins the selected root with a no-follow open, compares the
+pre-open and opened directory identities, and reopens every queued root-relative
+component with `cap_primitives::fs::open_dir_nofollow`. Enumeration uses a
+descriptor-backed `cap_std::fs::Dir`; the queue retains paths rather than open
+handles. A deterministic regression replaces a directory with an external
+symlink between metadata capture and the production open helper and verifies the
+open is rejected.
+
+Review-fix red/green command:
+
+```text
+cargo test -p imager --lib setup
+```
+
+The red run failed on the absent state getters and absent no-follow helper. The
+green run passed 28 tests on macOS. Linux had passed the pre-fix focused suite;
+the new capability-backed traversal still requires the final native Linux rerun.
+The scoped Clippy command above exits successfully with only the previously
+recorded warning in `apps/imager/src/model.rs:285`.
