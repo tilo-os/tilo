@@ -566,31 +566,31 @@ pub fn active_transition(clip: &Clip, playhead: f64) -> Option<(Transition, f64)
 /// Every animatable value is read through [`Clip::param_at`] at `at`, so a
 /// keyframed grade, scale or effect intensity is already a plain number by
 /// the time it reaches the GPU.
-#[allow(clippy::too_many_arguments)]
-fn layer_at(
-    clip: &Clip,
+struct LayerSample {
     at: f64,
     source_time: f64,
     alpha: f64,
     wipe: Option<Wipe>,
     source_alpha: bool,
     title: Option<TextSource>,
-) -> Layer {
+}
+
+fn layer_at(clip: &Clip, sample: LayerSample) -> Layer {
     Layer {
         clip: clip.id,
         media: clip.media,
-        source_time,
+        source_time: sample.source_time,
         palette: clip.palette,
-        filters: clip.filters_at(at),
-        curve: clip.curves_at(at),
-        effects: clip.effects_at(at),
-        alpha: alpha.clamp(0.0, 1.0),
-        wipe,
-        key: clip.key_at(at),
-        mask: clip.mask_at(at),
-        transform: clip.transform_at(at),
-        source_alpha,
-        title,
+        filters: clip.filters_at(sample.at),
+        curve: clip.curves_at(sample.at),
+        effects: clip.effects_at(sample.at),
+        alpha: sample.alpha.clamp(0.0, 1.0),
+        wipe: sample.wipe,
+        key: clip.key_at(sample.at),
+        mask: clip.mask_at(sample.at),
+        transform: clip.transform_at(sample.at),
+        source_alpha: sample.source_alpha,
+        title: sample.title,
     }
 }
 
@@ -697,7 +697,17 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
         let alpha_src = has_alpha(c);
         let title = title_of(c);
         let mk = |alpha: f64, wipe: Option<Wipe>| {
-            layer_at(c, playhead, t_in, alpha, wipe, alpha_src, title.clone())
+            layer_at(
+                c,
+                LayerSample {
+                    at: playhead,
+                    source_time: t_in,
+                    alpha,
+                    wipe,
+                    source_alpha: alpha_src,
+                    title: title.clone(),
+                },
+            )
         };
         let prev = outgoing_neighbour(&clips, i);
         let Some((kind, t)) = active_transition(c, playhead) else {
@@ -709,12 +719,14 @@ fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Lay
             prev.map(|a| {
                 layer_at(
                     a,
-                    playhead,
-                    outgoing_source_time(a, playhead),
-                    alpha,
-                    None,
-                    has_alpha(a),
-                    title_of(a),
+                    LayerSample {
+                        at: playhead,
+                        source_time: outgoing_source_time(a, playhead),
+                        alpha,
+                        wipe: None,
+                        source_alpha: has_alpha(a),
+                        title: title_of(a),
+                    },
                 )
             })
         };
