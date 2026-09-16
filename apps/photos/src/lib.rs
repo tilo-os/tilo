@@ -75,6 +75,12 @@ pub use model::{Edits, OpenImage, Rect01};
 /// Import a Camera portable-media reference into Photos without ever trusting
 /// a machine-local path.  The content hash is verified in qdoc first; missing
 /// bytes are an actionable refusal rather than a phantom library entry.
+///
+/// # Errors
+///
+/// Returns an error when the Camera identity is malformed, the verified bytes
+/// have not arrived on this device, exceed the import budget, fail integrity
+/// validation, or are not a safely decodable still image.
 pub fn camera_import_photo(media_id: &str, name: &str) -> Result<model::LibraryPhoto, String> {
     let hash = media_id
         .strip_prefix("media:blake3:")
@@ -110,6 +116,11 @@ pub fn camera_import_photo(media_id: &str, name: &str) -> Result<model::LibraryP
 /// boundary is useful to callers that already own a mutable Photos document;
 /// brokered callers use the same validation then dispatch `ImportPhoto` so
 /// history and collaboration observe the canonical action.
+///
+/// # Errors
+///
+/// Returns the same validation errors as [`camera_import_photo`], or an error
+/// if the validated import cannot be selected in the shared library.
 pub fn import_camera_media(
     doc: &mut automerge::AutoCommit,
     media_id: &str,
