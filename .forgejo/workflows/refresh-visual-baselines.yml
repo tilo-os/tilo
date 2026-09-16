@@ -26,6 +26,7 @@ env:
 jobs:
   refresh:
     runs-on: runner
+    timeout-minutes: 120
     container:
       # Keep this identical to nightly.yml. Updating visual baselines under a
       # mutable image would silently bless changes in fonts or Mesa.
