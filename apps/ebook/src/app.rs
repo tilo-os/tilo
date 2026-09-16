@@ -8026,81 +8026,45 @@ impl BooksApp {
         ctx: &mut EbookPaintCtx<'_>,
         view: &ReaderPaneView<'_>,
     ) -> (SelAnchor, CommentBoxBounds) {
-        let scene = &mut *ctx.scene;
         let t = view.transform;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let layout = view.frame.layout;
-        let annos = view.frame.annotations;
-        let palette = view.frame.palette;
-        let base_family = view.frame.base_family;
-        let base_mono = view.frame.base_mono;
-        let chapter = view.frame.chapter;
-        let sel_ord = view.frame.selection;
-        let comment_group = view.frame.comment_group;
         let pane = view.pane;
         let content_x = pane.x;
-        let content_w = pane.w;
 
         // ---- note bands + bookmark glyphs (behind text) -----------------
-        Self::draw_pane_note_bands(
-            scene, t, layout, annos, palette, theme, chapter, content_x, content_w, pane,
-        );
+        Self::draw_pane_note_bands(ctx, view);
 
         // ---- selection + ranged-highlight bands; rebuild sel_runs -------
-        let (sel_anchor, comment_box, group_top) = self.draw_pane_selection_bands(
-            scene,
-            t,
-            tr,
-            layout,
-            annos,
-            palette,
-            base_family,
-            base_mono,
-            chapter,
-            sel_ord,
-            comment_group,
-            pane,
-            content_x,
-        );
+        let (sel_anchor, comment_box, group_top) = self.draw_pane_selection_bands(ctx, view);
 
         // ---- draggable highlight markers (left-margin grab handles) -----
         // One grip per highlight group, at the top of its first band. Recorded
         // in `hi_markers` so the press handler can hit-test it.
-        self.draw_pane_highlight_markers(scene, t, palette, content_x, &group_top);
+        self.draw_pane_highlight_markers(
+            &mut *ctx.scene,
+            t,
+            view.frame.palette,
+            content_x,
+            &group_top,
+        );
 
         // ---- glyphs + decorations (on top of bands) ---------------------
-        Self::draw_pane_glyphs(
-            scene,
-            t,
-            tr,
-            layout,
-            palette,
-            base_family,
-            base_mono,
-            content_x,
-            content_w,
-            pane,
-            self.rect.width() < FRAME_MIN_W,
-        );
+        Self::draw_pane_glyphs(ctx, view, self.rect.width() < FRAME_MIN_W);
 
         (sel_anchor, comment_box)
     }
 
     /// Note-comment bands and bookmark glyphs, drawn behind the text.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_pane_note_bands(
-        scene: &mut Scene,
-        t: Affine,
-        layout: &ChapterLayout,
-        annos: &[Annotation],
-        palette: &ReaderPalette,
-        theme: &Theme,
-        chapter: usize,
-        content_x: f64,
-        content_w: f32,
-        pane: &Pane,
-    ) {
+    fn draw_pane_note_bands(ctx: &mut EbookPaintCtx<'_>, view: &ReaderPaneView<'_>) {
+        let scene = &mut *ctx.scene;
+        let t = view.transform;
+        let layout = view.frame.layout;
+        let annos = view.frame.annotations;
+        let palette = view.frame.palette;
+        let theme = ctx.theme;
+        let chapter = view.frame.chapter;
+        let pane = view.pane;
+        let content_x = pane.x;
+        let content_w = pane.w;
         for b in &layout.blocks {
             let visible: Vec<&crate::paginate::LaidLine> = b
                 .lines
@@ -8170,23 +8134,24 @@ impl BooksApp {
     /// band's screen anchor, the open comment overlay's on-page bounds, and
     /// the topmost band per highlight group (for the draggable margin
     /// markers drawn after).
-    #[allow(clippy::too_many_arguments)]
     fn draw_pane_selection_bands(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        layout: &ChapterLayout,
-        annos: &[Annotation],
-        palette: &ReaderPalette,
-        base_family: &FontChoice,
-        base_mono: bool,
-        chapter: usize,
-        sel_ord: Option<(DocPos, DocPos)>,
-        comment_group: Option<Uuid>,
-        pane: &Pane,
-        content_x: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &ReaderPaneView<'_>,
     ) -> (SelAnchor, CommentBoxBounds, HashMap<Uuid, (f64, HiColor)>) {
+        let scene = &mut *ctx.scene;
+        let t = view.transform;
+        let tr = &mut *ctx.text;
+        let layout = view.frame.layout;
+        let annos = view.frame.annotations;
+        let palette = view.frame.palette;
+        let base_family = view.frame.base_family;
+        let base_mono = view.frame.base_mono;
+        let chapter = view.frame.chapter;
+        let sel_ord = view.frame.selection;
+        let comment_group = view.frame.comment_group;
+        let pane = view.pane;
+        let content_x = pane.x;
         let ranged: Vec<&Annotation> = annos
             .iter()
             .filter(|a| a.chapter == chapter && a.kind == AnnoKind::Highlight && a.start < a.end)
@@ -8455,20 +8420,17 @@ impl BooksApp {
 
     /// Block decorations (Quote rule, Separator line, inline math, list
     /// bullets) and every run's glyphs, on top of the bands.
-    #[allow(clippy::too_many_arguments)]
     fn draw_pane_glyphs(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        layout: &ChapterLayout,
-        palette: &ReaderPalette,
-        base_family: &FontChoice,
-        base_mono: bool,
-        content_x: f64,
-        content_w: f32,
-        pane: &Pane,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &ReaderPaneView<'_>,
         clip_to_narrow_page: bool,
     ) {
+        let t = view.transform;
+        let layout = view.frame.layout;
+        let palette = view.frame.palette;
+        let pane = view.pane;
+        let content_x = pane.x;
+        let content_w = pane.w;
         // The layout engine guarantees line bounds, while this paint clip is
         // the final containment guard for font backends with generous glyph
         // overhang. Leave a small left allowance for list bullets/quote
@@ -8480,17 +8442,26 @@ impl BooksApp {
                 content_x + f64::from(content_w),
                 pane.y + f64::from(pane.win_end - pane.win_start),
             );
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &paint_bounds);
+            ctx.scene
+                .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &paint_bounds);
         }
         for b in &layout.blocks {
-            Self::draw_pane_block_decoration(scene, t, palette, content_x, content_w, pane, b);
+            Self::draw_pane_block_decoration(
+                &mut *ctx.scene,
+                t,
+                palette,
+                content_x,
+                content_w,
+                pane,
+                b,
+            );
             if let Some(math) = &b.math
                 && pane.shows(b.top, b.line_height)
             {
                 ui::math::draw_layout(
-                    scene,
+                    &mut *ctx.scene,
                     t,
-                    tr,
+                    &mut *ctx.text,
                     &math.layout,
                     Point::new(
                         content_x + f64::from(math.x),
@@ -8503,8 +8474,8 @@ impl BooksApp {
                 && let Some(first) = b.lines.iter().find(|l| pane.shows(l.y, b.line_height))
             {
                 let ly = pane.screen_y(first.y);
-                tr.draw_text(
-                    scene,
+                ctx.text.draw_text(
+                    &mut *ctx.scene,
                     bullet,
                     b.size,
                     palette.ink_dim,
@@ -8512,20 +8483,10 @@ impl BooksApp {
                     None,
                 );
             }
-            Self::draw_pane_block_runs(
-                scene,
-                t,
-                tr,
-                palette,
-                base_family,
-                base_mono,
-                content_x,
-                pane,
-                b,
-            );
+            Self::draw_pane_block_runs(ctx, view, b);
         }
         if clip_to_narrow_page {
-            scene.pop_layer();
+            ctx.scene.pop_layer();
         }
     }
 
@@ -8571,18 +8532,19 @@ impl BooksApp {
 
     /// Every run's glyphs for one block: an inline-mono background chip when
     /// needed, structured math, or shaped text.
-    #[allow(clippy::too_many_arguments)]
     fn draw_pane_block_runs(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        palette: &ReaderPalette,
-        base_family: &FontChoice,
-        base_mono: bool,
-        content_x: f64,
-        pane: &Pane,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &ReaderPaneView<'_>,
         b: &crate::paginate::LaidBlock,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = view.transform;
+        let tr = &mut *ctx.text;
+        let palette = view.frame.palette;
+        let base_family = view.frame.base_family;
+        let base_mono = view.frame.base_mono;
+        let pane = view.pane;
+        let content_x = pane.x;
         for l in &b.lines {
             if !pane.shows(l.y, b.line_height) {
                 continue;
