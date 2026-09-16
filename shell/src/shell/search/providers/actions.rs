@@ -797,7 +797,7 @@ impl Action {
             "Open quick settings",
             "Brightness, volume, Wi-Fi, Bluetooth, power profile",
             |st, _| {
-                st.overlays.quick_settings = true;
+                st.open_quick_settings();
                 Ok(())
             },
         ),
