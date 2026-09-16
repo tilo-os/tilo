@@ -1329,7 +1329,9 @@ struct NavigationState {
 #[derive(Default)]
 struct MediaPipelineState {
     auto_place_imports: bool,
+    #[cfg(any(feature = "gst", feature = "decode"))]
     monitor_tried: bool,
+    #[cfg(any(feature = "gst", feature = "decode"))]
     monitor_stale: bool,
 }
 
@@ -1441,10 +1443,6 @@ pub struct VideoEditorApp {
     /// something on the other end of them.
     #[cfg(any(feature = "gst", feature = "decode"))]
     monitor: Option<crate::audio::AudioMonitor>,
-    #[cfg(any(feature = "gst", feature = "decode"))]
-    /// Set when the document changes, so the monitor is handed the new
-    /// timeline once per edit instead of once per frame.
-    #[cfg(any(feature = "gst", feature = "decode"))]
     /// The level the mix is running at, written by whatever is mixing and
     /// read here. **Not** feature-gated: a build with no audio backend still
     /// has a mixer, still has a meter surface, and a `--shots` capture stages
@@ -1797,6 +1795,7 @@ impl VideoEditorApp {
             },
             navigation: NavigationState::default(),
             media_pipeline: MediaPipelineState {
+                #[cfg(any(feature = "gst", feature = "decode"))]
                 monitor_stale: true,
                 ..MediaPipelineState::default()
             },
@@ -8734,11 +8733,7 @@ impl Widget for VideoEditorApp {
                 // just above populated, so a peer's caret is this field's
                 // caret in another colour rather than a second guess at it.
                 crate::presence::draw_peer_field_carets(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    presence,
+                    &mut crate::presence::PeerPaintCtx::new(scene, transform, tr, theme, presence),
                     crate::presence::FIELD_TITLE_WORDS,
                     mid,
                     |byte| field.caret_rect(theme, byte),
@@ -15102,13 +15097,15 @@ impl VideoEditorApp {
                 (crate::waveform::WaveformState::Ready, Some(peaks)) => draw_waveform(
                     ctx.scene,
                     ctx.transform,
-                    inner,
-                    peaks,
-                    0.0,
-                    media.duration,
-                    media.duration,
-                    1.0,
-                    color,
+                    WaveformPaint {
+                        area: inner,
+                        peaks,
+                        source_in: 0.0,
+                        source_out: media.duration,
+                        media_duration: media.duration,
+                        volume: 1.0,
+                        color,
+                    },
                 ),
                 _ => draw_flat_signal(ctx.scene, ctx.transform, inner, color),
             }
@@ -18075,11 +18072,7 @@ impl VideoEditorApp {
         // to stay legible on a lane that is greyed back -- knowing someone
         // else is working on a locked clip is exactly when it matters.
         crate::presence::draw_peer_clips(
-            scene,
-            tf,
-            tr,
-            theme,
-            presence,
+            &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
             &drawn,
             Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1),
         );
@@ -18138,11 +18131,7 @@ impl VideoEditorApp {
         // mapping, so a peer's line lands on the pixel the local one would at
         // the same instant under the same zoom and scroll.
         crate::presence::draw_peer_playheads(
-            scene,
-            tf,
-            tr,
-            theme,
-            presence,
+            &mut crate::presence::PeerPaintCtx::new(scene, tf, tr, theme, presence),
             r.lanes,
             r.timeline.y1,
             |t| self.time_to_x(t, &r.lanes),
@@ -18372,16 +18361,18 @@ impl VideoEditorApp {
                     (crate::waveform::WaveformState::Ready, Some(peaks)) => draw_waveform(
                         scene,
                         tf,
-                        inner,
-                        peaks,
-                        clip.in_point,
-                        clip.out_point,
-                        media_dur,
-                        // The animated level, for the same reason as the clip
-                        // body: a keyframed ramp is heard rising and was drawn
-                        // flat.
-                        clip.param_at(Param::Volume, self.playhead),
-                        color,
+                        WaveformPaint {
+                            area: inner,
+                            peaks,
+                            source_in: clip.in_point,
+                            source_out: clip.out_point,
+                            media_duration: media_dur,
+                            // The animated level, for the same reason as the clip
+                            // body: a keyframed ramp is heard rising and was drawn
+                            // flat.
+                            volume: clip.param_at(Param::Volume, self.playhead),
+                            color,
+                        },
                     ),
                     _ => draw_flat_signal(scene, tf, inner, color),
                 }
@@ -19976,44 +19967,48 @@ fn darken(c: Color, t: f64) -> Color {
     )
 }
 
-/// Draw a real audio waveform from normalized `peaks` into `area`, mapping the
-/// source window `[in_p, out_p]` (over `media_dur`) into the peaks array so a
-/// trimmed clip shows its own portion. `volume` scales the bar height.
-#[allow(clippy::too_many_arguments)]
+/// Everything needed to paint one sampled window of an audio waveform.
+///
+/// Keeping the source interval and its media duration together prevents the
+/// three adjacent time values at call sites from being silently transposed.
+#[derive(Clone, Copy)]
+struct WaveformPaint<'a> {
+    area: Rect,
+    peaks: &'a [f32],
+    source_in: f64,
+    source_out: f64,
+    media_duration: f64,
+    volume: f64,
+    color: Color,
+}
+
+/// Draw a real audio waveform from normalized peaks into its target area,
+/// mapping the requested source window into the peaks array so a trimmed clip
+/// shows its own portion.
 #[allow(
     clippy::indexing_slicing,
     reason = "waveform draw buckets are paired with their validated sample interval before each read"
 )]
-fn draw_waveform(
-    scene: &mut Scene,
-    tf: Affine,
-    area: Rect,
-    peaks: &[f32],
-    in_p: f64,
-    out_p: f64,
-    media_dur: f64,
-    volume: f64,
-    color: Color,
-) {
-    if area.width() < 3.0 || area.height() < 2.0 || peaks.is_empty() {
+fn draw_waveform(scene: &mut Scene, tf: Affine, paint: WaveformPaint<'_>) {
+    if paint.area.width() < 3.0 || paint.area.height() < 2.0 || paint.peaks.is_empty() {
         return;
     }
-    let bars = (area.width() / 3.0).floor().max(1.0) as i64;
-    let midy = area.center().y;
-    let half = (area.height() / 2.0 - 2.0).max(1.0);
-    let dur = media_dur.max(1e-6);
-    let vscale = 0.25 + volume.clamp(0.0, 1.0) * 0.75;
+    let bars = (paint.area.width() / 3.0).floor().max(1.0) as i64;
+    let midy = paint.area.center().y;
+    let half = (paint.area.height() / 2.0 - 2.0).max(1.0);
+    let dur = paint.media_duration.max(1e-6);
+    let vscale = 0.25 + paint.volume.clamp(0.0, 1.0) * 0.75;
     for i in 0..bars {
         let fx = (i as f64 + 0.5) / bars as f64;
-        let x = area.x0 + 2.0 + fx * (area.width() - 4.0);
-        let t = in_p + fx * (out_p - in_p);
+        let x = paint.area.x0 + 2.0 + fx * (paint.area.width() - 4.0);
+        let t = paint.source_in + fx * (paint.source_out - paint.source_in);
         let frac = (t / dur).clamp(0.0, 1.0);
-        let idx = ((frac * peaks.len() as f64) as usize).min(peaks.len() - 1);
-        let amp = (f64::from(peaks[idx]) * half * vscale).max(0.5);
+        let idx = ((frac * paint.peaks.len() as f64) as usize).min(paint.peaks.len() - 1);
+        let amp = (f64::from(paint.peaks[idx]) * half * vscale).max(0.5);
         fill_rect(
             scene,
             tf,
-            color,
+            paint.color,
             Rect::new(x, midy - amp, x + 2.0, midy + amp),
         );
     }

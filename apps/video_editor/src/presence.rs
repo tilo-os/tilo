@@ -386,6 +386,37 @@ pub fn peer_field_carets(
 /// instant can be stepped apart instead of printing on top of one another.
 const CHIP_STEP: f64 = 16.0;
 
+/// Shared drawing resources for collaborative overlays.
+///
+/// Every peer overlay uses the same scene, transform, text renderer, theme,
+/// and presence snapshot. Grouping them makes that invariant explicit and
+/// keeps new overlay geometry from growing another long positional API.
+pub struct PeerPaintCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text_renderer: &'a mut TextRenderer,
+    theme: &'a Theme,
+    presence: &'a PresenceCtx,
+}
+
+impl<'a> PeerPaintCtx<'a> {
+    pub fn new(
+        scene: &'a mut Scene,
+        transform: Affine,
+        text_renderer: &'a mut TextRenderer,
+        theme: &'a Theme,
+        presence: &'a PresenceCtx,
+    ) -> Self {
+        Self {
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+        }
+    }
+}
+
 /// Draw every participant's playhead as a ghost line down the lanes with
 /// their name above it.
 ///
@@ -396,18 +427,13 @@ const CHIP_STEP: f64 = 16.0;
 ///
 /// Chips step down for each successive peer so two people parked on the same
 /// frame are both readable.
-#[allow(clippy::too_many_arguments)]
 pub fn draw_peer_playheads(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
+    ctx: &mut PeerPaintCtx<'_>,
     lanes: Rect,
     bottom: f64,
     time_to_x: impl Fn(f64) -> f64,
 ) {
-    for (i, peer) in peer_playheads(presence).iter().enumerate() {
+    for (i, peer) in peer_playheads(ctx.presence).iter().enumerate() {
         let x = time_to_x(peer.at);
         if x < lanes.x0 - 0.5 || x > lanes.x1 + 0.5 {
             continue;
@@ -416,13 +442,13 @@ pub fn draw_peer_playheads(
         // the lane area to leave room for it inside the timeline.
         let top = lanes.y0 + CHIP_STEP * (i % 3) as f64;
         let bar = Rect::new(x - 1.0, top, x + 1.0, bottom);
-        presence.draw_peer_caret_labeled(
-            scene,
-            theme,
-            text_renderer,
-            transform,
+        ctx.presence.draw_peer_caret_labeled(
+            ctx.scene,
+            ctx.theme,
+            ctx.text_renderer,
+            ctx.transform,
             &peer.user,
-            &presence.display_name(&peer.user),
+            &ctx.presence.display_name(&peer.user),
             bar,
         );
     }
@@ -440,26 +466,18 @@ pub fn draw_peer_playheads(
 /// clip it names, and there is nothing above the top lane to hang it in, so
 /// the chip has to know where the ceiling is or a peer on the top track is
 /// labelled with the bottom two pixels of their name.
-pub fn draw_peer_clips(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    visible: &[(ClipId, Rect)],
-    area: Rect,
-) {
-    for peer in peer_clips(presence) {
+pub fn draw_peer_clips(ctx: &mut PeerPaintCtx<'_>, visible: &[(ClipId, Rect)], area: Rect) {
+    for peer in peer_clips(ctx.presence) {
         let Some((_, rect)) = visible.iter().find(|(id, _)| *id == peer.clip) else {
             continue;
         };
-        presence.draw_peer_outline_labeled_within(
-            scene,
-            theme,
-            text_renderer,
-            transform,
+        ctx.presence.draw_peer_outline_labeled_within(
+            ctx.scene,
+            ctx.theme,
+            ctx.text_renderer,
+            ctx.transform,
             &peer.user,
-            &presence.display_name(&peer.user),
+            &ctx.presence.display_name(&peer.user),
             *rect,
             4.0,
             area,
@@ -478,23 +496,19 @@ pub fn draw_peer_clips(
 /// exists for: two people in the same words at the same time, which is when
 /// knowing where the other one is stops being a nicety.
 pub fn draw_peer_field_carets(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
+    ctx: &mut PeerPaintCtx<'_>,
     field: &str,
     subject: Uuid,
     mut caret_rect: impl FnMut(usize) -> Rect,
 ) {
-    for (user, byte) in peer_field_carets(presence, field, subject) {
-        presence.draw_peer_caret_labeled(
-            scene,
-            theme,
-            text_renderer,
-            transform,
+    for (user, byte) in peer_field_carets(ctx.presence, field, subject) {
+        ctx.presence.draw_peer_caret_labeled(
+            ctx.scene,
+            ctx.theme,
+            ctx.text_renderer,
+            ctx.transform,
             &user,
-            &presence.display_name(&user),
+            &ctx.presence.display_name(&user),
             caret_rect(byte),
         );
     }
@@ -894,13 +908,10 @@ mod tests {
 
         let mut scene = Scene::new();
         let mut tr = ui::text_render::TextRenderer::new();
+        let theme = Theme::default();
         let mut asked = Vec::new();
         draw_peer_field_carets(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::default(),
-            &ctx,
+            &mut PeerPaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, &ctx),
             FIELD_TITLE_WORDS,
             subject,
             |byte| {
