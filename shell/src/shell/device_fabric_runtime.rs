@@ -5,7 +5,7 @@
 //! history, not the live Wayland selection, until explicitly activated.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 
 use rand_core::{OsRng, RngCore};
@@ -28,6 +28,8 @@ const MAX_QUEUED_SPATIAL_INPUT: usize = 256;
 const MAX_SPATIAL_INPUT_FLUSH_PER_FRAME: usize = 32;
 const MAX_PENDING_INCOMING_MEDIA: usize = 16;
 const INCOMING_MEDIA_WAIT: Duration = Duration::from_secs(60 * 60);
+const BLUETOOTH_HANDOFF_WAIT: Duration = Duration::from_secs(45);
+const MAX_BLUETOOTH_HANDOFFS: usize = 32;
 
 #[derive(Clone)]
 struct PendingIncomingMedia {
@@ -90,6 +92,121 @@ fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
     STATE.get_or_init(|| Mutex::new(SpatialInputState::default()))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BluetoothHandoffPhase {
+    AwaitingReady,
+    CheckingPairing,
+    Ready,
+    DisconnectingSource,
+    AwaitingFinish,
+    ConnectingTarget,
+    AwaitingAcceptance,
+}
+
+#[derive(Clone, Debug)]
+struct BluetoothHandoffTransaction {
+    peer: crate::shell::personal_continuity::DeviceId,
+    address: String,
+    name: String,
+    outbound: bool,
+    phase: BluetoothHandoffPhase,
+    started: Instant,
+}
+
+impl BluetoothHandoffTransaction {
+    fn matches(
+        &self,
+        peer: &crate::shell::personal_continuity::DeviceId,
+        address: &str,
+        outbound: bool,
+        phase: BluetoothHandoffPhase,
+    ) -> bool {
+        self.outbound == outbound
+            && &self.peer == peer
+            && self.address.eq_ignore_ascii_case(address)
+            && self.phase == phase
+    }
+}
+
+#[derive(Debug)]
+enum BluetoothWorkerOutcome {
+    PairingChecked(Result<bool, String>),
+    SourceDisconnected(Result<(), String>),
+    TargetConnected(Result<(), String>),
+    SourceReconnected(Result<(), String>),
+}
+
+#[derive(Debug)]
+struct BluetoothWorkerResult {
+    request_id: [u8; 16],
+    address: String,
+    outcome: BluetoothWorkerOutcome,
+}
+
+struct BluetoothHandoffState {
+    transactions: BTreeMap<[u8; 16], BluetoothHandoffTransaction>,
+    result_tx: mpsc::Sender<BluetoothWorkerResult>,
+    result_rx: mpsc::Receiver<BluetoothWorkerResult>,
+}
+
+impl BluetoothHandoffState {
+    fn new() -> Self {
+        let (result_tx, result_rx) = mpsc::channel();
+        Self {
+            transactions: BTreeMap::new(),
+            result_tx,
+            result_rx,
+        }
+    }
+
+    fn start_worker(
+        &self,
+        request_id: [u8; 16],
+        address: String,
+        operation: BluetoothWorkerOperation,
+    ) {
+        let result_tx = self.result_tx.clone();
+        std::thread::spawn(move || {
+            let outcome = match operation {
+                BluetoothWorkerOperation::CheckPairing => BluetoothWorkerOutcome::PairingChecked(
+                    os_actions::bluez::paired_devices().map(|devices| {
+                        devices
+                            .iter()
+                            .any(|device| device.address.eq_ignore_ascii_case(&address))
+                    }),
+                ),
+                BluetoothWorkerOperation::DisconnectSource => {
+                    BluetoothWorkerOutcome::SourceDisconnected(os_actions::bt_disconnect(&address))
+                }
+                BluetoothWorkerOperation::ConnectTarget => {
+                    BluetoothWorkerOutcome::TargetConnected(os_actions::bt_connect(&address))
+                }
+                BluetoothWorkerOperation::ReconnectSource => {
+                    BluetoothWorkerOutcome::SourceReconnected(os_actions::bt_connect(&address))
+                }
+            };
+            let _ = result_tx.send(BluetoothWorkerResult {
+                request_id,
+                address,
+                outcome,
+            });
+        });
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BluetoothWorkerOperation {
+    CheckPairing,
+    DisconnectSource,
+    ConnectTarget,
+    ReconnectSource,
+}
+
+fn bluetooth_handoff_state() -> &'static Mutex<BluetoothHandoffState> {
+    static STATE: OnceLock<Mutex<BluetoothHandoffState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(BluetoothHandoffState::new()))
+}
+
 /// Stable local facts supplied by the compositor without blocking discovery.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LocalFabricCapabilities {
@@ -136,6 +253,7 @@ impl DeviceFabricRuntime {
         selection: &SharedSelection,
         local: LocalFabricCapabilities,
     ) {
+        pump_bluetooth_handoffs(network);
         self.handle_fabric_actions(network);
         self.retry_waiting_media(network);
         flush_spatial_input(network);
@@ -304,6 +422,18 @@ impl DeviceFabricRuntime {
                     if let Some(controller) = report.controller_bus_name {
                         let _ = crate::shell::mpris::pause_named(&controller);
                     }
+                }
+                action @ (PersonalFabricAction::BluetoothHandoffPrepare { .. }
+                | PersonalFabricAction::BluetoothHandoffPrepared { .. }
+                | PersonalFabricAction::BluetoothHandoffCommit { .. }
+                | PersonalFabricAction::BluetoothHandoffFinished { .. }
+                | PersonalFabricAction::BluetoothHandoffAccepted { .. }) => {
+                    handle_bluetooth_handoff_action(
+                        network,
+                        envelope.request_id,
+                        &envelope.source,
+                        action,
+                    );
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
@@ -482,8 +612,493 @@ fn handle_spatial_action(
                 spatial.inbound.push_back((source, event));
             }
         }
-        PersonalFabricAction::ResumeMedia { .. } | PersonalFabricAction::MediaAccepted { .. } => {}
+        PersonalFabricAction::ResumeMedia { .. }
+        | PersonalFabricAction::MediaAccepted { .. }
+        | PersonalFabricAction::BluetoothHandoffPrepare { .. }
+        | PersonalFabricAction::BluetoothHandoffPrepared { .. }
+        | PersonalFabricAction::BluetoothHandoffCommit { .. }
+        | PersonalFabricAction::BluetoothHandoffFinished { .. }
+        | PersonalFabricAction::BluetoothHandoffAccepted { .. } => {}
     }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the four authenticated Bluetooth transaction messages are kept together so every phase transition and rollback is auditable"
+)]
+fn handle_bluetooth_handoff_action(
+    network: &ShellNetwork,
+    envelope_request_id: [u8; 16],
+    source: &crate::shell::personal_continuity::DeviceId,
+    action: PersonalFabricAction,
+) {
+    match action {
+        PersonalFabricAction::BluetoothHandoffPrepare { address, name } => {
+            let accepted = bluetooth_handoff_state().lock().is_ok_and(|mut state| {
+                if state.transactions.len() >= MAX_BLUETOOTH_HANDOFFS
+                    || state.transactions.contains_key(&envelope_request_id)
+                {
+                    return false;
+                }
+                state.transactions.insert(
+                    envelope_request_id,
+                    BluetoothHandoffTransaction {
+                        peer: source.clone(),
+                        address: address.clone(),
+                        name,
+                        outbound: false,
+                        phase: BluetoothHandoffPhase::CheckingPairing,
+                        started: Instant::now(),
+                    },
+                );
+                state.start_worker(
+                    envelope_request_id,
+                    address.clone(),
+                    BluetoothWorkerOperation::CheckPairing,
+                );
+                true
+            });
+            if !accepted {
+                let _ = network.send_personal_fabric_action(
+                    source,
+                    PersonalFabricAction::BluetoothHandoffPrepared {
+                        request_id: envelope_request_id,
+                        address,
+                        ready: false,
+                    },
+                );
+            }
+        }
+        PersonalFabricAction::BluetoothHandoffPrepared {
+            request_id,
+            address,
+            ready,
+        } => {
+            let Ok(mut state) = bluetooth_handoff_state().lock() else {
+                return;
+            };
+            let valid = state
+                .transactions
+                .get(&request_id)
+                .is_some_and(|transaction| {
+                    transaction.matches(
+                        source,
+                        &address,
+                        true,
+                        BluetoothHandoffPhase::AwaitingReady,
+                    )
+                });
+            if !valid {
+                return;
+            }
+            if !ready {
+                state.transactions.remove(&request_id);
+                tracing::warn!(
+                    accessory = address,
+                    "Bluetooth handoff target does not have this accessory paired"
+                );
+                return;
+            }
+            if let Some(transaction) = state.transactions.get_mut(&request_id) {
+                transaction.phase = BluetoothHandoffPhase::DisconnectingSource;
+            }
+            state.start_worker(
+                request_id,
+                address,
+                BluetoothWorkerOperation::DisconnectSource,
+            );
+        }
+        PersonalFabricAction::BluetoothHandoffCommit {
+            request_id,
+            address,
+        } => {
+            let accepted = bluetooth_handoff_state().lock().is_ok_and(|mut state| {
+                let valid = state
+                    .transactions
+                    .get(&request_id)
+                    .is_some_and(|transaction| {
+                        transaction.matches(source, &address, false, BluetoothHandoffPhase::Ready)
+                    });
+                if !valid {
+                    return false;
+                }
+                if let Some(transaction) = state.transactions.get_mut(&request_id) {
+                    transaction.phase = BluetoothHandoffPhase::ConnectingTarget;
+                }
+                state.start_worker(
+                    request_id,
+                    address.clone(),
+                    BluetoothWorkerOperation::ConnectTarget,
+                );
+                true
+            });
+            if !accepted {
+                let _ = network.send_personal_fabric_action(
+                    source,
+                    PersonalFabricAction::BluetoothHandoffFinished {
+                        request_id,
+                        address,
+                        connected: false,
+                    },
+                );
+            }
+        }
+        PersonalFabricAction::BluetoothHandoffFinished {
+            request_id,
+            address,
+            connected,
+        } => {
+            let Ok(mut state) = bluetooth_handoff_state().lock() else {
+                return;
+            };
+            let valid = state
+                .transactions
+                .get(&request_id)
+                .is_some_and(|transaction| {
+                    transaction.matches(
+                        source,
+                        &address,
+                        true,
+                        BluetoothHandoffPhase::AwaitingFinish,
+                    )
+                });
+            if !valid {
+                return;
+            }
+            if connected {
+                drop(state);
+                let accepted = network
+                    .send_personal_fabric_action(
+                        source,
+                        PersonalFabricAction::BluetoothHandoffAccepted {
+                            request_id,
+                            address,
+                        },
+                    )
+                    .is_ok();
+                if accepted
+                    && let Ok(mut state) = bluetooth_handoff_state().lock()
+                    && let Some(transaction) = state.transactions.remove(&request_id)
+                {
+                    tracing::info!(
+                        accessory = transaction.name,
+                        target = transaction.peer.as_str(),
+                        "Bluetooth accessory handoff completed"
+                    );
+                }
+            } else {
+                state.transactions.remove(&request_id);
+                state.start_worker(
+                    request_id,
+                    address,
+                    BluetoothWorkerOperation::ReconnectSource,
+                );
+            }
+        }
+        PersonalFabricAction::BluetoothHandoffAccepted {
+            request_id,
+            address,
+        } => {
+            let Ok(mut state) = bluetooth_handoff_state().lock() else {
+                return;
+            };
+            let valid = state
+                .transactions
+                .get(&request_id)
+                .is_some_and(|transaction| {
+                    transaction.matches(
+                        source,
+                        &address,
+                        false,
+                        BluetoothHandoffPhase::AwaitingAcceptance,
+                    )
+                });
+            if valid {
+                state.transactions.remove(&request_id);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn pump_bluetooth_handoffs(network: &ShellNetwork) {
+    let results = bluetooth_handoff_state().lock().map_or_else(
+        |_| Vec::new(),
+        |state| state.result_rx.try_iter().collect::<Vec<_>>(),
+    );
+    for result in results {
+        finish_bluetooth_worker(network, result);
+    }
+
+    let expired = bluetooth_handoff_state().lock().map_or_else(
+        |_| Vec::new(),
+        |mut state| {
+            let expired = state
+                .transactions
+                .iter()
+                .filter(|(_, transaction)| transaction.started.elapsed() >= BLUETOOTH_HANDOFF_WAIT)
+                .map(|(request_id, transaction)| (*request_id, transaction.clone()))
+                .collect::<Vec<_>>();
+            for (request_id, _) in &expired {
+                state.transactions.remove(request_id);
+            }
+            expired
+        },
+    );
+    for (request_id, transaction) in expired {
+        if transaction.outbound
+            && matches!(
+                transaction.phase,
+                BluetoothHandoffPhase::DisconnectingSource | BluetoothHandoffPhase::AwaitingFinish
+            )
+            && let Ok(state) = bluetooth_handoff_state().lock()
+        {
+            state.start_worker(
+                request_id,
+                transaction.address.clone(),
+                BluetoothWorkerOperation::ReconnectSource,
+            );
+        }
+        if !transaction.outbound && transaction.phase == BluetoothHandoffPhase::AwaitingAcceptance {
+            let address = transaction.address.clone();
+            std::thread::spawn(move || {
+                let _ = os_actions::bt_disconnect(&address);
+            });
+        }
+        tracing::warn!(
+            accessory = transaction.name,
+            "Bluetooth accessory handoff timed out"
+        );
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "worker completions mirror the Bluetooth transaction phases and keep rollback adjacent to each hardware outcome"
+)]
+fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult) {
+    let request_id = result.request_id;
+    let address = result.address;
+    match result.outcome {
+        BluetoothWorkerOutcome::PairingChecked(check) => {
+            let ready = check.unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not inspect local Bluetooth bonds");
+                false
+            });
+            let transaction = bluetooth_handoff_state().lock().ok().and_then(|mut state| {
+                let valid = state
+                    .transactions
+                    .get(&request_id)
+                    .is_some_and(|transaction| {
+                        !transaction.outbound
+                            && transaction.address.eq_ignore_ascii_case(&address)
+                            && transaction.phase == BluetoothHandoffPhase::CheckingPairing
+                    });
+                if !valid {
+                    return None;
+                }
+                if ready {
+                    if let Some(transaction) = state.transactions.get_mut(&request_id) {
+                        transaction.phase = BluetoothHandoffPhase::Ready;
+                    }
+                    state.transactions.get(&request_id).cloned()
+                } else {
+                    state.transactions.remove(&request_id)
+                }
+            });
+            if let Some(transaction) = transaction
+                && network
+                    .send_personal_fabric_action(
+                        &transaction.peer,
+                        PersonalFabricAction::BluetoothHandoffPrepared {
+                            request_id,
+                            address,
+                            ready,
+                        },
+                    )
+                    .is_err()
+                && ready
+                && let Ok(mut state) = bluetooth_handoff_state().lock()
+            {
+                state.transactions.remove(&request_id);
+            }
+        }
+        BluetoothWorkerOutcome::SourceDisconnected(disconnected) => {
+            if let Err(error) = disconnected {
+                tracing::warn!(%error, "could not release Bluetooth accessory for handoff");
+                if let Ok(mut state) = bluetooth_handoff_state().lock() {
+                    state.transactions.remove(&request_id);
+                }
+                return;
+            }
+            let transaction = bluetooth_handoff_state().lock().ok().and_then(|mut state| {
+                let transaction = state.transactions.get_mut(&request_id)?;
+                if !transaction.outbound
+                    || !transaction.address.eq_ignore_ascii_case(&address)
+                    || transaction.phase != BluetoothHandoffPhase::DisconnectingSource
+                {
+                    return None;
+                }
+                transaction.phase = BluetoothHandoffPhase::AwaitingFinish;
+                Some(transaction.clone())
+            });
+            let Some(transaction) = transaction else {
+                if let Ok(state) = bluetooth_handoff_state().lock() {
+                    state.start_worker(
+                        request_id,
+                        address,
+                        BluetoothWorkerOperation::ReconnectSource,
+                    );
+                }
+                return;
+            };
+            if network
+                .send_personal_fabric_action(
+                    &transaction.peer,
+                    PersonalFabricAction::BluetoothHandoffCommit {
+                        request_id,
+                        address: address.clone(),
+                    },
+                )
+                .is_err()
+                && let Ok(mut state) = bluetooth_handoff_state().lock()
+            {
+                state.transactions.remove(&request_id);
+                state.start_worker(
+                    request_id,
+                    address,
+                    BluetoothWorkerOperation::ReconnectSource,
+                );
+            }
+        }
+        BluetoothWorkerOutcome::TargetConnected(connected) => {
+            let success = connected.is_ok();
+            if let Err(error) = connected {
+                tracing::warn!(%error, "Bluetooth accessory could not connect on target");
+            }
+            let transaction = bluetooth_handoff_state().lock().ok().and_then(|mut state| {
+                let valid = state
+                    .transactions
+                    .get(&request_id)
+                    .is_some_and(|transaction| {
+                        !transaction.outbound
+                            && transaction.address.eq_ignore_ascii_case(&address)
+                            && transaction.phase == BluetoothHandoffPhase::ConnectingTarget
+                    });
+                if !valid {
+                    return None;
+                }
+                if success {
+                    let transaction = state.transactions.get_mut(&request_id)?;
+                    transaction.phase = BluetoothHandoffPhase::AwaitingAcceptance;
+                    Some(transaction.clone())
+                } else {
+                    state.transactions.remove(&request_id)
+                }
+            });
+            let Some(transaction) = transaction else {
+                if success {
+                    std::thread::spawn(move || {
+                        let _ = os_actions::bt_disconnect(&address);
+                    });
+                }
+                return;
+            };
+            let send = network.send_personal_fabric_action(
+                &transaction.peer,
+                PersonalFabricAction::BluetoothHandoffFinished {
+                    request_id,
+                    address: address.clone(),
+                    connected: success,
+                },
+            );
+            if send.is_err() {
+                if let Ok(mut state) = bluetooth_handoff_state().lock() {
+                    state.transactions.remove(&request_id);
+                }
+                if success {
+                    std::thread::spawn(move || {
+                        let _ = os_actions::bt_disconnect(&address);
+                    });
+                }
+            }
+        }
+        BluetoothWorkerOutcome::SourceReconnected(reconnected) => {
+            if let Err(error) = reconnected {
+                tracing::error!(%error, "could not restore Bluetooth accessory after failed handoff");
+            }
+        }
+    }
+}
+
+/// Move one already-paired Bluetooth accessory to another certified qOS
+/// device without ever copying its bond keys. The target must independently
+/// know the same address before the source releases its connection.
+///
+/// # Errors
+///
+/// Returns an error when the address/name is malformed, the destination is
+/// not online and certified, another handoff exhausted the bounded queue, or
+/// the authenticated prepare action cannot be sent.
+pub fn request_bluetooth_handoff(
+    network: &ShellNetwork,
+    address: &str,
+    name: &str,
+    target: &crate::shell::personal_continuity::DeviceId,
+) -> Result<[u8; 16], String> {
+    if !super::device_fabric::valid_bluetooth_address(address)
+        || name.is_empty()
+        || name.len() > 128
+        || name.chars().any(char::is_control)
+    {
+        return Err("that Bluetooth accessory identity is invalid".into());
+    }
+    let (local, _) = network
+        .local_device_fabric_identity()
+        .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+    if target == &local {
+        return Err("the Bluetooth accessory is already on this device".into());
+    }
+    let fabric = network.device_fabric();
+    let destination = fabric
+        .snapshots()
+        .get(target)
+        .ok_or_else(|| "the target is not an enrolled device".to_string())?;
+    if !destination.presence.online {
+        return Err("the target device is offline".into());
+    }
+    if bluetooth_handoff_state()
+        .lock()
+        .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?
+        .transactions
+        .len()
+        >= MAX_BLUETOOTH_HANDOFFS
+    {
+        return Err("too many Bluetooth handoffs are already in progress".into());
+    }
+    let request_id = network.send_personal_fabric_action(
+        target,
+        PersonalFabricAction::BluetoothHandoffPrepare {
+            address: address.to_ascii_uppercase(),
+            name: name.to_string(),
+        },
+    )?;
+    let mut state = bluetooth_handoff_state()
+        .lock()
+        .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?;
+    state.transactions.insert(
+        request_id,
+        BluetoothHandoffTransaction {
+            peer: target.clone(),
+            address: address.to_ascii_uppercase(),
+            name: name.to_string(),
+            outbound: true,
+            phase: BluetoothHandoffPhase::AwaitingReady,
+            started: Instant::now(),
+        },
+    );
+    drop(state);
+    Ok(request_id)
 }
 
 /// Initiate a transactional move of one locally playing session. The source
@@ -1216,6 +1831,50 @@ fn unix_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn bluetooth_handoff_phases_bind_peer_direction_and_accessory() {
+        let target = DeviceId::new("target").unwrap();
+        let other = DeviceId::new("other").unwrap();
+        let transaction = BluetoothHandoffTransaction {
+            peer: target.clone(),
+            address: "AA:BB:CC:DD:EE:FF".into(),
+            name: "Headphones".into(),
+            outbound: true,
+            phase: BluetoothHandoffPhase::AwaitingReady,
+            started: Instant::now(),
+        };
+        assert!(transaction.matches(
+            &target,
+            "aa:bb:cc:dd:ee:ff",
+            true,
+            BluetoothHandoffPhase::AwaitingReady
+        ));
+        assert!(!transaction.matches(
+            &other,
+            "AA:BB:CC:DD:EE:FF",
+            true,
+            BluetoothHandoffPhase::AwaitingReady
+        ));
+        assert!(!transaction.matches(
+            &target,
+            "AA:BB:CC:DD:EE:00",
+            true,
+            BluetoothHandoffPhase::AwaitingReady
+        ));
+        assert!(!transaction.matches(
+            &target,
+            "AA:BB:CC:DD:EE:FF",
+            false,
+            BluetoothHandoffPhase::AwaitingReady
+        ));
+        assert!(!transaction.matches(
+            &target,
+            "AA:BB:CC:DD:EE:FF",
+            true,
+            BluetoothHandoffPhase::AwaitingFinish
+        ));
+    }
 
     #[test]
     fn roaming_projection_includes_personal_preferences_and_excludes_hardware_state() {

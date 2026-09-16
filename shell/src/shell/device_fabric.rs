@@ -203,6 +203,35 @@ pub enum PersonalFabricAction {
         lease_nonce: [u8; 16],
         event: FabricInputEvent,
     },
+    /// Phase one of accessory handoff. The address is ephemeral routing
+    /// metadata; bond keys and the device inventory never enter a snapshot.
+    BluetoothHandoffPrepare {
+        address: String,
+        name: String,
+    },
+    /// The target confirms whether this same address is already paired there.
+    BluetoothHandoffPrepared {
+        request_id: [u8; 16],
+        address: String,
+        ready: bool,
+    },
+    /// Sent only after the source has disconnected without forgetting its bond.
+    BluetoothHandoffCommit {
+        request_id: [u8; 16],
+        address: String,
+    },
+    /// Final target outcome. A failure tells the source to reconnect locally.
+    BluetoothHandoffFinished {
+        request_id: [u8; 16],
+        address: String,
+        connected: bool,
+    },
+    /// Source confirms it received a successful finish. Until this arrives,
+    /// the target retains rollback state and disconnects on timeout.
+    BluetoothHandoffAccepted {
+        request_id: [u8; 16],
+        address: String,
+    },
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -261,6 +290,37 @@ impl PersonalFabricActionEnvelope {
                 session_id,
             } => {
                 if request_id == &[0; 16] || !valid_identifier(session_id, 256) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::BluetoothHandoffPrepare { address, name } => {
+                if !valid_bluetooth_address(address)
+                    || name.is_empty()
+                    || name.len() > 128
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::BluetoothHandoffPrepared {
+                request_id,
+                address,
+                ..
+            }
+            | PersonalFabricAction::BluetoothHandoffCommit {
+                request_id,
+                address,
+            }
+            | PersonalFabricAction::BluetoothHandoffFinished {
+                request_id,
+                address,
+                ..
+            }
+            | PersonalFabricAction::BluetoothHandoffAccepted {
+                request_id,
+                address,
+            } => {
+                if request_id == &[0; 16] || !valid_bluetooth_address(address) {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1080,6 +1140,18 @@ fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
     }
 }
 
+pub(super) fn valid_bluetooth_address(address: &str) -> bool {
+    let bytes = address.as_bytes();
+    bytes.len() == 17
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 2 | 5 | 8 | 11 | 14) {
+                *byte == b':'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
 /// Whether a settings-store leaf is deliberately part of a person's fabric.
 ///
 /// This is an allowlist rather than a denylist: a newly-added setting stays
@@ -1651,6 +1723,76 @@ mod tests {
             envelope.validate_at(&source, &target, 10_000 + MAX_FABRIC_ACTION_AGE_MS + 1),
             Err(FabricError::InvalidAction)
         );
+    }
+
+    #[test]
+    fn bluetooth_handoff_actions_accept_only_canonical_bounded_ephemeral_identity() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        assert_eq!(
+            envelope(PersonalFabricAction::BluetoothHandoffPrepare {
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                name: "Headphones".into(),
+            })
+            .validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        for address in [
+            "AA:BB:CC:DD:EE",
+            "AA-BB-CC-DD-EE-FF",
+            "../../org/bluez/hci0",
+            "GG:BB:CC:DD:EE:FF",
+        ] {
+            assert_eq!(
+                envelope(PersonalFabricAction::BluetoothHandoffPrepare {
+                    address: address.into(),
+                    name: "Headphones".into(),
+                })
+                .validate_at(&source, &target, 10_100),
+                Err(FabricError::InvalidAction)
+            );
+        }
+        assert_eq!(
+            envelope(PersonalFabricAction::BluetoothHandoffCommit {
+                request_id: [0; 16],
+                address: "AA:BB:CC:DD:EE:FF".into(),
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
+    fn new_action_variants_do_not_renumber_existing_wire_actions() {
+        let placement = postcard::to_allocvec(&PersonalFabricAction::SetDisplayPlacement {
+            rect: DisplayRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        })
+        .unwrap();
+        let input = postcard::to_allocvec(&PersonalFabricAction::Input {
+            lease_nonce: [1; 16],
+            event: FabricInputEvent::PointerMotion { x: 0, y: 0 },
+        })
+        .unwrap();
+        let bluetooth = postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPrepare {
+            address: "AA:BB:CC:DD:EE:FF".into(),
+            name: "Headphones".into(),
+        })
+        .unwrap();
+        assert_eq!(placement.first(), Some(&2));
+        assert_eq!(input.first(), Some(&5));
+        assert_eq!(bluetooth.first(), Some(&6));
     }
 
     #[test]
