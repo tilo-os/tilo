@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require bounded jobs in the repository's fast feedback workflows."""
+"""Require every Forgejo workflow job to declare a positive timeout."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".forgejo" / "workflows"
-REQUIRED = ("lint.yml", "check.yml", "legacy-app-e2e.yml")
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 TIMEOUT = re.compile(r"^    timeout-minutes:\s*([0-9]+)\s*$")
 
@@ -52,12 +51,22 @@ def jobs_without_timeouts(path: Path) -> list[str]:
     return [job for job, bounded in jobs.items() if not bounded]
 
 
+def workflow_files(workflows: Path) -> list[Path]:
+    """Return every YAML workflow in a stable order."""
+    return sorted((*workflows.glob("*.yml"), *workflows.glob("*.yaml")))
+
+
 def audit(
-    workflows: Path = WORKFLOWS, required: tuple[str, ...] = REQUIRED
+    workflows: Path = WORKFLOWS, required: tuple[str, ...] | None = None
 ) -> list[Violation]:
+    paths = (
+        [workflows / workflow for workflow in required]
+        if required is not None
+        else workflow_files(workflows)
+    )
     violations: list[Violation] = []
-    for workflow in required:
-        path = workflows / workflow
+    for path in paths:
+        workflow = path.name
         if not path.is_file():
             violations.append(Violation(workflow, "<missing workflow>"))
             continue
@@ -73,7 +82,7 @@ def main() -> int:
         for violation in violations:
             print(violation)
         return 1
-    print("Fast workflow timeout policy OK")
+    print(f"Workflow timeout policy OK ({len(workflow_files(WORKFLOWS))} workflows)")
     return 0
 
 

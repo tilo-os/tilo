@@ -80,6 +80,7 @@ concurrency:
 jobs:
   plan:
     runs-on: runner
+    timeout-minutes: 15
     outputs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
       publish: ${{ steps.matrix.outputs.publish }}
@@ -113,6 +114,7 @@ jobs:
       fail-fast: true
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 600
     enable-openid-connect: true
     steps:
       - name: Checkout the monorepo
@@ -969,6 +971,7 @@ jobs:
     needs: [plan, build-and-push]
     if: needs.plan.outputs.publish == 'true'
     runs-on: runner
+    timeout-minutes: 120
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
