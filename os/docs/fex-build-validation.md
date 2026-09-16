@@ -548,3 +548,40 @@ Graphics application acceptance and a full corrected run remain required.
 A passing unseeded
 CPU-count test in the full suite does not supersede the failing controlled
 CPU-list regression fixture documented above.
+
+### Graphics application comparison with complete drivers
+
+The guest diagnostic runtime was extended with `glx-utils.x86_64` and both
+x86-64/i686 Mesa DRI and Vulkan drivers, using normal RPM scriptlets through
+explicit FEX execution. Its image is
+`localhost/qos-fex-graphics-guest:fedora44-dev`, ID
+`a2e62822ac3d9498f75d38c1005fa09c089460cb1f3de9c4fee2364e8a75db14`.
+The exported package inventory contains 1,070 entries. These diagnostic
+packages came from Fedora repositories; they are not promoted frozen release
+inputs.
+
+The native ARM graphics host image adds Mesa drivers, GL/Vulkan tools, and
+Xvfb to the complete installed FEX runtime. Its ID is
+`5819150611346d43c72daa5a733e207b093ef89645d727d545c4f289ce0ff8a7`.
+The comparison ran as UID 1000 with all capabilities dropped, an init process,
+no external network, and Podman's default seccomp filter. Xvfb provided a
+1280×800 display; Mesa software rendering was selected. Build artifacts and
+the guest filesystem were read-only, with test output in a private temporary
+directory.
+
+Native ARM `glxinfo -B` reported OpenGL 4.6 with llvmpipe. Native
+`vulkaninfo --summary` reported Vulkan 1.4.354 with llvmpipe. The four unchanged
+upstream graphics tests then finished in 2.10 seconds:
+
+| Guest application | Native graphics thunks | Result |
+| --- | --- | --- |
+| `glxinfo` | Disabled | Passed |
+| `glxinfo` | Enabled | Passed |
+| `vulkaninfo` | Disabled | Passed |
+| `vulkaninfo` | Enabled | Illegal instruction |
+
+The log is `fex-clang21-graphics-functional-validation.log`. Driver selection
+was automatic; no Vulkan ICD override hid the thunk failure. These results
+resolve the missing tools/drivers fixture problems and reproduce the remaining
+Vulkan bridge failure with the complete Clang 21 build. They do not establish
+physical GPU, shader workload, DXVK, or Proton acceptance.
