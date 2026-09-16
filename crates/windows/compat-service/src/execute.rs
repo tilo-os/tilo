@@ -13,6 +13,8 @@ pub const SECCOMP_CHILD_FD: i32 = 32;
 pub(crate) const PREFIX_CHILD_FD: i32 = 33;
 pub(crate) const HOME_CHILD_FD: i32 = 34;
 pub(crate) const RUNTIME_LOCK_CHILD_FD: i32 = 35;
+pub(crate) const PASSWD_CHILD_FD: i32 = 36;
+pub(crate) const GROUP_CHILD_FD: i32 = 37;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionOutcome {
@@ -30,6 +32,9 @@ pub struct BwrapExecutor;
 
 impl SandboxExecutor for BwrapExecutor {
     fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
+        // SAFETY: these calls only read this process's effective credentials.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        validate_identity_uid(plan.identity_uid, uid)?;
         let mut filter_file = if let Some(profile) = plan.seccomp_profile {
             let filter = launcher::seccomp::compile_baseline(profile)
                 .map_err(|error| ExecutionError::Seccomp(error.to_string()))?;
@@ -51,6 +56,12 @@ impl SandboxExecutor for BwrapExecutor {
             (duplicate_above_child_slots(prefix)?, PREFIX_CHILD_FD),
             (duplicate_above_child_slots(home)?, HOME_CHILD_FD),
         ];
+        for (name, contents, target) in identity_files(uid, gid) {
+            let mut file = create_memfd(name)?;
+            file.write_all(contents.as_bytes())?;
+            file.rewind()?;
+            inherited.push((duplicate_above_child_slots(file.as_raw_fd())?, target));
+        }
         if let Some(filter) = &filter_file {
             inherited.push((
                 duplicate_above_child_slots(filter.as_raw_fd())?,
@@ -103,12 +114,37 @@ impl SandboxExecutor for BwrapExecutor {
 fn duplicate_above_child_slots(fd: std::os::fd::RawFd) -> Result<File, std::io::Error> {
     // SAFETY: fcntl duplicates the borrowed live descriptor without changing
     // it. The result is newly owned and kept close-on-exec in the parent.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, RUNTIME_LOCK_CHILD_FD + 1) };
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, GROUP_CHILD_FD + 1) };
     if duplicate < 0 {
         return Err(std::io::Error::last_os_error());
     }
     // SAFETY: a successful F_DUPFD_CLOEXEC returns a new owned descriptor.
     Ok(unsafe { File::from_raw_fd(duplicate) })
+}
+
+fn validate_identity_uid(planned: u32, effective: u32) -> Result<(), ExecutionError> {
+    if planned != effective {
+        return Err(ExecutionError::IdentityMismatch { planned, effective });
+    }
+    Ok(())
+}
+
+fn identity_files(uid: u32, gid: u32) -> [(&'static str, String, i32); 2] {
+    [
+        (
+            "qos-capsule-passwd",
+            format!(
+                "qos:x:{uid}:{gid}:qOS capsule:{}:/usr/bin/nologin\n",
+                crate::plan::HOME_MOUNT
+            ),
+            PASSWD_CHILD_FD,
+        ),
+        (
+            "qos-capsule-group",
+            format!("qos:x:{gid}:\n"),
+            GROUP_CHILD_FD,
+        ),
+    ]
 }
 
 fn create_memfd(name: &str) -> Result<File, ExecutionError> {
@@ -134,6 +170,8 @@ fn create_memfd(name: &str) -> Result<File, ExecutionError> {
 
 #[derive(Debug, Error)]
 pub enum ExecutionError {
+    #[error("capsule session UID {planned} differs from executor UID {effective}")]
+    IdentityMismatch { planned: u32, effective: u32 },
     #[error("could not compile the qOS seccomp profile: {0}")]
     Seccomp(String),
     #[error("could not create a private sandbox memfd: {0}")]
@@ -142,4 +180,35 @@ pub enum ExecutionError {
     Spawn(std::io::Error),
     #[error("sandbox process failed: {0}")]
     Io(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_contains_only_fixed_capsule_paths_and_effective_ids() {
+        for (uid, gid) in [(0, 0), (1000, 2000), (u32::MAX, u32::MAX)] {
+            let files = identity_files(uid, gid);
+            assert_eq!(
+                files[0].1,
+                format!("qos:x:{uid}:{gid}:qOS capsule:/run/qos/capsule/home:/usr/bin/nologin\n")
+            );
+            assert_eq!(files[1].1, format!("qos:x:{gid}:\n"));
+            assert_eq!(files[0].2, PASSWD_CHILD_FD);
+            assert_eq!(files[1].2, GROUP_CHILD_FD);
+        }
+    }
+
+    #[test]
+    fn changed_execution_identity_fails_closed() {
+        assert!(validate_identity_uid(1000, 1000).is_ok());
+        assert!(matches!(
+            validate_identity_uid(1000, 0),
+            Err(ExecutionError::IdentityMismatch {
+                planned: 1000,
+                effective: 0
+            })
+        ));
+    }
 }

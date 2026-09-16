@@ -179,3 +179,38 @@ python3 /test.py --helper /helper --runtime /runtime --proton /proton \
 FEX/guest production packaging, complete native helper bindings, and the full
 outer capsule/Landlock launch remain acceptance requirements. The standalone
 container test does not establish those gates or graphical application support.
+
+## Private capsule identity and generated namespace probes
+
+The generated ARM Proton namespace exposed a failure hidden by the earlier
+whole-container test: UMU calls `getpwuid()` while preparing the prefix, but
+the capsule had no account database. UMU printed a traceback yet exited zero;
+the new fixture correctly rejected the run because Windows wrote no marker.
+
+The executor now creates private, read-only passwd and group files from its
+effective UID/GID. Both use the fixed name `qos` and the capsule's private home.
+No host account database or shadow file is mounted. Execution rejects a planned
+session UID that differs from the executor's UID. The two anonymous descriptors
+occupy slots 36 and 37; sources are duplicated above all reserved slots before
+remapping. The plan grants Landlock read access and fixes `USER` and `LOGNAME`.
+
+On 2026-09-16, 60 service tests and strict Clippy passed. The real Bubblewrap
+descriptor regression passed with both its tested filter configurations:
+`getent` resolved the synthetic UID/GID, writes to either file failed, and no
+shadow database was visible.
+
+Three ignored `generated_arm_*_namespace_executes_windows_console` tests now
+exercise the actual Wine32, Wine64, and Proton namespace plans. They require
+the fixed production artifact paths, a matching PE `cmd.exe` supplied through
+`QOS_ARM_CAPSULE_CMD_EXE`, writable `/run/user/<uid>`, Wine resource mountpoint
+directories, and a dummy render node inside a disposable container. They create
+a non-listening Unix socket only to satisfy the Wayland bind, so they do not
+establish graphics acceptance. Run each test separately with a 240-second outer
+timeout and container teardown.
+
+These diagnostic fixtures remove only the executable Landlock shim because
+the WSL kernel lacks the required ABI. Generated mounts, clean environment,
+offline network namespace, seccomp and descriptor transfer remain intact.
+Their results must never substitute for full qOS-kernel capsule acceptance.
+The initial Wine64 run timed out during prefix initialization; the Proton
+identity-fix rerun and remaining runtime integration checks are still pending.
