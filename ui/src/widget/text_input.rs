@@ -224,6 +224,10 @@ pub struct TextInput {
     scroll_x: f64,
     last_edit_time: Option<Instant>,
     font_size_override: Option<f32>,
+    /// The text scale used for the most recent paint. Code gutter geometry is
+    /// derived from the same scale as its shaped line-number text so it never
+    /// intrudes into the viewport at accessibility sizes.
+    gutter_text_scale: f64,
     /// Renders without the rounded-rect chrome, for block-editor cells that
     /// should read as document copy, not a form field.
     plain: bool,
@@ -386,6 +390,7 @@ impl TextInput {
             path_was_present: false,
             external_buffer: None,
             font_size_override: None,
+            gutter_text_scale: 1.0,
             plain: false,
             bound_text: None,
             local_author: None,
@@ -1704,7 +1709,9 @@ impl TextInput {
             )]
             let origin = transform
                 * Affine::translate((
-                    self.rect.x0 + gutter_width - GUTTER_PAD_R - f64::from(width),
+                    self.rect.x0 + gutter_width
+                        - GUTTER_PAD_R * self.gutter_text_scale
+                        - f64::from(width),
                     self.single_origin.y + f64::from(top),
                 ));
             let color = if line == current_line {
@@ -1986,7 +1993,7 @@ impl TextInput {
         }
         for (ry, num, current) in gutter_nums {
             let w = f64::from(self.measure_str(tr, num, size).0);
-            let x = self.rect.x0 + gutter_w - GUTTER_PAD_R - w;
+            let x = self.rect.x0 + gutter_w - GUTTER_PAD_R * self.gutter_text_scale - w;
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
@@ -2366,8 +2373,9 @@ impl TextInput {
             n /= 10;
         }
         let digits = digits.max(2);
-        let adv = f64::from(self.effective_font_size()) * GUTTER_DIGIT_RATIO;
-        GUTTER_PAD_L + f64::from(digits) * adv + GUTTER_PAD_R
+        let scale = self.gutter_text_scale;
+        let adv = f64::from(self.effective_font_size()) * scale * GUTTER_DIGIT_RATIO;
+        GUTTER_PAD_L * scale + f64::from(digits) * adv + GUTTER_PAD_R * scale
     }
 
     fn ml_left(&self) -> f64 {
@@ -3529,6 +3537,10 @@ impl Widget for TextInput {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
+        // Taffy measures before painting. Retain the renderer scale here too,
+        // so a freshly opened editor reserves its full accessibility gutter
+        // on the very first layout rather than correcting on frame two.
+        self.gutter_text_scale = f64::from(text_renderer.text_scale());
         if !self.multiline {
             self.model_layout_dirty = false;
             return taffy::Size::ZERO;
@@ -3557,6 +3569,7 @@ impl Widget for TextInput {
         _presence: &crate::presence::PresenceCtx,
     ) {
         self.last_caret_width = theme.caret_width;
+        self.gutter_text_scale = f64::from(theme.text_scale);
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
@@ -6822,6 +6835,41 @@ mod tests {
         assert!(
             large_height >= normal_height * 1.9,
             "editor paragraph geometry scales with the theme ({large_height} vs {normal_height})"
+        );
+    }
+
+    #[test]
+    fn code_gutter_reserves_space_for_scaled_line_numbers() {
+        let source = (1..=12)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut normal = TextInput::local()
+            .multiline(true)
+            .with_mono()
+            .with_gutter(true)
+            .with_initial_value(&source);
+        normal.apply_layout_external(Rect::new(0.0, 0.0, 420.0, 300.0));
+        draw_with_theme(&mut normal, &Theme::dark());
+        let normal_gutter = normal.gutter_width();
+
+        let mut large = TextInput::local()
+            .multiline(true)
+            .with_mono()
+            .with_gutter(true)
+            .with_initial_value(&source);
+        large.apply_layout_external(Rect::new(0.0, 0.0, 420.0, 300.0));
+        let large_theme = Theme::dark().with_text_scale(2.0);
+        draw_with_theme(&mut large, &large_theme);
+
+        assert!(
+            large.gutter_width() >= normal_gutter * 1.9,
+            "gutter follows line-number text scale ({} vs {normal_gutter})",
+            large.gutter_width()
+        );
+        assert!(
+            large.caret_rect(&large_theme, 0).x0 > large.rect.x0 + large.gutter_width(),
+            "the first code glyph stays to the right of the scaled gutter"
         );
     }
 
