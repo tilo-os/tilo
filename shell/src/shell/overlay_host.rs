@@ -2617,6 +2617,11 @@ impl ShellOverlayHost {
     /// Open the shell-owned exporter for the active identity. The Settings
     /// app may request this surface, but never receives private material or
     /// implements its own file-picker or encryption flow.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when another identity flow is active, the active
+    /// identity cannot be located, or its backup ceremony cannot be opened.
     pub fn open_portable_identity_backup(&mut self) -> Result<(), String> {
         if self.onboarding.is_some() {
             return Err("Finish the current identity flow before creating another backup.".into());
