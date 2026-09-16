@@ -290,6 +290,17 @@ impl Popover {
         self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
     }
 
+    /// Return the painted and hit-testable rect for one option after
+    /// [`Self::place`] or [`Widget::draw`] has resolved the popover body.
+    ///
+    /// Hand-drawn hosts need this to route a semantic action or synthesize a
+    /// pointer interaction without copying this primitive's private padding
+    /// and row-height constants. Returning `None` for an invalid index also
+    /// keeps callers from accidentally targeting the menu chrome.
+    pub fn item_rect(&self, idx: usize) -> Option<Rect> {
+        (idx < self.items.len()).then(|| self.row_rect(idx))
+    }
+
     #[allow(
         clippy::cast_precision_loss,
         reason = "idx is a row index into this popover's own (short) item \
@@ -735,7 +746,9 @@ mod tests {
     #[test]
     fn click_on_a_row_selects_it_click_outside_dismisses() {
         let mut p = opened();
-        let row2 = p.row_rect(2);
+        let row2 = p.item_rect(2).expect("published item geometry");
+        assert_eq!(p.item_at(row2.center()), Some(2));
+        assert!(p.item_rect(p.items().len()).is_none());
         dispatch(&mut p, &cursor_at(row2.center()));
         assert!(dispatch(&mut p, &left_press()), "row click consumed");
         assert_eq!(p.take_selection(), Some(2), "clicking a row selects it");
