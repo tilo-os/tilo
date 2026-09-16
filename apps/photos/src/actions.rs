@@ -73,6 +73,9 @@ pub enum PhotosOperation {
     /// has already routed the request to the Photos instance that publishes
     /// the resource, so accepting it is enough to reveal the current view.
     View,
+    /// Reveal the Photos-owned browsing and management surface without
+    /// opening a chooser or mutating the shared library.
+    ViewLibrary,
     /// Bring a durable album's filtered grid into view. This is presentation
     /// state only: unlike membership actions, activating it never edits the
     /// shared library.
@@ -130,6 +133,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     let kind = if matches!(
         op,
         PhotosOperation::View
+            | PhotosOperation::ViewLibrary
             | PhotosOperation::ViewAlbum { .. }
             | PhotosOperation::ViewFolder { .. }
             | PhotosOperation::ViewPerson { .. }
@@ -141,6 +145,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
     };
     let tags = match op {
         PhotosOperation::View
+        | PhotosOperation::ViewLibrary
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
@@ -173,6 +178,7 @@ fn operation(id: &str, label: &str, op: &PhotosOperation) -> Option<ActionSpec> 
         .with_contract(contract);
     Some(match op {
         PhotosOperation::View
+        | PhotosOperation::ViewLibrary
         | PhotosOperation::ViewAlbum { .. }
         | PhotosOperation::ViewFolder { .. }
         | PhotosOperation::ViewPerson { .. }
@@ -662,116 +668,33 @@ impl ResourceProvider for PhotosResources {
         let Some(image) = PhotosDoc::image(doc) else {
             return library_resources(doc);
         };
-        let edits = PhotosDoc::edits(doc);
-        let (w, h) = image.edited_size(&edits);
-        // Minted once and used for the resource and every child, so the parent
-        // and its facts cannot drift apart.
-        let id = resource_id(&image);
-
-        let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name);
-        if let Some(spec) = operation("view", "View photograph", &PhotosOperation::View) {
-            resource =
-                resource.with_action(spec.with_description("Bring this photograph into view"));
-        }
-        resource = resource
-            .with_action(
-                immediate_photos_spec("rotate-right", "Rotate right", edits.rotated_right())
-                    .with_description("Turn the photograph a quarter turn clockwise"),
-            )
-            .with_action(
-                immediate_photos_spec("rotate-left", "Rotate left", edits.rotated_left())
-                    .with_description("Turn the photograph a quarter turn anticlockwise"),
-            )
-            .with_action(
-                ActionSpec::typed(
-                    "crop",
-                    "Crop to a region",
-                    "0.25,0.25,0.5,0.5",
-                    ExecutionLocus::ClientLocal,
-                    vec![ActionParam::required(
-                        "region",
-                        ParamType::Text,
-                        "normalized x,y,width,height values between 0 and 1",
-                    )
-                    .with_schema(serde_json::json!({
-                        "type": "string",
-                        "pattern": "^[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*$"
-                    }))],
-                    move |args: &ActionArgs| {
-                        // An unparseable argument leaves the photograph exactly
-                        // as it is; it never crops to nothing.
-                        let next = match args.text("region").and_then(parse_crop_arg) {
-                            Some(rect) => edits.cropped_from_view(rect),
-                            None => edits,
-                        };
-                        encode(&PhotosAction::set(&next))
-                    },
-                )
-                .reversible()
-                .with_description(
-                    "Keep a region of what is currently shown, in normalized coordinates",
-                ),
-            );
-        resource = resource.with_action(file_operation("open", "Open another photograph", true));
-        for (id, label, op) in [("copy", "Copy photograph", PhotosOperation::Copy)] {
-            if let Some(spec) = operation(id, label, &op) {
-                resource = resource.with_action(spec);
-            }
-        }
-        if let Some(spec) = operation(
-            "share-reference",
-            "Share photograph reference",
-            &PhotosOperation::ShareReference {
-                resource_id: id.clone(),
-            },
-        ) {
-            resource = resource.with_action(spec);
-        }
-        resource = resource.with_action(file_operation("save", "Save edited photograph", false));
-
-        // Reset only appears when there is something to undo, so the surface
-        // never offers an operation that would do nothing.
-        if !edits.is_identity() {
-            resource = resource.with_action(
-                immediate_photos_spec("reset", "Reset edits", Edits::default())
-                    .with_description("Discard the crop and rotation, returning to the original"),
-            );
-        }
-
-        // The dimensions ride along in the label of a child resource rather
-        // than in a side channel, so a caller that can only read ids and
-        // titles still learns the size it is working with.
-        resource = resource.with_child(Resource::new(
-            format!("{id}#size"),
-            "photos.size",
-            format!("{w} x {h} pixels"),
-        ));
-
-        let mut resources = vec![resource];
+        let mut resources = vec![open_image_resource(doc, &image)];
         resources.extend(library_resources(doc));
         resources
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id.chars().take(MAX_RESOURCE_ID_CHARS + 1).count() > MAX_RESOURCE_ID_CHARS {
+            return None;
+        }
+        if let Some(image) = PhotosDoc::image(doc).filter(|image| resource_id(image) == id) {
+            return Some(open_image_resource(doc, &image));
+        }
         if id == "photos.library" {
-            return library_resources(doc).into_iter().next();
+            return Some(library_root_resource());
+        }
+        if let Some(photo) = PhotosDoc::photo(doc, id) {
+            return Some(photo_resource(doc, &photo));
+        }
+        if let Some(album) = PhotosDoc::album(doc, id) {
+            return Some(album_resource(&album));
         }
         let library = PhotosDoc::library(doc);
-        if let Some(photo) = library.photos.iter().find(|photo| photo.id == id) {
-            return Some(photo_resource(doc, photo));
-        }
-        library
-            .albums
-            .iter()
-            .find(|album| album.id == id)
-            .map(album_resource)
-            .or_else(|| {
-                metadata_label_counts(&library)
-                    .0
-                    .into_iter()
-                    .find(|(folder, _)| folder_resource_id(folder) == id)
-                    .map(|(folder, count)| folder_resource(&folder, count))
-            })
+        metadata_label_counts(&library)
+            .0
+            .into_iter()
+            .find(|(folder, _)| folder_resource_id(folder) == id)
+            .map(|(folder, count)| folder_resource(&folder, count))
             .or_else(|| {
                 metadata_label_counts(&library)
                     .1
@@ -789,15 +712,85 @@ impl ResourceProvider for PhotosResources {
     }
 }
 
+fn open_image_resource(doc: &AutoCommit, image: &OpenImage) -> Resource {
+    let edits = PhotosDoc::edits(doc);
+    let (w, h) = image.edited_size(&edits);
+    let id = resource_id(image);
+    let mut resource = Resource::new(id.clone(), IMAGE_KIND, &image.name);
+    if let Some(spec) = operation("view", "View photograph", &PhotosOperation::View) {
+        resource = resource.with_action(spec.with_description("Bring this photograph into view"));
+    }
+    resource = resource
+        .with_action(
+            immediate_photos_spec("rotate-right", "Rotate right", edits.rotated_right())
+                .with_description("Turn the photograph a quarter turn clockwise"),
+        )
+        .with_action(
+            immediate_photos_spec("rotate-left", "Rotate left", edits.rotated_left())
+                .with_description("Turn the photograph a quarter turn anticlockwise"),
+        )
+        .with_action(
+            ActionSpec::typed(
+                "crop",
+                "Crop to a region",
+                "0.25,0.25,0.5,0.5",
+                ExecutionLocus::ClientLocal,
+                vec![ActionParam::required(
+                    "region",
+                    ParamType::Text,
+                    "normalized x,y,width,height values between 0 and 1",
+                )
+                .with_schema(serde_json::json!({
+                    "type": "string",
+                    "pattern": "^[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*,[[:space:]]*(0(\\.[0-9]+)?|1(\\.0+)?)[[:space:]]*$"
+                }))],
+                move |args: &ActionArgs| {
+                    let next = match args.text("region").and_then(parse_crop_arg) {
+                        Some(rect) => edits.cropped_from_view(rect),
+                        None => edits,
+                    };
+                    encode(&PhotosAction::set(&next))
+                },
+            )
+            .reversible()
+            .with_description(
+                "Keep a region of what is currently shown, in normalized coordinates",
+            ),
+        )
+        .with_action(file_operation("open", "Open another photograph", true));
+    if let Some(spec) = operation("copy", "Copy photograph", &PhotosOperation::Copy) {
+        resource = resource.with_action(spec);
+    }
+    if let Some(spec) = operation(
+        "share-reference",
+        "Share photograph reference",
+        &PhotosOperation::ShareReference {
+            resource_id: id.clone(),
+        },
+    ) {
+        resource = resource.with_action(spec);
+    }
+    resource = resource.with_action(file_operation("save", "Save edited photograph", false));
+    if !edits.is_identity() {
+        resource = resource.with_action(
+            immediate_photos_spec("reset", "Reset edits", Edits::default())
+                .with_description("Discard the crop and rotation, returning to the original"),
+        );
+    }
+    resource.with_child(Resource::new(
+        format!("{id}#size"),
+        "photos.size",
+        format!("{w} x {h} pixels"),
+    ))
+}
+
 /// The durable library and album resource tree. Every photo and album gets a
 /// stable resource id even when it is not selected in the editor, allowing
 /// agents and search to resolve a late library item without a visual grid
 /// having first materialised it.
 fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     let library = PhotosDoc::library(doc);
-    let mut root = Resource::new("photos.library", "photos.library", "Photo library")
-        .with_action(file_operation("open", "Import photograph", true))
-        .with_action(create_album_spec());
+    let mut root = library_root_resource();
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
         root = root.with_child(photo_resource(doc, photo));
     }
@@ -817,10 +810,21 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     vec![root]
 }
 
+fn library_root_resource() -> Resource {
+    let mut root = Resource::new("photos.library", "photos.library", "Photo library");
+    if let Some(spec) = operation("open", "View photo library", &PhotosOperation::ViewLibrary) {
+        root = root.with_action(spec.with_description("Browse and manage photographs in Photos"));
+    }
+    root = root
+        .with_action(file_operation("import", "Import photograph", true))
+        .with_action(create_album_spec());
+    root
+}
+
 /// Deterministically collect the small virtual browse namespace.  It is
 /// derived only from durable metadata and does no filesystem work, so it is
 /// safe to publish to search, agents, history, and collaborators.
-fn metadata_label_counts(
+pub(crate) fn metadata_label_counts(
     library: &crate::model::PhotoLibrary,
 ) -> (LabelCounts, LabelCounts, LabelCounts) {
     let mut folders = std::collections::BTreeMap::<String, usize>::new();
@@ -864,7 +868,7 @@ pub(crate) fn tag_resource_id(tag: &str) -> String {
     format!("photos.tag:{}", qdoc::blobstore::hash_bytes(tag.as_bytes()))
 }
 
-fn folder_resource(folder: &str, count: usize) -> Resource {
+pub(crate) fn folder_resource(folder: &str, count: usize) -> Resource {
     let mut item = Resource::new(folder_resource_id(folder), "photos.folder", folder).with_child(
         Resource::new(
             format!("{}#count", folder_resource_id(folder)),
@@ -884,7 +888,7 @@ fn folder_resource(folder: &str, count: usize) -> Resource {
     item
 }
 
-fn person_resource(person: &str, count: usize) -> Resource {
+pub(crate) fn person_resource(person: &str, count: usize) -> Resource {
     let mut item = Resource::new(person_resource_id(person), "photos.person", person).with_child(
         Resource::new(
             format!("{}#count", person_resource_id(person)),
@@ -904,7 +908,7 @@ fn person_resource(person: &str, count: usize) -> Resource {
     item
 }
 
-fn tag_resource(tag: &str, count: usize) -> Resource {
+pub(crate) fn tag_resource(tag: &str, count: usize) -> Resource {
     let mut item =
         Resource::new(tag_resource_id(tag), "photos.tag", tag).with_child(Resource::new(
             format!("{}#count", tag_resource_id(tag)),
@@ -923,7 +927,7 @@ fn tag_resource(tag: &str, count: usize) -> Resource {
     item
 }
 
-fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
+pub(crate) fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
     let mut item =
         Resource::new(&photo.id, "photos.photo", &photo.image.name).with_child(Resource::new(
             format!("{}#size", photo.id),
@@ -1055,7 +1059,7 @@ fn photo_metadata_spec(photo: &LibraryPhoto) -> ActionSpec {
     .with_description("Replace this photograph's shared folder, people, tags, and capture date")
 }
 
-fn album_resource(album: &Album) -> Resource {
+pub(crate) fn album_resource(album: &Album) -> Resource {
     let mut item = Resource::new(&album.id, "photos.album", &album.name).with_child(Resource::new(
         format!("{}#count", album.id),
         "photos.count",
@@ -1414,6 +1418,19 @@ mod tests {
         assert_eq!(resources.len(), 1);
         assert_eq!(resources[0].kind, "photos.library");
         assert_eq!(resources[0].actions[0].id, "open");
+        let qos_actions::ActionInput::Immediate(open) = &resources[0].actions[0].input else {
+            panic!("library view is an immediate local operation");
+        };
+        assert_eq!(
+            decode_operation(&open.type_id, &open.payload).unwrap(),
+            Some(PhotosOperation::ViewLibrary)
+        );
+        assert!(
+            resources[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "import")
+        );
     }
 
     #[test]
@@ -1943,6 +1960,29 @@ mod tests {
         assert!(
             PhotosResources
                 .resource(&doc, "photos.photo:stale")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn open_editor_resource_resolves_exactly_without_falling_through_to_library_ids() {
+        let doc = doc_with_image();
+        let image = PhotosDoc::image(&doc).unwrap();
+        let id = resource_id(&image);
+        let resource = PhotosResources
+            .resource(&doc, &id)
+            .expect("the open editor resource is independently addressable");
+        assert_eq!(resource.kind, IMAGE_KIND);
+        assert!(resource.actions.iter().any(|action| action.id == "crop"));
+        assert!(resource.actions.iter().any(|action| action.id == "save"));
+    }
+
+    #[test]
+    fn exact_lookup_rejects_unbounded_untrusted_ids() {
+        let doc = doc_with_image();
+        assert!(
+            PhotosResources
+                .resource(&doc, &"x".repeat(MAX_RESOURCE_ID_CHARS + 1))
                 .is_none()
         );
     }
