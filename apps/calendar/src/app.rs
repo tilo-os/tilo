@@ -1718,6 +1718,8 @@ impl CalendarApp {
             task_positions: HashMap::new(),
             project_positions: HashMap::new(),
             calendar_positions: HashMap::new(),
+            #[cfg(test)]
+            exact_inspected: std::cell::Cell::new(0),
         }
         .with_resource_indices()
     }
@@ -1770,6 +1772,8 @@ impl CalendarApp {
             task_positions: HashMap::new(),
             project_positions: HashMap::new(),
             calendar_positions: HashMap::new(),
+            #[cfg(test)]
+            exact_inspected: std::cell::Cell::new(0),
         }
         .with_resource_indices()
     }
