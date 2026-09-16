@@ -25,6 +25,44 @@ asset cache as the named `github-assets` build context. The cache must contain
 resulting buildroot image by digest. No production FEX buildroot digest has
 been promoted yet.
 
+### Offline payload build contract
+
+`os/Containerfile.fex-payload` consumes a native ARM buildroot and a separate
+x86 development SDK by full OCI digest. Its named `fex-source` context must
+retain the pinned checkout's Git metadata and recursive submodules. The build
+verifies that clean source again, then configures and compiles without network
+access. It does not resolve packages or fetch dependencies during compilation.
+
+The recipe uses Clang/LLVM 21, both checked-in guest toolchains, all upstream
+supported thunk builds, and LTO. It explicitly sets `TUNE_CPU=none` and
+`TUNE_ARCH=generic`: the resulting package must not inherit the build machine's
+CPU extensions. It installs the main project and both guest subprojects,
+preserves upstream and bundled license/notice files, and records source,
+buildroot packages, input digests, and CMake configuration in the payload.
+
+`os/dev/validate-fex-payload.py STAGING_ROOT` verifies required executables,
+host and guest thunk families, ELF classes and architectures, the thunk
+database, and license-file presence. Its JSON inventory records content
+hashes. Validation rejects escaping file symlinks and malformed or missing
+artifacts. It is a packaging check, not dependency-closure or license review,
+and it explicitly reports the upstream lack of an i386 Vulkan guest thunk.
+
+Run its negative-fixture tests with:
+
+```sh
+python3 -m unittest discover -s os/tests -p test_fex_payload.py
+```
+
+On 2026-09-16 the exact recipe's CMake configuration completed offline against
+the existing native buildroot and complete guest SDK with portable CPU settings.
+Mutable input references were rejected before compilation. The complete new
+validator suite passed nine tests, and 36 real staged files passed validation
+in a separate fixture with the upstream license added. The original stage was
+unchanged and correctly failed its missing-license check. The complete new
+payload recipe has not yet been built or promoted. A production buildroot/SDK
+digest, separately frozen shipping guest filesystem, dependency-closure checks,
+and passing runtime acceptance remain required before final image integration.
+
 The buildroot compiles NASM natively into `/usr/local/bin`. NASM emits x86 test
 programs; it is not an x86 executable and does not require emulation to run.
 Keep `/usr/local/bin` before `/usr/bin` when configuring and building FEX.
