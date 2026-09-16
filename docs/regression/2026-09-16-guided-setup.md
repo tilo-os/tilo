@@ -280,7 +280,7 @@ and package state unchanged. The control without the override imported the test
 key and installed the valid fixture only inside a separate disposable root.
 The proof guest's system keyring was unchanged, and temporary keys/artifacts were
 removed. These are package-trust tests, not qOS installation or graphical login
-proof; the privileged installer implementation is still underway.
+proof. The subsequent real qOS transaction is recorded below.
 
 ## Existing installer baseline
 
@@ -314,8 +314,9 @@ native manifest probe confirmed this without pulling an image.
 
 RPM build tooling is now available as ordinary-user `rpmbuild` 6.0.2. Fedora
 installed six new required packages with no upgrades or removals (541 KiB
-download, 2 MiB installed). No qOS package or desktop-session change was made;
-a package installation and graphical-session proof remain required.
+download, 2 MiB installed). No qOS package or desktop-session change was made at that tooling step.
+The subsequent package installation is recorded below; graphical-session proof
+remains required.
 
 Fresh native release builds of the launcher, unlock helper and Desktop shell
 completed, and RPM assembly produced `qos-session-0.1.9-1.fc44.aarch64.rpm` in
@@ -325,10 +326,32 @@ The shell build emitted one existing `restore_documents` dead-code warning.
 Extraction checks passed for the package layout, ARM64 executables, resolved
 shared libraries and the host-session wrapper. A read-only DNF proposal resolved
 the package and five dependencies with no upgrades or removals. Nothing was
-installed. This local artifact is not a signed release or graphical login proof.
+installed by that proposal. This local artifact is not a signed release or
+graphical login proof.
+
+The verified native Desktop helper subsequently installed that exact RPM in
+`qOS Desktop Proof Fedora 44 ARM64`, a disposable clone with a pre-install
+snapshot. Its production empty-catalog refusal was asserted first; a test-only
+injection then permitted the local artifact while retaining every other host,
+package, signature-policy and installed-session check. The real transaction
+reported version `0.1.9-1.fc44` and `/usr/share/wayland-sessions/qos.desktop`;
+`rpm -V qos-session` returned clean. Saved GNOME session entries, GDM configuration,
+default target and the system signing-key list were unchanged. The original
+Fedora VM was not an installation target.
+
+The native Desktop suite passed 50 tests with two explicit native diagnostics
+ignored; the actual privileged transaction test was then run separately and
+passed. The host library suite passed 313 tests with one ignored. Native output
+remained in a root-owned 0600 log under a 0700 operation directory; the staged
+package was removed. Narrow Windows configuration compilation also passed for
+the catalog, downloader, probe, helper and worker; this is not a Windows runtime
+or full-app build. Native strict Imager Clippy retains 18 prior findings in
+catalog/download/folder modules and no helper/worker findings. The production
+Desktop catalog remains unreleased. Graphical login, identity completion,
+selected-folder import and returning to the prior desktop are still unproved.
 
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
-- Linux interactive wizard, desktop-session installation, and complete boot flow.
+- Linux interactive wizard, graphical desktop-session lifecycle, and complete boot flow.
 - Internal installer bundle and same-disk protected-partition protocol.
 - Host-side storage preparation, encryption handling, and recovery across crashes.
 - Real copied files, resumable verification, conflicts, recoverable deletions,
