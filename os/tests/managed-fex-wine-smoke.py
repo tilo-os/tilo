@@ -36,6 +36,9 @@ def main():
             parser.error("disposable capsule directory must not contain a test prefix")
     for bits in (64, 32):
         prefix.mkdir()
+        (prefix / "drive_c").mkdir()
+        (prefix / "dosdevices").mkdir()
+        (prefix / "dosdevices/c:").symlink_to("../drive_c", target_is_directory=True)
         with tempfile.TemporaryDirectory(prefix="qos-managed-fex-") as home:
             environment = os.environ | {
                 "HOME": home, "XDG_RUNTIME_DIR": home,
@@ -48,7 +51,7 @@ def main():
                 try:
                     process = subprocess.run(
                         [str(helper), f"wine{bits}", "cmd.exe", "/c", command],
-                        env=environment, stdin=subprocess.DEVNULL,
+                        env=environment, cwd=prefix / "drive_c", stdin=subprocess.DEVNULL,
                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                         timeout=180, text=True,
                     )
@@ -58,6 +61,12 @@ def main():
                     status, timed_out = None, True
                 (args.output_dir / f"wine{bits}-{name}.log").write_text(output)
                 marker_ok = name != "console" or marker in [line.strip() for line in output.splitlines()]
+                c_drive = prefix / "dosdevices/c:"
+                z_drive = prefix / "dosdevices/z:"
+                private_drives_ok = (
+                    c_drive.is_symlink() and c_drive.readlink() == Path("../drive_c")
+                    and not z_drive.exists() and not z_drive.is_symlink()
+                )
                 mappings = [("x32", "system32")] if bits == 32 else [("x64", "system32"), ("x32", "syswow64")]
                 dxvk_ok = True
                 for source_arch, destination in mappings:
@@ -71,7 +80,8 @@ def main():
                     "bits": bits, "test": name, "exit_code": status,
                     "timed_out": timed_out,
                     "dxvk_payload_matches": dxvk_ok,
-                    "passed": not timed_out and status == expected and marker_ok and dxvk_ok,
+                    "private_drives": private_drives_ok,
+                    "passed": not timed_out and status == expected and marker_ok and dxvk_ok and private_drives_ok,
                 })
                 print(json.dumps(results[-1]), flush=True)
                 if timed_out:
