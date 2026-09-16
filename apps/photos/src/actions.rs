@@ -684,7 +684,7 @@ impl ResourceProvider for PhotosResources {
             return Some(library_root_resource());
         }
         if let Some(photo) = PhotosDoc::photo(doc, id) {
-            return Some(photo_resource(doc, &photo));
+            return Some(photo_resource(&photo));
         }
         if let Some(album) = PhotosDoc::album(doc, id) {
             return Some(album_resource(&album));
@@ -792,7 +792,7 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     let library = PhotosDoc::library(doc);
     let mut root = library_root_resource();
     for photo in library.photos.iter().take(LIBRARY_CONTEXT_LIMIT) {
-        root = root.with_child(photo_resource(doc, photo));
+        root = root.with_child(photo_resource(photo));
     }
     for album in library.albums.iter().take(ALBUM_CONTEXT_LIMIT) {
         root = root.with_child(album_resource(album));
@@ -810,7 +810,7 @@ fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
     vec![root]
 }
 
-fn library_root_resource() -> Resource {
+pub(crate) fn library_root_resource() -> Resource {
     let mut root = Resource::new("photos.library", "photos.library", "Photo library");
     if let Some(spec) = operation("open", "View photo library", &PhotosOperation::ViewLibrary) {
         root = root.with_action(spec.with_description("Browse and manage photographs in Photos"));
@@ -927,13 +927,67 @@ pub(crate) fn tag_resource(tag: &str, count: usize) -> Resource {
     item
 }
 
-pub(crate) fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resource {
-    let mut item =
-        Resource::new(&photo.id, "photos.photo", &photo.image.name).with_child(Resource::new(
-            format!("{}#size", photo.id),
-            "photos.size",
-            format!("{} x {} pixels", photo.image.width, photo.image.height),
-        ));
+/// The authoritative subset needed to materialize a photo resource. Search
+/// retains this rather than a complete library record, so machine-local path
+/// hints and content-store identifiers are not duplicated into its index.
+#[derive(Clone)]
+pub(crate) struct PhotoResourceSeed {
+    pub id: String,
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub favorite: bool,
+    pub folder: Option<String>,
+    pub people: Vec<String>,
+    pub tags: Vec<String>,
+    pub captured_at: Option<String>,
+}
+
+impl From<&LibraryPhoto> for PhotoResourceSeed {
+    fn from(photo: &LibraryPhoto) -> Self {
+        Self {
+            id: photo.id.clone(),
+            name: photo.image.name.clone(),
+            width: photo.image.width,
+            height: photo.image.height,
+            favorite: photo.favorite,
+            folder: photo.folder.clone(),
+            people: photo.people.clone(),
+            tags: photo.tags.clone(),
+            captured_at: photo.captured_at.clone(),
+        }
+    }
+}
+
+impl PhotoResourceSeed {
+    fn metadata_summary(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(folder) = &self.folder {
+            parts.push(format!("Folder: {folder}"));
+        }
+        if !self.people.is_empty() {
+            parts.push(format!("People: {}", self.people.join(", ")));
+        }
+        if !self.tags.is_empty() {
+            parts.push(format!("Tags: {}", self.tags.join(", ")));
+        }
+        if let Some(captured_at) = &self.captured_at {
+            parts.push(format!("Captured: {captured_at}"));
+        }
+        parts.join(" · ")
+    }
+}
+
+pub(crate) fn photo_resource(photo: &LibraryPhoto) -> Resource {
+    photo_resource_from_seed(&PhotoResourceSeed::from(photo))
+}
+
+pub(crate) fn photo_resource_from_seed(photo: &PhotoResourceSeed) -> Resource {
+    let mut item = Resource::new(&photo.id, "photos.photo", &photo.name).with_child(Resource::new(
+        format!("{}#size", photo.id),
+        "photos.size",
+        format!("{} x {} pixels", photo.width, photo.height),
+    ));
     if !photo.metadata_summary().is_empty() {
         item = item.with_child(Resource::new(
             format!("{}#metadata", photo.id),
@@ -975,7 +1029,7 @@ pub(crate) fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resourc
             "Copy this library photograph's portable resource reference to the local clipboard",
         ));
     }
-    item = item.with_action(photo_metadata_spec(photo));
+    item = item.with_action(photo_metadata_spec(&photo.id));
     if let Some(spec) = direct_spec(
         "remove",
         "Remove from library",
@@ -986,6 +1040,25 @@ pub(crate) fn photo_resource(_doc: &AutoCommit, photo: &LibraryPhoto) -> Resourc
         item = item.with_action(spec.destructive().reversible());
     }
     item
+}
+
+/// A bounded, non-sensitive explanation of a rejected search refresh. It is
+/// addressable even while the last-good search generation remains active.
+pub(crate) fn search_status_resource(message: &str) -> Resource {
+    let mut resource = Resource::new(
+        "photos.search-status",
+        "photos.diagnostic",
+        "Photo search status",
+    )
+    .with_child(Resource::new(
+        "photos.search-status#message",
+        "photos.status",
+        message,
+    ));
+    if let Some(spec) = operation("open", "Open photo library", &PhotosOperation::ViewLibrary) {
+        resource = resource.with_action(spec);
+    }
+    resource
 }
 
 /// Keep user-authored metadata compact enough that a library remains a small
@@ -1032,8 +1105,8 @@ fn optional_metadata_text(args: &ActionArgs, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn photo_metadata_spec(photo: &LibraryPhoto) -> ActionSpec {
-    let photo_id = photo.id.clone();
+fn photo_metadata_spec(photo_id: &str) -> ActionSpec {
+    let photo_id = photo_id.to_owned();
     ActionSpec::typed(
         "set-metadata",
         "Set photo metadata",
@@ -1060,16 +1133,20 @@ fn photo_metadata_spec(photo: &LibraryPhoto) -> ActionSpec {
 }
 
 pub(crate) fn album_resource(album: &Album) -> Resource {
-    let mut item = Resource::new(&album.id, "photos.album", &album.name).with_child(Resource::new(
-        format!("{}#count", album.id),
+    album_resource_from_fields(&album.id, &album.name, album.photo_ids.len())
+}
+
+pub(crate) fn album_resource_from_fields(id: &str, name: &str, photo_count: usize) -> Resource {
+    let mut item = Resource::new(id, "photos.album", name).with_child(Resource::new(
+        format!("{id}#count"),
         "photos.count",
-        format!("{} photographs", album.photo_ids.len()),
+        format!("{photo_count} photographs"),
     ));
     if let Some(spec) = operation(
         "open",
         "Open album",
         &PhotosOperation::ViewAlbum {
-            album_id: album.id.clone(),
+            album_id: id.to_owned(),
         },
     ) {
         item = item.with_action(
@@ -1079,15 +1156,13 @@ pub(crate) fn album_resource(album: &Album) -> Resource {
     if let Some(spec) = direct_spec(
         "remove",
         "Remove album",
-        &PhotosAction::RemoveAlbum {
-            id: album.id.clone(),
-        },
+        &PhotosAction::RemoveAlbum { id: id.to_owned() },
     ) {
         item = item.with_action(spec.destructive().reversible());
     }
-    item = item.with_action(album_rename_spec(album));
-    item = item.with_action(album_membership_spec(album));
-    item = item.with_action(album_save_spec(album));
+    item = item.with_action(album_rename_spec(id));
+    item = item.with_action(album_membership_spec(id));
+    item = item.with_action(album_save_spec(id));
     item
 }
 
@@ -1136,8 +1211,8 @@ fn create_album_spec() -> ActionSpec {
     .with_description("Create an album and its initial photograph membership atomically")
 }
 
-fn album_save_spec(album: &Album) -> ActionSpec {
-    let id = album.id.clone();
+fn album_save_spec(album_id: &str) -> ActionSpec {
+    let id = album_id.to_owned();
     ActionSpec::typed(
         "save",
         "Save album",
@@ -1164,8 +1239,8 @@ fn album_save_spec(album: &Album) -> ActionSpec {
     .with_description("Atomically rename this album and replace its membership")
 }
 
-fn album_rename_spec(album: &Album) -> ActionSpec {
-    let album_id = album.id.clone();
+fn album_rename_spec(album_id: &str) -> ActionSpec {
+    let album_id = album_id.to_owned();
     ActionSpec::typed(
         "rename",
         "Rename album",
@@ -1187,8 +1262,8 @@ fn album_rename_spec(album: &Album) -> ActionSpec {
     .with_description("Change this album's visible name while keeping its stable id")
 }
 
-fn album_membership_spec(album: &Album) -> ActionSpec {
-    let album_id = album.id.clone();
+fn album_membership_spec(album_id: &str) -> ActionSpec {
+    let album_id = album_id.to_owned();
     ActionSpec::typed(
         "set-membership",
         "Set album membership",

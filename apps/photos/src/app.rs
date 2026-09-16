@@ -460,6 +460,12 @@ pub struct PhotosApp {
     /// Heads that produced the cached immutable/Arc-backed search catalogue.
     /// An unchanged `sync` must not rebuild a full-library index.
     search_heads: Vec<automerge::ChangeHash>,
+    /// A rejected index generation never erases the last-good provider. This
+    /// bounded diagnostic is visible and exported until a later refresh
+    /// succeeds.
+    search_refresh_error: Option<String>,
+    #[cfg(test)]
+    force_search_refresh_error: bool,
     /// The library is deliberately a bounded presentation slice.  The CRDT
     /// can hold considerably more entries than a window can paint or an
     /// assistive technology should receive in one update.
@@ -605,6 +611,9 @@ impl PhotosApp {
             canvas_state: CanvasState::Empty,
             search_provider: crate::search::PhotosSearchProvider::empty(),
             search_heads: Vec::new(),
+            search_refresh_error: None,
+            #[cfg(test)]
+            force_search_refresh_error: false,
             library_items: Vec::new(),
             library_total: 0,
             library_offset: 0,
@@ -2463,7 +2472,13 @@ impl PhotosApp {
     /// The status line: the file, its edited size, and any notice.
     fn status_text(&self, doc: &AutoCommit) -> String {
         let Some(open) = PhotosDoc::image(doc) else {
-            return self.notice.clone().unwrap_or_default();
+            return self
+                .notice
+                .iter()
+                .chain(self.search_refresh_error.iter())
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("  ·  ");
         };
         let edits = PhotosDoc::edits(doc);
         let (w, h) = open.edited_size(&edits);
@@ -2476,7 +2491,22 @@ impl PhotosApp {
             s.push_str("  ·  ");
             s.push_str(n);
         }
+        if let Some(error) = &self.search_refresh_error {
+            s.push_str("  ·  ");
+            s.push_str(error);
+        }
         s
+    }
+
+    fn refresh_search_provider(
+        &self,
+        doc: &AutoCommit,
+    ) -> Result<(), ui::search::SearchCatalogError> {
+        #[cfg(test)]
+        if self.force_search_refresh_error {
+            return Err(ui::search::SearchCatalogError::NonCanonicalResult);
+        }
+        self.search_provider.sync(doc)
     }
 
     fn empty_state_text(&self) -> (String, String) {
@@ -4831,16 +4861,17 @@ impl Widget for PhotosApp {
         for (hit, button) in &mut self.buttons {
             button.set_enabled(Self::enabled(*hit, has_image, edited));
         }
-        self.status = self.status_text(doc);
         let heads = doc.get_heads();
         let document_changed = heads != self.search_heads;
         if document_changed {
-            if self.search_provider.sync(doc).is_err() {
-                self.search_provider = crate::search::PhotosSearchProvider::empty();
-            }
-            self.search_heads = heads;
+            self.search_refresh_error = match self.refresh_search_provider(doc) {
+                Ok(()) => None,
+                Err(error) => Some(format!("Photo search kept its previous index: {error}")),
+            };
             self.thumbnail_unavailable.clear();
+            self.search_heads = heads;
         }
+        self.status = self.status_text(doc);
         let library = PhotosDoc::library(doc);
         let membership = self.active_album.as_ref().and_then(|id| {
             library
@@ -5554,11 +5585,21 @@ impl Widget for PhotosApp {
     /// inside this process could reach it.
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         use qos_actions::ResourceProvider;
-        crate::actions::PhotosResources.resources(doc)
+        let mut resources = crate::actions::PhotosResources.resources(doc);
+        if let Some(error) = &self.search_refresh_error {
+            resources.push(crate::actions::search_status_resource(error));
+        }
+        resources
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
         use qos_actions::ResourceProvider;
+        if id == "photos.search-status" {
+            return self
+                .search_refresh_error
+                .as_deref()
+                .map(crate::actions::search_status_resource);
+        }
         self.search_provider
             .resource(id)
             .or_else(|| crate::actions::PhotosResources.resource(doc, id))
@@ -6441,5 +6482,44 @@ mod tests {
                 && rect.y0 >= app.canvas_rect.y0
                 && rect.y1 <= app.canvas_rect.y1
         }));
+    }
+
+    #[test]
+    fn rejected_search_refresh_keeps_last_good_index_and_exports_diagnostic() {
+        let mut app = PhotosApp::new();
+        let mut doc = AutoCommit::new();
+        PhotosDoc::seed(&mut doc);
+        let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
+        let first_id = first.id.clone();
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos: vec![first],
+                albums: Vec::new(),
+            },
+        );
+        app.sync(&mut doc, &ROOT);
+        assert!(app.search_provider.resource(&first_id).is_some());
+
+        let mut library = PhotosDoc::library(&doc);
+        let second = LibraryPhoto::from_image(OpenImage::from_path("/photos/second.png", 20, 10));
+        let second_id = second.id.clone();
+        library.photos.push(second);
+        PhotosDoc::set_library(&mut doc, &library);
+        app.force_search_refresh_error = true;
+        app.sync(&mut doc, &ROOT);
+
+        assert!(app.search_provider.resource(&first_id).is_some());
+        assert!(app.search_provider.resource(&second_id).is_none());
+        assert!(app.status.contains("kept its previous index"));
+        let diagnostic = Widget::resource(&app, &doc, "photos.search-status")
+            .expect("rejected refresh is an exact addressable resource");
+        assert_eq!(diagnostic.kind, "photos.diagnostic");
+        assert!(diagnostic.actions.iter().any(|action| action.id == "open"));
+        assert!(
+            Widget::resources(&app, &doc)
+                .iter()
+                .any(|resource| resource.id.0 == "photos.search-status")
+        );
     }
 }
