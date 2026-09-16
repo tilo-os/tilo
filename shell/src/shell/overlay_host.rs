@@ -11313,6 +11313,11 @@ impl ShellOverlayHost {
             | WorkspaceSettingsOutcome::ComposerCapability
             | WorkspaceSettingsOutcome::ComposerExpiry(_)
             | WorkspaceSettingsOutcome::ComposerSubmit => {}
+            WorkspaceSettingsOutcome::ManagePermissionProfiles => {
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+                self.palette.set_query("permission role");
+                self.last_search_query = "\0workspace-permission-roles\0".to_string();
+            }
             WorkspaceSettingsOutcome::MemberRole(user) => {
                 if is_owner {
                     let current = self.chrome.as_ref().and_then(|chrome| {
@@ -12086,9 +12091,9 @@ impl Widget for ShellOverlayHost {
         // Runs first so an invite token / prompt is in chrome before draw.
         self.pump_peer_sync();
         if let Some(chrome) = self.chrome.as_ref() {
-            chrome
-                .borrow_mut()
-                .expire_notification_history_clear(Instant::now());
+            let mut state = chrome.borrow_mut();
+            state.sync_external_tree_revision();
+            state.expire_notification_history_clear(Instant::now());
         }
         let mut search_index_ready = false;
         // Retained search indexes are maintained on the compositor tick,
@@ -24840,6 +24845,7 @@ mod maximize_harvest_tests {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),
@@ -25088,6 +25094,7 @@ mod resync_strips_tests {
             ownership_transfer_audit: Vec::new(),
             ownership_transfer_cancellations: Vec::new(),
             capabilities: Vec::new(),
+            permission_profiles: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
             tasks: Vec::new(),
             effect_receipts: Vec::new(),

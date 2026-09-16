@@ -34,6 +34,43 @@ fn query_input_is_bounded(needle: &str) -> bool {
         <= ui::search::MAX_SEARCH_QUERY_SCALARS
 }
 
+/// Provider-independent lexical fit used at the global merge boundary. A
+/// provider still contributes domain knowledge through its normalized score,
+/// but an exact visible title must beat a weak metadata/fuzzy match from a
+/// different source.
+fn lexical_strength(needle: &str, result: &SearchResult) -> f32 {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() {
+        return 0.0;
+    }
+    let title = result.title.to_lowercase();
+    if title == needle {
+        return 4.0;
+    }
+    if title.starts_with(&needle) {
+        return 2.5;
+    }
+    if title
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|word| word.starts_with(&needle))
+    {
+        return 1.5;
+    }
+    if title.contains(&needle) {
+        return 1.0;
+    }
+    result.subtitle.as_deref().map_or(0.0, |subtitle| {
+        let subtitle = subtitle.to_lowercase();
+        if subtitle == needle {
+            0.7
+        } else if subtitle.contains(&needle) {
+            0.4
+        } else {
+            0.0
+        }
+    })
+}
+
 /// One well-known category a result can belong to — the domain vocabulary
 /// the chip strip and grouping use. Providers pick from it or, via
 /// [`ResourceKind::Custom`], mint a new one.
@@ -633,6 +670,7 @@ impl SearchRegistry {
             wanted_kinds.to_vec()
         };
         let mut merged: Vec<(SearchResult, f32)> = Vec::new();
+        let mut canonical_rows: HashMap<(String, String), usize> = HashMap::new();
         for provider in &self.providers {
             if !scope_allows(provider.as_ref(), scope, active_provider_id) {
                 continue;
@@ -672,8 +710,17 @@ impl SearchRegistry {
                     provider.id(),
                     r.score,
                 );
-                let strength = i32_to_f32_lossy(r.score) / i32_to_f32_lossy(top);
-                merged.push((r, strength));
+                let strength = lexical_strength(needle, &r)
+                    + i32_to_f32_lossy(r.score) / i32_to_f32_lossy(top);
+                let key = (r.provider_id.clone(), r.id.clone());
+                if let Some(&index) = canonical_rows.get(&key) {
+                    if strength > merged[index].1 {
+                        merged[index] = (r, strength);
+                    }
+                } else {
+                    canonical_rows.insert(key, merged.len());
+                    merged.push((r, strength));
+                }
             }
         }
         // Order groups by how well their best member matched, then the
@@ -771,7 +818,11 @@ fn scope_allows(
         SearchScope::All | SearchScope::Workspace => true,
         SearchScope::ActiveApp => match active_provider_id {
             Some(id) => provider.id() == id || provider.available_in_active_app_scope(),
-            None => true,
+            // The overlay explicitly degrades to `All` when there is no
+            // focused tab. Reaching this branch means a focused app exists
+            // but its primary provider is not ready; fail narrow rather than
+            // leaking unrelated workspace results into "This app".
+            None => provider.available_in_active_app_scope(),
         },
     }
 }
@@ -932,6 +983,78 @@ mod tests {
         assert_eq!(out[2].kind, ResourceKind::Action);
     }
 
+    #[test]
+    fn exact_title_beats_a_high_scoring_metadata_match_across_providers() {
+        let mut reg = SearchRegistry::new();
+        let mut settings = mk_result(
+            ResourceKind::Action,
+            "actions",
+            "settings",
+            "Open workspace settings",
+            100,
+        );
+        settings.subtitle = Some("Manage notes integrations".into());
+        reg.register(Rc::new(FakeProvider {
+            id: "actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![settings],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Notes", 0)],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "notes",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+
+        assert_eq!(out[0].title, "Notes");
+    }
+
+    #[test]
+    fn registry_collapses_duplicate_stable_rows_from_one_provider() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![
+                mk_result(ResourceKind::Note, "notes", "same-note", "Old title", 20),
+                mk_result(
+                    ResourceKind::Note,
+                    "notes",
+                    "same-note",
+                    "Current title",
+                    80,
+                ),
+            ],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "title",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].title, "Current title");
+    }
+
     /// Same two providers, but now the action is the strongest hit and must lead.
     #[test]
     fn the_same_providers_flip_when_the_action_scores_highest() {
@@ -1001,6 +1124,17 @@ mod tests {
             SearchScope::ActiveApp,
             Some("notes")
         ));
+    }
+
+    #[test]
+    fn unresolved_active_app_scope_never_widens_to_unrelated_providers() {
+        let unrelated = FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: Vec::new(),
+            max_score: None,
+        };
+        assert!(!scope_allows(&unrelated, SearchScope::ActiveApp, None));
     }
 
     #[test]
@@ -1360,11 +1494,7 @@ mod tests {
             doc_root: &root,
         };
         refresh_until_ready(&reg, &refresh_args);
-        for scope in [
-            SearchScope::All,
-            SearchScope::Workspace,
-            SearchScope::ActiveApp,
-        ] {
+        for scope in [SearchScope::All, SearchScope::Workspace] {
             let out = reg.query(&QueryArgs {
                 needle: "calculator",
                 scope,
