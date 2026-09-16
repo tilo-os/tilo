@@ -1,11 +1,13 @@
 //! Live target enumeration: turn `lsblk -J -b` into a list of
 //! [`TargetDrive`]s.
 //!
-//! Best-effort and side-effect free — if `lsblk` is missing or returns
-//! nonsense we degrade to `None`, letting the caller fall back to the
-//! curated sample so the UI is always populated. This module is only
-//! exercised in the live binary; `--shots` never calls it, so the
-//! screenshot stays deterministic offline.
+//! Best-effort and side-effect free — if the platform probe is missing or
+//! returns nonsense we degrade to `None`, letting the caller retain its last
+//! trustworthy snapshot. A successful probe with no usable drives is
+//! deliberately `Some(Vec::new())`: that distinction lets Rescan remove an
+//! unplugged drive instead of leaving a stale destructive target selected.
+//! This module is only exercised in the live binary; `--shots` never calls it,
+//! so the screenshot stays deterministic offline.
 
 #[cfg(target_os = "macos")]
 use std::io::Write;
@@ -62,8 +64,9 @@ fn native_image_path() -> std::io::Result<Option<std::path::PathBuf>> {
     Ok((!path.is_empty()).then(|| std::path::PathBuf::from(path)))
 }
 
-/// Enumerate candidate write targets. Returns `None` when `lsblk` is
-/// unavailable or produced no usable disks.
+/// Enumerate candidate write targets. Returns `None` when the platform probe
+/// is unavailable or malformed, and `Some(Vec::new())` when it succeeded but
+/// found no usable disks.
 pub fn probe() -> Option<Vec<TargetDrive>> {
     probe_platform()
 }
@@ -180,7 +183,7 @@ fn harden_flatpak_inventory(drives: Vec<TargetDrive>) -> Option<Vec<TargetDrive>
         drive.is_system |= host_system;
         safe.push(drive);
     }
-    (!safe.is_empty()).then_some(safe)
+    Some(safe)
 }
 
 #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
@@ -297,7 +300,7 @@ pub fn parse_diskutil(json: &Value) -> Option<Vec<TargetDrive>> {
             })
         })
         .collect::<Vec<_>>();
-    (!drives.is_empty()).then_some(drives)
+    Some(drives)
 }
 
 #[cfg(target_os = "windows")]
@@ -331,11 +334,11 @@ $disks | ConvertTo-Json -Compress -Depth 4"#;
 /// Parse PowerShell `Get-Disk` JSON. Kept platform-neutral for fixture tests.
 pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
     let one;
-    let disks = if let Some(items) = json.as_array() {
-        items
+    let (disks, inventory_is_array) = if let Some(items) = json.as_array() {
+        (items, true)
     } else {
         one = vec![json.clone()];
-        &one
+        (&one, false)
     };
     let drives = disks
         .iter()
@@ -370,7 +373,11 @@ pub fn parse_windows_disks(json: &Value) -> Option<Vec<TargetDrive>> {
             })
         })
         .collect::<Vec<_>>();
-    (!drives.is_empty()).then_some(drives)
+    // `Get-Disk | ConvertTo-Json` emits `[]` when the inventory is
+    // authoritatively empty. A singleton object remains accepted for older
+    // PowerShell producers, but a malformed singleton must still be a probe
+    // failure rather than an empty snapshot.
+    (inventory_is_array || !drives.is_empty()).then_some(drives)
 }
 
 fn windows_partitions(disk: &Value) -> Vec<TargetPartition> {
@@ -446,11 +453,7 @@ pub fn parse_lsblk(json: &Value) -> Option<Vec<TargetDrive>> {
         });
     }
 
-    if drives.is_empty() {
-        None
-    } else {
-        Some(drives)
-    }
+    Some(drives)
 }
 
 /// Flatten partitions; flag the drive as the system disk if any child is
@@ -692,7 +695,7 @@ mod tests {
     }
 
     #[test]
-    fn skips_zero_size_and_non_disk() {
+    fn successful_linux_probe_can_authoritatively_return_no_drives() {
         let json: Value = serde_json::from_str(
             r#"{"blockdevices":[
                  {"name":"loop0","size":0,"type":"loop"},
@@ -700,7 +703,8 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        assert!(parse_lsblk(&json).is_none());
+        assert_eq!(parse_lsblk(&json).unwrap().len(), 0);
+        assert!(parse_lsblk(&serde_json::json!({})).is_none());
     }
 
     /// Build a file whose ISO-9660 PVD carries `label`, so the real reader
@@ -811,6 +815,13 @@ mod tests {
     }
 
     #[test]
+    fn successful_macos_probe_can_authoritatively_return_no_external_drives() {
+        let empty = serde_json::json!({"AllDisksAndPartitions": []});
+        assert_eq!(parse_diskutil(&empty).unwrap().len(), 0);
+        assert!(parse_diskutil(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
     fn parses_windows_get_disk_and_flags_system_disk() {
         let json: Value = serde_json::from_str(r#"[
           {"Number":0,"FriendlyName":"Internal NVMe","Size":1000000000000,"BusType":"NVMe","IsBoot":true,"IsSystem":true,"IsReadOnly":false},
@@ -853,5 +864,14 @@ mod tests {
         assert_eq!(drives[0].partitions.len(), 1);
         assert_eq!(drives[0].partitions[0].name, "F:");
         assert_eq!(drives[0].contents_summary(), "1 partition(s): CAMERA");
+    }
+
+    #[test]
+    fn successful_windows_probe_can_authoritatively_return_no_drives() {
+        assert_eq!(
+            parse_windows_disks(&serde_json::json!([])).unwrap().len(),
+            0
+        );
+        assert!(parse_windows_disks(&serde_json::json!({})).is_none());
     }
 }
