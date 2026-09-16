@@ -839,7 +839,11 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     theme.with_reduce_motion(shot_motion_reduced())
 }
 
-fn shot_text_scale(cli: Option<f32>, environment: Option<&str>) -> f32 {
+/// Resolve screenshot text-scale precedence without reading process-global
+/// state. Custom capture frontends can pass their parsed CLI value and the
+/// compatibility environment value through the same policy as [`shot_theme`].
+#[must_use]
+pub fn shot_text_scale(cli: Option<f32>, environment: Option<&str>) -> f32 {
     cli.or_else(|| {
         environment
             .and_then(|value| value.trim().parse::<f32>().ok())
