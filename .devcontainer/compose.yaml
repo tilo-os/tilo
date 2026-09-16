@@ -1,7 +1,6 @@
 services:
   rust-dev:
-    # Official BranchBox pre-built image (instant startup)
-    # Falls back to local build if unavailable or DEVCONTAINER_PULL_POLICY=build
+    # Use the cached image when available; otherwise build locally.
     image: ${DEVCONTAINER_IMAGE:-ghcr.io/branchbox/branchbox/devcontainer-rust:latest}
     build:
       context: ..

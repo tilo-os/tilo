@@ -11,6 +11,15 @@
 
 set -euo pipefail
 
+DISTROBOX="${QOS_DISTROBOX:-}"
+run_in_env() {
+    if [ -n "$DISTROBOX" ]; then
+        distrobox enter "$DISTROBOX" -- "$@"
+    else
+        "$@"
+    fi
+}
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
@@ -25,7 +34,7 @@ if ! compgen -G "$PROFRAW/*.profraw" > /dev/null; then
 fi
 
 # llvm-profdata ships with clang. Fedora packages it as `llvm`.
-distrobox enter my-distrobox-44 -- bash -c "cd $ROOT && \
+run_in_env bash -c "cd $ROOT && \
     llvm-profdata merge \
         --output=$OUT \
         $PROFRAW/*.profraw"

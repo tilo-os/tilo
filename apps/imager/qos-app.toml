@@ -5,14 +5,7 @@
 # qpkg does not expose writing at all. The separately packaged Linux, Windows,
 # and macOS host downloads compile in the short-lived privileged writer.
 #
-# Pack and install:
-#
-#     cargo build -p imager -p pkg-cli -p install
-#     mkdir -p target/qpkg/imager/bin
-#     cp target/debug/imager target/qpkg/imager/bin/imager
-#     target/debug/qos-pkg pack --manifest apps/imager/qos-app.toml \
-#         --payload target/qpkg/imager --output target/imager.qpkg
-#     target/debug/qos-install install target/imager.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.imager"
@@ -22,8 +15,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

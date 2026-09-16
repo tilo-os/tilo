@@ -11,6 +11,15 @@
 
 set -euo pipefail
 
+DISTROBOX="${QOS_DISTROBOX:-}"
+run_in_env() {
+    if [ -n "$DISTROBOX" ]; then
+        distrobox enter "$DISTROBOX" -- "$@"
+    else
+        "$@"
+    fi
+}
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
@@ -47,7 +56,7 @@ for bin in shell terminal file-explorer qos-install; do
         echo "skip $bin: no $FDATA (was perf record run for this binary?)"
         continue
     fi
-    distrobox enter my-distrobox-44 -- bash -c "cd $ROOT && \
+    run_in_env bash -c "cd $ROOT && \
         llvm-bolt $IN -o $OUT_BIN -data=$FDATA \
             -reorder-blocks=ext-tsp \
             -reorder-functions=hfsort+ \

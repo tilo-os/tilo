@@ -6,14 +6,7 @@
 # cache is the app's own directory, so it needs nothing beyond the
 # system read profile.
 #
-# Pack and install:
-#
-#     cargo build -p maps -p pkg-cli -p install
-#     mkdir -p target/qpkg/maps/bin
-#     cp target/debug/maps target/qpkg/maps/bin/maps
-#     target/debug/qos-pkg pack --manifest apps/maps/qos-app.toml \
-#         --payload target/qpkg/maps --output target/maps.qpkg
-#     target/debug/qos-install install target/maps.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.maps"
@@ -23,8 +16,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

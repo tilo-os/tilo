@@ -1,15 +1,14 @@
 # Hello, world: from `cargo new` to `qos-install run`
 
-The full recipe. Every command below was executed against tools built
-from `origin/main`; the exact output is what you'll see if you follow
-along verbatim.
+The full recipe. Run the commands from a current checkout; exact output varies
+with the toolchain, host, and installed services.
 
 ## Prerequisites
 
 You need:
 
-- A Rust toolchain (rustc / cargo). The examples were verified with
-  Rust 1.96.0.
+- A Rust toolchain (rustc / cargo), as pinned by the repository's
+  `rust-toolchain.toml`.
 - The qOS packaging tools: `qos-pkg`, `qos-install`, `qos-launcher`,
   `qos-cli-shim`, `qos-runtime-bundle`. Build them from the workspace:
 

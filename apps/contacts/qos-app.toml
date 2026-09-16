@@ -1,21 +1,6 @@
 # Package manifest for `contacts` as a qOS app.
-#
-# Pack and install with:
-#
-#     cargo build -p contacts -p pkg-cli -p install --release
-#     mkdir -p target/contacts-payload/bin
-#     cp target/release/contacts  target/contacts-payload/bin/contacts
-#     target/release/qos-pkg pack \
-#         --manifest apps/contacts/qos-app.toml \
-#         --payload  target/contacts-payload \
-#         --output   target/contacts.qpkg
-#     target/release/qos-install install target/contacts.qpkg --allow-self-signed
-#     target/release/qos-install run    dev.qos.contacts
-#
-# The manifest lists the GPU + Wayland + font paths a wgpu/vello GUI app
-# needs, declares the file-chooser portal so Import/Export reach the host's
-# native picker, and claims the vCard file types so the OS can route a `.vcf`
-# open to Contacts (see the [providers] block).
+# The manifest lists the GPU, Wayland, font, and file-chooser capabilities
+# needed by this GUI app and claims the vCard file types in [providers].
 
 [package]
 id       = "dev.qos.contacts"

@@ -3,14 +3,7 @@
 # The strictest profile in the fleet: no file, no socket, no exec.
 # Everything past the GUI baseline is denied.
 #
-# Pack and install:
-#
-#     cargo build -p calculator -p pkg-cli -p install
-#     mkdir -p target/qpkg/calculator/bin
-#     cp target/debug/calculator target/qpkg/calculator/bin/calculator
-#     target/debug/qos-pkg pack --manifest apps/calculator/qos-app.toml \
-#         --payload target/qpkg/calculator --output target/calculator.qpkg
-#     target/debug/qos-install install target/calculator.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.calculator"
@@ -20,8 +13,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

@@ -12,6 +12,15 @@
 
 set -euo pipefail
 
+DISTROBOX="${QOS_DISTROBOX:-}"
+run_in_env() {
+    if [ -n "$DISTROBOX" ]; then
+        distrobox enter "$DISTROBOX" -- "$@"
+    else
+        "$@"
+    fi
+}
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
@@ -27,7 +36,7 @@ export LLVM_PROFILE_FILE="$PROFRAW/qos-%p-%m.profraw"
 # profile-generate` is stable and covers what we need.
 RUSTFLAGS="-C profile-generate=$PROFRAW $(grep -oE '\-C[[:space:]]+[^"]*' .cargo/config.toml | tr '\n' ' ')" \
 CARGO_TARGET_DIR="$BUILD" \
-distrobox enter my-distrobox-44 -- bash -c "cd $ROOT && cargo build --release \
+run_in_env bash -c "cd $ROOT && cargo build --release \
     -p shell -p terminal -p file-explorer -p install"
 
 echo

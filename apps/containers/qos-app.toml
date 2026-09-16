@@ -8,14 +8,7 @@
 # read+exec on the host bin dirs, and podman's user socket under
 # `$XDG_RUNTIME_DIR`.
 #
-# Pack and install:
-#
-#     cargo build -p containers -p pkg-cli -p install
-#     mkdir -p target/qpkg/containers/bin
-#     cp target/debug/containers target/qpkg/containers/bin/containers
-#     target/debug/qos-pkg pack --manifest apps/containers/qos-app.toml \
-#         --payload target/qpkg/containers --output target/containers.qpkg
-#     target/debug/qos-install install target/containers.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.containers"
@@ -25,8 +18,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

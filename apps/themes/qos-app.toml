@@ -4,14 +4,7 @@
 # OS-owned and reaches apps through the compositor, not through a file
 # an app reads out of another app's directory.
 #
-# Pack and install:
-#
-#     cargo build -p themes -p pkg-cli -p install
-#     mkdir -p target/qpkg/themes/bin
-#     cp target/debug/themes target/qpkg/themes/bin/themes
-#     target/debug/qos-pkg pack --manifest apps/themes/qos-app.toml \
-#         --payload target/qpkg/themes --output target/themes.qpkg
-#     target/debug/qos-install install target/themes.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.themes"
@@ -21,8 +14,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

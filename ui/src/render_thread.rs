@@ -67,10 +67,8 @@ pub fn set_frame_post_processor(p: Box<dyn FramePostProcess>) {
     }
 }
 
-/// Compile-time `Send` check: if a future vello/wgpu version regresses the
-/// `Send` impl on `Renderer`/`Scene`, this fails to compile rather than
-/// failing at thread spawn. Hand-rolled to avoid a dep on
-/// `static_assertions` for one macro.
+/// Compile-time `Send` check: a vello/wgpu regression fails to compile rather
+/// than at thread spawn.
 const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<Renderer>();

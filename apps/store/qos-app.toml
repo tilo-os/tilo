@@ -1,19 +1,7 @@
 # Package manifest for the qOS `store` — the app store, itself shipped as
 # a qOS app so it's discoverable, updatable and sandbox-audited exactly
 # like every other native app.
-#
-# Pack and install with:
-#
-#     cargo build -p store -p pkg-cli --release
-#     mkdir -p target/store-payload/bin
-#     cp target/release/store  target/store-payload/bin/store
-#     target/release/qos-pkg pack \
-#         --manifest apps/store/qos-app.toml \
-#         --payload  target/store-payload \
-#         --output   target/store.qpkg
-# The signed OS image provisions this system app and its required app-host
-# capability. Published Store builds are never self-installed from inside the
-# Store sandbox.
+
 
 [package]
 id       = "dev.qos.store"

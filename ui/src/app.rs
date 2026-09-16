@@ -6956,18 +6956,10 @@ impl AppHandler {
         }
     }
 
-    /// Split out of `window_event`'s `RedrawRequested` arm (`clippy::too_many_lines`).
-    /// Body unchanged from the original inline arm — see `window_event` for the
-    /// event-loop plumbing this is called from. The layout pass, draw pass,
-    /// legacy cursor drawing, and debug-outline drawing are further split
-    /// into [`run_layout_pass`], [`draw_frame_content`], [`draw_legacy_cursors`]
-    /// and [`draw_debug_outlines`] respectively; what remains is a single
-    /// frame's render-thread handshake (acquire scene, draw, send, log) whose
-    /// phases share `render`/`app`/`scene`/timing locals and several early
-    /// `return`s — further fragmenting it risks changing frame-timing or
-    /// error-path behaviour with no clippy/cargo loop available here to
-    /// verify against.
-    #[allow(clippy::too_many_lines, reason = "see doc comment above")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the frame handshake shares render state, timing locals, and early exits"
+    )]
     fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
         if self.render.is_none() {
             qos_startup_metrics::mark("first-redraw-init-render-start");
@@ -7393,16 +7385,10 @@ impl AppHandler {
         }
     }
 
-    /// Split out of `window_event`'s catch-all arm (`clippy::too_many_lines`). Body
-    /// unchanged from the original inline arm: a sequential chain of
-    /// mutually-exclusive `if !handled && ...` input-routing checks (Ctrl+K,
-    /// screen reader, undo/redo, Tab, arrow nav, gesture nav, generic widget
-    /// dispatch, Enter/Space activation, cursor/tooltip follow-up) that all
-    /// read and write the same `handled`/`focus_target`/`is_undo_redo`
-    /// locals in a fixed precedence order. Splitting each check into its own
-    /// method is possible but risks silently reordering that precedence with
-    /// no clippy/cargo loop available here to verify against.
-    #[allow(clippy::too_many_lines, reason = "see doc comment above")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "input routing shares mutable state and must retain fixed precedence"
+    )]
     fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) {
         let event = other;
         let app = &mut self.app;

@@ -7,14 +7,7 @@
 # through the host file-chooser portal, which hands back a descriptor
 # rather than a path.
 #
-# Pack and install:
-#
-#     cargo build -p pdf_viewer -p pkg-cli -p install
-#     mkdir -p target/qpkg/pdf_viewer/bin
-#     cp target/debug/pdf_viewer target/qpkg/pdf_viewer/bin/pdf_viewer
-#     target/debug/qos-pkg pack --manifest apps/pdf_viewer/qos-app.toml \
-#         --payload target/qpkg/pdf_viewer --output target/pdf_viewer.qpkg
-#     target/debug/qos-install install target/pdf_viewer.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.pdf-viewer"
@@ -24,8 +17,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

@@ -32,26 +32,21 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# Real PDF page rasterisation via a dynamically-loaded pdfium; falls back to
-# pure-Rust text extraction when the native library is not present.
+# PDF page rasterisation via dynamically loaded pdfium, with pure-Rust text
+# extraction when the native library is unavailable.
 pdfium-render = "0.8.37"
 pdf-extract = "0.12.0"
 # Decode imported images (PNG/JPEG/…) to place them as new PDF pages. Pinned to
 # the same 0.25 line pdfium-render uses so `DynamicImage` unifies to one type.
 image = { workspace = true, features = ["png", "jpeg"] }
 tempfile.workspace = true
-# Host-native file open/save through the XDG Desktop Portal
-# (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
-# chooser; on qOS the compositor's portal backend renders qOS's picker. The
-# portal call runs off the UI thread on its own small Tokio runtime and the
-# chosen path is delivered back over a channel from `ui::portal`.
+# Host-native file open/save through the XDG Desktop Portal; calls run off the
+# UI thread and return through `ui::portal`.
 
 [dev-dependencies]
-# Serialise the tests that touch the shared system clipboard so they never race
-# each other for it (arboard talks to the real Wayland/X11 clipboard).
+# Serialise tests that touch the shared system clipboard.
 serial_test.workspace = true
-# Two real files on disk, so "open a second document" is the real thing rather
-# than the same path twice.
+# Two distinct files for the multi-document test.
 
 [lints]
 workspace = true
