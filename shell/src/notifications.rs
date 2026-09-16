@@ -141,11 +141,49 @@ pub enum ContinuityOutboundEvent {
     Retire(ContinuityNotificationId),
 }
 
+/// One notification received over an already-authenticated personal fabric
+/// route. This is intentionally a distinct type from
+/// [`ContinuityNotificationDraft`]: it has no local D-Bus id and cannot be
+/// handed back to the local projection API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteContinuityNotification {
+    pub source_device: String,
+    pub source_label: String,
+    pub projection: ContinuityNotificationProjection,
+}
+
+impl RemoteContinuityNotification {
+    /// Remote records are displayable/routable but never projectable. Keeping
+    /// this property on the type makes the loop-prevention rule available to
+    /// consumers without asking them to infer it from absent fields.
+    pub const fn is_projectable(&self) -> bool {
+        false
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteContinuityEvent {
+    Upsert(RemoteContinuityNotification),
+    Retire {
+        source_device: String,
+        id: ContinuityNotificationId,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContinuityNotificationCommand {
     Dismiss,
     Invoke { action_key: String },
+}
+
+/// A locally-authorized action for the runtime to send to exactly the
+/// authenticated device which authored the displayed projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContinuityCommandEgress {
+    pub target_device: String,
+    pub id: ContinuityNotificationId,
+    pub command: ContinuityNotificationCommand,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,6 +198,10 @@ struct ContinuityState {
     by_id: HashMap<ContinuityNotificationId, ContinuityOriginRoute>,
     by_dbus_id: HashMap<u32, ContinuityNotificationId>,
     outbound: VecDeque<ContinuityOutboundEvent>,
+    remote_by_key: HashMap<(String, ContinuityNotificationId), RemoteContinuityNotification>,
+    remote_order: VecDeque<(String, ContinuityNotificationId)>,
+    remote_events: VecDeque<RemoteContinuityEvent>,
+    command_egress: VecDeque<ContinuityCommandEgress>,
 }
 
 impl CloseReason {
@@ -237,6 +279,11 @@ impl std::fmt::Debug for BridgeInner {
             .field("sharing", &self.sharing.len())
             .field("continuity_routes", &self.continuity.by_id.len())
             .field("continuity_outbound", &self.continuity.outbound.len())
+            .field("continuity_remote", &self.continuity.remote_by_key.len())
+            .field(
+                "continuity_remote_events",
+                &self.continuity.remote_events.len(),
+            )
             .finish()
     }
 }
@@ -485,6 +532,130 @@ impl NotificationBridge {
         retire_continuity_route(&mut inner, dbus_id);
         true
     }
+
+    /// Admit a projection only under the authenticated transport source that
+    /// delivered it. The source is not read from sender-controlled payload.
+    /// Exact duplicates are ignored; replacements update the existing key.
+    pub fn receive_continuity_projection(
+        &self,
+        authenticated_source: &str,
+        source_label: &str,
+        projection: ContinuityNotificationProjection,
+        now_unix_ms: u64,
+    ) -> bool {
+        if !valid_continuity_source(authenticated_source, source_label)
+            || !projection.validate_at(now_unix_ms)
+        {
+            return false;
+        }
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        expire_remote_continuity(&mut inner, now_unix_ms);
+        let key = (authenticated_source.to_string(), projection.id);
+        let incoming = RemoteContinuityNotification {
+            source_device: authenticated_source.to_string(),
+            source_label: source_label.to_string(),
+            projection,
+        };
+        if inner.continuity.remote_by_key.get(&key) == Some(&incoming) {
+            return false;
+        }
+        if !inner.continuity.remote_by_key.contains_key(&key) {
+            evict_oldest_remote_if_full(&mut inner);
+            inner.continuity.remote_order.push_back(key.clone());
+        }
+        inner.continuity.remote_by_key.insert(key, incoming.clone());
+        push_bounded(
+            &mut inner.continuity.remote_events,
+            RemoteContinuityEvent::Upsert(incoming),
+        );
+        true
+    }
+
+    /// Retire only the record authored by the authenticated source. A peer
+    /// cannot remove a sibling device's notification by copying its id.
+    pub fn retire_remote_continuity(
+        &self,
+        authenticated_source: &str,
+        id: ContinuityNotificationId,
+    ) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        remove_remote_continuity(&mut inner, authenticated_source, id, true)
+    }
+
+    /// Validate a local user command against the currently displayed remote
+    /// record, then queue it for the exact authenticated origin. Action keys
+    /// are accepted only when advertised by that live projection.
+    pub fn request_remote_continuity_command(
+        &self,
+        authenticated_source: &str,
+        id: ContinuityNotificationId,
+        command: ContinuityNotificationCommand,
+        now_unix_ms: u64,
+    ) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        expire_remote_continuity(&mut inner, now_unix_ms);
+        let key = (authenticated_source.to_string(), id);
+        let Some(notification) = inner.continuity.remote_by_key.get(&key) else {
+            return false;
+        };
+        if let ContinuityNotificationCommand::Invoke { action_key } = &command
+            && !notification
+                .projection
+                .actions
+                .iter()
+                .any(|(allowed, _)| allowed == action_key)
+        {
+            return false;
+        }
+        inner.continuity.remote_by_key.remove(&key);
+        inner
+            .continuity
+            .remote_order
+            .retain(|candidate| candidate != &key);
+        push_bounded(
+            &mut inner.continuity.command_egress,
+            ContinuityCommandEgress {
+                target_device: authenticated_source.to_string(),
+                id,
+                command,
+            },
+        );
+        true
+    }
+
+    /// Expire remote projections even when no new fabric traffic arrives.
+    pub fn expire_remote_continuity(&self, now_unix_ms: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            expire_remote_continuity(&mut inner, now_unix_ms);
+        }
+    }
+
+    pub fn drain_remote_continuity_events(&self) -> Vec<RemoteContinuityEvent> {
+        self.inner.lock().map_or_else(
+            |_| Vec::new(),
+            |mut inner| inner.continuity.remote_events.drain(..).collect(),
+        )
+    }
+
+    pub fn drain_continuity_command_egress(&self) -> Vec<ContinuityCommandEgress> {
+        self.inner.lock().map_or_else(
+            |_| Vec::new(),
+            |mut inner| inner.continuity.command_egress.drain(..).collect(),
+        )
+    }
+
+    #[cfg(test)]
+    fn remote_continuity_len(&self) -> usize {
+        self.inner
+            .lock()
+            .map_or(0, |inner| inner.continuity.remote_by_key.len())
+    }
 }
 
 fn random_nonzero_token() -> [u8; 16] {
@@ -529,6 +700,79 @@ fn retire_continuity_route(inner: &mut BridgeInner, dbus_id: u32) {
         &mut inner.continuity.outbound,
         ContinuityOutboundEvent::Retire(id),
     );
+}
+
+fn valid_continuity_source(device: &str, label: &str) -> bool {
+    !device.is_empty()
+        && device.len() <= 128
+        && !device.chars().any(char::is_control)
+        && !label.is_empty()
+        && label.len() <= 128
+        && !label.chars().any(char::is_control)
+}
+
+fn remove_remote_continuity(
+    inner: &mut BridgeInner,
+    source: &str,
+    id: ContinuityNotificationId,
+    emit: bool,
+) -> bool {
+    let key = (source.to_string(), id);
+    if inner.continuity.remote_by_key.remove(&key).is_none() {
+        return false;
+    }
+    inner
+        .continuity
+        .remote_order
+        .retain(|candidate| candidate != &key);
+    if emit {
+        push_bounded(
+            &mut inner.continuity.remote_events,
+            RemoteContinuityEvent::Retire {
+                source_device: source.to_string(),
+                id,
+            },
+        );
+    }
+    true
+}
+
+fn expire_remote_continuity(inner: &mut BridgeInner, now_unix_ms: u64) {
+    let expired = inner
+        .continuity
+        .remote_by_key
+        .iter()
+        .filter_map(|((source, id), notification)| {
+            (notification.projection.expires_unix_ms <= now_unix_ms)
+                .then_some((source.clone(), *id))
+        })
+        .collect::<Vec<_>>();
+    for (source, id) in expired {
+        remove_remote_continuity(inner, &source, id, true);
+    }
+}
+
+fn evict_oldest_remote_if_full(inner: &mut BridgeInner) {
+    if inner.continuity.remote_by_key.len() < MAX_CONTINUITY_NOTIFICATIONS {
+        return;
+    }
+    while let Some((source, id)) = inner.continuity.remote_order.pop_front() {
+        if inner
+            .continuity
+            .remote_by_key
+            .remove(&(source.clone(), id))
+            .is_some()
+        {
+            push_bounded(
+                &mut inner.continuity.remote_events,
+                RemoteContinuityEvent::Retire {
+                    source_device: source,
+                    id,
+                },
+            );
+            break;
+        }
+    }
 }
 
 /// Parse the `urgency` hint (a `y`/byte); defaults to `1` (normal) when absent or the wrong type — never refuse a notification over a bad hint.
@@ -1118,6 +1362,146 @@ mod tests {
             &ContinuityNotificationCommand::Dismiss,
             2_000,
         ));
+    }
+
+    fn remote_projection(token: u8, title: &str) -> ContinuityNotificationProjection {
+        ContinuityNotificationProjection {
+            id: ContinuityNotificationId {
+                epoch: [1; 16],
+                token: [token; 16],
+            },
+            app_id: "dev.qos.mail".into(),
+            app_name: "Mail".into(),
+            title: title.into(),
+            body: "Message".into(),
+            body_redacted: false,
+            actions: vec![("reply".into(), "Reply".into())],
+            urgency: 1,
+            expires_unix_ms: 10_000,
+        }
+    }
+
+    #[test]
+    fn remote_inbox_keys_identical_ids_by_authenticated_source() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(9, "Same id");
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection.clone(), 1));
+        assert!(bridge.receive_continuity_projection("tablet", "Tablet", projection, 1));
+        assert_eq!(bridge.remote_continuity_len(), 2);
+
+        assert!(bridge.retire_remote_continuity("phone", remote_projection(9, "x").id));
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        assert!(!bridge.retire_remote_continuity("attacker", remote_projection(9, "x").id));
+    }
+
+    #[test]
+    fn remote_inbox_dedupes_and_replaces_one_source_record() {
+        let bridge = NotificationBridge::new();
+        let first = remote_projection(2, "First");
+        assert!(bridge.receive_continuity_projection("phone", "Phone", first.clone(), 1));
+        assert!(!bridge.receive_continuity_projection("phone", "Phone", first.clone(), 1));
+        assert_eq!(bridge.drain_remote_continuity_events().len(), 1);
+
+        let mut replacement = first;
+        replacement.title = "Replacement".into();
+        assert!(bridge.receive_continuity_projection("phone", "Phone", replacement, 1));
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        let events = bridge.drain_remote_continuity_events();
+        let RemoteContinuityEvent::Upsert(notification) = &events[0] else {
+            panic!("expected replacement upsert");
+        };
+        assert_eq!(notification.projection.title, "Replacement");
+    }
+
+    #[test]
+    fn remote_commands_validate_live_action_and_route_exact_origin() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(3, "Action");
+        let id = projection.id;
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, 1));
+        assert!(!bridge.request_remote_continuity_command(
+            "phone",
+            id,
+            ContinuityNotificationCommand::Invoke {
+                action_key: "archive".into(),
+            },
+            2,
+        ));
+        assert!(bridge.request_remote_continuity_command(
+            "phone",
+            id,
+            ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            },
+            2,
+        ));
+        assert_eq!(
+            bridge.drain_continuity_command_egress(),
+            vec![ContinuityCommandEgress {
+                target_device: "phone".into(),
+                id,
+                command: ContinuityNotificationCommand::Invoke {
+                    action_key: "reply".into(),
+                },
+            }]
+        );
+        assert_eq!(bridge.remote_continuity_len(), 0);
+    }
+
+    #[test]
+    fn remote_expiry_and_retire_emit_local_removal() {
+        let bridge = NotificationBridge::new();
+        let projection = remote_projection(4, "Expires");
+        let id = projection.id;
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, 1));
+        bridge.drain_remote_continuity_events();
+        bridge.expire_remote_continuity(10_000);
+        assert_eq!(bridge.remote_continuity_len(), 0);
+        assert_eq!(
+            bridge.drain_remote_continuity_events(),
+            vec![RemoteContinuityEvent::Retire {
+                source_device: "phone".into(),
+                id,
+            }]
+        );
+    }
+
+    #[test]
+    fn remote_inbox_is_bounded_and_evicts_oldest() {
+        let bridge = NotificationBridge::new();
+        for index in 0..=MAX_CONTINUITY_NOTIFICATIONS {
+            let token = u8::try_from(index.saturating_add(1)).unwrap();
+            assert!(bridge.receive_continuity_projection(
+                "phone",
+                "Phone",
+                remote_projection(token, "Bounded"),
+                1,
+            ));
+        }
+        assert_eq!(bridge.remote_continuity_len(), MAX_CONTINUITY_NOTIFICATIONS);
+        let events = bridge.drain_remote_continuity_events();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RemoteContinuityEvent::Retire { id, .. } if id.token == [1; 16]
+        )));
+    }
+
+    #[test]
+    fn remote_record_carries_provenance_and_is_never_projectable() {
+        let bridge = NotificationBridge::new();
+        assert!(bridge.receive_continuity_projection(
+            "certified-phone",
+            "ada's phone",
+            remote_projection(5, "Remote"),
+            1,
+        ));
+        let events = bridge.drain_remote_continuity_events();
+        let RemoteContinuityEvent::Upsert(notification) = &events[0] else {
+            panic!("expected remote upsert");
+        };
+        assert_eq!(notification.source_device, "certified-phone");
+        assert_eq!(notification.source_label, "ada's phone");
+        assert!(!notification.is_projectable());
     }
 
     #[test]
