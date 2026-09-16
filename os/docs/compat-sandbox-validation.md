@@ -38,9 +38,40 @@ allowed the temporary file while retaining `EACCES` outside it.
 Validated SHA-256 values:
 
 - Kernel: `f88ab7ad6eae32417a437ff119c4ed8e8f8ddd5edaca920d82678fab1298ab7a`.
-- ARM launcher: `fd7e1f314206395ce9ceebadbb756992a8edd8c7a7565c0b5ae995495f6ec05a`.
+- ARM launcher (Rust 1.97.1): `5426235f69f27b802ce15083ed69a4225efd1e74565a2e602c288dbbf34f929e`.
+
+The initial local build used Fedora's Rust 1.94.1 because its `cargo` executable
+bypassed rustup. The preparation environment now places rustup's shims first
+on `PATH`; `rustup show active-toolchain` confirms the repository's
+`rust-toolchain.toml` selects 1.97.1. All 48 service tests, the shell check, and
+the kernel probe were repeated successfully with that toolchain. The two
+launcher builds are different artifacts; only the pinned build hash is listed
+above.
 
 This validates Landlock enforcement for the changed permission. It does not
 replace complete Wine/FEX launches inside the final capsule sandbox, seccomp
 acceptance, or final installer-image testing. WSL's ABI 3 kernel cannot validate
 the qOS ABI 5 requirement; that is why this check uses the built qOS kernel.
+
+## FEX syscall-policy comparison
+
+The actual launcher library generated both `qos-default` and `qos-jit` BPF
+programs for AArch64. A native helper installed each filter with
+`PR_SET_NO_NEW_PRIVS` and `PR_SET_SECCOMP` before executing the test command.
+Native `/usr/bin/true` passed under both filters. FEX executing the guest
+`/usr/bin/true` exited 139 under `qos-default` and 0 under `qos-jit`.
+`fex-qos-seccomp-validation.log` retains the comparison. These profiles differ
+in their simultaneous writable/executable-memory restrictions; the other
+syscall restrictions remain active.
+
+Both Wine architectures subsequently passed the tracked console smoke test
+with `qos-jit` installed before FEX and before the managed FEXServer. This
+covered Wine version queries, creation of independent prefixes, `cmd.exe`
+output, and wineserver cleanup/wait. The result is retained in
+`fex-wine-qos-jit-results/result.json`. Container capabilities remained dropped,
+external networking disabled, and the normal Podman filter enabled as well.
+
+This establishes a syscall-policy requirement for the translated runtime.
+Production Wine policy has not been weakened or changed to JIT based on this
+diagnostic. A trusted runtime selection and complete capsule integration are
+still required; catalogue-supplied settings must not grant a weaker filter.
