@@ -216,6 +216,7 @@ struct Layout {
     main: Rect,
     // controls
     hamburger: Rect,
+    rail_close: Rect,
     method: Rect,
     url: Rect,
     send: Rect,
@@ -276,6 +277,7 @@ pub struct ApiTesterApp {
     // --- Real child widgets ---
     method_dropdown: Dropdown,
     rail_button: Button,
+    rail_close: Button,
     env_dropdown: Dropdown,
     url_input: TextInput,
     body_input: TextInput,
@@ -357,6 +359,7 @@ struct BuiltModel {
 struct BuiltWidgets {
     method_dropdown: Dropdown,
     rail_button: Button,
+    rail_close: Button,
     env_dropdown: Dropdown,
     url_input: TextInput,
     body_input: TextInput,
@@ -459,6 +462,7 @@ impl ApiTesterApp {
             sidebar_scroll: 0.0,
             method_dropdown: widgets.method_dropdown,
             rail_button: widgets.rail_button,
+            rail_close: widgets.rail_close,
             env_dropdown: widgets.env_dropdown,
             url_input: widgets.url_input,
             body_input: widgets.body_input,
@@ -589,6 +593,12 @@ impl ApiTesterApp {
             .tooltip("Open workspace")
             .with_size(HAMBURGER_W as f32, 36.0)
             .on_effect(move || rail_sink.borrow_mut().push(Cmd::ToggleRail));
+        let close_sink = sink.clone();
+        let rail_close = Button::new("api.workspace-close", "Close", None)
+            .with_icon(Icon::X)
+            .with_accessible_name("Close workspace")
+            .tooltip("Close workspace")
+            .on_effect(move || close_sink.borrow_mut().push(Cmd::ToggleRail));
 
         // Environment picker — "No Environment" plus each named environment.
         let mut env_options = vec![NO_ENV.to_string()];
@@ -675,6 +685,7 @@ impl ApiTesterApp {
         BuiltWidgets {
             method_dropdown,
             rail_button,
+            rail_close,
             env_dropdown,
             url_input,
             body_input,
@@ -1014,6 +1025,9 @@ impl ApiTesterApp {
         ];
         if self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay {
             v.insert(0, &self.rail_button);
+            if self.sidebar_visible() {
+                v.insert(1, &self.rail_close);
+            }
         }
         if self.body_field_visible() {
             v.push(&self.body_input);
@@ -1059,6 +1073,9 @@ impl ApiTesterApp {
         let hamburger = self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay;
         if hamburger {
             v.push(&mut self.rail_button);
+            if sidebar {
+                v.push(&mut self.rail_close);
+            }
         }
         v.push(&mut self.method_dropdown);
         v.push(&mut self.url_input);
@@ -1106,6 +1123,9 @@ impl ApiTesterApp {
         let l = self.layout.clone();
         if self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay {
             self.rail_button.apply_layout_external(l.hamburger);
+            if self.sidebar_visible() {
+                self.rail_close.apply_layout_external(l.rail_close);
+            }
         }
         self.method_dropdown.apply_layout_external(l.method);
         self.url_input.apply_layout_external(l.url);
@@ -1269,8 +1289,9 @@ impl ApiTesterApp {
             let scale = self.layout_text_scale;
             // No app-name wordmark (the OS titlebar shows "API Tester"); the ENV
             // picker leads the sidebar. Keep room above it for the ENV caption.
-            let mut y = s.y0 + (PAD + 16.0) * scale - self.sidebar_scroll;
+            let mut y = s.y0 + (PAD + 48.0) * scale - self.sidebar_scroll;
             let control_x = s.x0 + PAD;
+            l.rail_close = Rect::new(s.x1 - PAD - 76.0, s.y0 + PAD, s.x1 - PAD, s.y0 + 48.0);
             let control_w = s.width() - PAD * 2.0;
             let action_rows = |count: usize, at: f64| {
                 (0..count).map(move |index| {
@@ -1400,6 +1421,27 @@ impl ApiTesterApp {
         let c = &theme.tokens.colors;
         let area = l.sidebar;
         scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &area);
+        // A visible local rail scrollbar makes overflow discoverable at 200%
+        // text scale (and communicates the same wheel gesture on any size).
+        let track = Rect::new(area.x1 - 6.0, area.y0 + 8.0, area.x1 - 3.0, area.y1 - 8.0);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c.border_standard.with_alpha_factor(0.45),
+            None,
+            &track,
+        );
+        let thumb_h = (area.height() * 0.22).max(44.0);
+        let travel = (area.height() - 16.0 - thumb_h).max(0.0);
+        let thumb_y = area.y0 + 8.0 + travel * (self.sidebar_scroll / 1200.0);
+        let thumb = Rect::new(area.x1 - 7.0, thumb_y, area.x1 - 2.0, thumb_y + thumb_h);
+        scene.fill(
+            Fill::NonZero,
+            t,
+            c.text_dim.with_alpha_factor(0.8),
+            None,
+            &thumb,
+        );
         let div = Rect::new(area.x1 - 1.0, area.y0, area.x1, area.y1);
         scene.fill(Fill::NonZero, t, c.border_standard, None, &div);
 
@@ -1414,6 +1456,9 @@ impl ApiTesterApp {
                 None,
                 TextWeight::Bold,
             );
+        }
+        if self.rail.layout() == SplitLayout::Overlay {
+            self.rail_close.draw(scene, t, tr, theme, presence);
         }
         Self::draw_section_label(scene, t, tr, theme, l.collections_label, "COLLECTIONS");
         Self::draw_section_label(scene, t, tr, theme, l.history_label, "HISTORY");
