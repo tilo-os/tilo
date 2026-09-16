@@ -1934,4 +1934,67 @@ mod tests {
             "the gutter shifts the caret right ({caret_with} vs {caret_without})",
         );
     }
+
+    #[test]
+    fn scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry() {
+        let text = "first logical line wraps across several visual rows because the editor is narrow\nsecond";
+        let mut normal = CodeEditor::local().with_initial_value(text);
+        normal.set_rect(Rect::new(0.0, 0.0, 190.0, 420.0));
+        draw_once(&mut normal, &Theme::dark());
+        let normal_gutter = normal.gutter_width();
+        let normal_line_height = normal.line_height();
+
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut large = CodeEditor::local().with_initial_value(text);
+        large.set_rect(Rect::new(0.0, 0.0, 190.0, 900.0));
+        draw_once(&mut large, &theme);
+        assert!(
+            large.gutter_width() >= normal_gutter * 1.8,
+            "measured gutter grows with its line-number glyphs ({} vs {})",
+            large.gutter_width(),
+            normal_gutter,
+        );
+        assert!(
+            large.line_height() >= normal_line_height * 1.9,
+            "wrapper reports the shaped 2× row height"
+        );
+
+        let first_end = text.find('\n').expect("hard line break");
+        let wrapped = large.selection_rects(&theme, 0, first_end);
+        assert!(wrapped.len() >= 2, "first logical line wraps visually");
+        assert!(wrapped.iter().all(|rect| {
+            (rect.height() - large.line_height()).abs() < 0.1
+                && rect.x0 >= large.rect().x0 + large.gutter_width()
+        }));
+        let second_start = first_end + 1;
+        let caret = large.caret_rect(&theme, second_start);
+        assert!(caret.x0 >= large.rect().x0 + large.gutter_width());
+        let point = Point::new(caret.x0 + 1.0, caret.y0 + caret.height() / 2.0);
+        assert_eq!(large.byte_at_point(point), second_start);
+        let mut doc = AutoCommit::new();
+        drive(
+            &mut large,
+            &mut doc,
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            },
+            mods(false, false),
+        );
+        assert!(drive(
+            &mut large,
+            &mut doc,
+            &WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            mods(false, false),
+        ));
+        assert_eq!(
+            large.cursor_pos(),
+            second_start,
+            "pointer event places the caret on the logical second line through wrapped rows"
+        );
+    }
 }
