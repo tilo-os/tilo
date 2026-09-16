@@ -7343,6 +7343,22 @@ struct ReaderPaneView<'a> {
     transform: Affine,
 }
 
+struct ReaderLineView<'a> {
+    pane: &'a ReaderPaneView<'a>,
+    block: &'a crate::paginate::LaidBlock,
+    indent: f64,
+    highlights: &'a [&'a Annotation],
+    line: &'a crate::paginate::LaidLine,
+    y: f64,
+    height: f64,
+}
+
+struct ReaderLineOutput<'a> {
+    highlight_tops: &'a mut HashMap<Uuid, (f64, HiColor)>,
+    selection_anchor: &'a mut SelAnchor,
+    comment_box: &'a mut CommentBoxBounds,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -8139,19 +8155,10 @@ impl BooksApp {
         ctx: &mut EbookPaintCtx<'_>,
         view: &ReaderPaneView<'_>,
     ) -> (SelAnchor, CommentBoxBounds, HashMap<Uuid, (f64, HiColor)>) {
-        let scene = &mut *ctx.scene;
-        let t = view.transform;
-        let tr = &mut *ctx.text;
         let layout = view.frame.layout;
         let annos = view.frame.annotations;
-        let palette = view.frame.palette;
-        let base_family = view.frame.base_family;
-        let base_mono = view.frame.base_mono;
         let chapter = view.frame.chapter;
-        let sel_ord = view.frame.selection;
-        let comment_group = view.frame.comment_group;
         let pane = view.pane;
-        let content_x = pane.x;
         let ranged: Vec<&Annotation> = annos
             .iter()
             .filter(|a| a.chapter == chapter && a.kind == AnnoKind::Highlight && a.start < a.end)
@@ -8176,23 +8183,21 @@ impl BooksApp {
                     continue;
                 }
                 self.draw_pane_line_bands(
-                    scene,
-                    t,
-                    tr,
-                    palette,
-                    base_family,
-                    base_mono,
-                    content_x,
-                    pane,
-                    b,
-                    indent,
-                    &block_ranged,
-                    l,
-                    sel_ord,
-                    comment_group,
-                    &mut group_top,
-                    &mut sel_anchor,
-                    &mut comment_box,
+                    ctx,
+                    &ReaderLineView {
+                        pane: view,
+                        block: b,
+                        indent,
+                        highlights: &block_ranged,
+                        line: l,
+                        y: pane.screen_y(l.y),
+                        height: f64::from(b.line_height),
+                    },
+                    &mut ReaderLineOutput {
+                        highlight_tops: &mut group_top,
+                        selection_anchor: &mut sel_anchor,
+                        comment_box: &mut comment_box,
+                    },
                 );
             }
         }
@@ -8204,24 +8209,24 @@ impl BooksApp {
     /// of each run inside the live selection / a ranged highlight. Pure
     /// measurement — the bands themselves are drawn by the caller once the
     /// full span per highlight is known.
-    #[allow(clippy::too_many_arguments)]
     fn draw_pane_line_runs(
         &mut self,
         tr: &mut TextRenderer,
-        base_family: &FontChoice,
-        base_mono: bool,
-        content_x: f64,
-        pane: &Pane,
-        b: &crate::paginate::LaidBlock,
-        indent: f64,
-        l: &crate::paginate::LaidLine,
-        ly: f64,
-        lh: f64,
-        block_ranged: &[&Annotation],
-        sel_ord: Option<(DocPos, DocPos)>,
+        view: &ReaderLineView<'_>,
         sel_band: &mut Option<(f64, f64)>,
         hi_span: &mut [Option<(f64, f64)>],
     ) {
+        let pane = view.pane.pane;
+        let base_family = view.pane.frame.base_family;
+        let base_mono = view.pane.frame.base_mono;
+        let content_x = pane.x;
+        let b = view.block;
+        let indent = view.indent;
+        let l = view.line;
+        let ly = view.y;
+        let lh = view.height;
+        let block_ranged = view.highlights;
+        let sel_ord = view.pane.frame.selection;
         for run in &l.runs {
             let weight = if run.bold {
                 TextWeight::Bold
@@ -8306,53 +8311,29 @@ impl BooksApp {
     /// Selection + ranged-highlight bands for one visible line: rebuilds its
     /// `sel_runs` (and `page_first_doc`/`page_last_doc`), then draws the
     /// highlight band(s) and the live-selection band for the line.
-    #[allow(clippy::too_many_arguments)]
     fn draw_pane_line_bands(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        palette: &ReaderPalette,
-        base_family: &FontChoice,
-        base_mono: bool,
-        content_x: f64,
-        pane: &Pane,
-        b: &crate::paginate::LaidBlock,
-        indent: f64,
-        block_ranged: &[&Annotation],
-        l: &crate::paginate::LaidLine,
-        sel_ord: Option<(DocPos, DocPos)>,
-        comment_group: Option<Uuid>,
-        group_top: &mut HashMap<Uuid, (f64, HiColor)>,
-        sel_anchor: &mut SelAnchor,
-        comment_box: &mut CommentBoxBounds,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &ReaderLineView<'_>,
+        output: &mut ReaderLineOutput<'_>,
     ) {
-        let ly = pane.screen_y(l.y);
-        let lh = f64::from(b.line_height);
+        let scene = &mut *ctx.scene;
+        let t = view.pane.transform;
+        let palette = view.pane.frame.palette;
+        let block_ranged = view.highlights;
+        let comment_group = view.pane.frame.comment_group;
+        let ly = view.y;
+        let lh = view.height;
         let mut sel_band: Option<(f64, f64)> = None;
         let mut hi_span: Vec<Option<(f64, f64)>> = vec![None; block_ranged.len()];
-        self.draw_pane_line_runs(
-            tr,
-            base_family,
-            base_mono,
-            content_x,
-            pane,
-            b,
-            indent,
-            l,
-            ly,
-            lh,
-            block_ranged,
-            sel_ord,
-            &mut sel_band,
-            &mut hi_span,
-        );
+        self.draw_pane_line_runs(&mut *ctx.text, view, &mut sel_band, &mut hi_span);
         for (i, a) in block_ranged.iter().enumerate() {
             if let Some((mnx, mxx)) = hi_span.get(i).copied().flatten() {
                 let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
                 paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
                 self.hi_bands.push(band);
-                group_top
+                output
+                    .highlight_tops
                     .entry(a.group)
                     .and_modify(|e| {
                         if band.y0 < e.0 {
@@ -8361,7 +8342,7 @@ impl BooksApp {
                     })
                     .or_insert((band.y0, a.color));
                 if comment_group == Some(a.group) {
-                    *comment_box = Some(match *comment_box {
+                    *output.comment_box = Some(match *output.comment_box {
                         Some((x0, y0, x1, y1)) => (
                             x0.min(band.x0),
                             y0.min(band.y0),
@@ -8376,8 +8357,8 @@ impl BooksApp {
         if let Some((mnx, mxx)) = sel_band {
             let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
             paint::fill_round(scene, t, band, 3.0, palette.accent.with_alpha_factor(0.30));
-            if sel_anchor.is_none() {
-                *sel_anchor = Some((f64::midpoint(mnx, mxx), ly));
+            if output.selection_anchor.is_none() {
+                *output.selection_anchor = Some((f64::midpoint(mnx, mxx), ly));
             }
         }
     }
