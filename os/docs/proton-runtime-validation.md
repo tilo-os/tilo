@@ -185,9 +185,9 @@ without the production seccomp filter. Plan tests also verify read-only
 platform mounts, lock overlay ordering, fixed offline provisioning variables,
 and retained network isolation.
 
-This supplies the production mount/state contract. The production ARM
-registry still needs the FEX entry point, managed server, guest dependencies,
-and native pressure-vessel handoff demonstrated by the standalone smoke test.
-Complete native helper bindings and full capsule execution remain acceptance
-requirements; these mount tests do not claim that the final launch chain is
-already integrated.
+This supplies the production mount/state contract. The ARM registry now selects
+the managed FEX helper and shipped emulator/graphics-provider manifests. The
+managed offline Proton test validates this helper and manifest combination;
+see `compat-sandbox-validation.md`. Production guest/FEX packaging, complete
+native helper bindings, and full capsule execution remain acceptance
+requirements. These mount tests do not establish final-image readiness.
