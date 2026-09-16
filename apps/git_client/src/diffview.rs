@@ -49,6 +49,27 @@ pub struct HunkInteraction {
     pub armed_discard: Option<usize>,
 }
 
+/// Resources and stable inputs shared by one diff paint pass.
+struct DiffPaintCtx<'a> {
+    scene: &'a mut Scene,
+    text: &'a mut TextRenderer,
+    transform: Affine,
+    theme: &'a Theme,
+    viewport: Rect,
+    diff: &'a FileDiff,
+    settings: Settings,
+    interaction: HunkInteraction,
+}
+
+struct HunkButtonSpec<'a> {
+    row: Rect,
+    right_x: f64,
+    hunk: usize,
+    action: HunkAction,
+    label: &'a str,
+    hovered: bool,
+}
+
 /// Stateless renderer for a file diff. The owning view supplies the
 /// viewport rect, scroll offset and settings; hit-test data comes back via
 /// the returned [`HunkButton`]s.
@@ -115,67 +136,41 @@ impl DiffView {
             &viewport,
         );
 
-        let result = if settings.diff_layout == DiffLayout::SideBySide {
-            Self::draw_split(scene, tr, t, theme, viewport, diff, scroll, *settings)
-        } else {
-            Self::draw_unified(
-                scene,
-                tr,
-                t,
-                theme,
-                viewport,
-                diff,
-                scroll,
-                *settings,
-                interaction.hovered,
-                interaction.staged_side,
-                interaction.armed_discard,
-            )
+        let mut ctx = DiffPaintCtx {
+            scene,
+            text: tr,
+            transform: t,
+            theme,
+            viewport,
+            diff,
+            settings: *settings,
+            interaction,
         };
 
-        scene.pop_layer();
+        let result = if settings.diff_layout == DiffLayout::SideBySide {
+            Self::draw_split(&mut ctx, scroll)
+        } else {
+            Self::draw_unified(&mut ctx, scroll)
+        };
+
+        ctx.scene.pop_layer();
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_unified(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        viewport: Rect,
-        diff: &FileDiff,
-        scroll: f64,
-        settings: Settings,
-        hover_hunk: Option<usize>,
-        staged_side: bool,
-        armed_hunk: Option<usize>,
-    ) -> Vec<HunkButton> {
+    fn draw_unified(ctx: &mut DiffPaintCtx<'_>, scroll: f64) -> Vec<HunkButton> {
         let mut buttons: Vec<HunkButton> = Vec::new();
-        let x0 = viewport.x0;
-        let top = viewport.y0 - scroll;
+        let x0 = ctx.viewport.x0;
+        let top = ctx.viewport.y0 - scroll;
         let mut last_hunk: Option<usize> = None;
 
-        for (i, line) in diff.lines.iter().enumerate() {
+        for (i, line) in ctx.diff.lines.iter().enumerate() {
             let y = top + i as f64 * ROW_H;
-            if y + ROW_H < viewport.y0 || y > viewport.y1 {
+            if y + ROW_H < ctx.viewport.y0 || y > ctx.viewport.y1 {
                 continue; // cull off-screen rows
             }
-            let row = Rect::new(x0, y, viewport.x1, y + ROW_H);
-            Self::draw_unified_row_background(
-                scene,
-                tr,
-                t,
-                theme,
-                row,
-                line,
-                hover_hunk,
-                staged_side,
-                armed_hunk,
-                &mut last_hunk,
-                &mut buttons,
-            );
-            Self::draw_unified_row_content(scene, tr, t, theme, diff, line, x0, y, settings);
+            let row = Rect::new(x0, y, ctx.viewport.x1, y + ROW_H);
+            Self::draw_unified_row_background(ctx, row, line, &mut last_hunk, &mut buttons);
+            Self::draw_unified_row_content(ctx, line, x0, y);
         }
         buttons
     }
@@ -183,20 +178,16 @@ impl DiffView {
     /// The row's tinted background, and — on a hunk's first row — its
     /// stage/unstage (+ worktree-side discard) buttons (part of
     /// [`Self::draw_unified`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
     fn draw_unified_row_background(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut DiffPaintCtx<'_>,
         row: Rect,
         line: &DiffLine,
-        hover_hunk: Option<usize>,
-        staged_side: bool,
-        armed_hunk: Option<usize>,
         last_hunk: &mut Option<usize>,
         buttons: &mut Vec<HunkButton>,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         match line.kind {
             DiffLineKind::Addition => draw::fill_rect(scene, t, row, draw::add_tint(theme)),
@@ -207,41 +198,39 @@ impl DiffView {
                 // hunk: always a stage/unstage toggle, plus a discard button
                 // on the worktree (unstaged) side.
                 if Some(line.hunk) != *last_hunk {
-                    let hovered = hover_hunk == Some(line.hunk);
-                    let toggle_label = if staged_side {
+                    let hovered = ctx.interaction.hovered == Some(line.hunk);
+                    let toggle_label = if ctx.interaction.staged_side {
                         "Unstage hunk"
                     } else {
                         "Stage hunk"
                     };
                     let mut right = row.x1 - 8.0;
                     let toggle = Self::draw_hunk_button(
-                        scene,
-                        tr,
-                        t,
-                        theme,
-                        &row,
-                        right,
-                        line.hunk,
-                        HunkAction::Toggle,
-                        toggle_label,
-                        hovered,
+                        ctx,
+                        HunkButtonSpec {
+                            row,
+                            right_x: right,
+                            hunk: line.hunk,
+                            action: HunkAction::Toggle,
+                            label: toggle_label,
+                            hovered,
+                        },
                     );
                     right = toggle.rect.x0 - 8.0;
                     buttons.push(toggle);
-                    if !staged_side {
-                        let armed = armed_hunk == Some(line.hunk);
+                    if !ctx.interaction.staged_side {
+                        let armed = ctx.interaction.armed_discard == Some(line.hunk);
                         let dlabel = if armed { "Discard?" } else { "Discard" };
                         let discard = Self::draw_hunk_button(
-                            scene,
-                            tr,
-                            t,
-                            theme,
-                            &row,
-                            right,
-                            line.hunk,
-                            HunkAction::Discard,
-                            dlabel,
-                            hovered || armed,
+                            ctx,
+                            HunkButtonSpec {
+                                row,
+                                right_x: right,
+                                hunk: line.hunk,
+                                action: HunkAction::Discard,
+                                label: dlabel,
+                                hovered: hovered || armed,
+                            },
                         );
                         buttons.push(discard);
                     }
@@ -255,20 +244,13 @@ impl DiffView {
 
     /// The line-number gutter, marker glyph, and syntax-highlighted (or
     /// plain) content for one row (part of [`Self::draw_unified`]).
-    #[allow(clippy::too_many_arguments, reason = "see the comment above txt")]
-    fn draw_unified_row_content(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        diff: &FileDiff,
-        line: &DiffLine,
-        x0: f64,
-        y: f64,
-        settings: Settings,
-    ) {
+    fn draw_unified_row_content(ctx: &mut DiffPaintCtx<'_>, line: &DiffLine, x0: f64, y: f64) {
+        Self::draw_linenos(ctx, x0, y, line);
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        Self::draw_linenos(scene, tr, t, theme, x0, y, line);
 
         // Marker glyph + content.
         let content_x = x0 + GUTTER_W;
@@ -311,38 +293,36 @@ impl DiffView {
                 );
             }
             _ => Self::draw_code(
-                scene,
-                tr,
-                t,
-                theme,
+                ctx,
                 &line.content,
-                &diff.language,
+                &ctx.diff.language,
                 text_x,
                 y + 2.0,
-                settings.syntax_highlight,
+                ctx.settings.syntax_highlight,
             ),
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_split(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        viewport: Rect,
-        diff: &FileDiff,
-        scroll: f64,
-        settings: Settings,
-    ) -> Vec<HunkButton> {
-        let c = &theme.tokens.colors;
+    fn draw_split(ctx: &mut DiffPaintCtx<'_>, scroll: f64) -> Vec<HunkButton> {
+        let viewport = ctx.viewport;
+        let border = ctx.theme.tokens.colors.border_standard;
+        let raised = ctx.theme.tokens.colors.surfaces.raised;
+        let add_tint = draw::add_tint(ctx.theme);
+        let del_tint = draw::del_tint(ctx.theme);
         let mid = f64::midpoint(viewport.x0, viewport.x1);
-        draw::vline(scene, t, mid, viewport.y0, viewport.y1, c.border_standard);
+        draw::vline(
+            ctx.scene,
+            ctx.transform,
+            mid,
+            viewport.y0,
+            viewport.y1,
+            border,
+        );
 
         let top = viewport.y0 - scroll;
         // Pair deletions/additions into aligned rows. We walk lines and
         // emit left (old) / right (new) cells; context spans both.
-        let rows = pair_rows(&diff.lines);
+        let rows = pair_rows(&ctx.diff.lines);
         for (i, pr) in rows.iter().enumerate() {
             let y = top + i as f64 * ROW_H;
             if y + ROW_H < viewport.y0 || y > viewport.y1 {
@@ -356,45 +336,38 @@ impl DiffView {
             // degrades to skipping the half-row instead of indexing blindly
             // into text parsed from a repository someone else wrote.
             if let Some(li) = pr.left
-                && let Some(line) = diff.lines.get(li)
+                && let Some(line) = ctx.diff.lines.get(li)
             {
                 if line.kind == DiffLineKind::Deletion {
-                    draw::fill_rect(scene, t, left, draw::del_tint(theme));
+                    draw::fill_rect(ctx.scene, ctx.transform, left, del_tint);
                 } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
-                    draw::fill_rect(scene, t, left, c.surfaces.raised);
+                    draw::fill_rect(ctx.scene, ctx.transform, left, raised);
                 }
-                Self::draw_half(scene, tr, t, theme, line, viewport.x0, y, settings, true);
+                Self::draw_half(ctx, line, viewport.x0, y, true);
             }
             if let Some(ri) = pr.right
-                && let Some(line) = diff.lines.get(ri)
+                && let Some(line) = ctx.diff.lines.get(ri)
             {
                 if line.kind == DiffLineKind::Addition {
-                    draw::fill_rect(scene, t, right, draw::add_tint(theme));
+                    draw::fill_rect(ctx.scene, ctx.transform, right, add_tint);
                 } else if line.kind == DiffLineKind::Hunk || line.kind == DiffLineKind::Meta {
-                    draw::fill_rect(scene, t, right, c.surfaces.raised);
+                    draw::fill_rect(ctx.scene, ctx.transform, right, raised);
                 }
-                Self::draw_half(scene, tr, t, theme, line, mid, y, settings, false);
+                Self::draw_half(ctx, line, mid, y, false);
             }
         }
         Vec::new()
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/y/c follow this file's graphics convention (transform, position, colour tokens); n/s/w are the line number and its formatted string/measured width"
     )]
-    fn draw_half(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        line: &DiffLine,
-        x0: f64,
-        y: f64,
-        settings: Settings,
-        is_left: bool,
-    ) {
+    fn draw_half(ctx: &mut DiffPaintCtx<'_>, line: &DiffLine, x0: f64, y: f64, is_left: bool) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let no = if is_left {
             line.old_lineno
@@ -433,28 +406,21 @@ impl DiffView {
                 );
             }
             _ => Self::draw_code(
-                scene,
-                tr,
-                t,
-                theme,
+                ctx,
                 &line.content,
                 "text",
                 text_x,
                 y + 2.0,
-                settings.syntax_highlight,
+                ctx.settings.syntax_highlight,
             ),
         }
     }
 
-    fn draw_linenos(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        x0: f64,
-        y: f64,
-        line: &DiffLine,
-    ) {
+    fn draw_linenos(ctx: &mut DiffPaintCtx<'_>, x0: f64, y: f64, line: &DiffLine) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let old = line.old_lineno.map(|n| n.to_string()).unwrap_or_default();
         let new = line.new_lineno.map(|n| n.to_string()).unwrap_or_default();
@@ -491,18 +457,18 @@ impl DiffView {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_code(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut DiffPaintCtx<'_>,
         content: &str,
         language: &str,
         x: f64,
         y: f64,
         highlight: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         if !highlight {
             draw::mono(scene, tr, t, content, FONT, c.text_primary, x, y);
@@ -519,38 +485,37 @@ impl DiffView {
     /// Draw one hunk-action button whose right edge sits at `right_x`, and
     /// return its hit rect. Discard buttons read in the danger hue when hovered
     /// so the destructive action is visually distinct from stage/unstage.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_hunk_button(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        row: &Rect,
-        right_x: f64,
-        hunk: usize,
-        action: HunkAction,
-        label: &str,
-        hovered: bool,
-    ) -> HunkButton {
+    fn draw_hunk_button(ctx: &mut DiffPaintCtx<'_>, spec: HunkButtonSpec<'_>) -> HunkButton {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let size = 11.0f32;
-        let tw = f64::from(tr.measure_weighted(label, size, None, TextWeight::Medium).0);
+        let tw = f64::from(
+            tr.measure_weighted(spec.label, size, None, TextWeight::Medium)
+                .0,
+        );
         let bw = tw + 20.0;
-        let bx = right_x - bw;
-        let by = row.y0 + 2.0;
-        let brect = Rect::new(bx, by, bx + bw, row.y1 - 2.0);
-        let accent = match action {
+        let bx = spec.right_x - bw;
+        let by = spec.row.y0 + 2.0;
+        let brect = Rect::new(bx, by, bx + bw, spec.row.y1 - 2.0);
+        let accent = match spec.action {
             HunkAction::Toggle => theme.accent_primary,
             HunkAction::Discard => c.semantic.danger,
         };
-        let bg = if hovered { accent } else { c.lift(0.72) };
-        let fg = if hovered { Color::WHITE } else { c.text_dim };
+        let bg = if spec.hovered { accent } else { c.lift(0.72) };
+        let fg = if spec.hovered {
+            Color::WHITE
+        } else {
+            c.text_dim
+        };
         draw::fill_round(scene, t, brect, 5.0, bg);
         draw::text_weighted(
             scene,
             tr,
             t,
-            label,
+            spec.label,
             size,
             fg,
             bx + (bw - tw) / 2.0,
@@ -559,8 +524,8 @@ impl DiffView {
             TextWeight::Medium,
         );
         HunkButton {
-            hunk,
-            action,
+            hunk: spec.hunk,
+            action: spec.action,
             rect: brect,
         }
     }
