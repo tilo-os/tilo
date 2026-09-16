@@ -23,7 +23,7 @@
 
 # ---- Frozen RPM repo (cross-time reproducibility) --------------------------
 # Every `dnf install` below installs ONLY from this digest-pinned snapshot of
-# the exact RPM set (built by os/dev/snapshot-rpms.sh / the snapshot-rpms CI
+# the exact RPM set (built by os/Containerfile.rpms / the snapshot-rpms CI
 # job), never live Fedora mirrors — so the same source rebuilds the same image
 # regardless of when. RPMS_REF (code.sandbox.example/qos/rpms@sha256:...) comes from
 # os/rpms-snapshot.env via the build scripts.
