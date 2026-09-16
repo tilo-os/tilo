@@ -20,9 +20,7 @@ fn memory_relay_fans_out_presence_updates_to_both_peers() {
     let alice = relay.attach("alice");
     let bob = relay.attach("bob");
 
-    alice.send(CollabRequest::DocumentIncremental {
-        data: vec![1, 2, 3],
-    });
+    alice.send(CollabRequest::document_incremental(vec![1, 2, 3]));
 
     relay.drain_peer_outbox(&alice);
     pump(&mut relay);
@@ -153,7 +151,7 @@ fn two_apps_sync_presence_caret_via_memory_relay() {
         path: vec![PathSegment::Field("body".into())],
     };
 
-    alice_peer.send(CollabRequest::DocumentIncremental { data: vec![] });
+    alice_peer.send(CollabRequest::document_incremental(vec![]));
     relay.drain_peer_outbox(&alice_peer);
     pump(&mut relay);
 
@@ -326,7 +324,7 @@ fn crdt_incremental_deltas_replay_on_remote_peer() {
         "save_incremental must emit non-empty bytes after a mutation"
     );
 
-    alice_peer.send(CollabRequest::DocumentIncremental { data: delta });
+    alice_peer.send(CollabRequest::document_incremental(delta));
     relay.drain_peer_outbox(&alice_peer);
     pump(&mut relay);
 
