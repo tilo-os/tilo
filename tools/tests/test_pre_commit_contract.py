@@ -1,0 +1,25 @@
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+HOOK = ROOT / ".githooks" / "pre-commit"
+CHECK_WORKFLOW = ROOT / ".forgejo" / "workflows" / "check.yml"
+
+
+class PreCommitContractTests(unittest.TestCase):
+    def test_local_hook_remains_non_compiling(self) -> None:
+        hook = HOOK.read_text(encoding="utf-8")
+
+        for command in ("cargo check", "cargo clippy", "cargo test", "cargo nextest"):
+            self.assertNotIn(command, hook)
+
+    def test_ci_owns_the_differential_clippy_gate(self) -> None:
+        workflow = CHECK_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("tools/clippy-diff.sh", workflow)
+        self.assertIn("Clippy diagnostic diff", workflow)
+
+
+if __name__ == "__main__":
+    unittest.main()
