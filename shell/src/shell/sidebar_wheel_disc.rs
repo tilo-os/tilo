@@ -31,6 +31,11 @@ use ui::widget::{Chip, ChipLead, ChipStyle, Widget};
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceId;
 
+/// Maximum width reserved by the content layout for the mounted workspace
+/// wheel. The disc itself may render narrower on short viewports, leaving the
+/// remainder as wallpaper rather than reflowing the active workspace.
+pub const SIDEBAR_RESERVE_PX: f32 = 320.0;
+
 /// A single spoke-label. `workspace_id` is an opaque correlator the host
 /// uses to map the active spoke back to a workspace in the tree; the
 /// widget itself never dereferences it.

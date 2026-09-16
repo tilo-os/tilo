@@ -1896,7 +1896,7 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
                   truncates a fraction or wraps out of range"
     )]
     let logical = |px: f64| (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32;
-    let chrome_w = f64::from(crate::shell::sidebar_wheel_chrome::SIDEBAR_WIDTH_PX);
+    let chrome_w = f64::from(crate::shell::sidebar_wheel_disc::SIDEBAR_RESERVE_PX);
     let chrome_h =
         f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + ui::widget::tabs::TAB_BAR_HEIGHT;
     (
