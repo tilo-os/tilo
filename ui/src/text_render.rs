@@ -329,6 +329,9 @@ impl ParagraphAlign {
 pub enum TextWrapMode {
     #[default]
     Wrap,
+    /// Prefer word boundaries and fall back to glyph boundaries when one word
+    /// is wider than the available measure.
+    WordOrGlyph,
     /// Choose a narrower measure that keeps the same number of lines while
     /// minimizing raggedness, like CSS `text-wrap: balance`.
     Balance,
@@ -1364,6 +1367,21 @@ impl TextRenderer {
         self.text_scale
     }
 
+    /// Convert a fully resolved logical-pixel style into the renderer-relative
+    /// input consumed by [`Self::measure_style`] and [`Self::draw_style`].
+    ///
+    /// Theme typography already includes the active UI and text scales. Both
+    /// size and pixel letter spacing are therefore divided by the renderer's
+    /// sanitized accessibility scale so those final values are applied once.
+    /// Legacy base-size callers should keep passing their styles directly.
+    pub fn renderer_input_style(&self, resolved: &TextStyle) -> TextStyle {
+        let scale = self.text_scale();
+        let mut style = resolved.clone();
+        style.size /= scale;
+        style.letter_spacing /= scale;
+        style
+    }
+
     fn scaled_style(&self, style: &TextStyle) -> TextStyle {
         if (self.text_scale - 1.0).abs() <= f32::EPSILON {
             return style.clone();
@@ -1510,7 +1528,10 @@ impl TextRenderer {
         };
         let layout_width = max_width.map(|width| (width - hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
-        buffer.set_wrap(Wrap::Word);
+        buffer.set_wrap(match style.wrap_mode {
+            TextWrapMode::WordOrGlyph => Wrap::WordOrGlyph,
+            TextWrapMode::Wrap | TextWrapMode::Balance => Wrap::Word,
+        });
         buffer.shape_until_scroll(&mut self.font_system, false);
         if style.wrap_mode == TextWrapMode::Balance && max_width.is_some() {
             balance_buffer(
@@ -1893,7 +1914,10 @@ impl TextRenderer {
         };
         let layout_width = max_width.map(|width| (width - hyphen_width).max(0.0));
         buffer.set_size(layout_width, None);
-        buffer.set_wrap(Wrap::Word);
+        buffer.set_wrap(match style.wrap_mode {
+            TextWrapMode::WordOrGlyph => Wrap::WordOrGlyph,
+            TextWrapMode::Wrap | TextWrapMode::Balance => Wrap::Word,
+        });
         buffer.shape_until_scroll(&mut self.font_system, false);
         if style.wrap_mode == TextWrapMode::Balance && max_width.is_some() {
             balance_buffer(
@@ -3164,6 +3188,81 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn resolved_styles_keep_metrics_and_glyph_geometry_across_renderer_scales() {
+        let text = "Tracked resolved text";
+        let resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
+        let mut renderer = crate::font_catalog::fixture_renderer();
+
+        let legacy_at_one = renderer.measure_style(text, None, &TextStyle::new(14.0));
+        let resolved_at_one = renderer.measure_style(text, None, &resolved);
+        let mut scene_at_one = Scene::new();
+        renderer.draw_style(
+            &mut scene_at_one,
+            text,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+            &resolved,
+        );
+
+        renderer.set_text_scale(2.0);
+        let legacy_at_two = renderer.measure_style(text, None, &TextStyle::new(14.0));
+        assert!((legacy_at_two.1 - legacy_at_one.1 * 2.0).abs() < 0.001);
+
+        let renderer_input = renderer.renderer_input_style(&resolved);
+        assert!((renderer_input.size - 14.0).abs() < 0.001);
+        assert!((renderer_input.letter_spacing - 1.5).abs() < 0.001);
+        let resolved_at_two = renderer.measure_style(text, None, &renderer_input);
+        assert_eq!(resolved_at_two, resolved_at_one);
+
+        let mut scene_at_two = Scene::new();
+        renderer.draw_style(
+            &mut scene_at_two,
+            text,
+            Color::WHITE,
+            Affine::IDENTITY,
+            None,
+            &renderer_input,
+        );
+        let first = scene_at_one.encoding();
+        let second = scene_at_two.encoding();
+        assert_eq!(first.resources.glyphs.len(), second.resources.glyphs.len());
+        for (left, right) in first.resources.glyphs.iter().zip(&second.resources.glyphs) {
+            assert_eq!(left.id, right.id);
+            assert_eq!(left.x, right.x);
+            assert_eq!(left.y, right.y);
+        }
+        assert_eq!(
+            first.resources.glyph_runs.len(),
+            second.resources.glyph_runs.len()
+        );
+        for (left, right) in first
+            .resources
+            .glyph_runs
+            .iter()
+            .zip(&second.resources.glyph_runs)
+        {
+            assert_eq!(left.font_size, right.font_size);
+            assert_eq!(left.transform, right.transform);
+            assert_eq!(left.glyphs, right.glyphs);
+        }
+    }
+
+    #[test]
+    fn resolved_theme_style_applies_ui_and_text_scale_once() {
+        let base = crate::theme::Theme::dark().tokens.typography.scale.sm;
+        let theme = crate::theme::Theme::dark()
+            .with_ui_scale(1.25)
+            .with_text_scale(2.0);
+        let resolved = TextStyle::new(theme.tokens.typography.scale.sm);
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        renderer.set_text_scale(2.0);
+        let renderer_input = renderer.renderer_input_style(&resolved);
+        let (_, height) = renderer.measure_style("Scale once", None, &renderer_input);
+        assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
     }
 }
 
