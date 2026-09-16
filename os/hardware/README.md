@@ -103,3 +103,29 @@ The update-reference binding covers image construction and initial installation.
 It does not prove that a later image published at that reference preserves the
 profile. A check of staged updates against the installed hardware profile and
 physical update/rollback acceptance remain separate work.
+
+## Lenovo wireless verification
+
+The locally inspected 7.2.5 kernel's Lenovo DTB declares Wi-Fi `pci17cb,1107`
+and Bluetooth `qcom,wcn7850-bt`; these match the inspected Windows Wi-Fi PCI
+identity (`17cb:1107`, subsystem `17aa:e0e9`) and FastConnect 7800 UART device.
+Its config enables ath12k, QCA UART Bluetooth, and XZ-compressed firmware loading.
+The inspected diagnostic runtime contains `atheros-firmware-20260622-1.fc44`,
+including WCN7850 Wi-Fi firmware and `qca/hmtbtfw20.tlv`, `hmtnv20.bin`,
+`hmtnv20.b10f`, and `hmtnv20.b112` (stored compressed). This is evidence about
+local inputs, not a completed or signed final OS image.
+
+For this Bluetooth compatible, the kernel selects `hmtbtfw<ROM>.tlv` and
+`hmtnv<ROM>.b<board>` from controller responses; `hpbtfw21`/`hpnv21` files do
+not establish WCN7850 support. Record the actual ROM/board ID and firmware
+requests during a live boot before selecting any additional NVM. Likewise,
+ath12k board-data selection uses QMI chip/board IDs and an optional variant,
+so matching Windows PCI IDs alone do not prove the selected board entry.
+
+The OS explicitly installs `NetworkManager-wifi` and `wireless-regdb` from
+the frozen RPM snapshot. Regenerate that snapshot after this package-set
+change; the build preflight rejects the previous manifest. Inspect the final
+image for the firmware, Wi-Fi plugin, and signed regulatory database, then
+verify Wi-Fi association, Bluetooth initialization/pairing, and suspend/resume
+on the laptop. The diagnostic runtime and QEMU tests cannot establish those
+physical-device results.
