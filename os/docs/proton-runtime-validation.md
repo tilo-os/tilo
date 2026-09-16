@@ -111,11 +111,37 @@ python3 /test.py --runtime /runtime --rootfs /rootfs \
   --proton /proton --output-dir /results
 ```
 
-This validates the actual Proton console runner inside sniper on ARM. It
-does not exercise UMU's installation/update entry point, game graphics,
-physical GPU drivers, or the complete qOS capsule policy. The test supplies
-UMU's non-Steam identity (`UMU_ID=umu-0`) directly; it does not claim to test
-the UMU launcher. The known FEX graphics failures remain unresolved.
+The direct mode validates the actual Proton console runner inside sniper on
+ARM. It supplies UMU's non-Steam identity (`UMU_ID=umu-0`) directly. The
+separate offline mode below also exercises the UMU entry point. Neither mode
+validates game graphics, physical GPU drivers, or the complete qOS capsule
+policy. The known FEX graphics failures remain unresolved.
+
+## Offline UMU entry point acceptance
+
+The checked-in harness also passed on 2026-09-16 with the same isolated
+container and `--umu /umu/umu_run.py`, where `/umu` is the read-only extracted
+UMU 1.4.0 zipapp artifact. Results are retained in
+`fex-umu-offline-smoke-results`. This mode executes guest Python through FEX;
+the unmodified runtime entry point then selects native ARM pressure-vessel
+using the emulator and graphics manifests. No replacement verifier or global
+binfmt handler is required.
+
+Before invoking UMU, the harness prepares a fresh per-user `umu/steamrt3`
+directory with copied top-level metadata/scripts, symlinks to the read-only
+runtime directories, and the upstream `umu -> _v2-entry-point` link. It does
+not pre-create an installation-success marker. UMU itself detects the offline
+network, runs the bundled x86 verifier through FEX, verifies the platform,
+writes its marker, and skips updates because `UMU_RUNTIME_UPDATE=0`.
+The harness requires all three corresponding log messages, the Windows
+marker file, exit 0, no timeout, and a live FEX server. All passed.
+
+The offline fixture has no D-Bus session. The Steam launcher service reports
+that it cannot create its IPC server and uses its upstream fallback to run
+the command. Session IPC acceptance remains a separate requirement. The
+fixture also reports a missing valid machine ID; this did not prevent the
+console command, but does not establish behavior for applications requiring
+that identity.
 
 ## Remaining integration requirements
 
@@ -125,7 +151,8 @@ the UMU launcher. The known FEX graphics failures remain unresolved.
 - UMU's `UMU_RUNTIME_UPDATE=0` prevents updates to an installed runtime; it
   does not suppress initial installation. Provisioning must satisfy UMU's
   integrity checks and installation marker contract without granting an
-  offline capsule network access.
+  offline capsule network access. The smoke fixture now demonstrates this;
+  production capsule provisioning still needs to implement it.
 - Runtime content should remain immutable, with any required installation
   markers and pressure-vessel variable state confined to capsule-owned
   writable storage.
