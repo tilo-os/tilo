@@ -88,9 +88,15 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .scenario
         .as_deref()
         .map_or_else(typst_editor::demo_root, typst_editor::demo_root_scenario);
+    let shared_theme = ui::launch::shot_theme(args);
     let theme = match args.value("--theme") {
-        Some("light") => Theme::light(),
-        Some("dark") | None => Theme::dark(),
+        Some("light") => Theme::light()
+            .with_text_scale(shared_theme.text_scale)
+            .with_reduce_motion(shared_theme.reduce_motion),
+        Some("dark") => Theme::dark()
+            .with_text_scale(shared_theme.text_scale)
+            .with_reduce_motion(shared_theme.reduce_motion),
+        None => shared_theme,
         Some(name) => {
             return Err(LaunchError::Scenario(format!(
                 "unknown screenshot theme {name:?}; expected \"light\" or \"dark\""
@@ -118,6 +124,7 @@ fn render_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -136,22 +143,20 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);

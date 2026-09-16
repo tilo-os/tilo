@@ -113,83 +113,110 @@ extern crate runtime_dylib;
 /// offscreen frame (a taffy layout error, or writing the output PNG).
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
-
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        let viewport = parse_size_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let scenario = parse_scenario_arg(&args);
-        // Some scenarios seed a demo directory that must exist BEFORE the widget
-        // is built (so the sidebar / workspace roots pick it up), so seed here.
-        let demo_dir = match scenario.as_deref() {
-            Some("sync") => Some(seed_sync_demo()),
-            Some("thumbnails") => Some(seed_thumbnails_demo()),
-            Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
-            Some("history") => Some(seed_history_demo()),
-            _ => None,
-        };
-        let mut widget = FileExplorerWidget::new();
-        // Optional `--path <dir>` starts the shot in a specific directory
-        // (e.g. to capture a deep breadcrumb trail), else the default
-        // cold-start location is used.
-        if let Some(d) = demo_dir {
-            widget.navigate(d);
-        } else if let Some(p) = parse_path_arg(&args) {
-            widget.navigate(p);
-        }
-        // Pre-layout scenario setup (view mode + selection must be set before
-        // the tree is built so the composed view captures them).
-        match scenario.as_deref() {
-            Some("grid" | "thumbnails" | "thumbnails-fs") => {
-                widget.set_view_mode(file_explorer::model::ViewMode::Grid);
-            }
-            Some("select") => {
-                widget.debug_select(&[7, 8]);
-                // Surface the floating status bubble for the still (count + N
-                // selected), since a single headless frame can't hover it.
-                widget.arm_status_bubble_for_shots();
-            }
-            // Just the floating status bubble (item count) over the cold-start
-            // view, with nothing selected.
-            Some("status") => widget.arm_status_bubble_for_shots(),
-            // Begin an inline rename before the first sync so the in-place
-            // editor is drawn over the row with its local name selected.
-            Some("rename") => {
-                widget.debug_select(&[3]);
-                widget.begin_rename();
-            }
-            // Summon the places drawer over the file view (the narrow
-            // layout's hamburger action). Set BEFORE layout so `apply_layout`
-            // places the revealed drawer — snapping post-layout would leave
-            // the panes at their pre-reveal rects.
-            Some("places") => widget.debug_open_places_drawer(),
-            // An intentionally non-connected account detail state. This
-            // exercises the privacy-preserving remote account surface without
-            // reading a developer's real account store or vault in screenshots.
-            Some("remote-account") => {
-                let account = file_explorer::remote_accounts::RemoteAccount {
-                    id: accounts::AccountId::from("shot-remote-account"),
-                    kind: file_explorer::remote_accounts::RemoteAccountKind::Nextcloud,
-                    label: "Personal cloud".into(),
-                    host: "cloud.example".into(),
-                    health:
-                        file_explorer::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
-                };
-                widget.debug_show_remote_account(&account, true);
-            }
-            Some("loading") => widget.debug_show_loading_state(),
-            Some("error") => widget.debug_show_error_state(),
-            _ => {}
-        }
-        render_shot_to_png(widget, viewport, scenario.as_deref(), &out)?;
-        return Ok(());
-    }
-
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.qos.file-explorer", live_root)
             .open_state(open_state)
+            .shot_handler(shot_handler)
+            .allowed_options(&["--size", "--path"])
             .allowed_live_flags(&["--open-share-stdin"])
-            .max_positionals(1),
+            .max_positionals(1)
+            .scenarios(&[
+                "context-menu",
+                "dropmove",
+                "error",
+                "grid",
+                "history",
+                "loading",
+                "menu",
+                "pindrag",
+                "places",
+                "remote-account",
+                "rename",
+                "reorder",
+                "select",
+                "status",
+                "sync",
+                "thumbnails",
+                "thumbnails-fs",
+            ]),
     )?;
+    Ok(())
+}
+
+fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
+    let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
+    let size = args.value("--size").and_then(parse_size);
+    let viewport = shot_viewport(args.viewport, size);
+    let scenario = args.scenario.as_deref();
+    // Some scenarios seed a demo directory that must exist BEFORE the widget
+    // is built (so the sidebar / workspace roots pick it up), so seed here.
+    let demo_dir = match scenario {
+        Some("sync") => Some(seed_sync_demo()),
+        Some("thumbnails") => Some(seed_thumbnails_demo()),
+        Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
+        Some("history") => Some(seed_history_demo()),
+        _ => None,
+    };
+    let mut widget = FileExplorerWidget::new();
+    // Optional `--path <dir>` starts the shot in a specific directory
+    // (e.g. to capture a deep breadcrumb trail), else the default
+    // cold-start location is used.
+    if let Some(d) = demo_dir {
+        widget.navigate(d);
+    } else if let Some(p) = args.value("--path") {
+        widget.navigate(std::path::PathBuf::from(p));
+    }
+    // Pre-layout scenario setup (view mode + selection must be set before
+    // the tree is built so the composed view captures them).
+    match scenario {
+        Some("grid" | "thumbnails" | "thumbnails-fs") => {
+            widget.set_view_mode(file_explorer::model::ViewMode::Grid);
+        }
+        Some("select") => {
+            widget.debug_select(&[7, 8]);
+            // Surface the floating status bubble for the still (count + N
+            // selected), since a single headless frame can't hover it.
+            widget.arm_status_bubble_for_shots();
+        }
+        // Just the floating status bubble (item count) over the cold-start
+        // view, with nothing selected.
+        Some("status") => widget.arm_status_bubble_for_shots(),
+        // Begin an inline rename before the first sync so the in-place
+        // editor is drawn over the row with its local name selected.
+        Some("rename") => {
+            widget.debug_select(&[3]);
+            widget.begin_rename();
+        }
+        // Summon the places drawer over the file view (the narrow
+        // layout's hamburger action). Set BEFORE layout so `apply_layout`
+        // places the revealed drawer — snapping post-layout would leave
+        // the panes at their pre-reveal rects.
+        Some("places") => widget.debug_open_places_drawer(),
+        // An intentionally non-connected account detail state. This
+        // exercises the privacy-preserving remote account surface without
+        // reading a developer's real account store or vault in screenshots.
+        Some("remote-account") => {
+            let account = file_explorer::remote_accounts::RemoteAccount {
+                id: accounts::AccountId::from("shot-remote-account"),
+                kind: file_explorer::remote_accounts::RemoteAccountKind::Nextcloud,
+                label: "Personal cloud".into(),
+                host: "cloud.example".into(),
+                health: file_explorer::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
+            };
+            widget.debug_show_remote_account(&account, true);
+        }
+        Some("loading") => widget.debug_show_loading_state(),
+        Some("error") => widget.debug_show_error_state(),
+        _ => {}
+    }
+    render_shot_to_png(
+        widget,
+        viewport,
+        ui::launch::shot_theme(args),
+        scenario,
+        out,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))?;
     Ok(())
 }
 
@@ -623,68 +650,13 @@ fn minimal_epub(title: &str, cover_png: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
-/// in `args`, otherwise `None`.
-fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--shots" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--shots=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
-}
-
-/// Returns `Some((w, h))` if `--size WxH` (or `--size=WxH`) appears in
-/// `args`, otherwise `None`. Lets a caller render the same offscreen frame
-/// at different viewport sizes (e.g. a normal 1280×800 and a narrow width)
-/// without a rebuild.
-fn parse_size_arg(args: &[String]) -> Option<(u32, u32)> {
-    let mut iter = args.iter().skip(1);
-    let spec = loop {
-        let arg = iter.next()?;
-        if arg == "--size" {
-            break iter.next()?.clone();
-        }
-        if let Some(rest) = arg.strip_prefix("--size=") {
-            break rest.to_string();
-        }
-    };
+fn parse_size(spec: &str) -> Option<(u32, u32)> {
     let (w, h) = spec.split_once(['x', 'X'])?;
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
-/// Returns `Some(name)` if `--scenario <name>` (or `--scenario=<name>`) appears
-/// in `args`. Drives headless demo shots (`grid`, `menu`, `reorder`).
-fn parse_scenario_arg(args: &[String]) -> Option<String> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--scenario" {
-            return iter.next().cloned();
-        }
-        if let Some(rest) = arg.strip_prefix("--scenario=") {
-            return Some(rest.to_string());
-        }
-    }
-    None
-}
-
-/// Returns `Some(dir)` if `--path <dir>` (or `--path=<dir>`) appears in
-/// `args`, otherwise `None`. Only meaningful alongside `--shots`.
-fn parse_path_arg(args: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = args.iter().skip(1);
-    while let Some(arg) = iter.next() {
-        if arg == "--path" {
-            return iter.next().map(std::path::PathBuf::from);
-        }
-        if let Some(rest) = arg.strip_prefix("--path=") {
-            return Some(std::path::PathBuf::from(rest));
-        }
-    }
-    None
+fn shot_viewport(viewport: Option<(u32, u32)>, size: Option<(u32, u32)>) -> (u32, u32) {
+    size.or(viewport).unwrap_or(DEFAULT_SHOTS_VIEWPORT)
 }
 
 /// Apply scenario-specific state that needs the already-laid-out geometry (a
@@ -779,28 +751,15 @@ fn apply_post_layout_scenario(
 fn render_shot_to_png(
     mut widget: FileExplorerWidget,
     viewport: (u32, u32),
+    theme: Theme,
     scenario: Option<&str>,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=<name>` renders the shot under any named theme (e.g.
-    // `dracula`, `gruvbox`, `catppuccin-mocha`, `light`, `high-contrast`), so
-    // the same frame can be graded under every palette. Defaults to dark.
-    let theme = std::env::var("QOS_SHOTS_THEME")
-        .ok()
-        .and_then(|n| Theme::named(&n))
-        .unwrap_or_else(Theme::dark)
-        // The live host supplies this through its accessibility settings. The
-        // offscreen seam also needs it so visual review can prove that the
-        // narrow places drawer and transient status surface settle without a
-        // fade/slide. Deliberately accept only an explicit opt-in value.
-        .with_reduce_motion(matches!(
-            std::env::var("QOS_SHOTS_REDUCE_MOTION").as_deref(),
-            Ok("1" | "true" | "TRUE")
-        ));
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -819,22 +778,20 @@ fn render_shot_to_png(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(&widget, &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -857,22 +814,23 @@ fn render_shot_to_png(
             },
             &[child],
         )?;
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
+        bindings.clear();
+        // SAFETY: this admission is rebuilt from the replacement tree before
+        // its renderer-aware settling pass.
+        unsafe {
+            bindings.rebuild(&widget, &taffy, child, &node_map);
+            ui::widget::compute_widget_layout(
+                &mut taffy,
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                &node_map,
+                &bindings,
+                &mut text_renderer,
+            )?;
+        }
         widget.apply_layout(&taffy, child, Point::ORIGIN);
     }
 
@@ -939,7 +897,16 @@ fn render_shot_to_png(
 
 #[cfg(test)]
 mod actor_tests {
-    use super::distinct_actor;
+    use super::{distinct_actor, shot_viewport};
+
+    #[test]
+    fn screenshot_viewport_honors_standard_value_unless_size_overrides_it() {
+        assert_eq!(shot_viewport(Some((480, 900)), None), (480, 900));
+        assert_eq!(
+            shot_viewport(Some((480, 900)), Some((640, 480))),
+            (640, 480)
+        );
+    }
 
     /// The regression, stated as the property it broke.
     ///

@@ -56,15 +56,7 @@ fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
 fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     let out = args.shots.as_deref().ok_or(LaunchError::ShotsUnsupported)?;
     let viewport = args.viewport.unwrap_or_else(|| shot_viewport(args));
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => ui::Theme::light(),
-        Some("high-contrast") => ui::Theme::high_contrast(),
-        _ => ui::Theme::dark(),
-    }
-    .with_reduce_motion(matches!(
-        std::env::var("QOS_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
+    let theme = ui::launch::shot_theme(args);
     ui::headless::FrameHarness::new_with_theme(ui::State::new(), shot_root(args)?, viewport, theme)
         .render_png(out);
     println!("dev.qos.slides: wrote shot to {}", out.display());
