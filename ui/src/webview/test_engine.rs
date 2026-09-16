@@ -188,6 +188,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::Key { .. }
             | WebViewCommand::SetFocused(_)
             | WebViewCommand::SetContentFilter(_)
+            | WebViewCommand::SetNativeFilterRules { .. }
             | WebViewCommand::SetContentFilters { .. }
             | WebViewCommand::SetUserScripts(_)
             | WebViewCommand::ClearWebsiteData => {}

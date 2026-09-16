@@ -130,9 +130,11 @@ def main():
     if not cmake:
         raise SystemExit("CMake is required. Install CMake, or use target/chromium-tools Python venv with cmake and ninja.")
     env = dict(os.environ, PATH=str(local_bin) + os.pathsep + os.environ["PATH"])
+    subprocess.run(["cargo", "build", "-p", "qos-chromium-blocker", "--profile", "thin-app"], cwd=ROOT, check=True)
+    blocker = ROOT / "target/thin-app/libqos_chromium_blocker.a"
     build = ROOT / "target/chromium-build"
     subprocess.run([cmake, "-S", str(ROOT / "apps/browser/chromium"), "-B", str(build),
-                    f"-DCEF_ROOT={sdk}", "-DCMAKE_BUILD_TYPE=Release",
+                    f"-DCEF_ROOT={sdk}", f"-DQOS_BLOCKER_LIBRARY={blocker}", "-DCMAKE_BUILD_TYPE=Release",
                     f"-DQOS_OUTPUT_DIR={ROOT / 'target/chromium'}"], check=True, env=env)
     subprocess.run([cmake, "--build", str(build), "--parallel", str(args.jobs)], check=True, env=env)
 

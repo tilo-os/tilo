@@ -2015,7 +2015,11 @@ impl BrowserWidget {
                     crate::blocker::user_scripts(),
                 )));
         } else {
-            self.engine.send(WebViewCommand::SetContentFilter(None));
+            if self.engine.supports_native_filtering() {
+                self.engine.send(WebViewCommand::SetNativeFilterRules {rules:std::sync::Arc::new(String::new()),enabled:Some(false)});
+            } else {
+                self.engine.send(WebViewCommand::SetContentFilter(None));
+            }
             self.engine
                 .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
                     Vec::new(),
@@ -2229,19 +2233,21 @@ impl Default for BrowserWidget {
     }
 }
 
-/// The engine a live browser window runs on: WPE `WebKit` when the `wpe`
-/// feature is compiled in (and its libraries boot), the deterministic
-/// test engine otherwise — so the chrome stays fully drivable in
-/// hermetic builds.
+/// Live browsing always uses a real engine. WPE is an explicit migration
+/// option; deterministic rendering is confined to `new_headless`.
 fn default_engine() -> SharedEngine {
     #[cfg(feature = "wpe")]
-    {
-        match ui::webview::wpe::WpeEngine::new() {
-            Ok(engine) => return engine,
-            Err(err) => tracing::warn!("WPE engine unavailable, using test engine: {err}"),
-        }
+    if std::env::var("QOS_BROWSER_ENGINE").as_deref() == Ok("wpe") {
+        return engine_or_error(ui::webview::wpe::WpeEngine::new().map(|engine| engine as SharedEngine));
     }
-    TestEngine::new()
+    engine_or_error(ui::webview::chromium::ChromiumEngine::new().map(|engine| engine as SharedEngine))
+}
+
+fn engine_or_error(result: Result<SharedEngine, String>) -> SharedEngine {
+    result.unwrap_or_else(|error| {
+        tracing::error!(%error, "browser engine unavailable");
+        ui::webview::chromium::UnavailableEngine::new(error)
+    })
 }
 
 impl Widget for BrowserWidget {
@@ -4257,11 +4263,13 @@ mod tests {
     }
 
     #[test]
-    fn default_engine_is_shareable() {
-        // The engine handle must be cloneable/shareable between widget,
-        // app, and blocker thread.
-        let engine: SharedEngine = default_engine();
+    fn default_engine_failure_never_becomes_a_simulated_page() {
+        let engine: SharedEngine = engine_or_error(Err("Chromium unavailable".into()));
         let _clone: SharedEngine = Arc::clone(&engine);
+        engine.send(WebViewCommand::Navigate("https://podesta.ai".into()));
+        assert!(engine.frames().lock().unwrap().is_none());
+        assert!(engine.drain_events().iter().any(|event| matches!(event,
+            WebViewEvent::LoadFailed { error, .. } if error == "Chromium unavailable")));
     }
 
     #[test]
