@@ -44,6 +44,13 @@ pub struct InstalledEntry {
     /// installed" state.
     #[serde(default)]
     pub pinned: bool,
+    /// False for immutable system packages supplied by the host RPM.
+    #[serde(default = "default_user_managed")]
+    pub user_managed: bool,
+}
+
+fn default_user_managed() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
