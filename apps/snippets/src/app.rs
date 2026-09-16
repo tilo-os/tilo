@@ -154,6 +154,94 @@ enum Action {
     PushBack,
 }
 
+impl Action {
+    fn semantic_id(&self) -> String {
+        match self {
+            Self::Select(Selection::Smart(smart)) => format!(
+                "snippets.sidebar.smart:{}",
+                smart.label().to_lowercase().replace(' ', "-")
+            ),
+            Self::Select(Selection::Folder(folder)) => {
+                format!("snippets.sidebar.folder:{}", actions::stable_key(folder))
+            }
+            Self::Select(Selection::Tag(tag)) => {
+                format!("snippets.sidebar.tag:{}", actions::stable_key(tag))
+            }
+            Self::OpenSnippet(id) => format!("snippets.snippet:{id}.open"),
+            Self::NewSnippet => "snippets.library.new-snippet".into(),
+            Self::Copy(id) => format!("snippets.snippet:{id}.copy"),
+            Self::Expand(id) => format!("snippets.snippet:{id}.expand"),
+            Self::ToggleFavorite(id) => format!("snippets.snippet:{id}.toggle-favorite"),
+            Self::Duplicate(id) => format!("snippets.snippet:{id}.duplicate"),
+            Self::Delete(id) => format!("snippets.snippet:{id}.delete"),
+            Self::FocusSearch => "snippets.library.search".into(),
+            Self::ClearSearch => "snippets.library.clear-search".into(),
+            Self::SetLanguage(id, _) => format!("snippets.snippet:{id}.set-language"),
+            Self::ToggleSidebar => "snippets.sidebar.toggle".into(),
+            Self::DismissSidebar => "snippets.sidebar.dismiss".into(),
+            Self::PushBack => "snippets.navigation.back".into(),
+        }
+    }
+
+    fn accessible_label(&self, app: &SnippetsApp) -> String {
+        match self {
+            Self::Select(Selection::Smart(smart)) => smart.label().into(),
+            Self::Select(Selection::Folder(folder)) => format!("Folder {folder}"),
+            Self::Select(Selection::Tag(tag)) => format!("Tag {tag}"),
+            Self::OpenSnippet(id) => app.library.get(*id).map_or_else(
+                || "Open snippet".into(),
+                |snippet| format!("Open {}", snippet.title),
+            ),
+            Self::NewSnippet => "New snippet".into(),
+            Self::Copy(_) => "Copy snippet".into(),
+            Self::Expand(_) => "Fill variables and copy".into(),
+            Self::ToggleFavorite(id) => {
+                if app.library.get(*id).is_some_and(|snippet| snippet.favorite) {
+                    "Unstar snippet".into()
+                } else {
+                    "Star snippet".into()
+                }
+            }
+            Self::Duplicate(_) => "Duplicate snippet".into(),
+            Self::Delete(_) => "Delete snippet".into(),
+            Self::FocusSearch => "Search snippets".into(),
+            Self::ClearSearch => "Clear search".into(),
+            Self::SetLanguage(_, language) => format!("Set language to {}", language.label()),
+            Self::ToggleSidebar => "Toggle folders and tags".into(),
+            Self::DismissSidebar => "Close folders and tags".into(),
+            Self::PushBack => "Back to snippet list".into(),
+        }
+    }
+
+    fn canonical_address(&self) -> Option<qos_actions::ActionAddress> {
+        match self {
+            Self::OpenSnippet(id) => Some(actions::open_snippet_address(*id)),
+            Self::Select(Selection::Tag(tag)) => Some(actions::reveal_tag_address(tag)),
+            Self::NewSnippet => Some(qos_actions::ActionAddress::new(
+                "snippets.library",
+                "new-snippet",
+            )),
+            Self::FocusSearch => Some(qos_actions::ActionAddress::new(
+                "snippets.library",
+                "search",
+            )),
+            Self::ToggleFavorite(id) => Some(qos_actions::ActionAddress::new(
+                actions::snippet_resource_id(*id),
+                "toggle-favorite",
+            )),
+            Self::Delete(id) => Some(qos_actions::ActionAddress::new(
+                actions::snippet_resource_id(*id),
+                "delete",
+            )),
+            Self::SetLanguage(id, _) => Some(qos_actions::ActionAddress::new(
+                actions::snippet_resource_id(*id),
+                "set-language",
+            )),
+            _ => None,
+        }
+    }
+}
+
 impl SnippetsApp {
     /// Build the live app on an **empty** library. A fresh install has no
     /// snippets — the user saves their own, or a peer's shared library is
@@ -1019,15 +1107,87 @@ impl ui::widget::Widget for SnippetsApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        self.expand
-            .as_ref()
-            .and_then(ExpandModal::accessibility)
-            .or_else(|| {
-                self.search_input
-                    .is_focused()
-                    .then(|| self.search_input.accessibility())
-                    .flatten()
+        if let Some(modal) = self.expand.as_ref().and_then(ExpandModal::accessibility) {
+            return Some(modal);
+        }
+
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut seen = std::collections::HashSet::new();
+        let children = self
+            .hit
+            .iter()
+            .filter_map(|(bounds, action)| {
+                let target = action.semantic_id();
+                seen.insert(target.clone()).then(|| {
+                    let role = if matches!(action, Action::FocusSearch) {
+                        Role::TextInput
+                    } else if matches!(action, Action::ToggleFavorite(_)) {
+                        Role::ToggleButton
+                    } else {
+                        Role::Button
+                    };
+                    AccessNode::new(role)
+                        .with_name(action.accessible_label(self))
+                        .with_action_target(target)
+                        .with_bounds(*bounds)
+                        .with_state(AccessState {
+                            focusable: true,
+                            focused: matches!(action, Action::FocusSearch)
+                                && self.search_input.is_focused(),
+                            checked: match action {
+                                Action::ToggleFavorite(id) => {
+                                    self.library.get(*id).map(|snippet| snippet.favorite)
+                                }
+                                _ => None,
+                            },
+                            ..Default::default()
+                        })
+                })
             })
+            .collect();
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Snippets")
+                .with_semantic_key("snippets.application")
+                .with_children(children),
+        )
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut seen = std::collections::HashSet::new();
+        self.hit
+            .iter()
+            .filter_map(|(_, action)| {
+                let control_id = action.semantic_id();
+                seen.insert(control_id.clone())
+                    .then(|| ui::widget::ControlBindingMetadata {
+                        control_id: control_id.clone(),
+                        kind: action.canonical_address().map_or_else(
+                            || ui::widget::ControlBindingKind::SemanticAction(control_id),
+                            ui::widget::ControlBindingKind::Action,
+                        ),
+                    })
+            })
+            .collect()
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus) {
+            return false;
+        }
+        let Some(hit_action) = self.hit.iter().find_map(|(_, candidate)| {
+            (candidate.semantic_id() == target).then(|| candidate.clone())
+        }) else {
+            return false;
+        };
+        self.apply(hit_action, state);
+        true
     }
 
     fn needs_commit(&self) -> bool {

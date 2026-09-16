@@ -3913,6 +3913,7 @@ impl Widget for DisksApp {
                         .confirm_body(&format!("/dev/{expected}"), self.live),
                 )
                 .with_bounds(ml.card)
+                .with_hashed_key("disks.confirmation-dialog")
                 .with_state(AccessState::new().modal(true));
             dialog.children.push(
                 AccessNode::new(Role::TextInput)
@@ -3952,7 +3953,9 @@ impl Widget for DisksApp {
             );
             root.children.push(dialog);
         } else {
-            let mut toolbar = AccessNode::new(Role::Toolbar).with_name("Storage controls");
+            let mut toolbar = AccessNode::new(Role::Toolbar)
+                .with_name("Storage controls")
+                .with_hashed_key("disks.toolbar");
             if let Some(menu) = lay.hamburger {
                 toolbar.children.push(
                     AccessNode::new(Role::Button)
@@ -3977,7 +3980,9 @@ impl Widget for DisksApp {
             root.children.push(toolbar);
 
             if self.list_open() {
-                let mut list = AccessNode::new(Role::List).with_name("Drives");
+                let mut list = AccessNode::new(Role::List)
+                    .with_name("Drives")
+                    .with_hashed_key("disks.drives");
                 let n = self.topo.drives.len();
                 for (i, drive) in self.topo.drives.iter().enumerate() {
                     let Some(&bounds) = lay.cards.get(i) else {
@@ -4008,7 +4013,9 @@ impl Widget for DisksApp {
                 root.children.push(list);
             }
 
-            let mut tabs = AccessNode::new(Role::TabBar).with_name("Drive details");
+            let mut tabs = AccessNode::new(Role::TabBar)
+                .with_name("Drive details")
+                .with_hashed_key("disks.drive-details");
             for (bounds, tab) in &lay.tabs {
                 tabs.children.push(
                     AccessNode::new(Role::Tab)
@@ -4027,6 +4034,7 @@ impl Widget for DisksApp {
             if let Some(drive) = self.drive() {
                 let mut actions = AccessNode::new(Role::Group)
                     .with_name(format!("Actions for /dev/{}", drive.name))
+                    .with_hashed_key("disks.drive-actions")
                     .with_bounds(lay.action_bar);
                 for (bounds, action, enabled) in &lay.action_buttons {
                     actions.children.push(
@@ -4085,6 +4093,7 @@ impl Widget for DisksApp {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.status.clone())
+                    .with_hashed_key("disks.status")
                     .with_live(Politeness::Polite),
             );
         }

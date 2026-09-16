@@ -617,6 +617,16 @@ impl Widget for EmptyState {
         }
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.action_id.as_deref() == Some(target) && self.perform_action(action, state, path)
+    }
+
     fn name(&self) -> &'static str {
         "EmptyState"
     }
@@ -695,15 +705,24 @@ impl Widget for EmptyState {
                 ),
             ];
         }
-        self.action_path.as_ref().map_or_else(Vec::new, |path| {
-            vec![crate::widget::ControlBindingMetadata {
-                control_id: self
-                    .action_id
+        self.action_path.as_ref().map_or_else(
+            || {
+                self.action_id
                     .clone()
-                    .unwrap_or_else(|| format!("empty-state:{}", self.title)),
-                kind: crate::widget::ControlBindingKind::CollaborativeDocument(path.clone()),
-            }]
-        })
+                    .map(crate::widget::ControlBindingMetadata::semantic)
+                    .into_iter()
+                    .collect()
+            },
+            |path| {
+                vec![crate::widget::ControlBindingMetadata {
+                    control_id: self
+                        .action_id
+                        .clone()
+                        .unwrap_or_else(|| format!("empty-state:{}", self.title)),
+                    kind: crate::widget::ControlBindingKind::CollaborativeDocument(path.clone()),
+                }]
+            },
+        )
     }
 }
 
