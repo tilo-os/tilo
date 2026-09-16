@@ -3884,10 +3884,9 @@ impl App {
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                     crate::diag!("[app] broadcast doc delta {}B", delta.len());
                 }
-                if self
-                    .collab_manager
-                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
-                {
+                if self.collab_manager.send(
+                    crate::collaboration::CollabRequest::document_incremental(delta),
+                ) {
                     self.document_frontier.advance(heads);
                 }
             }
@@ -3918,8 +3917,9 @@ impl App {
         }
         if let Some(manager) = self.room_collab_manager.as_mut() {
             if manager.is_connected()
-                && manager
-                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+                && manager.send(crate::collaboration::CollabRequest::document_incremental(
+                    delta,
+                ))
             {
                 frontier.advance(heads);
             }
@@ -3929,7 +3929,9 @@ impl App {
             // Do not advance this cursor for ordinary (non-record) apps.
             if self
                 .collab_manager
-                .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+                .send(crate::collaboration::CollabRequest::document_incremental(
+                    delta,
+                ))
             {
                 frontier.advance(heads);
             }
@@ -4655,7 +4657,7 @@ impl App {
                     crate::diag!("[app] recv Arrived; replying full state {}B", data.len());
                 }
                 self.collab_manager
-                    .send(crate::collaboration::CollabRequest::DocumentSnapshot { data });
+                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
             }
         }
     }

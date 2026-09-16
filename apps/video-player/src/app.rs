@@ -1650,7 +1650,7 @@ impl PlayerApp {
                 if let Some(engine) = self.player.engine()
                     && let Some(delta) = collab.host_step(engine, now)
                 {
-                    mgr.send(CollabRequest::DocumentIncremental { data: delta });
+                    mgr.send(CollabRequest::document_incremental(delta));
                 }
             }
             Role::Follower => {
