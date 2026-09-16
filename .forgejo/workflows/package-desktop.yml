@@ -51,7 +51,9 @@ on:
         default: false
 
 concurrency:
-  group: package-desktop-${{ github.ref }}
+  # An explicit full-native rehearsal must survive unrelated main pushes;
+  # automatic runs still supersede older automatic runs on the same ref.
+  group: package-desktop-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
 
 env:
