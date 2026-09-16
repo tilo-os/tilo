@@ -282,13 +282,19 @@ interface ChannelHandle {
   # session-local; only sanitized now-playing metadata enters device sync.
   reportPlayback @36 (appId :Text, reportsJson :Data) -> ();
 
+  # Ask the broker to select exactly one existing holder of this route and
+  # request a complete signed snapshot. The request itself is directed and
+  # carries no document data; it replaces the old presence-based broadcast
+  # where every holder serialized and fanned out the same full document.
+  requestDocumentSnapshot @37 () -> ();
+
   # Versioned, bounded active-session continuity control. The JSON vocabulary
   # is owned by qos-app's realtime_continuity module. Device routing and app /
   # workspace identity are re-derived by the broker; apps receive only opaque
   # restart-scoped session capabilities.
-  realtimeCommand @37 (appId :Text, commandJson :Data) -> (replyJson :Data);
+  realtimeCommand @38 (appId :Text, commandJson :Data) -> (replyJson :Data);
   # Directed lifecycle edges for this exact certified application connection.
-  subscribeRealtime @38 () -> (stream :RealtimeStream);
+  subscribeRealtime @39 () -> (stream :RealtimeStream);
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -651,6 +657,9 @@ struct ChannelContext {
   # or stop when it is empty. The compositor never relays this to peers.
   followTarget  @2 :Text;
   followChanged @3 :Bool;
+  # Directed control frame for one selected document holder. Ordinary context
+  # snapshots and follow controls leave this false.
+  snapshotRequested @4 :Bool;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

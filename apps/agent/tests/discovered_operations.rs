@@ -161,13 +161,7 @@ fn run(
         .expect("agent never established its route subscriptions");
     std::thread::sleep(Duration::from_millis(250));
     typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
-    send(
-        &mut peer,
-        &CollabRequest::DocumentSnapshot {
-            data: replica.save(),
-        },
-    )
-    .unwrap();
+    send(&mut peer, &CollabRequest::document_snapshot(replica.save())).unwrap();
 
     peer.set_read_timeout(Some(Duration::from_millis(200)));
     let deadline = Instant::now()
@@ -180,14 +174,9 @@ fn run(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
             CollabEvent::Invocation {
@@ -483,9 +472,7 @@ fn drive_photo_peer(
     );
     send(
         &mut photo_peer,
-        &CollabRequest::DocumentSnapshot {
-            data: photo_replica.save(),
-        },
+        &CollabRequest::document_snapshot(photo_replica.save()),
     )
     .unwrap();
     let _ = photo_ready_tx.send(());
@@ -494,15 +481,10 @@ fn drive_photo_peer(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 send(
                     &mut photo_peer,
-                    &CollabRequest::DocumentSnapshot {
-                        data: photo_replica.save(),
-                    },
+                    &CollabRequest::document_snapshot(photo_replica.save()),
                 )
                 .unwrap();
             }
@@ -571,9 +553,7 @@ fn drive_word_processor_peer(
     typed_peer::publish_actions(&mut wp_peer, APP, &word_processor_resources(&wp_replica));
     send(
         &mut wp_peer,
-        &CollabRequest::DocumentSnapshot {
-            data: wp_replica.save(),
-        },
+        &CollabRequest::document_snapshot(wp_replica.save()),
     )
     .unwrap();
     while Instant::now() < deadline && !done {
@@ -581,13 +561,8 @@ fn drive_word_processor_peer(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: wp_replica.save(),
-                };
+            CollabEvent::DocumentSnapshotRequested { .. } => {
+                let snap = CollabRequest::document_snapshot(wp_replica.save());
                 send(&mut wp_peer, &snap).unwrap();
             }
             event @ CollabEvent::Document { .. } => {

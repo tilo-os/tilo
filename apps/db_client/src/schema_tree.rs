@@ -9,7 +9,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use crate::model::RelationKind;
+use crate::model::{RelationKind, RelationRef};
 use crate::session::Session;
 use crate::theme_ext::ThemeExt;
 use ui::text_render::TextRenderer;
@@ -22,8 +22,8 @@ const INDENT: f64 = 14.0;
 #[derive(Clone, Debug)]
 pub enum TreeClick {
     ToggleSchema(String),
-    ToggleTable(String),
-    SelectTable(String),
+    ToggleTable(RelationRef),
+    SelectTable(RelationRef),
 }
 
 /// One flattened, rendered row of the tree, kept so hit-testing can map a
@@ -34,9 +34,11 @@ enum Row {
         name: String,
     },
     Table {
+        schema: String,
         name: String,
     },
     Column {
+        schema: String,
         table: String,
         text: String,
         icon: String,
@@ -48,8 +50,8 @@ pub struct SchemaTree {
     cursor: Point,
     scroll: usize,
     expanded_schemas: HashSet<String>,
-    expanded_tables: HashSet<String>,
-    selected: Option<String>,
+    expanded_tables: HashSet<RelationRef>,
+    selected: Option<RelationRef>,
     /// Rows produced by the last `draw`, used for hit-testing.
     rows: Vec<Row>,
 }
@@ -87,13 +89,13 @@ impl SchemaTree {
         self.cursor = p;
     }
 
-    pub fn set_selected(&mut self, name: &str) {
-        self.selected = Some(name.to_string());
+    pub fn set_selected(&mut self, relation: RelationRef) {
+        self.selected = Some(relation);
     }
 
-    pub fn toggle(&mut self, table: &str) {
-        if !self.expanded_tables.remove(table) {
-            self.expanded_tables.insert(table.to_string());
+    pub fn toggle(&mut self, relation: RelationRef) {
+        if !self.expanded_tables.remove(&relation) {
+            self.expanded_tables.insert(relation);
         }
     }
 
@@ -101,6 +103,13 @@ impl SchemaTree {
         if !self.expanded_schemas.remove(schema) {
             self.expanded_schemas.insert(schema.to_string());
         }
+    }
+
+    /// Reveal a schema for a typed resource navigation request. Unlike the
+    /// pointer toggle this is idempotent, so repeating a search activation
+    /// cannot unexpectedly hide the user's destination.
+    pub fn reveal_schema(&mut self, schema: &str) {
+        self.expanded_schemas.insert(schema.to_string());
     }
 
     pub fn scroll(&mut self, delta: isize) {
@@ -127,9 +136,13 @@ impl SchemaTree {
             }
             for table in &schema.tables {
                 rows.push(Row::Table {
+                    schema: schema.name.clone(),
                     name: table.name.clone(),
                 });
-                if self.expanded_tables.contains(&table.name) {
+                if self.expanded_tables.contains(&RelationRef {
+                    schema: schema.name.clone(),
+                    name: table.name.clone(),
+                }) {
                     for col in &table.columns {
                         let pk = if col.primary_key { "  PK" } else { "" };
                         let nn = if col.not_null && !col.primary_key {
@@ -139,6 +152,7 @@ impl SchemaTree {
                         };
                         let text = format!("{}{}{}  {}", col.name, pk, nn, col.decl_type);
                         rows.push(Row::Column {
+                            schema: schema.name.clone(),
                             table: table.name.clone(),
                             text,
                             icon: col.class.icon().to_string(),
@@ -163,18 +177,27 @@ impl SchemaTree {
         let idx = self.scroll + rel;
         match self.rows.get(idx)? {
             Row::Schema { name } => Some(TreeClick::ToggleSchema(name.clone())),
-            Row::Table { name } => {
+            Row::Table { schema, name } => {
                 // Click on the left disclosure triangle toggles; click on the
                 // label selects. We treat the leftmost INDENT*1.5 as the
                 // toggle zone.
                 let toggle_zone = self.rect.x0 + INDENT * 2.2;
                 if p.x < toggle_zone {
-                    Some(TreeClick::ToggleTable(name.clone()))
+                    Some(TreeClick::ToggleTable(RelationRef {
+                        schema: schema.clone(),
+                        name: name.clone(),
+                    }))
                 } else {
-                    Some(TreeClick::SelectTable(name.clone()))
+                    Some(TreeClick::SelectTable(RelationRef {
+                        schema: schema.clone(),
+                        name: name.clone(),
+                    }))
                 }
             }
-            Row::Column { table, .. } => Some(TreeClick::SelectTable(table.clone())),
+            Row::Column { schema, table, .. } => Some(TreeClick::SelectTable(RelationRef {
+                schema: schema.clone(),
+                name: table.clone(),
+            })),
         }
     }
 
@@ -212,12 +235,17 @@ impl SchemaTree {
                 Row::Schema { name } => {
                     self.draw_schema_row(scene, t, tr, theme, session, name, r, y);
                 }
-                Row::Table { name } => {
-                    self.draw_table_row(scene, t, tr, theme, session, name, r, y);
+                Row::Table { schema, name } => {
+                    self.draw_table_row(scene, t, tr, theme, session, schema, name, r, y);
                 }
                 Row::Column {
-                    table, text, icon, ..
-                } => self.draw_column_row(scene, t, tr, theme, session, table, text, icon, r, y),
+                    schema,
+                    table,
+                    text,
+                    icon,
+                } => self.draw_column_row(
+                    scene, t, tr, theme, session, schema, table, text, icon, r, y,
+                ),
             }
         }
     }
@@ -281,6 +309,7 @@ impl SchemaTree {
         tr: &mut TextRenderer,
         theme: &Theme,
         session: &Session,
+        schema: &str,
         name: &str,
         r: Rect,
         y: f64,
@@ -288,7 +317,11 @@ impl SchemaTree {
         let p = theme.db();
         let row_rect = Rect::new(r.x0 + 4.0, y, r.x1 - 4.0, y + ROW_H);
         let hover = row_rect.contains(self.cursor);
-        let selected = self.selected.as_deref() == Some(name);
+        let relation = RelationRef {
+            schema: schema.to_string(),
+            name: name.to_string(),
+        };
+        let selected = self.selected.as_ref() == Some(&relation);
         if selected {
             scene.fill(
                 Fill::NonZero,
@@ -306,9 +339,9 @@ impl SchemaTree {
                 &row_rect.to_rounded_rect(5.0),
             );
         }
-        let open = self.expanded_tables.contains(name);
+        let open = self.expanded_tables.contains(&relation);
         let tri = if open { "▾" } else { "▸" };
-        let info = session.schema.find_table(name);
+        let info = session.schema.find_relation(schema, name);
         let is_view = info.is_some_and(|t| t.kind == RelationKind::View);
         tr.draw_text(
             scene,
@@ -369,6 +402,7 @@ impl SchemaTree {
         tr: &mut TextRenderer,
         theme: &Theme,
         session: &Session,
+        schema: &str,
         table: &str,
         text: &str,
         icon: &str,
@@ -389,7 +423,7 @@ impl SchemaTree {
         }
         // Resolve the type colour from the live schema so it tracks the
         // theme (avoids storing a stale colour).
-        let (icon_color, _cls) = Self::column_class(session, table, text)
+        let (icon_color, _cls) = Self::column_class(session, schema, table, text)
             .map_or((theme.text_dim, crate::model::TypeClass::Unknown), |c| {
                 (theme.type_color(c), c)
             });
@@ -423,8 +457,13 @@ impl SchemaTree {
 
     /// Look up a column's type class by matching its rendered text back to
     /// the schema (the row stores the formatted string).
-    fn column_class(session: &Session, table: &str, text: &str) -> Option<crate::model::TypeClass> {
-        let info = session.schema.find_table(table)?;
+    fn column_class(
+        session: &Session,
+        schema: &str,
+        table: &str,
+        text: &str,
+    ) -> Option<crate::model::TypeClass> {
+        let info = session.schema.find_relation(schema, table)?;
         // The row text starts with the column name.
         let col_name = text.split_whitespace().next()?;
         info.columns

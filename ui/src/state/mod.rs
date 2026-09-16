@@ -3,8 +3,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
 
-pub mod collab;
-pub use collab::{CollaborationState, RemoteCursor};
+pub mod diagnostics;
+pub use diagnostics::{DocumentDiagnostics, FrontierDiagnostics};
 pub mod revision;
 pub use revision::{Revision, RevisionHistory, RevisionId, UnknownRevision};
 
@@ -41,12 +41,18 @@ impl DocumentFrontier {
     /// Build a delta without advancing the frontier. Call [`Self::advance`]
     /// only after the durable transport accepts it; a saturated/disconnected
     /// queue can then be retried instead of silently losing the mutation.
-    pub fn pending_delta(&self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
+    pub fn pending_delta(&mut self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
         let current = doc.get_heads();
         if current == self.heads {
             return (Vec::new(), current);
         }
-        (doc.save_after(&self.heads), current)
+        let delta = doc.save_after(&self.heads);
+        // Multiple observed frontiers may already cover the whole graph even
+        // when their vector is not Automerge's minimal current-head set.
+        if delta.is_empty() {
+            self.heads.clone_from(&current);
+        }
+        (delta, current)
     }
 
     /// Advance to heads whose delta a durable destination accepted.
@@ -61,8 +67,75 @@ impl DocumentFrontier {
         self.heads = doc.get_heads();
     }
 
+    /// Record changes known to have arrived from this destination without
+    /// claiming that it received locally pending changes. The union frontier
+    /// lets `save_after` omit echoes while retaining a rejected local delta.
+    pub fn observe(&mut self, observed: impl IntoIterator<Item = ChangeHash>) {
+        for hash in observed {
+            if !self.heads.contains(&hash) {
+                self.heads.push(hash);
+            }
+        }
+    }
+
+    fn observe_changes_after(&mut self, doc: &mut AutoCommit, before: &[ChangeHash]) {
+        self.observe(
+            doc.get_changes(before)
+                .into_iter()
+                .map(|change| change.hash()),
+        );
+    }
+
     pub fn heads(&self) -> &[ChangeHash] {
         &self.heads
+    }
+}
+
+/// A CRDT document paired with the explicit frontier for one collaboration
+/// route. This is the small, undo-free replica used by metadata documents such
+/// as room indexes; application documents add history through [`State`].
+pub struct DocumentReplica {
+    doc: AutoCommit,
+    outbound: DocumentFrontier,
+}
+
+impl DocumentReplica {
+    #[must_use]
+    pub fn new(mut doc: AutoCommit) -> Self {
+        let outbound = DocumentFrontier::at_document(&mut doc);
+        Self { doc, outbound }
+    }
+
+    #[must_use]
+    pub fn document(&self) -> &AutoCommit {
+        &self.doc
+    }
+
+    pub fn document_mut(&mut self) -> &mut AutoCommit {
+        &mut self.doc
+    }
+
+    pub fn pending_outbound_delta(&mut self) -> (Vec<u8>, Vec<ChangeHash>) {
+        self.outbound.pending_delta(&mut self.doc)
+    }
+
+    pub fn advance_outbound(&mut self, heads: Vec<ChangeHash>) {
+        self.outbound.advance(heads);
+    }
+
+    pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
+        let before = self.doc.get_heads();
+        let loaded = self.doc.load_incremental(data)?;
+        self.outbound.observe_changes_after(&mut self.doc, &before);
+        Ok(loaded)
+    }
+
+    pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        let mut incoming = AutoCommit::load(data)?;
+        let observed = incoming.get_heads();
+        self.doc.merge(&mut incoming)?;
+        self.outbound.observe(observed);
+        Ok(())
     }
 }
 
@@ -556,7 +629,9 @@ impl UndoLog {
 pub struct State {
     pub doc: AutoCommit,
     pub root: ObjId,
-    pub collab: CollaborationState,
+    /// The primary collaboration route's explicit outbound frontier. Kept
+    /// beside the document so every merge/adoption rebases it atomically.
+    outbound: DocumentFrontier,
     /// This document's history. Swapped out with the document itself in
     /// [`Self::adopt_doc`] — see there for why it cannot travel.
     undo: UndoLog,
@@ -573,10 +648,11 @@ impl State {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let undo = UndoLog::new(&mut doc);
+        let outbound = DocumentFrontier::at_document(&mut doc);
         Self {
             doc,
             root,
-            collab: CollaborationState::new(),
+            outbound,
             undo,
         }
     }
@@ -601,6 +677,7 @@ impl State {
         self.doc = doc;
         self.root = automerge::ROOT;
         self.undo = UndoLog::new(&mut self.doc);
+        self.outbound = DocumentFrontier::at_document(&mut self.doc);
         self.undo.revision = next;
         true
     }
@@ -871,10 +948,11 @@ impl State {
     /// — and this adopts it as the live document without a byte round-trip.
     pub fn from_doc(mut doc: AutoCommit) -> Self {
         let undo = UndoLog::new(&mut doc);
+        let outbound = DocumentFrontier::at_document(&mut doc);
         Self {
             doc,
             root: automerge::ROOT,
-            collab: CollaborationState::new(),
+            outbound,
             undo,
         }
     }
@@ -889,10 +967,11 @@ impl State {
         let mut doc = AutoCommit::load(data)?;
         let root = automerge::ROOT;
         let undo = UndoLog::new(&mut doc);
+        let outbound = DocumentFrontier::at_document(&mut doc);
         Ok(Self {
             doc,
             root,
-            collab: CollaborationState::new(),
+            outbound,
             undo,
         })
     }
@@ -910,6 +989,7 @@ impl State {
     /// Returns an error if `data` is not a valid incremental Automerge patch
     /// (corrupt bytes, or bytes that don't apply to this document's history).
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
+        let before = self.doc.get_heads();
         let n = self.doc.load_incremental(data)?;
         // Keep the undo baseline aligned with the new, merged document state
         // so the *next* local action brackets against a complete picture.
@@ -918,7 +998,34 @@ impl State {
         // merge, so undoing an earlier action still reverts exactly that
         // action, leaving the just-merged remote ops intact.
         self.undo.rebase(&mut self.doc);
+        self.outbound.observe_changes_after(&mut self.doc, &before);
         Ok(n)
+    }
+
+    /// Merge a complete peer snapshot without replacing local work, then
+    /// atomically align undo and outbound frontiers with the merged graph.
+    pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        let mut incoming = AutoCommit::load(data)?;
+        let observed = incoming.get_heads();
+        self.doc.merge(&mut incoming)?;
+        self.undo.rebase(&mut self.doc);
+        self.outbound.observe(observed);
+        Ok(())
+    }
+
+    /// Prepare primary-route bytes without advancing its frontier. The caller
+    /// advances only after its durable queue accepts the payload.
+    pub fn pending_outbound_delta(&mut self) -> (Vec<u8>, Vec<ChangeHash>) {
+        self.outbound.pending_delta(&mut self.doc)
+    }
+
+    pub fn advance_outbound(&mut self, heads: Vec<ChangeHash>) {
+        self.outbound.advance(heads);
+    }
+
+    /// Reset the primary route after an address/record change.
+    pub fn rebase_outbound(&mut self) {
+        self.outbound.rebase(&mut self.doc);
     }
 
     /// Serialize the changes made since the last `save/save_incremental` call.
@@ -1139,6 +1246,94 @@ mod tests {
 
         frontier.advance(heads);
         assert!(frontier.pending_delta(&mut doc).0.is_empty());
+    }
+
+    #[test]
+    fn rejected_local_delta_survives_concurrent_incremental_merge() {
+        let mut state = State::new();
+        state.doc.put(ROOT, "local", true).unwrap();
+        state.commit_action(None, None);
+        let (rejected, _) = state.pending_outbound_delta();
+        assert!(!rejected.is_empty());
+
+        let mut peer = AutoCommit::new();
+        peer.put(ROOT, "remote", true).unwrap();
+        peer.commit();
+        let remote_delta = peer.save_after(&[]);
+        state.load_incremental(&remote_delta).unwrap();
+
+        let (retry, accepted_heads) = state.pending_outbound_delta();
+        assert!(
+            !retry.is_empty(),
+            "the rejected local edit must remain pending"
+        );
+        let mut retry_receiver = AutoCommit::new();
+        retry_receiver.load_incremental(&retry).unwrap();
+        assert_eq!(
+            retry_receiver.get(ROOT, "local").unwrap().unwrap().0,
+            true.into()
+        );
+        assert!(
+            retry_receiver.get(ROOT, "remote").unwrap().is_none(),
+            "the inbound change must not be echoed back"
+        );
+
+        state.advance_outbound(accepted_heads);
+        assert!(state.pending_outbound_delta().0.is_empty());
+    }
+
+    #[test]
+    fn rejected_local_delta_survives_concurrent_snapshot_merge() {
+        let mut state = State::new();
+        state.doc.put(ROOT, "local", true).unwrap();
+        state.commit_action(None, None);
+        let (rejected, _) = state.pending_outbound_delta();
+        assert!(!rejected.is_empty());
+
+        let mut peer = AutoCommit::new();
+        peer.put(ROOT, "remote", true).unwrap();
+        peer.commit();
+        state.merge_snapshot(&peer.save()).unwrap();
+
+        let (retry, accepted_heads) = state.pending_outbound_delta();
+        assert!(
+            !retry.is_empty(),
+            "the rejected local edit must remain pending"
+        );
+        let mut retry_receiver = AutoCommit::new();
+        retry_receiver.load_incremental(&retry).unwrap();
+        assert_eq!(
+            retry_receiver.get(ROOT, "local").unwrap().unwrap().0,
+            true.into()
+        );
+        assert!(
+            retry_receiver.get(ROOT, "remote").unwrap().is_none(),
+            "the snapshot's changes must not be echoed back"
+        );
+
+        state.advance_outbound(accepted_heads);
+        assert!(state.pending_outbound_delta().0.is_empty());
+    }
+
+    #[test]
+    fn metadata_replica_does_not_lose_rejected_delta_on_receive() {
+        let mut replica = DocumentReplica::new(AutoCommit::new());
+        replica.document_mut().put(ROOT, "local", true).unwrap();
+        let (rejected, _) = replica.pending_outbound_delta();
+        assert!(!rejected.is_empty());
+
+        let mut peer = AutoCommit::new();
+        peer.put(ROOT, "remote", true).unwrap();
+        peer.commit();
+        replica.load_incremental(&peer.save_after(&[])).unwrap();
+
+        let (retry, accepted_heads) = replica.pending_outbound_delta();
+        let mut receiver = AutoCommit::new();
+        receiver.load_incremental(&retry).unwrap();
+        assert!(receiver.get(ROOT, "local").unwrap().is_some());
+        assert!(receiver.get(ROOT, "remote").unwrap().is_none());
+        replica.advance_outbound(accepted_heads);
+        assert!(replica.pending_outbound_delta().0.is_empty());
     }
 
     #[test]
