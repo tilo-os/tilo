@@ -3153,6 +3153,49 @@ fn spawn_default_command_uses_the_resolved_login_shell() {
 }
 
 #[test]
+fn newly_spawned_local_pty_does_not_append_to_a_previous_session_grid() {
+    use automerge::{AutoCommit, ObjType};
+
+    let mut old = TerminalWidget::spawn_headless().expect("old terminal");
+    let mut doc = AutoCommit::new();
+    old.feed(&mut doc, &automerge::ROOT, b"old-session-output");
+    old.sync(&mut doc, &automerge::ROOT);
+    assert!(old.grid_text().contains("old-session-output"));
+
+    // A real spawned widget owns a new local PTY incarnation. Use a short
+    // command so this test exercises the production reader/sync path without
+    // leaving an interactive shell behind.
+    let mut command = crate::CommandBuilder::new("/bin/sh");
+    command.arg("-c");
+    command.arg("printf new-session-output");
+    let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
+    for _ in 0..200 {
+        fresh.sync(&mut doc, &automerge::ROOT);
+        if fresh.grid_text().contains("new-session-output") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    let screen = fresh.grid_text();
+    assert!(
+        screen.contains("new-session-output"),
+        "screen was {screen:?}"
+    );
+    assert!(
+        !screen.contains("old-session-output"),
+        "a new PTY must not inherit the previous process' screen: {screen:?}"
+    );
+    assert!(
+        matches!(
+            doc.get(&automerge::ROOT, "terminal_grid"),
+            Ok(Some((automerge::Value::Object(ObjType::List), _)))
+        ),
+        "the new session recreated its durable grid"
+    );
+}
+
+#[test]
 fn with_command_forces_xterm_256color_term() {
     use portable_pty::CommandBuilder;
     // fish (and terminfo) need $TERM to name a terminal they support. Run a
