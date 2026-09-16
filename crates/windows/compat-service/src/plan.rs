@@ -550,6 +550,13 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             launcher::profile::landlock_ro_paths(network == NetworkShape::Unrestricted);
         let mut landlock_write = launcher::profile::landlock_rw_device_paths();
         landlock_read.extend(runtime.binds.iter().map(|binding| binding.sandbox.clone()));
+        if runtime.translated {
+            // FEXServer and its children enumerate their own descriptors.
+            // /proc/self resolved by this launcher's shim would name only the
+            // shim PID, not its children. This is the private procfs mounted
+            // above in --unshare-all's PID namespace, never a host proc bind.
+            landlock_read.push(PathBuf::from("/proc"));
+        }
         landlock_read.extend([PathBuf::from("/etc/passwd"), PathBuf::from("/etc/group")]);
         // This names the private tmpfs mounted above, never the host's /tmp.
         // Wine and translated runtimes need temporary files and local sockets.
@@ -1069,6 +1076,58 @@ mod tests {
     }
 
     #[test]
+    fn only_translated_runtimes_read_their_private_procfs() {
+        for host in ["x86_64", "aarch64"] {
+            for layer in [Layer::Wine, Layer::Proton] {
+                let route = route(layer);
+                let (_directory, store, state, program) = setup(&route);
+                let session = session();
+                let registry = TestHostRegistry(host);
+                let command = SandboxPlanner::new(&store, &registry, &session)
+                    .unwrap()
+                    .plan(
+                        &route,
+                        &state,
+                        &program,
+                        &CapabilityPlan::empty(),
+                        "workspace",
+                        &LaunchLease::deny_all("lease"),
+                    )
+                    .unwrap();
+                let shim_position = command
+                    .bwrap_argv
+                    .iter()
+                    .position(|argument| {
+                        argument == launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND
+                    })
+                    .unwrap();
+                let shim = launcher::landlock_shim::ShimArgs::parse(
+                    &command.bwrap_argv[shim_position + 1..],
+                )
+                .unwrap();
+                assert_eq!(shim.ro.contains(&PathBuf::from("/proc")), host == "aarch64");
+                assert!(!shim.rw.iter().any(|path| path.starts_with("/proc")));
+                assert!(!shim.no_landlock);
+                let namespace = &command.bwrap_argv[..shim_position];
+                assert!(namespace.iter().any(|argument| argument == "--unshare-all"));
+                assert!(
+                    namespace
+                        .windows(2)
+                        .any(|arguments| arguments == ["--proc", "/proc"])
+                );
+                assert!(!namespace.iter().any(|argument| argument == "--share-pid"));
+                assert!(
+                    !namespace
+                        .windows(3)
+                        .any(|arguments| arguments[0].contains("bind")
+                            && (Path::new(&arguments[1]).starts_with("/proc")
+                                || Path::new(&arguments[2]).starts_with("/proc")))
+                );
+            }
+        }
+    }
+
+    #[test]
     fn unknown_host_architecture_fails_closed() {
         let error = SystemRuntimeRegistry::resolve_for_host(
             Layer::Wine,
@@ -1341,30 +1400,64 @@ mod tests {
     #[test]
     #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
     fn generated_arm_wine32_namespace_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Wine, Architecture::Win32);
+        generated_arm_namespace_console(Layer::Wine, Architecture::Win32, false);
     }
 
     #[test]
     #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
     fn generated_arm_wine64_namespace_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Wine, Architecture::Win64);
+        generated_arm_namespace_console(Layer::Wine, Architecture::Win64, false);
     }
 
     #[test]
     #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
     fn generated_arm_proton_namespace_executes_windows_console() {
-        generated_arm_namespace_console(Layer::Proton, Architecture::Win64);
+        generated_arm_namespace_console(Layer::Proton, Architecture::Win64, false);
+    }
+
+    #[test]
+    #[ignore = "requires disposable native ARM VM with Landlock ABI >= 5 and runtime artifacts"]
+    fn generated_arm_wine32_landlock_executes_windows_console() {
+        generated_arm_namespace_console(Layer::Wine, Architecture::Win32, true);
+    }
+
+    #[test]
+    #[ignore = "requires disposable native ARM VM with Landlock ABI >= 5 and runtime artifacts"]
+    fn generated_arm_wine64_landlock_executes_windows_console() {
+        generated_arm_namespace_console(Layer::Wine, Architecture::Win64, true);
+    }
+
+    #[test]
+    #[ignore = "requires disposable native ARM VM with Landlock ABI >= 5 and runtime artifacts"]
+    fn generated_arm_proton_landlock_executes_windows_console() {
+        generated_arm_namespace_console(Layer::Proton, Architecture::Win64, true);
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "keep the namespace fixture and its exact production-plan adjustment auditable together"
     )]
-    fn generated_arm_namespace_console(layer: Layer, architecture: Architecture) {
+    fn generated_arm_namespace_console(layer: Layer, architecture: Architecture, landlock: bool) {
         use crate::SandboxExecutor;
         use std::os::unix::net::UnixListener;
 
         assert_eq!(std::env::consts::ARCH, "aarch64");
+        if landlock {
+            // SAFETY: the version query takes a null attributes pointer and size zero.
+            let abi = unsafe {
+                libc::syscall(
+                    libc::SYS_landlock_create_ruleset,
+                    std::ptr::null::<u8>(),
+                    0,
+                    1,
+                )
+            };
+            assert!(
+                abi >= 5,
+                "full capsule acceptance requires Landlock ABI >= 5: {abi}"
+            );
+            println!("QOS_ARM_CAPSULE_LANDLOCK_ABI={abi}");
+        }
         let mut route = route(layer);
         route.settings.architecture = architecture;
         route.settings.environment.insert(
@@ -1424,8 +1517,8 @@ mod tests {
                 None
             }
         );
-        // Remove exactly the executable shim and its arguments. Keep its
-        // read-only bind as well as all other production namespace arguments.
+        // Namespace-only cases remove exactly the executable shim and its
+        // arguments. Full cases preserve the entire production command.
         let shim = command
             .bwrap_argv
             .windows(2)
@@ -1437,7 +1530,16 @@ mod tests {
             .unwrap()
             .checked_add(shim)
             .unwrap();
-        command.bwrap_argv.drain(shim..=separator);
+        if landlock {
+            assert!(!command.bwrap_argv.iter().any(|arg| arg == "--no-landlock"));
+            assert!(
+                command.bwrap_argv[shim..separator]
+                    .iter()
+                    .any(|arg| arg == "--net-restricted")
+            );
+        } else {
+            command.bwrap_argv.drain(shim..=separator);
+        }
         let outcome = crate::BwrapExecutor.execute(&command);
         std::fs::remove_file(socket).unwrap();
         assert!(
