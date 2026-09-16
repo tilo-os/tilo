@@ -30,3 +30,7 @@ These archived reports preserve implementation and independent review evidence f
 - [composition-task-10-report](composition-task-10-report.md)
 - [composition-task-10-review](composition-task-10-review.md)
 - [composition-task-10-fix-1-review](composition-task-10-fix-1-review.md)
+- [composition-task-11-report](composition-task-11-report.md)
+- [composition-task-11-review](composition-task-11-review.md)
+- [composition-task-11-fix-1-review](composition-task-11-fix-1-review.md)
+- [composition-task-11-shared-toggle-report](composition-task-11-shared-toggle-report.md)
