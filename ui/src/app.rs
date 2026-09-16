@@ -4325,7 +4325,9 @@ impl App {
                 | CollabEvent::TaskRun(_)
                 | CollabEvent::TaskActionInvocationResult { .. }
                 | CollabEvent::TaskRunCancellation { .. }
-                | CollabEvent::WorkspaceControl { .. } => {}
+                | CollabEvent::WorkspaceControl { .. }
+                | CollabEvent::RealtimeCommandResult { .. }
+                | CollabEvent::Realtime(_) => {}
             }
         }
         if any {

@@ -163,6 +163,13 @@ pub enum CollabRequest {
         app_id: String,
         reports_json: Vec<u8>,
     },
+    /// One generic active-session continuity transition. The shell binds the
+    /// command to this connection's certified app/workspace route.
+    RealtimeCommand {
+        request_id: u64,
+        app_id: String,
+        command: crate::realtime_continuity::RealtimeCommand,
+    },
     OpenWorkspaceControl {
         session_id: u64,
         target_device: [u8; 32],
@@ -471,6 +478,11 @@ pub enum CollabEvent {
         session_id: u64,
         event: runtime_collab::WorkspaceControlEvent,
     },
+    RealtimeCommandResult {
+        request_id: u64,
+        result: Result<crate::realtime_continuity::RealtimeReply, String>,
+    },
+    Realtime(crate::realtime_continuity::RealtimeEvent),
 }
 
 impl CollabEvent {
@@ -823,6 +835,10 @@ fn launch_published_application_bytes(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive request meter must account for every bounded queue variant without a permissive fallback"
+)]
 fn request_bytes(request: &CollabRequest) -> Option<usize> {
     let mut meter = ByteMeter(Some(std::mem::size_of::<CollabRequest>()));
     match request {
@@ -872,6 +888,12 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         } => {
             meter.string_capacity(app_id);
             meter.bytes(reports_json);
+        }
+        CollabRequest::RealtimeCommand {
+            app_id, command, ..
+        } => {
+            meter.string_capacity(app_id);
+            serialized_bytes(command, &mut meter);
         }
         CollabRequest::ClearContinuation { app_id } => meter.string_capacity(app_id),
         CollabRequest::LaunchPublishedApplication {
@@ -1070,6 +1092,10 @@ fn task_run_bytes(run: &runtime_collab::TaskRunEnvelope, meter: &mut ByteMeter) 
     json_bytes(&run.action_context, meter);
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive event meter must account for every bounded queue variant without a permissive fallback"
+)]
 fn event_bytes(event: &CollabEvent) -> Option<usize> {
     let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
     match event {
@@ -1165,6 +1191,11 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
         }
+        CollabEvent::RealtimeCommandResult { result, .. } => match result {
+            Ok(reply) => serialized_bytes(reply, &mut meter),
+            Err(error) => meter.string_capacity(error),
+        },
+        CollabEvent::Realtime(event) => serialized_bytes(event, &mut meter),
     }
     meter.finish()
 }
@@ -2650,6 +2681,7 @@ async fn ensure_sdk_route(
     spawn_context_stream(&channel, inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
+    spawn_realtime_stream(&channel, inbound_tx).await;
     // This intentionally fails quietly for person sessions. An admitted
     // agent gets a separate broker-addressed queue; a document agent never
     // has to infer task work from room traffic.
@@ -2818,6 +2850,34 @@ async fn spawn_invocation_stream(
                         }
                     }
                 });
+            }
+        });
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_realtime_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &InboundBridge,
+) {
+    if let Ok(stream) = channel.subscribe_realtime().await {
+        let tx = inbound_tx.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(bytes) = stream.read().await {
+                if bytes.len() > crate::realtime_continuity::MAX_REALTIME_WIRE_BYTES {
+                    continue;
+                }
+                let Ok(event) =
+                    serde_json::from_slice::<crate::realtime_continuity::RealtimeEvent>(&bytes)
+                else {
+                    continue;
+                };
+                if !event.valid() || !tx.send_durable(CollabEvent::Realtime(event)) {
+                    break;
+                }
             }
         });
     }
@@ -3474,6 +3534,34 @@ async fn dispatch_sdk_request(
             if let Err(error) = route.channel.report_playback(&app_id, &reports_json).await {
                 tracing::warn!(%error, "collab: reporting private playback handoff state failed");
             }
+        }
+        CollabRequest::RealtimeCommand {
+            request_id,
+            app_id,
+            command,
+        } => {
+            let result = serde_json::to_vec(&command)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    if bytes.len() > crate::realtime_continuity::MAX_REALTIME_WIRE_BYTES {
+                        return Err("realtime command exceeds local protocol bound".into());
+                    }
+                    Ok(bytes)
+                });
+            let result = match result {
+                Ok(bytes) => route
+                    .channel
+                    .realtime_command(&app_id, &bytes)
+                    .await
+                    .map_err(|error| error.to_string())
+                    .and_then(|reply| {
+                        serde_json::from_slice::<crate::realtime_continuity::RealtimeReply>(&reply)
+                            .map_err(|error| error.to_string())
+                    }),
+                Err(error) => Err(error),
+            };
+            let _ =
+                inbound_tx.send_durable(CollabEvent::RealtimeCommandResult { request_id, result });
         }
         CollabRequest::OpenWorkspaceControl {
             session_id,
