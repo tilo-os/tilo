@@ -290,6 +290,7 @@ postcard = { workspace = true, features = ["alloc"] }
 # `walkdir` powers the files provider's name-index walker + the tantivy
 # content indexer.
 walkdir.workspace = true
+tar.workspace = true
 # tantivy is the BM25 content index behind the files provider's
 # full-text search. `mmap` avoids reading the whole segment file into
 # RAM for each query; disabling default features drops the parquet
