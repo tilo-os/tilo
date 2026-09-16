@@ -309,6 +309,10 @@ pub enum WebViewEvent {
     /// Load progress in `0.0..=1.0`.
     LoadProgress(f64),
     LoadFinished,
+    /// Completion tagged with its document URL, so stale startup loads can be ignored.
+    LoadFinishedAt {
+        uri: String,
+    },
     LoadFailed {
         uri: String,
         error: String,

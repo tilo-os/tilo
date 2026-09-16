@@ -53,6 +53,8 @@ mod native_blocker;
 mod page_menu;
 pub mod search_provider;
 pub mod settings;
+pub mod session;
+pub mod storage;
 
 pub use browser_tab_strip::BrowserTabStrip;
 pub use browser_tabs::BrowserTabs;

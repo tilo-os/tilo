@@ -88,6 +88,7 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("dev.qos.browser", browser_root)
             .shot_handler(render_shot)
+            .open_state_with_args(open_browser_state)
             .allowed_live_options(&[
                 "--shots-live",
                 "--shots-suggestions",
@@ -103,6 +104,7 @@ pub fn main() {
                 "--audit-state",
                 "--url",
                 "--size",
+                "--app-root",
             ])
             .allowed_flags(&["--probe-pip", "--pip-active"])
             .max_positionals(1)
@@ -116,7 +118,70 @@ pub fn main() {
     reason = "signature is fixed by LaunchSpec's argument-aware root factory"
 )]
 fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(Box::new(BrowserTabs::new(browser_widget(args))))
+    Ok(Box::new(browser_workspace(args)?))
+}
+
+static LAUNCH_SESSION: std::sync::OnceLock<
+    std::sync::Mutex<Result<Option<browser::session::SessionStore>, String>>,
+> = std::sync::OnceLock::new();
+
+fn prepare_session(args: &LaunchArgs) -> Result<(), String> {
+    browser::storage::configure(args.value("--app-root"))?;
+    let session = LAUNCH_SESSION.get_or_init(|| {
+        std::sync::Mutex::new((|| {
+            let root = browser::storage::data_dir().ok_or("Cannot locate browser app root")?;
+            browser::session::SessionStore::open(&root, browser::session::SessionMode::Normal)
+        })())
+    });
+    match &*session.lock().map_err(|e| e.to_string())? {
+        Ok(_) => Ok(()),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn browser_workspace(args: &LaunchArgs) -> Result<BrowserTabs, LaunchError> {
+    prepare_session(args).map_err(LaunchError::Operation)?;
+    let store = LAUNCH_SESSION
+        .get()
+        .and_then(|session| {
+            session
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.as_mut().ok().and_then(Option::take))
+        })
+        .ok_or_else(|| LaunchError::Operation("Browser recovery store already attached".into()))?;
+    BrowserTabs::new(browser_widget(args))
+        .with_session(store)
+        .map_err(LaunchError::Operation)
+}
+
+fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
+    if let Err(error) = prepare_session(args) {
+        return (ui::State::new(), ui::persist::Autosave::disabled(error));
+    }
+    if let Some(root) = browser::storage::explicit_root() {
+        let opened = ui::persist::DocStore::open_canonical_at(id, &root.join("document"));
+        return match opened {
+            Ok(mut store) => {
+                let mut doc = store.load_or_new();
+                if let Some(error) = store.refusal() {
+                    return (
+                        ui::State::from_doc(doc),
+                        ui::persist::Autosave::disabled(error.to_string()),
+                    );
+                }
+                let mut autosave =
+                    ui::persist::Autosave::spawn(store, ui::persist::DEFAULT_DEBOUNCE);
+                autosave.seed(&mut doc);
+                (ui::State::from_doc(doc), autosave)
+            }
+            Err(error) => (
+                ui::State::new(),
+                ui::persist::Autosave::disabled(error.to_string()),
+            ),
+        };
+    }
+    ui::persist::open(id)
 }
 
 fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
@@ -143,7 +208,7 @@ fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
 fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
-    let widget = browser_widget(args);
+    let widget = browser_workspace(args)?;
     let engine = widget.engine_handle();
 
     // Zero-copy GPU compositing: when the WebView engine exports dmabuf
@@ -159,8 +224,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
         ));
     }
 
-    let widget = BrowserTabs::new(widget);
-    let (state, autosave) = ui::persist::open("dev.qos.browser");
+    let (state, autosave) = open_browser_state("dev.qos.browser", args);
     let mut app =
         ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
     browser::actions::register(app.action_registry_mut());
