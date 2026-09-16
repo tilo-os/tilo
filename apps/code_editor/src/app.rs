@@ -51,7 +51,8 @@ use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor, Widget,
+    Button, FlapState, ModalAction, ModalFrame, ModalSpec, SplitLayout, TabBar, TabDescriptor,
+    Widget,
 };
 use uuid::Uuid;
 use vello::Scene;
@@ -86,6 +87,289 @@ const SIDEBAR_BREAKPOINT: f64 = 820.0;
 /// Hamburger toggle geometry, shown in the tab bar when the sidebar is an
 /// overlay (narrow window). Square button hugging the bar's left edge.
 const HAMBURGER_W: f64 = 40.0;
+
+/// The bottom-panel trigger occupies the trailing end of the existing 44px tab
+/// chrome. Keeping this width equal to the overlay hamburger gives both
+/// pointer targets a compact, familiar square without adding another row.
+const PANEL_TOGGLE_W: f32 = 40.0;
+const EDITOR_CHROME_H: f32 = 44.0;
+
+/// Retained toggle wrapper for the bottom dock. [`Button`] owns pointer,
+/// keyboard, focus, painting, and the canonical action emitter; this thin
+/// wrapper adds the disclosure state that a generic momentary button cannot
+/// infer for accessibility.
+struct BottomPanelToggle {
+    button: Button,
+    expanded: bool,
+    dirty: bool,
+}
+
+impl BottomPanelToggle {
+    const ID: &'static str = "code.bottom-panel-toggle";
+
+    fn new(binding: qos_actions::ActionBinding<()>) -> Self {
+        Self {
+            button: Button::new(Self::ID, "", None)
+                .tooltip("Show bottom panel")
+                .with_size(PANEL_TOGGLE_W, EDITOR_CHROME_H)
+                .ghost()
+                .on_action(binding),
+            expanded: false,
+            dirty: true,
+        }
+    }
+
+    fn set_expanded(&mut self, expanded: bool) {
+        if self.expanded != expanded {
+            self.dirty = true;
+        }
+        self.expanded = expanded;
+        self.button.set_tooltip(Some(if expanded {
+            "Hide bottom panel".to_string()
+        } else {
+            "Show bottom panel".to_string()
+        }));
+    }
+}
+
+impl Widget for BottomPanelToggle {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.button.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        #[allow(
+            clippy::unwrap_used,
+            reason = "inserting one fixed leaf into the app-owned layout tree is infallible unless the taffy arena is already corrupted"
+        )]
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(PANEL_TOGGLE_W),
+                    height: Dimension::length(EDITOR_CHROME_H),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.button.apply_layout_external(Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
+            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        ));
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.button
+            .draw(scene, transform, text_renderer, theme, presence);
+        let rect = self.button.get_rect();
+        let icon_size = (rect.height() - 14.0).clamp(12.0, 22.0);
+        let icon_rect = Rect::new(
+            rect.center().x - icon_size / 2.0,
+            rect.center().y - icon_size / 2.0,
+            rect.center().x + icon_size / 2.0,
+            rect.center().y + icon_size / 2.0,
+        );
+        let icon = if self.expanded {
+            ui::icons::Icon::ChevronDown
+        } else {
+            ui::icons::Icon::ChevronUp
+        };
+        icon.draw(scene, transform, icon_rect, theme.text_primary);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if self.is_focused()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(
+                            winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space
+                        ),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+            && self
+                .button
+                .perform_action(&ui::a11y::Action::Activate, state, path)
+        {
+            *handled = true;
+            return;
+        }
+        self.button.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node_id,
+            taffy,
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "BottomPanelToggle"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(Self::ID)
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.button.get_rect()
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.button.cursor_shape(point)
+    }
+
+    fn tooltip(&self) -> Option<&str> {
+        <Button as Widget>::tooltip(&self.button)
+    }
+
+    fn is_focusable(&self) -> bool {
+        self.button.is_focusable()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.button.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.button.is_focused()
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.button.is_enabled()
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        Some(
+            AccessNode::new(Role::ToggleButton)
+                .with_semantic_key(Self::ID)
+                .with_name(if self.expanded {
+                    "Hide bottom panel"
+                } else {
+                    "Show bottom panel"
+                })
+                .with_description("Problems, Search, and Terminal dock")
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    checked: Some(self.expanded),
+                    selected: self.expanded,
+                    expanded: Some(self.expanded),
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        self.button.perform_action(action, state, path)
+    }
+
+    fn take_control_invocation(&mut self) -> Option<qos_actions::ControlInvocation> {
+        self.button.take_control_invocation()
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.button.control_action_bindings()
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<qos_actions::ActionAddress>,
+    ) {
+        self.button.refresh_control_action_availability(allowed);
+    }
+
+    fn set_interaction_environment(
+        &mut self,
+        environment: ui::interaction::InteractionEnvironment,
+    ) {
+        self.button.set_interaction_environment(environment);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.button.needs_redraw()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        self.button.mark_drawn();
+    }
+}
+
+#[allow(
+    clippy::expect_used,
+    reason = "the binding is built from the command action on the resource returned by the same catalogue function"
+)]
+fn bottom_panel_toggle_binding(
+    project_name: &str,
+    project_id: &str,
+    next_file_id: &str,
+    next_folder_id: &str,
+    entry_count: usize,
+) -> qos_actions::ActionBinding<()> {
+    let resource = actions::project_root(&actions::CodeEditorResourceCtx {
+        project_name: project_name.to_string(),
+        project_id: project_id.to_string(),
+        next_file_id: next_file_id.to_string(),
+        next_file_name: format!("untitled-{entry_count}.txt"),
+        next_folder_id: next_folder_id.to_string(),
+        next_folder_name: format!("untitled-folder-{entry_count}"),
+        open_files: Vec::new(),
+        folders: Vec::new(),
+        symbols: Vec::new(),
+        search_results: Vec::new(),
+    });
+    qos_actions::ActionBinding::unit_for(&resource, "command-toggle-bottom-panel")
+        .expect("Toggle bottom panel is part of the Code command catalogue")
+}
 
 /// Width assumed before the window has been measured (first `build_layout`,
 /// before any `apply_layout`). Wide enough to dock — a fresh desktop window
@@ -188,6 +472,7 @@ pub struct CodeApp {
     /// `--shots` forces the bubble fully visible so a still frame captures it.
     shots_status: bool,
     panel: BottomPanel,
+    panel_toggle: BottomPanelToggle,
     palette: CommandPalette,
 
     /// Framework-owned action dispatch (the qOS resource + action model). The
@@ -236,6 +521,8 @@ pub struct CodeApp {
     rect: Rect,
     sidebar_node: Option<NodeId>,
     tabs_node: Option<NodeId>,
+    editor_header_node: Option<NodeId>,
+    panel_toggle_node: Option<NodeId>,
     editor_node: Option<NodeId>,
     panel_node: Option<NodeId>,
     content_node: Option<NodeId>,
@@ -578,6 +865,17 @@ impl CodeApp {
         // and then does nothing is worse than no chip.
         tabs.set_show_maximize(false);
 
+        let project_id = Uuid::new_v4().to_string();
+        let next_new_file_id = Uuid::new_v4().to_string();
+        let next_new_folder_id = Uuid::new_v4().to_string();
+        let panel_toggle = BottomPanelToggle::new(bottom_panel_toggle_binding(
+            &session.project.name,
+            &project_id,
+            &next_new_file_id,
+            &next_new_folder_id,
+            session.project.nodes.len(),
+        ));
+
         CodeApp {
             session,
             sidebar,
@@ -588,12 +886,13 @@ impl CodeApp {
             status_bubble: ui::StatusBubble::new(),
             shots_status: false,
             panel: BottomPanel::new(),
+            panel_toggle,
             palette: CommandPalette::new(),
             actions: ui::ActionHost::new(),
             pending_resource_command: None,
-            project_id: Uuid::new_v4().to_string(),
-            next_new_file_id: Uuid::new_v4().to_string(),
-            next_new_folder_id: Uuid::new_v4().to_string(),
+            project_id,
+            next_new_file_id,
+            next_new_folder_id,
             flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
@@ -604,11 +903,13 @@ impl CodeApp {
             scrim_rect: Rect::ZERO,
             hamburger_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
-            panel_visible: true,
+            panel_visible: false,
             theme_index: None,
             rect: Rect::ZERO,
             sidebar_node: None,
             tabs_node: None,
+            editor_header_node: None,
+            panel_toggle_node: None,
             editor_node: None,
             panel_node: None,
             content_node: None,
@@ -2393,6 +2694,7 @@ impl CodeApp {
                 self.ensure_terminal();
             }
         }
+        self.panel_toggle.set_expanded(self.panel_visible);
         self.dispatch_editor_text_edits(doc);
     }
 
@@ -3271,7 +3573,45 @@ impl CodeApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
+        if let Ok(existing) = taffy.style(tabs_node).cloned() {
+            let _ = taffy.set_style(
+                tabs_node,
+                Style {
+                    size: Size {
+                        width: Dimension::auto(),
+                        height: Dimension::length(EDITOR_CHROME_H),
+                    },
+                    flex_grow: 1.0,
+                    flex_basis: Dimension::length(0.0),
+                    ..existing
+                },
+            );
+        }
         self.tabs_node = Some(tabs_node);
+
+        self.panel_toggle.set_expanded(self.panel_visible);
+        let panel_toggle_node = self.panel_toggle.build_layout(taffy, theme, node_map);
+        self.panel_toggle_node = Some(panel_toggle_node);
+        #[allow(
+            clippy::unwrap_used,
+            reason = "the editor header inserts two freshly-created children into the same app-owned taffy arena"
+        )]
+        let editor_header_node = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Row,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(EDITOR_CHROME_H),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+                &[tabs_node, panel_toggle_node],
+            )
+            .unwrap();
+        self.editor_header_node = Some(editor_header_node);
 
         let editor_node = self.editor.build_layout(taffy, theme, node_map);
         if let Ok(existing) = taffy.style(editor_node).cloned() {
@@ -3295,7 +3635,7 @@ impl CodeApp {
         let find_node = self.find.build_layout(taffy, theme, node_map);
         self.find_node = Some(find_node);
 
-        let mut editor_col_children = vec![tabs_node, find_node, editor_node];
+        let mut editor_col_children = vec![editor_header_node, find_node, editor_node];
         if self.panel_visible {
             let panel_node = self.panel.build_layout(taffy, theme, node_map);
             self.panel_node = Some(panel_node);
@@ -3683,7 +4023,20 @@ impl CodeApp {
             *handled = true;
         }
 
-        if let Some(n) = self.tabs_node {
+        if let Some(n) = self.panel_toggle_node {
+            self.panel_toggle.handle_event(
+                event,
+                scale_factor,
+                &modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                n,
+                taffy,
+            );
+        }
+        if !*handled && let Some(n) = self.tabs_node {
             self.tabs.handle_event(
                 event,
                 scale_factor,
@@ -4030,12 +4383,22 @@ impl Widget for CodeApp {
                     content_origin.x + f64::from(col_layout.location.x),
                     content_origin.y + f64::from(col_layout.location.y),
                 );
-                if let Some(n) = self.tabs_node {
-                    self.tabs.apply_layout(taffy, n, col_origin);
-                    // Reserve the bar's left edge for the overlay hamburger so
-                    // the first tab isn't drawn beneath it.
-                    if self.sidebar_layout() == SplitLayout::Overlay {
-                        self.tabs.inset_left(HAMBURGER_W);
+                if let Some(header_node) = self.editor_header_node {
+                    let header_layout = taffy.layout(header_node).unwrap();
+                    let header_origin = Point::new(
+                        col_origin.x + f64::from(header_layout.location.x),
+                        col_origin.y + f64::from(header_layout.location.y),
+                    );
+                    if let Some(n) = self.tabs_node {
+                        self.tabs.apply_layout(taffy, n, header_origin);
+                        // Reserve the bar's left edge for the overlay hamburger so
+                        // the first tab isn't drawn beneath it.
+                        if self.sidebar_layout() == SplitLayout::Overlay {
+                            self.tabs.inset_left(HAMBURGER_W);
+                        }
+                    }
+                    if let Some(n) = self.panel_toggle_node {
+                        self.panel_toggle.apply_layout(taffy, n, header_origin);
                     }
                 }
                 if let Some(n) = self.find_node {
@@ -4095,6 +4458,8 @@ impl Widget for CodeApp {
                 }
                 self.tabs
                     .draw(scene, transform, text_renderer, theme, presence);
+                self.panel_toggle
+                    .draw(scene, transform, text_renderer, theme, presence);
                 self.find
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.editor
@@ -4108,6 +4473,8 @@ impl Widget for CodeApp {
                 // Content spans the full width and is drawn first; the sidebar
                 // slides in over it behind a scrim.
                 self.tabs
+                    .draw(scene, transform, text_renderer, theme, presence);
+                self.panel_toggle
                     .draw(scene, transform, text_renderer, theme, presence);
                 self.find
                     .draw(scene, transform, text_renderer, theme, presence);
@@ -4247,6 +4614,30 @@ impl Widget for CodeApp {
             return;
         }
 
+        // The bottom dock is a retained disclosure. Escape dismisses it after
+        // higher-priority modal/find surfaces have had their own Escape, then
+        // returns keyboard focus to the visible trigger that can reopen it.
+        if self.panel_visible
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(winit::keyboard::NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            self.panel_visible = false;
+            self.terminal_focused = false;
+            self.panel_toggle.set_expanded(false);
+            *focus_target = self.panel_toggle_node;
+            *handled = true;
+            return;
+        }
+
         // Terminal input capture: while the Terminal dock tab shows a live
         // terminal, a click in its content region focuses the shell and routes
         // keyboard + pointer input to it (like clicking into any terminal); a
@@ -4373,7 +4764,7 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs];
+        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs, &self.panel_toggle];
         if self.find.is_visible() {
             out.push(&self.find);
         }
@@ -4385,7 +4776,8 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.sidebar, &mut self.tabs];
+        let mut out: Vec<&mut (dyn Widget + '_)> =
+            vec![&mut self.sidebar, &mut self.tabs, &mut self.panel_toggle];
         if self.find.is_visible() {
             out.push(&mut self.find);
         }
@@ -4657,6 +5049,7 @@ impl Widget for CodeApp {
     fn needs_redraw(&self) -> bool {
         self.sidebar.needs_redraw()
             || self.tabs.needs_redraw()
+            || self.panel_toggle.needs_redraw()
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
             || self.find.needs_redraw()
@@ -4701,6 +5094,7 @@ impl Widget for CodeApp {
     fn mark_drawn(&mut self) {
         self.sidebar.mark_drawn();
         self.tabs.mark_drawn();
+        self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();
         self.find.mark_drawn();
@@ -5085,6 +5479,166 @@ mod tests {
         assert_eq!(app.editor.primary_caret(), (11, 4));
         assert!(app.panel_visible);
         assert_eq!(app.panel.active_tab(), PanelTab::Search);
+    }
+
+    #[test]
+    fn fresh_editor_collapses_the_empty_bottom_panel() {
+        let app = CodeApp::with_sample();
+
+        assert!(
+            !app.panel_visible,
+            "a fresh editor must give its height to code"
+        );
+        assert!(
+            app.children()
+                .iter()
+                .all(|child| child.test_id() != Some("bottom_panel")),
+            "the hidden dock must leave the retained child tree"
+        );
+    }
+
+    #[test]
+    fn explicit_problems_open_survives_an_empty_diagnostics_refresh() {
+        let mut app = CodeApp::new();
+        let mut doc = AutoCommit::new();
+        app.apply_command(Command::GoToProblems, &mut doc);
+
+        app.refresh_diagnostics(&doc);
+
+        assert!(app.panel.problems().is_empty());
+        assert!(
+            app.panel_visible,
+            "an explicit Problems open is authoritative"
+        );
+        assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+    }
+
+    #[test]
+    fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+
+        app.apply_command(Command::GoToProblems, &mut doc);
+        assert!(app.panel_visible);
+        assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+
+        app.apply_command(Command::ToggleBottomPanel, &mut doc);
+        assert!(!app.panel_visible);
+        app.apply_command(Command::ToggleBottomPanel, &mut doc);
+        assert!(app.panel_visible);
+        assert_eq!(app.panel.active_tab(), PanelTab::Problems);
+
+        app.apply_command(Command::GoToTerminal, &mut doc);
+        assert!(app.panel_visible);
+        assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
+        assert!(
+            app.terminal.is_some(),
+            "Terminal command keeps the live terminal opener"
+        );
+        app.apply_command(Command::ToggleBottomPanel, &mut doc);
+        app.apply_command(Command::ToggleBottomPanel, &mut doc);
+        assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
+        assert!(
+            app.terminal.is_some(),
+            "closing and reopening preserves the terminal session"
+        );
+    }
+
+    #[test]
+    fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes() {
+        fn trigger_semantics(snapshot: &ui::headless::InspectionSnapshot) -> &ui::a11y::AccessNode {
+            fn find(node: &ui::headless::InspectionNode) -> Option<&ui::a11y::AccessNode> {
+                if node.test_id.as_deref() == Some("code.bottom-panel-toggle") {
+                    return node.semantics.as_ref();
+                }
+                node.children.iter().find_map(find)
+            }
+
+            find(&snapshot.root).expect("dock trigger semantics")
+        }
+
+        let mut driver = ui::headless::Driver::new(
+            ui::State::new(),
+            Box::new(CodeApp::with_sample()),
+            (480, 900),
+        );
+        let targets = driver.targets();
+        let tabs = targets.get("tabs").copied().expect("tab bar target");
+        let trigger = targets
+            .get("code.bottom-panel-toggle")
+            .copied()
+            .expect("retained dock trigger");
+        assert_eq!(
+            trigger.y0, tabs.y0,
+            "trigger stays in the existing chrome row"
+        );
+        assert_eq!(trigger.height(), tabs.height());
+        assert!(
+            tabs.x1 <= trigger.x0,
+            "tab pills and dock trigger must not overlap"
+        );
+        let closed_snapshot = driver.inspection();
+        let closed = trigger_semantics(&closed_snapshot);
+        assert_eq!(closed.name.as_deref(), Some("Show bottom panel"));
+        assert_eq!(closed.state.expanded, Some(false));
+        assert!(!closed.state.selected);
+
+        driver
+            .click_named("code.bottom-panel-toggle")
+            .expect("pointer activates retained trigger");
+        assert!(driver.targets().contains_key("bottom_panel"));
+        let open_snapshot = driver.inspection();
+        let open = trigger_semantics(&open_snapshot);
+        assert_eq!(open.name.as_deref(), Some("Hide bottom panel"));
+        assert_eq!(open.state.expanded, Some(true));
+        assert!(open.state.selected);
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Hide bottom panel"),
+            "click transfers keyboard focus to the retained trigger"
+        );
+
+        driver.key("Enter");
+        assert!(
+            !driver.targets().contains_key("bottom_panel"),
+            "keyboard activation routes through the same toggle command"
+        );
+
+        driver.set_modifiers(&["ctrl".to_string()]);
+        driver.key("j");
+        driver.set_modifiers(&[]);
+        assert!(
+            driver.targets().contains_key("bottom_panel"),
+            "Ctrl+J remains an equivalent keyboard route"
+        );
+
+        driver.key("Escape");
+        assert!(
+            !driver.targets().contains_key("bottom_panel"),
+            "Escape closes the dock disclosure"
+        );
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Show bottom panel"),
+            "Escape returns focus to the retained trigger"
+        );
+
+        let trigger_node = driver
+            .a11y_node_named("Show bottom panel")
+            .expect("trigger is exported to assistive technology");
+        driver
+            .perform_a11y_action(trigger_node, &ui::a11y::Action::Activate)
+            .expect("semantic activation uses the retained control");
+        assert!(
+            driver.targets().contains_key("bottom_panel"),
+            "assistive activation reaches the same canonical toggle"
+        );
     }
 
     #[test]
