@@ -1742,7 +1742,7 @@ fn context_menu_is_keyboard_navigable_and_semantically_complete() {
 }
 
 #[test]
-fn context_menu_stays_reachable_at_a_narrow_viewport_edge() {
+fn context_menu_clamps_to_top_when_taller_than_viewport() {
     use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
     use vello::{
         Scene,
