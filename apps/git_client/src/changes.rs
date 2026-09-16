@@ -44,6 +44,17 @@ struct HitRegion {
     hit: ChangesHit,
 }
 
+/// Resources and stable geometry shared by every step of one column paint.
+struct ChangesPaintCtx<'a> {
+    scene: &'a mut Scene,
+    text: &'a mut TextRenderer,
+    transform: Affine,
+    theme: &'a Theme,
+    area: Rect,
+    selected: Option<(ChangeArea, usize)>,
+    regions: &'a mut Vec<HitRegion>,
+}
+
 /// What a [`ChangesColumn::draw`] pass produced: the click regions plus the
 /// rect where the owner should position and draw the commit-message
 /// [`ui::widget::TextInput`] (the toolkit input draws its own chrome + caret,
@@ -89,56 +100,48 @@ impl ChangesColumn {
             &list_area,
         );
 
+        let mut ctx = ChangesPaintCtx {
+            scene,
+            text: tr,
+            transform: t,
+            theme,
+            area: list_area,
+            selected,
+            regions: &mut regions,
+        };
+
         let mut y = list_area.y0 - scroll;
         y = Self::section(
-            scene,
-            tr,
-            t,
-            theme,
-            list_area,
+            &mut ctx,
             "Staged Changes",
             &model.staged,
             ChangeArea::Staged,
-            selected,
             y,
             true,
-            &mut regions,
         );
         y = Self::section(
-            scene,
-            tr,
-            t,
-            theme,
-            list_area,
+            &mut ctx,
             "Unstaged Changes",
             &model.unstaged,
             ChangeArea::Unstaged,
-            selected,
             y,
             false,
-            &mut regions,
         );
         let _ = Self::section(
-            scene,
-            tr,
-            t,
-            theme,
-            list_area,
+            &mut ctx,
             "Untracked Files",
             &model.untracked,
             ChangeArea::Untracked,
-            selected,
             y,
             false,
-            &mut regions,
         );
 
-        scene.pop_layer();
+        ctx.scene.pop_layer();
 
         // Commit box pinned to the bottom. Returns the rect the owner uses to
         // position the commit-message TextInput.
-        let commit_input =
-            Self::commit_box(scene, tr, t, theme, area, model, message, &mut regions);
+        ctx.area = area;
+        let commit_input = Self::commit_box(&mut ctx, model, message);
 
         // Build closures that resolve a click to a hit. Returned as a
         // boxed list so the app can route without knowing geometry.
@@ -165,35 +168,26 @@ impl ChangesColumn {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn section(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
+        ctx: &mut ChangesPaintCtx<'_>,
         title: &str,
         files: &[FileChange],
         change_area: ChangeArea,
-        selected: Option<(ChangeArea, usize)>,
         y: f64,
         is_staged: bool,
-        regions: &mut Vec<HitRegion>,
     ) -> f64 {
-        let mut y = Self::section_header(
-            scene, tr, t, theme, area, title, files, y, is_staged, regions,
-        );
+        let mut y = Self::section_header(ctx, title, files, y, is_staged);
 
         if files.is_empty() {
-            let c = &theme.tokens.colors;
+            let c = &ctx.theme.tokens.colors;
             draw::text(
-                scene,
-                tr,
-                t,
+                ctx.scene,
+                ctx.text,
+                ctx.transform,
                 "— nothing here —",
                 12.0,
                 c.text_dim,
-                area.x0 + 20.0,
+                ctx.area.x0 + 20.0,
                 y + 2.0,
                 None,
             );
@@ -201,20 +195,7 @@ impl ChangesColumn {
         }
 
         for (i, f) in files.iter().enumerate() {
-            Self::section_row(
-                scene,
-                tr,
-                t,
-                theme,
-                area,
-                change_area,
-                selected,
-                y,
-                is_staged,
-                f,
-                i,
-                regions,
-            );
+            Self::section_row(ctx, change_area, y, is_staged, f, i);
             y += ROW_H;
         }
         y + 8.0
@@ -223,22 +204,18 @@ impl ChangesColumn {
     /// The section header: title, count badge, and (when non-empty) the
     /// bulk stage/unstage-all action (part of [`Self::section`]). Returns
     /// the `y` the file rows should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn section_header(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
+        ctx: &mut ChangesPaintCtx<'_>,
         title: &str,
         files: &[FileChange],
         y: f64,
         is_staged: bool,
-        regions: &mut Vec<HitRegion>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let area = ctx.area;
         let c = &theme.tokens.colors;
         draw::text_weighted(
             scene,
@@ -294,7 +271,7 @@ impl ChangesColumn {
                 None,
                 TextWeight::Medium,
             );
-            regions.push(HitRegion {
+            ctx.regions.push(HitRegion {
                 rect: Rect::new(lx - 4.0, y, area.x1, y + SECTION_H),
                 hit: if is_staged {
                     ChangesHit::UnstageAll
@@ -309,30 +286,25 @@ impl ChangesColumn {
     /// One file row: selection tint, status badge, name/dir, +/- counts,
     /// and the stage/unstage chevron button (part of [`Self::section`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/y/c follow this file's graphics convention (transform, position, colour tokens); f/i are the iterated FileChange and its index"
     )]
     fn section_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
+        ctx: &mut ChangesPaintCtx<'_>,
         change_area: ChangeArea,
-        selected: Option<(ChangeArea, usize)>,
         y: f64,
         is_staged: bool,
         f: &FileChange,
         i: usize,
-        regions: &mut Vec<HitRegion>,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let area = ctx.area;
         let c = &theme.tokens.colors;
         let rrect = Rect::new(area.x0, y, area.x1, y + ROW_H);
-        let is_sel = selected == Some((change_area, i));
+        let is_sel = ctx.selected == Some((change_area, i));
         if is_sel {
             // A quiet surface wash keeps selection discoverable without
             // turning a whole row into a saturated accent block. The accent
@@ -415,29 +387,24 @@ impl ChangesColumn {
             brect.x0 + (brect.width() - chw) / 2.0,
             brect.y0 + 1.0,
         );
-        regions.push(HitRegion {
+        ctx.regions.push(HitRegion {
             rect: brect,
             hit: ChangesHit::ToggleStage(change_area, i),
         });
 
         // Row select region (everything left of the chevron).
-        regions.push(HitRegion {
+        ctx.regions.push(HitRegion {
             rect: Rect::new(area.x0, y, area.x1 - 30.0, y + ROW_H),
             hit: ChangesHit::SelectFile(change_area, i),
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn commit_box(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        model: &RepoModel,
-        message: &str,
-        regions: &mut Vec<HitRegion>,
-    ) -> Rect {
+    fn commit_box(ctx: &mut ChangesPaintCtx<'_>, model: &RepoModel, message: &str) -> Rect {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let area = ctx.area;
         let c = &theme.tokens.colors;
         let box_rect = Rect::new(area.x0, area.y1 - COMMIT_BOX_H, area.x1, area.y1);
         draw::fill_rect(scene, t, box_rect, c.surfaces.base);
@@ -463,12 +430,12 @@ impl ChangesColumn {
             box_rect.x1 - 12.0,
             box_rect.y1 - 52.0,
         );
-        regions.push(HitRegion {
+        ctx.regions.push(HitRegion {
             rect: input,
             hit: ChangesHit::FocusMessage,
         });
 
-        Self::commit_box_button(scene, tr, t, theme, box_rect, model, message, regions);
+        Self::commit_box_button(ctx, box_rect, model, message);
 
         input
     }
@@ -517,20 +484,16 @@ impl ChangesColumn {
 
     /// The commit button and the branch indicator beside it (part of
     /// [`Self::commit_box`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "internal draw-step split of an over-length function"
-    )]
     fn commit_box_button(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut ChangesPaintCtx<'_>,
         box_rect: Rect,
         model: &RepoModel,
         message: &str,
-        regions: &mut Vec<HitRegion>,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let enabled = !model.staged.is_empty() && !message.trim().is_empty();
         let brect = Rect::new(
@@ -572,7 +535,7 @@ impl ChangesColumn {
             TextWeight::Semibold,
         );
         if enabled {
-            regions.push(HitRegion {
+            ctx.regions.push(HitRegion {
                 rect: brect,
                 hit: ChangesHit::Commit,
             });
