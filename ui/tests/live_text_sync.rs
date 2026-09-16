@@ -3,7 +3,7 @@
 //! joiner adopts a full snapshot, then an incremental text edit ("typing")
 //! propagates. This is the transport+CRDT half of "type in one window, see
 //! it in the other" — the App layer drives exactly these calls
-//! (`broadcast_doc_delta` -> `DocumentIncremental`; poll -> `load_incremental`).
+//! (`broadcast_doc_delta` -> document incremental; poll -> `load_incremental`).
 
 #![allow(
     clippy::unwrap_used,
@@ -45,7 +45,7 @@ fn live_text_edit_propagates_through_broker() {
     a_doc.splice_text(&t, 0, 0, "hello").unwrap();
 
     // Late-join handshake: alice ships a full snapshot; bob adopts it.
-    a.send(CollabRequest::DocumentSnapshot { data: a_doc.save() });
+    a.send(CollabRequest::document_snapshot(a_doc.save()));
     let _ = a_doc.save_incremental(); // re-baseline incremental after full save
 
     let mut b_doc = AutoCommit::new();
@@ -72,7 +72,7 @@ fn live_text_edit_propagates_through_broker() {
     a_doc.splice_text(&t, 5, 0, " world").unwrap();
     let delta = a_doc.save_incremental();
     assert!(!delta.is_empty(), "the edit must produce a delta");
-    a.send(CollabRequest::DocumentIncremental { data: delta });
+    a.send(CollabRequest::document_incremental(delta));
 
     let mut got_edit = false;
     for _ in 0..40 {

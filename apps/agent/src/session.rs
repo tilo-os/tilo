@@ -263,16 +263,11 @@ pub struct Session {
 /// How often the agent asks again while it still has no document.
 const REASK_EVERY: Duration = Duration::from_millis(750);
 
-/// Ask the room for the document: peers already in it answer an `Arrived`
-/// with their full state. Safe to repeat — a second copy of a document the
-/// agent already holds merges to the same thing.
+/// Ask the broker to select one current holder of this exact route. Safe to
+/// repeat while no holder is available; unlike presence fan-out, one request
+/// produces at most one full snapshot.
 fn ask_for_document(link: &mut Link) -> Result<()> {
-    link.send(&CollabRequest::Presence {
-        key: PresenceKey::Workspace {
-            id: "word-processor".to_string(),
-        },
-        payload: PresencePayload::Arrived,
-    })
+    link.send(&CollabRequest::RequestDocumentSnapshot)
 }
 
 /// How the word processor keys a caret: the block's own presence key.
@@ -314,8 +309,7 @@ impl Session {
         // lets the agent learn other applications' exported operations while
         // every mutation below still names its owning app route explicitly.
         link.join_route(RouteSpec::cluster(cfg.cluster));
-        // The late-join handshake: every peer in the room answers an
-        // `Arrived` with its full document.
+        // The broker directs the late-join request to one existing holder.
         ask_for_document(&mut link)?;
         tracing::info!(
             transport = if cfg.endpoint.is_some() { "typed-endpoint" } else { "QOS_SVC_COLLAB_FD" },
@@ -922,26 +916,21 @@ impl Session {
                     }
                 };
             }
-            Some(CollabEvent::RemotePresenceUpdate {
-                user_id,
-                payload: PresencePayload::Arrived,
-                ..
-            }) => {
-                // A participant arriving after us deserves what we hold —
-                // every document, not only the one we were invited to.
-                if let Some(ed) = self.editor.as_mut() {
-                    let full = ed.full();
-                    self.link
-                        .send(&CollabRequest::DocumentSnapshot { data: full })?;
-                }
-                for peer in self.peers.values_mut() {
+            Some(CollabEvent::DocumentSnapshotRequested { route }) => {
+                if route.app_id == self.cfg.app_id && route.record == self.cfg.record {
+                    if let Some(editor) = self.editor.as_mut() {
+                        self.link
+                            .send(&CollabRequest::document_snapshot(editor.full()))?;
+                    }
+                } else if let Some(peer) = self
+                    .peers
+                    .values_mut()
+                    .find(|peer| peer.contract().app_id == route.app_id)
+                {
                     let full = peer.full();
-                    self.link.send_to_route(
-                        RouteSpec::app(peer.contract().app_id, self.cfg.cluster),
-                        &CollabRequest::DocumentSnapshot { data: full },
-                    )?;
+                    self.link
+                        .send_to_route(route, &CollabRequest::document_snapshot(full))?;
                 }
-                tracing::debug!(%user_id, peers = self.peers.len(), "sent our documents to a new participant");
             }
             Some(CollabEvent::ActionCatalogue { surfaces }) => {
                 self.broker_surfaces = surfaces;
@@ -1346,7 +1335,7 @@ impl Session {
                 let end = editor.latest_entry_id();
                 let product = (editor.contract().product)(&view, &editor.doc);
                 let record = self.cfg.record.clone().unwrap_or_default();
-                let request = CollabRequest::DocumentIncremental { data: delta };
+                let request = CollabRequest::document_incremental(delta);
                 if is_primary {
                     self.link.send(&request)?;
                 } else {
@@ -1550,8 +1539,7 @@ impl Session {
             qdoc::history::commit_stamped(&mut editor.doc);
             let data = editor.doc.save_incremental();
             if !data.is_empty() {
-                self.link
-                    .send(&CollabRequest::DocumentIncremental { data })?;
+                self.link.send(&CollabRequest::document_incremental(data))?;
             }
         }
         for editor in self.peers.values_mut() {
@@ -1983,8 +1971,7 @@ impl Session {
             .context("no document yet")?
             .apply(action)?;
         if let Some(data) = delta {
-            self.link
-                .send(&CollabRequest::DocumentIncremental { data })?;
+            self.link.send(&CollabRequest::document_incremental(data))?;
             if let WordProcessorAction::SpliceText { at, ins, .. } = action
                 && !ins.is_empty()
             {

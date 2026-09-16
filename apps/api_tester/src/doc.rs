@@ -99,7 +99,7 @@ impl ApiDoc {
             .next()
             .or_else(|| doc.put_object(root, store, ObjType::Map).ok());
         if let Some(map) = map {
-            let _ = doc.put(&map, id, true);
+            Self::put_bool_if_changed(doc, &map, id, true);
         }
     }
 
@@ -166,7 +166,28 @@ impl ApiDoc {
         Self::put_string_if_changed(doc, &map, "id", variable_id);
         Self::put_string_if_changed(doc, &map, "key", key);
         Self::put_string_if_changed(doc, &map, "value", value);
-        let _ = doc.put(&map, "enabled", true);
+        Self::put_bool_if_changed(doc, &map, "enabled", true);
+    }
+
+    /// Update only the public variable key at its stable address. The value
+    /// remains an independent CRDT scalar, so renaming never reads or replaces
+    /// a concurrent secret-value update.
+    pub fn rename_variable(
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        env_id: &str,
+        variable_id: &str,
+        key: &str,
+    ) {
+        let address = format!("{env_id}:{variable_id}");
+        if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, env_id)
+            || Self::is_tombstoned(doc, root, VARIABLE_TOMBSTONES_KEY, &address)
+        {
+            return;
+        }
+        if let Some(map) = Self::native_record_map(doc, root, VARIABLES_KEY, &address) {
+            Self::put_string_if_changed(doc, &map, "key", key);
+        }
     }
 
     /// Tombstone one stable variable row.  The environment id is part of the
@@ -215,13 +236,38 @@ impl ApiDoc {
     /// monolithic JSON core.  This is used for record metadata where a
     /// concurrent whole-name winner is preferable to interleaving characters.
     fn put_string_if_changed(doc: &mut AutoCommit, map: &ObjId, key: &str, value: &str) {
-        let current = doc.get_all(map, key).ok().and_then(|values| {
-            values.into_iter().find_map(|(stored, _)| match stored {
+        // `get` is Automerge's materialized deterministic winner. `get_all`
+        // includes losing concurrent values, so treating *any* matching value
+        // as current could incorrectly suppress a requested visible update.
+        let current = doc
+            .get(map, key)
+            .ok()
+            .flatten()
+            .and_then(|(stored, _)| match stored {
                 Value::Scalar(stored) => stored.to_str().map(str::to_owned),
                 Value::Object(_) => None,
-            })
-        });
+            });
         if current.as_deref() != Some(value) {
+            let _ = doc.put(map, key, value);
+        }
+    }
+
+    /// Store one boolean only when its observable value changes.  Tombstones
+    /// and the enabled marker are deliberately scalar fields, but reapplying
+    /// their idempotent actions must not create an ever-growing CRDT history.
+    fn put_bool_if_changed(doc: &mut AutoCommit, map: &ObjId, key: &str, value: bool) {
+        let current = doc
+            .get(map, key)
+            .ok()
+            .flatten()
+            .and_then(|(stored, _)| match stored {
+                Value::Scalar(stored) => match stored.as_ref() {
+                    ScalarValue::Boolean(stored) => Some(*stored),
+                    _ => None,
+                },
+                Value::Object(_) => None,
+            });
+        if current != Some(value) {
             let _ = doc.put(map, key, value);
         }
     }
@@ -564,7 +610,7 @@ impl ApiDoc {
     }
 
     pub fn set_active_env(doc: &mut AutoCommit, root: &ObjId, id: Option<&str>) {
-        let _ = doc.put(root, "active_env", id.unwrap_or("").to_string());
+        Self::put_string_if_changed(doc, root, "active_env", id.unwrap_or(""));
     }
 
     pub fn active_env(doc: &AutoCommit, root: &ObjId) -> Option<String> {
@@ -727,18 +773,15 @@ impl ApiDoc {
         map: &ObjId,
         id: &str,
     ) -> Option<T> {
-        doc.get_all(map, id)
-            .ok()?
-            .into_iter()
-            .find_map(|(value, _)| {
-                if let Value::Scalar(value) = value {
-                    value
-                        .to_str()
-                        .and_then(|json| serde_json::from_str(json).ok())
-                } else {
-                    None
-                }
-            })
+        doc.get(map, id).ok()?.and_then(|(value, _)| {
+            if let Value::Scalar(value) = value {
+                value
+                    .to_str()
+                    .and_then(|json| serde_json::from_str(json).ok())
+            } else {
+                None
+            }
+        })
     }
 
     fn put_json_if_changed<T: serde::Serialize>(
@@ -750,10 +793,8 @@ impl ApiDoc {
         let Ok(json) = serde_json::to_string(value) else {
             return;
         };
-        let already_current = doc.get_all(map, key).is_ok_and(|values| {
-            values.into_iter().any(|(stored, _)| {
-                matches!(stored, Value::Scalar(stored) if stored.to_str() == Some(json.as_str()))
-            })
+        let already_current = doc.get(map, key).ok().flatten().is_some_and(|(stored, _)| {
+            matches!(stored, Value::Scalar(stored) if stored.to_str() == Some(json.as_str()))
         });
         if !already_current {
             let _ = doc.put(map, key, json);
@@ -791,9 +832,9 @@ impl ApiDoc {
                     continue;
                 }
                 if let Some(value) = Self::record_at(doc, &map, &id) {
-                    // `get_all` is ordered by Automerge op id, so this is a
-                    // stable whole-record policy for two concurrent edits of
-                    // the same collection/environment/history record.
+                    // `record_at` intentionally follows Automerge's
+                    // materialized winner, the same explicit policy used by
+                    // scalar writes above.
                     values.entry(id).or_insert(value);
                 }
             }
@@ -1293,6 +1334,131 @@ mod tests {
         ApiDoc::set_text(&mut d, &root, "request", "{}");
         // No-op write must not advance the document.
         assert_eq!(heads_before, d.get_heads());
+    }
+
+    #[test]
+    fn repeated_native_scalar_writes_are_noops() {
+        let (mut d, root) = doc();
+        let environment = Environment::new("Production");
+        let environment_id = environment.id.to_string();
+        let variable_id = uuid::Uuid::new_v4().to_string();
+        ApiDoc::create_environment(&mut d, &root, &environment_id, &environment.name);
+        ApiDoc::set_variable(
+            &mut d,
+            &root,
+            &environment_id,
+            &variable_id,
+            "base_url",
+            "https://api.example.test",
+        );
+        ApiDoc::set_active_env(&mut d, &root, Some(&environment_id));
+        let heads_before = d.get_heads();
+
+        ApiDoc::set_variable(
+            &mut d,
+            &root,
+            &environment_id,
+            &variable_id,
+            "base_url",
+            "https://api.example.test",
+        );
+        ApiDoc::set_active_env(&mut d, &root, Some(&environment_id));
+
+        assert_eq!(
+            heads_before,
+            d.get_heads(),
+            "replaying equal variable and environment selections must not grow the CRDT"
+        );
+    }
+
+    #[test]
+    fn scalar_update_replaces_a_visible_conflict_winner_even_if_loser_matches() {
+        let (mut base, root) = doc();
+        let map = base
+            .put_object(&root, "scalars", ObjType::Map)
+            .expect("test map");
+        base.put(&map, "name", "base").expect("initial scalar");
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).expect("left peer");
+        let mut right = AutoCommit::load(&bytes).expect("right peer");
+        left.put(&map, "name", "left").expect("left write");
+        right.put(&map, "name", "right").expect("right write");
+        left.merge(&mut right).expect("merge concurrent writes");
+
+        let visible = left
+            .get(&map, "name")
+            .expect("read winner")
+            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .expect("string winner");
+        let losing = left
+            .get_all(&map, "name")
+            .expect("read conflicts")
+            .into_iter()
+            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+            .find(|value| value != &visible)
+            .expect("a concurrent losing value");
+
+        ApiDoc::put_string_if_changed(&mut left, &map, "name", &losing);
+        assert_eq!(
+            left.get(&map, "name")
+                .expect("read requested winner")
+                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+            Some(losing),
+            "requesting a value held only by a losing conflict updates the visible result"
+        );
+    }
+
+    #[test]
+    fn json_update_replaces_a_visible_conflict_winner_even_if_loser_matches() {
+        let (mut base, root) = doc();
+        let map = base
+            .put_object(&root, "records", ObjType::Map)
+            .expect("test map");
+        ApiDoc::put_json_if_changed(
+            &mut base,
+            &map,
+            "record",
+            &serde_json::json!({"name": "base"}),
+        );
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).expect("left peer");
+        let mut right = AutoCommit::load(&bytes).expect("right peer");
+        ApiDoc::put_json_if_changed(
+            &mut left,
+            &map,
+            "record",
+            &serde_json::json!({"name": "left"}),
+        );
+        ApiDoc::put_json_if_changed(
+            &mut right,
+            &map,
+            "record",
+            &serde_json::json!({"name": "right"}),
+        );
+        left.merge(&mut right).expect("merge concurrent records");
+
+        let visible = left
+            .get(&map, "record")
+            .expect("read winner")
+            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .expect("JSON winner");
+        let losing = left
+            .get_all(&map, "record")
+            .expect("read conflicts")
+            .into_iter()
+            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+            .find(|value| value != &visible)
+            .expect("a concurrent losing record");
+        let requested: serde_json::Value = serde_json::from_str(&losing).expect("valid JSON");
+
+        ApiDoc::put_json_if_changed(&mut left, &map, "record", &requested);
+        assert_eq!(
+            left.get(&map, "record")
+                .expect("read requested winner")
+                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+            Some(losing),
+            "a requested losing JSON record replaces the materialized winner"
+        );
     }
 
     #[test]
