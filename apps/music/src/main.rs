@@ -142,10 +142,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // lifecycle. Probe/relay/benchmark remain explicit command modes above:
     // they do not construct a GUI and therefore are not launch lifecycle.
     ui::launch::run(
-        &LaunchSpec::new("dev.qos.music", music::app_root)
+        &LaunchSpec::new_with_args("dev.qos.music", music::app_root_with_args)
             .shot_handler(render_shot)
             .allowed_flags(&["--live"])
             .allowed_options(&["--theme", "--play"])
+            .max_positionals(1)
             .scenarios(SHOT_SCENARIOS)
             .configure_app(configure_app),
     )?;
