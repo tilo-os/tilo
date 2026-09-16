@@ -65,7 +65,8 @@ pub use battery::{
     set_charge_limit, set_charge_limit_checked,
 };
 pub use bluetooth::{
-    BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth,
+    BluetoothHandoffTarget, BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth,
+    inspect_bluetooth_handoff_target, list_bt_devices, pair_bluetooth_handoff, set_bluetooth,
 };
 pub use display::{
     AmbientBrightnessController, ambient_lux, get_brightness, has_ambient_light_sensor,
