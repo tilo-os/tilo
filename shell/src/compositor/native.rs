@@ -4764,13 +4764,23 @@ pub fn run() -> ! {
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
     let mut power_policy = tilo_power_mgmt::config::load_policy();
-    let mut session = SessionManager::new(
+    let idle_config = if crate::compositor::dev_env::DEV_ENV_OVERRIDES
+        && (std::env::var_os(crate::compositor::idle::BLANK_SECS_ENV).is_some()
+            || std::env::var_os(crate::compositor::idle::LOCK_SECS_ENV).is_some()
+            || std::env::var_os(crate::compositor::idle::SUSPEND_SECS_ENV).is_some())
+    {
+        // Explicit developer/test timeouts must remain authoritative. The
+        // production release cannot enter this branch, and otherwise the
+        // persisted minute-granularity Settings policy silently overwrites
+        // the second-granularity E2E fixture before its first tick.
+        IdleConfig::from_env()
+    } else {
         IdleConfig::from_env()
             .with_blank(power_policy.idle_blank)
             .with_lock(power_policy.idle_lock)
-            .with_suspend(power_policy.idle_suspend),
-        Instant::now(),
-    );
+            .with_suspend(power_policy.idle_suspend)
+    };
+    let mut session = SessionManager::new(idle_config, Instant::now());
     // Session-lock unlock: input + auth state machine. Verifier is the fixed
     // test password (`TILO_LOCK_TEST_PASSWORD`) or real greetd/PAM; fail-closed otherwise.
     let mut lock = LockController::new(
