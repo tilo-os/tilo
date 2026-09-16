@@ -59,9 +59,19 @@ fn portable_http_url(value: &str) -> bool {
 }
 
 pub(crate) fn validate_app_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
+    if schema == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
+        return ui::app::sanitize_structural_continuation_metadata(bytes, |schema, bytes| {
+            validate_app_semantic_metadata(app_id, schema, bytes)
+        })
+        .is_some();
+    }
     if schema == ui::app::GENERIC_VIEW_CONTINUATION_SCHEMA {
         return ui::app::validate_generic_continuation_metadata(bytes);
     }
+    validate_app_semantic_metadata(app_id, schema, bytes)
+}
+
+fn validate_app_semantic_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bool {
     if schema != 1 {
         return false;
     }
@@ -129,10 +139,20 @@ impl ContinuationRegistry {
         // Reuse the launch target validator: a process cannot smuggle a local
         // pathname into the registry key either.
         LaunchIntent::app(app_id.clone())?;
-        let resume = ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?;
-        if !validate_app_metadata(&app_id, schema_version, resume.bytes()) {
-            return Err(ContinuityError::InvalidResumePayload);
-        }
+        let resume = if schema_version == ui::app::STRUCTURAL_CONTINUATION_SCHEMA {
+            let bytes =
+                ui::app::sanitize_structural_continuation_metadata(&bytes, |schema, bytes| {
+                    validate_app_semantic_metadata(&app_id, schema, bytes)
+                })
+                .ok_or(ContinuityError::InvalidResumePayload)?;
+            ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?
+        } else {
+            let resume = ResumeMetadata::new(schema_version, ResumeSensitivity::Syncable, bytes)?;
+            if !validate_app_metadata(&app_id, schema_version, resume.bytes()) {
+                return Err(ContinuityError::InvalidResumePayload);
+            }
+            resume
+        };
         let report = AppContinuationReport {
             room,
             app_id: app_id.clone(),
@@ -382,6 +402,50 @@ mod tests {
             Err(ContinuityError::InvalidResumePayload)
         );
         assert_eq!(reports.len(), 0);
+    }
+
+    #[test]
+    fn unknown_app_semantics_cannot_suppress_framework_presentation() {
+        let metadata = ui::app::compose_structural_continuation_metadata(
+            ui::view::View {
+                scroll: vec![24.0],
+                focus: None,
+                open_resource: None,
+                viewport: ui::view::ViewRect::default(),
+                view_mode: Some("grid".into()),
+            },
+            Some(ui::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: br#"{"password":"must-not-survive"}"#.to_vec(),
+            }),
+        )
+        .unwrap();
+        let room = RoomId::new();
+        let instance = AppInstanceId(41);
+        let mut reports = ContinuationRegistry::default();
+        assert!(
+            reports
+                .report(
+                    room,
+                    "dev.qos.custom",
+                    instance,
+                    metadata.schema_version,
+                    metadata.bytes,
+                )
+                .unwrap()
+        );
+        let retained = reports
+            .resume_for(room, "dev.qos.custom", instance)
+            .expect("generic presentation is retained");
+        let facets = ui::app::structural_continuation_facets(retained.bytes()).unwrap();
+        assert!(facets.presentation());
+        assert!(!facets.semantic());
+        assert!(
+            !retained
+                .bytes()
+                .windows(8)
+                .any(|window| window == b"password")
+        );
     }
 
     #[test]
