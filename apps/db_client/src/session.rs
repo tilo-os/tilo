@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::model::{
-    ConnectionProfile, DatabaseSchema, Engine, QueryResult, RelationKind, TableInfo,
+    ConnectionProfile, DatabaseSchema, Engine, QueryResult, RelationKind, RelationRef, TableInfo,
 };
 use crate::worker::{CancelQueryResult, DbReply, DbRequest, DbWorker};
 
@@ -60,6 +60,9 @@ pub enum RunStatus {
 /// rows another collaborator is not authorized to access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueryHistoryEntry {
+    /// Stable local connection identity. History remains local, but this keeps
+    /// its resource hierarchy truthful after the user changes connections.
+    pub connection_id: Uuid,
     pub generation: usize,
     pub sql: String,
     pub summary: String,
@@ -79,8 +82,9 @@ pub struct Session {
     pub connected: bool,
     /// Introspected schema for the active connection.
     pub schema: DatabaseSchema,
-    /// The table currently selected in the schema tree, by name.
-    pub selected_table: Option<String>,
+    /// The relation currently selected in the schema tree, qualified by its
+    /// schema so duplicate names cannot cross-target a live browse.
+    pub selected_relation: Option<RelationRef>,
     /// Result of the most recent `Run` in the Query tab.
     pub query_result: Option<QueryResult>,
     /// Result of browsing the selected table in the Data tab.
@@ -128,7 +132,7 @@ impl Session {
             active: 0,
             connected: false,
             schema: DatabaseSchema::default(),
-            selected_table: None,
+            selected_relation: None,
             query_result: None,
             data_result: None,
             tab: MainTab::Query,
@@ -273,6 +277,7 @@ impl Session {
                         self.query_result = Some(r);
                         self.query_gen += 1;
                         self.query_history.push(QueryHistoryEntry {
+                            connection_id,
                             generation: self.query_gen,
                             sql: std::mem::take(&mut self.active_query_sql),
                             summary,
@@ -289,6 +294,7 @@ impl Session {
             }
             DbReply::Browsed {
                 connection_id,
+                schema,
                 table,
                 offset,
                 result,
@@ -297,7 +303,11 @@ impl Session {
                 // selected table/page. Ignore any stale reply after a schema
                 // selection or page change instead of flashing old rows.
                 if self.active_connection_id() != Some(connection_id)
-                    || self.selected_table.as_deref() != Some(table.as_str())
+                    || self.selected_relation.as_ref()
+                        != Some(&RelationRef {
+                            schema: schema.clone(),
+                            name: table.clone(),
+                        })
                     || self.data_offset != offset
                 {
                     return;
@@ -320,12 +330,16 @@ impl Session {
     /// Replace the schema and reset the selected table to the first real table.
     fn set_schema(&mut self, schema: DatabaseSchema) {
         self.schema = schema;
-        self.selected_table = self
-            .schema
-            .schemas
-            .first()
-            .and_then(|s| s.tables.iter().find(|t| t.kind == RelationKind::Table))
-            .map(|t| t.name.clone());
+        self.selected_relation = self.schema.schemas.first().and_then(|schema| {
+            schema
+                .tables
+                .iter()
+                .find(|table| table.kind == RelationKind::Table)
+                .map(|table| RelationRef {
+                    schema: schema.name.clone(),
+                    name: table.name.clone(),
+                })
+        });
     }
 
     /// Reflect the live-handle state on the active profile so the sidebar
@@ -449,8 +463,8 @@ impl Session {
     }
 
     pub fn selected_table_info(&self) -> Option<&TableInfo> {
-        let name = self.selected_table.as_deref()?;
-        self.schema.find_table(name)
+        let relation = self.selected_relation.as_ref()?;
+        self.schema.find_relation(&relation.schema, &relation.name)
     }
 
     // ---- query + browse -------------------------------------------------
@@ -509,14 +523,22 @@ impl Session {
 
     /// Select a table by name and load its first page of data.
     pub fn select_table(&mut self, name: &str) {
-        self.selected_table = Some(name.to_string());
+        let Some(relation) = self.schema.relation_named(name) else {
+            return;
+        };
+        self.select_relation(relation);
+    }
+
+    /// Select a schema-qualified relation and request its first data page.
+    pub fn select_relation(&mut self, relation: RelationRef) {
+        self.selected_relation = Some(relation);
         self.data_offset = 0;
         self.load_table_data();
     }
 
     /// Request the current page of rows for the selected table (non-blocking).
     pub fn load_table_data(&mut self) {
-        let Some(table) = self.selected_table.clone() else {
+        let Some(relation) = self.selected_relation.clone() else {
             return;
         };
         let Some(connection_id) = self.active_connection_id() else {
@@ -524,7 +546,8 @@ impl Session {
         };
         self.worker.request(DbRequest::Browse {
             connection_id,
-            table,
+            schema: relation.schema,
+            table: relation.name,
             limit: self.data_page_size,
             offset: self.data_offset,
         });
@@ -749,11 +772,15 @@ mod tests {
     fn stale_table_page_is_ignored_after_selection_changes() {
         let mut s = Session::with_sample();
         let id = s.active_connection_id().unwrap();
-        s.selected_table = Some("artists".into());
+        s.selected_relation = Some(RelationRef {
+            schema: "main".into(),
+            name: "artists".into(),
+        });
         s.data_offset = 100;
 
         s.apply_reply(DbReply::Browsed {
             connection_id: id,
+            schema: "main".into(),
             table: "tracks".into(),
             offset: 0,
             result: Ok(QueryResult::default()),

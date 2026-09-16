@@ -417,19 +417,22 @@ impl LiveEngine {
     /// generated `SELECT`.
     pub fn browse_table(
         &mut self,
+        schema: &str,
         table: &str,
         limit: usize,
         offset: usize,
     ) -> Result<QueryResult, String> {
         let sql = match self {
             LiveEngine::MySql(_) => format!(
-                "SELECT * FROM `{}` LIMIT {} OFFSET {}",
+                "SELECT * FROM `{}`.`{}` LIMIT {} OFFSET {}",
+                schema.replace('`', "``"),
                 table.replace('`', "``"),
                 limit,
                 offset
             ),
             _ => format!(
-                "SELECT * FROM \"{}\" LIMIT {} OFFSET {}",
+                "SELECT * FROM \"{}\".\"{}\" LIMIT {} OFFSET {}",
+                schema.replace('"', "\"\""),
                 table.replace('"', "\"\""),
                 limit,
                 offset

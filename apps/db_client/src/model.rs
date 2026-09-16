@@ -259,6 +259,14 @@ pub struct TableInfo {
     pub row_count: Option<i64>,
 }
 
+/// A relation's unambiguous catalog address. Table names are only unique
+/// inside a schema, so live browse operations must never use a bare name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct RelationRef {
+    pub schema: String,
+    pub name: String,
+}
+
 impl TableInfo {
     pub fn primary_keys(&self) -> Vec<&ColumnInfo> {
         self.columns.iter().filter(|c| c.primary_key).collect()
@@ -290,6 +298,28 @@ impl DatabaseSchema {
             .iter()
             .flat_map(|s| s.tables.iter())
             .find(|t| t.name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn find_relation(&self, schema: &str, name: &str) -> Option<&TableInfo> {
+        self.schemas
+            .iter()
+            .find(|candidate| candidate.name == schema)?
+            .tables
+            .iter()
+            .find(|table| table.name == name)
+    }
+
+    pub fn relation_named(&self, name: &str) -> Option<RelationRef> {
+        self.schemas.iter().find_map(|schema| {
+            schema
+                .tables
+                .iter()
+                .find(|table| table.name == name)
+                .map(|table| RelationRef {
+                    schema: schema.name.clone(),
+                    name: table.name.clone(),
+                })
+        })
     }
 }
 
