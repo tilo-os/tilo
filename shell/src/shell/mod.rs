@@ -11,9 +11,8 @@
 //! - The workspace-name button opens `WorkspaceSettings`; switching to the Roles
 //!   tab lets you toggle per-app permissions via `DataTable`; the Files tab
 //!   shows per-role × per-file matrix.
-//! - `SidebarWheel` scrolls strips; overscrolling past the threshold shows the
-//!   "New session" hint and commits a new workspace; releasing before the
-//!   threshold snaps back.
+//! - `SidebarWheelDisc` switches workspaces, resists at each end, and exposes
+//!   an add-workspace control on the disc band.
 //! - Right-clicking a tile opens the context menu.
 //! - Hovering the workspace-name button reveals a tooltip after ~600 ms.
 //! - Creating a workspace (any path) triggers a toast.
@@ -78,7 +77,6 @@ pub mod room_activity;
 pub mod room_records;
 pub mod search;
 pub mod session_audio_policy;
-pub mod sidebar_wheel;
 pub mod sidebar_wheel_disc;
 pub mod split_row;
 pub mod state;
@@ -115,7 +113,6 @@ use crate::shell::global_search::GlobalSearch;
 use browser::BrowserWidget;
 
 use crate::shell::notes_app::NotesApp;
-use crate::shell::sidebar_wheel::SidebarWheel;
 use crate::shell::tile::{
     Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
@@ -158,8 +155,6 @@ pub struct Shell {
     state: ui::state::State,
 
     topbar: TopBar,
-    /// Overscroll past threshold creates a new workspace.
-    sidebar: SidebarWheel,
     /// Hidden unless `search_visible`.
     search: GlobalSearch,
     ws_settings: WorkspaceSettings,
@@ -208,7 +203,6 @@ impl Shell {
             tree,
             state: ui::state::State::new(),
             topbar: TopBar::new(),
-            sidebar: SidebarWheel::new(),
             search: GlobalSearch::new(),
             ws_settings: WorkspaceSettings::new(active_ws_id),
             #[cfg(any(test, debug_assertions))]
@@ -324,10 +318,6 @@ impl Shell {
 
     pub fn topbar(&self) -> &TopBar {
         &self.topbar
-    }
-
-    pub fn sidebar_wheel(&self) -> &SidebarWheel {
-        &self.sidebar
     }
 
     pub fn overview_visible(&self) -> bool {
@@ -530,26 +520,7 @@ impl Shell {
     /// active-strip index.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_sidebar_wheel(&mut self, dir: i32) -> usize {
-        let active_ws = self.tree.active;
-        let Some(workspace) = self.tree.workspaces.iter().find(|w| w.id == active_ws) else {
-            return 0;
-        };
-        let current = self
-            .tree
-            .active_strip
-            .get(&active_ws)
-            .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
-            .unwrap_or(0)
-            .min(workspace.strips.len().saturating_sub(1));
-        let Some(next) = SidebarWheel::next_strip_index(current, workspace.strips.len(), dir)
-        else {
-            return 0;
-        };
-        let Some(strip_id) = workspace.strips.get(next).map(|strip| strip.id) else {
-            return 0;
-        };
-        self.tree.active_strip.insert(active_ws, strip_id);
-        next
+        self.tree.move_active_strip(dir).unwrap_or(0)
     }
 
     /// Index of the currently-active strip on the active workspace in the
@@ -583,60 +554,11 @@ impl Shell {
         workspace.strips.len().saturating_sub(1)
     }
 
-    /// Drives the sidebar's overscroll gesture past the commit threshold;
-    /// asserts the toast side of the new-workspace routing (the append
-    /// itself lands on `state::WorkspaceTree`, not the runtime tree).
-    #[cfg(any(test, debug_assertions))]
-    pub fn simulate_overscroll_commit(&mut self) {
-        use ui::widget::toast::ToastKind;
-        // Overscroll still operates on the persisted workspace model; this
-        // focused helper only verifies gesture routing and its toast effect.
-        let mut scratch = state::WorkspaceTree {
-            workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
-            active: state::WorkspaceId::from(0),
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
-            ..Default::default()
-        };
-        if let Some(w) = scratch.workspaces.first() {
-            scratch.active = w.id;
-        }
-        self.sidebar.begin_overscroll(1);
-        for _ in 0..30 {
-            // 300px of pull, comfortably past the 240px threshold.
-            self.sidebar.drag_overscroll(1, 10.0);
-        }
-        self.sidebar.release_overscroll(&mut scratch);
-        self.toasts.push("Workspace created", ToastKind::Success);
-    }
-
     /// Same route as a real tray-gear click: `TopBarOutput::OpenQuickSettings`.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_tray_gear_click(&mut self) {
         let out = self.topbar.click_tray_settings();
         self.handle_topbar_output(out);
-    }
-
-    /// The button-click counterpart to [`Self::simulate_overscroll_commit`].
-    #[cfg(any(test, debug_assertions))]
-    pub fn simulate_new_workspace_via_management(&mut self) {
-        use ui::widget::toast::ToastKind;
-        // Workspace creation still operates on the persisted workspace model;
-        // this focused helper verifies the management-button route and toast.
-        let mut scratch = state::WorkspaceTree {
-            workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
-            active: state::WorkspaceId::from(0),
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
-            ..Default::default()
-        };
-        if let Some(w) = scratch.workspaces.first() {
-            scratch.active = w.id;
-        }
-        let _ = self.sidebar.click_management_new_workspace(&mut scratch);
-        self.toasts.push("Workspace created", ToastKind::Success);
     }
 
     /// Renames via [`WorkspaceSettings::rename`], matching the production
