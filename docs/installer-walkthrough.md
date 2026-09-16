@@ -99,6 +99,13 @@ mode enabled. The live installer asks for keyboard first, then optional network,
 disk method, account, filesystem/encryption, and a final review. No OS download
 is required: installation uses the signed image on the medium.
 
+On a laptop, connect its charger before beginning. If qOS can definitively see
+that the machine is discharging below 25%, Review explains the problem and the
+destructive install does not start. Plugging in is enough: press **Begin
+Install** again and the installer rechecks power immediately. Desktops, virtual
+machines, charging systems, and hardware without a trustworthy battery reading
+are not blocked.
+
 ### Erase disk
 
 This removes every partition and operating system on the selected disk. The
