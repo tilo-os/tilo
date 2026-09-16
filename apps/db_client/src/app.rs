@@ -516,6 +516,10 @@ impl QueryResizeMenu {
         self.menu.focus_first_action();
     }
 
+    fn reanchor(&mut self, anchor: Rect, viewport: Rect) {
+        self.menu.reanchor(anchor, viewport);
+    }
+
     fn is_open(&self) -> bool {
         self.menu.is_open()
     }
@@ -1262,6 +1266,9 @@ impl DbClientApp {
                     result_strip,
                     grid,
                 };
+                if self.query_resize_menu.is_open() {
+                    self.query_resize_menu.reanchor(divider, self.main_rect);
+                }
                 self.query_measure_dirty |= self.editor.set_measure_width(editor.width());
                 self.query_divider.set_geometry(
                     divider,
@@ -2061,6 +2068,22 @@ impl Widget for DbClientApp {
             }
         }
 
+        if self.query_resize_menu.is_open()
+            && let WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } = event
+            && self.handle_reserved_shortcut(logical_key, *modifiers)
+        {
+            *handled = true;
+            return;
+        }
+
         if self.query_resize_menu.is_open() {
             self.query_resize_menu.handle_event(
                 event,
@@ -2152,13 +2175,6 @@ impl Widget for DbClientApp {
 
     fn is_focusable(&self) -> bool {
         false
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        if !focused {
-            self.editor.set_focus(false);
-            self.query_divider.set_focus(false);
-        }
     }
 
     fn is_focused(&self) -> bool {
@@ -2591,26 +2607,9 @@ impl DbClientApp {
     }
 
     fn on_key_pressed(&mut self, logical_key: &Key, modifiers: Modifiers, handled: &mut bool) {
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-        // Global shortcut: Ctrl+Enter runs regardless of focus.
-        if ctrl {
-            if let Key::Named(NamedKey::Enter) = logical_key {
-                if let Some(sql) = self.pending_query_confirmation.take() {
-                    self.run_sql_effect(sql);
-                    *handled = true;
-                    return;
-                }
-                self.run_current_query();
-                *handled = true;
-                return;
-            }
-            if let Key::Character(c) = logical_key
-                && c.eq_ignore_ascii_case("n")
-            {
-                self.modal.open_new();
-                *handled = true;
-                return;
-            }
+        if self.handle_reserved_shortcut(logical_key, modifiers) {
+            *handled = true;
+            return;
         }
         if self.session.tab == MainTab::Query && self.query_divider.handle_key(logical_key) {
             self.drain_query_resize_actions();
@@ -2638,6 +2637,28 @@ impl DbClientApp {
                 *handled = true;
             }
         }
+    }
+
+    fn handle_reserved_shortcut(&mut self, logical_key: &Key, modifiers: Modifiers) -> bool {
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        if !ctrl {
+            return false;
+        }
+        if matches!(logical_key, Key::Named(NamedKey::Enter)) {
+            if let Some(sql) = self.pending_query_confirmation.take() {
+                self.run_sql_effect(sql);
+            } else {
+                self.run_current_query();
+            }
+            return true;
+        }
+        if let Key::Character(c) = logical_key
+            && c.eq_ignore_ascii_case("n")
+        {
+            self.modal.open_new();
+            return true;
+        }
+        false
     }
 
     /// Whether sidebar widgets (connection rows, schema tree, new-connection
@@ -4255,6 +4276,280 @@ mod behavior_tests {
         let reset = reset_rect(&driver.inspection());
         driver.click_at(reset.center().x, reset.center().y);
         assert_eq!(driver.targets()["db.query-divider"], automatic);
+    }
+
+    fn menu_action_rects(snapshot: &ui::headless::InspectionSnapshot) -> Vec<(String, Rect)> {
+        fn find(node: &ui::headless::InspectionNode) -> Option<Vec<(String, Rect)>> {
+            if node.test_id.as_deref() == Some("db.query-resize-menu") {
+                return Some(
+                    node.semantics
+                        .as_ref()?
+                        .children
+                        .iter()
+                        .filter_map(|child| {
+                            Some((
+                                child.action_target.clone()?,
+                                child.bounds.map(ui::a11y::AccessBounds::to_rect)?,
+                            ))
+                        })
+                        .collect(),
+                );
+            }
+            node.children.iter().find_map(find)
+        }
+
+        find(&snapshot.root).expect("open resize menu publishes semantic action bounds")
+    }
+
+    fn mounted_app(app: &DbClientApp) -> *const DbClientApp {
+        std::ptr::from_ref(app)
+    }
+
+    #[test]
+    fn modified_enter_runs_once_ahead_of_the_open_resize_menu() {
+        let app = Box::new(DbClientApp::new_demo());
+        let app_ptr = mounted_app(&app);
+        let mut driver = ui::headless::Driver::new(ui::State::new(), app, (1200, 800));
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::Increment)
+            .unwrap();
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+
+        // SAFETY: `app_ptr` points into the Box now owned by `driver`; the
+        // allocation stays stable and no Driver borrow is active while read.
+        let (generation, requested, effective) = unsafe {
+            let app = &*app_ptr;
+            (
+                app.session.query_gen,
+                app.query_height_request,
+                app.query_layout.editor.height(),
+            )
+        };
+        assert!(requested.is_some(), "precondition: resize is manual");
+        driver.set_modifiers(&["ctrl".into()]);
+        driver.key("Enter");
+        driver.set_modifiers(&[]);
+        assert!(
+            driver.wait_until(std::time::Duration::from_millis(500), |_| {
+                // SAFETY: same stable allocation; the mutable frame borrow has
+                // ended before this condition callback runs.
+                unsafe { (&*app_ptr).session.query_gen > generation }
+            })
+        );
+        // SAFETY: same stable allocation and non-overlapping read.
+        let app = unsafe { &*app_ptr };
+        assert_eq!(app.session.query_gen, generation + 1, "Run executes once");
+        assert_eq!(app.query_height_request, requested);
+        assert_eq!(app.query_layout.editor.height(), effective);
+        assert!(
+            app.query_resize_menu.is_open(),
+            "the reserved shortcut does not select or dismiss a resize item"
+        );
+    }
+
+    #[test]
+    fn open_resize_menu_reanchors_and_keeps_every_action_mapped_after_resize() {
+        fn assert_bounded_and_anchored(
+            driver: &ui::headless::Driver,
+            app: &DbClientApp,
+            width: f64,
+            height: f64,
+        ) -> Vec<(String, Rect)> {
+            let viewport = Rect::new(0.0, 0.0, width, height);
+            let menu = driver.targets()["db.query-resize-menu"];
+            assert!(
+                menu.x0 >= viewport.x0
+                    && menu.y0 >= viewport.y0
+                    && menu.x1 <= viewport.x1
+                    && menu.y1 <= viewport.y1
+            );
+            assert_eq!(menu.x0, app.query_layout.divider.x0);
+            assert!(
+                menu.y0 == app.query_layout.divider.y1
+                    || menu.y1 == app.query_layout.divider.y0
+                    || menu.y0 == viewport.y0
+                    || menu.y1 == viewport.y1,
+                "menu remains attached to the recomputed divider"
+            );
+            let actions = menu_action_rects(&driver.inspection());
+            assert_eq!(actions.len(), 3);
+            for (_, rect) in &actions {
+                assert!(
+                    rect.x0 >= menu.x0
+                        && rect.y0 >= menu.y0
+                        && rect.x1 <= menu.x1
+                        && rect.y1 <= menu.y1
+                );
+            }
+            actions
+        }
+
+        let app = Box::new(DbClientApp::new_demo());
+        let app_ptr = mounted_app(&app);
+        let mut driver = ui::headless::Driver::new(ui::State::new(), app, (1200, 800));
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::Increment)
+            .unwrap();
+        let requested = unsafe { (&*app_ptr).query_height_request.unwrap() };
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+        driver.key("ArrowDown");
+        driver.resize((480, 900)).unwrap();
+        // SAFETY: stable Driver-owned Box; read occurs between Driver calls.
+        assert_bounded_and_anchored(&driver, unsafe { &*app_ptr }, 480.0, 900.0);
+        driver.resize((800, 480)).unwrap();
+        assert_bounded_and_anchored(&driver, unsafe { &*app_ptr }, 800.0, 480.0);
+        if let Ok(path) = std::env::var("DB_CLIENT_TASK12_MENU_CAPTURE") {
+            driver.render_png(std::path::Path::new(&path));
+        }
+        assert_eq!(unsafe { (&*app_ptr).query_height_request }, Some(requested));
+        driver.key("Enter");
+        assert_eq!(
+            unsafe { (&*app_ptr).query_height_request },
+            Some(requested - 24.0),
+            "the highlighted Decrease action survives reanchoring"
+        );
+
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+        driver.resize((480, 900)).unwrap();
+        driver.resize((800, 480)).unwrap();
+        let actions = assert_bounded_and_anchored(&driver, unsafe { &*app_ptr }, 800.0, 480.0);
+        let increase = actions
+            .iter()
+            .find(|(target, _)| target == "db.increase-query-height")
+            .unwrap()
+            .1;
+        let before_increase = unsafe { (&*app_ptr).query_height_request.unwrap() };
+        driver.click_at(increase.center().x, increase.center().y);
+        assert_eq!(
+            unsafe { (&*app_ptr).query_height_request },
+            Some(before_increase + 24.0),
+            "the pointer row maps to Increase"
+        );
+
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::ShowContextMenu)
+            .unwrap();
+        driver.resize((480, 900)).unwrap();
+        driver.resize((800, 480)).unwrap();
+        assert_bounded_and_anchored(&driver, unsafe { &*app_ptr }, 800.0, 480.0);
+        driver
+            .perform_semantic_named(
+                "db.query-resize-menu",
+                Some("db.reset-query-height"),
+                &ui::a11y::Action::Activate,
+            )
+            .unwrap();
+        assert_eq!(
+            unsafe { (&*app_ptr).query_height_request },
+            None,
+            "the semantic Reset target maps to automatic height"
+        );
+    }
+
+    #[test]
+    fn mounted_clamped_long_query_remains_editable_and_scrollable() {
+        let app = Box::new(DbClientApp::new_demo());
+        let app_ptr = mounted_app(&app);
+        let mut driver = ui::headless::Driver::new(ui::State::new(), app, (800, 480));
+        let long_query = (0..60)
+            .map(|line| format!("SELECT {line} AS value;"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        driver
+            .perform_named(
+                "sql-editor",
+                &ui::a11y::Action::SetValue(long_query.clone()),
+            )
+            .unwrap();
+        let editor = driver.targets()["sql-editor"];
+        driver.click_at(editor.x0 + 64.0, editor.y0 + 12.0);
+        driver
+            .perform_named(
+                "sql-editor",
+                &ui::a11y::Action::SetSelection {
+                    anchor: long_query.len(),
+                    focus: long_query.len(),
+                },
+            )
+            .unwrap();
+        driver.type_text("\n-- edited at the end");
+        let editor = driver.targets()["sql-editor"];
+        driver.send(&cursor_event(editor.center().x, editor.center().y));
+        driver.scroll(0.0, -12.0);
+
+        // SAFETY: stable Driver-owned Box; reads occur between Driver calls.
+        unsafe {
+            let app = &*app_ptr;
+            assert!(app.editor.inner().content_height() > app.editor.rect().height());
+            assert!(
+                app.editor.inner().scroll_y() > 0.0,
+                "wheel scroll reaches the clamped editor: scroll={} content={} viewport={} focused={}",
+                app.editor.inner().scroll_y(),
+                app.editor.inner().content_height(),
+                app.editor.rect().height(),
+                app.editor.is_focused()
+            );
+            assert!(app.editor.value().ends_with("-- edited at the end"));
+            assert_eq!(app.editor.cursor_pos(), app.editor.value().len());
+            assert!(app.query_layout.grid.height() >= QUERY_GRID_MIN_H);
+        }
+        let shared_sql = EditorDoc::read_sql(&driver.state_mut().doc);
+        assert_eq!(shared_sql, unsafe { (&*app_ptr).editor.value() });
+
+        driver
+            .perform_named("db.query-divider", &ui::a11y::Action::Increment)
+            .unwrap();
+        let requested = unsafe { (&*app_ptr).query_height_request };
+        driver.resize((800, 700)).unwrap();
+        driver.resize((800, 480)).unwrap();
+        let app = unsafe { &*app_ptr };
+        assert_eq!(app.query_height_request, requested);
+        assert!(app.editor.value().ends_with("-- edited at the end"));
+        assert_eq!(app.editor.cursor_pos(), app.editor.value().len());
+        assert!(app.query_layout.grid.height() >= QUERY_GRID_MIN_H);
+    }
+
+    #[test]
+    fn many_connections_keep_narrow_drawer_and_query_actions_reachable() {
+        let mut app = Box::new(DbClientApp::new_demo());
+        for index in 3..8 {
+            let name = format!("Connection {index}");
+            app.session
+                .connections
+                .push(ConnectionProfile::new(&name, Engine::Postgres));
+        }
+        let app_ptr = mounted_app(&app);
+        let mut driver = ui::headless::Driver::new(ui::State::new(), app, (480, 900));
+        // SAFETY: stable Driver-owned Box; reads occur between Driver calls.
+        let closed_split = unsafe { (&*app_ptr).query_layout };
+        let toggle = unsafe { (&*app_ptr).toggle_btn };
+        assert!(toggle.width() > 0.0 && toggle.y0 >= 0.0 && toggle.y1 <= 900.0);
+        driver.click_at(toggle.center().x, toggle.center().y);
+        // Settle the existing flap animation after proving the real trigger.
+        unsafe { (&mut *(app_ptr.cast_mut())).flap.snap(true) };
+        driver.relayout();
+        let app = unsafe { &*app_ptr };
+        assert_eq!(app.session.connections.len(), 8);
+        assert!(app.flap.is_open(SplitLayout::Overlay));
+        assert_eq!(app.query_layout, closed_split);
+        assert_eq!(app.conn_rects.len(), 8);
+        let seventh = app.conn_rects[6].1;
+        assert!(seventh.y0 >= 0.0 && seventh.y1 <= 900.0);
+        driver.click_at(seventh.center().x, seventh.center().y);
+        assert_eq!(unsafe { (&*app_ptr).session.active }, 6);
+
+        let toggle = unsafe { (&*app_ptr).toggle_btn };
+        driver.click_at(toggle.center().x, toggle.center().y);
+        unsafe { (&mut *(app_ptr.cast_mut())).flap.snap(false) };
+        driver.relayout();
+        assert!(!unsafe { (&*app_ptr).flap.is_open(SplitLayout::Overlay) });
+        assert!(unsafe { (&*app_ptr).toggle_btn.width() > 0.0 });
     }
 
     #[test]
