@@ -960,7 +960,19 @@ pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
 
 impl ResourceProvider for crate::app::MailApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.mail_resource_ctx(doc), doc)
+        let mut roots = provide_resources(&self.mail_resource_ctx(doc), doc);
+        if let Some(error) = self.mail_search_error()
+            && let Some(mailbox) = roots
+                .iter_mut()
+                .find(|resource| resource.id.as_str() == "mail.mailbox")
+        {
+            mailbox.children.push(Resource::new(
+                "mail.search-status",
+                "mail.search_status",
+                format!("Search index unavailable: {error}"),
+            ));
+        }
+        roots
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -1005,6 +1017,15 @@ impl ResourceProvider for crate::app::MailApp {
                 )
                 .with_children(messages.iter().map(message_resource)),
             );
+        }
+        if id == "mail.search-status" {
+            return self.mail_search_error().map(|error| {
+                Resource::new(
+                    "mail.search-status",
+                    "mail.search_status",
+                    format!("Search index unavailable: {error}"),
+                )
+            });
         }
         let ctx = self.mail_resource_ctx(doc);
         find(provide_resources(&ctx, doc), id)
@@ -1177,6 +1198,46 @@ mod tests {
         assert!(
             labels.iter().any(|l| l.contains("New folder")),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn failed_search_refresh_stays_visible_and_addressable_until_a_good_snapshot() {
+        let (app, state) = seeded_app();
+        assert!(
+            app.mail_search_error().is_none(),
+            "the sample starts with a valid retained index"
+        );
+
+        app.inject_mail_search_snapshot_failure();
+        let resources = Widget::resources(&app, &state.doc);
+        let mailbox = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "mail.mailbox")
+            .expect("mailbox root");
+        assert!(
+            mailbox
+                .children
+                .iter()
+                .any(|resource| resource.id.as_str() == "mail.search-status"),
+            "the persistent index failure is published, not just shown in a toast"
+        );
+        let status =
+            <MailApp as ResourceProvider>::resource(&app, &state.doc, "mail.search-status")
+                .expect("diagnostic resource resolves exactly");
+        assert_eq!(status.kind, "mail.search_status");
+
+        app.refresh_mail_search_for_test()
+            .expect("a verified snapshot clears the old diagnostic");
+        assert!(
+            app.mail_search_error().is_none(),
+            "only a successful replacement clears the retained error"
+        );
+        assert!(
+            !Widget::resources(&app, &state.doc)
+                .iter()
+                .flat_map(|root| &root.children)
+                .any(|resource| resource.id.as_str() == "mail.search-status")
         );
     }
 
