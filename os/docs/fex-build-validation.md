@@ -4,6 +4,13 @@ FEX translates x86 instructions on ARM hosts. Its native executable alone does
 not provide Wine/Proton support: the x86 userspace filesystem, graphics thunks,
 and application sandbox integration must also be built and validated.
 
+Current complete-suite result: 11,726 passes, 460 unchanged upstream skips,
+and two failures across 12,188 tests. Vulkan thunk callback handling and an
+upstream expected-failure mismatch remain unresolved. Independent CPU-list
+and GLX pbuffer probes also remain failing. The native ARM and both x86 guest
+architectures pass the window pixel-rendering comparison. This is not release
+acceptance; detailed inputs and limits follow.
+
 ## Source and toolchain inputs
 
 `os/external-assets/fex-source.env` pins FEX and its recursive gitlinks.
@@ -617,3 +624,28 @@ and both i686 cases exited 1; thunked x86-64 exited 139 after the X error.
 control also fails, this is not evidence of a translation-only defect. Do not
 count the earlier successful local pixel readback as complete pbuffer acceptance
 or hide the error by ignoring X11 failures.
+
+A diagnostic rerun with Xvfb's MIT-SHM extension disabled failed in all five
+cases with `BadMatch` in ordinary `X_PutImage`, preserving the same exit codes.
+The failure therefore is not specific to shared-memory transport.
+`fex-gl-pbuffer-no-shm-validation.log` records this comparison; disabling the
+extension is not an accepted runtime workaround.
+
+### Full suite with corrected graphics and compiler inputs
+
+`fex-clang21-complete-graphics-validation.log` records the full, unfiltered
+12,188-case run against the complete graphics images described above. The
+run used the matched Clang 21 ABI driver, complete guest SDK, installed guest
+thunks, both guest Mesa architectures, and Xvfb. It finished in 495.41 seconds:
+
+- 11,726 passed;
+- 460 retained upstream skips;
+- two failures: `ThunkFunctionalTest-Thunks-/usr/bin/vulkaninfo` (illegal
+  instruction) and `syscalls_efault.64.jit.flt` (unexpected pass).
+
+No expected results or disabled-test lists were changed. The full-suite fixture
+retains the earlier permission/device setup and diagnostic outer seccomp
+override; the separate graphics and window-pixel comparisons passed their
+documented cases with the default filter. The two full-suite failures and the
+independent CPU-list/pbuffer failures remain open. A green generator or ABI
+subset does not supersede these results.
