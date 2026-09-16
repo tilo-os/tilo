@@ -90,7 +90,6 @@ The control socket is for **ad-hoc, programmatic, headless** drives — primaril
 
 ## Further reading
 
-- `docs/headless-testing.md` — full overview of the three e2e layers (shots / socket / headless backend)
-- `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md` — design rationale + spec
+- `docs/headless-testing.md` — the maintained overview and protocol guide for the three e2e layers (shots / socket / headless backend)
 - `shell/src/compositor/test_control.rs` — the protocol's source of truth (every command + response variant lives in the `Command` and `Response` enums)
 - `shell/src/bin/shots/scenario.rs` — pre-written scenarios that exercise the same code paths in-process

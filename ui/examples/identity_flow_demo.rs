@@ -1,4 +1,4 @@
-//! `identity_flow_demo` — eyeball the Phase 8 identity ceremony.
+//! Interactive identity creation, recovery, pairing, and invitation demo.
 //!
 //! Run with:
 //!

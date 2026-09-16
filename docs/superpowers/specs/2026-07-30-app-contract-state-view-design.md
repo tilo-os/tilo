@@ -1,6 +1,7 @@
 # The qOS app contract: good by default, extendable at every layer
 
-**Status:** design approved 2026-07-30. Implementation follows.
+**Status:** Implemented design record. The State/View split, action/resource
+surface, freeze/thaw hooks, and follow behavior live in `ui/src/{app,view}.rs`.
 
 ## Purpose
 

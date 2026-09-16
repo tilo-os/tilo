@@ -2,11 +2,7 @@
 //! disk and the in-memory block list the [`ui::widget::BlockEditor`]
 //! renders.
 //!
-//! Phase 3 extends this with four more block kinds: bullet lists,
-//! checklists, fenced code blocks, and dividers. Phase 4 adds inline
-//! marks (`**bold**`, `*italic*`, `` `code` ``, `[[Page Title]]`) and
-//! propagates a per-block [`MarkSpan`] list alongside the plain-text
-//! body. The grammar is:
+//! The grammar supports block structure and a per-block [`MarkSpan`] list:
 //!
 //! - A line beginning with `# `, `## `, `### ` is a heading.
 //! - A line beginning with `- ` / `* ` (after optional 2-space
@@ -17,7 +13,7 @@
 //! - A line beginning with ` ``` ` opens a fenced code block; the
 //!   matching closing fence terminates it. **v0.1 limitation**: code
 //!   block body is single-line per block.
-//! - Inline marks (Phase 4):
+//! - Inline marks:
 //!   - `**text**` → bold
 //!   - `*text*`  → italic (but: `**` never parses as italic-double-
 //!     star; the bold tokenizer runs first)
