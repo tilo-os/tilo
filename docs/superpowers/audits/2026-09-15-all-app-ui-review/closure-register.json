@@ -668,18 +668,67 @@
       {
         "id": "scratchpad-1",
         "title": "P1 \u2014 shared multiline sizing / app composition:",
-        "status": "open",
-        "evidence": []
+        "status": "closed",
+        "evidence": [
+          "fba9ea50f",
+          "untracked Scratchpad one-line patch preserved",
+          "Shared Task3 report + independent review",
+          "task3-controller-visual.md",
+          "task3-writing-20260916/captures/scratchpad/",
+          "12 framework integration +7app tests +4layout persistence/scroll harness"
+        ]
       },
       {
         "id": "scratchpad-2",
         "title": "P2 \u2014 app hierarchy:",
+        "status": "closed",
+        "evidence": [
+          "fba9ea50f",
+          "untracked Scratchpad one-line patch preserved",
+          "Shared Task3 report + independent review",
+          "task3-controller-visual.md",
+          "task3-writing-20260916/captures/scratchpad/",
+          "12 framework integration +7app tests +4layout persistence/scroll harness",
+          "Hierarchy ruling: primary writing surface now dominates; retain useful manual-save reminder."
+        ]
+      },
+      {
+        "id": "scratchpad-first-wheel",
+        "title": "P2 \u2014 fractional intrinsic height consumes the first wheel in subpixel editor overflow.",
+        "status": "closed",
+        "evidence": [
+          "fba9ea50f",
+          "untracked Scratchpad one-line patch preserved",
+          "Shared Task3 report + independent review",
+          "task3-controller-visual.md",
+          "task3-writing-20260916/captures/scratchpad/",
+          "12 framework integration +7app tests +4layout persistence/scroll harness"
+        ]
+      },
+      {
+        "id": "scratchpad-repeat-click-focus",
+        "title": "P1 \u2014 second click in an already focused editor loses typing focus.",
+        "status": "closed",
+        "evidence": [
+          "fba9ea50f",
+          "untracked Scratchpad one-line patch preserved",
+          "Shared Task3 report + independent review",
+          "task3-controller-visual.md",
+          "task3-writing-20260916/captures/scratchpad/",
+          "12 framework integration +7app tests +4layout persistence/scroll harness"
+        ]
+      },
+      {
+        "id": "scratchpad-final-empty-line",
+        "title": "P1 \u2014 final empty line has incorrect EOF caret and pointer geometry.",
         "status": "open",
-        "evidence": []
+        "evidence": [
+          "trailing-line-diagnosis.md"
+        ]
       }
     ],
-    "closure": "fixes and final verification pending",
-    "assigned_work": "Shared 3 + app verification"
+    "closure": "Writing-surface findings fixed; final-empty-line repair and final verification pending",
+    "assigned_work": "Shared 3 complete + Shared 7 final empty line"
   },
   {
     "app": "settings",

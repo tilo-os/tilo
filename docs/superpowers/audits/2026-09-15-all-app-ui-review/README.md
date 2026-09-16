@@ -47,7 +47,7 @@ Commits `ef5f08db5` and `4f0cc6b27` unify screenshot theme/scale/measurement acr
 
 ## Implementation progress — 2026-09-16
 
-The [closure register](closure-register.md) is the current status; the reviews above preserve baseline findings.
+The [closure register](closure-register.md) is the current status; the reviews above preserve baseline findings. [Accepted implementation evidence](implementation/README.md) retains the test reports and independent review results.
 
 - Store's marked card containment, header density, artwork and scaled-filter findings are verified. Settings' excessive preamble and VPN's excess compact-header space are also verified.
 - Shared Card, ContentCard and CardGrid now preserve their natural minimum height through intrinsic scrolling stacks. This fixes Store section overlap and Settings Region card overlap while retaining authored fixed rows and buttons. Commits `cec5c10c7` and `93b56dc1f` passed scoped spec and quality review, including real host Enter activation after scrolling and tabbing.
@@ -55,6 +55,6 @@ The [closure register](closure-register.md) is the current status; the reviews a
 - Shared verification: 3,070 UI library tests passed and 294 integration tests passed. Three integration failures also reproduce without the card changes: bound callback admission, an existing shell color audit, and typography gallery goldens. They are recorded as baseline failures, not silently counted as passing.
 - Shared text and EmptyState sizing is implemented in `17110d403` and passed independent specification and quality review. Focused wrapping, scale, pointer, and host keyboard checks pass; fresh VPN screenshots show bounded empty-state text at normal, narrow, and 200% sizes. The separate enlarged Tor header capsule remains open. The task's broader UI run passed 3,090 library tests with one failure in concurrent Chromium changes and two ignored tests; integration tests were not reached.
 
-Shared editor candidate `3f13fb4eb` has fresh Notes/Calendar/Typst screenshots, but is still in review fixes for wrapper scale propagation and CRDT history invalidation. Notes styled-glyph overdraw and Calendar scaled control heights are separately marked; these apps are not yet closed.
+Shared editor fixes `3f13fb4eb` and `83c269dac` passed independent review, including real wrapper scale propagation and CRDT undo/redo invalidation. CodeEditor23/TextInput99 focused module tests and the UI check pass. Root inspected9fresh post-fix Notes/Calendar/Typst images. Notes styled-glyph overdraw, Calendar scaled control heights and Typst toolbar/status bars remain separately assigned; these apps are not yet fully closed.
 
 Final all-app captures, the final UX matrix, Linux checks and whole-change review remain pending.

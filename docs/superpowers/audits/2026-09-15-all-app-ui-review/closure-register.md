@@ -37,7 +37,7 @@ Assigned work: [Shared](../../plans/2026-09-15-measured-ui-components.md), [Comp
 | pdf_viewer | [visual-reviewed](review-2.md) | 1 | Composition 6 | fixes and final verification pending |
 | photos | [visual-reviewed](review-2.md) | 1 | Text/geometry 19 | fixes and final verification pending |
 | remote | [visual-reviewed](review-2.md) | 1 | Text/geometry 20 | fixes and final verification pending |
-| scratchpad | [visual-reviewed](review-2.md) | 2 | Shared 3 + app verification | fixes and final verification pending |
+| scratchpad | [visual-reviewed](review-2.md) | 1 | Shared 3 complete + Shared 7 final empty line | Writing-surface findings fixed; final-empty-line repair and final verification pending |
 | settings | [visual-reviewed](review-3.md) | 2 | Text/geometry 22 | normal composition findings verified; remaining scale/balance findings and final matrix pending |
 | sheets | [visual-reviewed](review-3.md) | 2 | Text/geometry 1 | fixes and final verification pending |
 | slides | [visual-reviewed](review-3.md) | 1 | Text/geometry 2 | fixes and final verification pending |
