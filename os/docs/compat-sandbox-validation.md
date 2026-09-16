@@ -75,3 +75,33 @@ This establishes a syscall-policy requirement for the translated runtime.
 Production Wine policy has not been weakened or changed to JIT based on this
 diagnostic. A trusted runtime selection and complete capsule integration are
 still required; catalogue-supplied settings must not grant a weaker filter.
+
+## Capsule descriptor handoff
+
+Native ARM tests on 2026-09-16 found that an unprivileged Bubblewrap launch
+could not reopen `/proc/<broker-pid>/fd/<n>` directory sources: it returned
+`Permission denied`. Direct inherited `--bind-fd` bindings succeeded and
+retained the original directories after their pathnames were replaced.
+The executor now passes the anchored prefix and home descriptors directly.
+It duplicates sources above all reserved child slots before `pre_exec`,
+preventing descriptor remapping from overwriting another pending source.
+
+The real executor test also exposed an existing seccomp handoff bug. The
+filter memfd was positioned at EOF after writing; Bubblewrap read an empty
+program and `PR_SET_SECCOMP` returned `EINVAL`. Rewinding before inheritance
+resolved this failure without changing the syscall policy.
+
+Run the integration regression explicitly on Linux with Bubblewrap and
+unprivileged user namespaces available:
+
+```sh
+cargo test -p compat-service --locked \
+  executor_retains_directories_after_path_replacement -- --ignored --nocapture
+```
+
+This passed on native ARM with Rust 1.97.1, both without a filter and with
+the actual `qos-default` filter loaded by Bubblewrap. The normal service suite
+also passed all 48 tests; the environment-dependent regression is excluded
+from the default suite and was run separately. The shell integration check
+passed. These tests validate descriptor transfer, real mounts, and filter
+loading; they do not replace the full capsule/Landlock runtime acceptance.

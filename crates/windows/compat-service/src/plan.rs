@@ -283,6 +283,12 @@ pub struct CapsuleCommandPlan {
     _launch_paths: LaunchPaths,
 }
 
+impl CapsuleCommandPlan {
+    pub(crate) fn directory_fds(&self) -> [std::os::fd::RawFd; 2] {
+        self._launch_paths.directory_fds()
+    }
+}
+
 pub struct SandboxPlanner<'a, R> {
     store: &'a CapsuleStore,
     runtimes: &'a R,
@@ -335,8 +341,6 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         lease.validate(capabilities, network)?;
 
         let launch_paths = self.store.open_launch_paths(&capsule.id)?;
-        let prefix_host = launch_paths.prefix_source();
-        let home_host = launch_paths.home_source();
 
         let wayland =
             launcher::sandbox::wayland_bind_for(&self.session.wayland_socket, self.session.uid);
@@ -375,8 +379,16 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         for binding in &runtime.binds {
             bind(&mut argv, "--ro-bind", &binding.host, &binding.sandbox);
         }
-        bind(&mut argv, "--bind", &prefix_host, PREFIX_MOUNT);
-        bind(&mut argv, "--bind", &home_host, HOME_MOUNT);
+        for (fd, destination) in [
+            (crate::execute::PREFIX_CHILD_FD, PREFIX_MOUNT),
+            (crate::execute::HOME_CHILD_FD, HOME_MOUNT),
+        ] {
+            argv.extend([
+                "--bind-fd".to_string(),
+                fd.to_string(),
+                destination.to_string(),
+            ]);
+        }
 
         let mut landlock_read =
             launcher::profile::landlock_ro_paths(network == NetworkShape::Unrestricted);
@@ -879,12 +891,69 @@ mod tests {
                 .iter()
                 .any(|arg| arg.contains("/home/user"))
         );
-        assert!(
-            command
-                .bwrap_argv
-                .iter()
-                .any(|arg| arg.starts_with(&format!("/proc/{}/fd/", std::process::id())))
-        );
+        for (fd, destination) in [
+            (crate::execute::PREFIX_CHILD_FD, PREFIX_MOUNT),
+            (crate::execute::HOME_CHILD_FD, HOME_MOUNT),
+        ] {
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| { args == ["--bind-fd", fd.to_string().as_str(), destination] })
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires bubblewrap and unprivileged user namespaces"]
+    fn executor_retains_directories_after_path_replacement() {
+        use crate::SandboxExecutor;
+
+        let route = route(Layer::Wine);
+        let (_directory, store, state, program) = setup(&route);
+        let session = session();
+        let planner = SandboxPlanner::new(&store, &SystemRuntimeRegistry, &session).unwrap();
+        let mut command = planner
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap();
+        for (path, expected) in [
+            (store.prefix_path(&state.id), "original-prefix"),
+            (store.home_path(&state.id), "original-home"),
+        ] {
+            std::fs::write(path.join("value"), expected).unwrap();
+            std::fs::rename(&path, path.with_extension("retained")).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("value"), "replacement").unwrap();
+        }
+        // Exercise the real executor and descriptor transfer without requiring
+        // Wine, a GPU, or the production Landlock kernel for this mount test.
+        command.seccomp_profile = None;
+        command.bwrap_argv = [
+            "--unshare-all", "--die-with-parent", "--ro-bind", "/usr", "/usr",
+            "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
+            "--symlink", "usr/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev",
+            "--bind-fd", "33", "/prefix", "--bind-fd", "34", "/home",
+            "/bin/sh", "-ec",
+            "test \"$(cat /prefix/value)\" = original-prefix; test \"$(cat /home/value)\" = original-home",
+        ].map(str::to_owned).to_vec();
+        for profile in [None, Some(SeccompProfile::QosDefault)] {
+            command.seccomp_profile = profile;
+            if profile.is_some() {
+                command.bwrap_argv.splice(
+                    0..0,
+                    ["--seccomp".to_string(), crate::SECCOMP_CHILD_FD.to_string()],
+                );
+            }
+            let outcome = crate::BwrapExecutor.execute(&command).unwrap();
+            assert!(outcome.success, "{profile:?}: {outcome:?}");
+        }
     }
 
     #[test]

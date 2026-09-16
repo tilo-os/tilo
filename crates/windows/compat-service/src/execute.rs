@@ -1,6 +1,6 @@
 use std::ffi::CString;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
@@ -10,6 +10,8 @@ use thiserror::Error;
 use crate::CapsuleCommandPlan;
 
 pub const SECCOMP_CHILD_FD: i32 = 32;
+pub(crate) const PREFIX_CHILD_FD: i32 = 33;
+pub(crate) const HOME_CHILD_FD: i32 = 34;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionOutcome {
@@ -33,11 +35,31 @@ impl SandboxExecutor for BwrapExecutor {
             let mut file = create_memfd()?;
             file.write_all(&filter)?;
             file.sync_all()?;
+            // Bubblewrap reads from the inherited descriptor's current offset.
+            // dup2 shares that offset, so an EOF position yields an empty BPF
+            // program and PR_SET_SECCOMP fails with EINVAL.
+            file.rewind()?;
             Some(file)
         } else {
             None
         };
-        let filter_fd = filter_file.as_ref().map(AsRawFd::as_raw_fd);
+        // Duplicate above every destination before fork. Otherwise dup2 of
+        // one mapping could overwrite a source needed by the next mapping.
+        let [prefix, home] = plan.directory_fds();
+        let mut inherited = vec![
+            (duplicate_above_child_slots(prefix)?, PREFIX_CHILD_FD),
+            (duplicate_above_child_slots(home)?, HOME_CHILD_FD),
+        ];
+        if let Some(filter) = &filter_file {
+            inherited.push((
+                duplicate_above_child_slots(filter.as_raw_fd())?,
+                SECCOMP_CHILD_FD,
+            ));
+        }
+        let mappings: Vec<_> = inherited
+            .iter()
+            .map(|(file, target)| (file.as_raw_fd(), *target))
+            .collect();
 
         let mut command = Command::new("/usr/bin/bwrap");
         command
@@ -45,27 +67,22 @@ impl SandboxExecutor for BwrapExecutor {
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        if let Some(filter_fd) = filter_fd {
-            // SAFETY: `pre_exec` calls only async-signal-safe libc functions.
-            // The owned memfd remains alive until spawn returns.
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::dup2(filter_fd, SECCOMP_CHILD_FD) == -1 {
+        // SAFETY: the closure only iterates preallocated mappings and calls
+        // async-signal-safe dup2. Every source differs from every target, so
+        // dup2 also clears CLOEXEC on the inherited target descriptors.
+        // The owned source descriptors remain alive until spawn returns.
+        unsafe {
+            command.pre_exec(move || {
+                for &(source, target) in &mappings {
+                    if libc::dup2(source, target) == -1 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    let flags = libc::fcntl(SECCOMP_CHILD_FD, libc::F_GETFD);
-                    if flags == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    if libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
-                    {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
+                }
+                Ok(())
+            });
         }
         let mut child = command.spawn().map_err(ExecutionError::Spawn)?;
+        drop(inherited);
         drop(filter_file.take());
         let status = child.wait()?;
         Ok(ExecutionOutcome {
@@ -73,6 +90,17 @@ impl SandboxExecutor for BwrapExecutor {
             exit_code: status.code(),
         })
     }
+}
+
+fn duplicate_above_child_slots(fd: std::os::fd::RawFd) -> Result<File, std::io::Error> {
+    // SAFETY: fcntl duplicates the borrowed live descriptor without changing
+    // it. The result is newly owned and kept close-on-exec in the parent.
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, HOME_CHILD_FD + 1) };
+    if duplicate < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: a successful F_DUPFD_CLOEXEC returns a new owned descriptor.
+    Ok(unsafe { File::from_raw_fd(duplicate) })
 }
 
 fn create_memfd() -> Result<File, ExecutionError> {
