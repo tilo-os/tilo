@@ -219,6 +219,8 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    TabClosed,
+    TabCloseBlocked,
     ContextMenu {
         id: u32,
         x: f64,
@@ -348,6 +350,17 @@ pub trait WebViewEngine: Send + Sync {
 
     /// Take all pending events, oldest first.
     fn drain_events(&self) -> Vec<WebViewEvent>;
+
+    /// Request native close admission. True allows immediate local close; false
+    /// completes asynchronously through TabClosed or TabCloseBlocked.
+    fn request_close(&self) -> bool {
+        true
+    }
+
+    /// Runtime-owned download events, independent of a tab lifetime.
+    fn drain_download_events(&self) -> Vec<WebViewEvent> {
+        Vec::new()
+    }
 
     /// Invoked (from any thread) whenever a new frame or event is ready —
     /// typically wired to the winit event loop proxy so idle apps repaint

@@ -90,6 +90,15 @@ impl WebView {
         }
     }
 
+    /// Seed the window DPI before the first layout of a rebuilt view.
+    #[must_use]
+    pub fn with_scale_factor(mut self, scale_factor: f32) -> Self {
+        if scale_factor.is_finite() && scale_factor > 0.0 {
+            self.scale_factor = scale_factor;
+        }
+        self
+    }
+
     /// Override the e2e test identifier (default `"webview"`), for a tree
     /// hosting several web views.
     #[must_use]
@@ -261,17 +270,23 @@ impl Widget for WebView {
             }
             // The engine renders at physical resolution for our logical rect
             // — scale down so hi-DPI frames map 1:1 to device pixels.
-            let sx = self.rect.width() / f64::from(iw);
-            let sy = self.rect.height() / f64::from(ih);
-            let brush_transform =
-                Affine::translate((self.rect.x0, self.rect.y0)).pre_scale_non_uniform(sx, sy);
+            // Keep the last frame at its physical pixel size while a resize
+            // awaits paint. Stretching each axis independently distorts text.
+            let scale = 1.0 / f64::from(self.scale_factor);
+            let brush_transform = Affine::translate((self.rect.x0, self.rect.y0)).pre_scale(scale);
+            let painted = self.rect.intersect(Rect::new(
+                self.rect.x0,
+                self.rect.y0,
+                self.rect.x0 + f64::from(iw) * scale,
+                self.rect.y0 + f64::from(ih) * scale,
+            ));
             let brush = vello::peniko::ImageBrush::new(img);
             scene.fill(
                 Fill::NonZero,
                 transform,
                 &brush,
                 Some(brush_transform),
-                &self.rect,
+                &painted,
             );
         } else {
             crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);

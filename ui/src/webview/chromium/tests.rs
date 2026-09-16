@@ -427,3 +427,37 @@ fn find_and_zoom_protocol_rejects_invalid_bounds() {
         Some(json!({"op":"zoom","level":1.0}))
     );
 }
+
+#[test]
+fn runtime_download_queue_coalesces_progress_and_is_bounded() {
+    let queue = Mutex::new(VecDeque::new());
+    let update = |id, state: &str, received| WebViewEvent::DownloadUpdated {
+        id,
+        state: state.into(),
+        path: "/tmp/file".into(),
+        name: "file".into(),
+        received,
+        total: 1000,
+        error: String::new(),
+    };
+    for received in 0..1000 {
+        queue_download_event(&queue, update(1, "progress", received));
+    }
+    assert_eq!(queue.lock().unwrap().len(), 1);
+    queue_download_event(&queue, update(1, "complete", 1000));
+    assert!(
+        matches!(queue.lock().unwrap().front(), Some(WebViewEvent::DownloadUpdated { state, .. }) if state == "complete")
+    );
+    for id in 2..500 {
+        queue_download_event(&queue, update(id, "complete", 1000));
+    }
+    assert_eq!(queue.lock().unwrap().len(), 256);
+    assert_eq!(
+        decode_event(&json!({"event":"closed","tab":2})),
+        Some(WebViewEvent::TabClosed)
+    );
+    assert_eq!(
+        decode_event(&json!({"event":"close_blocked","tab":2})),
+        Some(WebViewEvent::TabCloseBlocked)
+    );
+}

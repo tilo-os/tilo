@@ -93,6 +93,7 @@ impl BrowserTabs {
         let mut widget = BrowserWidget::with_engine(engine, headless)
             .with_initial_uri(url.unwrap_or_else(|| "about:blank".into()));
         widget.share_history_pause(self.active());
+        widget.inherit_workspace_state(self.active());
         let id = self.next_id;
         self.next_id += 1;
         widget.set_tab_identity(id);
@@ -122,6 +123,28 @@ impl BrowserTabs {
         self.dirty = true;
     }
     fn close(&mut self, id: u64) {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == id) else {
+            return;
+        };
+        if !tab.widget.engine_handle().request_close() {
+            // TabBar optimistically removes its pill for close animation.
+            // Native admission is asynchronous: restore the visible tab until
+            // its closed event arrives, including when a download blocks it.
+            if !self.bar.tabs().iter().any(|tab| tab.id == id) {
+                let index = self.tabs.iter().position(|tab| tab.id == id).unwrap_or(0);
+                let title = tab.widget.tab_title();
+                self.bar
+                    .tabs_mut()
+                    .insert(index, TabDescriptor::new(id, title));
+            }
+            self.bar.finalize_close(id);
+            self.bar.set_active(self.active_id);
+            self.dirty = true;
+            return;
+        }
+        self.finish_close(id);
+    }
+    fn finish_close(&mut self, id: u64) {
         let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
             return;
         };
@@ -239,8 +262,12 @@ impl Widget for BrowserTabs {
             self.activate(self.bar.active_id());
         }
         let mut requests = Vec::new();
+        let mut closed = Vec::new();
         for tab in &mut self.tabs {
             tab.widget.sync(state, path);
+            if tab.widget.take_native_closed() {
+                closed.push(tab.id);
+            }
             requests.extend(tab.widget.engine_handle().take_new_tab_requests());
             let title = tab.widget.tab_title();
             if let Some(desc) = self
@@ -254,6 +281,9 @@ impl Widget for BrowserTabs {
                     self.dirty = true;
                 }
             }
+        }
+        for id in closed {
+            self.finish_close(id);
         }
         for (url, background) in requests {
             if let Err(error) = self.open(Some(url), background) {
@@ -388,6 +418,9 @@ impl Widget for BrowserTabs {
                     alt: m.alt_key(),
                     meta: m.super_key(),
                 });
+        }
+        for tab in &mut self.tabs {
+            tab.widget.set_window_scale(scale);
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale, position.y / scale);
@@ -627,6 +660,56 @@ mod tests {
             true,
         ))
     }
+    #[test]
+    fn native_close_admission_keeps_tab_visible_until_closed_event() {
+        struct ClosingEngine {
+            page: Arc<TestEngine>,
+            events: std::sync::Mutex<Vec<WebViewEvent>>,
+        }
+        impl WebViewEngine for ClosingEngine {
+            fn create_tab(&self) -> Result<SharedEngine, String> {
+                Ok(Arc::new(Engine(TestEngine::new())))
+            }
+            fn send(&self, command: WebViewCommand) {
+                self.page.send(command);
+            }
+            fn frames(&self) -> FrameSlot {
+                self.page.frames()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.events.lock().unwrap())
+            }
+            fn request_close(&self) -> bool {
+                false
+            }
+        }
+        let engine = Arc::new(ClosingEngine {
+            page: TestEngine::new(),
+            events: Default::default(),
+        });
+        let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(engine.clone(), true));
+        let mut doc = AutoCommit::new();
+        tabs.bar.start_closing(1);
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(tabs.bar.tabs().len(), 1);
+        assert_eq!(tabs.bar.active_id(), 1);
+        assert!(!tabs.bar.has_closing());
+        assert_eq!(tabs.tabs.len(), 1);
+        engine
+            .events
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::TabCloseBlocked);
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(tabs.active_id, 1);
+        assert!(tabs.retired.is_empty());
+        tabs.close(1);
+        engine.events.lock().unwrap().push(WebViewEvent::TabClosed);
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(tabs.tabs.len(), 1);
+        assert_ne!(tabs.active_id, 1);
+    }
+
     #[test]
     fn accessibility_tab_intents_are_applied_without_an_extra_pointer_event() {
         let mut tabs = workspace();

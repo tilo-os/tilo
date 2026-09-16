@@ -5,19 +5,26 @@ use ui::widget::{Button, Column, Container, Row, Text, Widget};
 
 pub(crate) struct Capabilities {
     permissions: BTreeMap<u32, (String, String)>,
-    prompts: BTreeMap<u32, (String, String)>,
-    downloads: BTreeMap<u32, Download>,
+    downloads: std::sync::Arc<std::sync::Mutex<DownloadStore>>,
+    observed_download_version: u64,
     notice: ui::LocalState<String>,
 }
 impl Default for Capabilities {
     fn default() -> Self {
         Self {
             permissions: BTreeMap::new(),
-            prompts: BTreeMap::new(),
-            downloads: BTreeMap::new(),
+            downloads: Default::default(),
+            observed_download_version: 0,
             notice: ui::LocalState::new(String::new()),
         }
     }
+}
+
+#[derive(Default)]
+struct DownloadStore {
+    prompts: BTreeMap<u32, (String, String)>,
+    records: BTreeMap<u32, Download>,
+    version: u64,
 }
 
 fn open_download(path: &std::path::Path, reveal: bool) -> Result<(), String> {
@@ -59,6 +66,15 @@ struct Download {
     error: String,
 }
 impl Capabilities {
+    pub fn share_downloads(&mut self, other: &Self) {
+        self.downloads = other.downloads.clone();
+    }
+    pub fn downloads_changed(&mut self) -> bool {
+        let version = self.downloads.lock().unwrap().version;
+        let changed = version != self.observed_download_version;
+        self.observed_download_version = version;
+        changed
+    }
     pub fn apply(&mut self, event: WebViewEvent) {
         match event {
             WebViewEvent::PermissionRequested {
@@ -74,8 +90,10 @@ impl Capabilities {
                 self.permissions.remove(&id);
             }
             WebViewEvent::DownloadRequested { id, url, name } => {
-                if self.prompts.len() < 32 {
-                    self.prompts.insert(id, (url, name));
+                let mut downloads = self.downloads.lock().unwrap();
+                downloads.version = downloads.version.wrapping_add(1);
+                if downloads.prompts.len() < 32 {
+                    downloads.prompts.insert(id, (url, name));
                 }
             }
             WebViewEvent::DownloadUpdated {
@@ -87,21 +105,23 @@ impl Capabilities {
                 total,
                 error,
             } => {
+                let mut downloads = self.downloads.lock().unwrap();
+                downloads.version = downloads.version.wrapping_add(1);
                 if !path.is_empty() || state != "progress" {
-                    self.prompts.remove(&id);
+                    downloads.prompts.remove(&id);
                 }
-                if self.downloads.len() >= 100 && !self.downloads.contains_key(&id) {
-                    if let Some(old) = self
-                        .downloads
+                if downloads.records.len() >= 100 && !downloads.records.contains_key(&id) {
+                    if let Some(old) = downloads
+                        .records
                         .iter()
                         .find(|(_, d)| d.state != "progress")
                         .map(|(id, _)| *id)
                     {
-                        self.downloads.remove(&old);
+                        downloads.records.remove(&old);
                     }
                 }
-                if self.downloads.len() < 100 || self.downloads.contains_key(&id) {
-                    self.downloads.insert(
+                if downloads.records.len() < 100 || downloads.records.contains_key(&id) {
+                    downloads.records.insert(
                         id,
                         Download {
                             name,
@@ -118,6 +138,7 @@ impl Capabilities {
         }
     }
     pub fn prompt(&self, engine: &SharedEngine) -> Option<Box<dyn Widget>> {
+        let downloads = self.downloads.lock().unwrap();
         let (id, title, permission) =
             if let Some((&id, (origin, rights))) = self.permissions.first_key_value() {
                 (
@@ -125,7 +146,7 @@ impl Capabilities {
                     format!("{origin} requests {rights}. Expires in 60 seconds."),
                     true,
                 )
-            } else if let Some((&id, (url, name))) = self.prompts.first_key_value() {
+            } else if let Some((&id, (url, name))) = downloads.prompts.first_key_value() {
                 (
                     id,
                     format!("Download {name} from {url}? Save in a new folder in Downloads."),
@@ -166,14 +187,15 @@ impl Capabilities {
         ))
     }
     pub fn downloads(&self, engine: &SharedEngine) -> Box<dyn Widget> {
+        let downloads = self.downloads.lock().unwrap();
         let mut rows = Column::new().with_no_padding().with_intrinsic_height();
         rows = rows.push(Box::new(
             Text::from_state(&self.notice, Clone::clone).with_size(13.0),
         ));
-        if self.downloads.is_empty() {
+        if downloads.records.is_empty() {
             rows = rows.push(Box::new(Text::new("No downloads this session.")));
         }
-        for (&id, d) in self.downloads.iter().rev() {
+        for (&id, d) in downloads.records.iter().rev() {
             let summary = format!(
                 "{} · {} · {} / {} bytes\n{} {}",
                 d.name, d.state, d.received, d.total, d.path, d.error
@@ -218,6 +240,77 @@ mod tests {
     fn contains(widget: &dyn Widget, id: &str) -> bool {
         widget.test_id() == Some(id) || widget.children().iter().any(|child| contains(*child, id))
     }
+    #[test]
+    fn download_records_survive_origin_close_and_permissions_stay_local() {
+        let first_engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+        let second_capture = ui::webview::test_engine::TestEngine::new();
+        let second_engine: SharedEngine = second_capture.clone();
+        let mut first = Capabilities::default();
+        let mut second = Capabilities::default();
+        second.share_downloads(&first);
+        first.apply(WebViewEvent::PermissionRequested {
+            id: 1,
+            origin: "https://site.test".into(),
+            permissions: "camera".into(),
+        });
+        assert!(first.prompt(&first_engine).is_some());
+        assert!(second.prompt(&second_engine).is_none());
+        first.apply(WebViewEvent::DownloadUpdated {
+            id: 7,
+            state: "progress".into(),
+            path: "/tmp/file".into(),
+            name: "file".into(),
+            received: 10,
+            total: 20,
+            error: String::new(),
+        });
+        assert!(second.downloads_changed());
+        let mut rows = second.downloads(&second_engine);
+        assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
+        let result = rows
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                ui::qos_actions::OperationKind::Effect,
+                "qos.ui.control.invoke",
+                &serde_json::to_vec("browser.download.cancel.7").unwrap(),
+                &automerge::AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert!(result.is_some());
+        assert!(
+            second_capture
+                .commands()
+                .contains(&WebViewCommand::CancelDownload { id: 7 })
+        );
+        drop(first);
+        second.apply(WebViewEvent::DownloadUpdated {
+            id: 7,
+            state: "complete".into(),
+            path: "/tmp/file".into(),
+            name: "file".into(),
+            received: 20,
+            total: 20,
+            error: String::new(),
+        });
+        assert!(contains(
+            second.downloads(&second_engine).as_ref(),
+            "browser.download.open.7"
+        ));
+        for id in 8..150 {
+            second.apply(WebViewEvent::DownloadUpdated {
+                id,
+                state: "complete".into(),
+                path: "/tmp/file".into(),
+                name: "file".into(),
+                received: 20,
+                total: 20,
+                error: String::new(),
+            });
+        }
+        assert_eq!(second.downloads.lock().unwrap().records.len(), 100);
+    }
+
     #[test]
     fn only_completed_downloads_offer_explicit_open_and_reveal() {
         let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();

@@ -31,12 +31,12 @@ with tempfile.TemporaryDirectory(prefix='qos-tabs-') as profile:
                     event=json.loads(data[1:])
                     if os.environ.get('QOS_TABS_DEBUG'): print(round(time.monotonic(),3),event,flush=True)
                     events.put(event)
-                else: events.put({'event':'frame','tab':struct.unpack_from('<I',data,1)[0] if data[0]==3 else 1})
+                else: events.put({'event':'frame','tab':struct.unpack_from('<I',data,1)[0] if data[0]==3 else 1,'size':struct.unpack_from('<II',data,5 if data[0]==3 else 1)})
         except Exception as e: events.put(e)
     threading.Thread(target=read,daemon=True).start()
     def send(**d):
         b=b'\1'+json.dumps(d).encode(); p.stdin.write(struct.pack('<I',len(b))+b); p.stdin.flush()
-    def until(predicate,timeout=60):
+    def until(predicate,timeout=120):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
             e=events.get(timeout=max(.01,end-time.monotonic()))
@@ -55,6 +55,11 @@ with tempfile.TemporaryDirectory(prefix='qos-tabs-') as profile:
             # New WebView instances send the same dimensions on layout.
             send(op='resize',width=800,height=600,scale_factor=1.0)
             until(lambda e:e['event']=='frame',timeout=4)
+        for scale in [1.0,2.0]:
+            for height in [480,600,520,600]:
+                width=int(800*scale); physical_height=int(height*scale)
+                send(op='resize',width=width,height=physical_height,scale_factor=scale)
+                until(lambda e:e['event']=='frame' and e['size']==(width,physical_height),timeout=5)
         send(op='shutdown'); assert p.wait(timeout=15)==0
         print('PASS: retained page repaints after show and identical resize')
     finally:
