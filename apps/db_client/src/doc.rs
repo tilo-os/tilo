@@ -119,6 +119,13 @@ impl ConnectionsDoc {
             let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, i) else {
                 continue;
             };
+            // Removal is a tombstone, not a list deletion: stable object ids
+            // let concurrent peer actions converge without resurrecting a
+            // second profile. Tombstones are intentionally invisible to the
+            // ordinary connection picker.
+            if bool_field(doc, &row, "removed").unwrap_or(false) {
+                continue;
+            }
             let id = str_field(doc, &row, "id")
                 .and_then(|s| Uuid::parse_str(&s).ok())
                 .unwrap_or_else(Uuid::new_v4);
