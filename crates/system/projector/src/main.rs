@@ -561,9 +561,37 @@ impl Default for MediaTelemetry {
 fn serve_file(mut stream: TcpStream, root: &Path, token: &str, telemetry: &MediaTelemetry) {
     let request_started = Instant::now();
     let mut request = [0u8; 2048];
-    let Ok(read) = stream.read(&mut request) else {
-        return;
-    };
+    let mut read = 0;
+    loop {
+        if read == request.len() {
+            let _ = stream.write_all(
+                b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return;
+        }
+        let Some(remaining) = request.get_mut(read..) else {
+            return;
+        };
+        let Ok(received) = stream.read(remaining) else {
+            return;
+        };
+        if received == 0 {
+            return;
+        }
+        let Some(total) = read.checked_add(received) else {
+            return;
+        };
+        read = total;
+        let Some(received_request) = request.get(..read) else {
+            return;
+        };
+        if received_request
+            .windows(4)
+            .any(|bytes| bytes == b"\r\n\r\n")
+        {
+            break;
+        }
+    }
     let Some(bytes) = request.get(..read) else {
         return;
     };
@@ -1698,11 +1726,14 @@ mod tests {
     fn request(port: u16, path: &str) -> Vec<u8> {
         let mut stream = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
             .expect("connect media server");
-        write!(
-            stream,
-            "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
-        )
-        .expect("write request");
+        write!(stream, "GET {path} HTTP/1.1\r\n").expect("write request line");
+        // TCP does not preserve write boundaries. Deliberately let the server
+        // observe a fragmented request so closing with unread header bytes
+        // cannot regress into a connection reset for real receivers.
+        std::thread::sleep(Duration::from_millis(30));
+        stream
+            .write_all(b"Host: localhost\r\nConnection: close\r\n\r\n")
+            .expect("write request headers");
         let mut response = Vec::new();
         stream.read_to_end(&mut response).expect("read response");
         response
