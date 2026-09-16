@@ -28,6 +28,7 @@ use std::time::Duration;
 use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use rand_core::{OsRng, RngCore};
 use serde::Deserialize;
 use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex as AsyncMutex;
@@ -44,7 +45,7 @@ use collab_types::{
 use runtime_collab::raw::{
     OpKind, action_catalogue_stream, action_directory, action_input, channel_handle,
     collab_service, context_stream, invocation_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, scrollback_batch, stream, task_run_stream,
+    presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
     workspace_control_handle,
 };
 use ui::collaboration::{CollabEvent, PresencePayload};
@@ -1067,6 +1068,48 @@ struct ChannelSubscribers {
 
 type ActionCatalogueSubscriber = (String, BrokerActor, mpsc::UnboundedSender<String>);
 
+struct RealtimeBinding {
+    id: crate::shell::realtime_session::RealtimeSessionId,
+    app: crate::shell::realtime_session::VerifiedAppRegistration,
+    source: crate::shell::personal_continuity::DeviceId,
+    owner_peer: u64,
+    authorization: Option<crate::shell::realtime_session::CaptureAuthorizationId>,
+}
+
+#[derive(Default)]
+struct RealtimeBridge {
+    broker: crate::shell::realtime_session::RealtimeSessionBroker,
+    sessions: HashMap<String, RealtimeBinding>,
+    subscribers: HashMap<u64, mpsc::UnboundedSender<Vec<u8>>>,
+}
+
+impl RealtimeBridge {
+    fn new_token(&self) -> String {
+        loop {
+            let mut bytes = [0_u8; 16];
+            OsRng.fill_bytes(&mut bytes);
+            let token = hex::encode(bytes);
+            if !self.sessions.contains_key(&token) {
+                return token;
+            }
+        }
+    }
+
+    fn notify(&mut self, peer: u64, event: &ui::realtime_continuity::RealtimeEvent) {
+        let Ok(bytes) = serde_json::to_vec(event) else {
+            return;
+        };
+        if bytes.len() > ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES
+            || self
+                .subscribers
+                .get(&peer)
+                .is_some_and(|subscriber| subscriber.send(bytes).is_err())
+        {
+            self.subscribers.remove(&peer);
+        }
+    }
+}
+
 /// Shared typed broker state, attached to the transport-neutral fanout core.
 pub struct CapnpBrokerState {
     /// Keyed by `join_channel`'s `channel_id`; lazily inserted on first join.
@@ -1108,6 +1151,7 @@ pub struct CapnpBrokerState {
     pending_task_runs: Mutex<HashMap<u64, PendingTaskRun>>,
     task_run_id: AtomicU64,
     invocation_id: AtomicU64,
+    realtime: Mutex<RealtimeBridge>,
     workspace_control_network: Mutex<Option<std::sync::Weak<crate::shell::network::ShellNetwork>>>,
 }
 
@@ -1287,6 +1331,7 @@ impl CapnpBrokerState {
                 pending_task_runs: Mutex::new(HashMap::new()),
                 task_run_id: AtomicU64::new(1),
                 invocation_id: AtomicU64::new(1),
+                realtime: Mutex::new(RealtimeBridge::default()),
                 workspace_control_network: Mutex::new(None),
             }),
             bridge_rx,
@@ -2821,6 +2866,31 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.task_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
+        if let Ok(mut realtime) = self.realtime.lock() {
+            realtime.subscribers.remove(&peer_id);
+            let owned = realtime
+                .sessions
+                .iter()
+                .filter_map(|(token, binding)| {
+                    (binding.owner_peer == peer_id).then_some((
+                        token.clone(),
+                        binding.id,
+                        binding.app.clone(),
+                        binding.source.clone(),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            for (token, id, app, source) in owned {
+                let _ = realtime.broker.apply_media_action(
+                    &app,
+                    id,
+                    &source,
+                    crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                    std::time::Instant::now(),
+                );
+                realtime.sessions.remove(&token);
+            }
+        }
         if let Ok(mut pending) = self.pending_invocations.lock() {
             let ids = pending
                 .iter()
@@ -3046,7 +3116,9 @@ impl CapnpBrokerState {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::TaskRun(_)
             | CollabEvent::TaskActionInvocationResult { .. }
-            | CollabEvent::TaskRunCancellation { .. } => {
+            | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::RealtimeCommandResult { .. }
+            | CollabEvent::Realtime(_) => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
             }
@@ -3386,9 +3458,287 @@ impl CapnpChannelHandle {
     fn route(&self) -> CrdtRoute {
         CrdtRoute::from_channel_key(&self.channel_id)
     }
+
+    fn realtime_registration(
+        &self,
+    ) -> Result<
+        (
+            crate::shell::realtime_session::VerifiedAppRegistration,
+            crate::shell::personal_continuity::DeviceId,
+        ),
+        capnp::Error,
+    > {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let route = self.route();
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Err(capnp::Error::failed(
+                "realtime continuity requires a certified app/workspace route".into(),
+            ));
+        }
+        let app = crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+            route.app_id,
+            route.cluster_id,
+        )
+        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        let local = self
+            .state
+            .workspace_control_network()
+            .and_then(|network| network.local_device_fabric_identity())
+            .map(|(device, _)| device)
+            .ok_or_else(|| {
+                capnp::Error::failed("realtime continuity requires a certified local device".into())
+            })?;
+        Ok((app, local))
+    }
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one authenticated RPC boundary validates and applies every realtime transition atomically so route binding and cutover acknowledgement cannot drift"
+    )]
+    fn realtime_command(
+        self: Rc<Self>,
+        params: channel_handle::RealtimeCommandParams,
+        mut results: channel_handle::RealtimeCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        let (app, local) = match self.realtime_registration() {
+            Ok(binding) => binding,
+            Err(error) => return Promise::err(error),
+        };
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let claimed_app = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        if claimed_app != app.app_id() {
+            return Promise::err(capnp::Error::failed(
+                "realtime app id must match the certified connection route".into(),
+            ));
+        }
+        let bytes = match request.get_command_json() {
+            Ok(bytes) if bytes.len() <= ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES => bytes,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "realtime command exceeds local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(error),
+        };
+        let command: ui::realtime_continuity::RealtimeCommand = match serde_json::from_slice(bytes)
+        {
+            Ok(command) => command,
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        if !command.valid() {
+            return Promise::err(capnp::Error::failed(
+                "realtime command contains an unsafe semantic locator".into(),
+            ));
+        }
+        let Ok(mut bridge) = self.state.realtime.lock() else {
+            return Promise::err(capnp::Error::failed(
+                "realtime broker is unavailable".into(),
+            ));
+        };
+        let now = std::time::Instant::now();
+        let reply = match command {
+            ui::realtime_continuity::RealtimeCommand::Register { intent } => {
+                let mut facets = Vec::with_capacity(4);
+                if intent.media.microphone {
+                    facets.push(crate::shell::realtime_session::RealtimeMediaFacet::Microphone);
+                }
+                if intent.media.camera {
+                    facets.push(crate::shell::realtime_session::RealtimeMediaFacet::Camera);
+                }
+                if intent.media.screen_share {
+                    facets.push(crate::shell::realtime_session::RealtimeMediaFacet::ScreenShare);
+                }
+                if intent.media.share_audio {
+                    facets.push(crate::shell::realtime_session::RealtimeMediaFacet::ShareAudio);
+                }
+                let registered = crate::shell::realtime_session::RealtimeResumeIntent {
+                    room: match crate::shell::realtime_session::SemanticRoomLocator::new(
+                        intent.provider,
+                        intent.room_id,
+                    ) {
+                        Ok(room) => room,
+                        Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                    },
+                    semantic_position: intent.semantic_position,
+                    media: match crate::shell::realtime_session::RealtimeMediaSet::new(facets) {
+                        Ok(media) => media,
+                        Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                    },
+                };
+                let id = match bridge.broker.register(&app, local.clone(), registered, now) {
+                    Ok(id) => id,
+                    Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                };
+                let token = bridge.new_token();
+                bridge.sessions.insert(
+                    token.clone(),
+                    RealtimeBinding {
+                        id,
+                        app,
+                        source: local,
+                        owner_peer: self.peer_id,
+                        authorization: None,
+                    },
+                );
+                ui::realtime_continuity::RealtimeReply::Registered { session: token }
+            }
+            ui::realtime_continuity::RealtimeCommand::Propose { session, target } => {
+                let target = match crate::shell::personal_continuity::DeviceId::new(target) {
+                    Ok(target) => target,
+                    Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                };
+                let Some(binding) = bridge.sessions.get(&session) else {
+                    return Promise::err(capnp::Error::failed("unknown realtime session".into()));
+                };
+                if binding.owner_peer != self.peer_id
+                    || binding.app != app
+                    || binding.source != local
+                {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime session binding mismatch".into(),
+                    ));
+                }
+                let (id, source) = (binding.id, binding.source.clone());
+                if let Err(error) = bridge.broker.propose_target(&app, id, &source, target, now) {
+                    return Promise::err(capnp::Error::failed(error.to_string()));
+                }
+                ui::realtime_continuity::RealtimeReply::Proposed
+            }
+            ui::realtime_continuity::RealtimeCommand::Accept { session } => {
+                let Some(binding) = bridge.sessions.get(&session) else {
+                    return Promise::err(capnp::Error::failed("unknown realtime session".into()));
+                };
+                if binding.app != app {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime session binding mismatch".into(),
+                    ));
+                }
+                let (id, source) = (binding.id, binding.source.clone());
+                let authorization = match bridge
+                    .broker
+                    .authorize_target_capture(&app, id, &source, &local, now)
+                {
+                    Ok(authorization) => authorization,
+                    Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                };
+                if let Err(error) =
+                    bridge
+                        .broker
+                        .accept_target(&app, id, &source, &local, authorization, now)
+                {
+                    return Promise::err(capnp::Error::failed(error.to_string()));
+                }
+                if let Some(binding) = bridge.sessions.get_mut(&session) {
+                    binding.authorization = Some(authorization);
+                }
+                ui::realtime_continuity::RealtimeReply::Accepted
+            }
+            ui::realtime_continuity::RealtimeCommand::MediaReady { session } => {
+                let Some(binding) = bridge.sessions.get(&session) else {
+                    return Promise::err(capnp::Error::failed("unknown realtime session".into()));
+                };
+                if binding.app != app {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime session binding mismatch".into(),
+                    ));
+                }
+                let Some(authorization) = binding.authorization else {
+                    return Promise::err(capnp::Error::failed(
+                        "fresh target capture authorization is required".into(),
+                    ));
+                };
+                let (id, owner_peer, source) =
+                    (binding.id, binding.owner_peer, binding.source.clone());
+                let directive =
+                    match bridge
+                        .broker
+                        .media_ready(&app, id, &source, &local, authorization, now)
+                    {
+                        Ok(directive) => directive,
+                        Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+                    };
+                if directive.stop_source {
+                    bridge.notify(
+                        owner_peer,
+                        &ui::realtime_continuity::RealtimeEvent::StopSource {
+                            session: session.clone(),
+                        },
+                    );
+                }
+                ui::realtime_continuity::RealtimeReply::MediaReady
+            }
+            ui::realtime_continuity::RealtimeCommand::TargetFailed { session } => {
+                let Some(binding) = bridge.sessions.get(&session) else {
+                    return Promise::err(capnp::Error::failed("unknown realtime session".into()));
+                };
+                if binding.app != app {
+                    return Promise::err(capnp::Error::failed(
+                        "realtime session binding mismatch".into(),
+                    ));
+                }
+                let (id, owner_peer, source) =
+                    (binding.id, binding.owner_peer, binding.source.clone());
+                if let Err(error) = bridge.broker.target_failed(&app, id, &source, &local, now) {
+                    return Promise::err(capnp::Error::failed(error.to_string()));
+                }
+                if let Some(binding) = bridge.sessions.get_mut(&session) {
+                    binding.authorization = None;
+                }
+                bridge.notify(
+                    owner_peer,
+                    &ui::realtime_continuity::RealtimeEvent::RolledBack {
+                        session: session.clone(),
+                    },
+                );
+                ui::realtime_continuity::RealtimeReply::RolledBack
+            }
+        };
+        drop(bridge);
+        let bytes = match serde_json::to_vec(&reply) {
+            Ok(bytes) => bytes,
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        results.get().set_reply_json(&bytes);
+        Promise::ok(())
+    }
+
+    fn subscribe_realtime(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeRealtimeParams,
+        mut results: channel_handle::SubscribeRealtimeResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let (tx, rx) = mpsc::unbounded_channel();
+        let Ok(mut bridge) = self.state.realtime.lock() else {
+            return Promise::err(capnp::Error::failed("realtime broker unavailable".into()));
+        };
+        bridge.subscribers.insert(self.peer_id, tx);
+        drop(bridge);
+        let client: realtime_stream::Client = capnp_rpc::new_client(RealtimeStreamServer {
+            rx: Rc::new(AsyncMutex::new(rx)),
+        });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "receipt validation and persistence share one RPC boundary so acknowledgement cannot precede durable local state"
@@ -6156,6 +6506,10 @@ struct InvocationStreamServer {
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
 }
 
+struct RealtimeStreamServer {
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<Vec<u8>>>>,
+}
+
 struct TaskRunStreamServer {
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<TaskRunEnvelope>>>,
 }
@@ -6211,6 +6565,25 @@ impl invocation_stream::Server for InvocationStreamServer {
                 .map_err(|error| capnp::Error::failed(error.to_string()))?
                 .unwrap_or_default();
             result.set_context_json(&context);
+            Ok(())
+        })
+    }
+}
+
+impl realtime_stream::Server for RealtimeStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: realtime_stream::ReadParams,
+        mut results: realtime_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            let mut guard = rx.lock().await;
+            let bytes = guard.recv().await.ok_or_else(|| {
+                capnp::Error::disconnected("realtime lifecycle stream closed".into())
+            })?;
+            drop(guard);
+            results.get().set_event_json(&bytes);
             Ok(())
         })
     }
