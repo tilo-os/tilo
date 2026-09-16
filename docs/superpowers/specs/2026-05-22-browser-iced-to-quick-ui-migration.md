@@ -26,7 +26,7 @@ Replace `iced` with `quick-ui` for the browser's chrome (address bar, tab strip,
 
 After the migration:
 - `quick-browser --shots /tmp/browser.png` works the same way it does for terminal + file-explorer
-- The browser participates in the same e2e test harness as the rest of the shell (NIRIOS_TEST_CONTROL, snapshot, headless backend)
+- The browser participates in the same e2e test harness as the rest of the shell (QOS_TEST_CONTROL, snapshot, headless backend)
 - Browser chrome theming flows through `quick_ui::theme::Theme` like everything else (currently the iced styling diverges from the rest of the OS)
 
 ## Inventory: what iced is doing in `apps/browser/`

@@ -349,8 +349,8 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
                                        // anchoring + percent-height widgets don't compose into a
                                        // bare Column). The offscreen `widget_snapshot` example
                                        // pins them at fixed rects for visual review.
-        )), // close Column → Box::new
-    ); // close Scrollable.with_child → Box::new (outer root)
+        )),
+    );
     let _ = popover;
     let _ = modal;
     root
@@ -411,7 +411,6 @@ pub fn run(_args: &[String]) {
     renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &out_top);
     println!("wrote top-of-page snapshot to {out_top}");
 
-    // ----- Now scroll down 600 px and re-render to verify scrolling --
     // Inject a synthetic MouseWheel event that the Scrollable should
     // catch and convert to an `offset_y` update. Then re-apply layout
     // (Scrollable's apply_layout re-positions its child using the new

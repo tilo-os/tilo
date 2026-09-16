@@ -1,4 +1,4 @@
-//! Phase 9: cooperative cryptographic redaction.
+//! Cooperative cryptographic redaction.
 //!
 //! A `RedactRequest` is the payload of a [`crate::op::SignedOp`] whose
 //! `op_class` is [`crate::role::OpClass::Redact`]. Only the channel owner

@@ -1,5 +1,4 @@
-//! Phase 4: clicking on a `Mark::Link(page_id)` span in the editor
-//! navigates the app to that page.
+//! Clicking a `Mark::Link(page_id)` span navigates to that page.
 //!
 //! Drives `NotesApp::navigate_to` directly — full click-through tests
 //! require a live winit event loop and per-glyph hit-tests, which
