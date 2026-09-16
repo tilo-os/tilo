@@ -216,8 +216,17 @@ native manifest probe confirmed this without pulling an image.
 RPM build tooling is now available as ordinary-user `rpmbuild` 6.0.2. Fedora
 installed six new required packages with no upgrades or removals (541 KiB
 download, 2 MiB installed). No qOS package or desktop-session change was made;
-a fresh native payload, package installation and graphical-session proof remain
-required.
+a package installation and graphical-session proof remain required.
+
+Fresh native release builds of the launcher, unlock helper and Desktop shell
+completed, and RPM assembly produced `qos-session-0.1.9-1.fc44.aarch64.rpm` in
+`/home/parallels/qos-desktop-package.UhBqUX/RPMS/aarch64/` inside Fedora. Its SHA-256
+is `39fdb1f7fd5baa646d4cd31b1f521f7cf66f44a9dbf814b91efbb4d015ed9a3a`.
+The shell build emitted one existing `restore_documents` dead-code warning.
+Extraction checks passed for the package layout, ARM64 executables, resolved
+shared libraries and the host-session wrapper. A read-only DNF proposal resolved
+the package and five dependencies with no upgrades or removals. Nothing was
+installed. This local artifact is not a signed release or graphical login proof.
 
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
 - Linux interactive wizard, desktop-session installation, and complete boot flow.
