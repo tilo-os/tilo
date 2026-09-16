@@ -105,6 +105,13 @@ impl SchemaTree {
         }
     }
 
+    /// Reveal a schema for a typed resource navigation request. Unlike the
+    /// pointer toggle this is idempotent, so repeating a search activation
+    /// cannot unexpectedly hide the user's destination.
+    pub fn reveal_schema(&mut self, schema: &str) {
+        self.expanded_schemas.insert(schema.to_string());
+    }
+
     pub fn scroll(&mut self, delta: isize) {
         let vis = self.visible_rows();
         let max = self.rows.len().saturating_sub(vis);
