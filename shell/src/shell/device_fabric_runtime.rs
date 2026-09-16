@@ -14,6 +14,8 @@ use std::time::{Duration, Instant, SystemTime};
 use rand_core::{OsRng, RngCore};
 use serde_json::{Map, Value};
 
+use crate::network::actor::{PersonalMediaTransferStatus, PersonalNearbyTransferFrame};
+
 use crate::compositor::selection::{
     SharedSelection, merge_shared_clipboard_history, shareable_clipboard_history,
 };
@@ -189,6 +191,24 @@ pub enum NearbyDropEvent {
 struct NearbyDropState {
     events: VecDeque<NearbyDropEvent>,
     pending: BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String)>,
+    large_offers: BTreeMap<
+        [u8; 16],
+        (
+            crate::shell::personal_continuity::DeviceId,
+            [u8; 16],
+            String,
+        ),
+    >,
+    progress: BTreeMap<
+        [u8; 16],
+        (
+            crate::shell::personal_continuity::DeviceId,
+            u64,
+            u64,
+            PersonalMediaTransferStatus,
+        ),
+    >,
+    last_offer: BTreeMap<[u8; 16], Instant>,
 }
 
 fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
@@ -196,10 +216,188 @@ fn nearby_drop_state() -> &'static Mutex<NearbyDropState> {
     STATE.get_or_init(|| Mutex::new(NearbyDropState::default()))
 }
 
+fn nearby_transfer_root() -> Option<PathBuf> {
+    dirs::state_dir().map(|root| root.join("qos").join("nearby-transfers"))
+}
+
+fn nearby_store_cell() -> &'static Mutex<Option<crate::shell::nearby_transfer::NearbyTransferStore>>
+{
+    static STORE: OnceLock<Mutex<Option<crate::shell::nearby_transfer::NearbyTransferStore>>> =
+        OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(None))
+}
+
+fn with_nearby_transfer_store<T>(
+    operation: impl FnOnce(&mut crate::shell::nearby_transfer::NearbyTransferStore) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = nearby_store_cell()
+        .lock()
+        .map_err(|_| "nearby transfer store is unavailable".to_string())?;
+    if guard.is_none() {
+        let root = nearby_transfer_root()
+            .ok_or_else(|| "nearby transfer state directory is unavailable".to_string())?;
+        *guard = Some(crate::shell::nearby_transfer::NearbyTransferStore::open(
+            root,
+            unix_millis(),
+        )?);
+    }
+    operation(
+        guard
+            .as_mut()
+            .ok_or_else(|| "nearby transfer store is unavailable".to_string())?,
+    )
+}
+
+fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
+    let Ok(mut guard) = nearby_store_cell().try_lock() else {
+        return Vec::new();
+    };
+    if guard.is_none() {
+        let Some(root) = nearby_transfer_root() else {
+            return Vec::new();
+        };
+        let Ok(store) =
+            crate::shell::nearby_transfer::NearbyTransferStore::open(root, unix_millis())
+        else {
+            return Vec::new();
+        };
+        *guard = Some(store);
+    }
+    guard
+        .as_ref()
+        .map_or_else(Vec::new, |store| store.outbox().to_vec())
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+struct NearbyStagingResult {
+    target: crate::shell::personal_continuity::DeviceId,
+    name: String,
+    result: Result<(), String>,
+}
+
+fn nearby_staging_queue() -> &'static (
+    mpsc::Sender<NearbyStagingResult>,
+    Mutex<mpsc::Receiver<NearbyStagingResult>>,
+) {
+    static QUEUE: OnceLock<(
+        mpsc::Sender<NearbyStagingResult>,
+        Mutex<mpsc::Receiver<NearbyStagingResult>>,
+    )> = OnceLock::new();
+    QUEUE.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel();
+        (sender, Mutex::new(receiver))
+    })
+}
+
 pub fn take_nearby_drop_events() -> Vec<NearbyDropEvent> {
     nearby_drop_state()
         .lock()
         .map_or_else(|_| Vec::new(), |mut state| state.events.drain(..).collect())
+}
+
+pub(crate) fn record_nearby_transfer_progress(
+    target: crate::shell::personal_continuity::DeviceId,
+    transfer_id: [u8; 16],
+    sent_bytes: u64,
+    total_bytes: u64,
+    status: PersonalMediaTransferStatus,
+) {
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        state
+            .progress
+            .insert(transfer_id, (target, sent_bytes, total_bytes, status));
+        if status == PersonalMediaTransferStatus::Failed {
+            state.large_offers.remove(&transfer_id);
+        }
+    }
+}
+
+pub(crate) fn handle_nearby_transfer_frame(
+    network: &ShellNetwork,
+    source: &crate::shell::personal_continuity::DeviceId,
+    frame: PersonalNearbyTransferFrame,
+) {
+    let (transfer_id, request_id) = match &frame {
+        PersonalNearbyTransferFrame::Chunk {
+            transfer_id,
+            request_id,
+            ..
+        }
+        | PersonalNearbyTransferFrame::Finish {
+            transfer_id,
+            request_id,
+            ..
+        }
+        | PersonalNearbyTransferFrame::Abort {
+            transfer_id,
+            request_id,
+        } => (*transfer_id, *request_id),
+    };
+    let authorized = with_nearby_transfer_store(|store| {
+        Ok(store.inbox().iter().any(|entry| {
+            entry.id == transfer_id
+                && entry.source == source.as_str()
+                && entry.request_id == request_id
+        }))
+    })
+    .unwrap_or(false);
+    if !authorized {
+        return;
+    }
+    match frame {
+        PersonalNearbyTransferFrame::Chunk { offset, bytes, .. } => {
+            if bytes.len() <= crate::network::actor::PERSONAL_MEDIA_CHUNK_BYTES {
+                let _ =
+                    with_nearby_transfer_store(|store| store.append(transfer_id, offset, &bytes));
+            }
+        }
+        PersonalNearbyTransferFrame::Finish { content_hash, .. } => {
+            let expected = with_nearby_transfer_store(|store| {
+                Ok(store
+                    .inbox()
+                    .iter()
+                    .find(|entry| entry.id == transfer_id)
+                    .map(|entry| entry.content_hash))
+            })
+            .ok()
+            .flatten();
+            let root = dirs::download_dir().map(|path| path.join("qOS Nearby"));
+            let installed = expected
+                .filter(|expected| expected == &content_hash)
+                .zip(root)
+                .and_then(|(_, root)| {
+                    with_nearby_transfer_store(|store| store.finish(transfer_id, &root)).ok()
+                });
+            if installed.is_none() {
+                let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
+            }
+            if let Some(path) = installed.as_ref()
+                && let Ok(mut state) = nearby_drop_state().lock()
+            {
+                state.events.push_back(NearbyDropEvent::Received {
+                    path: path.clone(),
+                    peer: source.clone(),
+                });
+            }
+            let _ = network.send_personal_fabric_action(
+                source,
+                PersonalFabricAction::NearbyTransferResult {
+                    request_id,
+                    transfer_id,
+                    accepted: installed.is_some(),
+                },
+            );
+        }
+        // A transport abort is resumable: keep only the last durable prefix.
+        PersonalNearbyTransferFrame::Abort { .. } => {}
+    }
 }
 
 #[derive(Clone)]
@@ -445,6 +643,7 @@ impl DeviceFabricRuntime {
     ) {
         pump_bluetooth_handoffs(network);
         self.handle_fabric_actions(network);
+        resume_nearby_transfers(network);
         pump_personal_displays(network);
         self.retry_waiting_media(network);
         flush_spatial_input(network);
@@ -616,7 +815,12 @@ impl DeviceFabricRuntime {
                     }
                 }
                 action @ (PersonalFabricAction::NearbyDrop { .. }
-                | PersonalFabricAction::NearbyDropResult { .. }) => {
+                | PersonalFabricAction::NearbyDropResult { .. }
+                | PersonalFabricAction::NearbyTransferOffer { .. }
+                | PersonalFabricAction::NearbyTransferReady { .. }
+                | PersonalFabricAction::NearbyTransferCancel { .. }
+                | PersonalFabricAction::NearbyTransferRestart { .. }
+                | PersonalFabricAction::NearbyTransferResult { .. }) => {
                     handle_nearby_drop_action(
                         network,
                         envelope.request_id,
@@ -767,6 +971,56 @@ impl DeviceFabricRuntime {
     }
 }
 
+fn resume_nearby_transfers(network: &ShellNetwork) {
+    if let Ok(receiver) = nearby_staging_queue().1.lock() {
+        while let Ok(staged) = receiver.try_recv() {
+            if staged.result.is_err()
+                && let Ok(mut state) = nearby_drop_state().lock()
+            {
+                state.events.push_back(NearbyDropEvent::Failed {
+                    file_name: staged.name,
+                    peer: staged.target,
+                });
+            }
+        }
+    }
+    let entries = try_outbox_entries();
+    for entry in entries {
+        let Ok(target) = crate::shell::personal_continuity::DeviceId::new(entry.target.clone())
+        else {
+            continue;
+        };
+        let should_offer = nearby_drop_state().lock().is_ok_and(|state| {
+            !state.large_offers.contains_key(&entry.id)
+                && state
+                    .last_offer
+                    .get(&entry.id)
+                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(10))
+        });
+        if !should_offer {
+            continue;
+        }
+        if let Ok(mut state) = nearby_drop_state().lock() {
+            state.last_offer.insert(entry.id, Instant::now());
+        }
+        if let Ok(request) = network.send_personal_fabric_action(
+            &target,
+            PersonalFabricAction::NearbyTransferOffer {
+                transfer_id: entry.id,
+                name: entry.name.clone(),
+                kind: entry.kind,
+                total_bytes: entry.total_bytes,
+                content_hash: entry.content_hash,
+            },
+        ) && let Ok(mut state) = nearby_drop_state().lock()
+        {
+            state
+                .large_offers
+                .insert(entry.id, (target, request, entry.name));
+        }
+    }
+}
+
 fn prune_spatial_leases(network: &ShellNetwork) {
     if let Ok(mut spatial) = spatial_input_state().lock() {
         let now = unix_ms();
@@ -811,6 +1065,10 @@ fn prune_spatial_leases(network: &ShellNetwork) {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive exact-peer state machine keeps inline delivery, offer, resume, restart, cancellation, and result binding auditable together"
+)]
 fn handle_nearby_drop_action(
     network: &ShellNetwork,
     envelope_request_id: [u8; 16],
@@ -860,6 +1118,185 @@ fn handle_nearby_drop_action(
                         peer: source,
                     }
                 });
+            }
+        }
+        PersonalFabricAction::NearbyTransferOffer {
+            transfer_id,
+            name,
+            kind,
+            total_bytes,
+            content_hash,
+        } => {
+            let ready = with_nearby_transfer_store(|store| {
+                store.begin_incoming(
+                    transfer_id,
+                    source.as_str().to_string(),
+                    envelope_request_id,
+                    name,
+                    kind,
+                    total_bytes,
+                    content_hash,
+                    unix_millis(),
+                )
+            });
+            match ready {
+                Ok((committed_offset, prefix_hash)) => {
+                    let _ = network.send_personal_fabric_action(
+                        &source,
+                        PersonalFabricAction::NearbyTransferReady {
+                            request_id: envelope_request_id,
+                            transfer_id,
+                            committed_offset,
+                            prefix_hash,
+                        },
+                    );
+                }
+                Err(_) => {
+                    let _ = network.send_personal_fabric_action(
+                        &source,
+                        PersonalFabricAction::NearbyTransferResult {
+                            request_id: envelope_request_id,
+                            transfer_id,
+                            accepted: false,
+                        },
+                    );
+                }
+            }
+        }
+        PersonalFabricAction::NearbyTransferReady {
+            request_id,
+            transfer_id,
+            committed_offset,
+            prefix_hash,
+        } => {
+            let pending = nearby_drop_state().lock().ok().and_then(|state| {
+                state.large_offers.get(&transfer_id).cloned().filter(
+                    |(target, offer_request, _)| target == &source && offer_request == &request_id,
+                )
+            });
+            let Some((target, _, _)) = pending else {
+                return;
+            };
+            let manifest = with_nearby_transfer_store(|store| {
+                let entry = store
+                    .outbox()
+                    .iter()
+                    .find(|entry| entry.id == transfer_id && entry.target == target.as_str())
+                    .cloned()
+                    .ok_or_else(|| "unknown nearby transfer offer".to_string())?;
+                let path = store.object_path(transfer_id);
+                let local_prefix =
+                    crate::shell::nearby_transfer::hash_prefix(&path, committed_offset)?;
+                Ok((entry, path, local_prefix))
+            });
+            let Ok((entry, path, local_prefix)) = manifest else {
+                return;
+            };
+            if local_prefix != prefix_hash {
+                let _ = network.send_personal_fabric_action(
+                    &source,
+                    PersonalFabricAction::NearbyTransferRestart {
+                        request_id,
+                        transfer_id,
+                    },
+                );
+                return;
+            }
+            let _ = network.start_nearby_transfer(
+                &target,
+                transfer_id,
+                request_id,
+                entry.total_bytes,
+                committed_offset,
+                prefix_hash,
+                entry.content_hash,
+                &path,
+            );
+        }
+        PersonalFabricAction::NearbyTransferRestart {
+            request_id,
+            transfer_id,
+        } => {
+            let valid = with_nearby_transfer_store(|store| {
+                Ok(store.inbox().iter().any(|entry| {
+                    entry.id == transfer_id
+                        && entry.source == source.as_str()
+                        && entry.request_id == request_id
+                }))
+            })
+            .unwrap_or(false);
+            if valid
+                && let Ok(prefix_hash) =
+                    with_nearby_transfer_store(|store| store.restart_incoming(transfer_id))
+            {
+                let _ = network.send_personal_fabric_action(
+                    &source,
+                    PersonalFabricAction::NearbyTransferReady {
+                        request_id,
+                        transfer_id,
+                        committed_offset: 0,
+                        prefix_hash,
+                    },
+                );
+            }
+        }
+        PersonalFabricAction::NearbyTransferCancel {
+            request_id,
+            transfer_id,
+        } => {
+            let incoming = with_nearby_transfer_store(|store| {
+                Ok(store.inbox().iter().any(|entry| {
+                    entry.id == transfer_id
+                        && entry.source == source.as_str()
+                        && entry.request_id == request_id
+                }))
+            })
+            .unwrap_or(false);
+            if incoming {
+                let _ = with_nearby_transfer_store(|store| store.cancel_incoming(transfer_id));
+            }
+            let outgoing = nearby_drop_state().lock().ok().and_then(|mut state| {
+                let pending = state
+                    .large_offers
+                    .get(&transfer_id)
+                    .cloned()
+                    .filter(|(target, offer, _)| target == &source && offer == &request_id);
+                if pending.is_some() {
+                    state.large_offers.remove(&transfer_id);
+                }
+                pending
+            });
+            if outgoing.is_some() {
+                let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+            }
+        }
+        PersonalFabricAction::NearbyTransferResult {
+            request_id,
+            transfer_id,
+            accepted,
+        } => {
+            let pending = nearby_drop_state().lock().ok().and_then(|mut state| {
+                let pending = state
+                    .large_offers
+                    .get(&transfer_id)
+                    .cloned()
+                    .filter(|(target, offer, _)| target == &source && offer == &request_id);
+                if accepted && pending.is_some() {
+                    state.large_offers.remove(&transfer_id);
+                }
+                pending
+            });
+            if let Some((peer, _, file_name)) = pending {
+                if accepted {
+                    let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
+                }
+                if let Ok(mut state) = nearby_drop_state().lock() {
+                    state.events.push_back(if accepted {
+                        NearbyDropEvent::Sent { file_name, peer }
+                    } else {
+                        NearbyDropEvent::Failed { file_name, peer }
+                    });
+                }
             }
         }
         _ => {}
@@ -918,7 +1355,12 @@ fn handle_spatial_action(
         | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
         | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
         | PersonalFabricAction::NearbyDrop { .. }
-        | PersonalFabricAction::NearbyDropResult { .. } => {}
+        | PersonalFabricAction::NearbyDropResult { .. }
+        | PersonalFabricAction::NearbyTransferOffer { .. }
+        | PersonalFabricAction::NearbyTransferReady { .. }
+        | PersonalFabricAction::NearbyTransferCancel { .. }
+        | PersonalFabricAction::NearbyTransferRestart { .. }
+        | PersonalFabricAction::NearbyTransferResult { .. } => {}
     }
 }
 
@@ -1636,7 +2078,9 @@ pub fn request_media_handoff(
     Ok(request_id)
 }
 
-/// Send one bounded regular file over the authenticated exact-target fast path.
+/// Send one file or folder to an authenticated exact target. Files up to
+/// 48 KiB use the inline fast path; everything else is staged immutably into
+/// the durable resumable object spool.
 ///
 /// # Errors
 ///
@@ -1652,22 +2096,59 @@ pub fn request_nearby_drop(
         .filter(|name| super::device_fabric::valid_nearby_file_name(name))
         .ok_or_else(|| "file name is not portable".to_string())?
         .to_string();
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("source cannot be inspected: {error}"))?;
+    if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
+        return Err("nearby drop requires one regular file or folder".into());
+    }
+    if metadata.is_dir()
+        || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
+    {
+        let target = target.clone();
+        let worker_target = target.clone();
+        let source = path.to_path_buf();
+        let name = file_name.clone();
+        let sender = nearby_staging_queue().0.clone();
+        let mut transfer_id = [0; 16];
+        while transfer_id == [0; 16] {
+            OsRng.fill_bytes(&mut transfer_id);
+        }
+        std::thread::Builder::new()
+            .name("qos-nearby-stage".into())
+            .spawn(move || {
+                let result = with_nearby_transfer_store(|store| {
+                    store
+                        .stage_with_id(
+                            &source,
+                            worker_target.as_str().to_string(),
+                            unix_millis(),
+                            transfer_id,
+                        )
+                        .map(|_| ())
+                });
+                let _ = sender.send(NearbyStagingResult {
+                    target: worker_target,
+                    name,
+                    result,
+                });
+            })
+            .map_err(|error| format!("nearby transfer could not start: {error}"))?;
+        if let Ok(mut state) = nearby_drop_state().lock() {
+            state.events.push_back(NearbyDropEvent::Sending {
+                file_name,
+                peer: target,
+            });
+        }
+        return Ok(transfer_id);
+    }
+    if metadata.len() == 0 {
+        return Err("nearby drop cannot send an empty file".into());
+    }
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
         .map_err(|error| format!("file cannot be opened: {error}"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("file cannot be inspected: {error}"))?;
-    if !metadata.is_file()
-        || metadata.len() == 0
-        || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
-    {
-        return Err(
-            "nearby drop fast path requires one non-empty regular file up to 48 KiB".into(),
-        );
-    }
     let mut bytes = Vec::new();
     file.take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
         .read_to_end(&mut bytes)
@@ -1698,6 +2179,37 @@ pub fn request_nearby_drop(
         });
     }
     Ok(request)
+}
+
+/// Cancel one durable transfer locally and tell its exact peer to discard the
+/// matching partial. An unrelated device/request pair cannot cancel it.
+///
+/// # Errors
+///
+/// Returns an error when the transfer is not active, its exact peer cannot be
+/// reached, or durable local cleanup fails.
+pub fn cancel_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> Result<(), String> {
+    let pending = nearby_drop_state()
+        .lock()
+        .map_err(|_| "nearby transfer state is unavailable")?
+        .large_offers
+        .get(&transfer_id)
+        .cloned()
+        .ok_or_else(|| "nearby transfer is not active".to_string())?;
+    let (target, request_id, _) = pending;
+    network.send_personal_fabric_action(
+        &target,
+        PersonalFabricAction::NearbyTransferCancel {
+            request_id,
+            transfer_id,
+        },
+    )?;
+    with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id))?;
+    if let Ok(mut state) = nearby_drop_state().lock() {
+        state.large_offers.remove(&transfer_id);
+        state.progress.remove(&transfer_id);
+    }
+    Ok(())
 }
 
 fn install_nearby_drop(
@@ -1771,7 +2283,7 @@ fn fabric_transfer_views(
     use crate::network::actor::PersonalMediaTransferStatus;
     use crate::shell::overlay_host::{FabricTransferStatus, FabricTransferView};
 
-    network
+    let media = network
         .outgoing_personal_media_transfers()
         .into_iter()
         .map(|transfer| FabricTransferView {
@@ -1785,8 +2297,33 @@ fn fabric_transfer_views(
                 PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
                 PersonalMediaTransferStatus::Failed => FabricTransferStatus::Failed,
             },
-        })
-        .collect()
+        });
+    let nearby = nearby_drop_state().lock().map_or_else(
+        |_| Vec::new(),
+        |state| {
+            state
+                .progress
+                .values()
+                .cloned()
+                .map(
+                    |(target, sent_bytes, total_bytes, status)| FabricTransferView {
+                        target,
+                        sent_bytes,
+                        total_bytes,
+                        status: match status {
+                            PersonalMediaTransferStatus::Started
+                            | PersonalMediaTransferStatus::Progress => {
+                                FabricTransferStatus::Sending
+                            }
+                            PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
+                            PersonalMediaTransferStatus::Failed => FabricTransferStatus::Failed,
+                        },
+                    },
+                )
+                .collect::<Vec<_>>()
+        },
+    );
+    media.chain(nearby).collect()
 }
 
 fn bluetooth_authorization_views(

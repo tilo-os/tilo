@@ -262,6 +262,36 @@ pub enum PersonalFabricAction {
         file_name: String,
         accepted: bool,
     },
+    /// Durable object offer. The source path never leaves its device; the ID
+    /// addresses an immutable private spool object.
+    NearbyTransferOffer {
+        transfer_id: [u8; 16],
+        name: String,
+        kind: crate::shell::nearby_transfer::TransferKind,
+        total_bytes: u64,
+        content_hash: [u8; 32],
+    },
+    /// Receiver checkpoint for an exact offer request. The source verifies
+    /// the prefix before seeking, otherwise it restarts from byte zero.
+    NearbyTransferReady {
+        request_id: [u8; 16],
+        transfer_id: [u8; 16],
+        committed_offset: u64,
+        prefix_hash: [u8; 32],
+    },
+    NearbyTransferCancel {
+        request_id: [u8; 16],
+        transfer_id: [u8; 16],
+    },
+    NearbyTransferRestart {
+        request_id: [u8; 16],
+        transfer_id: [u8; 16],
+    },
+    NearbyTransferResult {
+        request_id: [u8; 16],
+        transfer_id: [u8; 16],
+        accepted: bool,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -583,6 +613,50 @@ impl PersonalFabricActionEnvelope {
                 ..
             } => {
                 if request_id == &[0; 16] || !valid_nearby_file_name(file_name) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::NearbyTransferOffer {
+                transfer_id,
+                name,
+                total_bytes,
+                ..
+            } => {
+                if transfer_id == &[0; 16]
+                    || !valid_nearby_file_name(name)
+                    || *total_bytes == 0
+                    || *total_bytes > crate::shell::nearby_transfer::MAX_TRANSFER_BYTES
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::NearbyTransferReady {
+                request_id,
+                transfer_id,
+                committed_offset,
+                ..
+            } => {
+                if request_id == &[0; 16]
+                    || transfer_id == &[0; 16]
+                    || *committed_offset > crate::shell::nearby_transfer::MAX_TRANSFER_BYTES
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::NearbyTransferCancel {
+                request_id,
+                transfer_id,
+            }
+            | PersonalFabricAction::NearbyTransferRestart {
+                request_id,
+                transfer_id,
+            }
+            | PersonalFabricAction::NearbyTransferResult {
+                request_id,
+                transfer_id,
+                ..
+            } => {
+                if request_id == &[0; 16] || transfer_id == &[0; 16] {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2132,6 +2206,51 @@ mod tests {
                 request_id: [5; 16],
                 address: "AA:BB:CC:DD:EE:FF".into(),
                 authorization: [0; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+    }
+
+    #[test]
+    fn nearby_transfer_actions_bind_nonzero_ids_and_bounded_manifests() {
+        let source = id("source");
+        let target = id("target");
+        let envelope = |action| PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action,
+        };
+        assert_eq!(
+            envelope(PersonalFabricAction::NearbyTransferOffer {
+                transfer_id: [4; 16],
+                name: "Photos".into(),
+                kind: crate::shell::nearby_transfer::TransferKind::FolderArchive,
+                total_bytes: 100,
+                content_hash: [5; 32],
+            })
+            .validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::NearbyTransferReady {
+                request_id: [0; 16],
+                transfer_id: [4; 16],
+                committed_offset: 0,
+                prefix_hash: *blake3::hash(&[]).as_bytes(),
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::NearbyTransferOffer {
+                transfer_id: [4; 16],
+                name: "../escape".into(),
+                kind: crate::shell::nearby_transfer::TransferKind::File,
+                total_bytes: 100,
+                content_hash: [5; 32],
             })
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)

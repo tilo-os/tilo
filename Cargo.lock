@@ -13543,6 +13543,7 @@ dependencies = [
  "sysinfo",
  "taffy",
  "tantivy",
+ "tar",
  "tempfile",
  "terminal",
  "thiserror 2.0.18",

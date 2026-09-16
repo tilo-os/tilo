@@ -48,6 +48,7 @@ pub mod identity_provisioning;
 pub mod launcher;
 pub mod media_keys;
 pub mod mpris;
+pub mod nearby_transfer;
 pub mod network;
 pub mod notes_app;
 pub mod notification;
