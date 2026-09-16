@@ -7383,6 +7383,21 @@ struct RailScrollbarView {
     content_height: f64,
 }
 
+struct NotesPanelView {
+    rect: Rect,
+    count: usize,
+}
+
+struct NoteCardView<'a> {
+    rect: Rect,
+    annotation: &'a Annotation,
+    excerpt: &'a str,
+    note: &'a str,
+    inner_width: f32,
+    excerpt_height: f32,
+    composing: bool,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -9235,8 +9250,28 @@ impl BooksApp {
             1.0,
         );
 
-        Self::draw_notes_header(scene, t, tr, c, x0, y0, annos.len());
-        let add_y = self.draw_notes_add_row(scene, t, tr, theme, c, x0, panel_x1, y0);
+        let panel_view = NotesPanelView {
+            rect: panel,
+            count: annos.len(),
+        };
+        Self::draw_notes_header(
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            &panel_view,
+        );
+        let add_y = self.draw_notes_add_row(
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            &panel_view,
+        );
 
         // The annotation history is a genuine scroll surface, not a clipped
         // preview.  Measure rows once to establish a stable list coordinate
@@ -9282,7 +9317,16 @@ impl BooksApp {
         let mut y = list_y0 - self.notes_scroll;
         for (a, height) in annos.iter().zip(&row_heights) {
             if y + *height >= list_y0 && y <= list_y1 {
-                self.draw_note_card(scene, t, tr, theme, c, card_x0, card_x1, y, a);
+                self.draw_note_card(
+                    &mut EbookPaintCtx {
+                        scene: &mut *scene,
+                        transform: t,
+                        text: &mut *tr,
+                        theme,
+                    },
+                    Rect::new(card_x0, y, card_x1, y + *height),
+                    a,
+                );
             }
             y += *height + 12.0;
         }
@@ -9302,84 +9346,71 @@ impl BooksApp {
     }
 
     /// "ANNOTATIONS" title + the count badge.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_notes_header(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        x0: f64,
-        y0: f64,
-        count: usize,
-    ) {
-        tr.draw_text_weighted(
-            scene,
+    fn draw_notes_header(ctx: &mut EbookPaintCtx<'_>, view: &NotesPanelView) {
+        let c = &ctx.theme.tokens.colors;
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "ANNOTATIONS",
             11.0,
             c.text_dim,
-            t * Affine::translate((x0 + 22.0, y0 + 18.0)),
+            ctx.transform * Affine::translate((view.rect.x0 + 22.0, view.rect.y0 + 18.0)),
             None,
             TextWeight::Semibold,
         );
-        let count = format!("{count}");
-        let (cw, _) = tr.measure(&count, 11.0, None);
+        let count = format!("{}", view.count);
+        let (cw, _) = ctx.text.measure(&count, 11.0, None);
         let badge = Rect::new(
-            x0 + 110.0,
-            y0 + 14.0,
-            x0 + 110.0 + f64::from(cw) + 16.0,
-            y0 + 14.0 + 18.0,
+            view.rect.x0 + 110.0,
+            view.rect.y0 + 14.0,
+            view.rect.x0 + 110.0 + f64::from(cw) + 16.0,
+            view.rect.y0 + 32.0,
         );
-        paint::fill_round(scene, t, badge, 9.0, c.surfaces.overlay);
-        tr.draw_text(
-            scene,
+        paint::fill_round(ctx.scene, ctx.transform, badge, 9.0, c.surfaces.overlay);
+        ctx.text.draw_text(
+            ctx.scene,
             &count,
             11.0,
             c.text_dim,
-            t * Affine::translate((x0 + 118.0, y0 + 17.0)),
+            ctx.transform * Affine::translate((view.rect.x0 + 118.0, view.rect.y0 + 17.0)),
             None,
         );
     }
 
     /// "+ Note on selection" action row. Returns its y (the list starts
     /// below it).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_notes_add_row(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x0: f64,
-        panel_x1: f64,
-        y0: f64,
-    ) -> f64 {
-        let add_y = y0 + 42.0;
+    fn draw_notes_add_row(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &NotesPanelView) -> f64 {
+        let c = &ctx.theme.tokens.colors;
+        let add_y = view.rect.y0 + 42.0;
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());
         let add_label = if has_sel {
             "+ Note on selection"
         } else {
             "Select text to annotate"
         };
-        let add_rect = Rect::new(x0 + 16.0, add_y, panel_x1 - 16.0, add_y + 30.0);
+        let add_rect = Rect::new(
+            view.rect.x0 + 16.0,
+            add_y,
+            view.rect.x1 - 16.0,
+            add_y + 30.0,
+        );
         let hover = has_sel && self.is_hover(add_rect);
         paint::fill_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             add_rect,
-            f64::from(theme.tokens.radii.md),
+            f64::from(ctx.theme.tokens.radii.md),
             if hover {
-                theme.bg_hover
+                ctx.theme.bg_hover
             } else {
                 c.surfaces.overlay
             },
         );
-        tr.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             add_label,
             12.0,
             if has_sel { c.text_primary } else { c.text_dim },
-            t * Affine::translate((x0 + 28.0, add_y + 8.0)),
+            ctx.transform * Affine::translate((view.rect.x0 + 28.0, add_y + 8.0)),
             None,
             TextWeight::Medium,
         );
@@ -9389,30 +9420,17 @@ impl BooksApp {
         add_y
     }
 
-    /// One annotation card in the notes list. Returns the y just below it
-    /// (the next card's top).
-    #[allow(clippy::too_many_arguments)]
-    fn draw_note_card(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        card_x0: f64,
-        card_x1: f64,
-        y: f64,
-        a: &Annotation,
-    ) -> f64 {
+    /// Paint one measured annotation card in the virtual notes list.
+    fn draw_note_card(&mut self, ctx: &mut EbookPaintCtx<'_>, rect: Rect, a: &Annotation) {
         // Measure note/excerpt to size the card. This must stay identical to
         // `note_card_height`, which establishes the virtual list positions.
-        let inner_w = (card_x1 - card_x0 - 28.0) as f32;
+        let inner_w = (rect.width() - 28.0) as f32;
         let excerpt = if a.excerpt.is_empty() {
             "(no excerpt)".to_string()
         } else {
             format!("“{}”", a.excerpt)
         };
-        let (_, eh) = tr.measure(&excerpt, 12.0, Some(inner_w));
+        let (_, eh) = ctx.text.measure(&excerpt, 12.0, Some(inner_w));
         let composing = self.composing == Some(a.id);
         let note_disp = if composing {
             format!("{}\u{2502}", a.note)
@@ -9422,7 +9440,7 @@ impl BooksApp {
         let (_, nh) = if note_disp.is_empty() {
             (0.0, 0.0)
         } else {
-            tr.measure(&note_disp, 12.5, Some(inner_w))
+            ctx.text.measure(&note_disp, 12.5, Some(inner_w))
         };
         let card_h = 30.0
             + f64::from(eh)
@@ -9432,16 +9450,21 @@ impl BooksApp {
                 f64::from(nh) + 12.0
             }
             + 16.0;
-        let card = Rect::new(card_x0, y, card_x1, y + card_h);
+        debug_assert!((rect.height() - card_h).abs() < 0.01);
+        let view = NoteCardView {
+            rect,
+            annotation: a,
+            excerpt: &excerpt,
+            note: &note_disp,
+            inner_width: inner_w,
+            excerpt_height: eh,
+            composing,
+        };
 
-        self.draw_note_card_frame(scene, t, theme, c, card, composing);
-        self.draw_note_card_header(scene, t, tr, theme, c, card_x0, card_x1, y, a);
-        Self::draw_note_card_body(
-            scene, t, tr, c, card_x0, y, inner_w, &excerpt, &note_disp, eh,
-        );
-        self.push_note_card_hits(card_x0, card_x1, y, card_h, a);
-
-        y + card_h + 12.0
+        self.draw_note_card_frame(ctx, &view);
+        self.draw_note_card_header(ctx, &view);
+        Self::draw_note_card_body(ctx, &view);
+        self.push_note_card_hits(&view);
     }
 
     fn note_card_height(
@@ -9471,38 +9494,31 @@ impl BooksApp {
         30.0 + f64::from(excerpt_h) + note_h + 16.0
     }
 
-    fn draw_note_card_frame(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        card: Rect,
-        composing: bool,
-    ) {
-        let hover = self.is_hover(card);
+    fn draw_note_card_frame(&self, ctx: &mut EbookPaintCtx<'_>, view: &NoteCardView<'_>) {
+        let c = &ctx.theme.tokens.colors;
+        let hover = self.is_hover(view.rect);
         paint::fill_round(
-            scene,
-            t,
-            card,
-            f64::from(theme.tokens.radii.md),
+            ctx.scene,
+            ctx.transform,
+            view.rect,
+            f64::from(ctx.theme.tokens.radii.md),
             c.surfaces.raised,
         );
-        if composing {
+        if view.composing {
             paint::stroke_round(
-                scene,
-                t,
-                card,
-                f64::from(theme.tokens.radii.md),
-                theme.border_focus,
+                ctx.scene,
+                ctx.transform,
+                view.rect,
+                f64::from(ctx.theme.tokens.radii.md),
+                ctx.theme.border_focus,
                 1.6,
             );
         } else if hover {
             paint::stroke_round(
-                scene,
-                t,
-                card,
-                f64::from(theme.tokens.radii.md),
+                ctx.scene,
+                ctx.transform,
+                view.rect,
+                f64::from(ctx.theme.tokens.radii.md),
                 c.border_standard,
                 1.0,
             );
@@ -9511,49 +9527,48 @@ impl BooksApp {
 
     /// Colour dot / bookmark glyph + kind label + chapter/paragraph locator,
     /// and the always-visible delete button.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_note_card_header(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        card_x0: f64,
-        card_x1: f64,
-        y: f64,
-        a: &Annotation,
-    ) {
+    fn draw_note_card_header(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &NoteCardView<'_>) {
+        let c = &ctx.theme.tokens.colors;
+        let a = view.annotation;
+        let card_x0 = view.rect.x0;
+        let card_x1 = view.rect.x1;
+        let y = view.rect.y0;
         // header: colour dot + kind + location
         let dot = Point::new(card_x0 + 16.0, y + 17.0);
         match a.kind {
             AnnoKind::Bookmark => paint::bookmark(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 Rect::new(dot.x - 7.0, y + 8.0, dot.x + 7.0, y + 24.0),
-                theme.accent_primary,
+                ctx.theme.accent_primary,
                 1.5,
                 true,
             ),
-            _ => paint::circle(scene, t, dot, 6.0, ReaderPalette::highlight_swatch(a.color)),
+            _ => paint::circle(
+                ctx.scene,
+                ctx.transform,
+                dot,
+                6.0,
+                ReaderPalette::highlight_swatch(a.color),
+            ),
         }
-        tr.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             a.kind.label(),
             12.0,
             c.text_primary,
-            t * Affine::translate((card_x0 + 30.0, y + 11.0)),
+            ctx.transform * Affine::translate((card_x0 + 30.0, y + 11.0)),
             None,
             TextWeight::Semibold,
         );
         let loc = format!("Ch {} · ¶{}", a.chapter + 1, a.block + 1);
-        let (lw, _) = tr.measure(&loc, 11.0, None);
-        tr.draw_text(
-            scene,
+        let (lw, _) = ctx.text.measure(&loc, 11.0, None);
+        ctx.text.draw_text(
+            ctx.scene,
             &loc,
             11.0,
             c.text_dim,
-            t * Affine::translate((card_x1 - 30.0 - f64::from(lw), y + 12.0)),
+            ctx.transform * Affine::translate((card_x1 - 30.0 - f64::from(lw), y + 12.0)),
             None,
         );
         // Delete is always drawn and hit-registered, not gated on hover —
@@ -9565,63 +9580,60 @@ impl BooksApp {
         } else {
             c.text_dim.with_alpha_factor(0.55)
         };
-        paint::close(scene, t, del, del_col, 1.4);
+        paint::close(ctx.scene, ctx.transform, del, del_col, 1.4);
         self.push_hit(del, Action::Delete(a.id));
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_note_card_body(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        card_x0: f64,
-        y: f64,
-        inner_w: f32,
-        excerpt: &str,
-        note_disp: &str,
-        eh: f32,
-    ) {
+    fn draw_note_card_body(ctx: &mut EbookPaintCtx<'_>, view: &NoteCardView<'_>) {
+        let c = &ctx.theme.tokens.colors;
         // excerpt
-        tr.draw_text(
-            scene,
-            excerpt,
+        ctx.text.draw_text(
+            ctx.scene,
+            view.excerpt,
             12.0,
             c.text_dim,
-            t * Affine::translate((card_x0 + 14.0, y + 30.0)),
-            Some(inner_w),
+            ctx.transform * Affine::translate((view.rect.x0 + 14.0, view.rect.y0 + 30.0)),
+            Some(view.inner_width),
         );
         // note body
-        if !note_disp.is_empty() {
-            tr.draw_text(
-                scene,
-                note_disp,
+        if !view.note.is_empty() {
+            ctx.text.draw_text(
+                ctx.scene,
+                view.note,
                 12.5,
                 c.text_primary,
-                t * Affine::translate((card_x0 + 14.0, y + 30.0 + f64::from(eh) + 8.0)),
-                Some(inner_w),
+                ctx.transform
+                    * Affine::translate((
+                        view.rect.x0 + 14.0,
+                        view.rect.y0 + 30.0 + f64::from(view.excerpt_height) + 8.0,
+                    )),
+                Some(view.inner_width),
             );
         }
     }
 
     /// click card → jump; click again on a note → edit.
-    fn push_note_card_hits(
-        &mut self,
-        card_x0: f64,
-        card_x1: f64,
-        y: f64,
-        card_h: f64,
-        a: &Annotation,
-    ) {
+    fn push_note_card_hits(&mut self, view: &NoteCardView<'_>) {
+        let a = view.annotation;
         // jump is the primary intent for the whole card area minus delete
         self.push_hit(
-            Rect::new(card_x0, y, card_x1 - 30.0, y + card_h),
+            Rect::new(
+                view.rect.x0,
+                view.rect.y0,
+                view.rect.x1 - 30.0,
+                view.rect.y1,
+            ),
             Action::JumpTo(a.id),
         );
         if a.kind == AnnoKind::Note {
             // a smaller secondary zone to begin editing
             self.push_hit(
-                Rect::new(card_x0, y + 28.0, card_x1 - 30.0, y + card_h),
+                Rect::new(
+                    view.rect.x0,
+                    view.rect.y0 + 28.0,
+                    view.rect.x1 - 30.0,
+                    view.rect.y1,
+                ),
                 Action::EditNote(a.id),
             );
         }
