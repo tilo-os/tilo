@@ -12,6 +12,26 @@ The staged MiniBrowser, WPEWebProcess, WPENetworkProcess, and WPEGPUProcess are
 AArch64 ELF executables. Their dynamic dependencies resolved in the native
 build environment.
 
+## Existing local buildroot identity
+
+The retained native buildroot resolves as
+`localhost/qos-wpe-buildroot@sha256:1c17950cbd3d6a31c8fab1a9f3880abc91f7b656ba7a0ed54eaafc452b9bfb59`.
+Its image ID is
+`5c42be1f7edfd10e1c6f26144cf812ed585f2576ae864a69cba01c72d4b2059a`.
+A read-only, network-disabled verification container confirmed all 1,126
+installed package identities match `wpe-buildroot-packages.txt`, its recorded
+and native architectures are aarch64, and no live repository files remain.
+Compiler/build tools and the GBM, Wayland, epoxy, input and systemd pkg-config
+probes passed. The engine image above inherits all 66 buildroot layers exactly.
+
+Local preparation selects this immutable reference through `WPE_BUILDROOT_REF`;
+it does not need to resolve or rebuild those dependencies again. Evidence is
+retained under `wpe-buildroot-local-verification/` in the preparation directory.
+The first probe used the wrong pkg-config name `libepoxy`; the corrected
+`epoxy` probe passed. This establishes local buildroot identity and continuity
+with the tested engine, not signature verification, production promotion or
+browser operation against the final OS runtime package set.
+
 ## Installed runtime smoke test
 
 Overlay `/wpe/` from the engine image into `/` of a test buildroot, matching the
