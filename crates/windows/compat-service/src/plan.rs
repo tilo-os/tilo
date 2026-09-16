@@ -188,6 +188,12 @@ impl SystemRuntimeRegistry {
                         runtime_bind("/usr/bin/env", "/usr/bin/env"),
                         runtime_bind("/usr/bin/python3", "/usr/bin/python3"),
                         runtime_bind("/bin/sh", "/bin/sh"),
+                        // The pinned Steam entry points invoke these native
+                        // helpers, including after the ARM emulation handoff.
+                        runtime_bind("/usr/bin/readlink", "/usr/bin/readlink"),
+                        runtime_bind("/usr/bin/getopt", "/usr/bin/getopt"),
+                        // pressure-vessel probes its nested bwrap with `true`.
+                        runtime_bind("/usr/bin/true", "/usr/bin/true"),
                         runtime_bind("/usr/bin/bwrap", "/usr/bin/bwrap"),
                         runtime_bind(PROTON_HOST, PROTON_MOUNT),
                     ],
