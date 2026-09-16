@@ -44,3 +44,22 @@ Fedora ARM64 also rendered `linux-setup-folders-copy-640x640.png` through the na
 - Live capabilities deliberately remain false. The UI does not claim that Connected folders, installation, migration, or synchronization work before the corresponding executor and release evidence exists.
 - Windows known-folder logic is covered by parser and platform-neutral behavior tests, but this task did not execute a native Windows build or folder dialog.
 - The overall guided migration objective still requires real installation, migration, synchronization, packaging, and Windows/Linux release verification outside this UI task.
+
+## Round 1 review fixes
+
+- Corrected common `Later` semantics. Inherited and explicit `Later` entries remain remembered but are excluded from the effective plan; explicit Copy and Connected overrides remain scheduled and visible on Review.
+- Rejected protected and overlapping sources before incrementing pending work or launching enumeration, while retaining completion-time checks for concurrently arriving scans.
+- Added an injectable worker launcher and handled both known-folder and scan thread-launch errors. Failure now clears the matching pending state, reports an error, and stops idle sync instead of waiting forever.
+- Added visible per-folder policy state: the effective button is primary and labeled `Common: …` for inherited choices or `Selected: …` for explicit overrides; the common-choice reset is disabled and labeled accordingly while already inherited.
+- Replaced the misleading keyboard test with real focused Enter and Space events, retained separate assistive-technology activation coverage, and added headless host parity for the live App's focused-control fallback. The parity tests prove one activation per key press, no activation on release, and no second activation when a widget consumes the press.
+
+### Round 1 TDD and verification
+
+- Controller RED: `common_later_preserves_explicit_copy_and_connected_overrides` expected two scheduled overrides and received zero before the effective-mode filter.
+- Headless RED: `enter_and_space_activate_a_focused_button_once_per_press` expected one activation after Enter and received zero before the FrameHarness fallback.
+- macOS controller: `cargo test --locked -p imager --lib setup::controller::tests::` — 6 passed, 0 failed, 178 filtered.
+- macOS view: `cargo test --locked -p imager --lib setup::view::tests::` — 12 passed, 0 failed, 172 filtered. This includes deterministic launch failure, pre-scan guards, real Enter/Space, assistive activation, and selection feedback.
+- macOS headless parity: the two exact `ui` tests `enter_and_space_activate_a_focused_button_once_per_press` and `consumed_enter_does_not_run_the_focused_activation_fallback` each passed; the macOS linker emitted its existing oversized `__eh_frame` warning.
+- Fedora ARM64: `cargo test --locked -p imager --lib setup:: -- --skip setup::migration` — 43 passed, 0 failed, 142 filtered; exit 0 with no warnings. The paused migration task remained intentionally excluded.
+- Imager lint: `cargo clippy --locked -p imager --lib --no-deps -- -D warnings -A clippy::needless-return -A clippy::missing-errors-doc` — passed. The allowances cover an existing model finding and the separate paused migration file. A strict `ui` package Clippy run reached 91 findings in unrelated concurrent UI work and reported none in `ui/src/headless.rs`; those files were not changed in this task.
+- Formatting and patch hygiene: direct `rustfmt` on `controller.rs`, `view.rs`, and `ui/src/headless.rs`, plus `git diff --check` on owned paths, passed.
