@@ -288,6 +288,45 @@ also timed out without the executable shim. These are failures, not capsule
 acceptance. The original heap assertion was absent, but that does not establish
 why initialization timed out or prove every SVE operation correct at 256 bits.
 
+The follow-up controls retain the immutable binaries copied into
+`kernel-arm-capsule-console-sve256-01/inputs` and the diagnostic new-WoW guest
+payload. They do not use subsequently rebuilt traditional-Wine provider tests.
+The full Landlock control `kernel-arm-capsule-console-nosve-01`, with
+`max,sve=off,sme=off`, also timed out during Wine64 preparation after 138.84
+seconds. Wine32 and Proton were not reached. Disabling SVE therefore does not
+resolve this initialization failure.
+
+Private namespace observers captured process state at approximately 30, 60,
+and 100 seconds without changing production deadlines, seccomp or executable
+bytes. `kernel-arm-capsule-namespace-observer-01` showed that the initial
+`wine wineboot.exe -i` loader remained in `anon_pipe_read` after both its Wineboot
+child and Wineserver exited. The private prefix acquired neither registry
+files nor Windows DLLs. This is not evidence of initialization merely taking
+longer under TCG.
+
+`kernel-arm-capsule-namespace-pipe-observer-01` identified the exit statuses and
+pipe ownership from outside the capsule, inside the disposable VM:
+
+- Wineserver PID 183 was a zombie with `/proc/PID/stat` field 52 equal to 4:
+  termination by `SIGILL`. Wineboot PID 185 exited with status 0.
+- Wine loader PID 181 was blocked reading 16 bytes from fd 11. That descriptor
+  and its own write-only fd 12 both referenced `pipe:[1456]`. After Wineserver
+  exited, the cross-VM descriptor scan found only this loader holding the pipe;
+  no retained writer in the native supervisor or FEXServer was observed.
+- The retained write end prevents end-of-file on that pipe, explaining the
+  loader's continued wait until the existing preparation timeout. The cause
+  of Wineserver's `SIGILL` remains unknown.
+
+Wine also logged `prctl(PR_SET_SECCOMP, ...): Invalid argument` and missing
+kernel32 lookup warnings. Their causal role is unproven; the immutable guest
+does contain its builtin kernel32 and ntdll payloads. Kernel logs captured at
+exit supplied no fault address. FEX can synthesize guest `SIGILL` using a native
+`hlt` trampoline, so the signal number alone cannot distinguish a guest fault,
+a native JIT instruction fault, or a forced FEX assertion. First-signal
+registers, instruction bytes and mapped guest state are the next discriminator.
+All diagnostic results remain failures, and both owned image mounts and the
+VM processes were released after each run. No workaround was installed.
+
 ### Running the harness
 
 Use `python3 os/tests/kernel-arm-capsule-smoke.py --help` for the explicit kernel,
