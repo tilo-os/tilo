@@ -2516,17 +2516,18 @@ impl BooksApp {
             let book_id = self.book_id();
             let excerpt = self.selection_excerpt();
             let id = Uuid::new_v4();
-            let action = crate::actions::add_note_action(
-                &book_id,
+            let action = crate::actions::NoteDraft {
+                book_id,
                 id,
-                self.chapter,
+                chapter: self.chapter,
                 block,
                 start,
                 end,
-                self.hi_color,
-                &excerpt,
-                "",
-            );
+                color: self.hi_color,
+                excerpt,
+                text: String::new(),
+            }
+            .into_action();
             self.perform_action(doc, &action);
             self.composing = Some(id);
             self.note_composer.open(id, "");
@@ -2608,18 +2609,21 @@ impl BooksApp {
         if let Some((block, start, end, color, excerpt)) = anchor {
             let book_id = self.book_id();
             let id = Uuid::new_v4();
-            let action = crate::actions::add_comment_action(
-                &book_id,
+            let action = crate::actions::CommentDraft {
                 group,
-                id,
-                self.chapter,
-                block,
-                start,
-                end,
-                color,
-                &excerpt,
-                "",
-            );
+                note: crate::actions::NoteDraft {
+                    book_id,
+                    id,
+                    chapter: self.chapter,
+                    block,
+                    start,
+                    end,
+                    color,
+                    excerpt,
+                    text: String::new(),
+                },
+            }
+            .into_action();
             self.perform_action(doc, &action);
             self.comment_overlay.open(group);
             self.comment_overlay.begin_editing(id, "");
