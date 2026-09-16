@@ -42,7 +42,7 @@ is the one excursion, and beat 7 happens inside it rather than after a return.
 
 **The boot bumper ends where the desktop arrives**, not after it: the demo
 opens on an empty desktop, so holding one first shows the same picture on both
-sides of a cut. See `boot-bumper-cut.md`.
+sides of a cut.
 
 ## 1 · Empty desktop, Quinten opens Files ✅
 

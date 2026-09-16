@@ -181,9 +181,7 @@ pub struct ComposeWindow {
     // body
     format: ComposeFormat,
     editor: Wysiwyg,
-    /// Plain-text body (Text mode) — a shared multiline [`TextInput`], so the
-    /// body gets real caret/selection/clipboard/a11y for free instead of a
-    /// hand-rolled `String`.
+    /// Plain-text body (Text mode), backed by a shared multiline [`TextInput`].
     plain_body: TextInput,
 
     /// Portable qdoc attachment references, never host paths.

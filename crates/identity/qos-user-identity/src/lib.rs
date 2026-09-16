@@ -2,9 +2,8 @@
 //!
 //! # Model
 //!
-//! Today, every device holds an Ed25519 keypair. That keypair is *the
-//! device*; it does not carry any statement about who owns the
-//! device. This crate adds a second, human-scoped keypair: the
+//! Each device holds an Ed25519 keypair. That keypair identifies the
+//! device but does not state who owns it. This crate adds a human-scoped keypair: the
 //! **user root identity**. The root keypair certifies each of the
 //! user's devices by signing a [`DeviceCert`] that binds
 //! `device_public_key → user_public_key` together with a human-readable
