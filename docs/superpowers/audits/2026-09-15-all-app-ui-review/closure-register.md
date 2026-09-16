@@ -14,7 +14,7 @@ Assigned work: [Shared](../../plans/2026-09-15-measured-ui-components.md), [Comp
 | calendar | [visual-reviewed](review-1.md) | 2 | Shared 2 + Text geometry 23 | fixes and final verification pending |
 | camera | [visual-reviewed](review-1.md) | 2 | Text/geometry 5 | fixes and final verification pending |
 | chat | [visual-reviewed](review-1.md) | 2 | Composition 5 | fixes and final verification pending |
-| code_editor | [visual-reviewed](review-1.md) | 2 | Composition 10 + 13 (Task1 umbrella) | fixes and final verification pending |
+| code_editor | [visual-reviewed](review-1.md) | 1 | Composition 10 + 13 (Task1 umbrella) | empty dock composition verified; app-local scaled metrics and final matrix pending |
 | contacts | [visual-reviewed](review-1.md) | 1 | Text/geometry 7 | fixes and final verification pending |
 | containers | [visual-reviewed](review-1.md) | 2 | Composition 2 | fixes and final verification pending |
 | db_client | [visual-reviewed](review-1.md) | 2 | Composition 12 + 14 (Task1 umbrella) | fixes and final verification pending |
