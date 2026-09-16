@@ -981,6 +981,14 @@ impl Drop for UnlinkOnDrop {
     }
 }
 
+/// Remove a Wayland endpoint and Smithay's companion lock file. The native
+/// entry point uses `process::exit` after its orderly shutdown path, which
+/// skips the `Drop` implementation that normally removes both files.
+fn unlink_wayland_endpoint(path: &Path) {
+    let _ = std::fs::remove_file(path);
+    let _ = std::fs::remove_file(path.with_extension("lock"));
+}
+
 /// Bind the test-control unix socket, returning the listener plus an
 /// `UnlinkOnDrop` guard on success, or `None` if unset/the bind fails
 /// (logged via `eprintln!`); the production path never depends on this.
@@ -1681,13 +1689,14 @@ fn client_input_allowed(fb: &FrameBuilder) -> bool {
 /// spawned. This keeps the token single-use and binds it to the exact user
 /// action rather than accepting an app-id guess later.
 fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
-    // A host-session launch may resolve to a legacy X11-only program.  The
-    // private bridge is started asynchronously after the public Wayland
-    // socket begins dispatching, so startup restore can reach this boundary
-    // first.  Preserve the one-shot request (and its placement) until DISPLAY
-    // is published instead of spawning it into a knowingly incomplete
-    // environment and showing a false failure notification.
-    if !crate::shell::host_apps::x11_ready() {
+    // A host-session launch may resolve to a legacy X11-only program. Keep it
+    // queued during the private bridge's short startup race. Once recovery is
+    // terminally unavailable, drain it with the explicit Wayland-only
+    // environment; Wayland-capable host apps remain usable and an X11-only
+    // child gets the ordinary launcher failure notification.
+    if crate::shell::host_apps::x11_availability()
+        == crate::shell::host_apps::X11Availability::Starting
+    {
         return false;
     }
     let requests = crate::shell::host_apps::drain_queued_launches();
@@ -4564,7 +4573,7 @@ pub fn run() -> ! {
     {
         runtime.set_realtime_adapter(adapter);
     }
-    let _identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
+    let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
     // connected descriptor. The shell owns package resolution and launching;
     // failure only removes the advanced handoff, never core Settings controls.
@@ -4588,11 +4597,12 @@ pub fn run() -> ! {
     state.output_size = size_to_signed(initial_size);
 
     // `new_auto` walks `wayland-1..wayland-32`, binding the first free name.
-    let (listening_socket, socket_name, _display_file) = bind_and_publish_wayland_socket();
+    let (listening_socket, socket_name, display_file) = bind_and_publish_wayland_socket();
+    let public_socket_path = crate::shell::launcher::runtime_dir().join(&socket_name);
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`tilo-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
-    let _windows_compat = match crate::shell::windows_compat::spawn(
+    let windows_compat = match crate::shell::windows_compat::spawn(
         frame_builder.chrome_handle().borrow().tree_handle(),
     ) {
         Ok(service) => {
@@ -4654,8 +4664,10 @@ pub fn run() -> ! {
     // its display; public clients cannot see the input-method/virtual-keyboard
     // globals at all. The preference controls both accepting connections and
     // the supervised service process.
+    let mut osk_socket_path = None;
     let mut osk_service = match bind_osk_socket() {
         Ok((osk_socket, path)) => {
+            osk_socket_path = Some(path.clone());
             let mut service = crate::compositor::osk_service::OskService::new(path.clone());
             let authorization = service.socket_authorization();
             if let Err(error) = event_loop.handle().insert_source(
@@ -4693,9 +4705,14 @@ pub fn run() -> ! {
     //
     // The privilege is the socket, not a client request: the sandbox launcher
     // bind-mounts only the public socket (`crates/packaging/launcher/src/sandbox.rs`); bind failure is logged and non-fatal.
+    let mut privileged_socket_path = None;
     match bind_privileged_socket() {
         Ok((privileged_socket, path)) => {
-            eprintln!("tilo compositor privileged socket on {}", path.display());
+            privileged_socket_path = Some(crate::shell::launcher::runtime_dir().join(&path));
+            eprintln!(
+                "tilo compositor privileged socket on {}",
+                Path::new(&path).display()
+            );
             if let Err(err) = event_loop.handle().insert_source(
                 privileged_socket,
                 move |client_stream, (), state| {
@@ -6882,6 +6899,18 @@ pub fn run() -> ! {
     drop(collab_broker);
     drop(tool_service);
     drop(xwayland);
+    drop(windows_compat);
+    drop(identity_broker);
+    drop(floating_surface_service);
+    drop(osk_service);
+    drop(display_file);
+    unlink_wayland_endpoint(&public_socket_path);
+    if let Some(path) = osk_socket_path.as_deref() {
+        unlink_wayland_endpoint(path);
+    }
+    if let Some(path) = privileged_socket_path.as_deref() {
+        unlink_wayland_endpoint(path);
+    }
     // Same reasoning again: releases the D-Bus bus name and tears down the
     // notification object server before `process::exit` skips its destructor.
     drop(notif_handle);
