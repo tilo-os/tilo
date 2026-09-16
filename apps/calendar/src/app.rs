@@ -44,6 +44,7 @@ use ui::{
     widget::{
         BlockEditor, Checkbox, CheckboxFace, DatePicker, Dropdown, ExternalDatePickerHit,
         TextInput, Toggle, ToggleFace,
+        chip::{Chip, ChipLead, ChipStyle},
     },
 };
 
@@ -106,6 +107,11 @@ const MODAL_MARGIN: f64 = 40.0;
 /// Above this theme scale, an editor needs a wider canvas for its real labels
 /// and controls instead of squeezing 2× glyphs into the normal modal grid.
 const LARGE_TEXT_SCALE: f32 = 1.35;
+/// Metadata chips are compact at the default text size but must grow with
+/// text-only accessibility scaling: their border is a container, never a
+/// decoration drawn across the label.
+const EVENT_FORM_CHIP_H: f64 = 28.0;
+const EVENT_FORM_CHIP_GAP: f64 = 6.0;
 
 /// How the event/task detail editor is presented at the current width.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -3192,7 +3198,7 @@ impl CalendarApp {
         } else {
             2.0
         };
-        y += chip_rows * 34.0 + 36.0;
+        y += chip_rows * event_form_chip_row_pitch(self.text_scale) + 36.0;
 
         f.notes_top = y - r.y0;
         f
@@ -4840,7 +4846,9 @@ impl CalendarApp {
         } else {
             self.notes_top_offset()
         };
-        let notes_label_y = r.y0 + notes_top - 26.0;
+        let (_, label_h) = tr.measure("NOTES", 11.0, None);
+        let (notes_label_y, notes_rule_y) =
+            notes_header_positions(r.y0 + notes_top, f64::from(label_h));
         tr.draw_text(
             scene,
             "NOTES",
@@ -4853,8 +4861,8 @@ impl CalendarApp {
             scene,
             t,
             c.border_standard,
-            Point::new(x, notes_label_y + 18.0),
-            Point::new(x + w, notes_label_y + 18.0),
+            Point::new(x, notes_rule_y),
+            Point::new(x + w, notes_rule_y),
             1.0,
         );
     }
@@ -5122,38 +5130,30 @@ impl CalendarApp {
                 Action::CycleRecurrenceInterval,
             ),
             (reminder_label, Action::CycleReminder),
-            (format!("● {}", e.color.name()), Action::CycleColor),
+            (e.color.name().to_string(), Action::CycleColor),
             (format!("◷ {}", e.timezone), Action::CycleTimezone),
             (guest_label, Action::FocusField(FormField::Invite)),
         ];
         let max_x = f.title.x1;
-        let gap = if theme.text_scale >= LARGE_TEXT_SCALE {
-            12.0
-        } else {
-            8.0
-        };
+        let height = event_form_chip_height(theme.text_scale);
+        let gap = EVENT_FORM_CHIP_GAP * f64::from(theme.text_scale).max(1.0);
         let mut x = label_x;
         let mut y = f.chips_y;
-        let mut rects = Vec::with_capacity(specs.len());
-        for (label, action) in specs {
-            let width = f64::from(tr.measure(&label, 12.0, None).0) + 24.0;
+        for (index, (label, action)) in specs.into_iter().enumerate() {
+            let lead = if index == 3 {
+                ChipLead::Dot(e.color.color(theme))
+            } else {
+                ChipLead::None
+            };
+            let width = Chip::natural_width_at(&label, height, lead, theme, tr);
             if x > label_x && x + width > max_x {
                 x = label_x;
-                y += 34.0;
+                y += event_form_chip_row_pitch(theme.text_scale);
             }
-            let rect = chip(scene, t, tr, theme, x, y, &label, false);
+            let rect = Rect::new(x, y, x + width, y + height);
+            Chip::draw_at(scene, t, rect, &label, lead, ChipStyle::quiet(), theme, tr);
             x = rect.x1 + gap;
             hits.push((rect, action));
-            rects.push(rect);
-        }
-        if let Some(color_rect) = rects.get(3) {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                e.color.color(theme),
-                None,
-                &Circle::new(Point::new(color_rect.x0 + 12.0, color_rect.center().y), 4.0),
-            );
         }
     }
 
@@ -7312,45 +7312,26 @@ fn draw_field_button(
     }
 }
 
-/// Draw a small pill chip and return its rect.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter is an independently-meaningful piece of the chip's own geometry/label"
-)]
-#[allow(
-    clippy::many_single_char_names,
-    reason = "t is the paint transform, x/y are the chip's position, and c/r are the \
-              theme's colour set and the resulting rect — conventional short names for \
-              this draw step"
-)]
-fn chip(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    x: f64,
-    y: f64,
-    label: &str,
-    filled: bool,
-) -> Rect {
-    let c = &theme.tokens.colors;
-    let tw = f64::from(tr.measure(label, 12.0, None).0);
-    let r = Rect::new(x, y, x + tw + 24.0, y + 28.0);
-    if filled {
-        fill_round(scene, t, c.accent[5], r, 8.0);
-    } else {
-        fill_round(scene, t, c.neutral[2], r, 8.0);
-        stroke_round(scene, t, c.border_standard, r, 8.0, 1.0);
-    }
-    tr.draw_text(
-        scene,
-        label,
-        12.0,
-        c.neutral[9],
-        t * Affine::translate((r.x0 + 12.0, r.center().y - 7.0)),
-        None,
-    );
-    r
+/// The immediate-mode shared chip measures its label against the renderer's
+/// scaled font. Keep this geometry in one helper so the form reserve, hit
+/// targets, and painted border agree at every accessibility text size.
+fn event_form_chip_height(text_scale: f32) -> f64 {
+    EVENT_FORM_CHIP_H * f64::from(text_scale).max(1.0)
+}
+
+fn event_form_chip_row_pitch(text_scale: f32) -> f64 {
+    event_form_chip_height(text_scale) + EVENT_FORM_CHIP_GAP * f64::from(text_scale).max(1.0)
+}
+
+/// Position the NOTES heading above its rule using the shaped label height.
+/// At 200% text, a fixed baseline offset made the rule cut across the label.
+/// The editor starts eight pixels below the rule, preserving its prior visual
+/// rhythm while making the heading's clearance explicit.
+fn notes_header_positions(notes_origin_y: f64, label_h: f64) -> (f64, f64) {
+    const RULE_TO_EDITOR_GAP: f64 = 8.0;
+    const LABEL_TO_RULE_GAP: f64 = 6.0;
+    let rule_y = notes_origin_y - RULE_TO_EDITOR_GAP;
+    (rule_y - LABEL_TO_RULE_GAP - label_h, rule_y)
 }
 
 fn elide(s: &str, max: usize) -> String {
@@ -8127,6 +8108,11 @@ mod tests {
             .collect();
         assert_eq!(chip_rects.len(), 5);
         for rect in &chip_rects {
+            assert_eq!(
+                rect.height(),
+                event_form_chip_height(theme.text_scale),
+                "the chip border grows with its 2× label instead of cutting through it"
+            );
             assert!(
                 rect.x0 >= app.detail_rect.x0 && rect.x1 <= app.detail_rect.x1,
                 "wrapped metadata chip escaped the phone sheet: {rect:?}"
@@ -8136,6 +8122,61 @@ mod tests {
         assert!(
             app.detail_rect.y0 + app.form.notes_top > last_bottom,
             "notes must begin below the final wrapped metadata row"
+        );
+    }
+
+    #[test]
+    fn high_contrast_large_text_metadata_chips_clear_labels_and_notes() {
+        let mut app = CalendarApp::new_demo();
+        app.detail_open = true;
+        app.text_scale = 2.0;
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
+        app.relayout();
+
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let theme = Theme::high_contrast().with_text_scale(2.0);
+        text.set_text_scale(theme.text_scale);
+        let painted = app.draw_event_form(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let chip_rects: Vec<_> = painted
+            .iter()
+            .filter(|(rect, action)| {
+                rect.y0 >= app.form.chips_y
+                    && matches!(
+                        action,
+                        Action::CycleRecurrence
+                            | Action::CycleRecurrenceInterval
+                            | Action::CycleReminder
+                            | Action::CycleColor
+                            | Action::CycleTimezone
+                            | Action::FocusField(FormField::Invite)
+                    )
+            })
+            .map(|(rect, _)| *rect)
+            .collect();
+        assert_eq!(chip_rects.len(), 6);
+        let expected_h = event_form_chip_height(theme.text_scale);
+        assert!(
+            chip_rects.iter().all(|rect| rect.height() == expected_h),
+            "every high-contrast chip must contain the scaled label within its border"
+        );
+        let last_bottom = chip_rects.iter().map(|rect| rect.y1).fold(0.0, f64::max);
+        assert!(
+            app.detail_rect.y0 + app.form.notes_top > last_bottom,
+            "the notes divider must remain below the enlarged chip rows"
+        );
+        let (_, notes_h) = text.measure("NOTES", 11.0, None);
+        let (notes_y, rule_y) =
+            notes_header_positions(app.detail_rect.y0 + app.form.notes_top, f64::from(notes_h));
+        assert!(
+            rule_y >= notes_y + f64::from(notes_h) + 6.0,
+            "the NOTES rule must start after the scaled label, never through it"
         );
     }
 
