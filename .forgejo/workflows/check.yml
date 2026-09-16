@@ -116,6 +116,9 @@ jobs:
           python3 os/tests/test_windows_guest_payload.py
           python3 os/tests/test_windows_guest_dxvk.py
           python3 os/tests/test_windows_dxvk_load_evidence.py
+          python3 os/tests/test_wine_rpm_contract.py
+          python3 os/tests/test_wine_rpm_merge.py
+          python3 os/tests/imager_media_profiles.py
           python3 apps/imager/packaging/test_generate_winget.py
           bash os/tests/release_security_invariants.sh
           bash os/tests/selinux_policy_store_invariants.sh
