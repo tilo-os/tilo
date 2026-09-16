@@ -48,6 +48,7 @@ use crate::store;
 const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
 const CUSTOMIZER_W: f32 = 344.0;
+const NARROW_CONTENT_GUTTER: f32 = 16.0;
 /// Allocated-width breakpoint (logical px). At or above this the gallery is a
 /// docked sidebar beside the preview + customizer; below it the gallery
 /// becomes an overlay flap. Chosen so the gallery, a usable preview, and the
@@ -1568,6 +1569,18 @@ impl Widget for ThemesApp {
 
         let narrow = if overlay {
             let tabs = self.narrow_tabs.build_layout(taffy, theme, node_map);
+            let _ = taffy.set_style(
+                tabs,
+                Style {
+                    margin: taffy::Rect {
+                        left: length(NARROW_CONTENT_GUTTER),
+                        right: length(NARROW_CONTENT_GUTTER),
+                        top: length(0.0_f32),
+                        bottom: length(0.0_f32),
+                    },
+                    ..taffy.style(tabs).cloned().unwrap_or_default()
+                },
+            );
             self.narrow_tabs_node = Some(tabs);
             Some((tabs, self.narrow_preview))
         } else {
@@ -2114,6 +2127,11 @@ mod tests {
         assert_eq!(
             narrow_view_state(&app),
             ("Customize".to_owned(), [true, false])
+        );
+        assert_eq!(
+            app.narrow_tabs.get_rect().x0,
+            16.0,
+            "view selector follows the narrow content gutter"
         );
         assert!(
             app.customizer.get_rect().y0 < 160.0,
