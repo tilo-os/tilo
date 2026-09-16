@@ -2552,16 +2552,20 @@ impl Core {
         self.hourly_scroll_x = self.hourly_scroll_x.clamp(0.0, self.hourly_max_scroll);
 
         chart::draw_hourly_strip(
-            ctx.scene,
-            ctx.transform,
-            band,
-            &cols,
-            col_w,
-            self.hourly_scroll_x,
-            accent,
-            theme,
-            ctx.text_renderer,
-            "°",
+            &mut chart::ChartPaintCtx {
+                scene: ctx.scene,
+                transform: ctx.transform,
+                theme,
+                text_renderer: ctx.text_renderer,
+            },
+            &chart::HourlyStrip {
+                band,
+                columns: &cols,
+                column_width: col_w,
+                scroll_x: self.hourly_scroll_x,
+                accent,
+                temperature_suffix: "°",
+            },
         );
 
         self.draw_hourly_scrollbar(ctx, hcard, band, content_w);
