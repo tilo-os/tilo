@@ -27,7 +27,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 
@@ -40,12 +40,25 @@ pub const ROW_H: f64 = 30.0;
 /// Which of the three sidebar row shapes this row paints.
 #[derive(Clone)]
 pub enum NavKind {
+    Disclosure {
+        expanded: bool,
+    },
+    Divider,
     /// A foldable collection header: disclosure caret + name + request count.
-    Collection { expanded: bool, count: usize },
+    Collection {
+        expanded: bool,
+        count: usize,
+    },
     /// A saved request: coloured method tag + name, highlighted when active.
-    Request { method: HttpMethod, selected: bool },
+    Request {
+        method: HttpMethod,
+        selected: bool,
+    },
     /// A history entry: coloured method tag + path + coloured status code.
-    History { method: HttpMethod, status: u16 },
+    History {
+        method: HttpMethod,
+        status: u16,
+    },
 }
 
 /// A single focusable sidebar row.
@@ -66,6 +79,7 @@ pub struct NavRow {
     /// `Activate` action. The app supplies a closure that pushes the row's
     /// command onto its sink.
     on_activate: Option<Box<dyn FnMut()>>,
+    on_adjust: Option<Box<dyn FnMut(f64)>>,
 }
 
 impl NavRow {
@@ -84,6 +98,7 @@ impl NavRow {
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             on_activate: None,
+            on_adjust: None,
         }
     }
 
@@ -91,6 +106,21 @@ impl NavRow {
     pub fn on_activate<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_activate = Some(Box::new(f));
         self
+    }
+
+    pub fn on_adjust(mut self, f: impl FnMut(f64) + 'static) -> Self {
+        self.on_adjust = Some(Box::new(f));
+        self
+    }
+
+    pub fn set_expanded(&mut self, expanded: bool) {
+        if let NavKind::Disclosure { expanded: value } = &mut self.kind {
+            *value = expanded;
+        }
+    }
+
+    pub fn set_accessible_name(&mut self, name: String) {
+        self.accessible_name = name;
     }
 
     /// Place the row at an absolute rect — the app positions every row over
@@ -178,6 +208,49 @@ impl Widget for NavRow {
         }
 
         match &self.kind {
+            NavKind::Divider => {
+                let color = if self.is_focused {
+                    theme.border_focus
+                } else {
+                    theme.tokens.colors.border_standard
+                };
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    color,
+                    None,
+                    &Rect::new(r.x0, r.center().y, r.x1, r.center().y + 1.0),
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    color,
+                    None,
+                    &RoundedRect::from_rect(
+                        Rect::new(
+                            r.center().x - 22.0,
+                            r.center().y - 2.0,
+                            r.center().x + 22.0,
+                            r.center().y + 2.0,
+                        ),
+                        2.0,
+                    ),
+                );
+            }
+            NavKind::Disclosure { expanded } => {
+                let label = format!("{} {}", if *expanded { "▾" } else { "▸" }, self.label);
+                let style =
+                    tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+                let (_, height) = tr.measure_style(&label, Some((r.width() - 12.0) as f32), &style);
+                tr.draw_style(
+                    scene,
+                    &label,
+                    theme.tokens.colors.text_primary,
+                    t * Affine::translate((r.x0 + 6.0, r.center().y - f64::from(height) / 2.0)),
+                    Some((r.width() - 12.0) as f32),
+                    &style,
+                );
+            }
             NavKind::Collection { expanded, count } => {
                 Self::draw_collection_row(
                     scene,
@@ -263,6 +336,20 @@ impl Widget for NavRow {
                     },
                 ..
             } if self.is_focused => {
+                if matches!(self.kind, NavKind::Divider) {
+                    let delta = match key {
+                        Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => Some(24.0),
+                        Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => Some(-24.0),
+                        _ => None,
+                    };
+                    if let Some(delta) = delta
+                        && let Some(adjust) = &mut self.on_adjust
+                    {
+                        adjust(delta);
+                        *handled = true;
+                        return;
+                    }
+                }
                 let is_activate = matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space))
                     || matches!(key, Key::Character(s) if s.as_str() == " ");
                 if is_activate {
@@ -289,7 +376,11 @@ impl Widget for NavRow {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.rect
             .contains(point)
-            .then_some(winit::window::CursorIcon::Pointer)
+            .then_some(if matches!(self.kind, NavKind::Divider) {
+                winit::window::CursorIcon::RowResize
+            } else {
+                winit::window::CursorIcon::Pointer
+            })
     }
 
     fn is_focusable(&self) -> bool {
@@ -311,16 +402,34 @@ impl Widget for NavRow {
             NavKind::Request { selected, .. } => {
                 state = state.selected(*selected);
             }
-            NavKind::History { .. } => {}
+            NavKind::History { .. } | NavKind::Divider => {}
+            NavKind::Disclosure { expanded } => state = state.expanded(*expanded),
         }
         Some(
-            AccessNode::new(Role::Button)
-                .with_name(self.accessible_name.clone())
-                .with_state(state),
+            AccessNode::new(if matches!(self.kind, NavKind::Divider) {
+                Role::Slider
+            } else {
+                Role::Button
+            })
+            .with_name(self.accessible_name.clone())
+            .with_state(state),
         )
     }
 
     fn perform_action(&mut self, action: &Action, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+        if let Some(adjust) = &mut self.on_adjust {
+            match action {
+                Action::Increment => {
+                    adjust(24.0);
+                    return true;
+                }
+                Action::Decrement => {
+                    adjust(-24.0);
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if matches!(action, Action::Activate) {
             self.activate();
             true
@@ -358,7 +467,8 @@ impl NavRow {
         tr.draw_text_weighted(
             scene,
             label,
-            theme.tokens.typography.scale.base,
+            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base))
+                .size,
             c.text_primary,
             t * Affine::translate((r.x0 + 24.0, y + 6.0)),
             Some((inner_w - 60.0) as f32),
@@ -384,8 +494,8 @@ impl NavRow {
         tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
-        y: f64,
-        inner_w: f64,
+        _y: f64,
+        _inner_w: f64,
         label: &str,
         method: HttpMethod,
         selected: bool,
@@ -404,22 +514,30 @@ impl NavRow {
                 &shape,
             );
         }
+        let (method_w, method_h) =
+            tr.measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
+        let label_size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        let (_, label_h) = tr.measure(label, label_size, None);
+        let label_x = r.x0 + 28.0 + f64::from(method_w).max(24.0) + 12.0;
         tr.draw_text_weighted(
             scene,
             method_short(method),
             10.0,
             method_color(theme, method),
-            t * Affine::translate((r.x0 + 28.0, y + 9.0)),
+            t * Affine::translate((r.x0 + 28.0, r.center().y - f64::from(method_h) / 2.0)),
             None,
             TextWeight::Bold,
         );
         tr.draw_text(
             scene,
             label,
-            theme.tokens.typography.scale.sm,
+            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                .size,
             if selected { c.text_primary } else { c.text_dim },
-            t * Affine::translate((r.x0 + 64.0, y + 8.0)),
-            Some((inner_w - 72.0) as f32),
+            t * Affine::translate((label_x, r.center().y - f64::from(label_h) / 2.0)),
+            Some((r.x1 - label_x - 8.0).max(0.0) as f32),
         );
     }
 
@@ -431,29 +549,39 @@ impl NavRow {
         tr: &mut TextRenderer,
         theme: &Theme,
         r: Rect,
-        y: f64,
-        inner_w: f64,
+        _y: f64,
+        _inner_w: f64,
         label: &str,
         method: HttpMethod,
         status: u16,
     ) {
         let c = &theme.tokens.colors;
+        let (method_w, method_h) =
+            tr.measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
+        let (status_w, status_h) =
+            tr.measure_weighted(&status.to_string(), 11.0, None, TextWeight::Semibold);
+        let label_size = tr
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+            .size;
+        let (_, label_h) = tr.measure(label, label_size, None);
+        let label_x = r.x0 + 6.0 + f64::from(method_w).max(28.0) + 12.0;
         tr.draw_text_weighted(
             scene,
             method_short(method),
             10.0,
             method_color(theme, method),
-            t * Affine::translate((r.x0 + 6.0, y + 9.0)),
+            t * Affine::translate((r.x0 + 6.0, r.center().y - f64::from(method_h) / 2.0)),
             None,
             TextWeight::Bold,
         );
         tr.draw_text(
             scene,
             label,
-            theme.tokens.typography.scale.sm,
+            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
+                .size,
             c.text_dim,
-            t * Affine::translate((r.x0 + 46.0, y + 8.0)),
-            Some((inner_w - 90.0) as f32),
+            t * Affine::translate((label_x, r.center().y - f64::from(label_h) / 2.0)),
+            Some((r.x1 - label_x - f64::from(status_w) - 14.0).max(0.0) as f32),
         );
         let st = status.to_string();
         let (sw, _) = tr.measure(&st, 11.0, None);
@@ -462,7 +590,10 @@ impl NavRow {
             &st,
             11.0,
             status_color(theme, status_class(status)),
-            t * Affine::translate((r.x1 - f64::from(sw) - 6.0, y + 8.0)),
+            t * Affine::translate((
+                r.x1 - f64::from(sw) - 6.0,
+                r.center().y - f64::from(status_h) / 2.0,
+            )),
             None,
             TextWeight::Semibold,
         );
