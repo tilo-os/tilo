@@ -151,9 +151,21 @@ pub struct MediaHandoff {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaSourceLocator {
-    Workspace { path: String },
-    RemoteStream { url: String },
-    AppResource { uri: String },
+    Workspace {
+        path: String,
+    },
+    RemoteStream {
+        url: String,
+    },
+    AppResource {
+        uri: String,
+    },
+    /// Random transfer identity resolved only inside the receiving shell's
+    /// verified cache. No host path or bearer capability crosses the wire.
+    PersonalTransfer {
+        transfer_id: [u8; 16],
+        file_name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1052,6 +1064,19 @@ fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
                 && uri.len() <= 8192
                 && !uri.chars().any(char::is_control)
         }
+        MediaSourceLocator::PersonalTransfer {
+            transfer_id,
+            file_name,
+        } => {
+            transfer_id != &[0; 16]
+                && !file_name.is_empty()
+                && file_name.len() <= 1024
+                && file_name != "."
+                && file_name != ".."
+                && !file_name
+                    .chars()
+                    .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+        }
     }
 }
 
@@ -1595,6 +1620,10 @@ mod tests {
             },
             MediaSourceLocator::AppResource {
                 uri: "1music://track/foreign".into(),
+            },
+            MediaSourceLocator::PersonalTransfer {
+                transfer_id: [0; 16],
+                file_name: "../foreign.mp4".into(),
             },
         ] {
             let envelope = PersonalFabricActionEnvelope {

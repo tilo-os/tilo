@@ -26,6 +26,23 @@ const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 const PRESENCE_HEARTBEAT: Duration = Duration::from_secs(10);
 const MAX_QUEUED_SPATIAL_INPUT: usize = 256;
 const MAX_SPATIAL_INPUT_FLUSH_PER_FRAME: usize = 32;
+const MAX_PENDING_INCOMING_MEDIA: usize = 16;
+const INCOMING_MEDIA_WAIT: Duration = Duration::from_secs(60 * 60);
+
+#[derive(Clone)]
+struct PendingIncomingMedia {
+    received: Instant,
+    request_id: [u8; 16],
+    source: crate::shell::personal_continuity::DeviceId,
+    session_id: String,
+    app_id: String,
+    workspace_id: String,
+    title: String,
+    locator: MediaSourceLocator,
+    position_ms: u64,
+    resume_playing: bool,
+    has_video: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct OutboundSpatialInput {
@@ -93,6 +110,7 @@ pub struct DeviceFabricRuntime {
     settings_origin_initialized: bool,
     pending_incoming_media:
         BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String)>,
+    waiting_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
 }
 
 impl DeviceFabricRuntime {
@@ -107,6 +125,7 @@ impl DeviceFabricRuntime {
             applied_remote_settings: BTreeMap::new(),
             settings_origin_initialized: false,
             pending_incoming_media: BTreeMap::new(),
+            waiting_incoming_media: BTreeMap::new(),
         }
     }
 
@@ -118,6 +137,7 @@ impl DeviceFabricRuntime {
         local: LocalFabricCapabilities,
     ) {
         self.handle_fabric_actions(network);
+        self.retry_waiting_media(network);
         flush_spatial_input(network);
         self.acknowledge_opened_media(network);
         let now = Instant::now();
@@ -251,37 +271,25 @@ impl DeviceFabricRuntime {
                     resume_playing,
                     has_video,
                 } => {
-                    let Some((local, _)) = network.local_device_fabric_identity() else {
-                        continue;
-                    };
-                    let Some(presence) = network.device_fabric().snapshots().get(&local).cloned()
-                    else {
-                        continue;
-                    };
-                    let capable = if has_video {
-                        presence.presence.capabilities.video_output
-                    } else {
-                        presence.presence.capabilities.audio_output
-                    };
-                    let Some(room) = crate::shell::state::RoomId::parse(&workspace_id) else {
-                        continue;
-                    };
-                    if !capable {
-                        continue;
-                    }
-                    if crate::shell::launcher::launch_media_handoff(
-                        &app_id,
-                        room,
-                        &locator,
-                        &title,
-                        envelope.request_id,
+                    let request = PendingIncomingMedia {
+                        received: Instant::now(),
+                        request_id: envelope.request_id,
+                        source: envelope.source,
+                        session_id,
+                        app_id,
+                        workspace_id,
+                        title,
+                        locator,
                         position_ms,
                         resume_playing,
-                    )
-                    .is_ok()
+                        has_video,
+                    };
+                    if !self.try_launch_incoming_media(network, &request)
+                        && matches!(request.locator, MediaSourceLocator::PersonalTransfer { .. })
+                        && self.waiting_incoming_media.len() < MAX_PENDING_INCOMING_MEDIA
                     {
-                        self.pending_incoming_media
-                            .insert(envelope.request_id, (envelope.source, session_id));
+                        self.waiting_incoming_media
+                            .insert(request.request_id, request);
                     }
                 }
                 PersonalFabricAction::MediaAccepted {
@@ -298,6 +306,77 @@ impl DeviceFabricRuntime {
                     }
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
+            }
+        }
+    }
+
+    fn try_launch_incoming_media(
+        &mut self,
+        network: &ShellNetwork,
+        request: &PendingIncomingMedia,
+    ) -> bool {
+        let Some((local, _)) = network.local_device_fabric_identity() else {
+            return false;
+        };
+        let Some(presence) = network.device_fabric().snapshots().get(&local).cloned() else {
+            return false;
+        };
+        let capable = if request.has_video {
+            presence.presence.capabilities.video_output
+        } else {
+            presence.presence.capabilities.audio_output
+        };
+        let Some(room) = crate::shell::state::RoomId::parse(&request.workspace_id) else {
+            return true;
+        };
+        if !capable {
+            return true;
+        }
+        let launched = match &request.locator {
+            MediaSourceLocator::PersonalTransfer { transfer_id, .. } => {
+                let Some(path) =
+                    network.completed_personal_media_transfer(&request.source, *transfer_id)
+                else {
+                    return false;
+                };
+                crate::shell::launcher::launch_verified_media_handoff(
+                    &request.app_id,
+                    room,
+                    &path,
+                    &request.title,
+                    request.request_id,
+                    request.position_ms,
+                    request.resume_playing,
+                )
+            }
+            _ => crate::shell::launcher::launch_media_handoff(
+                &request.app_id,
+                room,
+                &request.locator,
+                &request.title,
+                request.request_id,
+                request.position_ms,
+                request.resume_playing,
+            ),
+        }
+        .is_ok();
+        if launched {
+            self.pending_incoming_media.insert(
+                request.request_id,
+                (request.source.clone(), request.session_id.clone()),
+            );
+        }
+        true
+    }
+
+    fn retry_waiting_media(&mut self, network: &ShellNetwork) {
+        let waiting = std::mem::take(&mut self.waiting_incoming_media);
+        for (request_id, request) in waiting {
+            if request.received.elapsed() >= INCOMING_MEDIA_WAIT {
+                continue;
+            }
+            if !self.try_launch_incoming_media(network, &request) {
+                self.waiting_incoming_media.insert(request_id, request);
             }
         }
     }
@@ -426,21 +505,28 @@ pub fn request_media_handoff(
         .device_fabric()
         .handoff_media(session_id, target)
         .map_err(|error| error.to_string())?;
-    let locator = match &report.source {
-        media::handoff::HandoffSource::Workspace { path } => MediaSourceLocator::Workspace {
-            path: path.to_string_lossy().into_owned(),
-        },
+    let (locator, local_transfer) = match &report.source {
+        media::handoff::HandoffSource::Workspace { path } => (
+            MediaSourceLocator::Workspace {
+                path: path.to_string_lossy().into_owned(),
+            },
+            None,
+        ),
         media::handoff::HandoffSource::RemoteStream { url } => {
-            MediaSourceLocator::RemoteStream { url: url.clone() }
+            (MediaSourceLocator::RemoteStream { url: url.clone() }, None)
         }
         media::handoff::HandoffSource::AppResource { uri } => {
-            MediaSourceLocator::AppResource { uri: uri.clone() }
+            (MediaSourceLocator::AppResource { uri: uri.clone() }, None)
         }
-        media::handoff::HandoffSource::LocalFile { .. } => {
-            return Err(
-                "This file is device-local. Add it to Files to hydrate it on another device."
-                    .into(),
-            );
+        media::handoff::HandoffSource::LocalFile { path } => {
+            let transfer = network.prepare_personal_media_transfer(target, path)?;
+            (
+                MediaSourceLocator::PersonalTransfer {
+                    transfer_id: transfer.transfer_id,
+                    file_name: transfer.file_name.clone(),
+                },
+                Some(transfer),
+            )
         }
     };
     let action = PersonalFabricAction::ResumeMedia {
@@ -454,6 +540,9 @@ pub fn request_media_handoff(
         has_video: report.session.has_video,
     };
     let request_id = network.send_personal_fabric_action(target, action)?;
+    if let Some(transfer) = local_transfer {
+        network.start_personal_media_transfer(transfer)?;
+    }
     media::handoff::remember_outbound_handoff(request_id, report);
     Ok(request_id)
 }
