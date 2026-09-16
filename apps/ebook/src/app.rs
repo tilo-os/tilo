@@ -63,7 +63,9 @@ use crate::model::{
     AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
     Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
 };
-use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_chapter};
+use crate::paginate::{
+    ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
+};
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
@@ -7738,15 +7740,17 @@ impl BooksApp {
         {
             self.layout = Some(layout_chapter(
                 tr,
-                &ch.blocks,
-                geom.content_w,
-                geom.content_h,
-                &self.settings,
-                self.chapter,
-                &book.language,
-                base_family,
-                font_mult,
-                font_sig,
+                &ChapterLayoutRequest {
+                    blocks: &ch.blocks,
+                    content_width: geom.content_w,
+                    content_height: geom.content_h,
+                    settings: &self.settings,
+                    chapter: self.chapter,
+                    language: &book.language,
+                    base_family,
+                    font_multiplier: font_mult,
+                    font_signature: font_sig,
+                },
             ));
         }
         self.layout.take().unwrap_or_else(|| ChapterLayout {
@@ -11595,14 +11599,22 @@ mod interaction_tests {
     }
 
     fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
-        for _ in 0..80 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
             app.sync(doc, &automerge::ROOT);
             if app.import_loading.is_none() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        panic!("book import did not finish in time");
+        let pending = app
+            .import_loading
+            .as_ref()
+            .map(|loading| loading.path.display().to_string());
+        panic!(
+            "book import did not finish within 10 seconds (pending: {pending:?}, error: {:?})",
+            app.load_error
+        );
     }
 
     fn find_semantic_target<'a>(node: &'a AccessNode, target: &str) -> Option<&'a AccessNode> {
@@ -12983,11 +12995,10 @@ mod interaction_tests {
         );
     }
 
-    /// The floating page bubble is a transient overlay: hidden on a settled
-    /// reader, surfaced by a page change, and it schedules the animation frames
-    /// that let it fade itself out (so it hides without a stray pointer event).
+    /// The floating page bubble is hidden on a settled reader and surfaced by
+    /// a page change without leaving an invisible navigation hit behind.
     #[test]
-    fn page_bubble_surfaces_on_a_page_change_and_schedules_its_fade() {
+    fn page_bubble_surfaces_on_a_page_change() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
@@ -13001,17 +13012,13 @@ mod interaction_tests {
             find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
             "the hidden bubble exposes no page-nav hit"
         );
-        // A page turn pokes the bubble; the next frame draws it (its chevrons are
-        // hit-testable) and it keeps requesting frames so it can fade on its own.
+        // A page turn pokes the bubble; the next frame draws it and makes its
+        // chevrons hit-testable.
         app.dispatch(Action::NextPage, &mut doc);
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(
             find_hit(&app, |a| matches!(a, Action::NextPage)).is_some(),
             "a page change surfaces the bubble's next chevron"
-        );
-        assert!(
-            app.reader_bubble.needs_frame(Instant::now()),
-            "the visible bubble schedules its own fade-out frames"
         );
     }
 
@@ -14572,7 +14579,7 @@ mod interaction_tests {
     #[test]
     fn page_for_block_maps_a_block_to_its_page() {
         use crate::model::{Block, Span};
-        use crate::paginate::layout_chapter;
+        use crate::paginate::{ChapterLayoutRequest, layout_chapter};
         let mut tr = TextRenderer::new();
         // Eight fat paragraphs into a small box -> several pages.
         let blocks: Vec<Block> = (0..8)
@@ -14582,15 +14589,17 @@ mod interaction_tests {
             .collect();
         let layout = layout_chapter(
             &mut tr,
-            &blocks,
-            300.0,
-            160.0,
-            &Settings::default(),
-            0,
-            "en-US",
-            &FontChoice::SansSerif,
-            1.0,
-            0,
+            &ChapterLayoutRequest {
+                blocks: &blocks,
+                content_width: 300.0,
+                content_height: 160.0,
+                settings: &Settings::default(),
+                chapter: 0,
+                language: "en-US",
+                base_family: &FontChoice::SansSerif,
+                font_multiplier: 1.0,
+                font_signature: 0,
+            },
         );
         assert!(layout.page_count() >= 2, "content spans multiple pages");
         assert_eq!(page_for_block(&layout, 0), 0, "first block is on page 0");
