@@ -33,11 +33,8 @@ impl HistoryView {
     /// Draw the commit list with graph. Returns the row rects so the app
     /// can hit-test selection. `selected` is the index of the highlighted
     /// commit.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_list(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
+        paint: &mut draw::PaintCtx<'_>,
         theme: &Theme,
         area: Rect,
         model: &RepoModel,
@@ -45,6 +42,7 @@ impl HistoryView {
         selected: usize,
         scroll: f64,
     ) -> Vec<Rect> {
+        let (scene, tr, t) = paint.parts();
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
 
@@ -313,14 +311,13 @@ impl HistoryView {
         reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
     )]
     pub fn draw_detail(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
+        paint: &mut draw::PaintCtx<'_>,
         theme: &Theme,
         area: Rect,
         commit: &Commit,
         scroll: f64,
     ) {
+        let (scene, tr, t) = paint.parts();
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.raised);
         draw::vline(scene, t, area.x0, area.y0, area.y1, c.border_standard);
