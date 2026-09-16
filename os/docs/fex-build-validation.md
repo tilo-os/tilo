@@ -153,9 +153,10 @@ processes, the two devices, and the diagnostic seccomp setting, all 11 previousl
 failing syscall groups passed. The complete suite must still pass with this
 fixture; targeted success alone is not full acceptance.
 
-The complete rerun of FEX-2609 with this fixture finished in 590.61 seconds:
+The complete rerun of the configured FEX-2609 suite with this fixture finished in 590.61 seconds:
 11,616 passes, 458 upstream skips, and zero failures across 12,074 cases.
-This baseline does not cover the separate Fedora `ldconfig` crash.
+This baseline had `BUILD_THUNKS=OFF` and `BUILD_FEX_LINUX_TESTS=OFF`; it does not
+cover those additional targets or the separate Fedora `ldconfig` crash.
 
 ## Consecutive syscall regression
 
@@ -172,7 +173,7 @@ syscall overwrites its allocated register. Upstream
 fixes Linux syscall block boundaries and advances the saved instruction
 pointer, including cache format invalidation. That exact, unmodified revision
 passed the regression and actual Fedora `ldconfig -p` with normal JIT settings.
-Its complete native ARM suite then passed in 480.47 seconds: 11,616 passes,
+The same configured native ARM suite then passed in 480.47 seconds: 11,616 passes,
 458 upstream skips, and zero failures across 12,074 cases. The source manifest
 now pins this revision and its recursive gitlinks. No downstream FEX patch or
 production block-size override is required.
@@ -191,3 +192,54 @@ The resulting local image is
 Unlike the earlier ignored `SHELL` recipe, this build did not rely on OCI shell
 selection to launch FEX. This remains a diagnostic SDK assembled from live
 Fedora repositories, not the frozen production runtime or a release artifact.
+
+## Graphics bridge build inputs
+
+The native buildroot also supplies Clang's development library and the native
+ALSA, DRM, OpenGL/EGL, X11, XCB, Wayland, and xshmfence development packages.
+FEX uses them to build its native thunk generator and ARM host libraries.
+The separate x86 SDK needs matching development packages for both x86-64 and
+i686, including the C/C++ libraries described above. Preserve normal package
+scripts when constructing that SDK.
+
+Use the explicit guest toolchains in `os/dev/toolchains/` when enabling the
+upstream targets:
+
+```sh
+export QOS_FEX_X86_SYSROOT=/x86-sdk
+cmake -S /src -B /build \
+  -DBUILD_THUNKS=ON -DBUILD_FEX_LINUX_TESTS=ON -DENABLE_CLANG_THUNKS=ON \
+  -DX86_DEV_ROOTFS="$QOS_FEX_X86_SYSROOT" \
+  -DX86_64_TOOLCHAIN_FILE=/qos/os/dev/toolchains/fex-cross-x86_64.cmake \
+  -DX86_32_TOOLCHAIN_FILE=/qos/os/dev/toolchains/fex-cross-i686.cmake
+cmake --build /build --parallel 2
+```
+
+The environment variable is also required by upstream's nested Linux-test
+projects, which do not forward `X86_DEV_ROOTFS` themselves. The toolchains use
+native Clang with explicit guest targets, the SDK's GCC runtime, and target
+pkg-config directories. They reject an absent SDK or `/` as the SDK; guest
+library discovery cannot silently fall back to native ARM libraries. The
+outer build still compiles the generator and host libraries natively.
+
+Building thunks is not runtime acceptance. Run the added `.ThunkGen`, Linux
+`.jit.flt`, and `ThunkFunctionalTest` cases with the installed libraries and
+the required guest applications. Report those results separately from the
+12,074-case baseline. The pinned source currently emits a 64-bit Vulkan guest
+thunk but no 32-bit Vulkan guest thunk; this must be accounted for when
+validating 32-bit DirectX applications, not hidden by the existence of a
+32-bit-interface host library.
+
+The native ARM buildroot recipe completed successfully with these dependencies
+(image ID `e877d2c6ca51003b1fd8fd45670eaccde172df49370a0ea331d2b098c3add959`).
+Both checked-in guest toolchains compiled and linked a C++ program using vectors
+and exceptions; ELF inspection confirmed the requested architectures, and FEX
+ran both successfully (`CROSS_SDK_PASS`, 64-bit and 32-bit, sum 42).
+
+The first expanded test run completed 110 cases: 103 passes, two upstream skips,
+and five failures. These comprise `VariadicFunction.ThunkGen` (generated
+`__size_t` is undeclared), both `smc-shared-1` variants (executable shared-memory
+mapping), `cpu_count.32` (12 CPUID IDs versus 119 reported CPUs), and
+`syscalls_efault.64` (all 20 assertions pass, but upstream marks it an expected
+failure). These results do not constitute runtime acceptance; preserve the
+failures and investigate the fixture and implementation separately.
