@@ -43,6 +43,7 @@ jobs:
           python3 -m unittest tools/tests/test_ci_select.py
           python3 -m unittest tools/tests/test_app_release.py
           python3 -m unittest tools/tests/test_changed_rustfmt.py
+          python3 -m unittest tools/tests/test_nextest_policy.py
           bash tools/tests/ci_sccache.sh
 
       - name: Immutable workflow dependency contract
