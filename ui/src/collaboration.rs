@@ -1092,6 +1092,10 @@ fn task_run_bytes(run: &runtime_collab::TaskRunEnvelope, meter: &mut ByteMeter) 
     json_bytes(&run.action_context, meter);
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive byte accounting intentionally mirrors every collaboration event variant"
+)]
 fn event_bytes(event: &CollabEvent) -> Option<usize> {
     let mut meter = ByteMeter(Some(std::mem::size_of::<CollabEvent>()));
     match event {
