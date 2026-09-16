@@ -47,6 +47,30 @@ case folding, mount safety, and authorization remain execution responsibilities.
 - Scoped re-review approved both fixes with no directly introduced regressions.
   Native Windows verification remains outstanding.
 
+## Setup screens — Task 2 verification
+
+- Added a development `--setup` entry and five deterministic setup screenshot
+  scenarios. Live installation and synchronization remain unavailable pending
+  their real executors; screenshots do not establish installation support.
+- macOS full Imager tests: 172 library tests and 2 binary tests passed before
+  the final `/var/home` guard adjustment. After that adjustment, all 8 view tests
+  passed, including system-folder rejection and overlapping-selection handling.
+- Native Fedora ARM64 full Imager library suite: 173 passed, zero failed before
+  that final adjustment. The final focused view suite passed all 8 tests,
+  including accepting `/var/home/qos/Documents` while rejecting system folders.
+- The native Linux executable rendered `setup-folders-copy` at 640x640 using
+  `cargo run --locked -p imager --bin imager -- --shots <output.png>
+  --scenario setup-folders-copy --viewport 640x640`. The inspected image shows
+  all three modes, Help, status and navigation without overlap. VM locale and
+  unavailable graphics-driver probes logged diagnostics before the usable
+  Vulkan adapter rendered successfully; the process exited zero.
+- Ten macOS renders cover all five scenarios at 1180x820 and 640x640. Root
+  inspection led to compact mode cards, a scrollbar gutter, plain availability
+  wording and an opaque theme background. The corrected compact folder view and
+  review view were inspected successfully.
+- Screenshots are in the task's local visualization directory under
+  `guided-setup/`. Task-scoped code review is still pending.
+
 ## Outstanding end-state evidence
 
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
