@@ -75,7 +75,9 @@ use crate::reading_settings::{
     ReadingSettings, ReadingSettingsAction, ReadingSettingsEventCtx, ReadingSettingsPaintCtx,
     ReadingSettingsView,
 };
-use crate::shelf_controls::{ShelfControlAction, ShelfControls};
+use crate::shelf_controls::{
+    ShelfBarView, ShelfControlAction, ShelfControls, ShelfMenuView, ShelfPaintCtx,
+};
 
 const TOP_BAR: f64 = 54.0;
 
@@ -6389,14 +6391,18 @@ impl BooksApp {
         }
 
         let sort_btn = self.shelf_controls.draw_bar(
-            scene,
-            t,
-            tr,
-            theme,
-            r,
-            open_x,
-            self.cursor,
-            self.library_prefs,
+            &mut ShelfPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            ShelfBarView {
+                viewport: r,
+                open_book_x: open_x,
+                cursor: self.cursor,
+                preferences: self.library_prefs,
+            },
         );
 
         // --- filter + sort the display order ------------------------------
@@ -6407,14 +6413,18 @@ impl BooksApp {
         if order.is_empty() {
             Self::draw_all_read_empty_state(scene, t, tr, &c, r);
             self.shelf_controls.draw_menu(
-                scene,
-                t,
-                tr,
-                theme,
-                r,
-                sort_btn,
-                self.cursor,
-                self.library_prefs.sort,
+                &mut ShelfPaintCtx {
+                    scene,
+                    transform: t,
+                    text: tr,
+                    theme,
+                },
+                ShelfMenuView {
+                    viewport: r,
+                    anchor: sort_btn,
+                    cursor: self.cursor,
+                    selected: self.library_prefs.sort,
+                },
             );
             self.library = lib;
             return;
@@ -6422,14 +6432,18 @@ impl BooksApp {
 
         self.draw_library_grid(scene, t, tr, theme, &lib, &order, &c, r);
         self.shelf_controls.draw_menu(
-            scene,
-            t,
-            tr,
-            theme,
-            r,
-            sort_btn,
-            self.cursor,
-            self.library_prefs.sort,
+            &mut ShelfPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            ShelfMenuView {
+                viewport: r,
+                anchor: sort_btn,
+                cursor: self.cursor,
+                selected: self.library_prefs.sort,
+            },
         );
         self.library = lib;
     }
