@@ -23,6 +23,11 @@ pub struct Manifest {
     /// `[trust]` block — third-party attestations.
     #[serde(default)]
     pub trust: Trust,
+    /// `[continuity]` block — the framework-owned state facets this app
+    /// promises every handoff will retain. This is signed with the rest of
+    /// the manifest, so a release cannot silently weaken its fidelity.
+    #[serde(default)]
+    pub continuity: ContinuityContract,
     /// `[sandbox]` block — the security profile applied at load.
     pub sandbox: Sandbox,
     /// `[entrypoint]` block — what to launch. Required for `app`; optional/unset for other kinds.
@@ -332,6 +337,39 @@ pub struct TrustAttestation {
     /// empty for legacy claim-only rows.
     #[serde(default, rename = "signature")]
     pub signature_hex: String,
+}
+
+/// `[continuity]` — minimum facets a continuation payload must contain.
+///
+/// Presentation state is the fleet-wide baseline supplied by the UI runtime.
+/// Apps may additionally require a semantic projection which another device
+/// can reopen natively rather than merely reproducing pixels.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContinuityContract {
+    #[serde(default = "default_continuity_facets")]
+    pub required: Vec<ContinuityFacet>,
+}
+
+impl Default for ContinuityContract {
+    fn default() -> Self {
+        Self {
+            required: default_continuity_facets(),
+        }
+    }
+}
+
+fn default_continuity_facets() -> Vec<ContinuityFacet> {
+    vec![ContinuityFacet::Presentation]
+}
+
+/// A stable, signed handoff-fidelity capability.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContinuityFacet {
+    /// Framework-owned focus, viewport, scroll, and view-mode state.
+    Presentation,
+    /// App-owned resource identity and domain state, sanitized for roaming.
+    Semantic,
 }
 
 impl TrustAttestation {
