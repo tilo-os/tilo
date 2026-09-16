@@ -531,53 +531,26 @@ impl Shell {
     /// active-strip index.
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_sidebar_wheel(&mut self, dir: i32) -> usize {
-        // `SidebarWheel::on_wheel` reads/writes `active_strip` on
-        // `state::WorkspaceTree`, not the runtime tree, so dispatch against
-        // a scratch state tree and copy the result back out.
         let active_ws = self.tree.active;
-        let mut scratch = state::WorkspaceTree {
-            workspaces: self
-                .tree
-                .workspaces
-                .iter()
-                .map(|w| {
-                    let mut s = state::Workspace::new(w.id, &w.name);
-                    s.strips = w
-                        .strips
-                        .iter()
-                        .map(|st| state::Strip::new(st.id, &st.name))
-                        .collect();
-                    s
-                })
-                .collect(),
-            active: active_ws,
-            active_strip: std::collections::HashMap::default(),
-            active_group: std::collections::HashMap::default(),
-            collaborators: vec![],
-            ..Default::default()
+        let Some(workspace) = self.tree.workspaces.iter().find(|w| w.id == active_ws) else {
+            return 0;
         };
-        // Seed the active-strip entry for the active workspace.
-        if let Some(ws) = self.tree.workspaces.iter().find(|w| w.id == active_ws)
-            && let Some(first) = ws.strips.first()
-        {
-            scratch.active_strip.insert(active_ws, first.id);
-        }
-        self.sidebar.on_wheel(dir, &mut scratch);
-        // Snap back the active strip id (if changed) by index lookup.
-
-        scratch
+        let current = self
+            .tree
             .active_strip
             .get(&active_ws)
-            .and_then(|id| {
-                scratch
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == active_ws)?
-                    .strips
-                    .iter()
-                    .position(|s| s.id == *id)
-            })
+            .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
             .unwrap_or(0)
+            .min(workspace.strips.len().saturating_sub(1));
+        let Some(next) = SidebarWheel::next_strip_index(current, workspace.strips.len(), dir)
+        else {
+            return 0;
+        };
+        let Some(strip_id) = workspace.strips.get(next).map(|strip| strip.id) else {
+            return 0;
+        };
+        self.tree.active_strip.insert(active_ws, strip_id);
+        next
     }
 
     /// Index of the currently-active strip on the active workspace in the
@@ -586,11 +559,29 @@ impl Shell {
     /// that case).
     #[cfg(any(test, debug_assertions))]
     pub fn active_strip_index(&self) -> usize {
-        // No per-workspace active-strip map on the runtime tree yet (that
-        // lives on `state::WorkspaceTree`) — `0` is a stable placeholder;
-        // callers wanting the live selection use the `state` tree path.
-        let _ = self;
-        0
+        let active_ws = self.tree.active;
+        let Some(workspace) = self.tree.workspaces.iter().find(|w| w.id == active_ws) else {
+            return 0;
+        };
+        self.tree
+            .active_strip
+            .get(&active_ws)
+            .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
+            .unwrap_or(0)
+    }
+
+    #[cfg(any(test, debug_assertions))]
+    pub fn append_empty_strip_for_test(&mut self, name: &str) -> usize {
+        let Some(workspace) = self
+            .tree
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == self.tree.active)
+        else {
+            return 0;
+        };
+        workspace.strips.push(RuntimeStrip::new(name, Vec::new()));
+        workspace.strips.len().saturating_sub(1)
     }
 
     /// Drives the sidebar's overscroll gesture past the commit threshold;
@@ -599,7 +590,8 @@ impl Shell {
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_overscroll_commit(&mut self) {
         use ui::widget::toast::ToastKind;
-        // Scratch state tree, same reason as `simulate_sidebar_wheel`.
+        // Overscroll still operates on the persisted workspace model; this
+        // focused helper only verifies gesture routing and its toast effect.
         let mut scratch = state::WorkspaceTree {
             workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
@@ -631,7 +623,8 @@ impl Shell {
     #[cfg(any(test, debug_assertions))]
     pub fn simulate_new_workspace_via_management(&mut self) {
         use ui::widget::toast::ToastKind;
-        // Scratch state tree, same reason as `simulate_sidebar_wheel`.
+        // Workspace creation still operates on the persisted workspace model;
+        // this focused helper verifies the management-button route and toast.
         let mut scratch = state::WorkspaceTree {
             workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
