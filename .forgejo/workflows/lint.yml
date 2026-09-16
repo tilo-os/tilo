@@ -18,6 +18,7 @@ concurrency:
 jobs:
   quality:
     runs-on: runner
+    timeout-minutes: 30
     container:
       image: code.podesta.ai/qos/qos-builder:latest
       credentials:
