@@ -32,7 +32,7 @@
       }
     ],
     "closure": "fixes and final verification pending",
-    "assigned_work": "Composition 1"
+    "assigned_work": "Composition 11 (Task1 umbrella)"
   },
   {
     "app": "backups",
@@ -194,7 +194,7 @@
     ],
     "closure": "fixes and final verification pending",
     "capture_fidelity": "verified for standard CLI route in corrected visual review; batch Imager fallback verified by focused tests and code review",
-    "assigned_work": "Composition 1"
+    "assigned_work": "Composition 10 + 13 (Task1 umbrella)"
   },
   {
     "app": "contacts",
@@ -254,7 +254,7 @@
       }
     ],
     "closure": "fixes and final verification pending",
-    "assigned_work": "Composition 1"
+    "assigned_work": "Composition 12 + 14 (Task1 umbrella)"
   },
   {
     "app": "diffmerge",
