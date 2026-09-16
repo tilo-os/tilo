@@ -15038,7 +15038,7 @@ impl VideoEditorApp {
         );
         let count = format!("{} clips", self.project.media.len());
         let (cw, _) = tr.measure(&count, 11.0, None);
-        let count_x = r.bin.x1 - 14.0 * bin_scale - cw as f64;
+        let count_x = r.bin.x1 - 14.0 * bin_scale - f64::from(cw);
         if count_x > add.x1 + 8.0 * bin_scale {
             text(
                 scene,
@@ -15107,7 +15107,7 @@ impl VideoEditorApp {
             // Keep the thumbnail close to its familiar 64px visual size:
             // only the text rhythm needs to expand. Letting it grow with the
             // row would turn a 200% bin into a wall of poster-sized swatches.
-            let thumb_h = (rect.height() - 2.0 * row_inset).max(0.0).min(64.0);
+            let thumb_h = (rect.height() - 2.0 * row_inset).clamp(0.0, 64.0);
             let thumb_y0 = rect.center().y - thumb_h / 2.0;
             let thumb = Rect::new(
                 rect.x0 + row_inset,
@@ -15227,13 +15227,13 @@ impl VideoEditorApp {
             // room; in its place when there is not.
             let chip = long.zip(short).and_then(|(long, short)| {
                 [
-                    (tx + sw as f64 + 8.0, long),
-                    (tx + sw as f64 + 8.0, short),
+                    (tx + f64::from(sw) + 8.0, long),
+                    (tx + f64::from(sw) + 8.0, short),
                     (tx, long),
                     (tx, short),
                 ]
                 .into_iter()
-                .find(|(x0, label)| x0 + tr.measure(label, 10.5, None).0 as f64 + 14.0 <= right)
+                .find(|(x0, label)| x0 + f64::from(tr.measure(label, 10.5, None).0) + 14.0 <= right)
             });
             // The metadata line survives unless the chip had to take its place.
             if chip.map(|(x0, _)| x0 > tx).unwrap_or(true) {
@@ -15249,7 +15249,7 @@ impl VideoEditorApp {
                 );
             }
             if let Some((cx0, label)) = chip {
-                let w = tr.measure(label, 10.5, None).0 as f64 + 14.0 * bin_scale;
+                let w = f64::from(tr.measure(label, 10.5, None).0) + 14.0 * bin_scale;
                 let chip_top = rect.y0 + 31.0 * bin_scale;
                 let chip = Rect::new(cx0, chip_top, cx0 + w, chip_top + 17.0 * bin_scale);
                 fill_rrect(scene, tf, with_alpha(c.semantic.warning, 0.20), chip, 4.0);
