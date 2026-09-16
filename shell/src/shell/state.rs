@@ -10484,11 +10484,9 @@ mod active_group_tests {
 #[cfg(test)]
 mod active_workspace_peer_count_tests {
     //! Coverage for [`active_workspace_peer_count`] — the shared helper
-    //! that keeps the top-bar avatar stack and the wheel-disc active-card
-    //! collaborator-dot count in lock-step.
+    //! used by chrome that summarizes the active workspace roster.
 
     use super::*;
-    use crate::shell::sidebar_wheel_chrome::SidebarWheelChrome;
     use crate::shell::topbar_chrome::TopBarChrome;
     use std::collections::HashMap;
 
@@ -10531,30 +10529,15 @@ mod active_workspace_peer_count_tests {
     }
 
     #[test]
-    fn topbar_and_wheel_disc_agree_on_active_collab_count() {
+    fn topbar_uses_shared_active_workspace_peer_count() {
         // Two explicit collaborators on the active workspace — one is the
-        // local user ("me"). Both chromes must agree that the *peer* count
-        // (excluding "me") is 1.
+        // local user ("me"). Chrome must expose only the remote peer.
         let tree = tree_with_active_collaborators(vec![
             Collaborator::new("me", "Me"),
             Collaborator::new("alice", "Alice"),
         ]);
 
         let topbar = TopBarChrome::from_tree(&tree);
-        let wheel = SidebarWheelChrome::from_tree(&tree);
-        let active_idx = tree
-            .workspaces
-            .iter()
-            .position(|w| w.id == tree.active)
-            .expect("active workspace present");
-
-        assert_eq!(
-            topbar.collaborator_initials().len(),
-            wheel.card_collab_count(active_idx),
-            "top-bar avatar stack and wheel-disc active card must agree on \
-             the peer count (audit B-10); helper is the single source of truth"
-        );
-        // And both should equal the helper's value.
         assert_eq!(active_workspace_peer_count(&tree), 1);
         assert_eq!(topbar.collaborator_initials().len(), 1);
     }
