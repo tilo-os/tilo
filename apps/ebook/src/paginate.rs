@@ -948,36 +948,31 @@ fn compose_block_lines(
 
 /// A laid-out `Block::Math` — the formula centered in the content width, with
 /// vertical breathing room scaled off the body size.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter feeds a distinct piece of the geometry below (index/source for the \
-              block, y/body/content_w for its measurements, tr/st/expr for the math layout \
-              call); grouping any subset would be arbitrary rather than a real simplification"
-)]
-fn laid_math_block(
+struct MathBlockInput<'a> {
     index: usize,
-    y: f32,
-    expr: &ui::math::MathExpr,
-    source: &str,
-    tr: &mut TextRenderer,
-    st: &BlockStyle,
-    body: f32,
-    content_w: f32,
-) -> LaidBlock {
-    let math_layout = ui::math::layout(&expr.root, tr, st.size);
-    let vertical_pad = body * 0.35;
+    top: f32,
+    expression: &'a ui::math::MathExpr,
+    source: &'a str,
+    style: &'a BlockStyle,
+    body_size: f32,
+    content_width: f32,
+}
+
+fn laid_math_block(text: &mut TextRenderer, input: &MathBlockInput<'_>) -> LaidBlock {
+    let math_layout = ui::math::layout(&input.expression.root, text, input.style.size);
+    let vertical_pad = input.body_size * 0.35;
     let height = math_layout.height as f32 + vertical_pad * 2.0;
-    let math_x = ((content_w - math_layout.width as f32) * 0.5).max(0.0);
+    let math_x = ((input.content_width - math_layout.width as f32) * 0.5).max(0.0);
     LaidBlock {
-        index,
+        index: input.index,
         kind: LayoutKind::Math,
-        top: y,
-        bottom: y + height,
-        size: st.size,
+        top: input.top,
+        bottom: input.top + height,
+        size: input.style.size,
         line_height: height,
         indent: 0.0,
         lines: vec![LaidLine {
-            y,
+            y: input.top,
             glyph_scale: 1.0,
             adjustment_ratio: 0.0,
             rtl: false,
@@ -989,8 +984,8 @@ fn laid_math_block(
             x: math_x,
             y_offset: vertical_pad,
         }),
-        text: source.to_string(),
-        char_len: source.chars().count(),
+        text: input.source.to_string(),
+        char_len: input.source.chars().count(),
     }
 }
 
@@ -1023,36 +1018,50 @@ fn laid_separator_block(index: usize, y: f32, st: &BlockStyle) -> LaidBlock {
 /// the reader's chosen body face (serif / a named installed family / sans);
 /// `font_mult` scales the nominal body size for that face; `font_sig` feeds the
 /// layout cache key so a font change relays out.
-// Layout entry point: chapter/text-renderer/box/typography params are the
-// natural, minimal parameter set for the pagination engine.
-#[allow(clippy::too_many_arguments)]
-pub fn layout_chapter(
-    tr: &mut TextRenderer,
-    blocks: &[Block],
-    content_w: f32,
-    content_h: f32,
-    settings: &Settings,
-    chapter: usize,
-    language: &str,
-    base_family: &FontChoice,
-    font_mult: f32,
-    font_sig: u64,
-) -> ChapterLayout {
+pub struct ChapterLayoutRequest<'a> {
+    pub blocks: &'a [Block],
+    pub content_width: f32,
+    pub content_height: f32,
+    pub settings: &'a Settings,
+    pub chapter: usize,
+    pub language: &'a str,
+    pub base_family: &'a FontChoice,
+    pub font_multiplier: f32,
+    pub font_signature: u64,
+}
+
+pub fn layout_chapter(tr: &mut TextRenderer, request: &ChapterLayoutRequest<'_>) -> ChapterLayout {
     let text_scale = tr.text_scale();
     let key = LayoutKey::new(
-        chapter, content_w, content_h, settings, font_sig, text_scale,
+        request.chapter,
+        request.content_width,
+        request.content_height,
+        request.settings,
+        request.font_signature,
+        text_scale,
     );
-    let body = settings.body_size_with(font_mult);
-    let base_mono = matches!(base_family, FontChoice::Monospace);
-    let mut laid: Vec<LaidBlock> = Vec::with_capacity(blocks.len());
+    let body = request.settings.body_size_with(request.font_multiplier);
+    let base_mono = matches!(request.base_family, FontChoice::Monospace);
+    let mut laid: Vec<LaidBlock> = Vec::with_capacity(request.blocks.len());
     let mut y = 0.0f32;
 
-    for (index, block) in blocks.iter().enumerate() {
+    for (index, block) in request.blocks.iter().enumerate() {
         let st = style_for(block, body, text_scale);
         y += st.space_before;
 
         if let Block::Math { expr, source, .. } = block {
-            let laid_block = laid_math_block(index, y, expr, source, tr, &st, body, content_w);
+            let laid_block = laid_math_block(
+                tr,
+                &MathBlockInput {
+                    index,
+                    top: y,
+                    expression: expr,
+                    source,
+                    style: &st,
+                    body_size: body,
+                    content_width: request.content_width,
+                },
+            );
             y = laid_block.bottom;
             laid.push(laid_block);
             continue;
@@ -1070,11 +1079,11 @@ pub fn layout_chapter(
             &WordBuildInput {
                 block,
                 style: &st,
-                settings,
-                language,
-                base_family,
+                settings: request.settings,
+                language: request.language,
+                base_family: request.base_family,
                 base_mono,
-                line_height: st.size * 1.25 * settings.line_spacing * text_scale,
+                line_height: st.size * 1.25 * request.settings.line_spacing * text_scale,
             },
         );
         let line_height = built.line_height;
@@ -1086,9 +1095,9 @@ pub fn layout_chapter(
                 words: &built.words,
                 canonical_text: &built.canonical_text,
                 style: &st,
-                settings,
-                content_width: content_w,
-                base_family,
+                settings: request.settings,
+                content_width: request.content_width,
+                base_family: request.base_family,
                 block_top,
                 line_height,
             },
@@ -1123,7 +1132,7 @@ pub fn layout_chapter(
     }
 
     let total_height = y;
-    let pages = paginate(&laid, content_h);
+    let pages = paginate(&laid, request.content_height);
 
     ChapterLayout {
         blocks: laid,
@@ -1265,6 +1274,31 @@ mod tests {
         }
     }
 
+    fn test_layout(
+        text: &mut TextRenderer,
+        blocks: &[Block],
+        content_width: f32,
+        content_height: f32,
+        settings: &Settings,
+        language: &str,
+        base_family: &FontChoice,
+    ) -> ChapterLayout {
+        layout_chapter(
+            text,
+            &ChapterLayoutRequest {
+                blocks,
+                content_width,
+                content_height,
+                settings,
+                chapter: 0,
+                language,
+                base_family,
+                font_multiplier: 1.0,
+                font_signature: 0,
+            },
+        )
+    }
+
     #[test]
     fn layout_produces_pages_and_lines() {
         let mut tr = TextRenderer::new();
@@ -1284,17 +1318,14 @@ mod tests {
                   couple of times within the narrow measure we hand the engine.",
             ),
         ];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             360.0,
             220.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::SansSerif,
-            1.0,
-            0,
         );
         assert!(layout.total_height > 0.0);
         assert!(layout.page_count() >= 1);
@@ -1323,7 +1354,7 @@ mod tests {
                 }],
             }],
         };
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &[Block::Math {
                 expr,
@@ -1333,11 +1364,8 @@ mod tests {
             420.0,
             500.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let block = &layout.blocks[0];
         let math = block.math.as_ref().expect("shared math layout attached");
@@ -1357,17 +1385,14 @@ mod tests {
         let mut tr = TextRenderer::new();
         let big = "word ".repeat(400);
         let blocks = vec![para(&big)];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             300.0,
             160.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::SansSerif,
-            1.0,
-            0,
         );
         assert!(layout.page_count() >= 3, "lots of text -> several pages");
         // Page starts strictly increase.
@@ -1406,7 +1431,7 @@ mod tests {
             composition: CompositionStyle::Ragged,
             ..Default::default()
         };
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &[para(
                 "“Characteristically typographic paragraphs demonstrate hyphenation and spacing.”",
@@ -1414,11 +1439,8 @@ mod tests {
             145.0,
             600.0,
             &settings,
-            0,
             "en-US",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let lines = &layout.blocks[0].lines;
         assert!(
@@ -1450,17 +1472,14 @@ mod tests {
     fn selection_char_offsets_are_assigned_across_words() {
         let mut tr = TextRenderer::new();
         let blocks = vec![para("alpha beta gamma")];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             600.0,
             400.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::SansSerif,
-            1.0,
-            0,
         );
         let b = &layout.blocks[0];
         assert_eq!(
@@ -1480,17 +1499,14 @@ mod tests {
     fn language_aware_hyphenation_paints_only_the_exercised_break() {
         let mut tr = TextRenderer::new();
         let blocks = vec![para("characteristically")];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             105.0,
             400.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let block = &layout.blocks[0];
         assert!(block.lines.len() >= 2, "the long word should hyphenate");
@@ -1517,17 +1533,14 @@ mod tests {
     fn opening_punctuation_hangs_into_the_margin_without_changing_source() {
         let mut tr = TextRenderer::new();
         let blocks = vec![para("“Typography begins at the edge.”")];
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &blocks,
             600.0,
             400.0,
             &Settings::default(),
-            0,
             "en-US",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let block = &layout.blocks[0];
         let line = &block.lines[0];
@@ -1547,17 +1560,14 @@ mod tests {
     fn unspaced_cjk_uses_unicode_breaks_and_inter_character_justification() {
         let mut tr = TextRenderer::new();
         let text = "天地玄黃宇宙洪荒日月盈昃辰宿列張寒來暑往秋收冬藏";
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &[para(text)],
             120.0,
             500.0,
             &Settings::default(),
-            0,
             "zh-Hant",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let block = &layout.blocks[0];
         assert!(block.lines.len() >= 2, "CJK wraps without ASCII spaces");
@@ -1573,17 +1583,14 @@ mod tests {
     #[test]
     fn rtl_paragraphs_use_visual_bidi_order_and_right_align_the_final_line() {
         let mut tr = TextRenderer::new();
-        let layout = layout_chapter(
+        let layout = test_layout(
             &mut tr,
             &[para("مرحبا بالعالم 123")],
             500.0,
             400.0,
             &Settings::default(),
-            0,
             "ar",
             &FontChoice::Serif,
-            1.0,
-            0,
         );
         let line = &layout.blocks[0].lines[0];
         assert!(line.rtl);
