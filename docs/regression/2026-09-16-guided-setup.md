@@ -266,6 +266,22 @@ modules and none in this probe; aggregate lint is not green. Independent review
 approved spec compliance and code quality. Package installation and graphical
 login remain unverified.
 
+## Native package trust preparation
+
+A separate Fedora ARM64 proof VM was cloned during an idle window; the original
+VM was restarted and verified running. The clone has RPM signing/repository test
+tools, and still has no qOS session package installed.
+
+Native DNF 5.4.4 tests used a temporary signed RPM and repository in disposable
+install roots. A fixed transaction-local empty `gpgkey` override preserved
+configured signature checks and refused unknown keys for a local RPM, repository
+metadata and a repository package. Each refusal left that install root's keyring
+and package state unchanged. The control without the override imported the test
+key and installed the valid fixture only inside a separate disposable root.
+The proof guest's system keyring was unchanged, and temporary keys/artifacts were
+removed. These are package-trust tests, not qOS installation or graphical login
+proof; the privileged installer implementation is still underway.
+
 ## Existing installer baseline
 
 Native Fedora ARM64 ran `bash os/tests/installer_target_invariants.sh` and
