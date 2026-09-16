@@ -215,6 +215,19 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
         tabs.set_active(32);
         tabs.set_viewport_width(f64::from(size.0));
         tabs.set_motion_reduced(true);
+        let favicon = vello::peniko::ImageData {
+            data: vello::peniko::Blob::new(std::sync::Arc::new(vec![
+                20, 110, 230, 255, 255, 190, 20, 255, 255, 80, 80, 255, 30, 190, 100, 255,
+            ])),
+            format: vello::peniko::ImageFormat::Rgba8,
+            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+            width: 2,
+            height: 2,
+        };
+        tabs.set_fixture_visual(1, Some(favicon), false, false, false);
+        tabs.set_fixture_visual(2, None, true, false, false);
+        tabs.set_fixture_visual(30, None, false, true, false);
+        tabs.set_fixture_visual(32, None, false, true, true);
         render_shot_to_png(
             Box::new(tabs),
             size,

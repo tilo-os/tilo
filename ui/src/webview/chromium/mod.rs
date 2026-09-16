@@ -849,6 +849,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "audio_muted" => WebViewEvent::AudioMutedChanged(value["muted"].as_bool()?),
         "media_state" => WebViewEvent::MediaPlayingChanged {
             page_url: value["page_url"].as_str()?.into(),
+            document_generation: value["document_generation"].as_u64()?,
             playing: value["playing"].as_bool()?,
         },
         "progress" => WebViewEvent::LoadProgress(value["progress"].as_f64()?.clamp(0.0, 1.0)),

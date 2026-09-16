@@ -28,6 +28,7 @@
 #include <iostream>
 #include <mutex>
 #include <map>
+#include <optional>
 #include <set>
 #include <poll.h>
 #include <thread>
@@ -203,7 +204,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,WindowOpenDisposition disposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
-  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { ++favicon_generation_;navigation_history_->Invalidate();StringEvent("uri","url",url); } }
+  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { ++favicon_generation_;media_frames_.clear();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false); } }
   void OnTitleChange(CefRefPtr<CefBrowser>,const CefString& title) override { StringEvent("title","title",title); }
   void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,const std::vector<CefString>& urls) override {
     if(urls.empty() || urls.front().ToString().size()>8192) return;
@@ -249,9 +250,15 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_RENDERER) return false;
-    if(message->GetName()=="qos.media_state" && frame && frame->IsMain() && browser_ && frame->GetURL()==browser_->GetMainFrame()->GetURL()) { auto d=CefDictionaryValue::Create();d->SetString("page_url",frame->GetURL());d->SetBool("playing",message->GetArgumentList()->GetBool(0));Event("media_state",d);return true; }
+    if(message->GetName()=="qos.media_context" && frame && browser_) { media_frames_[frame->GetIdentifier().ToString()]={static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0)),false};PublishMediaState();return true; }
+    if(message->GetName()=="qos.media_context_closed" && frame && browser_) {auto found=media_frames_.find(frame->GetIdentifier().ToString());if(found!=media_frames_.end() && found->second.first==static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0))) media_frames_.erase(found);PublishMediaState();return true;}
+    if(message->GetName()=="qos.media_state" && frame && browser_) { auto found=media_frames_.find(frame->GetIdentifier().ToString());const auto token=static_cast<uint64_t>(message->GetArgumentList()->GetDouble(1));if(found!=media_frames_.end() && found->second.first==token) {found->second.second=message->GetArgumentList()->GetBool(0);PublishMediaState();}return true; }
     if(message->GetName()!="qos.config") return false;
     SendFilters(frame);SendScripts(frame);return true;
+  }
+  void PublishMediaState(std::optional<bool> forced=std::nullopt) {
+    if(!browser_) return;bool playing=forced.value_or(std::any_of(media_frames_.begin(),media_frames_.end(),[](const auto& entry){return entry.second.second;}));
+    auto d=CefDictionaryValue::Create();d->SetString("page_url",browser_->GetMainFrame()->GetURL());d->SetInt("document_generation",static_cast<int>(favicon_generation_ & 0x7fffffff));d->SetBool("playing",playing);Event("media_state",d);
   }
   void SendFilters(CefRefPtr<CefFrame> frame) {
     if(!frame) return;
@@ -381,6 +388,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<CefBrowser> browser_;
  private:
   int id_;bool visible_=true;int key_modifiers_=0;uint64_t favicon_generation_=0;
+  std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   CefRefPtr<qos::NavigationHistory> navigation_history_;
   CefRefPtr<qos::Capabilities> capabilities_;
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;

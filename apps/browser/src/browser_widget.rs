@@ -74,6 +74,39 @@ const PIP_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// expanse of empty canvas. Compact chrome deliberately remains fluid.
 const LIBRARY_DESKTOP_CONTENT_WIDTH: f32 = 920.0;
 
+fn decode_favicon_png(
+    bytes: &[u8],
+    expected_width: u32,
+    expected_height: u32,
+) -> Option<vello::peniko::ImageData> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().ok()?;
+    if reader.output_color_type() != (png::ColorType::Rgba, png::BitDepth::Eight) {
+        return None;
+    }
+    let size = reader.output_buffer_size()?;
+    if size > 64 * 64 * 4 {
+        return None;
+    }
+    let mut rgba = vec![0; size];
+    let info = reader.next_frame(&mut rgba).ok()?;
+    if info.width != expected_width
+        || info.height != expected_height
+        || info.buffer_size() != expected_width as usize * expected_height as usize * 4
+    {
+        return None;
+    }
+    rgba.truncate(info.buffer_size());
+    Some(vello::peniko::ImageData {
+        data: vello::peniko::Blob::new(std::sync::Arc::new(rgba)),
+        format: vello::peniko::ImageFormat::Rgba8,
+        alpha_type: vello::peniko::ImageAlphaType::Alpha,
+        width: expected_width,
+        height: expected_height,
+    })
+}
+
 /// Browser's public navigation boundary. Keep this separate from the generic
 /// embedded-view helper: Browser's manifest advertises only these schemes.
 fn is_supported_web_url(value: &str) -> bool {
@@ -295,9 +328,10 @@ pub struct BrowserWidget {
     /// `1.0` when idle; anything below shows the progress bar.
     progress: f64,
     title: String,
-    favicon: Option<(u32, u32, std::sync::Arc<Vec<u8>>)>,
+    favicon: Option<vello::peniko::ImageData>,
     audio_muted: bool,
     media_playing: bool,
+    media_document_generation: Option<u64>,
     /// Most recent URI the engine reported — recorded into history on
     /// load-finished.
     current_uri: String,
@@ -442,17 +476,14 @@ impl BrowserWidget {
         } else {
             self.tab_url()
         };
-        let title = if self.audio_muted {
-            format!("Muted · {title}")
-        } else if self.media_playing {
-            format!("Media playing · {title}")
-        } else {
-            title.to_owned()
-        };
-        if self.progress < 1.0 {
-            format!("Loading · {title}")
-        } else {
-            title
+        title.to_owned()
+    }
+    pub(crate) fn tab_visual(&self) -> crate::browser_tab_strip::TabVisual {
+        crate::browser_tab_strip::TabVisual {
+            favicon: self.favicon.clone(),
+            loading: self.progress < 1.0,
+            muted: self.audio_muted,
+            media_playing: self.media_playing,
         }
     }
     pub(crate) fn tab_muted(&self) -> bool {
@@ -578,6 +609,7 @@ impl BrowserWidget {
             favicon: None,
             audio_muted: false,
             media_playing: false,
+            media_document_generation: None,
             current_uri: String::new(),
             load_error: None,
             address_error_active: false,
@@ -2268,6 +2300,7 @@ impl BrowserWidget {
                     self.document_revision = self.document_revision.wrapping_add(1);
                     self.favicon = None;
                     self.media_playing = false;
+                    self.media_document_generation = None;
                     if uri != self.current_uri {
                         self.loading_stopped = false;
                         self.structure_dirty |= self.daily.navigation_started(&self.engine);
@@ -2308,16 +2341,27 @@ impl BrowserWidget {
                 } if page_url == self.current_uri
                     || (self.current_uri.is_empty() && page_url == self.initial_url) =>
                 {
-                    self.favicon = Some((width, height, png));
-                    self.structure_dirty = true;
+                    if let Some(image) = decode_favicon_png(&png, width, height) {
+                        self.favicon = Some(image);
+                        self.structure_dirty = true;
+                    }
                 }
                 WebViewEvent::FaviconChanged { .. } => {}
                 WebViewEvent::AudioMutedChanged(muted) => {
                     self.audio_muted = muted;
                     self.structure_dirty = true;
                 }
-                WebViewEvent::MediaPlayingChanged { page_url, playing } => {
-                    if page_url == self.current_uri {
+                WebViewEvent::MediaPlayingChanged {
+                    page_url,
+                    document_generation,
+                    playing,
+                } => {
+                    if page_url == self.current_uri
+                        && self
+                            .media_document_generation
+                            .is_none_or(|current| document_generation >= current)
+                    {
+                        self.media_document_generation = Some(document_generation);
                         self.media_playing = playing;
                         self.structure_dirty = true;
                     }
@@ -4843,6 +4887,45 @@ mod architecture_tests {
         ]);
         widget.apply_engine_events();
         assert!(!widget.back_menu.is_open());
+    }
+
+    #[test]
+    fn stale_media_event_from_same_url_reload_is_ignored_by_generation() {
+        struct EventEngine {
+            events: std::sync::Mutex<Vec<WebViewEvent>>,
+            capture: std::sync::Arc<TestEngine>,
+        }
+        impl WebViewEngine for EventEngine {
+            fn send(&self, command: WebViewCommand) {
+                self.capture.send(command);
+            }
+            fn frames(&self) -> ui::webview::FrameSlot {
+                self.capture.frames()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.events.lock().unwrap())
+            }
+        }
+        let engine = std::sync::Arc::new(EventEngine {
+            events: std::sync::Mutex::new(vec![
+                WebViewEvent::UriChanged("https://media.test/".into()),
+                WebViewEvent::MediaPlayingChanged {
+                    page_url: "https://media.test/".into(),
+                    document_generation: 8,
+                    playing: true,
+                },
+                WebViewEvent::MediaPlayingChanged {
+                    page_url: "https://media.test/".into(),
+                    document_generation: 7,
+                    playing: false,
+                },
+            ]),
+            capture: TestEngine::new(),
+        });
+        let mut widget = BrowserWidget::with_engine(engine, true);
+        widget.apply_engine_events();
+        assert!(widget.media_playing);
+        assert_eq!(widget.media_document_generation, Some(8));
     }
 
     #[test]

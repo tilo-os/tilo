@@ -303,6 +303,7 @@ pub enum WebViewEvent {
     AudioMutedChanged(bool),
     MediaPlayingChanged {
         page_url: String,
+        document_generation: u64,
         playing: bool,
     },
     /// Load progress in `0.0..=1.0`.
