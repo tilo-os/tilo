@@ -21,6 +21,11 @@ const LEASE_ROOT: &str = "/run/qos/windows-compat/leases";
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
 const PROTON_HOST: &str = "/usr/lib/qos/windows-runners/proton/UMU-Proton-10.0-4";
 const PROTON_MOUNT: &str = "/opt/qos/proton";
+const STEAM_RUNTIME_HOST: &str =
+    "/usr/lib/qos/windows-runners/steam-runtime/SteamLinuxRuntime_sniper";
+const UMU_FOLDERS_MOUNT: &str = "/tmp/qos-runtime";
+const STEAM_RUNTIME_MOUNT: &str = "/tmp/qos-runtime/umu/steamrt3";
+const STEAM_PLATFORM: &str = "sniper_platform_3.0.20260805.254768";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeBind {
@@ -34,6 +39,7 @@ pub struct RuntimeImage {
     sandbox_entrypoint: PathBuf,
     environment: Vec<(&'static str, String)>,
     needs_nested_runtime: bool,
+    runtime_lock_mount: Option<PathBuf>,
 }
 
 impl RuntimeImage {
@@ -84,13 +90,14 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
                 sandbox_entrypoint: PathBuf::from("/usr/bin/wine"),
                 environment: Vec::new(),
                 needs_nested_runtime: false,
+                runtime_lock_mount: None,
             }),
             Layer::Wine => Err(PlanError::RunnerNotInstalled(format!(
                 "wine {}",
                 runner.version
             ))),
             Layer::Proton if matches!(runner.version.as_str(), PINNED_PROTON | "10.0-4") => {
-                Ok(RuntimeImage {
+                let mut image = RuntimeImage {
                     // Exact paths installed by os/Containerfile. UMU owns the
                     // Steam Runtime and protonfix invocation contract.
                     binds: vec![
@@ -104,9 +111,42 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
                         runtime_bind(PROTON_HOST, PROTON_MOUNT),
                     ],
                     sandbox_entrypoint: PathBuf::from("/usr/libexec/qos-umu-run"),
-                    environment: vec![("PROTONPATH", PROTON_MOUNT.to_string())],
+                    environment: vec![
+                        ("PROTONPATH", PROTON_MOUNT.to_string()),
+                        ("UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT.to_string()),
+                        ("UMU_RUNTIME_UPDATE", "0".to_string()),
+                        ("PRESSURE_VESSEL_COPY_RUNTIME", "1".to_string()),
+                        (
+                            "PRESSURE_VESSEL_VARIABLE_DIR",
+                            "/tmp/qos-runtime/var".to_string(),
+                        ),
+                    ],
                     needs_nested_runtime: true,
-                })
+                    runtime_lock_mount: Some(
+                        Path::new(STEAM_RUNTIME_MOUNT)
+                            .join(STEAM_PLATFORM)
+                            .join("files/.ref"),
+                    ),
+                };
+                // Keep the parent writable for UMU's atomic install marker,
+                // but mount every executable and shared runtime tree read-only.
+                for entry in [
+                    "_v2-entry-point",
+                    "run",
+                    "run-in-sniper",
+                    "VERSIONS.txt",
+                    "toolmanifest.vdf",
+                    "mtree.txt.gz",
+                    "pressure-vessel",
+                    "pressure-vessel-arm64",
+                    STEAM_PLATFORM,
+                ] {
+                    image.binds.push(RuntimeBind {
+                        host: Path::new(STEAM_RUNTIME_HOST).join(entry),
+                        sandbox: Path::new(STEAM_RUNTIME_MOUNT).join(entry),
+                    });
+                }
+                Ok(image)
             }
             Layer::Proton => Err(PlanError::RunnerNotInstalled(format!(
                 "{} {}",
@@ -280,12 +320,13 @@ pub struct CapsuleCommandPlan {
     pub lease_id: String,
     // Open directory descriptors backing the prefix/home bind sources. Kept
     // private so a plan cannot be copied after its authority-bearing handles.
-    _launch_paths: LaunchPaths,
+    launch_paths: LaunchPaths,
+    pub(crate) runtime_lock_required: bool,
 }
 
 impl CapsuleCommandPlan {
     pub(crate) fn directory_fds(&self) -> [std::os::fd::RawFd; 2] {
-        self._launch_paths.directory_fds()
+        self.launch_paths.directory_fds()
     }
 }
 
@@ -378,6 +419,16 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         launcher::profile::push_system_profile(&mut argv, network == NetworkShape::Unrestricted);
         for binding in &runtime.binds {
             bind(&mut argv, "--ro-bind", &binding.host, &binding.sandbox);
+        }
+        if let Some(lock) = &runtime.runtime_lock_mount {
+            argv.extend([
+                "--symlink".to_string(),
+                "_v2-entry-point".to_string(),
+                format!("{STEAM_RUNTIME_MOUNT}/umu"),
+                "--bind-data".to_string(),
+                crate::execute::RUNTIME_LOCK_CHILD_FD.to_string(),
+                lock.display().to_string(),
+            ]);
         }
         for (fd, destination) in [
             (crate::execute::PREFIX_CHILD_FD, PREFIX_MOUNT),
@@ -480,7 +531,8 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
                 .any(|device| device == "microphone"),
             audio_output: !lease.audio.is_empty(),
             lease_id: lease.id.clone(),
-            _launch_paths: launch_paths,
+            launch_paths,
+            runtime_lock_required: runtime.runtime_lock_mount.is_some(),
         })
     }
 }
@@ -808,9 +860,15 @@ mod tests {
                 .host_paths()
                 .any(|path| path == Path::new(PROTON_HOST))
         );
-        assert_eq!(
-            proton.environment,
-            vec![("PROTONPATH", PROTON_MOUNT.to_string())]
+        assert!(
+            proton
+                .environment
+                .contains(&("PROTONPATH", PROTON_MOUNT.to_string()))
+        );
+        assert!(
+            proton
+                .environment
+                .contains(&("UMU_RUNTIME_UPDATE", "0".to_string()))
         );
         assert!(proton.needs_nested_runtime);
     }
@@ -910,7 +968,7 @@ mod tests {
         use crate::SandboxExecutor;
 
         let route = route(Layer::Wine);
-        let (_directory, store, state, program) = setup(&route);
+        let (directory, store, state, program) = setup(&route);
         let session = session();
         let planner = SandboxPlanner::new(&store, &SystemRuntimeRegistry, &session).unwrap();
         let mut command = planner
@@ -943,6 +1001,27 @@ mod tests {
             "/bin/sh", "-ec",
             "test \"$(cat /prefix/value)\" = original-prefix; test \"$(cat /home/value)\" = original-home",
         ].map(str::to_owned).to_vec();
+        let immutable_lock = directory.path().join("runtime.ref");
+        std::fs::write(&immutable_lock, "immutable").unwrap();
+        command.runtime_lock_required = true;
+        command.bwrap_argv.splice(
+            0..0,
+            [
+                "--dir".to_string(),
+                "/runtime".to_string(),
+                "--ro-bind".to_string(),
+                immutable_lock.display().to_string(),
+                "/runtime/.ref".to_string(),
+                "--bind-data".to_string(),
+                crate::execute::RUNTIME_LOCK_CHILD_FD.to_string(),
+                "/runtime/.ref".to_string(),
+            ],
+        );
+        command
+            .bwrap_argv
+            .last_mut()
+            .unwrap()
+            .push_str("; test ! -s /runtime/.ref; printf private > /runtime/.ref");
         for profile in [None, Some(SeccompProfile::QosDefault)] {
             command.seccomp_profile = profile;
             if profile.is_some() {
@@ -953,7 +1032,68 @@ mod tests {
             }
             let outcome = crate::BwrapExecutor.execute(&command).unwrap();
             assert!(outcome.success, "{profile:?}: {outcome:?}");
+            assert_eq!(
+                std::fs::read_to_string(&immutable_lock).unwrap(),
+                "immutable"
+            );
         }
+    }
+
+    #[test]
+    fn proton_provisions_immutable_runtime_with_private_lock_and_metadata() {
+        let route = route(Layer::Proton);
+        let (_directory, store, state, program) = setup(&route);
+        let host = session();
+        let planner = SandboxPlanner::new(&store, &SystemRuntimeRegistry, &host).unwrap();
+        let command = planner
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap();
+        assert!(command.runtime_lock_required);
+        let platform = format!("{STEAM_RUNTIME_MOUNT}/{STEAM_PLATFORM}");
+        let lock = format!("{platform}/files/.ref");
+        let platform_bind = command
+            .bwrap_argv
+            .windows(3)
+            .position(|args| args[0] == "--ro-bind" && args[2] == platform)
+            .unwrap();
+        let lock_bind = command
+            .bwrap_argv
+            .windows(3)
+            .position(|args| {
+                args == [
+                    "--bind-data",
+                    crate::execute::RUNTIME_LOCK_CHILD_FD.to_string().as_str(),
+                    &lock,
+                ]
+            })
+            .unwrap();
+        assert!(lock_bind > platform_bind);
+        assert!(
+            command
+                .bwrap_argv
+                .windows(3)
+                .any(|args| { args == ["--setenv", "UMU_FOLDERS_PATH", UMU_FOLDERS_MOUNT] })
+        );
+        assert!(
+            command
+                .bwrap_argv
+                .windows(3)
+                .any(|args| { args == ["--setenv", "UMU_RUNTIME_UPDATE", "0"] })
+        );
+        assert!(
+            !command
+                .bwrap_argv
+                .windows(3)
+                .any(|args| { args[0] == "--bind" && args[1].starts_with(STEAM_RUNTIME_HOST) })
+        );
+        assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
     }
 
     #[test]
