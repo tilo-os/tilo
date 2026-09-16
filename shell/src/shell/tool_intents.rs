@@ -84,9 +84,9 @@ pub fn spawn() -> std::io::Result<ToolServiceHandle> {
                 }
                 routes.push(ShellRequest { request, reply });
                 drop(routes);
-                return result
+                result
                     .recv_timeout(Duration::from_secs(2))
-                    .map_err(|_| "the shell did not accept the requested route".to_string())?;
+                    .map_err(|_| "the shell did not accept the requested route".to_string())?
             }
         }),
         workspace_requests,
