@@ -347,3 +347,36 @@ fn tab_endpoints_keep_runtime_and_waker_after_first_endpoint_closes() {
     drop(second);
     assert!(process.stopping.load(Ordering::Acquire));
 }
+
+#[test]
+#[cfg(unix)]
+fn native_capacity_is_reserved_until_closed_acknowledgment() {
+    let mut packet = Vec::new();
+    protocol::write_json(&mut packet, &json!({"event":"closed","tab":32})).unwrap();
+    let encoded: String = packet
+        .iter()
+        .map(|byte| format!("\\{:03o}", byte))
+        .collect();
+    let (dir, host) = helper_fixture(&format!(
+        "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/ack-close\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec cat >/dev/null"
+    ));
+    let profile = dir.path().join("profile");
+    let first = ChromiumEngine::with_host(&host, &profile).unwrap();
+    let mut tabs: Vec<_> = (1..32).map(|_| first.create_tab().unwrap()).collect();
+    drop(tabs.pop());
+    assert!(
+        first.create_tab().is_err(),
+        "native browser is still closing"
+    );
+    assert_eq!(first.runtime.routes.lock().unwrap().len(), 32);
+    std::fs::write(profile.join("ack-close"), b"ack").unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while first.runtime.routes.lock().unwrap().contains_key(&32) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "closed event releases native reservation"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(first.create_tab().is_ok());
+}

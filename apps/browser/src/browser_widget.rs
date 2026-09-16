@@ -300,7 +300,8 @@ pub struct BrowserWidget {
     settings_presentation: SettingsPresentation,
     /// History pausing is an in-memory, device-local session boundary. It is
     /// never serialized to the collaborative document or the profile.
-    history_paused: bool,
+    history_paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    observed_history_paused: bool,
     /// Local presentation error after a history-clear write failed. Kept in
     /// the browser (rather than the shared document) because it describes
     /// this profile's disk, not collaborative state.
@@ -354,6 +355,7 @@ pub struct BrowserWidget {
     /// it for a disappeared `<video>` and closes it a quarter-second later.
     pip_page_fallback: bool,
     active_pip: bool,
+    pip_id: String,
     pip_request_seq: u64,
     active_pip_probe: Option<u64>,
     active_pip_refresh_probe: Option<u64>,
@@ -425,6 +427,16 @@ impl BrowserWidget {
             title.to_owned()
         }
     }
+    pub(crate) fn set_tab_identity(&mut self, id: u64) {
+        self.pip_id = format!("{PIP_ID}.{id}");
+    }
+    pub(crate) fn share_history_pause(&mut self, other: &Self) {
+        self.history_paused = other.history_paused.clone();
+    }
+    pub(crate) fn history_paused(&self) -> bool {
+        self.history_paused
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
     pub(crate) fn focus_tab_address(&mut self) -> bool {
         self.focus_address_input()
     }
@@ -487,7 +499,8 @@ impl BrowserWidget {
             extension_notice: None,
             extension_feedback: Default::default(),
             settings_presentation,
-            history_paused: false,
+            history_paused: Default::default(),
+            observed_history_paused: false,
             history_clear_error: None,
             history_save: History::save,
             history,
@@ -521,6 +534,7 @@ impl BrowserWidget {
             active_pip_element: None,
             pip_page_fallback: false,
             active_pip: false,
+            pip_id: PIP_ID.into(),
             pip_request_seq: 0,
             active_pip_probe: None,
             active_pip_refresh_probe: None,
@@ -641,7 +655,8 @@ impl BrowserWidget {
             self.history
                 .record_at("https://www.rust-lang.org/learn", "Learn Rust", 1);
         }
-        self.history_paused = true;
+        self.history_paused
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.show_library = true;
         self.show_settings = false;
         self.library_section = LibrarySection::History;
@@ -740,7 +755,8 @@ impl BrowserWidget {
             }
             BrowserOperation::TogglePictureInPicture => self.begin_pip_probe(),
             BrowserOperation::ToggleHistoryPause => {
-                self.history_paused = !self.history_paused;
+                self.history_paused
+                    .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
                 self.structure_dirty = true;
             }
         }
@@ -1029,7 +1045,7 @@ impl BrowserWidget {
         let preferred_size = Self::preferred_pip_size(aspect);
 
         self.pending_pip = Some(ui::floating_surface::FloatingSurfaceRequest {
-            id: PIP_ID.into(),
+            id: self.pip_id.clone(),
             title: element.label.clone(),
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppElement {
@@ -1158,7 +1174,7 @@ impl BrowserWidget {
             self.title.clone()
         };
         self.pending_pip = Some(ui::floating_surface::FloatingSurfaceRequest {
-            id: PIP_ID.into(),
+            id: self.pip_id.clone(),
             title,
             role: ui::floating_surface::FloatingRole::PictureInPicture,
             source: ui::floating_surface::FloatingSource::AppRegion {
@@ -1341,7 +1357,7 @@ impl BrowserWidget {
         } else {
             pip_btn
         };
-        let history_pause_label = if self.history_paused {
+        let history_pause_label = if self.history_paused() {
             "Resume history in this window"
         } else {
             "Pause history in this window"
@@ -1359,7 +1375,7 @@ impl BrowserWidget {
             "browser.session",
             "toggle-history-pause",
         );
-        let history_pause_btn = if self.history_paused {
+        let history_pause_btn = if self.history_paused() {
             history_pause_btn.primary()
         } else {
             history_pause_btn
@@ -1449,7 +1465,7 @@ impl BrowserWidget {
         if let Some(prompt) = self.capabilities.prompt(&self.engine) {
             column = column.push(prompt);
         }
-        if self.history_paused {
+        if self.history_paused() {
             column = column.push(Box::new(
                 Container::new().with_background().with_child(Box::new(
                     Text::new(
@@ -1528,7 +1544,7 @@ impl BrowserWidget {
             .push(Box::new(Text::new("Library").with_size(24.0)))
             .push(Box::new(Spacer::new()));
         if self.compact_chrome && self.library_section == LibrarySection::History {
-            let label = if self.history_paused {
+            let label = if self.history_paused() {
                 "Resume history"
             } else {
                 "Pause history"
@@ -1633,13 +1649,13 @@ impl BrowserWidget {
         let body: Box<dyn Widget> = match self.library_section {
             LibrarySection::History if self.history.is_empty() => {
                 let (title, message) = if self.compact_chrome {
-                    if self.history_paused {
+                    if self.history_paused() {
                         ("History paused", "New pages are not saved.")
                     } else {
                         ("No browsing history yet", "Pages you visit appear here.")
                     }
                 } else {
-                    if self.history_paused {
+                    if self.history_paused() {
                         (
                             "History is paused in this window",
                             "New pages here aren’t saved to history.",
@@ -2128,7 +2144,7 @@ impl BrowserWidget {
                     // Record the finished page in persistent history
                     // (real pages only — skip about:/data: and blanks).
                     if !self.headless
-                        && !self.history_paused
+                        && !self.history_paused()
                         && self.current_uri.starts_with("http")
                     {
                         self.history = History::load();
@@ -2410,6 +2426,9 @@ impl BrowserWidget {
         fn focus(widget: &mut dyn Widget) -> bool {
             if widget.test_id() == Some(URL_INPUT_ID) {
                 widget.set_focus(true);
+                if let Some((_, text)) = widget.text_review() {
+                    widget.set_state(&format!("{}:b:0", text.len()));
+                }
                 return true;
             }
             for child in widget.children_mut() {
@@ -2679,7 +2698,7 @@ impl Widget for BrowserWidget {
         let mut session = Resource::new(
             "browser.session",
             "browser.history-pause",
-            if self.history_paused {
+            if self.history_paused() {
                 "History paused"
             } else {
                 "History recording"
@@ -2687,7 +2706,7 @@ impl Widget for BrowserWidget {
         );
         if let Some(spec) = operation(
             "toggle-history-pause",
-            if self.history_paused {
+            if self.history_paused() {
                 "Resume history in this window"
             } else {
                 "Pause history in this window"
@@ -3047,7 +3066,7 @@ impl Widget for BrowserWidget {
             };
             self.perform_browser_operation(operation)?;
             let output = if is_history_pause_toggle {
-                local_output(if self.history_paused {
+                local_output(if self.history_paused() {
                     "History paused in this window."
                 } else {
                     "History resumed in this window."
@@ -3136,6 +3155,11 @@ impl Widget for BrowserWidget {
         reason = "Browser's frame-level input routing remains ordered in one place."
     )]
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        let paused = self.history_paused();
+        if self.observed_history_paused != paused {
+            self.observed_history_paused = paused;
+            self.structure_dirty = true;
+        }
         if !self.bootstrap_done {
             if !self.headless {
                 self.engine
@@ -3186,8 +3210,34 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        fn address_state(widget: &dyn Widget) -> Option<String> {
+            if widget.test_id() == Some(URL_INPUT_ID) && widget.is_focused() {
+                return widget.get_state();
+            }
+            widget
+                .children()
+                .iter()
+                .find_map(|child| address_state(*child))
+        }
+        fn restore_address(widget: &mut dyn Widget, state: &str) {
+            if widget.test_id() == Some(URL_INPUT_ID) {
+                widget.set_focus(true);
+                widget.set_state(state);
+                return;
+            }
+            for child in widget.children_mut() {
+                restore_address(child, state);
+            }
+        }
+        let address_state = self
+            .composed
+            .as_ref()
+            .and_then(|widget| address_state(widget.as_ref()));
         let mut composed = self.build_composition();
         let child_node = composed.build_layout(taffy, theme, node_map);
+        if let Some(state) = address_state {
+            restore_address(composed.as_mut(), &state);
+        }
         composed.set_motion_reduced(self.motion_reduced);
         self.composed = Some(composed);
 
@@ -3391,12 +3441,15 @@ impl Widget for BrowserWidget {
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
         self.pending_pip_region_update
             .take()
-            .map(|region| vec![(PIP_ID.into(), region)])
+            .map(|region| vec![(self.pip_id.clone(), region)])
             .unwrap_or_default()
     }
 
     fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.active_pip.then(|| PIP_ID.into()).into_iter().collect()
+        self.active_pip
+            .then(|| self.pip_id.clone())
+            .into_iter()
+            .collect()
     }
 
     fn on_floating_surface_host_message(
@@ -3405,13 +3458,13 @@ impl Widget for BrowserWidget {
     ) {
         match message {
             ui::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
-                if id == PIP_ID =>
+                if id == &self.pip_id =>
             {
                 self.active_pip = true;
             }
             ui::floating_surface::FloatingSurfaceHostMessage::Closed { id }
             | ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
-                if id == PIP_ID =>
+                if id == &self.pip_id =>
             {
                 self.active_pip = false;
                 self.active_pip_element = None;
@@ -4343,6 +4396,75 @@ mod tests {
         let mut w = BrowserWidget::with_engine(engine, true);
         let (state, root) = synced(&mut w);
         assert_eq!(w.address.with(Clone::clone), DEFAULT_URL);
+    }
+
+    #[test]
+    fn history_clear_on_exit_belongs_to_workspace_lifetime() {
+        const CHILD: &str = "QOS_TEST_HISTORY_EXIT_CHILD";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let path = crate::history::history_path().unwrap();
+            assert!(
+                path.starts_with(std::path::PathBuf::from(root)),
+                "isolated history path"
+            );
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            w.headless = false;
+            w.settings.clear_on_exit = true;
+            w.history.record_at("https://retained.test", "Retained", 1);
+            w.history.save().unwrap();
+            drop(w);
+            assert!(
+                !History::load().is_empty(),
+                "closing one page must retain shared history"
+            );
+            let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+            w.headless = false;
+            w.settings.clear_on_exit = true;
+            drop(crate::BrowserTabs::new(w));
+            assert!(
+                History::load().is_empty(),
+                "workspace exit clears persisted history"
+            );
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "browser_widget::tests::history_clear_on_exit_belongs_to_workspace_lifetime",
+                "--nocapture",
+            ])
+            .env(CHILD, root.path())
+            .env("HOME", root.path())
+            .env("XDG_DATA_HOME", root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[test]
+    fn address_focus_selects_all_and_survives_chrome_rebuild() {
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        let _ = synced(&mut w);
+        let mut tree = TaffyTree::new();
+        w.build_layout(&mut tree, &Theme::dark(), &mut Default::default());
+        assert!(w.focus_address_input());
+        fn state(widget: &dyn Widget) -> Option<String> {
+            if widget.test_id() == Some(URL_INPUT_ID) {
+                assert!(widget.is_focused());
+                return widget.get_state();
+            }
+            widget.children().iter().find_map(|child| state(*child))
+        }
+        let selected = format!("{}:b:0", DEFAULT_URL.len());
+        assert_eq!(state(&w).as_deref(), Some(selected.as_str()));
+        let mut tree = TaffyTree::new();
+        w.build_layout(&mut tree, &Theme::dark(), &mut Default::default());
+        assert_eq!(state(&w).as_deref(), Some(selected.as_str()));
     }
 
     #[test]
@@ -5503,8 +5625,8 @@ mod tests {
     }
 }
 
-impl Drop for BrowserWidget {
-    fn drop(&mut self) {
+impl BrowserWidget {
+    pub(crate) fn clear_history_on_workspace_exit(&mut self) {
         if !self.headless && self.settings.clear_on_exit {
             self.history.clear();
             if let Err(error) = self.history.save() {
