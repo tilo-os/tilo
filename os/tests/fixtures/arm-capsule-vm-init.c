@@ -45,6 +45,8 @@ static void prepare(void) {
     printf("QOS_ARM_CAPSULE_VM_ABI=%ld\n", abi);
     if (abi < 5) { errno = ENOTSUP; fail("Landlock ABI"); }
     module("netfs"); module("9pnet"); module("9pnet_virtio"); module("9p"); module("overlay");
+    int guest_block = access("/guest-squashfs", F_OK) == 0;
+    if (guest_block) module("squashfs");
     attach("native", "/native", "9p", MS_RDONLY,
            "trans=virtio,version=9p2000.L,msize=1048576,cache=loose");
     attach("tmpfs", "/scratch", "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755,size=2G");
@@ -57,9 +59,17 @@ static void prepare(void) {
         "/vm/usr/lib/qos/windows-runners/proton/UMU-Proton-10.0-4",
         "/vm/usr/lib/qos/windows-runners/steam-runtime/SteamLinuxRuntime_sniper"
     };
-    for (size_t i = 0; i < sizeof(tags)/sizeof(tags[0]); ++i)
-        attach(tags[i], targets[i], "9p", MS_RDONLY,
-               "trans=virtio,version=9p2000.L,msize=1048576,cache=loose");
+    for (size_t i = 0; i < sizeof(tags)/sizeof(tags[0]); ++i) {
+        if (guest_block && i == 1) {
+            for (int attempt = 0; attempt < 100 && access("/dev/vda", F_OK); ++attempt)
+                usleep(100000);
+            attach("/dev/vda", targets[i], "squashfs", MS_RDONLY, NULL);
+            puts("QOS_ARM_CAPSULE_GUEST_ROOT=squashfs-readonly");
+        } else {
+            attach(tags[i], targets[i], "9p", MS_RDONLY,
+                   "trans=virtio,version=9p2000.L,msize=1048576,cache=loose");
+        }
+    }
     attach("proc", "/vm/proc", "proc", 0, NULL);
     attach("sysfs", "/vm/sys", "sysfs", 0, NULL);
     attach("devtmpfs", "/vm/dev", "devtmpfs", 0, NULL);

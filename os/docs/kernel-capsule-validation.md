@@ -61,6 +61,7 @@ with two TCG vCPUs and 4 GiB RAM. Its executable SHA-256 is
 | `kernel-arm-capsule-fex-diagnostic-01` | Direct FEX guest `true` passed; guest `getconf _NPROCESSORS_ONLN` returned 2 and passed. |
 | `kernel-arm-capsule-wine-diagnostic-01` | Direct Wine with a fresh correctly mapped C drive reproduced the assertion without the capsule or qOS seccomp. |
 | `kernel-arm-capsule-wine-qemu10-01` | The same direct Wine control reproduced the assertion under QEMU 10.2.2. |
+| `kernel-arm-capsule-wine-squashfs-02` | The complete original guest root mounted as read-only SquashFS over virtio-block reproduced the same direct-Wine assertion under QEMU 10.2.2. Native userspace still used 9p. |
 
 The newer emulator came from the existing native libvirt runtime image
 `bb391b2cad8818d2e92a84357d0a45c0b432c21cccf060f40cf3439013fa1132`.
@@ -77,6 +78,41 @@ does not exclude a Wine-specific FEX, packaging, kernel, or TCG defect. Native
 runtime comparisons are separate controls; reproducing on two QEMU versions
 does not establish that physical hardware would fail.
 No upstream FEX source or expected-result lists were changed for these tests.
+
+## Read-only block-filesystem control
+
+`--guest-squashfs PATH` substitutes a regular SquashFS artifact file for the
+guest-root 9p share. The harness refuses device paths, attaches the file as a
+read-only virtio block device, loads the matching signed `squashfs.ko`, and
+mounts it read-only at the same guest-root path. The default remains 9p. Native
+userspace and the other artifact shares are unchanged.
+
+The complete 6.4 GiB original guest directory was compressed without exclusions
+or source permission changes using existing offline `squashfs-tools` 4.6.1:
+
+```sh
+mksquashfs /guest-root /output/guest.squashfs \
+  -noappend -exit-on-error -comp zstd -Xcompression-level 3 \
+  -processors 2 -mem 256M -no-progress
+```
+
+The builder had only `DAC_READ_SEARCH` added to its otherwise empty capability
+set, read-only source access, and a 7 GiB output limit. Output is about 2.3 GiB;
+SHA-256 is
+`730d904addefc98b44231cf1984b714d222c828a5d8ca4cc51e4c8f0c2eae66e`.
+
+An earlier build without that read capability silently replaced seven
+restricted-mode files with empty files despite exiting zero. It was rejected;
+its hash, rejection reason and logs were retained, and only the invalid image
+file was removed after verifying the replacement. The replacement treats read
+errors as fatal, has no omission warnings, and all seven affected files were
+byte-compared against their unchanged source. The rejected image's VM run is
+not acceptance evidence.
+
+The clean block-filesystem control still failed before the Windows marker.
+Therefore the three full Landlock cases were not rerun with it. This rules out
+guest-root 9p as a necessary condition for this failure; it does not rule out
+effects from the remaining native-userland 9p share or establish a root cause.
 
 ## Reproduction and evidence
 
