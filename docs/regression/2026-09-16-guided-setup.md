@@ -129,6 +129,28 @@ cross-check failed in the `ring` C build because the macOS host lacks Windows
 SDK headers (`assert.h`); native Windows execution and full-app verification
 remain outstanding.
 
+## Durable copy recovery — task review pending
+
+Commit `4c8fcd403` adds private versioned journals, verified resume, persistent
+directory outcomes and conflict preservation. Real subprocess exits exercise
+file publication and journal replacement boundaries; changed or unrecorded
+output remains intact. macOS setup tests passed 91 tests; native Fedora setup
+passed 88. The disposable Btrfs copy/recovery suite passed 42 tests, and a
+separate subvolume/snapshot identity test passed. Required fixture-only tests
+are explicitly ignored in ordinary runs. All Btrfs loop fixtures were removed.
+
+The Btrfs test initially passed through a same-boot device-number fallback.
+A strengthened assertion correctly failed before native filesystem/subvolume
+identity was added. Native probes establish the final path uses Btrfs-specific
+identity rather than assuming generic UUID ioctl support. These checks do not
+constitute an actual reboot or physical power-loss test.
+
+Windows cfg compilation and scoped Clippy passed. Windows journaled copying
+currently refuses before mutation pending a verified native durability adapter;
+the existing nonjournal API remains available. Journals currently use complete
+JSON snapshots with a 16 MiB bound and quadratic cumulative write cost. The task
+review must assess these limits; this is not yet the worker/UI import flow.
+
 ## Existing installer baseline
 
 Native Fedora ARM64 ran `bash os/tests/installer_target_invariants.sh` and
