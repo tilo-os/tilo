@@ -67,7 +67,7 @@ use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
-use crate::reading_settings::{ReadingSettings, ReadingSettingsAction};
+use crate::reading_settings::{ReadingSettings, ReadingSettingsAction, ReadingSettingsEventCtx};
 use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
@@ -5258,16 +5258,18 @@ impl BooksApp {
             input_handled = true;
         }
 
-        let settings_actions = self.reading_settings.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            node_id,
-            taffy,
-            &mut input_handled,
-        );
+        let settings_actions = self
+            .reading_settings
+            .handle_event(&mut ReadingSettingsEventCtx {
+                event,
+                scale_factor,
+                modifiers,
+                state: doc,
+                root: path,
+                node_id,
+                taffy,
+                handled: &mut input_handled,
+            });
         for action in settings_actions {
             self.dispatch_reading_settings(action, doc);
         }
