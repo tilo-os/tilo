@@ -93,6 +93,14 @@ pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
     )
 }
 
+#[cfg(test)]
+pub(crate) fn queued_launch_count_for_test() -> usize {
+    queued_launches()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct X11Session {
     pub display: String,
@@ -116,6 +124,17 @@ pub(crate) fn set_x11_session(session: Option<X11Session>) {
 /// Wayland-only launch, never fall back to ambient DISPLAY/XAUTHORITY.
 pub(crate) fn x11_session() -> Option<X11Session> {
     x11_slot().read().ok().and_then(|slot| slot.clone())
+}
+
+/// Whether host launches which may need X11 can safely be dispatched.
+///
+/// The host-session bridge starts asynchronously so the compositor can paint
+/// immediately.  Session restore and very fast launcher interaction can race
+/// that startup; launching without the private DISPLAY makes X11-only apps
+/// fail permanently even though the bridge becomes ready a few milliseconds
+/// later.  Keep the request queued until publication instead.
+pub(crate) fn x11_ready() -> bool {
+    x11_session().is_some()
 }
 
 impl HostApp {
@@ -507,6 +526,36 @@ mod tests {
                 .any(|arg| arg == "--x11-display" || arg == "--x11-authority"),
             "a dead bridge must not hand a later X11/Electron launch stale connection details"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_queued_host_launch_survives_the_xwayland_startup_window() {
+        set_x11_session(None);
+        let _ = drain_queued_launches();
+        queue_launch(QueuedLaunch {
+            desktop_id: "org.example.Legacy.desktop".into(),
+            display_name: "Legacy".into(),
+            placement: crate::compositor::tab_binding::Placement::NewGroup,
+            portal_workspace_id: None,
+        });
+
+        assert!(!x11_ready());
+        assert_eq!(
+            queued_launch_count_for_test(),
+            1,
+            "checking readiness must not consume the launch queued during login"
+        );
+
+        set_x11_session(Some(X11Session {
+            display: ":1234".into(),
+            authority: PathBuf::from("/run/user/1000/qos-session/Xauthority-1234"),
+        }));
+        assert!(x11_ready());
+        let requests = drain_queued_launches();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].desktop_id, "org.example.Legacy.desktop");
+        set_x11_session(None);
     }
 
     /// The real scan of this machine, not a fixture.
