@@ -1329,7 +1329,9 @@ struct NavigationState {
 #[derive(Default)]
 struct MediaPipelineState {
     auto_place_imports: bool,
+    #[cfg(any(feature = "gst", feature = "decode"))]
     monitor_tried: bool,
+    #[cfg(any(feature = "gst", feature = "decode"))]
     monitor_stale: bool,
 }
 
@@ -1441,10 +1443,6 @@ pub struct VideoEditorApp {
     /// something on the other end of them.
     #[cfg(any(feature = "gst", feature = "decode"))]
     monitor: Option<crate::audio::AudioMonitor>,
-    #[cfg(any(feature = "gst", feature = "decode"))]
-    /// Set when the document changes, so the monitor is handed the new
-    /// timeline once per edit instead of once per frame.
-    #[cfg(any(feature = "gst", feature = "decode"))]
     /// The level the mix is running at, written by whatever is mixing and
     /// read here. **Not** feature-gated: a build with no audio backend still
     /// has a mixer, still has a meter surface, and a `--shots` capture stages
@@ -1797,6 +1795,7 @@ impl VideoEditorApp {
             },
             navigation: NavigationState::default(),
             media_pipeline: MediaPipelineState {
+                #[cfg(any(feature = "gst", feature = "decode"))]
                 monitor_stale: true,
                 ..MediaPipelineState::default()
             },
