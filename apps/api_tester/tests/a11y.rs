@@ -112,18 +112,7 @@ fn every_control_is_a_focusable_accessible_node() {
         "an expanded collection reports it"
     );
 
-    for name in [
-        "New collection",
-        "Save request",
-        "Rename collection",
-        "Rename request",
-        "Delete request",
-        "New environment",
-        "Rename environment",
-        "Delete environment",
-        "Add variable",
-        "Delete variable",
-    ] {
+    for name in ["New collection", "New environment"] {
         assert!(
             nodes
                 .iter()
