@@ -462,6 +462,10 @@ impl Widget for WebView {
     fn is_focused(&self) -> bool {
         self.focused
     }
+
+    fn wants_tab_input(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -471,6 +475,13 @@ mod tests {
     use crate::webview::test_engine::TestEngine;
     use std::sync::Arc;
     use winit::event::{DeviceId, ElementState, WindowEvent};
+
+    #[test]
+    fn focused_page_owns_tab_for_dom_focus_navigation() {
+        let mut page = WebView::new(TestEngine::new());
+        page.set_focus(true);
+        assert!(page.wants_tab_input());
+    }
 
     fn laid_out(engine: Arc<TestEngine>) -> (WebView, TaffyTree<()>, NodeId) {
         let mut w = WebView::new(engine);
