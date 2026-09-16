@@ -84,3 +84,49 @@ The test link emits the existing macOS `__eh_frame section too large` warning. I
 
 - No application capture was produced in this implementer task; the controller owns Notes, Calendar and corrected Typst integration captures.
 - The full UI suite was intentionally not repeated because the task brief directs focused editor filters and records unrelated Chromium churn. All relevant editor module tests and `cargo check -p ui` are green.
+
+## Review fix round 1
+
+### RED evidence
+
+The two review findings were reproduced with production-lifecycle regressions before their fixes:
+
+1. `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p ui --lib widget::code_editor::tests::wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal -- --exact --nocapture`
+   - Failed at `wrapper measure and draw must share the 2x paragraph height`.
+   - The test drives the wrapper through Taffy `build_layout`, measured layout computation, `apply_layout`, and `draw` with a renderer left at 1x. This confirmed that `CodeEditor::build_layout` discarded the 2x theme scale before delegating measurement.
+
+2. `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p ui --lib widget::text_input::tests::crdt_sync_undo_redo_invalidates_multiline_measurement -- --exact --nocapture`
+   - Failed at `CRDT text growth invalidates retained measurement` after `take_dirty()` returned `None`.
+   - The test creates a real Automerge `Text`, commits a wrapping replacement through `State`, synchronizes the bound input, and then performs real `State::undo` and `State::redo`. This confirmed that path-bound model adoption changed text without setting `model_layout_dirty`.
+
+### Implementation
+
+- `CodeEditor::build_layout` now forwards the resolved theme text scale through a dedicated `TextInput::capture_layout_text_scale` method before registering the wrapper leaf. The existing direct-measure fallback to the renderer remains intact for callers that have no themed build pass.
+- Scalar values, Automerge `Text` values, removed paths, and direct bound-text adoption now share `TextInput::adopt_model_text`. A changed multiline value sets `model_layout_dirty`; path synchronization remains a model update rather than a user edit, while direct bindings preserve their existing reconciliation dirty signal.
+- Corrected the `ensure_shaped_layout` comment to describe its actual unit return and rebuild inputs.
+- Corrected the gutter-width comment to distinguish retained glyph measurement from the pre-measure estimate.
+- Replaced the earlier `set_text` undo/redo surrogate with the real CRDT commit/undo/redo regression above.
+
+### GREEN verification
+
+Focused regressions on the final implementation:
+
+- `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p ui --lib widget::code_editor::tests::wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal -- --exact --nocapture` — 1 passed, 0 failed.
+- `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p ui --lib widget::text_input::tests::crdt_sync_undo_redo_invalidates_multiline_measurement -- --exact --nocapture` — 1 passed, 0 failed.
+
+Affected module tests on the formatted final source:
+
+- `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p ui --lib widget::code_editor::tests -- --nocapture` — 23 passed, 0 failed.
+- `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p ui --lib widget::text_input::tests -- --nocapture` — 99 passed, 0 failed.
+- `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 cargo check -p ui` — passed.
+- `rustfmt --edition 2024 ui/src/widget/code_editor.rs ui/src/widget/text_input.rs` — passed.
+- `git diff --check -- ui/src/widget/code_editor.rs ui/src/widget/text_input.rs` — passed.
+
+The test link continues to emit the existing macOS `__eh_frame section too large` warning; it does not fail compilation or the test executable.
+
+### Self-review and remaining gaps
+
+- Confirmed the wrapper test catches both the original 2x mismatch and same-instance 2x-to-1x invalidation while the renderer remains stale at 1x throughout.
+- Confirmed the CRDT regression consumes initial measurement, keeps model sync out of `take_dirty`, and requires a new measurement after replacement, undo, and redo.
+- Confirmed unchanged model text does not mark measurement dirty, and removed paths use the same change comparison before invalidation.
+- No app files or `Scrollable` production code changed. Controller-owned image review and separately queued app geometry remain outside this fix round.

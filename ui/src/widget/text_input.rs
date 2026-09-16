@@ -465,13 +465,32 @@ impl TextInput {
         let text = state
             .text(obj)
             .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
-        if self.text != text {
-            self.text = text;
+        if self.adopt_model_text(text) {
             self.dirty = true;
         }
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
         Ok(())
+    }
+
+    /// Replace text read from model state without reporting a user edit.
+    /// Returns whether the value changed so direct bindings can preserve
+    /// their existing reconciliation signal.
+    fn adopt_model_text(&mut self, text: String) -> bool {
+        if self.text == text {
+            return false;
+        }
+        self.text = text;
+        self.model_layout_dirty |= self.multiline;
+        true
+    }
+
+    /// Capture the resolved theme scale before a renderer-backed measurement.
+    pub(super) fn capture_layout_text_scale(&mut self, text_scale: f32) {
+        if self.layout_text_scale != Some(text_scale) {
+            self.layout_text_scale = Some(text_scale);
+            self.model_layout_dirty |= self.multiline;
+        }
     }
 
     /// Keep the binding readable while an owning action bridge handles user writes.
@@ -1585,8 +1604,7 @@ impl TextInput {
     /// the same shaped paragraph for paint, wrapping, carets, selection,
     /// hit-testing, vertical movement, and IME composition.
     /// Rebuilds `self.single_layout` (and its signature) if the shaped
-    /// spans, family or size changed since the last draw. Returns the
-    /// `TextStyle` used, so gutter line numbers reuse the exact metrics.
+    /// spans, family, size, or available width changed.
     fn ensure_shaped_layout(
         &mut self,
         tr: &mut TextRenderer,
@@ -2427,7 +2445,8 @@ impl TextInput {
         self.tab_spaces = Some(n);
     }
 
-    /// Pure function of line count + font size, so geometry and painting stay identical.
+    /// Uses measured line-number glyphs after layout, with a font-size
+    /// estimate only before the first measurement.
     fn code_gutter_w(&self) -> f64 {
         if !self.gutter || !self.multiline {
             return 0.0;
@@ -3541,12 +3560,12 @@ impl Widget for TextInput {
                 match val {
                     Value::Scalar(s) => {
                         if let automerge::ScalarValue::Str(text) = s.as_ref() {
-                            self.text = text.to_string();
+                            self.adopt_model_text(text.to_string());
                         }
                     }
                     Value::Object(ObjType::Text) => {
                         if let Ok(text) = state.text(&obj_id) {
-                            self.text = text;
+                            self.adopt_model_text(text);
                         }
                     }
                     Value::Object(_) => {}
@@ -3554,7 +3573,7 @@ impl Widget for TextInput {
             }
             Ok(None) if self.path_was_present => {
                 self.path_was_present = false;
-                self.text.clear();
+                self.adopt_model_text(String::new());
                 self.cursor_pos = 0;
                 self.selection_anchor = None;
                 self.goal_x = None;
@@ -3574,10 +3593,7 @@ impl Widget for TextInput {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        if self.layout_text_scale != Some(theme.text_scale) {
-            self.layout_text_scale = Some(theme.text_scale);
-            self.model_layout_dirty |= self.multiline;
-        }
+        self.capture_layout_text_scale(theme.text_scale);
         // Multiline is measured (grows with content, see `measure`); single-line is a fixed 40px row.
         let height = if self.multiline {
             Dimension::auto()
@@ -7002,51 +7018,77 @@ mod tests {
     }
 
     #[test]
-    fn scaled_multiline_geometry_refreshes_across_model_undo_redo_replay() {
-        let long = "undo and redo replay model text through the same widget, including a long line that wraps at large text";
+    fn crdt_sync_undo_redo_invalidates_multiline_measurement() {
+        let short = "short";
+        let long = "undo and redo replay real CRDT text through the same widget, including a long line that wraps at large text";
         let theme = Theme::dark().with_text_scale(2.0);
-        let mut input = TextInput::local().multiline(true).with_initial_value(long);
-        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, 400.0));
-        draw_with_theme(&mut input, &theme);
-        let long_height = input.content_height();
-        let long_rows = input
-            .single_layout
-            .as_ref()
-            .expect("redo source layout")
-            .buffer
-            .layout_runs()
-            .count();
-        assert!(long_rows > 1, "precondition: large text wraps");
+        let mut state = crate::State::new();
+        let text_obj = state
+            .doc
+            .put_object(&state.root, "body", ObjType::Text)
+            .expect("create document text");
+        state
+            .doc
+            .splice_text(&text_obj, 0, 0, short)
+            .expect("seed document text");
+        state.commit_action(None, None);
 
-        input.set_text("undo");
-        input.set_cursor_pos(input.value().len());
-        draw_with_theme(&mut input, &theme);
-        assert_eq!(
-            input
-                .single_layout
-                .as_ref()
-                .expect("undo layout")
-                .buffer
-                .layout_runs()
-                .count(),
-            1
-        );
-        assert!(input.content_height() < long_height);
+        let mut input = TextInput::from_document_string("body").multiline(true);
+        Widget::sync(&mut input, &mut state.doc, &state.root);
+        let mut renderer = TextRenderer::new();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let _ = Widget::build_layout(&mut input, &mut taffy, &theme, &mut node_map);
+        let measure = |input: &mut TextInput, renderer: &mut TextRenderer| {
+            Widget::measure(
+                input,
+                taffy::Size {
+                    width: Some(180.0),
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(180.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                renderer,
+            )
+            .height
+        };
+        let short_height = measure(&mut input, &mut renderer);
+        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(short_height)));
+        assert!(!Widget::layout_needs_measure(&input));
 
-        input.set_text(long);
-        input.set_cursor_pos(long.len());
-        draw_with_theme(&mut input, &theme);
-        assert_eq!(
-            input
-                .single_layout
-                .as_ref()
-                .expect("redo layout")
-                .buffer
-                .layout_runs()
-                .count(),
-            long_rows
+        let old_len = state.doc.length(&text_obj);
+        state
+            .doc
+            .splice_text(
+                &text_obj,
+                0,
+                isize::try_from(old_len).expect("test text length fits isize"),
+                long,
+            )
+            .expect("replace with wrapping text");
+        state.commit_action(None, None);
+        Widget::sync(&mut input, &mut state.doc, &state.root);
+        assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
+        assert!(
+            Widget::layout_needs_measure(&input),
+            "CRDT text growth invalidates retained measurement"
         );
-        assert!((input.content_height() - long_height).abs() < 0.1);
+        let long_height = measure(&mut input, &mut renderer);
+        assert!(long_height > short_height * 1.8, "long text wraps at 2x");
+
+        state.undo(None, None).expect("undo long text");
+        Widget::sync(&mut input, &mut state.doc, &state.root);
+        assert!(Widget::layout_needs_measure(&input));
+        let undo_height = measure(&mut input, &mut renderer);
+        assert!((undo_height - short_height).abs() < 0.1);
+
+        state.redo(None, None).expect("redo long text");
+        Widget::sync(&mut input, &mut state.doc, &state.root);
+        assert!(Widget::layout_needs_measure(&input));
+        let redo_height = measure(&mut input, &mut renderer);
+        assert!((redo_height - long_height).abs() < 0.1);
     }
 
     /// Mirrors the handler's own `padding_x = 10.0`; assumes `scroll_x == 0`.
