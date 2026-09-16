@@ -7410,6 +7410,11 @@ struct SettingsColumnView {
     y: f64,
 }
 
+struct FontRowView<'a> {
+    rect: Rect,
+    font: &'a FontEntry,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -10223,27 +10228,9 @@ impl BooksApp {
 
         y = Self::draw_font_rows_header(ctx, SettingsColumnView { y, ..view });
         for f in &fonts {
-            y = self.draw_font_row(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                &ctx.theme.tokens.colors,
-                view.x,
-                view.width,
-                y,
-                f,
-            );
+            y = self.draw_font_row(ctx, SettingsColumnView { y, ..view }, f);
         }
-        y = self.draw_add_font_button(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &ctx.theme.tokens.colors,
-            view.x,
-            y,
-        );
+        y = self.draw_add_font_button(ctx, SettingsColumnView { y, ..view });
 
         // The default-font dropdown menu (drawn last so it floats over the rows).
         if self.default_font_menu {
@@ -10354,26 +10341,33 @@ impl BooksApp {
 
     /// One font row: name (or its rename editor), kind label, and the right
     /// control cluster. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_font_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        column: SettingsColumnView,
         f: &FontEntry,
     ) -> f64 {
-        let radii_md = f64::from(theme.tokens.radii.md);
+        let c = &ctx.theme.tokens.colors;
+        let radii_md = f64::from(ctx.theme.tokens.radii.md);
         let row_h = 64.0;
-        let cy = y + row_h / 2.0;
-        let card = Rect::new(x, y, x + w, y + row_h);
-        paint::fill_round(scene, t, card, radii_md, c.surfaces.raised);
+        let view = FontRowView {
+            rect: Rect::new(
+                column.x,
+                column.y,
+                column.x + column.width,
+                column.y + row_h,
+            ),
+            font: f,
+        };
+        paint::fill_round(
+            ctx.scene,
+            ctx.transform,
+            view.rect,
+            radii_md,
+            c.surfaces.raised,
+        );
 
-        self.draw_font_row_name(scene, t, tr, theme, c, x, w, y, f);
+        self.draw_font_row_name(ctx, &view);
 
         let kind = match &f.kind {
             FontKind::Default => "Default face".to_string(),
@@ -10381,72 +10375,85 @@ impl BooksApp {
             FontKind::Mono => "Monospace".to_string(),
             FontKind::Named(n) => format!("System · {n}"),
         };
-        tr.draw_text(
-            scene,
+        ctx.text.draw_text(
+            ctx.scene,
             &kind,
             12.0,
             c.text_dim,
-            t * Affine::translate((x + 20.0, y + 38.0)),
+            ctx.transform * Affine::translate((view.rect.x0 + 20.0, view.rect.y0 + 38.0)),
             None,
         );
 
-        self.draw_font_row_controls(scene, t, tr, theme, c, x, w, cy, f);
+        self.draw_font_row_controls(ctx, &view);
 
-        y + row_h + 10.0
+        view.rect.y1 + 10.0
     }
 
     /// Name rendered in its own face. When renaming, the real inline editor
     /// (a `ui::EditableLabel` over a `TextInput`) takes over the slot;
     /// otherwise a pencil affordance invites a tap to rename.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_font_row_name(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        y: f64,
-        f: &FontEntry,
-    ) {
-        let name_x = x + 20.0;
+    fn draw_font_row_name(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &FontRowView<'_>) {
+        let c = &ctx.theme.tokens.colors;
+        let f = view.font;
+        let name_x = view.rect.x0 + 20.0;
         let renaming_this =
             matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
         let fam = font_choice(&f.kind);
         if renaming_this {
             // Editor spans from the name to just before the right controls,
             // and typesets the edited value in the font's own face.
-            let field_x1 = (x + w - 210.0).max(name_x + 140.0);
-            let field_rect = Rect::new(name_x - 8.0, y + 8.0, field_x1, y + 8.0 + 30.0);
+            let field_x1 = (view.rect.x1 - 210.0).max(name_x + 140.0);
+            let field_rect = Rect::new(
+                name_x - 8.0,
+                view.rect.y0 + 8.0,
+                field_x1,
+                view.rect.y0 + 38.0,
+            );
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field_rect);
-                rn.field
-                    .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
+                rn.field.draw(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text,
+                    ctx.theme,
+                    &ui::presence::PresenceCtx::empty(),
+                );
             }
         } else {
-            tr.draw_text_font(
-                scene,
+            ctx.text.draw_text_font(
+                ctx.scene,
                 &f.name,
                 16.0,
                 c.text_primary,
-                t * Affine::translate((name_x, y + 12.0)),
+                ctx.transform * Affine::translate((name_x, view.rect.y0 + 12.0)),
                 None,
                 TextWeight::Semibold,
                 false,
                 &fam,
             );
-            let (nw, _) = tr.measure_font(&f.name, 16.0, None, TextWeight::Semibold, false, &fam);
+            let (nw, _) =
+                ctx.text
+                    .measure_font(&f.name, 16.0, None, TextWeight::Semibold, false, &fam);
             let pencil = Rect::new(
                 name_x + f64::from(nw) + 6.0,
-                y + 12.0,
+                view.rect.y0 + 12.0,
                 name_x + f64::from(nw) + 26.0,
-                y + 32.0,
+                view.rect.y0 + 32.0,
             );
-            paint::pencil(scene, t, pencil, c.text_dim.with_alpha_factor(0.5), 1.3);
+            paint::pencil(
+                ctx.scene,
+                ctx.transform,
+                pencil,
+                c.text_dim.with_alpha_factor(0.5),
+                1.3,
+            );
             self.push_hit(
-                Rect::new(name_x, y + 8.0, name_x + f64::from(nw) + 30.0, y + 34.0),
+                Rect::new(
+                    name_x,
+                    view.rect.y0 + 8.0,
+                    name_x + f64::from(nw) + 30.0,
+                    view.rect.y0 + 34.0,
+                ),
                 Action::BeginRenameFont(f.id.clone()),
             );
         }
@@ -10456,20 +10463,11 @@ impl BooksApp {
     /// delete column so every row's size control lines up (built-ins
     /// reserve the column but draw nothing in it): delete (custom fonts
     /// only), size stepper, and the quick-settings visibility toggle.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_font_row_controls(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        cy: f64,
-        f: &FontEntry,
-    ) {
-        let del_col = x + w - 16.0 - 24.0;
+    fn draw_font_row_controls(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &FontRowView<'_>) {
+        let c = &ctx.theme.tokens.colors;
+        let f = view.font;
+        let cy = view.rect.center().y;
+        let del_col = view.rect.x1 - 16.0 - 24.0;
         if matches!(f.kind, FontKind::Named(_)) {
             let del = Rect::new(del_col, cy - 12.0, del_col + 24.0, cy + 12.0);
             let col = if self.is_hover(del) {
@@ -10477,15 +10475,15 @@ impl BooksApp {
             } else {
                 c.text_dim.with_alpha_factor(0.6)
             };
-            paint::close(scene, t, del, col, 1.4);
+            paint::close(ctx.scene, ctx.transform, del, col, 1.4);
             self.push_hit(del, Action::RemoveFont(f.id.clone()));
         }
         let size_right = del_col - 12.0;
         let left = self.size_stepper(
-            scene,
-            t,
-            tr,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
             c,
             size_right,
             cy,
@@ -10497,9 +10495,9 @@ impl BooksApp {
         let tog_h = 22.0;
         let tog_x = left - 16.0 - tog_w;
         self.switch(
-            scene,
-            t,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.theme,
             Rect::new(tog_x, cy - tog_h / 2.0, tog_x + tog_w, cy + tog_h / 2.0),
             f.shown,
             Action::ToggleFontShown(f.id.clone()),
@@ -10507,38 +10505,45 @@ impl BooksApp {
     }
 
     /// "+ Add a system font" pill. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_add_font_button(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        mut y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: SettingsColumnView,
     ) -> f64 {
+        let c = &ctx.theme.tokens.colors;
+        let mut y = view.y;
         let add = "＋  Add a system font";
-        let aw = f64::from(tr.measure_weighted(add, 13.0, None, TextWeight::Medium).0) + 32.0;
-        let arect = Rect::new(x, y, x + aw, y + 36.0);
+        let aw = f64::from(
+            ctx.text
+                .measure_weighted(add, 13.0, None, TextWeight::Medium)
+                .0,
+        ) + 32.0;
+        let arect = Rect::new(view.x, y, view.x + aw, y + 36.0);
         paint::fill_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             arect,
             18.0,
             if self.is_hover(arect) {
-                theme.bg_hover
+                ctx.theme.bg_hover
             } else {
                 c.surfaces.overlay
             },
         );
-        paint::stroke_round(scene, t, arect, 18.0, c.border_standard, 1.0);
-        tr.draw_text_weighted(
-            scene,
+        paint::stroke_round(
+            ctx.scene,
+            ctx.transform,
+            arect,
+            18.0,
+            c.border_standard,
+            1.0,
+        );
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             add,
             13.0,
             c.text_primary,
-            t * Affine::translate((x + 16.0, y + 11.0)),
+            ctx.transform * Affine::translate((view.x + 16.0, y + 11.0)),
             None,
             TextWeight::Medium,
         );
