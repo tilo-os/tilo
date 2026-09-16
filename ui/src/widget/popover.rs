@@ -241,6 +241,16 @@ impl Popover {
         (idx < self.items.len()).then_some(idx)
     }
 
+    /// Bounds of one option row after [`Self::place`] has resolved the menu.
+    /// Hand-drawn hosts and tests can synthesize a click without copying the
+    /// popover's private padding and row-height constants.
+    pub fn item_rect(&self, index: usize) -> Option<Rect> {
+        if !self.open || index >= self.items.len() {
+            return None;
+        }
+        Some(self.row_rect(index))
+    }
+
     pub fn contains(&self, point: Point) -> bool {
         self.open && self.rect.contains(point)
     }
