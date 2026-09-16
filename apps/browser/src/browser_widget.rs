@@ -272,6 +272,7 @@ pub struct BrowserWidget {
     /// An address draft belongs to this window. Only an explicit Navigate
     /// resource operation crosses the browser/engine boundary.
     address: ui::LocalState<String>,
+    daily: crate::daily_controls::DailyControls,
 
     // Chrome state mirrored from engine events.
     can_go_back: bool,
@@ -479,6 +480,7 @@ impl BrowserWidget {
             bootstrap_done: false,
             headless,
             address: ui::LocalState::new(initial_url.clone()),
+            daily: Default::default(),
             initial_url,
             can_go_back: false,
             can_go_forward: false,
@@ -1451,6 +1453,10 @@ impl BrowserWidget {
                     .on_effect(move || developer_engine.send(WebViewCommand::ShowDeveloperTools)),
             ));
         }
+        if !self.compact_chrome {
+            toolbar = toolbar.push(Box::new(self.daily.launcher()));
+            toolbar = toolbar.push(Box::new(self.daily.zoom_reset()));
+        }
         toolbar = toolbar.push(Box::new(settings_btn));
 
         // The web view must reach the window edges — no border, no gap.
@@ -1462,6 +1468,9 @@ impl BrowserWidget {
             .with_no_padding()
             .with_gap(0.0)
             .push(Box::new(Container::new().with_child(Box::new(toolbar))));
+        if self.daily.open && !self.show_settings && !self.show_library {
+            column = column.push(self.daily.bar());
+        }
         if let Some(prompt) = self.capabilities.prompt(&self.engine) {
             column = column.push(prompt);
         }
@@ -2086,6 +2095,9 @@ impl BrowserWidget {
         let editing = self.url_input_focused();
         for event in self.engine.drain_events() {
             match event {
+                event @ (WebViewEvent::FindResult { .. } | WebViewEvent::ZoomChanged(_)) => {
+                    self.structure_dirty |= self.daily.apply(event);
+                }
                 WebViewEvent::NavigationHistory {
                     request_id,
                     entries,
@@ -2395,6 +2407,71 @@ impl BrowserWidget {
             return false;
         }
         let modifiers = modifiers.state();
+        let platform = if cfg!(target_os = "macos") {
+            modifiers.super_key()
+        } else {
+            modifiers.control_key()
+        };
+        if platform && !modifiers.alt_key() {
+            use crate::daily_controls::Action;
+            if matches!(&key.logical_key, WKey::Character(c) if c == "[" || c == "]") {
+                self.queue_unit_operation(
+                    "browser.page",
+                    if matches!(&key.logical_key, WKey::Character(c) if c == "[") {
+                        "back"
+                    } else {
+                        "forward"
+                    },
+                );
+                return true;
+            }
+            let action = match &key.logical_key {
+                WKey::Character(c) if c.eq_ignore_ascii_case("f") => Some(Action::Open),
+                WKey::Character(c) if c.eq_ignore_ascii_case("g") => {
+                    Some(Action::Next(!modifiers.shift_key()))
+                }
+                WKey::Character(c) if c == "+" || c == "=" => Some(Action::Zoom(1)),
+                WKey::Character(c) if c == "-" => Some(Action::Zoom(-1)),
+                WKey::Character(c) if c == "0" => Some(Action::Zoom(0)),
+                WKey::Character(c) if c.eq_ignore_ascii_case("d") => {
+                    self.queue_unit_operation("browser.page", "bookmark");
+                    return true;
+                }
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.daily.act(action, &self.engine);
+                self.structure_dirty = true;
+                return true;
+            }
+        }
+        if key.logical_key == WKey::Named(WNamedKey::F3) {
+            self.daily.act(
+                crate::daily_controls::Action::Next(!modifiers.shift_key()),
+                &self.engine,
+            );
+            return true;
+        }
+        if self.daily.open
+            && (key.logical_key == WKey::Named(WNamedKey::Escape)
+                || (key.logical_key == WKey::Named(WNamedKey::Enter)
+                    && self.control_focused(crate::daily_controls::FIND_INPUT)))
+        {
+            self.daily.act(
+                if key.logical_key == WKey::Named(WNamedKey::Escape) {
+                    crate::daily_controls::Action::Close
+                } else {
+                    crate::daily_controls::Action::Next(!modifiers.shift_key())
+                },
+                &self.engine,
+            );
+            self.structure_dirty = true;
+            return true;
+        }
+        if key.logical_key == WKey::Named(WNamedKey::Escape) && self.progress < 1.0 {
+            self.queue_unit_operation("browser.page", "stop");
+            return true;
+        }
         let alt_navigation =
             modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key();
         let reload = (modifiers.control_key() || modifiers.super_key())
@@ -2417,14 +2494,18 @@ impl BrowserWidget {
     /// page cannot intercept the shortcut and leave keyboard users hunting
     /// for the address field.
     fn focus_address_input(&mut self) -> bool {
+        self.focus_control(URL_INPUT_ID)
+    }
+
+    fn focus_control(&mut self, id: &str) -> bool {
         fn clear(widget: &mut dyn Widget) {
             widget.set_focus(false);
             for child in widget.children_mut() {
                 clear(child);
             }
         }
-        fn focus(widget: &mut dyn Widget) -> bool {
-            if widget.test_id() == Some(URL_INPUT_ID) {
+        fn focus(widget: &mut dyn Widget, id: &str) -> bool {
+            if widget.test_id() == Some(id) {
                 widget.set_focus(true);
                 if let Some((_, text)) = widget.text_review() {
                     widget.set_state(&format!("{}:b:0", text.len()));
@@ -2432,7 +2513,7 @@ impl BrowserWidget {
                 return true;
             }
             for child in widget.children_mut() {
-                if focus(child) {
+                if focus(child, id) {
                     return true;
                 }
             }
@@ -2440,7 +2521,7 @@ impl BrowserWidget {
         }
         self.composed.as_mut().is_some_and(|composed| {
             clear(composed.as_mut());
-            focus(composed.as_mut())
+            focus(composed.as_mut(), id)
         })
     }
 
@@ -2821,7 +2902,8 @@ impl Widget for BrowserWidget {
                     observed_tags: crate::actions::observed_bookmark_tags(doc, &entry.url),
                 },
             ) {
-                child.actions.push(spec.destructive());
+                // Removing one bookmark is a reversible document edit.
+                child.actions.push(spec);
             }
             bookmarks.children.push(child);
         }
@@ -3188,6 +3270,7 @@ impl Widget for BrowserWidget {
             self.extension_notice = Some(message);
             self.structure_dirty = true;
         }
+        self.structure_dirty |= self.daily.sync(&self.engine);
         self.tick_back_hold(std::time::Instant::now());
         self.apply_engine_events();
         let heads = state.get_heads();
@@ -3210,36 +3293,48 @@ impl Widget for BrowserWidget {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        fn address_state(widget: &dyn Widget) -> Option<String> {
-            if widget.test_id() == Some(URL_INPUT_ID) && widget.is_focused() {
-                return widget.get_state();
+        fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
+            if matches!(
+                widget.test_id(),
+                Some(URL_INPUT_ID) | Some(crate::daily_controls::FIND_INPUT)
+            ) && widget.is_focused()
+            {
+                return widget
+                    .get_state()
+                    .map(|state| (widget.test_id().unwrap_or(URL_INPUT_ID).to_owned(), state));
             }
             widget
                 .children()
                 .iter()
                 .find_map(|child| address_state(*child))
         }
-        fn restore_address(widget: &mut dyn Widget, state: &str) {
-            if widget.test_id() == Some(URL_INPUT_ID) {
+        fn restore_address(widget: &mut dyn Widget, id: &str, state: &str) {
+            if widget.test_id() == Some(id) {
                 widget.set_focus(true);
                 widget.set_state(state);
                 return;
             }
             for child in widget.children_mut() {
-                restore_address(child, state);
+                restore_address(child, id, state);
             }
         }
+        let page_focused = self.control_focused("browser.surface");
         let address_state = self
             .composed
             .as_ref()
             .and_then(|widget| address_state(widget.as_ref()));
         let mut composed = self.build_composition();
         let child_node = composed.build_layout(taffy, theme, node_map);
-        if let Some(state) = address_state {
-            restore_address(composed.as_mut(), &state);
+        if let Some((id, state)) = address_state {
+            restore_address(composed.as_mut(), &id, &state);
         }
         composed.set_motion_reduced(self.motion_reduced);
         self.composed = Some(composed);
+        if let Some(id) = self.daily.focus_pending.take() {
+            self.focus_control(id);
+        } else if page_focused {
+            self.focus_control("browser.surface");
+        }
 
         let style = Style {
             display: taffy::Display::Flex,
@@ -3956,6 +4051,45 @@ mod architecture_tests {
             device_id: unsafe { std::mem::zeroed() },
             event,
             is_synthetic: false,
+        }
+    }
+
+    #[test]
+    fn find_focus_moves_to_search_then_returns_to_page_and_survives_rebuild() {
+        let mut widget = BrowserWidget::new_headless();
+        compose(&mut widget);
+        assert!(widget.focus_control("browser.surface"));
+        compose(&mut widget);
+        assert!(widget.control_focused("browser.surface"));
+        widget.daily.act(crate::daily_controls::Action::Open, &widget.engine);
+        compose(&mut widget);
+        assert!(widget.control_focused(crate::daily_controls::FIND_INPUT));
+        widget.daily.act(crate::daily_controls::Action::Close, &widget.engine);
+        compose(&mut widget);
+        assert!(widget.control_focused("browser.surface"));
+    }
+
+    #[test]
+    fn daily_shortcuts_capture_find_zoom_bookmark_but_leave_plain_typing() {
+        let mut widget = BrowserWidget::new_headless();
+        for letter in ["f", "+", "-", "0", "d"] {
+            let mut event = key(WNamedKey::Enter);
+            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                event.logical_key = WKey::Character(letter.into());
+            }
+            assert!(!widget.handle_browser_shortcut(&event, Default::default()));
+            assert!(
+                widget.handle_browser_shortcut(
+                    &event,
+                    (if cfg!(target_os = "macos") {
+                        winit::keyboard::ModifiersState::SUPER
+                    } else {
+                        winit::keyboard::ModifiersState::CONTROL
+                    })
+                    .into()
+                ),
+                "{letter}"
+            );
         }
     }
 
@@ -5553,6 +5687,29 @@ mod tests {
             unavailable.poll_resource_operation(invocation, false, &doc, &root),
             Some(ui::qos_actions::InvocationUpdate::Failed { .. })
         ));
+    }
+
+    #[test]
+    fn removing_one_bookmark_is_an_ordinary_reversible_document_action() {
+        let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
+        w.bookmarks.add("https://test.example", "Test bookmark");
+        let (doc, _root) = synced(&mut w);
+        let resources = w.resources(&doc);
+        let bookmarks = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.0 == "browser.bookmarks")
+            .unwrap();
+        let remove = bookmarks.children[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "remove")
+            .unwrap();
+        assert_eq!(
+            remove.contract.confirmation,
+            ui::qos_actions::ConfirmationPolicy::None
+        );
+        assert_eq!(remove.kind, OperationKind::Document);
     }
 
     #[test]

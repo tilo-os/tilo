@@ -114,6 +114,14 @@ pub enum WebViewCommand {
     GoForward,
     Reload,
     StopLoading,
+    Find {
+        id: u32,
+        text: String,
+        forward: bool,
+        next: bool,
+    },
+    StopFinding,
+    SetZoomLevel(f64),
     /// Viewport size in physical pixels plus the display scale factor.
     Resize {
         width: u32,
@@ -207,6 +215,13 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    FindResult {
+        id: u32,
+        count: i32,
+        active: i32,
+        final_update: bool,
+    },
+    ZoomChanged(f64),
     NavigationHistory {
         request_id: u32,
         entries: Vec<NavigationEntry>,

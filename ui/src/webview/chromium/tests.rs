@@ -380,3 +380,50 @@ fn native_capacity_is_reserved_until_closed_acknowledgment() {
     }
     assert!(first.create_tab().is_ok());
 }
+
+#[test]
+#[cfg(unix)]
+fn hiding_retains_last_frame_for_recomposed_tab_until_next_paint() {
+    let (dir, host) = helper_fixture("exec cat >/dev/null");
+    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    *engine.frames().lock().unwrap() = Some(super::super::Frame {
+        rgba: Arc::new(vec![255, 0, 0, 255]),
+        width: 1,
+        height: 1,
+    });
+    engine.set_visible(false);
+    engine.set_visible(true);
+    assert!(
+        engine.frames().lock().unwrap().is_some(),
+        "recomposing a retained tab needs pixels before asynchronous repaint"
+    );
+}
+
+#[test]
+fn find_and_zoom_protocol_rejects_invalid_bounds() {
+    assert!(command_within_limits(&WebViewCommand::Find {
+        id: 1,
+        text: "needle".into(),
+        forward: false,
+        next: true
+    }));
+    assert!(!command_within_limits(&WebViewCommand::SetZoomLevel(
+        f64::NAN
+    )));
+    assert!(!command_within_limits(&WebViewCommand::SetZoomLevel(10.0)));
+    assert!(
+        validate_event(&json!({"event":"find_result","id":1,"count":3,"active":1,"final":true}))
+            .is_ok()
+    );
+    assert!(
+        validate_event(
+            &json!({"event":"find_result","id":1,"count":4294967296_u64,"active":1,"final":true})
+        )
+        .is_err()
+    );
+    assert!(validate_event(&json!({"event":"zoom","level":99.0})).is_err());
+    assert_eq!(
+        encode_command(WebViewCommand::SetZoomLevel(1.0)),
+        Some(json!({"op":"zoom","level":1.0}))
+    );
+}
