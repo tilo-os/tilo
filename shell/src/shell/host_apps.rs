@@ -114,9 +114,47 @@ fn x11_slot() -> &'static RwLock<Option<X11Session>> {
 
 #[cfg(any(test, target_os = "linux"))]
 pub(crate) fn set_x11_session(session: Option<X11Session>) {
+    let ready = session.is_some();
     if let Ok(mut slot) = x11_slot().write() {
         *slot = session;
     }
+    if ready && let Ok(mut state) = x11_availability_slot().write() {
+        *state = X11Availability::Ready;
+    }
+}
+
+/// The bridge is deliberately asynchronous: callers need to distinguish the
+/// short startup race from a terminal outage.  `Unavailable` is also the
+/// default for native qOS sessions, where Wayland host apps must not be gated
+/// on an optional compatibility service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum X11Availability {
+    Starting,
+    Ready,
+    Unavailable,
+}
+
+fn x11_availability_slot() -> &'static RwLock<X11Availability> {
+    static STATE: OnceLock<RwLock<X11Availability>> = OnceLock::new();
+    STATE.get_or_init(|| RwLock::new(X11Availability::Unavailable))
+}
+
+pub(crate) fn set_x11_starting() {
+    if let Ok(mut state) = x11_availability_slot().write() {
+        *state = X11Availability::Starting;
+    }
+}
+
+pub(crate) fn set_x11_unavailable() {
+    if let Ok(mut state) = x11_availability_slot().write() {
+        *state = X11Availability::Unavailable;
+    }
+}
+
+pub(crate) fn x11_availability() -> X11Availability {
+    x11_availability_slot()
+        .read()
+        .map_or(X11Availability::Unavailable, |state| *state)
 }
 
 /// The only X11 connection host launches may inherit. The compositor revokes
@@ -133,8 +171,9 @@ pub(crate) fn x11_session() -> Option<X11Session> {
 /// that startup; launching without the private DISPLAY makes X11-only apps
 /// fail permanently even though the bridge becomes ready a few milliseconds
 /// later.  Keep the request queued until publication instead.
+#[cfg(test)]
 pub(crate) fn x11_ready() -> bool {
-    x11_session().is_some()
+    x11_availability() == X11Availability::Ready && x11_session().is_some()
 }
 
 impl HostApp {
@@ -531,6 +570,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn a_queued_host_launch_survives_the_xwayland_startup_window() {
+        set_x11_starting();
         set_x11_session(None);
         let _ = drain_queued_launches();
         queue_launch(QueuedLaunch {
@@ -556,6 +596,24 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].desktop_id, "org.example.Legacy.desktop");
         set_x11_session(None);
+        set_x11_unavailable();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn x11_availability_distinguishes_startup_from_terminal_outage() {
+        set_x11_session(None);
+        set_x11_starting();
+        assert_eq!(x11_availability(), X11Availability::Starting);
+        set_x11_unavailable();
+        assert_eq!(x11_availability(), X11Availability::Unavailable);
+        set_x11_session(Some(X11Session {
+            display: ":1234".into(),
+            authority: PathBuf::from("/tmp/qos-test-authority"),
+        }));
+        assert_eq!(x11_availability(), X11Availability::Ready);
+        set_x11_session(None);
+        set_x11_unavailable();
     }
 
     /// The real scan of this machine, not a fixture.
