@@ -312,6 +312,9 @@ impl PowerActionPref {
 fn default_suspend_minutes() -> u32 {
     15
 }
+fn default_lock_minutes() -> u32 {
+    5
+}
 fn default_saver_suspend_minutes() -> u32 {
     10
 }
@@ -358,6 +361,10 @@ pub struct PowerPrefs {
     pub performance_suspend_minutes: u32,
     /// Idle minutes before the screen blanks; `0` disables blanking.
     pub blank_minutes: u32,
+    /// Idle minutes before the session locks; `0` is the explicit "Never"
+    /// choice. Manual lock and the mandatory pre-suspend lock remain active.
+    #[serde(default = "default_lock_minutes")]
+    pub lock_minutes: u32,
     /// What to do when the lid closes.
     #[serde(default = "default_lid_action")]
     pub lid_close_action: PowerActionPref,
@@ -384,6 +391,7 @@ impl Default for PowerPrefs {
             balanced_suspend_minutes: default_suspend_minutes(),
             performance_suspend_minutes: default_performance_suspend_minutes(),
             blank_minutes: 10,
+            lock_minutes: default_lock_minutes(),
             lid_close_action: default_lid_action(),
             power_key_action: default_power_key_action(),
             low_battery_percent: default_low_battery_percent(),
@@ -1054,6 +1062,7 @@ mod tests {
         assert_eq!(p.input.keyboard_layout, "us");
         assert!(p.power.auto_suspend);
         assert_eq!(p.power.blank_minutes, 10);
+        assert_eq!(p.power.lock_minutes, 5);
         assert_eq!(p.updates.channel, "Stable");
         assert_eq!(p.updates.last_checked, "Never");
     }
@@ -1068,6 +1077,7 @@ mod tests {
         p.input.keyboard_layouts = vec!["de".into()];
         p.power.auto_suspend = false;
         p.power.blank_minutes = 30;
+        p.power.lock_minutes = 0;
         p.updates.auto = false;
         p.updates.channel = "Nightly".into();
         p.appearance.theme = "Nord".into();
@@ -1328,6 +1338,7 @@ mod tests {
         p.power.auto_suspend = true;
         p.power.suspend_minutes = 20;
         p.power.blank_minutes = 5;
+        p.power.lock_minutes = 10;
         p.power.lid_close_action = PowerActionPref::Lock;
         p.power.power_key_action = PowerActionPref::Ignore;
         p.power.low_battery_percent = 18;
@@ -1340,6 +1351,7 @@ mod tests {
         assert_eq!(power["auto_suspend"], serde_json::json!(true));
         assert_eq!(power["suspend_minutes"], serde_json::json!(20));
         assert_eq!(power["blank_minutes"], serde_json::json!(5));
+        assert_eq!(power["lock_minutes"], serde_json::json!(10));
         // Actions must be the lowercase labels the reader expects.
         assert_eq!(power["lid_close_action"], serde_json::json!("lock"));
         assert_eq!(power["power_key_action"], serde_json::json!("ignore"));
@@ -1368,6 +1380,7 @@ mod tests {
         let p = SystemPrefs::from_json(json);
         assert!(!p.power.auto_suspend);
         assert_eq!(p.power.blank_minutes, 15);
+        assert_eq!(p.power.lock_minutes, 5);
         // New fields take their defaults.
         assert_eq!(p.power.suspend_minutes, 15);
         assert_eq!(p.power.lid_close_action, PowerActionPref::Suspend);
