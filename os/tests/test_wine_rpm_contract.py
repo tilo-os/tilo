@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Behavioral tests for source identity and paired Wine loader contracts."""
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -20,6 +21,17 @@ def layout(arch):
 
 
 class ContractTests(unittest.TestCase):
+    def test_dist_macro_produces_distinct_release_and_tracks_epoch(self):
+        pin = json.loads((Path(__file__).resolve().parents[1] / 'dev/wine-source.json').read_text())
+        identity = C.build_identity(pin)
+        self.assertEqual(identity['release'], '3.fc44.qos_traditional1')
+        self.assertNotEqual(identity['release'], pin['release'])
+        pin['source_date_epoch'] += 1
+        self.assertEqual(C.build_identity(pin)['source_date_epoch'], pin['source_date_epoch'])
+        pin['build_release'] = pin['release']
+        with self.assertRaises(ValueError):
+            C.build_identity(pin)
+
     def test_supported_traditional_layout_both_targets(self):
         for arch in ('i686', 'x86_64'):
             C.validate_core_layout(arch, layout(arch))

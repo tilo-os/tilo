@@ -12,11 +12,13 @@ python3 /qos/wine_rpm_contract.py source /wine-source /qos/wine-source.json
 # %prep, %build or foreign binary-package scriptlets.
 rpm -i --define '_topdir /wine-source-check' /wine-source/wine-11.0-3.fc44.src.rpm
 python3 /qos/wine_rpm_contract.py spec /wine-source-check/SPECS/wine.spec /qos/wine-source.json
+build_dist=$(python3 /qos/wine_rpm_contract.py setting dist /qos/wine-source.json)
 # builddep's conditional flags apply to SPEC files, not to SRPM inputs.
 # Do not use --skip-unavailable, --nodeps, or remove any BuildRequires.
 dnf5 builddep -y --without=new_wow64 --define="_target_cpu $WINE_TARGET" \
+    --define="dist $build_dist" \
     --spec /wine-source-check/SPECS/wine.spec
-rpmspec --target "$WINE_TARGET" --without new_wow64 -q --buildrequires \
+rpmspec --target "$WINE_TARGET" --without new_wow64 --define "dist $build_dist" -q --buildrequires \
     /wine-source-check/SPECS/wine.spec | LC_ALL=C sort -u > /usr/lib/qos/wine-buildrequires.txt
 python3 /qos/wine_rpm_contract.py record-buildroot "$WINE_TARGET" /qos/wine-source.json
 # Publish this complete root by OCI digest. No Wine compilation occurs here.

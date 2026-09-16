@@ -6,5 +6,7 @@
   "spec_sha256": "55a61c216e6a4e86e5bae18180cc8d0f887d74e86867cca584a497d4f885a288",
   "source_date_epoch": 1768778056,
   "version": "11.0",
-  "release": "3.fc44"
+  "release": "3.fc44",
+  "build_dist": ".fc44.qos_traditional1",
+  "build_release": "3.fc44.qos_traditional1"
 }
