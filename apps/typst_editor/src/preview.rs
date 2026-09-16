@@ -136,12 +136,20 @@ impl PreviewPane {
     }
 
     pub fn set_rect(&mut self, rect: Rect) {
+        let was_at_top = self.viewport.scroll_y() <= 0.5;
         self.rect = rect;
         self.viewport.set_rect(self.main_rect());
         // Re-apply the fit-width intent so a resize keeps the page spanning the
         // pane; a pinned custom zoom is left untouched.
         if self.fit_width {
             self.viewport.set_zoom(self.viewport.fit_width_zoom());
+            // `set_zoom` preserves the viewport centre, which is right for a
+            // reader who deliberately scrolled.  On a fresh/top-of-document
+            // preview it would instead manufacture a scroll offset while the
+            // initial fit-width zoom grows, hiding the document title.
+            if was_at_top {
+                self.viewport.set_scroll(self.viewport.scroll_x(), 0.0);
+            }
         }
         self.recompute_current();
     }
@@ -153,6 +161,7 @@ impl PreviewPane {
     /// Install freshly compiled pages together with their extracted text layer.
     /// `page_text` is parallel to `pages` (empty when the compile failed).
     pub fn set_pages_with_text(&mut self, pages: &[PageImage], page_text: &[Vec<TextRun>]) {
+        let was_empty = self.images.is_empty();
         self.images = pages
             .iter()
             .map(|p| Image::from_rgba(p.rgba.clone(), p.width, p.height).with_fit(ImageFit::Fill))
@@ -198,6 +207,9 @@ impl PreviewPane {
         // Keep the fit-width intent honoured now that the content size changed.
         if self.fit_width {
             self.viewport.set_zoom(self.viewport.fit_width_zoom());
+            if was_empty {
+                self.viewport.set_scroll(self.viewport.scroll_x(), 0.0);
+            }
         }
         self.recompute_current();
     }
@@ -979,6 +991,16 @@ mod tests {
         );
         assert!(p.viewport.zoom() > z0, "ctrl+wheel-up zooms in");
         assert!(!p.fit_width, "an explicit zoom drops the fit-width intent");
+    }
+
+    #[test]
+    fn initial_fit_width_keeps_the_document_title_at_the_top() {
+        let p = pane();
+        assert_eq!(
+            p.viewport.scroll_y(),
+            0.0,
+            "a first fit-width layout must not centre-scroll past the title"
+        );
     }
 
     #[test]
