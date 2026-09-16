@@ -4692,6 +4692,7 @@ pub fn run() -> ! {
     let mut session = SessionManager::new(
         IdleConfig::from_env()
             .with_blank(power_policy.idle_blank)
+            .with_lock(power_policy.idle_lock)
             .with_suspend(power_policy.idle_suspend),
         Instant::now(),
     );
@@ -5377,6 +5378,7 @@ pub fn run() -> ! {
             let policy = tilo_power_mgmt::config::load_policy();
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
+            session.set_lock_timeout(policy.idle_lock);
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
