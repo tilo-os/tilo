@@ -34,6 +34,19 @@ case folding, mount safety, and authorization remain execution responsibilities.
   active. The passing tests above predate those fixes and do not prove the race
   is fixed. The controller is not yet accepted for the dependent view.
 
+## Controller review fixes — 0f9d911cf / eda70d280
+
+- Controller page and default-mode state now have read-only getters.
+- Folder enumeration pins directory handles and uses descriptor-relative
+  no-follow traversal with identity checks.
+- macOS focused setup tests: 28 passed; scoped Clippy exits 0 with the existing
+  unrelated `model.rs:285` warning.
+- Native Fedora ARM64 `cargo test --locked -p imager --lib setup`: 27 passed,
+  zero failed, 135 filtered. This includes the deterministic test replacing a
+  queued directory with a symlink.
+- Scoped re-review approved both fixes with no directly introduced regressions.
+  Native Windows verification remains outstanding.
+
 ## Outstanding end-state evidence
 
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
