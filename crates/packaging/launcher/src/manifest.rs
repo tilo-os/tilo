@@ -86,6 +86,9 @@ pub struct MinimalManifest {
     pub opens_mime: Vec<String>,
     /// Normalized URI schemes (without `:`) declared by the package.
     pub opens_schemes: Vec<String>,
+    /// Signed minimum handoff-fidelity facets. Legacy manifests default to
+    /// framework presentation state.
+    pub continuity: ContinuityContract,
 }
 
 impl MinimalManifest {
@@ -113,7 +116,11 @@ struct RawManifest {
     cli: Option<CliBlock>,
     #[serde(default)]
     providers: Option<ProvidersBlock>,
+    #[serde(default)]
+    continuity: ContinuityContract,
 }
+
+pub use pkg::manifest::{ContinuityContract, ContinuityFacet};
 
 /// `[providers]` block, mirrors [`pkg::manifest::Providers`], decoded
 /// here to keep the launcher independent of the full pkg crate.
@@ -222,6 +229,7 @@ impl From<RawManifest> for MinimalManifest {
             opens_ext,
             opens_mime,
             opens_schemes,
+            continuity: raw.continuity,
         }
     }
 }
@@ -619,6 +627,25 @@ mod tests {
         )
         .expect("a manifest with no [providers] block still parses");
         assert!(m.opens_ext.is_empty());
+        assert_eq!(
+            m.continuity.required,
+            vec![ContinuityFacet::Presentation],
+            "legacy manifests retain the framework presentation baseline"
+        );
+    }
+
+    #[test]
+    fn shipped_browser_requires_semantic_continuity() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace root above crates/packaging/launcher");
+        let manifest = read_manifest(&repo.join("apps/browser/qos-app.toml"))
+            .expect("shipped browser manifest parses through installed-app schema");
+        assert_eq!(
+            manifest.continuity.required,
+            vec![ContinuityFacet::Presentation, ContinuityFacet::Semantic]
+        );
     }
 
     /// Case and a leading dot are packaging noise, not meaning.
