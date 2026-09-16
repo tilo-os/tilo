@@ -75,64 +75,12 @@ impl DbSearchIndex {
 
         let mut rows = Vec::new();
         let mut resources = HashMap::new();
-        for connection in &session.connections {
-            let id = format!("connection:{}", connection.id);
-            let result = SearchResult::for_action(
-                KIND,
-                &connection.name,
-                ActionAddress::new(&id, "connect"),
-            )
-            .with_subtitle(connection.subtitle());
-            let mut resource = Resource::new(&id, "database.connection", &connection.name);
-            if let Ok(action) = ActionSpec::operation(
-                "connect",
-                "Connect",
-                OperationKind::Effect,
-                DB_OPERATION_TYPE,
-                &DbClientOperation::Connect {
-                    connection_id: connection.id.to_string(),
-                },
-            ) {
-                resource
-                    .actions
-                    .push(action.retry_policy(RetryPolicy::Idempotent));
-            }
-            if include_connection_mutations {
-                if let Ok(action) = ActionSpec::immediate(
-                    "remove",
-                    "Remove saved connection",
-                    crate::actions::DB_ACTION_TYPE,
-                    &crate::actions::remove_connection_action(connection.id),
-                ) {
-                    resource.actions.push(action.destructive());
-                }
-                let id = connection.id;
-                resource.actions.push(
-                    ActionSpec::prompted(
-                        "rename",
-                        "Rename",
-                        "Connection name",
-                        &connection.name,
-                        qos_actions::ExecutionLocus::ClientLocal,
-                        move |name| {
-                            crate::actions::encode(&crate::actions::rename_connection_action(
-                                id, name,
-                            ))
-                        },
-                    )
-                    .reversible()
-                    .retry_policy(RetryPolicy::Idempotent),
-                );
-            }
-            index_resource(
-                &mut rows,
-                &mut resources,
-                resource,
-                "connect",
-                format!("{} {}", connection.name, connection.subtitle()),
-                result,
-            );
-        }
+        index_connections(
+            session,
+            include_connection_mutations,
+            &mut rows,
+            &mut resources,
+        );
         if session.connected
             && let Some(connection) = session.active_connection()
         {
@@ -471,6 +419,72 @@ impl DbSearchIndex {
             .get(id)
             .cloned()
     }
+}
+
+fn index_connections(
+    session: &Session,
+    include_mutations: bool,
+    rows: &mut Vec<(String, String, SearchResult)>,
+    resources: &mut HashMap<String, Resource>,
+) {
+    for connection in &session.connections {
+        let id = format!("connection:{}", connection.id);
+        let result =
+            SearchResult::for_action(KIND, &connection.name, ActionAddress::new(&id, "connect"))
+                .with_subtitle(connection.subtitle());
+        let mut resource = Resource::new(&id, "database.connection", &connection.name);
+        if let Ok(action) = ActionSpec::operation(
+            "connect",
+            "Connect",
+            OperationKind::Effect,
+            DB_OPERATION_TYPE,
+            &DbClientOperation::Connect {
+                connection_id: connection.id.to_string(),
+            },
+        ) {
+            resource
+                .actions
+                .push(action.retry_policy(RetryPolicy::Idempotent));
+        }
+        if include_mutations {
+            append_connection_mutations(&mut resource, connection);
+        }
+        index_resource(
+            rows,
+            resources,
+            resource,
+            "connect",
+            format!("{} {}", connection.name, connection.subtitle()),
+            result,
+        );
+    }
+}
+
+fn append_connection_mutations(
+    resource: &mut Resource,
+    connection: &crate::model::ConnectionProfile,
+) {
+    if let Ok(action) = ActionSpec::immediate(
+        "remove",
+        "Remove saved connection",
+        crate::actions::DB_ACTION_TYPE,
+        &crate::actions::remove_connection_action(connection.id),
+    ) {
+        resource.actions.push(action.destructive());
+    }
+    let id = connection.id;
+    resource.actions.push(
+        ActionSpec::prompted(
+            "rename",
+            "Rename",
+            "Connection name",
+            &connection.name,
+            qos_actions::ExecutionLocus::ClientLocal,
+            move |name| crate::actions::encode(&crate::actions::rename_connection_action(id, name)),
+        )
+        .reversible()
+        .retry_policy(RetryPolicy::Idempotent),
+    );
 }
 
 fn index_resource(
