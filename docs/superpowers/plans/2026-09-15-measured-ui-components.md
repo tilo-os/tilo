@@ -137,7 +137,7 @@ Three separate approximate sizing paths currently disagree: `measure_item_axis`1
 
 ### Task 6: Single shaped source for rich inline marks
 
-**Dependency:** Task2 accepted. Confirmed ordinary-size Notes defect, not a speculative typography redesign.
+**Dependency:** Tasks2 and7 accepted before dispatch. Preserve Task7 final-empty-line normalization and its regressions when consuming shape_styled. Confirmed ordinary-size Notes defect, not a speculative typography redesign.
 **Files:** `ui/src/widget/rich_text_line.rs`, scoped `ui/src/widget/text_input.rs` attributed single-line support; only extend `ui/src/richtext.rs` or `ui/src/text_render.rs` if existing range decoration support cannot preserve behavior. Report architectural need before widening production scope.
 **Evidence:** `.superpowers/app-ui-2026-09-15/rich-mark-diagnosis.md`, actual Notes images in `task2-after-20260916/captures/notes/`. Inner plain text is painted then marked substrings painted again from a separate shape with different advances.
 

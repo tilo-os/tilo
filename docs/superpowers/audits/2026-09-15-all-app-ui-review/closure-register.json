@@ -721,14 +721,17 @@
       {
         "id": "scratchpad-final-empty-line",
         "title": "P1 \u2014 final empty line has incorrect EOF caret and pointer geometry.",
-        "status": "open",
+        "status": "closed",
         "evidence": [
-          "trailing-line-diagnosis.md"
+          "trailing-line-diagnosis.md",
+          "commit fd7b0964f",
+          "implementation/shared-task-7-report.md",
+          "implementation/shared-task-7-review.md"
         ]
       }
     ],
-    "closure": "Writing-surface findings fixed; final-empty-line repair and final verification pending",
-    "assigned_work": "Shared 3 complete + Shared 7 final empty line"
+    "closure": "All marked findings fixed; final verification pending",
+    "assigned_work": "Shared 3 + Shared 7 complete; final verification"
   },
   {
     "app": "settings",
