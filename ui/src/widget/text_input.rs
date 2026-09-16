@@ -3680,7 +3680,10 @@ impl Widget for TextInput {
             )]
             return taffy::Size {
                 width,
-                height: height as f32,
+                // Taffy rounds layout boxes to pixels. Never round intrinsic
+                // text below its last row: subpixel inner overflow would eat
+                // the first wheel event instead of scrolling the outer pane.
+                height: height.ceil() as f32,
             };
         }
         let avail_w = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
