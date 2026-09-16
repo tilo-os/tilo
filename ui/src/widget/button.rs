@@ -28,6 +28,10 @@ pub struct Button {
     /// icon-only button, used as the accessible name when none was set
     /// explicitly.
     tooltip: Option<String>,
+    /// Original presentation captured while a responsive toolbar displays
+    /// this button icon-first. Kept separately so an app's explicit tooltip
+    /// and accessible name are restored exactly when space returns.
+    compact_presentation: Option<(String, Option<String>, Option<String>)>,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -92,6 +96,7 @@ impl Button {
             label: label.to_string(),
             accessible_name: None,
             tooltip: None,
+            compact_presentation: None,
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -326,6 +331,43 @@ impl Button {
     pub fn set_style(&mut self, style: ButtonStyle) {
         if self.style != style {
             self.style = style;
+            self.dirty = true;
+        }
+    }
+
+    /// Prefer the icon in a space-constrained toolbar while retaining the
+    /// original visible label as the accessible name and hover tooltip.
+    ///
+    /// Apps should use this for responsive presentation only; activation,
+    /// focus and resource-action semantics are intentionally unchanged.
+    pub fn set_compact_toolbar_presentation(&mut self, compact: bool) {
+        if compact && !self.label.is_empty() && self.compact_presentation.is_none() {
+            self.compact_presentation = Some((
+                std::mem::take(&mut self.label),
+                self.accessible_name.take(),
+                self.tooltip.take(),
+            ));
+            self.accessible_name = self
+                .compact_presentation
+                .as_ref()
+                .and_then(|presentation| presentation.1.clone())
+                .or_else(|| {
+                    self.compact_presentation
+                        .as_ref()
+                        .map(|presentation| presentation.0.clone())
+                });
+            self.tooltip = self
+                .compact_presentation
+                .as_ref()
+                .and_then(|presentation| presentation.2.clone())
+                .or_else(|| self.accessible_name.clone());
+            self.dirty = true;
+        } else if !compact
+            && let Some((label, accessible_name, tooltip)) = self.compact_presentation.take()
+        {
+            self.label = label;
+            self.accessible_name = accessible_name;
+            self.tooltip = tooltip;
             self.dirty = true;
         }
     }
@@ -1793,6 +1835,41 @@ mod tests {
         assert_eq!(Widget::tooltip(&b), Some("Search"));
         let plain = Button::new("id", "Save", None);
         assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
+    }
+
+    #[test]
+    fn compact_toolbar_presentation_round_trips_authored_semantics() {
+        let mut button = Button::new("publish", "Publish", None)
+            .with_icon(crate::icons::Icon::CloudDownload)
+            .with_accessible_name("Publish document")
+            .tooltip("Publish this document now");
+
+        button.set_compact_toolbar_presentation(true);
+        assert!(button.label.is_empty(), "only the icon should be painted");
+        assert_eq!(
+            Widget::accessibility(&button).unwrap().name.as_deref(),
+            Some("Publish document"),
+            "compaction never makes an icon-only control silent"
+        );
+        assert_eq!(
+            Widget::tooltip(&button),
+            Some("Publish this document now"),
+            "the authored tooltip survives compaction"
+        );
+
+        button.set_compact_toolbar_presentation(false);
+        assert_eq!(button.label, "Publish");
+        assert_eq!(
+            button.accessible_name.as_deref(),
+            Some("Publish document"),
+            "expansion restores the authored accessible name rather than retaining a fallback"
+        );
+        assert_eq!(
+            Widget::accessibility(&button).unwrap().name.as_deref(),
+            Some("Publish"),
+            "the visible label again takes precedence after expansion"
+        );
+        assert_eq!(Widget::tooltip(&button), Some("Publish this document now"));
     }
 
     #[test]

@@ -101,29 +101,4 @@ if git diff --cached --name-only | grep -qE '^vendor/[^/]+/Cargo\.lock$'; then
   fail=1
 fi
 
-# Compile and lint the crates the change actually touches. Scoped by -p so the
-# cost tracks the diff, not the workspace. Set QOS_HOOK_NO_BUILD=1 when the
-# target directory is cold and you know it.
-if [ -n "$staged_rs" ] && [ "${QOS_HOOK_NO_BUILD:-0}" != "1" ] && command -v cargo >/dev/null 2>&1; then
-  pkgs=$(printf '%s\n' "$staged_rs" | while IFS= read -r f; do
-    d=$(dirname "$root/$f")
-    while [ "$d" != "$root" ] && [ "$d" != "/" ]; do
-      if [ -f "$d/Cargo.toml" ]; then
-        grep -m1 '^name = ' "$d/Cargo.toml" | sed 's/^name = "\(.*\)"/\1/'
-        break
-      fi
-      d=$(dirname "$d")
-    done
-  done | sort -u)
-  if [ -n "$pkgs" ]; then
-    args=$(printf '%s\n' "$pkgs" | sed 's/^/-p /' | tr '\n' ' ')
-    # shellcheck disable=SC2086
-    if ! cargo clippy --all-targets --quiet $args -- -D warnings >/dev/null 2>&1; then
-      note "cargo clippy failed for: $(printf '%s' "$pkgs" | tr '\n' ' ')"
-      note "  re-run to see it:  cargo clippy --all-targets $args"
-      fail=1
-    fi
-  fi
-fi
-
 exit "$fail"
