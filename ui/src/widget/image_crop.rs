@@ -7,10 +7,11 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::ColorCompat;
 use crate::LocalState;
 use crate::a11y::{AccessNode, AccessState, Action, Role};
 use crate::presence::PresenceCtx;
@@ -295,7 +296,12 @@ impl ImageCropEditor {
     fn paint_crop_overlay(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let image = self.image_rect();
         let crop = self.selection_rect();
-        let shade = Color::from_rgba8(0, 0, 0, 130);
+        let shade = theme
+            .tokens
+            .colors
+            .surfaces
+            .scrim
+            .with_alpha_factor(130.0 / 255.0);
         for outside in [
             Rect::new(image.x0, image.y0, image.x1, crop.y0),
             Rect::new(image.x0, crop.y1, image.x1, image.y1),
