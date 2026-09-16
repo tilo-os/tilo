@@ -112,6 +112,11 @@ fn run_guest(arguments: &[OsString], server: &mut ManagedChild) -> io::Result<i3
 fn configure_environment(command: &mut Command) {
     command
         .env("FEX_ROOTFS", ROOTFS)
+        // FEX otherwise puts its filesystem socket below XDG_RUNTIME_DIR,
+        // where the capsule grants access only to its brokered Wayland socket.
+        // This absolute override is shared by the server and every client.
+        // /tmp is the capsule's private tmpfs, already writable under Landlock.
+        .env("FEX_SERVERSOCKETPATH", "/tmp/qos-fex-server.sock")
         .env("FEX_INTERPRETER_INSTALLED", "0");
 }
 
@@ -235,6 +240,42 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Write;
+
+    #[test]
+    fn inherited_socket_and_rootfs_overrides_are_replaced() {
+        let mut child = Command::new("/usr/bin/env");
+        child
+            .env_clear()
+            .env("FEX_ROOTFS", "/attacker/rootfs")
+            .env("FEX_SERVERSOCKETPATH", "/attacker/server.sock")
+            .env("FEX_INTERPRETER_INSTALLED", "1")
+            .env("XDG_RUNTIME_DIR", "/run/user/1000");
+        configure_environment(&mut child);
+        let output = child.output().unwrap();
+        assert!(output.status.success());
+        let environment = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == "FEX_SERVERSOCKETPATH=/tmp/qos-fex-server.sock")
+        );
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == format!("FEX_ROOTFS={ROOTFS}"))
+        );
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == "FEX_INTERPRETER_INSTALLED=0")
+        );
+        assert!(
+            environment
+                .lines()
+                .any(|line| line == "XDG_RUNTIME_DIR=/run/user/1000")
+        );
+        assert!(!environment.contains("/attacker/"));
+    }
 
     fn sleeping_server() -> ManagedChild {
         ManagedChild::new(Command::new("/bin/sleep").arg("5").spawn().unwrap(), false)
