@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import platform
 import select
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -37,6 +38,7 @@ def main():
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--rootfs", type=Path, required=True)
     parser.add_argument("--proton", type=Path, required=True)
+    parser.add_argument("--umu", type=Path, help="test the pinned UMU zipapp entry point offline")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args()
@@ -45,6 +47,9 @@ def main():
     runtime, rootfs, proton = (
         path.resolve(strict=True) for path in (args.runtime, args.rootfs, args.proton)
     )
+    umu = args.umu.resolve(strict=True) if args.umu else None
+    if umu is not None and not umu.is_file():
+        parser.error("--umu must point to the launcher zipapp")
     for path in (runtime, rootfs, proton):
         if not path.is_dir() or path == Path("/"):
             parser.error("runtime, rootfs, and proton must be separate directories")
@@ -84,6 +89,37 @@ def main():
             "UMU_ID": "umu-0", "SteamAppId": "0", "SteamGameId": "0",
             "WINEDEBUG": "-all",
         }
+        if umu is not None:
+            # UMU owns this per-user directory and atomically replaces its
+            # install marker. Keep large runtime directories shared read-only;
+            # the caller still supplies the separate writable .ref binding.
+            local = home / "data/umu/steamrt3"
+            local.mkdir(parents=True)
+            for item in runtime.iterdir():
+                if item.is_dir():
+                    (local / item.name).symlink_to(item, target_is_directory=True)
+                else:
+                    shutil.copy2(item, local / item.name)
+            (local / "umu").symlink_to("_v2-entry-point")
+            graphics = home / "graphics.json"
+            graphics.write_text(json.dumps({"graphics_provider_v0": {
+                "root": str(rootfs),
+                "architectures": ["x86_64-linux-gnu", "i386-linux-gnu"],
+            }}))
+            environment.update(
+                UMU_FOLDERS_PATH=str(home / "data"), UMU_RUNTIME_UPDATE="0",
+                UMU_LOG="debug", PROTONPATH=str(proton),
+                WINEPREFIX=str(home / "compat"), GAMEID="umu-0",
+                STEAM_COMPAT_GRAPHICS_PROVIDER=str(graphics),
+                STEAM_COMPAT_MACHINE_ARCHITECTURE="aarch64-linux-gnu",
+                PRESSURE_VESSEL_COPY_RUNTIME="1",
+                PRESSURE_VESSEL_VARIABLE_DIR=str(home / "var"),
+                PRESSURE_VESSEL_GENERATE_LOCALES="0",
+                PRESSURE_VESSEL_SYSTEMD_SCOPE="0",
+                PRESSURE_VESSEL_GRAPHICS_PROVIDER_aarch64_linux_gnu="/",
+                PRESSURE_VESSEL_GRAPHICS_PROVIDER_x86_64_linux_gnu=str(rootfs),
+                PRESSURE_VESSEL_GRAPHICS_PROVIDER_i386_linux_gnu=str(rootfs),
+            )
         read_fd, write_fd = os.pipe()
         with (args.output_dir / "FEXServer.log").open("w") as server_log:
             server = subprocess.Popen(
@@ -113,17 +149,34 @@ def main():
                     "/usr/bin/python3", str(proton / "proton"), "run", "cmd.exe",
                     "/c", rf"echo {marker}>C:\qos-console.txt",
                 ]
+                if umu is not None:
+                    command = [
+                        "/usr/bin/FEX", "/usr/bin/python3", str(umu), "cmd.exe",
+                        "/c", rf"echo {marker}>C:\qos-console.txt",
+                    ]
+                log = args.output_dir / "proton.log"
                 status, timed_out = run(
-                    command, environment, args.timeout, args.output_dir / "proton.log",
+                    command, environment, args.timeout, log,
                 )
-                marker_path = home / "compat/pfx/drive_c/qos-console.txt"
+                prefix = home / ("compat" if umu is not None else "compat/pfx")
+                marker_path = prefix / "drive_c/qos-console.txt"
                 actual = marker_path.read_text().strip() if marker_path.is_file() else None
                 alive = server.poll() is None
+                offline_verified = None
+                if umu is not None:
+                    output = log.read_text(errors="replace")
+                    offline_verified = all(message in output for message in (
+                        "Network is unreachable", f"{platforms[0].parent.name}: mtree is OK",
+                        "steamrt3 updates disabled, skipping",
+                    ))
                 results.append({
-                    "test": "proton-console", "exit_code": status,
+                    "test": "umu-offline-console" if umu is not None else "proton-console",
+                    "exit_code": status,
                     "timed_out": timed_out, "server_running": alive,
                     "console_marker": actual,
-                    "passed": status == 0 and not timed_out and alive and actual == marker,
+                    "offline_runtime_verified": offline_verified,
+                    "passed": (status == 0 and not timed_out and alive
+                               and actual == marker and offline_verified is not False),
                 })
             finally:
                 os.close(read_fd)
