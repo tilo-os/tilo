@@ -325,6 +325,7 @@ impl DeviceFabricRuntime {
             return;
         }
         self.last_sample = Some(now);
+        crate::shell::mpris::refresh_handoff_reports();
         let Some((device, label)) = network.local_device_fabric_identity() else {
             return;
         };
@@ -532,39 +533,72 @@ impl DeviceFabricRuntime {
         if !capable {
             return true;
         }
-        let launched = match &request.locator {
+        let verified_path = match &request.locator {
             MediaSourceLocator::PersonalTransfer { transfer_id, .. } => {
                 let Some(path) =
                     network.completed_personal_media_transfer(&request.source, *transfer_id)
                 else {
                     return false;
                 };
-                crate::shell::launcher::launch_verified_media_handoff(
+                Some(path)
+            }
+            _ => None,
+        };
+        let resume_source = verified_path.as_ref().map_or_else(
+            || match &request.locator {
+                MediaSourceLocator::Workspace { path } => {
+                    Some(crate::shell::mpris::ResumeSource::LocalFile(
+                        media::Source::workspace_root().join(path),
+                    ))
+                }
+                MediaSourceLocator::RemoteStream { url } => {
+                    Some(crate::shell::mpris::ResumeSource::Uri(url.clone()))
+                }
+                MediaSourceLocator::PersonalTransfer { .. }
+                | MediaSourceLocator::AppResource { .. } => None,
+            },
+            |path| Some(crate::shell::mpris::ResumeSource::LocalFile(path.clone())),
+        );
+        let launch = verified_path.as_ref().map_or_else(
+            || {
+                crate::shell::launcher::launch_media_handoff(
                     &request.app_id,
                     room,
-                    &path,
+                    &request.locator,
                     &request.title,
                     request.request_id,
                     request.position_ms,
                     request.resume_playing,
                 )
-            }
-            _ => crate::shell::launcher::launch_media_handoff(
-                &request.app_id,
-                room,
-                &request.locator,
-                &request.title,
-                request.request_id,
-                request.position_ms,
-                request.resume_playing,
-            ),
-        }
-        .is_ok();
+            },
+            |path| {
+                crate::shell::launcher::launch_verified_media_handoff(
+                    &request.app_id,
+                    room,
+                    path,
+                    &request.title,
+                    request.request_id,
+                    request.position_ms,
+                    request.resume_playing,
+                )
+            },
+        );
+        let launched = launch.is_ok();
         if launched {
             self.pending_incoming_media.insert(
                 request.request_id,
                 (request.source.clone(), request.session_id.clone()),
             );
+            if let Some(source) = resume_source {
+                let _ =
+                    crate::shell::mpris::resume_after_launch(crate::shell::mpris::ResumeRequest {
+                        request_id: request.request_id,
+                        package_id: request.app_id.clone(),
+                        source,
+                        position_ms: request.position_ms,
+                        playing: request.resume_playing,
+                    });
+            }
         }
         true
     }
@@ -582,7 +616,11 @@ impl DeviceFabricRuntime {
     }
 
     fn acknowledge_opened_media(&mut self, network: &ShellNetwork) {
-        for request_id in media::handoff::accepted_handoff_requests() {
+        let mut accepted = media::handoff::accepted_handoff_requests();
+        accepted.extend(crate::shell::mpris::take_accepted_handoff_requests());
+        accepted.sort_unstable();
+        accepted.dedup();
+        for request_id in accepted {
             let Some((source, session_id)) = self.pending_incoming_media.remove(&request_id) else {
                 continue;
             };

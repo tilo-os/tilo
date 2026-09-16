@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::Source;
 
@@ -228,6 +229,47 @@ fn external_registry() -> &'static Mutex<BTreeMap<String, Vec<PlaybackReport>>> 
     REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+#[derive(Default)]
+struct SystemReports {
+    replaced_at: Option<Instant>,
+    reports: Vec<PlaybackReport>,
+}
+
+fn system_registry() -> &'static Mutex<SystemReports> {
+    static REGISTRY: OnceLock<Mutex<SystemReports>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(SystemReports::default()))
+}
+
+/// Discovered player state is only a short-lived observation. If the shell's
+/// MPRIS worker stalls or disappears, do not advertise a phantom player.
+const SYSTEM_REPORT_TTL: Duration = Duration::from_secs(5);
+
+fn system_reports_are_fresh(replaced_at: Option<Instant>, now: Instant) -> bool {
+    replaced_at
+        .is_some_and(|updated| system_report_age_is_fresh(now.saturating_duration_since(updated)))
+}
+
+fn system_report_age_is_fresh(age: Duration) -> bool {
+    age <= SYSTEM_REPORT_TTL
+}
+
+fn append_discovered_reports(reports: &mut Vec<PlaybackReport>, discovered: &[PlaybackReport]) {
+    let mut controller_names = reports
+        .iter()
+        .filter_map(|report| report.controller_bus_name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for report in discovered {
+        if report
+            .controller_bus_name
+            .as_ref()
+            .is_some_and(|name| !controller_names.insert(name.clone()))
+        {
+            continue;
+        }
+        reports.push(report.clone());
+    }
+}
+
 fn outbound_handoffs() -> &'static Mutex<BTreeMap<[u8; 16], PlaybackReport>> {
     static HANDOFFS: OnceLock<Mutex<BTreeMap<[u8; 16], PlaybackReport>>> = OnceLock::new();
     HANDOFFS.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -287,23 +329,27 @@ pub(crate) fn remove(engine_id: u64) {
 
 /// Snapshot every audible engine in this process for the OS fabric bridge.
 pub fn playback_sessions() -> Vec<PlaybackSession> {
-    let mut sessions = registry()
+    let mut reports = registry()
         .lock()
         .map(|sessions| {
             sessions
                 .values()
-                .map(|registered| registered.report.session.clone())
+                .map(|registered| registered.report.clone())
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
     if let Ok(external) = external_registry().lock() {
-        sessions.extend(
-            external
-                .values()
-                .flatten()
-                .map(|report| report.session.clone()),
-        );
+        reports.extend(external.values().flatten().cloned());
     }
+    if let Ok(system) = system_registry().lock()
+        && system_reports_are_fresh(system.replaced_at, Instant::now())
+    {
+        append_discovered_reports(&mut reports, &system.reports);
+    }
+    let mut sessions = reports
+        .into_iter()
+        .map(|report| report.session)
+        .collect::<Vec<_>>();
     sessions.truncate(MAX_PLAYBACK_REPORTS);
     sessions
 }
@@ -356,6 +402,26 @@ pub fn remove_external_reports(owner: &str) {
     }
 }
 
+/// Replace the shell-owned snapshot of standards-discovered players.
+///
+/// Unlike authenticated app reports, discovery has no broker route to trust.
+/// Every item is therefore revalidated from its own installed-package route,
+/// and observations expire if the discovery worker stops refreshing them.
+pub fn replace_system_reports(reports: Vec<PlaybackReport>) {
+    let reports = reports
+        .into_iter()
+        .filter(|report| {
+            report.accepted_handoff_request.is_none()
+                && report.validate_route(&report.session.app_id, &report.workspace_id)
+        })
+        .take(MAX_PLAYBACK_REPORTS)
+        .collect();
+    if let Ok(mut system) = system_registry().lock() {
+        system.reports = reports;
+        system.replaced_at = Some(Instant::now());
+    }
+}
+
 /// Resolve private source/controller information for a selected logical
 /// session without ever copying it into the convergent device snapshot.
 pub fn playback_report(session_id: &str) -> Option<PlaybackReport> {
@@ -367,10 +433,20 @@ pub fn playback_report(session_id: &str) -> Option<PlaybackReport> {
     {
         return Some(report.clone());
     }
-    external_registry().lock().ok().and_then(|external| {
+    if let Some(report) = external_registry().lock().ok().and_then(|external| {
         external
             .values()
             .flatten()
+            .find(|report| report.session.id == session_id)
+            .cloned()
+    }) {
+        return Some(report);
+    }
+    system_registry().lock().ok().and_then(|system| {
+        system_reports_are_fresh(system.replaced_at, Instant::now()).then_some(())?;
+        system
+            .reports
+            .iter()
             .find(|report| report.session.id == session_id)
             .cloned()
     })
@@ -500,6 +576,27 @@ fn source_identity(source: &Source) -> (String, String) {
 mod tests {
     use super::*;
 
+    fn report(id: &str, bus_name: &str) -> PlaybackReport {
+        PlaybackReport {
+            session: PlaybackSession {
+                id: format!("dev.qos.player:{id}"),
+                app_id: "dev.qos.player".into(),
+                title: id.into(),
+                content_id: format!("blake3:{}", "0".repeat(64)),
+                position_ms: 0,
+                duration_ms: None,
+                playing: true,
+                has_video: false,
+            },
+            workspace_id: String::new(),
+            source: HandoffSource::RemoteStream {
+                url: "https://example.test/media".into(),
+            },
+            controller_bus_name: Some(bus_name.into()),
+            accepted_handoff_request: None,
+        }
+    }
+
     #[test]
     fn public_session_never_exposes_source_uri() {
         let source = Source::Remote {
@@ -570,5 +667,27 @@ mod tests {
                 .iter()
                 .all(|session| session.title != "Foreign")
         );
+    }
+
+    #[test]
+    fn explicit_reports_win_over_discovery_for_the_same_player() {
+        let explicit = report("explicit", "org.mpris.MediaPlayer2.player");
+        let discovered = report("discovered", "org.mpris.MediaPlayer2.player");
+        let other = report("other", "org.mpris.MediaPlayer2.other");
+        let mut reports = vec![explicit.clone()];
+
+        append_discovered_reports(&mut reports, &[discovered, other.clone()]);
+
+        assert_eq!(reports, vec![explicit, other]);
+    }
+
+    #[test]
+    fn discovered_reports_expire_when_refresh_stalls() {
+        let now = Instant::now();
+        assert!(system_reports_are_fresh(Some(now), now));
+        assert!(!system_report_age_is_fresh(
+            SYSTEM_REPORT_TTL.saturating_add(Duration::from_millis(1))
+        ));
+        assert!(!system_reports_are_fresh(None, now));
     }
 }
