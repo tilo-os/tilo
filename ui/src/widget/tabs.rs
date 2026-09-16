@@ -2226,7 +2226,7 @@ impl Widget for TabBar {
             node = node.with_position(i.saturating_add(1), self.tabs.len());
         }
         let count = self.tabs.len();
-        let tab_children: Vec<AccessNode> = self
+        let mut tab_children: Vec<AccessNode> = self
             .tabs
             .iter()
             .enumerate()
@@ -2243,6 +2243,19 @@ impl Widget for TabBar {
                 // that can't see it gets it as a description instead.
                 // `AccessState` has no flag for this and inventing one would
                 // ripple through every widget.
+                let node = if !self.pinned_ids.contains(&t.id) {
+                    node.with_children(vec![
+                        AccessNode::new(Role::Button)
+                            .with_name(format!("Close {}", t.title))
+                            .with_action_target(format!("tab-close:{}", t.id))
+                            .with_state(AccessState {
+                                focusable: true,
+                                ..Default::default()
+                            }),
+                    ])
+                } else {
+                    node
+                };
                 if self.modified_ids.contains(&t.id) {
                     node.with_description(crate::i18n!("tab-modified"))
                 } else {
@@ -2250,6 +2263,15 @@ impl Widget for TabBar {
                 }
             })
             .collect();
+        tab_children.push(
+            AccessNode::new(Role::Button)
+                .with_name("New tab")
+                .with_action_target("tab-new")
+                .with_state(AccessState {
+                    focusable: true,
+                    ..Default::default()
+                }),
+        );
         node = node.with_children(tab_children);
         Some(node)
     }
@@ -2261,6 +2283,19 @@ impl Widget for TabBar {
         _state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        if !matches!(action, crate::a11y::Action::Activate) {
+            return false;
+        }
+        if target == "tab-new" {
+            self.pending_new_tab = Some(());
+            return true;
+        }
+        if let Some(id) = target
+            .strip_prefix("tab-close:")
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            return !self.pinned_ids.contains(&id) && self.start_closing(id);
+        }
         let Some(id) = target
             .strip_prefix("tab:")
             .and_then(|value| value.parse::<u64>().ok())
@@ -3347,7 +3382,11 @@ mod tests {
         let mut b = bar();
         b.set_modified(2, true);
         let node = Widget::accessibility(&b).expect("TabBar always reports a node");
-        let children = node.children;
+        let children: Vec<_> = node
+            .children
+            .into_iter()
+            .filter(|child| child.role == Role::Tab)
+            .collect();
         assert_eq!(children.len(), 3);
         assert_eq!(children[0].role, Role::Tab);
         assert_eq!(
@@ -5078,6 +5117,28 @@ mod tests {
         let node = Widget::accessibility(&b).expect("tab bar semantics");
         assert!(node.state.focusable);
         assert!(node.state.focused, "AT sees the same focus the ring paints");
+    }
+
+    #[test]
+    fn accessible_new_and_close_controls_dispatch_the_same_tab_intents() {
+        let mut b = bar();
+        let mut doc = AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut b,
+            "tab-new",
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(b.take_new_tab().is_some());
+        assert!(Widget::perform_semantic_action(
+            &mut b,
+            "tab-close:2",
+            &crate::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert_eq!(b.take_close(), Some(2));
     }
 
     #[test]
