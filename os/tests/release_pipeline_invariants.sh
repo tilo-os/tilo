@@ -158,6 +158,11 @@ grep -Fq 'SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945
   && ok 'OS and CI builder images install checksum-pinned native cache clients' \
   || bad 'an ARM build image can still install the x86 compiler-cache client'
 
+grep -Fq "PKGEXT='.pkg.tar.zst'" "$repo/dist/arch/build-arch.sh" \
+  && grep -Fq 'makepkg --config "$makepkg_config"' "$repo/dist/arch/build-arch.sh" \
+  && ok 'Arch packages use the release artifact compression on every architecture' \
+  || bad 'an Arch base image can silently change the release package extension'
+
 python3 "$repo/tools/app_release.py" --collection default > /dev/null \
   && python3 "$repo/tools/app_release.py" --collection recovery > /dev/null \
   && ok 'named app collections resolve against the live manifest catalogue' \
