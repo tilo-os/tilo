@@ -470,6 +470,10 @@ impl OnboardingView {
     /// Settings is deliberately only a discovery surface: the passphrase,
     /// destination picker, and portable-backup cryptography remain in this
     /// shell-owned ceremony.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the active identity cannot be read or validated.
     pub fn new_for_portable_backup(identity_dir: PathBuf) -> Result<Self, String> {
         let identity_path = runtime_identity::resolve_active_identity(&identity_dir)
             .unwrap_or_else(|| identity_dir.join("primary.json"));
