@@ -327,7 +327,7 @@ pub fn service_document_invocation(
         Ok(_) => {
             let delta = replica.save_after(&before);
             assert!(!delta.is_empty(), "the invoked document action was a no-op");
-            peer.send(&CollabRequest::DocumentIncremental { data: delta })
+            peer.send(&CollabRequest::document_incremental(delta))
                 .unwrap();
             qos_actions::InvocationUpdate::Succeeded {
                 invocation,

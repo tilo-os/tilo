@@ -24,6 +24,12 @@ use crate::identity::AttestationId;
 use crate::role::OpClass;
 
 const DOCUMENT_MUTATION_PREFIX: &[u8] = b"qos-document-mutation-v1\0";
+/// Maximum Automerge bytes carried by one snapshot or incremental mutation.
+/// This leaves headroom for signing, encryption and queue metadata below the
+/// UI bridge's 4 MiB retained-allocation ceiling.
+pub const MAX_DOCUMENT_MUTATION_BYTES: usize = 3 * 1024 * 1024;
+const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize =
+    DOCUMENT_MUTATION_PREFIX.len() + MAX_DOCUMENT_MUTATION_BYTES + 16;
 const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"qos-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"qos-document-attestation-v1\0";
 const DOCUMENT_CHANNEL_DOMAIN: &[u8] = b"qos-document-channel-v1\0";
@@ -50,9 +56,21 @@ pub enum DocumentMutationError {
     /// Payload predates the typed document-mutation envelope.
     #[error("signed payload is not a typed document mutation")]
     MissingPrefix,
+    /// The payload exceeds the collaboration transport's per-mutation budget.
+    #[error("document mutation is {actual} bytes; maximum is {max}")]
+    TooLarge { actual: usize, max: usize },
     /// The versioned payload body is malformed.
     #[error("typed document mutation is malformed: {0}")]
     Malformed(postcard::Error),
+}
+
+/// Failure to encode a typed document mutation.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum DocumentMutationEncodeError {
+    #[error("document mutation is {actual} bytes; maximum is {max}")]
+    TooLarge { actual: usize, max: usize },
+    #[error("typed document mutation could not be serialized: {0}")]
+    Serialization(postcard::Error),
 }
 
 impl DocumentMutation {
@@ -63,8 +81,16 @@ impl DocumentMutation {
     ///
     /// Returns postcard's serialisation error if the mutation cannot be
     /// encoded.
-    pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
-        let body = postcard::to_allocvec(self)?;
+    pub fn encode(&self) -> Result<Vec<u8>, DocumentMutationEncodeError> {
+        let actual = self.data().len();
+        if actual > MAX_DOCUMENT_MUTATION_BYTES {
+            return Err(DocumentMutationEncodeError::TooLarge {
+                actual,
+                max: MAX_DOCUMENT_MUTATION_BYTES,
+            });
+        }
+        let body =
+            postcard::to_allocvec(self).map_err(DocumentMutationEncodeError::Serialization)?;
         let mut encoded =
             Vec::with_capacity(DOCUMENT_MUTATION_PREFIX.len().saturating_add(body.len()));
         encoded.extend_from_slice(DOCUMENT_MUTATION_PREFIX);
@@ -80,10 +106,25 @@ impl DocumentMutation {
     /// Returns [`DocumentMutationError::MissingPrefix`] for legacy raw bytes,
     /// or [`DocumentMutationError::Malformed`] for a corrupt typed body.
     pub fn decode(payload: &[u8]) -> Result<Self, DocumentMutationError> {
+        if payload.len() > MAX_ENCODED_DOCUMENT_MUTATION_BYTES {
+            return Err(DocumentMutationError::TooLarge {
+                actual: payload.len(),
+                max: MAX_ENCODED_DOCUMENT_MUTATION_BYTES,
+            });
+        }
         let body = payload
             .strip_prefix(DOCUMENT_MUTATION_PREFIX)
             .ok_or(DocumentMutationError::MissingPrefix)?;
-        postcard::from_bytes(body).map_err(DocumentMutationError::Malformed)
+        let mutation: Self =
+            postcard::from_bytes(body).map_err(DocumentMutationError::Malformed)?;
+        let actual = mutation.data().len();
+        if actual > MAX_DOCUMENT_MUTATION_BYTES {
+            return Err(DocumentMutationError::TooLarge {
+                actual,
+                max: MAX_DOCUMENT_MUTATION_BYTES,
+            });
+        }
+        Ok(mutation)
     }
 
     /// Borrow the underlying Automerge bytes independent of mutation kind.
@@ -479,6 +520,25 @@ mod tests {
             DocumentMutation::decode(b"raw legacy automerge bytes"),
             Err(DocumentMutationError::MissingPrefix)
         );
+    }
+
+    #[test]
+    fn typed_document_mutations_enforce_wire_budget_before_decode() {
+        let oversized =
+            DocumentMutation::Incremental(vec![0; MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)]);
+        assert!(matches!(
+            oversized.encode(),
+            Err(DocumentMutationEncodeError::TooLarge { actual, max })
+                if actual == MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)
+                    && max == MAX_DOCUMENT_MUTATION_BYTES
+        ));
+
+        let oversized_wire = vec![0; MAX_ENCODED_DOCUMENT_MUTATION_BYTES.saturating_add(1)];
+        assert!(matches!(
+            DocumentMutation::decode(&oversized_wire),
+            Err(DocumentMutationError::TooLarge { actual, max })
+                if actual == oversized_wire.len() && max == MAX_ENCODED_DOCUMENT_MUTATION_BYTES
+        ));
     }
 
     #[test]
