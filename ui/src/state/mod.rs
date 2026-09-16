@@ -123,6 +123,12 @@ impl DocumentReplica {
         self.outbound.advance(heads);
     }
 
+    /// Apply incremental Automerge bytes and retain them in the outbound frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `data` is not a valid incremental Automerge payload
+    /// for this document.
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
         let loaded = self.doc.load_incremental(data)?;
@@ -130,6 +136,12 @@ impl DocumentReplica {
         Ok(loaded)
     }
 
+    /// Merge a complete Automerge snapshot and retain its observed frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `data` is not a valid Automerge snapshot or cannot
+    /// be merged into this document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut incoming = AutoCommit::load(data)?;
         let observed = incoming.get_heads();
@@ -1004,6 +1016,11 @@ impl State {
 
     /// Merge a complete peer snapshot without replacing local work, then
     /// atomically align undo and outbound frontiers with the merged graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `data` is not a valid Automerge snapshot or cannot
+    /// be merged into this document.
     pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
         let mut incoming = AutoCommit::load(data)?;
         let observed = incoming.get_heads();
