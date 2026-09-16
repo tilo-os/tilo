@@ -29,9 +29,10 @@ class EvidenceTests(unittest.TestCase):
             selected.write_bytes(f"{bits} {dll}".encode())
             source.write_bytes(selected.read_bytes())
             windows_path = f"C:\\windows\\{directory}\\{dll}"
+            logged_path = windows_path.replace("\\", "\\\\")
             lines.extend((f"QOS_DXVK_MODULE_{bits} {dll} {windows_path}",
                           f"QOS_DXVK_EXPORT_{bits} {dll} {export}",
-                          f'0024:trace:loaddll:build_module Loaded L"{windows_path}" at 1234: native'))
+                          f'0024:trace:loaddll:build_module Loaded L"{logged_path}" at 1234: native'))
         lines.append(f"QOS_DXVK_LOAD_PASS_{bits}")
         return "\n".join(lines)
 
@@ -45,6 +46,11 @@ class EvidenceTests(unittest.TestCase):
     def test_builtin_load_is_not_native_success(self):
         output = self.fixture(32).replace(": native", ": builtin")
         self.assertFalse(PROBE.assess(output, 32, self.prefix, self.dxvk)[0])
+
+    def test_native_log_for_different_dll_path_does_not_match(self):
+        output = self.fixture(64).replace(r'C:\\windows\\system32\\dxgi.dll',
+                                         r'C:\\windows\\system32\\other-dxgi.dll')
+        self.assertFalse(PROBE.assess(output, 64, self.prefix, self.dxvk)[0])
 
     def test_64bit_module_cannot_come_from_syswow64(self):
         output = self.fixture(64, "syswow64")
