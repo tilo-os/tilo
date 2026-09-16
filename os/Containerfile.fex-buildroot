@@ -39,3 +39,12 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/qos-assets,ro \
       | LC_ALL=C sort > /usr/lib/qos/fex-buildroot-packages.txt; \
     uname -m > /usr/lib/qos/fex-buildroot-arch; \
     rm -rf /tmp/nasm-source /tmp/nasm.sha256 /tmp/external-assets.tsv
+
+# The pinned thunk generator emits Clang 22's internal __size_t spelling into
+# generated C++, where it is undeclared. Use the validated Clang/LLVM 21 API
+# and compiler explicitly; keep the default compiler for the guest SDK tools.
+RUN dnf install -y clang21 clang21-devel llvm21-devel \
+ && dnf clean all \
+ && /usr/lib64/llvm21/bin/clang --version > /usr/lib/qos/fex-generator-compiler-version \
+ && rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' \
+      | LC_ALL=C sort > /usr/lib/qos/fex-buildroot-packages.txt
