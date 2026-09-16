@@ -6327,32 +6327,35 @@ struct ShelfGrid {
     scroll: f64,
 }
 
+struct BookCardView<'a> {
+    book: &'a Book,
+    index: usize,
+    cover: Rect,
+    focused: bool,
+    shared: bool,
+}
+
 impl BooksApp {
     fn draw_library(&mut self, ctx: &mut EbookPaintCtx<'_>) {
-        let scene = &mut *ctx.scene;
-        let t = ctx.transform;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
         self.shelf_controls.begin_frame();
         let lib = std::mem::take(&mut self.library);
-        let c = theme.tokens.colors.clone();
         let r = self.rect;
 
-        let open_x = self.draw_library_header(scene, t, tr, theme, &c, r, lib.len());
+        let open_x = self.draw_library_header(ctx, r, lib.len());
 
         // --- empty shelf: a composed, inviting onboarding -----------------
         if lib.is_empty() {
-            self.draw_empty_library(scene, t, tr, theme, &c);
+            self.draw_empty_library(ctx);
             self.library = lib;
             return;
         }
 
         let sort_btn = self.shelf_controls.draw_bar(
             &mut ShelfPaintCtx {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
+                scene: &mut *ctx.scene,
+                transform: ctx.transform,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
             },
             ShelfBarView {
                 viewport: r,
@@ -6368,13 +6371,13 @@ impl BooksApp {
 
         // Everything hidden by the "hide read" filter.
         if order.is_empty() {
-            Self::draw_all_read_empty_state(scene, t, tr, &c, r);
+            Self::draw_all_read_empty_state(ctx, r);
             self.shelf_controls.draw_menu(
                 &mut ShelfPaintCtx {
-                    scene,
-                    transform: t,
-                    text: tr,
-                    theme,
+                    scene: &mut *ctx.scene,
+                    transform: ctx.transform,
+                    text: &mut *ctx.text,
+                    theme: ctx.theme,
                 },
                 ShelfMenuView {
                     viewport: r,
@@ -6387,13 +6390,13 @@ impl BooksApp {
             return;
         }
 
-        self.draw_library_grid(scene, t, tr, theme, &lib, &order, &c, r);
+        self.draw_library_grid(ctx, &lib, &order, r);
         self.shelf_controls.draw_menu(
             &mut ShelfPaintCtx {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
+                scene: &mut *ctx.scene,
+                transform: ctx.transform,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
             },
             ShelfMenuView {
                 viewport: r,
@@ -6408,17 +6411,17 @@ impl BooksApp {
     /// Top bar: title + book count, and the primary "Open book" action
     /// (always present — a way in that doesn't depend on any folder).
     /// Returns the button's left edge, so shelf controls can lay out from it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_library_header(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
+        ctx: &mut EbookPaintCtx<'_>,
         r: Rect,
         book_count: usize,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
         let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOP_BAR);
         paint::fill_rect(scene, t, bar, c.surfaces.raised);
         paint::line(
@@ -6478,13 +6481,11 @@ impl BooksApp {
 
     /// Everything hidden by the "hide read" filter: an empty-shelf message
     /// with a hint to turn the filter back off.
-    fn draw_all_read_empty_state(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        r: Rect,
-    ) {
+    fn draw_all_read_empty_state(ctx: &mut EbookPaintCtx<'_>, r: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let c = &ctx.theme.tokens.colors;
         let cx = f64::midpoint(r.x0, r.x1);
         let cy = (r.y0 + TOP_BAR + r.y1) / 2.0;
         let head = "All books are finished";
@@ -6584,7 +6585,6 @@ impl BooksApp {
 
     /// The scrolling book grid + trailing "Add books" tile, scroll
     /// indicator, and (if open) the sort dropdown menu.
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/c/r are the standard transform/colours/rect draw-context names, and i/x/y \
@@ -6592,21 +6592,20 @@ impl BooksApp {
     )]
     fn draw_library_grid(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut EbookPaintCtx<'_>,
         lib: &[Book],
         order: &[usize],
-        c: &ui::tokens::colors::Colors,
         r: Rect,
     ) {
+        let t = ctx.transform;
+        let c = ctx.theme.tokens.colors.clone();
         let grid = self.shelf_grid_geometry(r, order.len());
 
         // Clip the scrolling body to below the top bar so cards slide under it
         // rather than over it, then offset every card by the scroll.
         let body = Rect::new(r.x0, r.y0 + TOP_BAR + 1.0, r.x1, r.y1);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
+        ctx.scene
+            .push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &body);
         for (i, &orig) in order.iter().enumerate() {
             let Some(book) = lib.get(orig) else { continue };
             let col = i % grid.cols;
@@ -6625,18 +6624,14 @@ impl BooksApp {
                 .get(&book.id)
                 .is_some_and(|p| is_shared(p));
             self.draw_book_card(
-                scene,
-                t,
-                tr,
-                theme,
-                book,
-                orig,
-                x,
-                y,
-                grid.card_w,
-                grid.cover_h,
-                focused,
-                shared,
+                ctx,
+                &BookCardView {
+                    book,
+                    index: orig,
+                    cover: Rect::new(x, y, x + grid.card_w, y + grid.cover_h),
+                    focused,
+                    shared,
+                },
             );
         }
         // Trailing "Add books" tile in the next free grid cell.
@@ -6647,10 +6642,10 @@ impl BooksApp {
             let x = grid.start_x + col as f64 * (grid.card_w + grid.gap);
             let y = grid.start_y + row as f64 * grid.row_pitch - grid.scroll;
             if !(y > r.y1 || y + grid.card_h + 84.0 < r.y0 + TOP_BAR) {
-                self.draw_add_book_card(scene, t, tr, theme, x, y, grid.card_w, grid.cover_h);
+                self.draw_add_book_card(ctx, Rect::new(x, y, x + grid.card_w, y + grid.cover_h));
             }
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
 
         // Scroll indicator, only when there's something to scroll to.
         if self.shelf_max_scroll > 1.0 {
@@ -6662,7 +6657,7 @@ impl BooksApp {
             let frac = grid.scroll / self.shelf_max_scroll;
             let thumb_y = track_y0 + frac * (track_h - thumb_h);
             let thumb = Rect::new(track_x, thumb_y, track_x + 4.0, thumb_y + thumb_h);
-            paint::fill_round(scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.5));
+            paint::fill_round(ctx.scene, t, thumb, 2.0, c.text_dim.with_alpha_factor(0.5));
         }
     }
 
@@ -6670,14 +6665,12 @@ impl BooksApp {
     /// headline, a plain-language explanation, and one primary action — open a
     /// book from anywhere. No magic folder, no "reload"; the shelf fills itself
     /// the moment the reader opens their first book.
-    fn draw_empty_library(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-    ) {
+    fn draw_empty_library(&mut self, ctx: &mut EbookPaintCtx<'_>) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
         let r = self.rect;
         let cx = f64::midpoint(r.x0, r.x1);
         // Compose the block around a comfortable optical centre (a touch above
@@ -6857,81 +6850,57 @@ impl BooksApp {
         Some(img)
     }
 
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard transform/geometry/colours names shared by \
                   every draw helper in this section"
     )]
-    fn draw_book_card(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        book: &Book,
-        idx: usize,
-        x: f64,
-        y: f64,
-        w: f64,
-        cover_h: f64,
-        focused: bool,
-        shared: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let cover = Rect::new(x, y, x + w, y + cover_h);
+    fn draw_book_card(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &BookCardView<'_>) {
+        let t = ctx.transform;
+        let cover = view.cover;
+        let x = cover.x0;
+        let y = cover.y0;
+        let w = cover.width();
+        let cover_h = cover.height();
         let hover = self.is_hover(Rect::new(x, y, x + w, y + cover_h + 78.0));
 
         // Drop shadow.
         let shadow = Rect::new(x + 3.0, y + 6.0, x + w + 3.0, y + cover_h + 6.0);
-        paint::fill_round(scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 60));
+        paint::fill_round(ctx.scene, t, shadow, 12.0, Color::from_rgba8(0, 0, 0, 60));
 
-        let title_on_cover =
-            self.draw_book_cover_art(scene, t, tr, theme, book, x, y, w, cover_h, cover);
+        let title_on_cover = self.draw_book_cover_art(ctx, view.book, cover);
 
         // Shared-vs-local badge, overlaid at the cover's top-right. A book on the
         // workspace is available to everyone there; a local one lives only on
         // this device. Both are labelled so the state reads at a glance.
-        Self::draw_shared_badge(scene, t, tr, theme, x, y, w, shared);
+        Self::draw_shared_badge(ctx, cover, view.shared);
 
         // Keyboard focus draws a ring even without a pointer over the card, so
         // arrow-key navigation is visible; hover uses the same treatment.
-        if focused {
-            paint::stroke_round(scene, t, cover, 12.0, theme.accent_primary, 2.5);
+        if view.focused {
+            paint::stroke_round(ctx.scene, t, cover, 12.0, ctx.theme.accent_primary, 2.5);
         } else if hover {
-            paint::stroke_round(scene, t, cover, 12.0, theme.border_focus, 2.0);
+            paint::stroke_round(ctx.scene, t, cover, 12.0, ctx.theme.border_focus, 2.0);
         }
 
         // --- under-cover meta: progress + counts -------------------------
-        let meta_y = self.draw_book_card_meta(
-            scene,
-            t,
-            tr,
-            c,
-            theme,
-            book,
-            x,
-            y,
-            w,
-            cover_h,
-            title_on_cover,
-        );
+        let meta_y = self.draw_book_card_meta(ctx, view.book, cover, title_on_cover);
 
         // Clamp the click target to the scrolling body so a card sliding under
         // the top bar can't capture clicks up in the header.
         let hit_top = y.max(self.rect.y0 + TOP_BAR);
         let hit_bot = (meta_y + 70.0).min(self.rect.y1);
         if hit_bot > hit_top {
-            self.push_hit(Rect::new(x, hit_top, x + w, hit_bot), Action::OpenBook(idx));
+            self.push_hit(
+                Rect::new(x, hit_top, x + w, hit_bot),
+                Action::OpenBook(view.index),
+            );
         }
 
         // Share/Remove cluster over the cover foot on hover. Pushed after the
         // whole-card hit so they win the click where they overlap.
         if hover && y >= self.rect.y0 + TOP_BAR {
-            self.draw_book_card_hover_actions(
-                scene, t, tr, theme, x, y, w, cover_h, &book.id, shared,
-            );
+            self.draw_book_card_hover_actions(ctx, cover, &view.book.id, view.shared);
         }
     }
 
@@ -6940,20 +6909,20 @@ impl BooksApp {
     /// title in serif display, author along the base). Returns whether the
     /// title is already shown on the cover (a real cover isn't relabelled
     /// below it).
-    #[allow(clippy::too_many_arguments)]
     fn draw_book_cover_art(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut EbookPaintCtx<'_>,
         book: &Book,
-        x: f64,
-        y: f64,
-        w: f64,
-        cover_h: f64,
         cover: Rect,
     ) -> bool {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let x = cover.x0;
+        let y = cover.y0;
+        let w = cover.width();
+        let cover_h = cover.height();
         let real_cover = self.cover_image(book);
         let title_on_cover = real_cover.is_none();
         if let Some(img) = real_cover {
@@ -7027,17 +6996,14 @@ impl BooksApp {
     }
 
     /// The "Shared"/"Local" badge overlaid at the cover's top-right.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_shared_badge(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
-        w: f64,
-        shared: bool,
-    ) {
+    fn draw_shared_badge(ctx: &mut EbookPaintCtx<'_>, cover: Rect, shared: bool) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let x = cover.x0;
+        let y = cover.y0;
+        let w = cover.width();
         let (label, bg, ink, glyph) = if shared {
             (
                 "Shared",
@@ -7084,7 +7050,6 @@ impl BooksApp {
     /// Under-cover meta: title (when not already on the cover), progress
     /// bar + percent, and an annotation-count badge. Returns the meta
     /// block's top y, so the caller can size the card's click target.
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard transform/geometry/colours names shared by \
@@ -7092,18 +7057,20 @@ impl BooksApp {
     )]
     fn draw_book_card_meta(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        theme: &Theme,
+        ctx: &mut EbookPaintCtx<'_>,
         book: &Book,
-        x: f64,
-        y: f64,
-        w: f64,
-        cover_h: f64,
+        cover: Rect,
         title_on_cover: bool,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        let x = cover.x0;
+        let y = cover.y0;
+        let w = cover.width();
+        let cover_h = cover.height();
         let frac = self.shelf_fraction.get(&book.id).copied().unwrap_or(0.0);
         let anno = self.shelf_annos.get(&book.id).copied().unwrap_or(0);
         let meta_y = y + cover_h + 14.0;
@@ -7158,20 +7125,21 @@ impl BooksApp {
     /// The Share/Remove affordance cluster over the cover foot, shown on
     /// hover only (pushed after the whole-card hit, so they win the click
     /// where they overlap it).
-    #[allow(clippy::too_many_arguments)]
     fn draw_book_card_hover_actions(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
-        w: f64,
-        cover_h: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        cover: Rect,
         book_id: &str,
         shared: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let x = cover.x0;
+        let y = cover.y0;
+        let w = cover.width();
+        let cover_h = cover.height();
         let sh = 26.0;
         let by = y + cover_h - sh - 8.0;
         let mut right = x + w - 10.0;
@@ -7219,21 +7187,16 @@ impl BooksApp {
     }
 
     /// The trailing "Add books" tile: opens the host file picker.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_add_book_card(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
-        w: f64,
-        cover_h: f64,
-    ) {
+    fn draw_add_book_card(&mut self, ctx: &mut EbookPaintCtx<'_>, tile: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let x = tile.x0;
+        let y = tile.y0;
+        let w = tile.width();
+        let cover_h = tile.height();
         let c = &theme.tokens.colors;
-        let tile = Rect::new(x, y, x + w, y + cover_h);
         let hover = self.is_hover(tile);
 
         // A quiet, inviting drop surface: faint fill under a dashed accent border.
