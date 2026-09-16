@@ -109,21 +109,28 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo,ro \
 # UMU is the upstream-supported way to run Proton outside Steam. Keep the
 # launcher and the default Proton build as independently pinned artifacts:
 # catalogues may select another installed runner, while a fresh image is still
-# able to create a game capsule without downloading Proton first. The Steam
-# Linux Runtime container remains UMU-owned and is populated in the capsule's
-# content-addressed cache when a game first needs that particular runtime.
+# able to provision an offline game capsule. Ship the matching Steam runtime
+# as immutable content; UMU metadata, runtime locks, and variable state belong
+# to each capsule. See os/docs/proton-runtime-validation.md for that contract.
 FROM ${BASE_REF} AS windows-compat-artifacts
 ## Bottles' upstream program records improve catalogue matching. They are data,
 ## never an instruction source: qOS imports identity/runner hints only and does
 ## not execute a record's Steps, URLs, shell snippets, or dependencies.
 RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
-    mkdir -p /out/bin /out/proton \
+    mkdir -p /out/bin /out/proton /out/steam-runtime \
     && install -D -m 0644 /qos-assets/umu-database-8297d420.csv /out/catalogues/umu-database.csv \
     && tar -xf /qos-assets/umu-launcher-1.4.0.tar -C /tmp \
     && install -m 0755 /tmp/umu/umu-run /out/bin/umu-run \
     && install -m 0644 /tmp/umu/umu_run.py /out/bin/umu_run.py \
     && tar -xzf /qos-assets/umu-proton-10.0-4.tar.gz -C /out/proton \
     && test -x /out/proton/UMU-Proton-10.0-4/proton \
+    && tar -xJf /qos-assets/steam-runtime-sniper-3.0.20260805.254768.tar.xz -C /out/steam-runtime \
+    && case "$(uname -m)" in \
+         x86_64) pv=pressure-vessel ;; \
+         aarch64) pv=pressure-vessel-arm64 ;; \
+         *) echo "unsupported Steam runtime host architecture: $(uname -m)" >&2; exit 1 ;; \
+       esac \
+    && /out/steam-runtime/SteamLinuxRuntime_sniper/${pv}/bin/pv-verify /out/steam-runtime/SteamLinuxRuntime_sniper \
     && mkdir -p /out/catalogues/bottles-programs \
     && tar -xzf /qos-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
     && chmod -R a-w /out/catalogues/bottles-programs
@@ -1651,6 +1658,7 @@ COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /usr/shar
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/qos-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
 COPY --from=windows-compat-artifacts /out/proton/ /usr/lib/qos/windows-runners/proton/
+COPY --from=windows-compat-artifacts /out/steam-runtime/ /usr/lib/qos/windows-runners/steam-runtime/
 COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/qos/windows/catalogues/
 # The VM is defined only after an owner supplies installation media. These
 # immutable host/guest contracts deliberately ship no Windows image or key.
