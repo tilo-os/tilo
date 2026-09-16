@@ -1,0 +1,94 @@
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
+index 0a51b98..8d69d21 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Thread.cpp
+@@ -482,8 +482,28 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
+                           uint64_t Result {};
+ #ifndef PR_GET_AUXV
+ #define PR_GET_AUXV 0x41555856
++#endif
++#ifndef PR_SVE_SET_VL
++#define PR_SVE_SET_VL 50
++#endif
++#ifndef PR_SVE_GET_VL
++#define PR_SVE_GET_VL 51
++#endif
++#ifndef PR_SME_SET_VL
++#define PR_SME_SET_VL 63
++#endif
++#ifndef PR_SME_GET_VL
++#define PR_SME_GET_VL 64
+ #endif
+                           switch (option) {
++                          // These controls belong to the AArch64 ABI. Native x86 Linux
++                          // returns EINVAL, regardless of the requested vector length.
++                          // Forwarding them would expose or change the emulator's host
++                          // vector state without updating its cached CPU features.
++                          case PR_SVE_SET_VL:
++                          case PR_SVE_GET_VL:
++                          case PR_SME_SET_VL:
++                          case PR_SME_GET_VL: return -EINVAL;
+                           case PR_SET_SECCOMP: {
+                             uint32_t Operation {};
+                             if (arg2 == SECCOMP_MODE_STRICT) Operation = SECCOMP_SET_MODE_STRICT;
+diff --git a/unittests/FEXLinuxTests/tests/syscalls/prctl_arm_vector.cpp b/unittests/FEXLinuxTests/tests/syscalls/prctl_arm_vector.cpp
+new file mode 100644
+index 0000000..3cacb9e
+--- /dev/null
++++ b/unittests/FEXLinuxTests/tests/syscalls/prctl_arm_vector.cpp
+@@ -0,0 +1,55 @@
++// SPDX-License-Identifier: MIT
++#include <catch2/catch_test_macros.hpp>
++
++#include <cerrno>
++#include <sys/prctl.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++// Linux UAPI numbers are fixed even when the build headers predate SME.
++// This file is built and run as both an i386 and an x86-64 guest.
++namespace {
++constexpr int SVE_SET_VL = 50;
++constexpr int SVE_GET_VL = 51;
++constexpr int SME_SET_VL = 63;
++constexpr int SME_GET_VL = 64;
++constexpr unsigned long VL_INHERIT = 1UL << 17;
++constexpr unsigned long VL_ONEXEC = 1UL << 18;
++
++void RequireInvalid(int Option, unsigned long Arg2, unsigned long Arg3 = 0, unsigned long Arg4 = 0, unsigned long Arg5 = 0) {
++  INFO("prctl option=" << Option << " arg2=" << Arg2 << " arg3=" << Arg3 << " arg4=" << Arg4 << " arg5=" << Arg5);
++  errno = 0;
++  const long Result = syscall(SYS_prctl, Option, Arg2, Arg3, Arg4, Arg5);
++  REQUIRE(Result == -1);
++  REQUIRE(errno == EINVAL);
++}
++} // namespace
++
++TEST_CASE("x86 prctl rejects ARM vector length queries") {
++  for (const int Option : {SVE_GET_VL, SME_GET_VL}) {
++    RequireInvalid(Option, 0);
++    RequireInvalid(Option, ~0UL, ~0UL, ~0UL, ~0UL);
++  }
++}
++
++TEST_CASE("x86 prctl rejects ARM vector length changes") {
++  for (const int Option : {SVE_SET_VL, SME_SET_VL}) {
++    // Include valid native ARM lengths and flags: invalid arguments alone
++    // would also pass with accidental forwarding on an ARM host.
++    for (const unsigned long Length : {16UL, 32UL, 64UL}) {
++      for (const unsigned long Flags : {0UL, VL_INHERIT, VL_ONEXEC, VL_INHERIT | VL_ONEXEC}) {
++        RequireInvalid(Option, Length | Flags);
++      }
++    }
++    RequireInvalid(Option, 0);
++    RequireInvalid(Option, 17);
++    RequireInvalid(Option, ~0UL, ~0UL, ~0UL, ~0UL);
++  }
++}
++
++TEST_CASE("ordinary and unknown prctl options keep their x86 behavior") {
++  char Name[16] {};
++  REQUIRE(syscall(SYS_prctl, PR_GET_NAME, Name, 0UL, 0UL, 0UL) == 0);
++  REQUIRE(Name[15] == 0);
++  RequireInvalid(-1, 0);
++}

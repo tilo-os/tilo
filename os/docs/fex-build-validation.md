@@ -17,6 +17,16 @@ acceptance; detailed inputs and limits follow.
 `os/dev/fetch-fex-source.sh DESTINATION` acquires that checkout or verifies an
 existing clean checkout without resetting caller changes.
 
+Local downstream fixes are carried separately under
+`os/external-assets/fex-patches/`. Their ordered manifest binds each patch's
+SHA-256 to the unchanged upstream revision. The payload build copies the input
+into a disposable writable source directory, verifies that copy is pristine,
+then checks and applies that series. It never patches the caller's source or
+accepts an arbitrary dirty checkout. The patch files and an application record
+ship with the payload; the OS consumer requires the same reviewed series.
+Patch application does not establish execution acceptance. The local fixes
+require the regression and capsule evidence described below before release.
+
 `os/Containerfile.fex-buildroot` builds the native compiler/tool dependencies.
 Pass the digest-pinned `BASE_REF` from `os/base-snapshot.env` and the external
 asset cache as the named `github-assets` build context. The cache must contain
@@ -24,6 +34,22 @@ asset cache as the named `github-assets` build context. The cache must contain
 `os/external-assets/github-assets.tsv`. Production consumers must pin the
 resulting buildroot image by digest. No production FEX buildroot digest has
 been promoted yet.
+
+Local preparation has verified these existing immutable inputs:
+
+- ARM buildroot: `localhost/qos-fex-buildroot@sha256:a0af121da48ed8a9a73dea795200b5b8535dc2905633c70ab8df164909c6d7a7`.
+- x86 SDK: `localhost/qos-fex-thunk-sdk@sha256:ef722888334908045f0dc84489c654476b2ff1fb4b95132daaa638c3f3ef93ef`.
+
+A read-only, network-disabled buildroot probe matched all 1,157 RPM identities
+to its recorded inventory and checked Clang 21.1.8, NASM 2.16.03 (including
+the SMSW regression), build tools and CMake configuration. Its installed LLD
+is 22.1.8. The downstream incremental builder used this exact image ID.
+The retained SDK extraction's package inventory matches the original image's
+record; complete extracted-file equality has not been established. Production
+builds mount the immutable SDK image read-only during compilation instead of
+copying it into another layer. This preserves the full SDK without redundant
+storage. These local identities do not establish release signing/promotion or
+reproducibility of the earlier live-repository dependency resolution.
 
 ### Offline payload build contract
 

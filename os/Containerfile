@@ -84,8 +84,9 @@ FROM --platform=linux/amd64 ${WINDOWS_GUEST_REF} AS windows-guest-input
 FROM ${BASE_REF} AS windows-provider-aarch64
 ARG FEX_PAYLOAD_REF
 ARG WINDOWS_GUEST_REF
-COPY os/dev/windows_provider.py os/dev/validate-fex-payload.py os/dev/validate-windows-guest.py /qos/
+COPY os/dev/windows_provider.py os/dev/validate-fex-payload.py os/dev/validate-windows-guest.py os/dev/apply-fex-patches.py /qos/
 COPY os/external-assets/fex-source.env os/dev/wine-source.json /qos/
+COPY os/external-assets/fex-patches/ /qos/fex-patches/
 RUN --network=none \
     --mount=type=bind,from=windows-fex-input,source=/,target=/fex,ro \
     --mount=type=bind,from=windows-guest-input,source=/,target=/guest,ro \

@@ -79,6 +79,15 @@ def validate(fex_root, guest_root, fex_ref, guest_ref, source_pin, wine_pin):
     source = guest.guest_file(fex_root, "usr/lib/qos/fex/source.txt").read_text()
     if not revision or source.splitlines()[0] != "FEX source revision: " + revision[1]:
         raise ValueError("FEX source differs from the repository pin")
+    patch_module = load("apply-fex-patches")
+    patches = patch_module.patch_record(source_pin.parent / "fex-patches")
+    recorded_patches = json.loads(guest.guest_file(fex_root,
+        "usr/lib/qos/fex/downstream-patches.json").read_text())
+    shipped_patches = patch_module.patch_record(guest.guest_file(fex_root,
+        "usr/share/qos/fex/patches/series.json").parent)
+    if patches["base_revision"] != revision[1] or recorded_patches != patches or shipped_patches != patches:
+        raise ValueError("FEX downstream patches differ from the reviewed series")
+    result["fex_downstream_patches"] = patches
     cache = guest.guest_file(fex_root, "usr/lib/qos/fex/cmake-cache.txt").read_text()
     for key, value in (("TUNE_CPU", "none"), ("TUNE_ARCH", "generic")):
         if not re.search(rf"^{key}:[^=]+={value}$", cache, re.M):
