@@ -2247,6 +2247,30 @@ impl FrameBuilder {
             self.relayout();
             self.focus_first(focus);
         }
+        // Native/DRM chrome does not run through `ui::App`, whose event loop
+        // normally turns Enter/Space on the focused widget into an
+        // accessibility Activate action. First offer the raw event to the
+        // widget (editing controls may consume it), then activate only when it
+        // was otherwise unhandled.
+        if !handled
+            && let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == winit::event::ElementState::Pressed
+            && matches!(
+                event.logical_key,
+                Key::Named(NamedKey::Enter | NamedKey::Space)
+            )
+            && let Some(focused) = *focus
+            && let Some(widget) = self.node_map.get(&focused).copied()
+        {
+            // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
+            // pointer remains valid until the next structural rebuild. This is
+            // the same focused-node dispatch invariant used by `ui::App`.
+            let activated =
+                unsafe { (*widget).perform_action(&ui::a11y::Action::Activate, state, root_obj) };
+            if activated {
+                handled = true;
+            }
+        }
         // Match `ui::App`: unmodified Tab advances the global DFS focus order
         // only when the focused widget did not claim it. A terminal and a
         // multiline editor legitimately consume Tab as input; intercepting it
@@ -2419,6 +2443,7 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 )]
 mod tests {
     use super::*;
+    use automerge::ReadDoc;
     use automerge::transaction::Transactable;
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey};
@@ -2691,6 +2716,47 @@ mod tests {
         assert!(
             !create.is_disabled(),
             "the externally-operated acknowledgement must enable the gated action"
+        );
+    }
+
+    #[test]
+    fn native_oobe_enter_activates_the_focused_button() {
+        let (mut fb, _identity_dir) = onboarding_frame();
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let tab = key_press(Key::Named(NamedKey::Tab));
+
+        assert!(fb.dispatch_event(
+            &tab,
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(focused_name(&fb, focus).as_deref(), Some("Create identity"));
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        assert_eq!(
+            doc.get(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN)
+                .expect("read begin action")
+                .and_then(|(value, _)| value.to_bool()),
+            Some(true),
+            "activation must write the begin action into the document"
+        );
+
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.pump_apps(&mut doc, &automerge::ROOT);
+        fb.relayout();
+        fb.reconcile_native_focus(&mut focus);
+        assert!(
+            focused_name(&fb, focus).is_some_and(|name| name.contains("I understand")),
+            "Enter must advance into the identity-protection step"
         );
     }
 

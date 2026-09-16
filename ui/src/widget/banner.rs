@@ -23,7 +23,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -92,11 +92,16 @@ fn paint_banner(
     let text_x = icon_rect.x1 + GAP;
     let title_size = theme.tokens.typography.scale.base;
     let msg_size = theme.tokens.typography.scale.sm;
-    let total_text_h = if message.is_some() {
-        f64::from(title_size) + 4.0 + f64::from(msg_size)
-    } else {
-        f64::from(title_size)
-    };
+    let title_style = TextStyle::new(title_size);
+    let message_style = TextStyle::new(msg_size);
+    let text_width = banner_text_width(rect, dismissible);
+    let (_, title_h) = text_renderer.measure_style(title, Some(text_width), &title_style);
+    let message_h = message.map_or(0.0, |msg| {
+        text_renderer
+            .measure_style(msg, Some(text_width), &message_style)
+            .1
+    });
+    let total_text_h = f64::from(title_h + message_h) + if message.is_some() { 4.0 } else { 0.0 };
     let mut ty = rect.center().y - total_text_h / 2.0;
     #[allow(
         clippy::arithmetic_side_effects,
@@ -110,9 +115,9 @@ fn paint_banner(
         title_size,
         theme.text_primary,
         title_transform,
-        None,
+        Some(text_width),
     );
-    ty += f64::from(title_size) + 4.0;
+    ty += f64::from(title_h) + 4.0;
     if let Some(msg) = message {
         #[allow(
             clippy::arithmetic_side_effects,
@@ -120,7 +125,14 @@ fn paint_banner(
                       or panic"
         )]
         let msg_transform = transform * Affine::translate((text_x, ty));
-        text_renderer.draw_text(scene, msg, msg_size, theme.text_dim, msg_transform, None);
+        text_renderer.draw_text(
+            scene,
+            msg,
+            msg_size,
+            theme.text_dim,
+            msg_transform,
+            Some(text_width),
+        );
     }
 
     if dismissible {
@@ -139,6 +151,21 @@ fn paint_banner(
         dr
     } else {
         Rect::ZERO
+    }
+}
+
+fn banner_text_width(rect: Rect, dismissible: bool) -> f32 {
+    let trailing = if dismissible {
+        PAD_X + DISMISS_D + GAP
+    } else {
+        PAD_X
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "banner geometry is an ordinary logical-pixel value"
+    )]
+    {
+        (rect.width() - PAD_X - ICON_D - GAP - trailing).max(1.0) as f32
     }
 }
 
@@ -295,13 +322,19 @@ impl Banner {
     }
 
     /// Intrinsic content height for the current title/message, in logical px.
-    fn content_height(&self, theme: &Theme) -> f64 {
-        let title_h = f64::from(theme.tokens.typography.scale.base);
-        let mut h = title_h;
-        if self.message.is_some() {
-            h += 4.0 + f64::from(theme.tokens.typography.scale.sm);
-        }
-        (h + PAD_Y * 2.0).max(44.0)
+    fn content_height(&self, theme: &Theme, text_renderer: &mut TextRenderer, width: f32) -> f64 {
+        let rect = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), 1.0);
+        let text_width = banner_text_width(rect, self.dismissible);
+        let title_style = TextStyle::new(theme.tokens.typography.scale.base);
+        let (_, title_h) = text_renderer.measure_style(&self.title, Some(text_width), &title_style);
+        let message_h = self.message.as_ref().map_or(0.0, |message| {
+            let style = TextStyle::new(theme.tokens.typography.scale.sm);
+            text_renderer
+                .measure_style(message, Some(text_width), &style)
+                .1
+        });
+        let gap = if self.message.is_some() { 4.0 } else { 0.0 };
+        (f64::from(title_h + message_h) + gap + PAD_Y * 2.0).max(44.0)
     }
 }
 
@@ -316,19 +349,18 @@ impl Widget for Banner {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        theme: &Theme,
+        _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let h = if self.dismissed {
-            0.0
-        } else {
-            self.content_height(theme) as f32
-        };
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: taffy::Size {
                 width: percent(1.0_f32),
-                height: length(h),
+                height: if self.dismissed {
+                    length(0.0_f32)
+                } else {
+                    taffy::Dimension::auto()
+                },
             },
             ..Default::default()
         });
@@ -343,20 +375,22 @@ impl Widget for Banner {
     )]
     fn measure(
         &mut self,
-        _k: taffy::Size<Option<f32>>,
-        _a: taffy::Size<taffy::AvailableSpace>,
-        _tr: &mut TextRenderer,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        tr: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let theme = Theme::dark();
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            taffy::AvailableSpace::MinContent => 1.0,
+            taffy::AvailableSpace::MaxContent => 320.0,
+        });
         let h = if self.dismissed {
             0.0
         } else {
-            self.content_height(&theme) as f32
+            self.content_height(&theme, tr, width) as f32
         };
-        taffy::Size {
-            width: 320.0,
-            height: h,
-        }
+        taffy::Size { width, height: h }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -608,11 +642,34 @@ mod tests {
     #[test]
     fn message_makes_the_banner_taller() {
         let theme = Theme::dark();
-        let short = Banner::info("One line").content_height(&theme);
+        let mut text = TextRenderer::new();
+        let short = Banner::info("One line").content_height(&theme, &mut text, 500.0);
         let tall = Banner::info("One line")
             .with_message("Plus a detail line")
-            .content_height(&theme);
+            .content_height(&theme, &mut text, 500.0);
         assert!(tall > short, "a message adds a second line of height");
+    }
+
+    #[test]
+    fn long_message_wraps_and_grows_to_its_painted_height() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let message = "qOS found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
+        let banner = Banner::warning("Your existing identity needs recovery").with_message(message);
+        let width = 700.0;
+        let height = banner.content_height(&theme, &mut text, width);
+        let text_width = banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false);
+        let (_, message_height) =
+            text.measure(message, theme.tokens.typography.scale.sm, Some(text_width));
+
+        assert!(
+            message_height > theme.tokens.typography.scale.sm * 1.25,
+            "the recovery copy must wrap instead of escaping the banner"
+        );
+        assert!(
+            height >= f64::from(message_height) + PAD_Y * 2.0,
+            "the banner must reserve the same wrapped height that it paints"
+        );
     }
 
     #[test]
