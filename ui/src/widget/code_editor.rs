@@ -8,10 +8,6 @@
 //! owns the language tokenizer, and every colour comes from the OS
 //! [`Theme`]), and **soft-tab / indent** handling.
 //!
-//! `code_editor`, `typst_editor`, and `db_client`'s SQL editor previously
-//! each forked their own caret/selection/gutter/highlight code; now they
-//! supply only a language [`Highlighter`] and share this editor.
-//!
 //! ```no_run
 //! use ui::widget::code_editor::{CodeEditor, Language};
 //! let mut editor = CodeEditor::local()

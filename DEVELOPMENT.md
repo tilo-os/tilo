@@ -167,7 +167,7 @@ for the disk-image step:
 
 VM login `tester` / `quickdesktop`. Check the FUSE mount with
 `mountpoint /var/workspace`; the test image's results are in
-`journalctl -u quick-fs-test`.
+`journalctl -u fs-test`.
 
 ## Running qOS on your own machine (Silverblue / Bazzite)
 

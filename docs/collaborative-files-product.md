@@ -108,8 +108,7 @@ read. Missing, replaced, permission-weakened or malformed runtime state maps to
 the fail-closed maximum timestamp. Exact-share source-loss, process and semantic
 forward/backward clock boundaries, concurrent remote
 structural conflicts and forced-partition multi-writer coverage are enforced
-as mandatory release tests. The row-by-row status and direct evidence live in
-[collaborative-files-completion-audit.md](collaborative-files-completion-audit.md).
+as mandatory release tests.
 
 The mandatory CI contract runs two partition layers. The state-machine matrix
 uses no timing sleeps: two writers edit independently, atomically persist and
@@ -400,8 +399,8 @@ proven in the actual Forgejo runner environment.
   predictive open-to-sibling hydration, and Files interactions against a live
   collaborative mount.
 - Security, migration/corruption, accessibility, localization, performance and
-  installed-OS smoke gates are green. The completion audit must link every bullet
-  above to direct evidence.
+  installed-OS smoke gates are green. Each release gate must link its claims to
+  direct executable evidence.
 
 ## Delivery order
 

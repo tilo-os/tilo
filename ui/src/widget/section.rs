@@ -1,11 +1,8 @@
 //! `Section` — an intrinsic vertical stack with reliable, explicit spacing.
 //!
-//! Taffy's block layout intentionally ignores flex/grid `gap`. That made the
-//! otherwise-natural `Column::with_intrinsic_height()` shape render adjacent
-//! cards and rows flush together, so apps repeatedly interleaved private empty
-//! containers. `Section` owns that workaround once while preserving ordinary
-//! widget traversal, focus, accessibility, actions, and document sync through
-//! its inner `Column`.
+//! Taffy's intrinsic block layout ignores flex/grid `gap`, so `Section` inserts
+//! spacer widgets between its children while retaining `Column` traversal,
+//! focus, accessibility, actions, and document sync.
 
 use std::collections::HashMap;
 

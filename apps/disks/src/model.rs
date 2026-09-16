@@ -1,9 +1,8 @@
 //! Pure data model for the Disks app.
 //!
 //! Everything here is plain data + serde so the whole topology can be
-//! round-tripped through a single Automerge `Text` blob (the same
-//! Phase-1 pattern the notes app uses). Rendering, probing and CRDT
-//! plumbing live in sibling modules — this file knows nothing about
+//! round-tripped through a single Automerge `Text` blob. Rendering, probing,
+//! and CRDT plumbing live in sibling modules — this file knows nothing about
 //! vello, taffy or `lsblk`.
 
 use serde::{Deserialize, Serialize};

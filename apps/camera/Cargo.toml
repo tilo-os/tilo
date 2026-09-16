@@ -15,12 +15,8 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
-# Live camera capture ships on by default: a normally-built `camera` opens the
-# real device (GStreamer v4l2src) and shows the live viewfinder. The capture
-# pipeline is only driven for the `Storage::Disk` (live) source — the sample
-# source used by `--shots` and tests synthesizes its viewfinder frame and never
-# enumerates or opens a device (see `poll_camera`), so the feature only compiles
-# the pipeline in while the runtime storage decides whether it runs.
+# Live camera capture uses GStreamer's v4l2src. Sample storage used by shots and
+# tests does not enumerate or open a device.
 default = ["live-capture"]
 # Live capture via GStreamer's v4l2src. See `src/capture.rs`.
 live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
@@ -49,14 +45,7 @@ qos-ocr = { path = "../../crates/media/ocr" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
 os-actions = { path = "../../crates/system/os-actions" }
 
-# QR / barcode pipeline — both pure Rust.
-#   qrcode:  encode payloads into a module matrix (used to synthesize the
-#            offline sample frame for `--shots`, and to render the "share
-#            my Wi-Fi" QR in-app).
-#   rqrr:    detect + decode QR codes from a greyscale buffer. This is the
-#            real scanner: the composited sample frame is decoded back so
-#            the on-screen bounding box + payload are produced by an actual
-#            decode, not hand-placed.
+# Pure-Rust QR/barcode encoding and detection for share and scan flows.
 qrcode.workspace = true
 rqrr.workspace = true
 

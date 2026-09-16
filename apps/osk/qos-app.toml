@@ -5,20 +5,10 @@
 # process-credential-gated OSK display and its own keymap + swipe-model
 # files. Nothing else — no documents, no network, no exec.
 #
-# `kind = "service"` because of that first sentence. It draws, so its
-# entrypoint stays `gui`, but it is a surface the shell shows when text
-# input wants one — not something a user opens from the launcher. With
-# `kind = "app"` it appeared in the command palette as "Open On-Screen
-# Keyboard", which spawned a keyboard in an ordinary tiled window.
+# `kind = "service"` keeps it out of the launcher; its `gui` entrypoint is a
+# compositor-managed surface shown when text input needs it.
 #
-# Pack and install:
-#
-#     cargo build -p osk -p pkg-cli -p install
-#     mkdir -p target/qpkg/osk/bin
-#     cp target/debug/osk target/qpkg/osk/bin/osk
-#     target/debug/qos-pkg pack --manifest apps/osk/qos-app.toml \
-#         --payload target/qpkg/osk --output target/osk.qpkg
-#     target/debug/qos-install install target/osk.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.osk"
@@ -28,8 +18,6 @@ version  = "0.1.0"
 kind     = "service"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """An agent edits a document someone has open, live, through the real stack.
 
-The demo's agent beat (plan/yc-demo.md, beat 6), driven end to end:
+The demo's agent beat (docs/demo-script.md, beat 6), driven end to end:
 
   1. a headless compositor with a private runtime dir (its own broker,
      Wayland socket and control socket);

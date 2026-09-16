@@ -4,14 +4,7 @@
 # through the host's file-chooser portal, so the app needs the session
 # bus and no standing filesystem grant at all. Never writes.
 #
-# Pack and install:
-#
-#     cargo build -p diffmerge -p pkg-cli -p install
-#     mkdir -p target/qpkg/diffmerge/bin
-#     cp target/debug/diffmerge target/qpkg/diffmerge/bin/diffmerge
-#     target/debug/qos-pkg pack --manifest apps/diffmerge/qos-app.toml \
-#         --payload target/qpkg/diffmerge --output target/diffmerge.qpkg
-#     target/debug/qos-install install target/diffmerge.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.diffmerge"
@@ -21,8 +14,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

@@ -3,14 +3,7 @@
 # Snippets are CRDT state — nothing is written to disk and nothing is
 # read from it. The system read profile is all it needs.
 #
-# Pack and install:
-#
-#     cargo build -p snippets -p pkg-cli -p install
-#     mkdir -p target/qpkg/snippets/bin
-#     cp target/debug/snippets target/qpkg/snippets/bin/snippets
-#     target/debug/qos-pkg pack --manifest apps/snippets/qos-app.toml \
-#         --payload target/qpkg/snippets --output target/snippets.qpkg
-#     target/debug/qos-install install target/snippets.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.snippets"
@@ -20,8 +13,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

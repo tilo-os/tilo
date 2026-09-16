@@ -10,8 +10,8 @@ executable stand-alone; the higher-level flow is described below.
   qos-install, emit a `{name: bytes}` JSON blob on stdout.
 
 - `qemu-boot-measure.sh <qcow2> <label>` — headless QEMU boot of a
-  qcow2 through the my-distrobox-44 toolbox's qemu-system-x86_64
-  + OVMF. Snapshots the base so consecutive runs are hermetic; polls
+  qcow2 using qemu-system-x86_64 + OVMF. Set `QOS_DISTROBOX` when those
+  tools are in a distrobox. Snapshots the base so consecutive runs are hermetic; polls
   the serial console for the multi-user.target reach; extracts the
   kernel timestamp on the reach line into a JSON `{state, boot_ms}`
   blob. Powers the guest down cleanly.
@@ -51,12 +51,6 @@ executable stand-alone; the higher-level flow is described below.
   `.forgejo/workflows/build-image.yml` job already has the token; the
   rebuilt image + qcow2 flow through the release channel.
 
-## Baseline captured (pre-service-prune host qcow2, 2 vCPU / 2 GB / KVM)
-
-- **Boot to multi-user.target**: 14,531 ms
-- **State reached**: reached-target (systemd initialisation completed)
-- **Note**: this baseline was captured against the qcow2 built before
-  the qos-relay SELinux fix (DynamicUser=yes → policy denial on the
-  StateDirectory rename); the audit log shows the crash loop but the
-  target reach still succeeds because qos-relay is on `WantedBy=` not
-  the critical chain.
+Measurements are workload- and host-dependent. Record the image revision,
+CPU/memory/KVM settings, adapter, and `QOS_DISTROBOX` value with each result;
+do not treat an old run as a repository baseline.

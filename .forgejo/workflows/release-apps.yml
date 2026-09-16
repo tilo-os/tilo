@@ -1,11 +1,7 @@
 name: Release / apps
 
-# Apps are a component boundary. A change to one app builds that app, while
-# shared runtime/UI code remains covered by the affected-package test graph.
-# Tagged/manual releases produce both native architectures and publish
-# immutable qpkg collections to Forgejo's generic package registry. OS and
-# desktop releases can consume a named collection without rebuilding app
-# sources.
+# Builds changed apps for validation and publishes immutable qpkg collections
+# for tagged or manual releases.
 on:
   pull_request:
     branches: [main]
@@ -64,13 +60,8 @@ on:
 
 concurrency:
   group: release-apps-${{ github.ref }}
-  # A main run may be the one that republishes the complete collection after
-  # a shared runtime/toolkit change. Cancelling it when the next app commit
-  # lands loses that information: the successor diffs only against its direct
-  # parent, builds a partial app set, and can never combine it with the older
-  # collection because their runtime roots differ. Serialize main releases so
-  # every published collection advances in commit order; only supersede PR
-  # validation, where no channel state is mutated.
+  # Published collections advance in commit order; PR validation may supersede
+  # older validation because it does not mutate a channel.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -110,10 +101,7 @@ jobs:
               elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
                 args+=(--collection "${REQUESTED_COLLECTION:-default}")
               elif [[ $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main ]]; then
-                # A published collection is one atomic runtime ABI boundary.
-                # Rebuild every member on main so a failed earlier publication
-                # cannot leave the channel permanently incompatible with later
-                # partial app updates.
+                # A published collection is one runtime ABI boundary.
                 args+=(--collection default)
               else
                 base='${{ github.event.pull_request.base.sha }}'

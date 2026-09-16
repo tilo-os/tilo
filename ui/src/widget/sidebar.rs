@@ -1,17 +1,10 @@
 //! `SidebarDrawer` — a reusable collapsible sidebar / drawer primitive.
 //!
-//! Apps hand-rolled the same "dock-vs-overlay sidebar + scrim + collapse
-//! toggle + `user_toggled`" pattern repeatedly (the calculator alone three
-//! times), so this promotes it into one theme-driven, retained-mode
-//! controller.
-//!
 //! Unlike [`crate::widget::NavSplit`] (a full [`Widget`](crate::widget::Widget)
 //! with its own inner Taffy tree), `SidebarDrawer` is a *headless* geometry +
 //! state controller: it owns the responsive docked-vs-overlay decision, the
 //! eased reveal, the scrim, and the user-toggle memory, and hands back the
-//! resolved rects — usable from both widget-tree hosts and the immediate-mode
-//! Vello painters the calculator's panels are built from (which can't embed a
-//! `Widget`).
+//! resolved rects for widget-tree hosts and immediate-mode Vello painters.
 //!
 //! Behaviour (the Adwaita `OverlaySplitView` "flap" idiom): **docked** (wide)
 //! sits beside the content, inset by the eased sidebar width, and collapsing
@@ -22,8 +15,7 @@
 //! width; an explicit user toggle is remembered until the layout crosses the
 //! breakpoint, whereupon it reverts to the width-driven default.
 //!
-//! The eased reveal reuses the [`FlapState`] kernel from weather / chat /
-//! `NavSplit`, so the slide feels identical across the OS.
+//! The eased reveal uses the shared [`FlapState`] kernel.
 
 use std::time::Instant;
 

@@ -12,9 +12,8 @@ license.workspace = true
 # + seccomp), passes well-known service sockets in via SCM_RIGHTS, and
 # execs the entrypoint binary inside the sandbox.
 #
-# This crate intentionally ships a minimal in-tree `MinimalManifest`
-# shim: the canonical `qos-pkg` crate is being built in parallel. When
-# it lands, swap `MinimalManifest` for the real type as a follow-up.
+# This crate carries a minimal in-tree `MinimalManifest` decoder while the
+# canonical package schema is consumed through the `pkg` dependency below.
 
 [[bin]]
 name = "qos-launcher"

@@ -8284,8 +8284,6 @@ mod tests {
         assert!(a.model.selected.is_none(), "Escape deselects the place");
     }
 
-    // --- Click-dispatch coverage for previously-untested Hits ---------------
-
     /// Clearing the search (the × button's `Hit`) empties the query and results.
     #[test]
     fn clear_search_dispatch() {

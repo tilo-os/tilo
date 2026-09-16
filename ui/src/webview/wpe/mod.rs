@@ -7,9 +7,8 @@
 //! channel drained by a GLib timeout source on the engine thread; navigation
 //! state flows back as [`WebViewEvent`]s from GObject signal handlers.
 //!
-//! The SHM path costs one CPU copy + BGRA→RGBA swizzle per frame — deliberate
-//! v1 simplicity; DMA-BUF → wgpu external-texture import slots in behind the
-//! same trait as the follow-up.
+//! The SHM path costs one CPU copy and a BGRA→RGBA swizzle per frame. The
+//! backend trait also permits a direct DMA-BUF import implementation.
 //!
 //! Requires the WPE stack built by `os/dev/build-wpe.sh` (Fedora ships no WPE
 //! packages); point `PKG_CONFIG_PATH`/`LD_LIBRARY_PATH` at the prefix.

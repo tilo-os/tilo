@@ -4,14 +4,7 @@
 # `host`: Open-Meteo's forecast and geocoding APIs. Reads the shared
 # settings file for units/locale.
 #
-# Pack and install:
-#
-#     cargo build -p weather -p pkg-cli -p install
-#     mkdir -p target/qpkg/weather/bin
-#     cp target/debug/weather target/qpkg/weather/bin/weather
-#     target/debug/qos-pkg pack --manifest apps/weather/qos-app.toml \
-#         --payload target/qpkg/weather --output target/weather.qpkg
-#     target/debug/qos-install install target/weather.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.weather"
@@ -21,8 +14,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

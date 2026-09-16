@@ -1,13 +1,7 @@
 name: Release / desktop
 
-# Native builds are intentional: the compositor links the distribution's
-# graphics/input stack and cannot be safely produced by a generic cross image.
-# Each amd64 distribution runs in its own isolated job on the generic runner.
-# Release tags add the native ARM64 runner only when the explicit capability
-# switch below is enabled; ordinary changes retain one amd64 lane. Pull
-# requests build and install-test the affected release payload.
-# Version tags additionally publish
-# the verified artifacts to Forgejo releases and its native package registries.
+# Native builds cover the compositor's distribution graphics/input stack.
+# Pull requests install-test the payload; release tags publish verified artifacts.
 on:
   pull_request:
     branches: [main]
@@ -51,16 +45,14 @@ on:
         default: false
 
 concurrency:
-  # An explicit full-native rehearsal must survive unrelated main pushes;
-  # automatic runs still supersede older automatic runs on the same ref.
+  # Preserve explicit full-native rehearsals across unrelated main pushes.
   group: package-desktop-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/desktop-v') }}
 
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: never
-  # Tags and explicit full-native dispatches use the isolated native-ARM pool.
-  # Ordinary changes retain one amd64 lane to keep feedback focused and cheap.
+  # Tags and explicit full-native dispatches use the native-ARM pool.
   QOS_DESKTOP_ARM64_RELEASES: "1"
 
 jobs:
@@ -117,10 +109,7 @@ jobs:
           fedora-44|registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b|
           EOF
           )
-          # Packaging compiles the complete desktop stack with fat LTO and is
-          # both CPU-bound and close to the normal runner's memory ceiling.
-          # Keep that exceptional envelope explicit rather than making every
-          # CI job larger.
+          # Fat-LTO desktop packaging needs the larger runner class.
           amd64_runner=runner-large
           arm64_runner=runner-large-arm64
           # menci's cross-build image deliberately declares an amd64 OCI
@@ -147,8 +136,7 @@ jobs:
   package:
     needs: validate
     name: package lane / ${{ matrix.arch }}
-    # Desktop packaging uses the generic large class on each architecture;
-    # ordinary CI retains the smaller, higher-concurrency runner class.
+    # Desktop packaging uses the larger native runner class.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
     # One architecture job runs all five native userspaces serially. Forgejo
@@ -189,9 +177,7 @@ jobs:
         env:
           # Runner-level cache credentials must never enter pull-request code.
           QOS_ENABLE_REMOTE_CACHE: ${{ github.event_name != 'pull_request' && '1' || '0' }}
-          # The explicit large runner class has enough CPU/RAM for six native
-          # compiler processes. Direct/local invocations retain the helper's
-          # conservative two-job default.
+          # The larger runner supports six native compiler processes.
           QOS_CARGO_JOBS: "6"
           QOS_LANE_TARGETS: ${{ matrix.targets }}
           # RPM signing is restricted to protected desktop tags and happens in

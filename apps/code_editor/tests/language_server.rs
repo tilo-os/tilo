@@ -2,14 +2,8 @@
 //! Cargo project on disk, a real deliberate error, and the real diagnostic that
 //! comes back.
 //!
-//! Everything else about the LSP client is unit-tested against canned JSON,
-//! which is the right way to test a parser and exactly the wrong way to find
-//! the bug this exists to catch. The editor's language server was previously
-//! rooted at `file:///<project-name>` — a path that is not on the filesystem.
-//! Every parser test still passed, the handshake still completed, and the
-//! server reported nothing, forever, because it could not find a `Cargo.toml`
-//! above a directory that does not exist. Only running the real binary against
-//! a real directory shows that.
+//! Unit tests cover the protocol parser; this test verifies project-root
+//! resolution and diagnostics against a real filesystem directory.
 //!
 //! The test builds its own tiny crate rather than using this workspace: qOS has
 //! ~200 members and indexing it takes minutes, which is not a unit of work a
@@ -17,34 +11,8 @@
 //! `initialize`, answering the server's own requests, `didOpen`, `$/progress`,
 //! `publishDiagnostics` — is identical at either size.
 //!
-//! It requires `rust-analyzer` and `cargo` on PATH and **fails** without them.
-//! A test that quietly passes when it could not look at its subject is worse
-//! than no test, and this suite has been bitten by that before.
-//!
-//! # Two things here look like waste and are not
-//!
-//! **The 180-second budget.** That is what a cold crate graph costs:
-//! `cargo metadata`, proc-macro loading, then indexing. Shrinking it does not
-//! make the test faster in the passing case — a diagnostic normally arrives in
-//! a second or two, because rust-analyzer resolves names itself without waiting
-//! for `cargo check`. What a smaller budget changes is the *failing* case,
-//! turning "the server never reported this error" into "timed out", which is
-//! the least useful sentence a failure can print.
-//!
-//! **The `$/progress` assertions.** They are not decoration. rust-analyzer only
-//! emits `$/progress` when the client advertised `window.workDoneProgress` in
-//! `initialize`, so [`indexing_is_visible_while_it_happens`] is what fails if
-//! that capability is ever dropped — and if it is dropped, the editor goes back
-//! to sitting silent for minutes on a cold workspace, which is the exact
-//! failure mode of looking broken while working correctly.
-//!
-//! Both were verified by falsification rather than by assertion: the deliberate
-//! error was removed from the fixture and the test re-run. It then failed —
-//! after the full 180 seconds, reporting the real progress stream (`Fetching`,
-//! `Building CrateGraph`, `Roots Scanned`, `Loading proc-macros`,
-//! `Indexing 0%…100%`, `cargo check`) and a `Diagnostics(0)` for the correct
-//! file URI. That is the evidence that a pass here means the diagnostic really
-//! arrived, rather than that nothing was ever looked at.
+//! The test requires `rust-analyzer` and `cargo` on PATH. It also verifies
+//! `$/progress`, which depends on the client advertising work-done progress.
 
 #![allow(
     clippy::unwrap_used,

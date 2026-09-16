@@ -1,5 +1,5 @@
 //! Renders the `widget_showcase` Column tree to PNG via `OffscreenRenderer`.
-//! Lets reviewers (and Claude) inspect the live App layout without opening
+//! Lets reviewers inspect the live app layout without opening
 //! a window. Run with:
 //! ```
 //! cargo run -p ui --example ui-shots -- widget_showcase_snapshot
@@ -32,12 +32,9 @@ use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format,
 };
 
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
 #[allow(
     clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
+    reason = "affine composition uses floating-point matrix arithmetic"
 )]
 fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))

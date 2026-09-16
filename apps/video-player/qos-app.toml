@@ -4,14 +4,7 @@
 # (feature `portal`) — from the media roots. Read-only; the only write
 # is the audio device for playback.
 #
-# Pack and install:
-#
-#     cargo build -p video-player -p pkg-cli -p install
-#     mkdir -p target/qpkg/video-player/bin
-#     cp target/debug/video-player target/qpkg/video-player/bin/video-player
-#     target/debug/qos-pkg pack --manifest apps/video-player/qos-app.toml \
-#         --payload target/qpkg/video-player --output target/video-player.qpkg
-#     target/debug/qos-install install target/video-player.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.video-player"
@@ -21,8 +14,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

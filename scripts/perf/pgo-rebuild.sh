@@ -11,6 +11,15 @@
 
 set -euo pipefail
 
+DISTROBOX="${QOS_DISTROBOX:-}"
+run_in_env() {
+    if [ -n "$DISTROBOX" ]; then
+        distrobox enter "$DISTROBOX" -- "$@"
+    else
+        "$@"
+    fi
+}
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
@@ -27,7 +36,7 @@ fi
 # unit, this squeezes another 5–20% out of hot loops.
 CARGO_TARGET_DIR="$BUILD" \
 RUSTFLAGS="-C profile-use=$PROFDATA $(grep -oE '\-C[[:space:]]+[^"]*' .cargo/config.toml | tr '\n' ' ')" \
-distrobox enter my-distrobox-44 -- bash -c "cd $ROOT && cargo build --release \
+run_in_env bash -c "cd $ROOT && cargo build --release \
     -p shell -p terminal -p file-explorer -p install"
 
 echo

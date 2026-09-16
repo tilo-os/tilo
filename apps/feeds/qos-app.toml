@@ -5,14 +5,7 @@
 # uses the file-chooser portal, article links open through the host,
 # and OPML export is written to the sandbox's own /tmp.
 #
-# Pack and install:
-#
-#     cargo build -p feeds -p pkg-cli -p install
-#     mkdir -p target/qpkg/feeds/bin
-#     cp target/debug/feeds target/qpkg/feeds/bin/feeds
-#     target/debug/qos-pkg pack --manifest apps/feeds/qos-app.toml \
-#         --payload target/qpkg/feeds --output target/feeds.qpkg
-#     target/debug/qos-install install target/feeds.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.feeds"
@@ -22,8 +15,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

@@ -1,11 +1,8 @@
-# Named qpkg sets consumed by release-apps.yml. `*` is resolved from the
-# checked-in apps/*/qos-app.toml manifests, so adding an app cannot silently
-# leave the normal desktop/OS collection incomplete.
+# Release sets resolve `*` from tracked app manifests.
 
 [collections.default]
 include = ["*"]
-# Browser links the promoted WPE engine and remains an OS-native integration
-# build. The other 50 apps are independently releasable qpkgs.
+# Browser remains an OS-native WPE integration build.
 exclude = ["browser"]
 
 [collections.desktop]
