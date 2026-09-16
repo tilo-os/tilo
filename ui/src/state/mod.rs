@@ -33,13 +33,25 @@ impl DocumentFrontier {
     /// represented by that payload. Unlike `save_incremental`, this does not
     /// share hidden mutable cursor state with persistence or snapshot export.
     pub fn take_delta(&mut self, doc: &mut AutoCommit) -> Vec<u8> {
-        let current = doc.get_heads();
-        if current == self.heads {
-            return Vec::new();
-        }
-        let delta = doc.save_after(&self.heads);
+        let (delta, current) = self.pending_delta(doc);
         self.heads = current;
         delta
+    }
+
+    /// Build a delta without advancing the frontier. Call [`Self::advance`]
+    /// only after the durable transport accepts it; a saturated/disconnected
+    /// queue can then be retried instead of silently losing the mutation.
+    pub fn pending_delta(&self, doc: &mut AutoCommit) -> (Vec<u8>, Vec<ChangeHash>) {
+        let current = doc.get_heads();
+        if current == self.heads {
+            return (Vec::new(), current);
+        }
+        (doc.save_after(&self.heads), current)
+    }
+
+    /// Advance to heads whose delta a durable destination accepted.
+    pub fn advance(&mut self, heads: Vec<ChangeHash>) {
+        self.heads = heads;
     }
 
     /// Treat the document's current state as already observed on this route.
@@ -1113,6 +1125,20 @@ mod tests {
 
         target.put(automerge::ROOT, "local", true).unwrap();
         assert!(!frontier.take_delta(&mut target).is_empty());
+    }
+
+    #[test]
+    fn pending_delta_is_retryable_until_transport_accepts_it() {
+        let mut doc = AutoCommit::new();
+        let mut frontier = DocumentFrontier::at_document(&mut doc);
+        doc.put(automerge::ROOT, "body", "retry me").unwrap();
+
+        let (first, heads) = frontier.pending_delta(&mut doc);
+        let (retry, _) = frontier.pending_delta(&mut doc);
+        assert_eq!(retry, first);
+
+        frontier.advance(heads);
+        assert!(frontier.pending_delta(&mut doc).0.is_empty());
     }
 
     #[test]
