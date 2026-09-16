@@ -4043,14 +4043,43 @@ impl ImagerApp {
         self.export_after_sync = true;
     }
 
+    /// Replace the last probe snapshot without carrying destructive consent
+    /// across an unplug/replug substitution. Device names such as `disk4`,
+    /// `sdb`, and `PhysicalDrive2` are reusable slots, not hardware identity.
+    fn apply_drive_inventory(&mut self, targets: Vec<TargetDrive>) {
+        let remembered = self.target().cloned();
+        self.targets = targets;
+        self.selected = remembered.as_ref().and_then(|expected| {
+            self.targets
+                .iter()
+                .position(|actual| Self::same_rescanned_target(expected, actual))
+        });
+        if self.selected.is_none() {
+            self.confirm_input.set_text("");
+        }
+    }
+
+    fn same_rescanned_target(expected: &TargetDrive, actual: &TargetDrive) -> bool {
+        let stable_identity_matches = match (&expected.stable_id, &actual.stable_id) {
+            (Some(expected), Some(actual)) => expected == actual,
+            (Some(_), None) | (None, Some(_)) => false,
+            (None, None) => true,
+        };
+        stable_identity_matches
+            && expected.name == actual.name
+            && expected.model == actual.model
+            && expected.size == actual.size
+            && expected.removable == actual.removable
+            && expected.is_system == actual.is_system
+    }
+
     fn do_rescan(&mut self, state: &AutoCommit) -> bool {
         if live_probe_enabled() {
             // Re-read the live block-device inventory. `probe()` returns `None`
-            // only when `lsblk` is unavailable — a transient failure — so in
+            // only when the platform probe is unavailable or malformed, so in
             // that case we keep the last-known list rather than blanking it.
             // A real (possibly empty) result is authoritative and replaces it,
             // so unplugging the selected drive genuinely drops it from the list.
-            let remembered = self.target().map(|d| d.name.clone());
             let Some(t) = crate::probe::probe() else {
                 self.set_status(
                     state,
@@ -4059,11 +4088,7 @@ impl ImagerApp {
                 self.dirty = true;
                 return false;
             };
-            self.targets.clone_from(&t);
-            // Keep the same physical drive selected across a rescan by name,
-            // not by index (indices shift as drives come and go).
-            self.selected =
-                remembered.and_then(|name| self.targets.iter().position(|d| d.name == name));
+            self.apply_drive_inventory(t);
             let n = self.targets.len();
             let removable = self.removable_count();
             self.set_status(
@@ -5854,6 +5879,51 @@ mod tests {
         // Sample has one USB (removable) + one NVMe (fixed).
         assert_eq!(app.visible_targets().len(), 1);
         assert_eq!(app.removable_count(), 1);
+    }
+
+    #[test]
+    fn authoritative_empty_rescan_clears_stale_target_and_consent() {
+        let (mut app, doc) = seeded_app();
+        app.select_target(&doc, 0);
+        app.confirm_input.set_text("sdb");
+
+        app.apply_drive_inventory(Vec::new());
+
+        assert!(app.targets.is_empty());
+        assert_eq!(app.selected, None);
+        assert!(app.confirm_input.value().is_empty());
+    }
+
+    #[test]
+    fn rescan_preserves_only_the_same_physical_target() {
+        let (mut app, doc) = seeded_app();
+        app.select_target(&doc, 0);
+        app.confirm_input.set_text("sdb");
+        let selected = app.target().unwrap().clone();
+        let mut reordered = crate::model::sample_targets();
+        reordered.swap(0, 1);
+
+        app.apply_drive_inventory(reordered);
+
+        assert_eq!(app.selected, Some(1));
+        assert_eq!(
+            app.target().and_then(|drive| drive.stable_id.as_deref()),
+            selected.stable_id.as_deref()
+        );
+        assert_eq!(app.confirm_input.value(), "sdb");
+
+        let mut replacement = selected;
+        replacement.stable_id = Some("different-usb-stick".into());
+        app.apply_drive_inventory(vec![replacement]);
+
+        assert_eq!(
+            app.selected, None,
+            "a reused OS device slot is not the reviewed drive"
+        );
+        assert!(
+            app.confirm_input.value().is_empty(),
+            "consent never carries to replacement hardware"
+        );
     }
 
     #[test]
