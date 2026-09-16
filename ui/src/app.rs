@@ -3795,12 +3795,12 @@ impl App {
         // Arrival remains ephemeral presence only. Document catch-up is a
         // broker-directed request with one selected snapshot responder.
         if let Some(k) = key {
-            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                crate::diag!(
-                    "[app] set scope; collab connected={}; broadcasting Arrived",
-                    self.collab_manager.is_connected()
-                );
-            }
+            tracing::debug!(
+                target: "qos.state",
+                event = "presence_arrived",
+                connected = self.collab_manager.is_connected(),
+                "publishing collaboration presence"
+            );
             self.broadcast_presence(k, crate::collaboration::PresencePayload::Arrived);
         }
     }
@@ -3881,9 +3881,14 @@ impl App {
         if self.collab_manager.is_connected() {
             let (delta, heads) = self.document_frontier.pending_delta(&mut self.state.doc);
             if !delta.is_empty() {
-                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    crate::diag!("[app] broadcast doc delta {}B", delta.len());
-                }
+                tracing::debug!(
+                    target: "qos.state",
+                    event = "document_send",
+                    kind = "incremental",
+                    bytes = delta.len(),
+                    heads = heads.len(),
+                    "queueing document mutation"
+                );
                 if self.collab_manager.send(
                     crate::collaboration::CollabRequest::document_incremental(delta),
                 ) {
@@ -4228,13 +4233,15 @@ impl App {
                 } => {
                     // The broker already validated the envelope (signature +
                     // role table + replay defence); the toolkit trusts it.
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        crate::diag!(
-                            "[app] recv document from {} ({}B payload)",
-                            "<peer>",
-                            envelope.payload.len()
-                        );
-                    }
+                    tracing::debug!(
+                        target: "qos.state",
+                        event = "document_receive",
+                        bytes = envelope.payload.len(),
+                        author = ?envelope.author,
+                        sequence = envelope.seq,
+                        encrypted = envelope.encryption.is_some(),
+                        "applying document mutation"
+                    );
                     self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
                 }
                 CollabEvent::ScrollbackBatch {
@@ -4245,9 +4252,12 @@ impl App {
                 } => {
                     // Broker pre-validated each envelope, trusted the same
                     // way as a live document mutation.
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
-                    }
+                    tracing::debug!(
+                        target: "qos.state",
+                        event = "document_scrollback",
+                        operations = ops.len(),
+                        "applying document scrollback"
+                    );
                     for (index, envelope) in ops.into_iter().enumerate() {
                         let decrypted = decrypted_payloads
                             .get(index)
@@ -5543,13 +5553,13 @@ impl App {
                 } else {
                     self.collab_manager = CollaborationManager::for_record(&id);
                 }
-                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    crate::diag!(
-                        "[app] checked out record {}; collab connected={}",
-                        id.as_str(),
-                        self.collab_manager.is_connected()
-                    );
-                }
+                tracing::debug!(
+                    target: "qos.state",
+                    event = "record_checkout",
+                    record = id.as_str(),
+                    connected = self.collab_manager.is_connected(),
+                    "switched document collaboration route"
+                );
                 self.needs_sync = true;
                 self.layout_dirty = true;
                 // Presence announces the location; document catch-up is an
