@@ -68,6 +68,7 @@ pub mod grid;
 pub mod model;
 pub mod sample;
 pub mod schema_tree;
+pub mod search;
 pub mod session;
 pub mod structure;
 pub mod theme_ext;
