@@ -1,0 +1,987 @@
+//! Verified, one-time folder copying into a fresh destination.
+//!
+//! Grants must be native absolute paths without symlink components. Directory
+//! handles, not estimates or queued absolute paths, authorize traversal. No
+//! source writes, merges, automatic retries, or executable launches occur here.
+
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, File};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
+use cap_primitives::fs::{DirOptions, FollowSymlinks, Metadata, OpenOptions};
+use cap_std::fs::Dir;
+use sha2::{Digest, Sha256};
+
+use super::nofollow::{metadata_nofollow, open_directory_nofollow, same_directory_identity};
+
+const BUFFER_SIZE: usize = 64 * 1024;
+const MAX_DEPTH: usize = 128;
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Debug, Default)]
+pub struct CopyProgress {
+    pub verified_files: u64,
+    pub verified_bytes: u64,
+    pub current_relative_path: PathBuf,
+}
+
+/// Paths are relative to the selected source. Verified output is retained on
+/// cancellation/failure. General fidelity disclosures do not assert metadata
+/// equivalence; errors preserving supported timestamps make `complete` false.
+#[derive(Clone, Debug, Default)]
+pub struct CopyReport {
+    pub verified_files: Vec<PathBuf>,
+    pub verified_bytes: u64,
+    pub skipped: Vec<(PathBuf, String)>,
+    pub failed: Vec<(PathBuf, String)>,
+    pub cancelled: bool,
+    pub scan_completed: bool,
+    pub metadata_limitations: Vec<String>,
+}
+
+impl CopyReport {
+    pub fn complete(&self) -> bool {
+        self.scan_completed && !self.cancelled && self.skipped.is_empty() && self.failed.is_empty()
+    }
+}
+
+fn changed(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Each edge retains both the parent capability and the observed child identity.
+/// Sharing ancestors bounds descriptors to the depth of the active traversal.
+struct PinnedDirectory {
+    file: File,
+    identity: Metadata,
+    parent: Option<(Arc<Self>, OsString)>,
+}
+
+impl PinnedDirectory {
+    fn open_absolute(path: &Path) -> io::Result<Arc<Self>> {
+        if !path.is_absolute() {
+            return Err(changed("folder grant must be a native absolute path"));
+        }
+        let mut anchor = PathBuf::new();
+        let mut names = Vec::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) | Component::RootDir if names.is_empty() => {
+                    anchor.push(component);
+                }
+                Component::Normal(name) => names.push(name),
+                _ => return Err(changed("folder grant contains a non-normal component")),
+            }
+        }
+        let file =
+            cap_primitives::fs::open_ambient_dir(&anchor, cap_primitives::ambient_authority())?;
+        let identity = Metadata::from_file(&file)?;
+        let mut directory = Arc::new(Self {
+            file,
+            identity,
+            parent: None,
+        });
+        for name in names {
+            let metadata = metadata_nofollow(&directory.file, Path::new(name))?;
+            directory = directory.open_child(name, &metadata)?;
+        }
+        Ok(directory)
+    }
+
+    fn open_child(self: &Arc<Self>, name: &OsStr, expected: &Metadata) -> io::Result<Arc<Self>> {
+        reject_windows_placeholder(expected)?;
+        let file = open_directory_nofollow(&self.file, Path::new(name), expected)?;
+        Ok(Arc::new(Self {
+            identity: Metadata::from_file(&file)?,
+            file,
+            parent: Some((Arc::clone(self), name.to_os_string())),
+        }))
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        let mut current = self;
+        while let Some((parent, name)) = &current.parent {
+            let metadata = metadata_nofollow(&parent.file, Path::new(name))?;
+            if metadata.is_symlink()
+                || !metadata.is_dir()
+                || !same_directory_identity(&metadata, &current.identity)
+            {
+                return Err(changed(
+                    "directory identity changed; select the folder again",
+                ));
+            }
+            reject_windows_placeholder(&metadata)?;
+            current = parent;
+        }
+        Ok(())
+    }
+
+    fn contains_identity(&self, identity: &Metadata) -> bool {
+        let mut current = self;
+        loop {
+            if same_directory_identity(&current.identity, identity) {
+                return true;
+            }
+            match &current.parent {
+                Some((parent, _)) => current = parent,
+                None => return false,
+            }
+        }
+    }
+
+    fn create_child(self: &Arc<Self>, name: &OsStr) -> io::Result<Arc<Self>> {
+        self.validate()?;
+        let options = private_directory_options();
+        // mkdir is exclusive: an existing file, directory or link is an error.
+        cap_primitives::fs::create_dir(&self.file, Path::new(name), &options)?;
+        let expected = metadata_nofollow(&self.file, Path::new(name))?;
+        let child = self.open_child(name, &expected)?;
+        child.validate()?;
+        Ok(child)
+    }
+}
+
+fn private_directory_options() -> DirOptions {
+    #[allow(unused_mut)]
+    let mut options = DirOptions::new();
+    #[cfg(unix)]
+    {
+        use cap_primitives::fs::DirBuilderExt;
+        options.mode(0o700);
+    }
+    options
+}
+
+#[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
+fn reject_windows_placeholder(metadata: &Metadata) -> io::Result<()> {
+    #[cfg(windows)]
+    {
+        use cap_primitives::fs::MetadataExt;
+        // All reparse points (including cloud placeholders/junctions), offline,
+        // recall-on-open and recall-on-data-access require a separate safe path.
+        if metadata.file_attributes() & (0x400 | 0x1000 | 0x40000 | 0x400000) != 0 {
+            return Err(changed("reparse point or cloud placeholder is unsupported"));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = metadata;
+    Ok(())
+}
+
+fn same_snapshot(before: &Metadata, after: &Metadata) -> bool {
+    if !same_directory_identity(before, after)
+        || before.len() != after.len()
+        || before.modified().ok() != after.modified().ok()
+        || before.permissions() != after.permissions()
+        || before.is_file() != after.is_file()
+        || before.is_dir() != after.is_dir()
+        || after.is_symlink()
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use cap_primitives::fs::MetadataExt;
+        if before.ctime() != after.ctime() || before.ctime_nsec() != after.ctime_nsec() {
+            return false;
+        }
+    }
+    #[cfg(windows)]
+    {
+        use cap_primitives::fs::MetadataExt;
+        if before.file_attributes() != after.file_attributes() {
+            return false;
+        }
+    }
+    true
+}
+
+fn preserve_times(file: &File, original: &Metadata) -> io::Result<()> {
+    let modified = original.modified()?.into_std();
+    let accessed = original.accessed()?.into_std();
+    file.set_times(
+        fs::FileTimes::new()
+            .set_accessed(accessed)
+            .set_modified(modified),
+    )?;
+    let actual = file.metadata()?;
+    if actual.modified()? != modified || actual.accessed()? != accessed {
+        return Err(changed(
+            "destination cannot preserve source timestamps exactly",
+        ));
+    }
+    Ok(())
+}
+
+// Linux scanner handles may be O_PATH and Windows scanner handles lack
+// FILE_WRITE_ATTRIBUTES. Reopen only the fresh destination using its pinned
+// parent, no-follow lookup and identity comparison before setting timestamps.
+fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) -> io::Result<()> {
+    use cap_fs_ext::OpenOptionsMaybeDirExt;
+    directory.validate()?;
+    let (parent, name) = directory
+        .parent
+        .as_ref()
+        .ok_or_else(|| changed("destination has no pinned parent"))?;
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .maybe_dir(true)
+        .follow(FollowSymlinks::No);
+    #[cfg(windows)]
+    {
+        use cap_primitives::fs::OpenOptionsExt;
+        options.access_mode(0x80 | 0x100); // FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
+    }
+    let writable = cap_primitives::fs::open(&parent.file, Path::new(name), &options)?;
+    let observed = Metadata::from_file(&writable)?;
+    if !observed.is_dir() || !same_directory_identity(&directory.identity, &observed) {
+        return Err(changed("destination changed before timestamp preservation"));
+    }
+    preserve_times(&writable, original)
+}
+
+/// The only removable entry is an exclusive temporary file whose current
+/// no-follow identity still matches the handle created by this operation.
+struct OwnedTemporary {
+    parent: Arc<PinnedDirectory>,
+    name: OsString,
+    file: File,
+    identity: Metadata,
+}
+
+impl OwnedTemporary {
+    fn create(parent: &Arc<PinnedDirectory>, excluded: &OsStr) -> io::Result<Self> {
+        parent.validate()?;
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        {
+            use cap_primitives::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        for _ in 0..128 {
+            let name = OsString::from(format!(
+                ".qos-copy-{}-{}",
+                std::process::id(),
+                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            if name == excluded {
+                continue;
+            }
+            match cap_primitives::fs::open(&parent.file, Path::new(&name), &options) {
+                Ok(file) => {
+                    let identity = Metadata::from_file(&file)?;
+                    return Ok(Self {
+                        parent: Arc::clone(parent),
+                        name,
+                        file,
+                        identity,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(changed("cannot reserve an exclusive temporary filename"))
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        self.parent.validate()?;
+        let metadata = metadata_nofollow(&self.parent.file, Path::new(&self.name))?;
+        if !metadata.is_file()
+            || metadata.is_symlink()
+            || !same_directory_identity(&metadata, &self.identity)
+        {
+            return Err(changed("temporary destination was replaced"));
+        }
+        Ok(())
+    }
+
+    fn remove_owned(&self) -> io::Result<()> {
+        self.validate()?;
+        cap_primitives::fs::remove_file(&self.parent.file, Path::new(&self.name))
+    }
+}
+
+impl Drop for OwnedTemporary {
+    fn drop(&mut self) {
+        // Never recursively clean a destination or unlink a replacement.
+        let _ = self.remove_owned();
+    }
+}
+
+struct StagedFile {
+    source_parent: Arc<PinnedDirectory>,
+    name: OsString,
+    source: File,
+    original: Metadata,
+    temporary: OwnedTemporary,
+    bytes: u64,
+    digest: [u8; 32],
+}
+
+impl StagedFile {
+    fn copy(
+        source_parent: &Arc<PinnedDirectory>,
+        destination: &Arc<PinnedDirectory>,
+        name: &OsStr,
+        expected: &Metadata,
+        cancelled: &AtomicBool,
+    ) -> io::Result<Self> {
+        check_cancel(cancelled)?;
+        source_parent.validate()?;
+        reject_windows_placeholder(expected)?;
+        if !expected.is_file() || expected.is_symlink() {
+            return Err(changed("source is not a regular file"));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No).nonblock(true);
+        let mut source = cap_primitives::fs::open(&source_parent.file, Path::new(name), &options)?;
+        let original = Metadata::from_file(&source)?;
+        if !same_snapshot(expected, &original) {
+            return Err(changed("source changed while opening"));
+        }
+        let mut temporary = OwnedTemporary::create(destination, name)?;
+        let (bytes, digest) = stream(
+            &mut source,
+            Some(&mut temporary.file),
+            original.len(),
+            cancelled,
+        )?;
+        temporary.file.flush()?;
+        temporary.file.sync_all()?;
+        Ok(Self {
+            source_parent: Arc::clone(source_parent),
+            name: name.to_os_string(),
+            source,
+            original,
+            temporary,
+            bytes,
+            digest,
+        })
+    }
+
+    fn verify_and_publish(mut self, cancelled: &AtomicBool) -> io::Result<u64> {
+        check_cancel(cancelled)?;
+        self.temporary.validate()?;
+        self.temporary.file.seek(SeekFrom::Start(0))?;
+        let destination = stream(&mut self.temporary.file, None, self.bytes, cancelled)?;
+        if destination != (self.bytes, self.digest) {
+            return Err(changed("destination content verification failed"));
+        }
+        self.source.seek(SeekFrom::Start(0))?;
+        let reread = stream(&mut self.source, None, self.bytes, cancelled)?;
+        if reread != (self.bytes, self.digest) {
+            return Err(changed(
+                "source content changed during copy; retry required",
+            ));
+        }
+        self.source_parent.validate()?;
+        let by_handle = Metadata::from_file(&self.source)?;
+        let by_name = metadata_nofollow(&self.source_parent.file, Path::new(&self.name))?;
+        if !same_snapshot(&self.original, &by_handle) || !same_snapshot(&self.original, &by_name) {
+            return Err(changed(
+                "source metadata or identity changed during copy; retry required",
+            ));
+        }
+        preserve_times(&self.temporary.file, &self.original)?;
+        self.temporary.file.sync_all()?;
+        check_cancel(cancelled)?;
+        self.temporary.validate()?;
+        // Hard-link publication is atomic and fails if the destination exists.
+        // Filesystems without hard links are explicitly unsupported, never
+        // downgraded to an overwriting rename or a partially visible copy.
+        cap_primitives::fs::hard_link(
+            &self.temporary.parent.file,
+            Path::new(&self.temporary.name),
+            &self.temporary.parent.file,
+            Path::new(&self.name),
+        )?;
+        let published = metadata_nofollow(&self.temporary.parent.file, Path::new(&self.name))?;
+        if !published.is_file() || !same_directory_identity(&published, &self.temporary.identity) {
+            return Err(changed("published destination identity changed"));
+        }
+        self.temporary.remove_owned()?;
+        Ok(self.bytes)
+    }
+}
+
+/// Bounded streaming, also used for the independent source/destination rereads.
+/// The expected length bounds work even if another process keeps appending.
+fn stream(
+    source: &mut File,
+    mut destination: Option<&mut File>,
+    expected: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<(u64, [u8; 32])> {
+    let mut buffer = vec![0_u8; BUFFER_SIZE];
+    let mut digest = Sha256::new();
+    let mut total = 0_u64;
+    loop {
+        check_cancel(cancelled)?;
+        let count = source.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total = total
+            .checked_add(count as u64)
+            .ok_or_else(|| changed("file length overflow"))?;
+        if total > expected {
+            return Err(changed("file length changed during copy"));
+        }
+        let chunk = buffer
+            .get(..count)
+            .ok_or_else(|| changed("invalid read length"))?;
+        digest.update(chunk);
+        if let Some(output) = &mut destination {
+            output.write_all(chunk)?;
+        }
+    }
+    if total != expected {
+        return Err(changed("file length changed during copy"));
+    }
+    Ok((total, digest.finalize().into()))
+}
+
+struct Copier<'a, P> {
+    cancelled: &'a AtomicBool,
+    progress: P,
+    report: CopyReport,
+}
+
+impl<P: FnMut(CopyProgress)> Copier<'_, P> {
+    fn notify(&mut self, path: &Path) {
+        (self.progress)(CopyProgress {
+            verified_files: self.report.verified_files.len() as u64,
+            verified_bytes: self.report.verified_bytes,
+            current_relative_path: path.to_path_buf(),
+        });
+    }
+
+    fn walk(
+        &mut self,
+        source: &Arc<PinnedDirectory>,
+        destination: &Arc<PinnedDirectory>,
+        relative: &Path,
+        depth: usize,
+    ) -> io::Result<()> {
+        check_cancel(self.cancelled)?;
+        source.validate()?;
+        destination.validate()?;
+        if depth > MAX_DEPTH {
+            return Err(changed("folder nesting exceeds supported depth"));
+        }
+        let before = Metadata::from_file(&source.file)?;
+        let directory = Dir::from_std_file(source.file.try_clone()?);
+        let mut names = Vec::new();
+        for entry in directory.entries()? {
+            check_cancel(self.cancelled)?;
+            match entry {
+                Ok(entry) => names.push(entry.file_name()),
+                Err(error) => self
+                    .report
+                    .failed
+                    .push((relative.to_path_buf(), error.to_string())),
+            }
+        }
+        names.sort();
+        for name in names {
+            let path = relative.join(&name);
+            self.notify(&path);
+            check_cancel(self.cancelled)?;
+            source.validate()?;
+            destination.validate()?;
+            if let Err(error) = self.copy_entry(source, destination, &name, &path, depth) {
+                if self.cancelled.load(Ordering::Relaxed) {
+                    return Err(error);
+                }
+                self.report.failed.push((path, error.to_string()));
+            }
+        }
+        source.validate()?;
+        if !same_snapshot(&before, &Metadata::from_file(&source.file)?) {
+            return Err(changed(
+                "source directory changed during enumeration; retry required",
+            ));
+        }
+        destination.validate()?;
+        preserve_directory_times(destination, &before)?;
+        Ok(())
+    }
+
+    fn copy_entry(
+        &mut self,
+        source: &Arc<PinnedDirectory>,
+        destination: &Arc<PinnedDirectory>,
+        name: &OsStr,
+        relative: &Path,
+        depth: usize,
+    ) -> io::Result<()> {
+        let metadata = metadata_nofollow(&source.file, Path::new(name))?;
+        if metadata.is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
+            self.report.skipped.push((
+                relative.to_path_buf(),
+                "symbolic link or unsupported file type".to_string(),
+            ));
+            return Ok(());
+        }
+        reject_windows_placeholder(&metadata)?;
+        if metadata.is_dir() {
+            let source_child = source.open_child(name, &metadata)?;
+            let destination_child = destination.create_child(name)?;
+            self.walk(
+                &source_child,
+                &destination_child,
+                relative,
+                depth.saturating_add(1),
+            )
+        } else {
+            let staged = StagedFile::copy(source, destination, name, &metadata, self.cancelled)?;
+            let bytes = staged.verify_and_publish(self.cancelled)?;
+            self.report.verified_bytes = self
+                .report
+                .verified_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| changed("verified byte count overflow"))?;
+            self.report.verified_files.push(relative.to_path_buf());
+            self.notify(relative);
+            Ok(())
+        }
+    }
+}
+
+/// Copy the explicitly granted source to the exact, new import directory.
+///
+/// `complete()` covers all regular-file bytes, directory entries and supported
+/// timestamps, with other fidelity limitations disclosed separately. Progress
+/// counts only published, verified files. An initial progress event occurs after
+/// pinning grants but before creating the destination.
+///
+/// # Errors
+/// Returns an error for invalid/overlapping grants, an existing destination, or
+/// failure to create the fresh root. Failures after creation are per-path report
+/// entries; verified outputs remain available for later explicit resumption.
+pub fn copy_folder(
+    source: &Path,
+    destination: &Path,
+    cancelled: &AtomicBool,
+    progress: impl FnMut(CopyProgress),
+) -> Result<CopyReport, String> {
+    let mut copier = Copier {
+        cancelled,
+        progress,
+        report: CopyReport {
+            metadata_limitations: vec!["Copies regular-file contents and access/modification times. Ownership, original permissions, ACLs, extended attributes, alternate streams, creation times, sparse layout and hard-link relationships are not preserved. New files use private user-owned permissions on Unix and inherit destination security on Windows.".to_string()],
+            ..CopyReport::default()
+        },
+    };
+    if cancelled.load(Ordering::Relaxed) {
+        copier.report.cancelled = true;
+        return Ok(copier.report);
+    }
+    if !destination.is_absolute() {
+        return Err("destination must be a native absolute path".to_string());
+    }
+    let name = destination
+        .file_name()
+        .ok_or_else(|| "destination must name a new directory".to_string())?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "destination has no parent".to_string())?;
+    let source = PinnedDirectory::open_absolute(source)
+        .map_err(|error| format!("cannot open source: {error}"))?;
+    let parent = PinnedDirectory::open_absolute(parent)
+        .map_err(|error| format!("cannot open destination parent: {error}"))?;
+    if parent.contains_identity(&source.identity) {
+        return Err("source and destination overlap".to_string());
+    }
+    copier.notify(Path::new(""));
+    if cancelled.load(Ordering::Relaxed) {
+        copier.report.cancelled = true;
+        return Ok(copier.report);
+    }
+    source.validate().map_err(|error| error.to_string())?;
+    let destination = parent
+        .create_child(name)
+        .map_err(|error| format!("cannot create fresh destination: {error}"))?;
+    match copier.walk(&source, &destination, Path::new(""), 0) {
+        Ok(()) => copier.report.scan_completed = true,
+        Err(error) => copier
+            .report
+            .failed
+            .push((PathBuf::new(), error.to_string())),
+    }
+    copier.report.cancelled = cancelled.load(Ordering::Relaxed);
+    Ok(copier.report)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn fixture() -> (TempDir, PathBuf, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let source = base.join("source");
+        fs::create_dir(&source).unwrap();
+        (temp, source, base.join("destination"))
+    }
+
+    // Catches missing/corrupted copies and dropped empty directories.
+    #[test]
+    fn copies_nested_files_and_empty_directories_without_changing_originals() {
+        let (_temp, source, destination) = fixture();
+        fs::create_dir(source.join("nested")).unwrap();
+        fs::create_dir(source.join("empty")).unwrap();
+        fs::write(source.join("nested/hello.txt"), b"hello").unwrap();
+        let mut progress = Vec::new();
+        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |p| {
+            progress.push(p);
+        })
+        .unwrap();
+        assert!(report.complete(), "{report:?}");
+        assert_eq!(
+            fs::read(destination.join("nested/hello.txt")).unwrap(),
+            b"hello"
+        );
+        assert!(destination.join("empty").is_dir());
+        assert_eq!(fs::read(source.join("nested/hello.txt")).unwrap(), b"hello");
+        assert_eq!(report.verified_bytes, 5);
+        assert_eq!(report.verified_files, [PathBuf::from("nested/hello.txt")]);
+        assert_eq!(progress.last().unwrap().verified_bytes, 5);
+    }
+
+    // Catches overwrite/merge or recursive self-copy.
+    #[test]
+    fn refuses_existing_destination_and_overlapping_grants() {
+        let (_temp, source, destination) = fixture();
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("sentinel"), b"keep").unwrap();
+        for target in [&destination, &source, &source.join("inside")] {
+            assert!(copy_folder(&source, target, &AtomicBool::new(false), |_| {}).is_err());
+        }
+        assert_eq!(fs::read(destination.join("sentinel")).unwrap(), b"keep");
+        assert!(!source.join("inside").exists());
+    }
+
+    // Catches work performed despite an already-cancelled grant.
+    #[test]
+    fn cancellation_creates_no_destination_and_reports_incomplete() {
+        let (_temp, source, destination) = fixture();
+        fs::write(source.join("sentinel"), b"keep").unwrap();
+        let report = copy_folder(&source, &destination, &AtomicBool::new(true), |_| {}).unwrap();
+        assert!(report.cancelled);
+        assert!(!report.complete());
+        assert!(!destination.exists());
+        assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symbolic_link_source() {
+        let (temp, source, destination) = fixture();
+        fs::write(source.join("sentinel"), b"keep").unwrap();
+        let link = temp.path().canonicalize().unwrap().join("link");
+        std::os::unix::fs::symlink(&source, &link).unwrap();
+        assert!(copy_folder(&link, &destination, &AtomicBool::new(false), |_| {}).is_err());
+        assert!(!destination.exists());
+        assert_eq!(fs::read(source.join("sentinel")).unwrap(), b"keep");
+    }
+    // Catches a check-then-open destination parent redirect.
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_destination_parent_replaced_after_pinning() {
+        let (temp, source, _) = fixture();
+        let base = temp.path().canonicalize().unwrap();
+        let parent = base.join("parent");
+        fs::create_dir(&parent).unwrap();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        let mut replaced = false;
+        let result = copy_folder(
+            &source,
+            &parent.join("copy"),
+            &AtomicBool::new(false),
+            |_| {
+                if !replaced {
+                    replaced = true;
+                    fs::rename(&parent, base.join("old-parent")).unwrap();
+                    fs::create_dir(&parent).unwrap();
+                    fs::write(parent.join("sentinel"), b"keep").unwrap();
+                }
+            },
+        );
+        assert!(replaced);
+        assert!(result.is_err() || !result.unwrap().complete());
+        assert!(!parent.join("copy").exists());
+        assert!(!base.join("old-parent/copy").exists());
+        assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
+    }
+
+    // Catches silently following links or claiming a partial copy complete.
+    #[cfg(unix)]
+    #[test]
+    fn unsupported_entries_are_explicit_and_never_followed() {
+        let (temp, source, destination) = fixture();
+        let outside = temp.path().canonicalize().unwrap().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel"), b"keep").unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("link")).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("socket")).unwrap();
+        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(!report.complete());
+        assert_eq!(report.skipped.len(), 2);
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|(path, _)| path == Path::new("link"))
+        );
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|(path, _)| path == Path::new("socket"))
+        );
+        assert!(!destination.join("link").exists());
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
+    }
+
+    // Catches loss of timestamps and accidentally copying permissive modes.
+    #[test]
+    fn preserves_supported_timestamps_and_discloses_other_metadata_limits() {
+        let (_temp, source, destination) = fixture();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        fs::File::options()
+            .write(true)
+            .open(source.join("hello"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_accessed(time).set_modified(time))
+            .unwrap();
+        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(report.complete(), "{report:?}");
+        assert_eq!(
+            fs::metadata(destination.join("hello"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            time
+        );
+        assert_eq!(
+            fs::metadata(destination.join("hello"))
+                .unwrap()
+                .accessed()
+                .unwrap(),
+            time
+        );
+        assert!(!report.metadata_limitations.is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&destination).unwrap().permissions().mode() & 0o077,
+                0
+            );
+            assert_eq!(
+                fs::metadata(destination.join("hello"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o077,
+                0
+            );
+        }
+    }
+
+    fn stage_fixture(source: &Path, destination: &Path) -> StagedFile {
+        let source = PinnedDirectory::open_absolute(source).unwrap();
+        let destination = PinnedDirectory::open_absolute(destination).unwrap();
+        let expected = metadata_nofollow(&source.file, Path::new("hello")).unwrap();
+        StagedFile::copy(
+            &source,
+            &destination,
+            OsStr::new("hello"),
+            &expected,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+
+    // Catches publication without destination digest verification.
+    #[test]
+    fn corruption_of_staged_bytes_is_not_published() {
+        let (_temp, source, destination) = fixture();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let mut staged = stage_fixture(&source, &destination);
+        staged.temporary.file.seek(SeekFrom::Start(0)).unwrap();
+        staged.temporary.file.write_all(b"wrong").unwrap();
+        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+        assert!(!destination.join("hello").exists());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
+    }
+
+    // Catches trusting size/mtime without a second source content read.
+    #[test]
+    fn source_content_changed_with_restored_mtime_is_not_published() {
+        let (_temp, source, destination) = fixture();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let staged = stage_fixture(&source, &destination);
+        let time = fs::metadata(source.join("hello"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        fs::write(source.join("hello"), b"world").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(source.join("hello"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(time))
+            .unwrap();
+        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+        assert!(!destination.join("hello").exists());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+        assert_eq!(fs::read(source.join("hello")).unwrap(), b"world");
+    }
+
+    // Catches overwriting a conflict created after exclusive staging.
+    #[test]
+    fn publication_preserves_conflicting_destination() {
+        let (_temp, source, destination) = fixture();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let staged = stage_fixture(&source, &destination);
+        fs::write(destination.join("hello"), b"sentinel").unwrap();
+        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+        assert_eq!(fs::read(destination.join("hello")).unwrap(), b"sentinel");
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    }
+
+    // Catches unlinking an entry we no longer own during error cleanup.
+    #[test]
+    fn replacing_a_temporary_file_preserves_the_replacement() {
+        let (_temp, source, destination) = fixture();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let staged = stage_fixture(&source, &destination);
+        let temporary = destination.join(&staged.temporary.name);
+        fs::remove_file(&temporary).unwrap();
+        fs::write(&temporary, b"sentinel").unwrap();
+        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+        assert_eq!(fs::read(temporary).unwrap(), b"sentinel");
+        assert!(!destination.join("hello").exists());
+    }
+
+    // Catches completing a cancelled operation or deleting verified work.
+    #[test]
+    fn cancellation_retains_verified_files_and_stops_before_next_entry() {
+        let (_temp, source, destination) = fixture();
+        fs::write(source.join("a"), b"hello").unwrap();
+        fs::write(source.join("b"), b"world").unwrap();
+        let cancelled = AtomicBool::new(false);
+        let report = copy_folder(&source, &destination, &cancelled, |p| {
+            if p.verified_files == 1 {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+        assert!(report.cancelled);
+        assert!(!report.complete());
+        assert_eq!(report.verified_files, [PathBuf::from("a")]);
+        assert_eq!(report.verified_bytes, 5);
+        assert_eq!(fs::read(destination.join("a")).unwrap(), b"hello");
+        assert!(!destination.join("b").exists());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cancellation_after_staging_cleans_only_the_unpublished_temp() {
+        let (_temp, source, destination) = fixture();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        fs::create_dir(&destination).unwrap();
+        let staged = stage_fixture(&source, &destination);
+        assert!(staged.verify_and_publish(&AtomicBool::new(true)).is_err());
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn large_file_and_non_ascii_name_cross_chunk_boundaries() {
+        let (_temp, source, destination) = fixture();
+        let bytes = vec![43; 200_003];
+        fs::write(source.join("café 📁.txt"), &bytes).unwrap();
+        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(report.complete(), "{report:?}");
+        assert_eq!(report.verified_bytes, 200_003);
+        assert_eq!(fs::read(destination.join("café 📁.txt")).unwrap(), bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn swapped_descendant_is_never_followed_outside_grant() {
+        let (temp, source, destination) = fixture();
+        fs::create_dir(source.join("child")).unwrap();
+        fs::write(source.join("child/hello"), b"hello").unwrap();
+        let outside = temp.path().canonicalize().unwrap().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel"), b"keep").unwrap();
+        let mut swapped = false;
+        let report = copy_folder(&source, &destination, &AtomicBool::new(false), |p| {
+            if p.current_relative_path == Path::new("child") && !swapped {
+                swapped = true;
+                fs::rename(source.join("child"), source.join("old-child")).unwrap();
+                std::os::unix::fs::symlink(&outside, source.join("child")).unwrap();
+            }
+        })
+        .unwrap();
+        assert!(swapped);
+        assert!(!report.complete());
+        assert!(!destination.join("child").exists());
+        assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pinned_destination_parent_cannot_be_renamed_on_windows() {
+        let (temp, source, _) = fixture();
+        let base = temp.path().canonicalize().unwrap();
+        let parent = base.join("parent");
+        fs::create_dir(&parent).unwrap();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        let mut attempted = false;
+        let report = copy_folder(
+            &source,
+            &parent.join("copy"),
+            &AtomicBool::new(false),
+            |_| {
+                if !attempted {
+                    attempted = true;
+                    assert!(fs::rename(&parent, base.join("renamed")).is_err());
+                }
+            },
+        )
+        .unwrap();
+        assert!(attempted);
+        assert!(report.complete(), "{report:?}");
+        assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
+    }
+}
