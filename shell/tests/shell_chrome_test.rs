@@ -606,15 +606,12 @@ fn toast_fires_on_rename_and_create() {
 fn sidebar_wheel_event_routes_through_shell() {
     use shell::shell::Shell;
     let mut shell = Shell::new_for_test();
-    let strips_before = shell.active_strip_index();
-    shell.simulate_sidebar_wheel(1);
-    // Either the index advanced or the clamp held at the last strip — both
-    // valid. This only asserts the shell routed the wheel to the sidebar
-    // widget without mutating the search/overview flags.
-    // Deliberately not asserted on: `active_strip_index` is still a placeholder
-    // that always answers 0, so comparing it would pass whatever the wheel did.
-    // The binding stays to mark the spot for when it reports a real index.
-    let _ = strips_before;
+    assert_eq!(shell.append_empty_strip_for_test("Second"), 1);
+    assert_eq!(shell.active_strip_index(), 0);
+    assert_eq!(shell.simulate_sidebar_wheel(1), 1);
+    assert_eq!(shell.active_strip_index(), 1);
+    assert_eq!(shell.simulate_sidebar_wheel(-1), 0);
+    assert_eq!(shell.active_strip_index(), 0);
     assert!(!shell.search_visible());
     assert!(!shell.overview_visible());
 }
