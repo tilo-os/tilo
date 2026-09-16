@@ -108,25 +108,29 @@ jobs:
           FULL_NATIVE: ${{ github.event.inputs.full_native }}
         shell: bash
         run: |
-          targets=$(cat <<'EOF'
-          arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|
+          common_targets=$(cat <<'EOF'
           nix|docker.io/nixos/nix@sha256:f6f7814c2224dad18b14479fed5f0620be65d54625a4b97ae8b24b407e1b43a2|
           ubuntu-24.04|docker.io/library/ubuntu@sha256:1e0a86e57d247923571b75e0aaf48a1449cf8c543d51fb3e07a4a7d7bfa79316|1+ubuntu24.04
           debian-13|docker.io/library/debian@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1|1+deb13
           fedora-44|registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b|
           EOF
           )
+          # menci's cross-build image deliberately declares an amd64 OCI
+          # config around an ARM rootfs. Keep it for the x86/QEMU fallback,
+          # but give native runners a genuinely arm64-declared image.
+          amd64_targets="arch|docker.io/menci/archlinuxarm@sha256:dbb3df8941d78f13e4277cec63beeac61096b474864974cfeff64efebd1aa81c|"$'\n'"$common_targets"
+          arm64_targets="arch|docker.io/gomasy/archlinuxarm@sha256:2b73dc79eaf9b816d0e41345258766ac3cb6bb2b407125d9f5b31cf94e177488|"$'\n'"$common_targets"
           release_arches=amd64
           if [[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]] &&
              [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
             release_arches=amd64,arm64
-            matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"runner",targets:$targets},
-              {arch:"arm64",runner:"runner-arm64",targets:$targets}
+            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg arm64_targets "$arm64_targets" '{include:[
+              {arch:"amd64",runner:"runner",targets:$amd64_targets},
+              {arch:"arm64",runner:"runner-arm64",targets:$arm64_targets}
             ]}')
           else
-            matrix=$(jq -cn --arg targets "$targets" '{include:[
-              {arch:"amd64",runner:"runner",targets:$targets}
+            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" '{include:[
+              {arch:"amd64",runner:"runner",targets:$amd64_targets}
             ]}')
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
