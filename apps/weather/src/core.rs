@@ -106,6 +106,65 @@ struct DrawCtx<'a> {
     theme: &'a Theme,
 }
 
+impl DrawCtx<'_> {
+    fn text_left(
+        &mut self,
+        text: &str,
+        x: f64,
+        y_top: f64,
+        size: f32,
+        weight: TextWeight,
+        color: Color,
+    ) {
+        self.text_renderer.draw_text_weighted(
+            self.scene,
+            text,
+            size,
+            color,
+            self.transform * Affine::translate((x, y_top)),
+            None,
+            weight,
+        );
+    }
+
+    fn text_right(
+        &mut self,
+        text: &str,
+        x_right: f64,
+        y_top: f64,
+        size: f32,
+        weight: TextWeight,
+        color: Color,
+    ) {
+        let (width, _) = self
+            .text_renderer
+            .measure_weighted(text, size, None, weight);
+        self.text_left(text, x_right - f64::from(width), y_top, size, weight, color);
+    }
+
+    fn text_center(
+        &mut self,
+        text: &str,
+        x_center: f64,
+        y_top: f64,
+        size: f32,
+        weight: TextWeight,
+        color: Color,
+    ) {
+        let (width, _) = self
+            .text_renderer
+            .measure_weighted(text, size, None, weight);
+        self.text_left(
+            text,
+            x_center - f64::from(width) / 2.0,
+            y_top,
+            size,
+            weight,
+            color,
+        );
+    }
+}
+
 /// The `Widget::handle_event` inputs the overview and its embedded search
 /// field share. The pane constructs this once at the trait boundary; internal
 /// routing then adds only the state specific to each gesture.
@@ -891,9 +950,7 @@ impl Core {
         // matches render as a floating dropdown over it (drawn last), so the
         // list never jumps around while typing.
         let mut y = sy + sh + 16.0;
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             "SAVED PLACES",
             left,
             y,
@@ -957,9 +1014,7 @@ impl Core {
         ctx.scene.pop_layer();
 
         if self.model.locations.is_empty() {
-            text_left(
-                ctx.scene,
-                ctx.text_renderer,
+            ctx.text_left(
                 "No places yet — search above",
                 left,
                 list_top + 8.0,
@@ -1147,7 +1202,6 @@ impl Core {
     ) {
         let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = f64::midpoint(rect.x0, rect.x1);
@@ -1195,9 +1249,7 @@ impl Core {
                 theme,
             );
             let temp = snap.temp_in(snap.current.temperature, self.units).round() as i64;
-            text_center(
-                scene,
-                tr,
+            ctx.text_center(
                 &format!("{temp}°"),
                 cx,
                 slot.y1 - 18.0,
@@ -1206,9 +1258,7 @@ impl Core {
                 c.text_primary,
             );
         } else {
-            text_center(
-                scene,
-                tr,
+            ctx.text_center(
                 "—",
                 cx,
                 slot.y0 + 14.0,
@@ -1310,7 +1360,6 @@ impl Core {
         units: Units,
     ) {
         let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let selected = index == self.model.selected;
@@ -1352,9 +1401,7 @@ impl Core {
                 theme,
             );
         }
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &loc.name,
             chip.x0 + 58.0,
             chip.y0 + if large_text { 13.0 } else { 12.0 },
@@ -1374,9 +1421,7 @@ impl Core {
         } else {
             loc.country.clone()
         };
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &sub,
             chip.x0 + 58.0,
             chip.y0 + if large_text { 58.0 } else { 35.0 },
@@ -1386,9 +1431,7 @@ impl Core {
         );
         if let Some(snap) = self.model.snapshot_for(loc.id) {
             let temp = snap.temp_in(snap.current.temperature, units).round() as i64;
-            text_right(
-                scene,
-                tr,
+            ctx.text_right(
                 &format!("{temp}°"),
                 chip.x1 - 14.0,
                 chip.y0 + if large_text { 27.0 } else { 16.0 },
@@ -1397,9 +1440,7 @@ impl Core {
                 c.text_primary,
             );
         } else {
-            text_right(
-                scene,
-                tr,
+            ctx.text_right(
                 "—",
                 chip.x1 - 16.0,
                 chip.y0 + 20.0,
@@ -1429,7 +1470,6 @@ impl Core {
     fn draw_delete_dropzone(&self, ctx: &mut DrawCtx<'_>, rect: Rect) {
         let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let zone = self.delete_zone_rect();
@@ -1461,9 +1501,7 @@ impl Core {
         } else {
             c.semantic.danger
         };
-        text_center(
-            scene,
-            tr,
+        ctx.text_center(
             "Delete",
             zone.x0 + w / 2.0,
             zone.y1 - 26.0,
@@ -1474,9 +1512,7 @@ impl Core {
     }
 
     fn draw_context_menu(&self, ctx: &mut DrawCtx<'_>, hot: &mut Vec<Hotspot>) {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let Some(menu) = self.menu.as_ref() else {
             return;
@@ -1492,21 +1528,22 @@ impl Core {
         let my = menu.anchor.y.min(area.y1 - mh - 4.0).max(area.y0 + 4.0);
         let panel = Rect::new(mx, my, mx + mw, my + mh);
         let shape = RoundedRect::from_rect(panel, f64::from(theme.tokens.radii.md));
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
             t,
             Color::from_rgba8(0, 0, 0, 80),
             None,
             &RoundedRect::from_rect(panel.inset(-3.0), f64::from(theme.tokens.radii.md) + 3.0),
         );
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
             t,
             c.surfaces.overlay.with_alpha_factor(0.98),
             None,
             &shape,
         );
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
+        ctx.scene
+            .stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
         for (i, action) in menu.items.iter().enumerate() {
             let ry = my + pad + i as f64 * row_h;
             let row = Rect::new(mx + pad, ry, mx + mw - pad, ry + row_h);
@@ -1516,7 +1553,7 @@ impl Core {
                 } else {
                     c.neutral[2]
                 };
-                scene.fill(
+                ctx.scene.fill(
                     Fill::NonZero,
                     t,
                     hl,
@@ -1538,13 +1575,11 @@ impl Core {
                 icon_top + icon_size,
             );
             match action {
-                EntryAction::Delete => Icon::Trash.draw(scene, t, icon_r, text_color),
-                EntryAction::MoveToTop => Icon::ChevronUp.draw(scene, t, icon_r, text_color),
-                EntryAction::Refresh => Icon::Refresh.draw(scene, t, icon_r, text_color),
+                EntryAction::Delete => Icon::Trash.draw(ctx.scene, t, icon_r, text_color),
+                EntryAction::MoveToTop => Icon::ChevronUp.draw(ctx.scene, t, icon_r, text_color),
+                EntryAction::Refresh => Icon::Refresh.draw(ctx.scene, t, icon_r, text_color),
             }
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 action.label(),
                 row.x0 + if large_text { 44.0 } else { 32.0 },
                 row.y0 + row_h / 2.0 - if large_text { 14.0 } else { 8.0 },
@@ -1973,9 +2008,7 @@ impl Core {
 
         let Some(snap) = snap_opt else {
             self.max_scroll = 0.0;
-            text_left(
-                ctx.scene,
-                ctx.text_renderer,
+            ctx.text_left(
                 "Fetching current conditions…",
                 mx,
                 body_top + 24.0,
@@ -2019,7 +2052,6 @@ impl Core {
     fn draw_detail_zero_state(&mut self, ctx: &mut DrawCtx<'_>, rect: Rect) {
         let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = rect.center().x;
@@ -2044,9 +2076,7 @@ impl Core {
                 "Choose a saved place on the left to see its forecast.",
             )
         };
-        text_center(
-            scene,
-            tr,
+        ctx.text_center(
             headline,
             cx,
             anchor + glyph + 20.0,
@@ -2054,9 +2084,7 @@ impl Core {
             TextWeight::Bold,
             c.text_primary,
         );
-        text_center(
-            scene,
-            tr,
+        ctx.text_center(
             sub,
             cx,
             anchor + glyph + 54.0,
@@ -2078,9 +2106,7 @@ impl Core {
         loc: &SavedLocation,
         snap: Option<&WeatherSnapshot>,
     ) -> f64 {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let top_pad = if self.detail_reserve_back {
@@ -2096,9 +2122,7 @@ impl Core {
             refresh_width: if large_text { 44.0 } else { 34.0 },
             large_text,
         };
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &loc.name,
             header.left,
             header.top,
@@ -2106,9 +2130,7 @@ impl Core {
             TextWeight::Bold,
             c.text_primary,
         );
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &loc.subtitle(),
             header.left,
             header.top + if large_text { 48.0 } else { 32.0 },
@@ -2126,7 +2148,7 @@ impl Core {
         );
         let rshape = RoundedRect::from_rect(refresh, f64::from(theme.tokens.radii.md));
         let rhover = refresh.contains(self.last_mouse);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
             t,
             if rhover {
@@ -2137,8 +2159,9 @@ impl Core {
             None,
             &rshape,
         );
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &rshape);
-        Icon::Refresh.draw(scene, t, refresh.inset(-8.0), c.text_primary);
+        ctx.scene
+            .stroke(&Stroke::new(1.0), t, c.border_standard, None, &rshape);
+        Icon::Refresh.draw(ctx.scene, t, refresh.inset(-8.0), c.text_primary);
         self.refresh_btn = refresh;
 
         self.draw_detail_header_status(ctx, snap, &header);
@@ -2151,17 +2174,13 @@ impl Core {
         snap: Option<&WeatherSnapshot>,
         header: &DetailHeaderLayout,
     ) {
-        let scene = &mut *ctx.scene;
-        let tr = &mut *ctx.text_renderer;
         let c = &ctx.theme.tokens.colors;
         if let Some(snap) = snap {
             let cur = &snap.current;
             let date_str = fmt_date(&cur.time);
             let time_str = hhmm(&cur.time);
             if header.large_text {
-                text_left(
-                    scene,
-                    tr,
+                ctx.text_left(
                     &format!("{date_str} · Local time {time_str}"),
                     header.left,
                     header.top + 82.0,
@@ -2170,9 +2189,7 @@ impl Core {
                     c.text_dim,
                 );
             } else {
-                text_right(
-                    scene,
-                    tr,
+                ctx.text_right(
                     &date_str,
                     header.right - header.refresh_width - 12.0,
                     header.top + 2.0,
@@ -2180,9 +2197,7 @@ impl Core {
                     TextWeight::Medium,
                     c.text_primary,
                 );
-                text_right(
-                    scene,
-                    tr,
+                ctx.text_right(
                     &format!("Local time {time_str}"),
                     header.right - header.refresh_width - 12.0,
                     header.top + 24.0,
@@ -2193,9 +2208,7 @@ impl Core {
             }
         }
         if self.status.starts_with("Couldn't") || self.status.starts_with("Offline") {
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 &self.status,
                 header.left,
                 header.top + if header.large_text { 112.0 } else { 51.0 },
@@ -2258,9 +2271,7 @@ impl Core {
             TextWeight::Bold,
         );
         let (tnw, _) = tr.measure_weighted(&temp_str, temp_size, None, TextWeight::Bold);
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             units.degree_glyph(),
             temp_x + f64::from(tnw) + 4.0,
             hero.y0 + if large_text { 32.0 } else { 40.0 },
@@ -2269,9 +2280,7 @@ impl Core {
             c.text_dim,
         );
         let cond = Sky::label(cur.weather_code);
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             cond,
             temp_x + 2.0,
             hero.y0 + if large_text { 140.0 } else { 114.0 },
@@ -2280,9 +2289,7 @@ impl Core {
             c.text_primary,
         );
         let feels = snap.temp_in(cur.apparent, units).round() as i64;
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &format!("Feels like {feels}{}", units.temp_suffix()),
             temp_x + 2.0,
             hero.y0 + if large_text { 184.0 } else { 140.0 },
@@ -2327,59 +2334,56 @@ impl Core {
                 cur.is_day,
             );
         } else {
-            let scene = &mut *ctx.scene;
-            let tr = &mut *ctx.text_renderer;
             let sx = if large_text {
                 hero.x0 + 18.0
             } else {
                 hero.x1 - 18.0
             };
-            let draw = if large_text { text_left } else { text_right };
-            draw(
-                scene,
-                tr,
-                "Sunrise",
-                sx,
-                hero.y1 - if large_text { 70.0 } else { 60.0 },
-                10.0,
-                TextWeight::Semibold,
-                c.text_dim,
-            );
-            draw(
-                scene,
-                tr,
-                &sr,
-                sx,
-                hero.y1 - if large_text { 42.0 } else { 46.0 },
-                14.0,
-                TextWeight::Medium,
-                c.text_primary,
-            );
             let sunset_x = if large_text {
                 hero.center().x + 14.0
             } else {
                 sx
             };
-            draw(
-                scene,
-                tr,
-                "Sunset",
-                sunset_x,
-                hero.y1 - if large_text { 70.0 } else { 26.0 },
-                10.0,
-                TextWeight::Semibold,
-                c.text_dim,
-            );
-            draw(
-                scene,
-                tr,
-                &ss,
-                sunset_x,
-                hero.y1 - if large_text { 42.0 } else { 12.0 },
-                14.0,
-                TextWeight::Medium,
-                c.text_primary,
-            );
+            for (text, x, y, size, weight, color) in [
+                (
+                    "Sunrise",
+                    sx,
+                    hero.y1 - if large_text { 70.0 } else { 60.0 },
+                    10.0,
+                    TextWeight::Semibold,
+                    c.text_dim,
+                ),
+                (
+                    sr.as_str(),
+                    sx,
+                    hero.y1 - if large_text { 42.0 } else { 46.0 },
+                    14.0,
+                    TextWeight::Medium,
+                    c.text_primary,
+                ),
+                (
+                    "Sunset",
+                    sunset_x,
+                    hero.y1 - if large_text { 70.0 } else { 26.0 },
+                    10.0,
+                    TextWeight::Semibold,
+                    c.text_dim,
+                ),
+                (
+                    ss.as_str(),
+                    sunset_x,
+                    hero.y1 - if large_text { 42.0 } else { 12.0 },
+                    14.0,
+                    TextWeight::Medium,
+                    c.text_primary,
+                ),
+            ] {
+                if large_text {
+                    ctx.text_left(text, x, y, size, weight, color);
+                } else {
+                    ctx.text_right(text, x, y, size, weight, color);
+                }
+            }
         }
     }
 
@@ -2393,9 +2397,7 @@ impl Core {
         snap: &WeatherSnapshot,
         layout: &DetailBodyLayout,
     ) -> f64 {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
@@ -2450,10 +2452,8 @@ impl Core {
             let ty = y + row as f64 * (layout.tile_h + gap);
             let tile = Rect::new(tx, ty, tx + tw, ty + layout.tile_h);
             let large_text = theme.text_scale >= 1.5;
-            card(scene, t, tile, theme);
-            text_left(
-                scene,
-                tr,
+            card(ctx.scene, t, tile, theme);
+            ctx.text_left(
                 label,
                 tile.x0 + 12.0,
                 tile.y0 + if large_text { 14.0 } else { 12.0 },
@@ -2461,9 +2461,7 @@ impl Core {
                 TextWeight::Semibold,
                 c.text_dim,
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 value,
                 tile.x0 + 12.0,
                 tile.y0 + if large_text { 44.0 } else { 30.0 },
@@ -2471,9 +2469,7 @@ impl Core {
                 TextWeight::Bold,
                 c.text_primary,
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 sub,
                 tile.x0 + 12.0,
                 tile.y1 - if large_text { 32.0 } else { 22.0 },
@@ -2506,9 +2502,7 @@ impl Core {
         let hourly_h = if large_text { 286.0 } else { HOURLY_CARD_H };
         let hcard = Rect::new(mx, y, mx + mw, y + hourly_h);
         card(ctx.scene, ctx.transform, hcard, theme);
-        text_left(
-            ctx.scene,
-            ctx.text_renderer,
+        ctx.text_left(
             "Next 24 hours",
             hcard.x0 + 16.0,
             hcard.y0 + 12.0,
@@ -2517,9 +2511,7 @@ impl Core {
             c.text_primary,
         );
         if self.hourly_max_scroll > 1.0 {
-            text_right(
-                ctx.scene,
-                ctx.text_renderer,
+            ctx.text_right(
                 "scroll →",
                 hcard.x1 - 16.0,
                 hcard.y0 + 16.0,
@@ -2636,9 +2628,7 @@ impl Core {
 
         let dcard = Rect::new(mx, y, mx + mw, y + layout.days_block_h);
         card(ctx.scene, ctx.transform, dcard, theme);
-        text_left(
-            ctx.scene,
-            ctx.text_renderer,
+        ctx.text_left(
             "7-day forecast",
             dcard.x0 + 16.0,
             dcard.y0 + 12.0,
@@ -2693,16 +2683,14 @@ impl Core {
     /// The row divider, the "Today"/"Tomorrow"/weekday label, the condition
     /// icon, and (when there's room) the condition text.
     fn draw_day_row_label(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let geo = row.geometry;
         let i = row.index;
         let d = row.forecast;
         let c = &theme.tokens.colors;
         if i > 0 {
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 t,
                 c.border_standard.with_alpha_factor(0.5),
@@ -2715,9 +2703,7 @@ impl Core {
             1 => "Tomorrow".to_string(),
             _ => weekday(&d.date),
         };
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &day_label,
             geo.inner_l,
             cy - 8.0,
@@ -2727,7 +2713,7 @@ impl Core {
         );
         let dsky = Sky::from_code(d.weather_code);
         icon::draw_icon(
-            scene,
+            ctx.scene,
             t,
             dsky,
             true,
@@ -2735,9 +2721,7 @@ impl Core {
             theme,
         );
         if geo.show_cond {
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 Sky::label(d.weather_code),
                 geo.cond_x,
                 cy - 7.0,
@@ -2753,7 +2737,6 @@ impl Core {
     fn draw_day_row_extras(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
         let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let geo = row.geometry;
         let d = row.forecast;
@@ -2774,9 +2757,7 @@ impl Core {
             None,
             &Circle::new(Point::new(geo.extras_x + 4.0, cy), 3.0),
         );
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             &uv_label,
             geo.extras_x + 12.0,
             cy - 7.0,
@@ -2784,9 +2765,7 @@ impl Core {
             TextWeight::Medium,
             c.text_dim,
         );
-        text_right(
-            scene,
-            tr,
+        ctx.text_right(
             &wind_label,
             geo.extras_right,
             cy - 7.0,
@@ -2799,24 +2778,20 @@ impl Core {
     /// The precip-probability read-out (when there's room) and the lo/hi
     /// temperature bar.
     fn draw_day_row_temps(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let geo = row.geometry;
         let d = row.forecast;
         let c = &theme.tokens.colors;
         if geo.show_precip {
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 t,
                 c.semantic.info,
                 None,
                 &Circle::new(Point::new(geo.precip_left, cy), 3.0),
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 &format!("{}%", d.precip_probability.round() as i64),
                 geo.precip_left + 8.0,
                 cy - 7.0,
@@ -2827,9 +2802,7 @@ impl Core {
         }
         let lo = row.snapshot.temp_in(d.temp_min, row.units).round() as i64;
         let hi = row.snapshot.temp_in(d.temp_max, row.units).round() as i64;
-        text_right(
-            scene,
-            tr,
+        ctx.text_right(
             &format!("{lo}°"),
             geo.lo_x,
             cy - 8.0,
@@ -2838,7 +2811,7 @@ impl Core {
             c.text_dim,
         );
         let track = RoundedRect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0, 3.0);
-        scene.fill(Fill::NonZero, t, c.neutral[2], None, &track);
+        ctx.scene.fill(Fill::NonZero, t, c.neutral[2], None, &track);
         let week_min = row.week_min;
         let week_span = row.week_max - week_min;
         let f0 = ((d.temp_min - week_min) / week_span).clamp(0.0, 1.0);
@@ -2848,10 +2821,9 @@ impl Core {
         let seg = RoundedRect::new(seg_x0, cy - 3.0, seg_x1.max(seg_x0 + 4.0), cy + 3.0, 3.0);
         let grad = Gradient::new_linear(Point::new(geo.bar_x0, cy), Point::new(geo.bar_x1, cy))
             .with_stops([(0.0_f32, c.semantic.info), (1.0_f32, c.semantic.warning)]);
-        scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &seg);
-        text_left(
-            scene,
-            tr,
+        ctx.scene
+            .fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &seg);
+        ctx.text_left(
             &format!("{hi}°"),
             geo.bar_x1 + 8.0,
             cy - 8.0,
@@ -2880,9 +2852,7 @@ impl Core {
 
         let acard = Rect::new(mx, y, mx + mw, y + layout.aq_block_h);
         card(ctx.scene, ctx.transform, acard, theme);
-        text_left(
-            ctx.scene,
-            ctx.text_renderer,
+        ctx.text_left(
             "Air quality",
             acard.x0 + 16.0,
             acard.y0 + 12.0,
@@ -2910,9 +2880,7 @@ impl Core {
         view_h: f64,
         body_h: f64,
     ) {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         // Connection/update problems are called out beside the city name,
@@ -2922,9 +2890,7 @@ impl Core {
             && !self.status.starts_with("Couldn't")
             && !self.status.starts_with("Offline")
         {
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 &self.status,
                 mx,
                 rect.y1 - 20.0,
@@ -2940,14 +2906,14 @@ impl Core {
             let track_h = track_bot - track_top;
             let thumb_h = (track_h * (view_h / body_h)).clamp(28.0, track_h);
             let thumb_y = track_top + (self.scroll / self.max_scroll) * (track_h - thumb_h);
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 t,
                 c.neutral[2].with_alpha_factor(0.6),
                 None,
                 &RoundedRect::new(tx, track_top, tx + 3.0, track_bot, 1.5),
             );
-            scene.fill(
+            ctx.scene.fill(
                 Fill::NonZero,
                 t,
                 c.text_dim.with_alpha_factor(0.7),
@@ -2987,7 +2953,6 @@ impl Core {
     ) {
         let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = f64::midpoint(area.x0, area.x1);
@@ -3042,9 +3007,7 @@ impl Core {
             None,
             &Circle::new(Point::new(sx, sy), 7.0),
         );
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             "Sunrise",
             area.x0 + 4.0,
             baseline + 6.0,
@@ -3052,9 +3015,7 @@ impl Core {
             TextWeight::Semibold,
             c.text_dim,
         );
-        text_left(
-            scene,
-            tr,
+        ctx.text_left(
             sunrise,
             area.x0 + 4.0,
             baseline + 20.0,
@@ -3062,9 +3023,7 @@ impl Core {
             TextWeight::Medium,
             c.text_primary,
         );
-        text_right(
-            scene,
-            tr,
+        ctx.text_right(
             "Sunset",
             area.x1 - 4.0,
             baseline + 6.0,
@@ -3072,9 +3031,7 @@ impl Core {
             TextWeight::Semibold,
             c.text_dim,
         );
-        text_right(
-            scene,
-            tr,
+        ctx.text_right(
             sunset,
             area.x1 - 4.0,
             baseline + 20.0,
@@ -3110,9 +3067,7 @@ impl Core {
             } else {
                 "Air quality unavailable"
             };
-            text_center(
-                ctx.scene,
-                ctx.text_renderer,
+            ctx.text_center(
                 msg,
                 area.center().x,
                 hero_top + 22.0,
@@ -3180,9 +3135,7 @@ impl Core {
             );
             let number_size = if large_text { 28.0 } else { 34.0 };
             let (nw, _) = tr.measure_weighted(&num, number_size, None, TextWeight::Bold);
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 "AQI",
                 hero.x0 + 24.0 + f64::from(nw),
                 hero.y0 + if large_text { 58.0 } else { 30.0 },
@@ -3190,9 +3143,7 @@ impl Core {
                 TextWeight::Semibold,
                 c.text_dim,
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 api::european_aqi_band(aqi),
                 hero.x0 + if large_text { 166.0 } else { 132.0 },
                 hero.y0 + 12.0,
@@ -3200,9 +3151,7 @@ impl Core {
                 TextWeight::Semibold,
                 sev,
             );
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 "European AQI · now",
                 hero.x0 + if large_text { 166.0 } else { 132.0 },
                 hero.y0 + if large_text { 58.0 } else { 40.0 },
@@ -3212,9 +3161,7 @@ impl Core {
             );
         } else if let Some(us) = aq.us_aqi {
             let sev = aqi_band_color(us / 2.0, theme); // rough EU-equivalent tint
-            text_left(
-                scene,
-                tr,
+            ctx.text_left(
                 &format!("{} US AQI", us.round() as i64),
                 hero.x0,
                 hero.y0 + 18.0,
@@ -3227,9 +3174,7 @@ impl Core {
 
     /// The key pollutant tiles (µg/m³) below the AQI hero.
     fn draw_aq_tiles(ctx: &mut DrawCtx<'_>, layout: &AqTileLayout, aq: &AirQuality) {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text_renderer;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let tiles: [(&str, Option<f64>); 4] = [
@@ -3248,10 +3193,8 @@ impl Core {
             let ty = tiles_top + row as f64 * (layout.tile_height + layout.gap);
             let tile = Rect::new(tx, ty, tx + tw, ty + layout.tile_height);
             let large_text = theme.text_scale >= 1.5;
-            card(scene, t, tile, theme);
-            text_left(
-                scene,
-                tr,
+            card(ctx.scene, t, tile, theme);
+            ctx.text_left(
                 label,
                 tile.x0 + 12.0,
                 tile.y0 + 12.0,
@@ -3261,9 +3204,7 @@ impl Core {
             );
             match val {
                 Some(v) => {
-                    text_left(
-                        scene,
-                        tr,
+                    ctx.text_left(
                         &format!("{}", v.round() as i64),
                         tile.x0 + 12.0,
                         tile.y0 + if large_text { 42.0 } else { 26.0 },
@@ -3271,9 +3212,7 @@ impl Core {
                         TextWeight::Bold,
                         c.text_primary,
                     );
-                    text_left(
-                        scene,
-                        tr,
+                    ctx.text_left(
                         "µg/m³",
                         tile.x0 + 12.0,
                         tile.y1 - if large_text { 30.0 } else { 18.0 },
@@ -3283,9 +3222,7 @@ impl Core {
                     );
                 }
                 None => {
-                    text_left(
-                        scene,
-                        tr,
+                    ctx.text_left(
                         "—",
                         tile.x0 + 12.0,
                         tile.y0 + 26.0,
@@ -3783,74 +3720,6 @@ fn card(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
         c.border_standard.with_alpha_factor(0.7),
         None,
         &shape,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn text_left(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    s: &str,
-    x: f64,
-    y_top: f64,
-    size: f32,
-    weight: TextWeight,
-    color: Color,
-) {
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        Affine::translate((x, y_top)),
-        None,
-        weight,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn text_right(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    s: &str,
-    x_right: f64,
-    y_top: f64,
-    size: f32,
-    weight: TextWeight,
-    color: Color,
-) {
-    let (w, _) = tr.measure_weighted(s, size, None, weight);
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        Affine::translate((x_right - f64::from(w), y_top)),
-        None,
-        weight,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn text_center(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    s: &str,
-    x_center: f64,
-    y_top: f64,
-    size: f32,
-    weight: TextWeight,
-    color: Color,
-) {
-    let (w, _) = tr.measure_weighted(s, size, None, weight);
-    tr.draw_text_weighted(
-        scene,
-        s,
-        size,
-        color,
-        Affine::translate((x_center - f64::from(w) / 2.0, y_top)),
-        None,
-        weight,
     );
 }
 
