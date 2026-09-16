@@ -31,6 +31,7 @@ use super::model::{Capabilities, Experience, FolderMode, HostOs};
 type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
+type ImportLauncher = fn() -> ImportApp;
 
 const INSTALL_UNAVAILABLE: &str = "Installation is not available in this build yet.";
 
@@ -95,6 +96,7 @@ pub struct SetupApp {
     rect: Rect,
     structure_dirty: bool,
     import_requested: bool,
+    import_launcher: ImportLauncher,
     import_app: Option<ImportApp>,
 }
 
@@ -161,17 +163,19 @@ impl SetupApp {
             rect: Rect::ZERO,
             structure_dirty: true,
             import_requested: false,
+            import_launcher: ImportApp::new,
             import_app: None,
         }
     }
 
     #[must_use]
     pub fn for_shot(scenario: &str) -> Self {
+        let experience_only = scenario == "setup-experience";
         let mut app = Self::with_capabilities(SetupCapabilities {
             platform: Capabilities {
                 host: HostOs::Linux,
-                desktop_session: true,
-                internal_dual_boot: true,
+                desktop_session: !experience_only,
+                internal_dual_boot: !experience_only,
             },
             connected_folders: scenario == "setup-folders-connected",
         });
@@ -183,8 +187,8 @@ impl SetupApp {
                 unavailable_reason: None,
             })
             .collect();
-        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
-        if scenario != "setup-experience" {
+        if !experience_only {
+            app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
             app.apply_command(SetupCommand::Next);
             let mut documents = shot_scan("Documents", 38, 2_460_000_000);
             if scenario == "setup-review" {
@@ -924,7 +928,7 @@ impl SetupApp {
 
     fn ensure_import_app(&mut self) {
         if self.import_requested && self.import_app.is_none() {
-            self.import_app = Some(ImportApp::new());
+            self.import_app = Some((self.import_launcher)());
             self.structure_dirty = true;
         }
     }
@@ -959,7 +963,13 @@ impl SetupApp {
                 )),
         ));
         let mut nav = Row::new().no_wrap();
-        if page != SetupPage::Experience {
+        if page == SetupPage::Experience {
+            nav = nav.push(Box::new(self.button(
+                "setup.open-imports",
+                "Add folders now…",
+                SetupCommand::OpenImports,
+            )));
+        } else {
             nav = nav.push(Box::new(self.button(
                 "setup.back",
                 "Back",
@@ -1515,13 +1525,36 @@ mod tests {
             .unwrap();
     }
 
-    // Catches exposing later import as prose without a callable route.
+    // Catches exposing later import only after unavailable installation steps.
     #[test]
-    fn setup_add_folders_action_opens_the_real_import_surface() {
-        let mut app = supported_fixture();
-        app.apply_command(SetupCommand::OpenImports);
+    fn initial_unavailable_experience_can_activate_the_real_import_surface() {
+        let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Other,
+                desktop_session: false,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+        app.import_launcher = || ImportApp::for_shot("import-complete");
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
 
-        assert!(app.import_requested);
+        harness
+            .expect(&SemanticExpectation::named("setup.experience.desktop").enabled(false))
+            .unwrap();
+        harness
+            .expect(&SemanticExpectation::named("setup.experience.full").enabled(false))
+            .unwrap();
+        harness
+            .expect(&SemanticExpectation::named("setup.open-imports").enabled(true))
+            .unwrap();
+        harness
+            .perform_named("setup.open-imports", &Action::Activate)
+            .unwrap();
+
+        harness
+            .expect(&SemanticExpectation::named("import.pick-source").enabled(true))
+            .unwrap();
     }
 
     #[test]
