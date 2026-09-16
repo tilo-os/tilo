@@ -99,6 +99,13 @@ impl NavRow {
         self.rect = rect;
     }
 
+    /// Whether keyboard or assistive navigation currently owns this row.
+    /// The rail uses this to keep the focused resource inside its local
+    /// scrolling viewport.
+    pub fn is_focused(&self) -> bool {
+        self.is_focused
+    }
+
     fn activate(&mut self) {
         if let Some(cb) = self.on_activate.as_mut() {
             cb();
