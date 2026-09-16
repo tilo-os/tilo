@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use pkg::id::Kind;
-use pkg::manifest::{EntrypointType, Manifest, NetMode};
+use pkg::manifest::{ContinuityFacet, EntrypointType, Manifest, NetMode};
 use pkg::validate::validate_manifest;
 
 /// Repo root, derived from this crate's path at `<root>/crates/packaging/pkg`.
@@ -79,6 +79,31 @@ fn every_manifest_passes_schema_validation() {
     for dir in app_dirs() {
         let m = load(&dir);
         validate_manifest(&m).unwrap_or_else(|e| panic!("{} fails validation: {e}", dir.display()));
+    }
+}
+
+/// Handoff fidelity is a signed package promise, not an app-by-app convention.
+/// The runtime supplies presentation state for the whole GUI fleet; apps with
+/// a domain projection pin that stronger promise in their manifests.
+#[test]
+fn app_fleet_declares_structural_continuity_fidelity() {
+    let semantic_apps = ["dev.qos.browser", "dev.qos.ebook", "dev.qos.music"];
+
+    for dir in app_dirs() {
+        let m = load(&dir);
+        assert!(
+            m.continuity
+                .required
+                .contains(&ContinuityFacet::Presentation),
+            "{}: app handoff must retain framework presentation state",
+            dir.display()
+        );
+        assert_eq!(
+            m.continuity.required.contains(&ContinuityFacet::Semantic),
+            semantic_apps.contains(&m.package.id.as_str()),
+            "{}: signed semantic-continuity declaration drifted from the apps that implement it",
+            dir.display()
+        );
     }
 }
 
