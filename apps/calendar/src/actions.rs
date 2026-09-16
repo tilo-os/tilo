@@ -24,6 +24,8 @@
 //! wall-clock, and a malformed payload (an unparseable id or datetime) is a
 //! **no-op** rather than an error, so a bad replay can't wedge a peer.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 
 use automerge::AutoCommit;
@@ -1671,6 +1673,8 @@ pub struct CalendarResourceCtx {
     pub(crate) task_positions: HashMap<String, usize>,
     pub(crate) project_positions: HashMap<String, usize>,
     pub(crate) calendar_positions: HashMap<String, usize>,
+    #[cfg(test)]
+    pub(crate) exact_inspected: Cell<usize>,
 }
 
 impl CalendarResourceCtx {
@@ -1721,24 +1725,47 @@ impl CalendarResourceCtx {
             task_positions: HashMap::new(),
             project_positions: HashMap::new(),
             calendar_positions: HashMap::new(),
+            #[cfg(test)]
+            exact_inspected: Cell::new(0),
         }
     }
+    #[cfg(test)]
+    fn inspect_exact(&self) {
+        self.exact_inspected
+            .set(self.exact_inspected.get().saturating_add(1));
+    }
+    #[cfg(test)]
+    fn reset_exact_inspected(&self) {
+        self.exact_inspected.set(0);
+    }
+    #[cfg(test)]
+    fn exact_inspected(&self) -> usize {
+        self.exact_inspected.get()
+    }
     fn event(&self, id: &str) -> Option<&EventResource> {
+        #[cfg(test)]
+        self.inspect_exact();
         self.event_positions
             .get(id)
             .and_then(|index| self.events.get(*index))
     }
     fn task(&self, id: &str) -> Option<&TaskResource> {
+        #[cfg(test)]
+        self.inspect_exact();
         self.task_positions
             .get(id)
             .and_then(|index| self.tasks.get(*index))
     }
     fn project(&self, id: &str) -> Option<&ProjectResource> {
+        #[cfg(test)]
+        self.inspect_exact();
         self.project_positions
             .get(id)
             .and_then(|index| self.projects.get(*index))
     }
     fn calendar(&self, id: &str) -> Option<&CalendarCollectionResource> {
+        #[cfg(test)]
+        self.inspect_exact();
         self.calendar_positions
             .get(id)
             .and_then(|index| self.calendars.get(*index))
@@ -1759,10 +1786,7 @@ fn event_visible_to_resource_surface(ctx: &CalendarResourceCtx, event: &EventRes
     } else {
         event.data.calendar_id.as_str()
     };
-    ctx.calendars
-        .iter()
-        .find(|calendar| calendar.id == owner)
-        .is_none_or(|calendar| calendar.visible)
+    ctx.calendar(owner).is_none_or(|calendar| calendar.visible)
 }
 
 /// Retain exactly the event's owning collection when materialising a nested
@@ -1780,9 +1804,7 @@ fn scope_event_owner(
         event.data.calendar_id.as_str()
     };
     scoped.calendars = ctx
-        .calendars
-        .iter()
-        .find(|calendar| calendar.id == owner)
+        .calendar(owner)
         .cloned()
         .or_else(|| {
             Some(CalendarCollectionResource {
@@ -3053,6 +3075,8 @@ fn find_resource(resources: Vec<Resource>, id: &str) -> Option<Resource> {
     reason = "stable-id routing keeps every ownership/staleness branch adjacent for auditability"
 )]
 fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
+    #[cfg(test)]
+    ctx.reset_exact_inspected();
     let mut scoped = ctx.empty_scoped();
 
     if id == "calendar.calendar" {
@@ -3396,6 +3420,7 @@ mod tests {
         ctx.events = vec![event.clone()];
         ctx.tasks.clear();
         ctx.projects.clear();
+        ctx = ctx.with_resource_indices();
 
         let resources = provide_resources(&ctx, &doc);
         assert!(
@@ -3410,18 +3435,19 @@ mod tests {
         let resolved = resource_from_ctx(&ctx, &doc, &calendar_id)
             .expect("an omitted current calendar resolves directly");
         assert_eq!(resolved.id.as_str(), calendar_id);
-        assert_eq!(
-            resolved.children.len(),
-            1,
-            "direct context has only its owner event"
+        assert!(
+            resolved.children.is_empty(),
+            "exact container lookup must not expand an unbounded event history"
         );
-        assert_eq!(
-            resolved.children[0].id.as_str(),
-            format!("calendar.event:{}", event.data.id)
+        let event_id = format!("calendar.event:{}", event.data.id);
+        assert!(
+            resource_from_ctx(&ctx, &doc, &event_id).is_some(),
+            "the omitted collection's event remains independently addressable"
         );
 
         ctx.calendars
             .retain(|calendar| calendar.id != event.data.calendar_id);
+        ctx = ctx.with_resource_indices();
         assert!(
             resource_from_ctx(&ctx, &doc, &calendar_id).is_none(),
             "a removed collection id is not redirected to a surviving calendar"
@@ -3440,23 +3466,160 @@ mod tests {
             &project_resource_id(project_id.parse().unwrap()),
         )
         .expect("current project resolves lazily");
-        assert!(resource.children.iter().all(|child| {
-            let raw = child
-                .id
-                .as_str()
-                .strip_prefix("calendar.task:")
-                .expect("project direct children are tasks");
-            ctx.tasks
-                .iter()
-                .any(|task| task.data.id == raw && task.data.project == project_id)
-        }));
+        assert!(
+            resource.children.is_empty(),
+            "exact project lookup must not expand an unbounded task history"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the four sequential 100k fixtures document each exact resource family in one regression"
+    )]
+    fn real_provider_resolves_late_large_corpora_with_fixed_lookup_work() {
+        const LARGE: usize = 100_001;
+
+        fn resolve_bounded(app: &CalendarApp, doc: &AutoCommit, id: &str, kind: &str) -> Resource {
+            let resource = <CalendarApp as ResourceProvider>::resource(app, doc, id)
+                .unwrap_or_else(|| panic!("late exact resource did not resolve: {id}"));
+            assert_eq!(resource.kind, kind);
+            let inspected = app
+                .resource_context
+                .as_ref()
+                .expect("retained resource context")
+                .exact_inspected();
+            assert!(
+                inspected <= 4,
+                "exact lookup inspected {inspected} retained keys for {id}"
+            );
+            resource
+        }
+
+        let (mut app, doc) = seeded();
+        let base = app.calendar_resource_ctx();
+        let event_template = base.events[0].clone();
+        let task_template = base.tasks[0].clone();
+        let project_template = base.projects[0].clone();
+        let calendar_template = base.calendars[0].clone();
+
+        let mut ctx = base.clone();
+        ctx.events.clear();
+        ctx.tasks.clear();
+        ctx.projects.clear();
+        ctx.calendars = (0..LARGE)
+            .map(|index| CalendarCollectionResource {
+                id: format!("stress/calendar/{index}"),
+                label: format!("Stress calendar {index}"),
+                color: calendar_template.color,
+                visible: true,
+            })
+            .collect();
+        let late_calendar = calendar_resource_id("stress/calendar/100000");
+        app.resource_context = Some(ctx.with_resource_indices());
+        resolve_bounded(&app, &doc, &late_calendar, "calendar.collection");
+
+        let mut ctx = base.clone();
+        ctx.events.clear();
+        ctx.tasks.clear();
+        ctx.calendars = vec![calendar_template.clone()];
+        ctx.projects = (0..LARGE)
+            .map(|index| {
+                let mut project = project_template.clone();
+                project.data.id = Uuid::from_u128(200_000 + index as u128).to_string();
+                project.data.name = format!("Stress project {index}");
+                project
+            })
+            .collect();
+        let late_project_id = ctx.projects.last().expect("late project").data.id.clone();
+        let late_project = project_resource_id(late_project_id.parse().expect("project id"));
+        app.resource_context = Some(ctx.with_resource_indices());
+        resolve_bounded(&app, &doc, &late_project, "calendar.project");
+
+        let attendee_id = Uuid::from_u128(400_000);
+        let mut ctx = base.clone();
+        ctx.tasks.clear();
+        ctx.projects.clear();
+        ctx.calendars = vec![calendar_template.clone()];
+        ctx.events = (0..LARGE)
+            .map(|index| {
+                let mut event = event_template.clone();
+                event.data.id = Uuid::from_u128(300_000 + index as u128).to_string();
+                event.data.title = format!("Stress event {index}");
+                event.data.calendar_id = calendar_template.id.clone();
+                event.data.reminder = -1;
+                event.data.attendees.clear();
+                event
+            })
+            .collect();
+        let late_event = ctx.events.last_mut().expect("late event");
+        let late_event_id: Id = late_event.data.id.parse().expect("event id");
+        late_event.data.reminder = 10;
+        late_event.data.attendees.push(AttendeeData {
+            id: attendee_id.to_string(),
+            name: "Late attendee".into(),
+            email: "late@example.test".into(),
+            status: "NEEDS-ACTION".into(),
+        });
+        app.resource_context = Some(ctx.with_resource_indices());
+        let event_id = event_resource_id(late_event_id);
+        resolve_bounded(&app, &doc, &event_id, "calendar.event");
+        resolve_bounded(&app, &doc, &format!("{event_id}:notes"), "calendar.note");
+        resolve_bounded(
+            &app,
+            &doc,
+            &reminder_resource_id(late_event_id),
+            "calendar.reminder",
+        );
+        resolve_bounded(
+            &app,
+            &doc,
+            &attendee_resource_id(late_event_id, attendee_id),
+            "calendar.attendee",
+        );
+
+        let mut ctx = base;
+        ctx.events.clear();
+        ctx.calendars = vec![calendar_template];
+        ctx.projects = vec![project_template];
+        let owner = ctx.projects[0].data.id.clone();
+        ctx.tasks = (0..LARGE)
+            .map(|index| {
+                let mut task = task_template.clone();
+                task.data.id = Uuid::from_u128(500_000 + index as u128).to_string();
+                task.data.title = format!("Stress task {index}");
+                task.data.project = owner.clone();
+                task.subtasks.clear();
+                task
+            })
+            .collect();
+        let late_task_id: Id = ctx
+            .tasks
+            .last()
+            .expect("late task")
+            .data
+            .id
+            .parse()
+            .expect("task id");
+        app.resource_context = Some(ctx.with_resource_indices());
+        let task_id = task_resource_id(late_task_id);
+        resolve_bounded(&app, &doc, &task_id, "calendar.task");
+        resolve_bounded(&app, &doc, &format!("{task_id}:notes"), "calendar.note");
+
+        let mut stale = app.resource_context.take().expect("retained context");
+        stale.tasks.clear();
+        app.resource_context = Some(stale.with_resource_indices());
+        assert!(
+            <CalendarApp as ResourceProvider>::resource(&app, &doc, &task_id).is_none(),
+            "a deleted late stable id must not resolve"
+        );
         assert_eq!(
-            resource.children.len(),
-            ctx.tasks
-                .iter()
-                .filter(|task| task.data.project == project_id)
-                .count()
-                .min(EAGER_RESOURCE_SNAPSHOT_LIMIT.saturating_sub(2))
+            app.resource_context
+                .as_ref()
+                .expect("retained context")
+                .exact_inspected(),
+            1,
+            "stale deletion is one exact key lookup"
         );
     }
 
@@ -3529,6 +3692,7 @@ mod tests {
             color: None,
             visible: false,
         }];
+        ctx = ctx.with_resource_indices();
 
         let root = provide_resources(&ctx, &doc).remove(0);
         let private_collection = root
