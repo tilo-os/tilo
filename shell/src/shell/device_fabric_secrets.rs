@@ -59,7 +59,7 @@ pub enum WifiSecretError {
 /// passphrase, encryption failure, or an aggregate exceeding the fabric cap.
 pub fn seal_wifi_credential(
     ssid: &str,
-    security: &str,
+    security: os_actions::WifiSecurity,
     password: &str,
     author: &DeviceId,
     recipients: impl IntoIterator<Item = DeviceId>,
@@ -67,7 +67,7 @@ pub fn seal_wifi_credential(
 ) -> Result<WifiCredential, WifiSecretError> {
     if ssid.is_empty()
         || ssid.len() > 128
-        || !matches!(security, "wpa2" | "wpa3" | "owe" | "enterprise")
+        || !security.supports_portable_passphrase()
         || password.is_empty()
         || password.len() > MAX_WIFI_PASSWORD_BYTES
         || stamp.device != *author
@@ -139,7 +139,7 @@ pub fn seal_wifi_credential(
     Ok(WifiCredential {
         network_id,
         ssid: ssid.to_string(),
-        security: security.to_string(),
+        security,
         sealed_secret,
         nonce: bundle_nonce,
         stamp,
@@ -156,6 +156,9 @@ pub fn open_wifi_credential(
     credential: &WifiCredential,
     recipient_key: &SigningKey,
 ) -> Result<String, WifiSecretError> {
+    if !credential.security.supports_portable_passphrase() {
+        return Err(WifiSecretError::InvalidCredential);
+    }
     let bundle = decode_bundle(&credential.sealed_secret)?;
     let recipient_bytes = recipient_key.verifying_key().to_bytes();
     let recipient = DeviceId::new(hex::encode(recipient_bytes))
@@ -178,7 +181,7 @@ pub fn open_wifi_credential(
         &credential.stamp.device,
         &recipient,
         &credential.ssid,
-        &credential.security,
+        credential.security,
         credential.network_id,
         credential.nonce,
         envelope.ephemeral_public_key,
@@ -255,12 +258,12 @@ fn decode_device_key(device: &DeviceId) -> Result<[u8; 32], WifiSecretError> {
         .map_err(|_| WifiSecretError::InvalidCredential)
 }
 
-fn wifi_network_id(ssid: &str, security: &str) -> [u8; 32] {
+fn wifi_network_id(ssid: &str, security: os_actions::WifiSecurity) -> [u8; 32] {
     let mut material = WIFI_KEY_DOMAIN.to_vec();
     material.extend_from_slice(b"network\0");
     material.extend_from_slice(ssid.as_bytes());
     material.push(0);
-    material.extend_from_slice(security.as_bytes());
+    material.push(security.continuity_tag());
     *blake3::hash(&material).as_bytes()
 }
 
@@ -284,7 +287,7 @@ fn wifi_envelope_aad(
     author: &DeviceId,
     recipient: &DeviceId,
     ssid: &str,
-    security: &str,
+    security: os_actions::WifiSecurity,
     network_id: [u8; 32],
     bundle_nonce: [u8; 24],
     ephemeral: [u8; 32],
@@ -296,7 +299,7 @@ fn wifi_envelope_aad(
     aad.push(0);
     aad.extend_from_slice(ssid.as_bytes());
     aad.push(0);
-    aad.extend_from_slice(security.as_bytes());
+    aad.push(security.continuity_tag());
     aad.extend_from_slice(&network_id);
     aad.extend_from_slice(&bundle_nonce);
     aad.extend_from_slice(&ephemeral);
@@ -319,7 +322,7 @@ mod tests {
         let author = device(&author_key);
         let credential = seal_wifi_credential(
             "Home",
-            "wpa3",
+            os_actions::WifiSecurity::Wpa3,
             "correct horse battery staple",
             &author,
             [author.clone(), device(&laptop_key)],
@@ -356,7 +359,7 @@ mod tests {
         let author = device(&key);
         let mut credential = seal_wifi_credential(
             "Home",
-            "wpa2",
+            os_actions::WifiSecurity::Wpa2,
             "secret",
             &author,
             [author.clone()],
@@ -371,5 +374,49 @@ mod tests {
             open_wifi_credential(&credential, &key),
             Err(WifiSecretError::DecryptionFailed)
         );
+    }
+
+    #[test]
+    fn security_mode_is_authenticated_and_enterprise_cannot_be_password_only() {
+        let key = SigningKey::from_bytes(&[31; 32]);
+        let author = device(&key);
+        let stamp = FabricStamp {
+            counter: 1,
+            device: author.clone(),
+        };
+        let mut credential = seal_wifi_credential(
+            "Home",
+            os_actions::WifiSecurity::Wpa2,
+            "secret",
+            &author,
+            [author.clone()],
+            stamp.clone(),
+        )
+        .unwrap();
+        credential.security = os_actions::WifiSecurity::Wpa3;
+        assert_eq!(
+            open_wifi_credential(&credential, &key),
+            Err(WifiSecretError::DecryptionFailed)
+        );
+
+        for security in [
+            os_actions::WifiSecurity::Enterprise,
+            os_actions::WifiSecurity::Owe,
+            os_actions::WifiSecurity::Open,
+            os_actions::WifiSecurity::Unknown,
+        ] {
+            assert_eq!(
+                seal_wifi_credential(
+                    "Corp",
+                    security,
+                    "not-enough-enterprise-context",
+                    &author,
+                    [author.clone()],
+                    stamp.clone(),
+                ),
+                Err(WifiSecretError::InvalidCredential),
+                "{security:?}"
+            );
+        }
     }
 }

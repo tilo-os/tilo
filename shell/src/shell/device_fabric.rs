@@ -543,7 +543,7 @@ impl RoamingSetting {
 pub struct WifiCredential {
     pub network_id: [u8; 32],
     pub ssid: String,
-    pub security: String,
+    pub security: os_actions::WifiSecurity,
     pub sealed_secret: Vec<u8>,
     pub nonce: [u8; 24],
     pub stamp: FabricStamp,
@@ -556,9 +556,9 @@ impl WifiCredential {
         }
         if self.ssid.is_empty()
             || self.ssid.len() > 128
-            || !matches!(
-                self.security.as_str(),
-                "wpa2" | "wpa3" | "owe" | "enterprise"
+            || matches!(
+                self.security,
+                os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Unknown
             )
             || self.sealed_secret.is_empty()
             || self.sealed_secret.len() > MAX_SEALED_SECRET_BYTES
@@ -1466,12 +1466,83 @@ mod tests {
         source.wifi.push(WifiCredential {
             network_id: [1; 32],
             ssid: "Home".into(),
-            security: "wpa3".into(),
+            security: os_actions::WifiSecurity::Wpa3,
             sealed_secret: Vec::new(),
             nonce: [2; 24],
             stamp: stamp("phone", 1),
         });
         assert_eq!(source.validate(), Err(FabricError::InvalidWifiCredential));
+    }
+
+    #[test]
+    fn typed_wifi_security_decodes_the_legacy_string_postcard_shape() {
+        #[derive(Serialize)]
+        struct LegacyWifiCredential {
+            network_id: [u8; 32],
+            ssid: String,
+            security: String,
+            sealed_secret: Vec<u8>,
+            nonce: [u8; 24],
+            stamp: FabricStamp,
+        }
+
+        let legacy = LegacyWifiCredential {
+            network_id: [1; 32],
+            ssid: "Home".into(),
+            security: "wpa3".into(),
+            sealed_secret: vec![1, 2, 3],
+            nonce: [2; 24],
+            stamp: stamp("phone", 1),
+        };
+        let bytes = postcard::to_allocvec(&legacy).unwrap();
+        let decoded: WifiCredential = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.security, os_actions::WifiSecurity::Wpa3);
+        assert_eq!(postcard::to_allocvec(&decoded).unwrap(), bytes);
+    }
+
+    #[test]
+    fn legacy_enterprise_record_is_retained_but_cannot_supply_a_password() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let owner_text = hex::encode(key.verifying_key().to_bytes());
+        let owner = id(&owner_text);
+        let mut credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            "Corp",
+            os_actions::WifiSecurity::Wpa2,
+            "legacy-secret",
+            &owner,
+            [owner.clone()],
+            FabricStamp {
+                counter: 1,
+                device: owner.clone(),
+            },
+        )
+        .unwrap();
+        // Version 1 allowed this string even though its secret lacked the EAP
+        // identity and CA policy needed to safely recreate the profile.
+        credential.security = os_actions::WifiSecurity::Enterprise;
+
+        assert_eq!(
+            crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &key),
+            Err(crate::shell::device_fabric_secrets::WifiSecretError::InvalidCredential)
+        );
+
+        let mut source = snapshot(&owner_text, 1, 0, FabricCapabilities::default());
+        source.wifi.push(credential);
+        source.settings.push(RoamingSetting {
+            key: "qos.appearance.theme".into(),
+            value: Value::String("Nord".into()),
+            stamp: FabricStamp {
+                counter: 1,
+                device: owner,
+            },
+        });
+        let mut fabric = DeviceFabric::default();
+        fabric.upsert(source).unwrap();
+
+        assert_eq!(
+            fabric.merged_settings()["qos.appearance.theme"],
+            Value::String("Nord".into())
+        );
     }
 
     #[test]
