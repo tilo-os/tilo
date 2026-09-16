@@ -2614,6 +2614,22 @@ impl ShellOverlayHost {
         self.onboarding_focus_reset = false;
     }
 
+    /// Open the shell-owned exporter for the active identity. The Settings
+    /// app may request this surface, but never receives private material or
+    /// implements its own file-picker or encryption flow.
+    pub fn open_portable_identity_backup(&mut self) -> Result<(), String> {
+        if self.onboarding.is_some() {
+            return Err("Finish the current identity flow before creating another backup.".into());
+        }
+        let identity_dir = runtime_identity::identity_dir_from_env()
+            .map_err(|error| format!("Could not locate the active identity: {error}"))?;
+        self.onboarding =
+            Some(crate::onboarding_view::OnboardingView::new_for_portable_backup(identity_dir)?);
+        self.onboarding_released = false;
+        self.onboarding_focus_reset = false;
+        Ok(())
+    }
+
     #[doc(hidden)]
     pub fn set_onboarding_visual_state_for_snapshot(
         &mut self,
