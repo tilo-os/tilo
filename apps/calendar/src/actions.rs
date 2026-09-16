@@ -1670,6 +1670,7 @@ pub struct CalendarResourceCtx {
     pub(crate) event_positions: HashMap<String, usize>,
     pub(crate) task_positions: HashMap<String, usize>,
     pub(crate) project_positions: HashMap<String, usize>,
+    pub(crate) calendar_positions: HashMap<String, usize>,
 }
 
 impl CalendarResourceCtx {
@@ -1694,6 +1695,12 @@ impl CalendarResourceCtx {
             .enumerate()
             .map(|(index, project)| (project.data.id.clone(), index))
             .collect();
+        self.calendar_positions = self
+            .calendars
+            .iter()
+            .enumerate()
+            .map(|(index, calendar)| (calendar.id.clone(), index))
+            .collect();
         self
     }
 
@@ -1713,6 +1720,7 @@ impl CalendarResourceCtx {
             event_positions: HashMap::new(),
             task_positions: HashMap::new(),
             project_positions: HashMap::new(),
+            calendar_positions: HashMap::new(),
         }
     }
     fn event(&self, id: &str) -> Option<&EventResource> {
@@ -1729,6 +1737,11 @@ impl CalendarResourceCtx {
         self.project_positions
             .get(id)
             .and_then(|index| self.projects.get(*index))
+    }
+    fn calendar(&self, id: &str) -> Option<&CalendarCollectionResource> {
+        self.calendar_positions
+            .get(id)
+            .and_then(|index| self.calendars.get(*index))
     }
 }
 
@@ -3048,9 +3061,8 @@ fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> O
 
     if let Some(raw) = id.strip_prefix("calendar.collection:") {
         let calendar = ctx
-            .calendars
-            .iter()
-            .find(|calendar| calendar.id == raw && calendar_resource_id(raw) == id)?;
+            .calendar(raw)
+            .filter(|_| calendar_resource_id(raw) == id)?;
         scoped.calendars = vec![calendar.clone()];
         // Resolve only the addressed container. Its potentially unbounded
         // event history remains independently addressable by stable id.
