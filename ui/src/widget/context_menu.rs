@@ -1,7 +1,7 @@
 //! `ContextMenu` primitive — a right-click / long-press invoked list of
-//! actions with optional separators, backed visually by `overlay::Popover`
-//! so it participates in the overlay stack, scrim dismissal, and focus
-//! contract.
+//! actions with optional separators. Standalone owners draw it in their
+//! overlay pass. `open_anchored` opts into measured, viewport-bounded geometry;
+//! legacy `open_at` callers retain their point placement and fixed rows.
 //!
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
@@ -11,11 +11,11 @@ use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -82,6 +82,10 @@ pub struct ContextMenu {
     /// `take_selection()` after dispatching the event and mutates itself.
     /// The legacy `Arc` callback still fires too.
     selection: Option<usize>,
+    bounds: Option<(Rect, Rect)>,
+    row_height: f64,
+    measured_width: f64,
+    scroll_offset: f64,
 }
 
 impl Default for ContextMenu {
@@ -100,6 +104,10 @@ impl ContextMenu {
             hovered: None,
             last_cursor: Point::ZERO,
             selection: None,
+            bounds: None,
+            row_height: ROW_HEIGHT,
+            measured_width: MENU_WIDTH,
+            scroll_offset: 0.0,
         }
     }
 
@@ -118,9 +126,134 @@ impl ContextMenu {
     /// consumers (like `TextInput`) that route a click to a row in the same
     /// input batch the menu opened in.
     pub fn open_at(&mut self, position: [f32; 2]) {
+        self.bounds = None;
+        self.scroll_offset = 0.0;
         self.open = true;
         self.position = Some(position);
         self.layout_at_position();
+    }
+
+    /// Open a shared menu inside a host viewport. Geometry is immediately usable;
+    /// call `layout_within` with the renderer before painting to settle text metrics.
+    pub fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
+        self.open = true;
+        self.hovered = None;
+        self.scroll_offset = 0.0;
+        self.reanchor(anchor, viewport);
+    }
+
+    pub fn reanchor(&mut self, anchor: Rect, viewport: Rect) {
+        self.bounds = Some((anchor, viewport));
+        self.layout_at_position();
+    }
+
+    pub fn layout_within(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let style = text.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let mut width: f64 = 0.0;
+        let mut height: f64 = 0.0;
+        for item in &self.items {
+            if let Some(label) = item.label() {
+                let (w, h) = text.measure_style(label, None, &style);
+                width = width.max(f64::from(w));
+                height = height.max(f64::from(h));
+            }
+        }
+        self.measured_width = width + 20.0;
+        self.row_height = (height + 12.0).max(ROW_HEIGHT);
+        self.layout_at_position();
+        self.ensure_hover_visible();
+    }
+
+    fn row_height(&self, item: &MenuItem) -> f64 {
+        if self.bounds.is_some() && matches!(item, MenuItem::Action { .. }) {
+            self.row_height
+        } else {
+            item_height(item)
+        }
+    }
+
+    fn content_height(&self) -> f64 {
+        self.items.iter().map(|item| self.row_height(item)).sum()
+    }
+
+    fn body_rect(&self) -> Rect {
+        let inset = if self.bounds.is_some() {
+            PADDING.min(self.rect.height() / 4.0)
+        } else {
+            PADDING
+        };
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0 + inset,
+            self.rect.x1,
+            self.rect.y1 - inset,
+        )
+    }
+
+    fn max_scroll(&self) -> f64 {
+        (self.content_height() - self.body_rect().height()).max(0.0)
+    }
+
+    /// Painted (clipped) geometry of an action row, in host coordinates.
+    pub fn item_rect(&self, index: usize) -> Option<Rect> {
+        if !self.open || !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
+            return None;
+        }
+        let body = self.body_rect();
+        let top = body.y0 - self.scroll_offset
+            + self
+                .items
+                .iter()
+                .take(index)
+                .map(|item| self.row_height(item))
+                .sum::<f64>();
+        let rect = Rect::new(
+            body.x0,
+            top,
+            body.x1,
+            top + self.row_height(self.items.get(index)?),
+        )
+        .intersect(body);
+        (!rect.is_zero_area()).then_some(rect)
+    }
+
+    pub fn focus_item(&mut self, index: usize) -> bool {
+        if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
+            return false;
+        }
+        self.hovered = Some(index);
+        self.ensure_hover_visible();
+        true
+    }
+
+    pub fn focus_first_action(&mut self) {
+        self.hovered = None;
+        self.move_hover(1);
+    }
+
+    fn ensure_hover_visible(&mut self) {
+        if self.bounds.is_none() {
+            return;
+        }
+        if let Some(index) = self.hovered {
+            let top = self
+                .items
+                .iter()
+                .take(index)
+                .map(|item| self.row_height(item))
+                .sum::<f64>();
+            let height = self
+                .items
+                .get(index)
+                .map_or(0.0, |item| self.row_height(item));
+            let body_height = self.body_rect().height();
+            if top < self.scroll_offset {
+                self.scroll_offset = top;
+            } else if top + height > self.scroll_offset + body_height {
+                self.scroll_offset = top + height.min(body_height) - body_height;
+            }
+        }
+        self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
     }
 
     /// Mirrors the `build_layout` + `apply_layout` geometry without a taffy
@@ -128,6 +261,22 @@ impl ContextMenu {
     /// standalone consumer (one that owns a `ContextMenu` as a field rather
     /// than a tree node) hit-test and draw the menu directly.
     pub fn layout_at_position(&mut self) {
+        if let Some((anchor, viewport)) = self.bounds {
+            let width = self.measured_width.min(viewport.width().max(0.0));
+            let height = (self.content_height() + PADDING * 2.0).min(viewport.height().max(0.0));
+            let x = anchor
+                .x0
+                .clamp(viewport.x0, (viewport.x1 - width).max(viewport.x0));
+            let preferred_y = if anchor.y1 + height <= viewport.y1 {
+                anchor.y1
+            } else {
+                anchor.y0 - height
+            };
+            let y = preferred_y.clamp(viewport.y0, (viewport.y1 - height).max(viewport.y0));
+            self.rect = Rect::new(x, y, x + width, y + height);
+            self.scroll_offset = self.scroll_offset.clamp(0.0, self.max_scroll());
+            return;
+        }
         let Some([px, py]) = self.position else {
             return;
         };
@@ -164,17 +313,11 @@ impl ContextMenu {
         if !self.open {
             return None;
         }
-        let [px, py] = point;
-        if px < self.rect.x0 || px > self.rect.x1 || py < self.rect.y0 || py > self.rect.y1 {
-            return None;
-        }
-        let mut y = self.rect.y0 + PADDING;
-        for (idx, item) in self.items.iter().enumerate() {
-            let h = item_height(item);
-            if matches!(item, MenuItem::Action { .. }) && py >= y && py < y + h {
+        let point = Point::new(point[0], point[1]);
+        for idx in 0..self.items.len() {
+            if self.item_rect(idx).is_some_and(|rect| rect.contains(point)) {
                 return Some(idx);
             }
-            y += h;
         }
         None
     }
@@ -234,6 +377,7 @@ impl ContextMenu {
         for _ in 0..n {
             if matches!(self.items.get(idx), Some(MenuItem::Action { .. })) {
                 self.hovered = Some(idx);
+                self.ensure_hover_visible();
                 return;
             }
             idx = wrapping_step(idx, n, down);
@@ -303,6 +447,10 @@ impl Widget for ContextMenu {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if self.bounds.is_some() {
+            self.layout_at_position();
+            return;
+        }
         // The caller-provided anchor wins when open; otherwise the
         // taffy-assigned position keeps offscreen/closed menus sensible.
         let l = taffy.layout(node).copied().unwrap_or_default();
@@ -334,6 +482,9 @@ impl Widget for ContextMenu {
             return;
         }
 
+        if self.bounds.is_some() {
+            self.layout_within(text_renderer, theme);
+        }
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         // The near-black overlay tier, so the menu reads as an opaque
         // raised sheet, never bleeding the content beneath.
@@ -353,8 +504,17 @@ impl Widget for ContextMenu {
         );
 
         let text_size = theme.tokens.typography.scale.sm;
-        let mut y = self.rect.y0 + PADDING;
+        let style = text_renderer.renderer_input_style(&TextStyle::new(text_size));
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &self.body_rect(),
+        );
+        let mut y = self.body_rect().y0 - self.scroll_offset;
         for (idx, item) in self.items.iter().enumerate() {
+            let row_height = self.row_height(item);
             match item {
                 MenuItem::Action { label, .. } => {
                     if self.hovered == Some(idx) {
@@ -362,7 +522,7 @@ impl Widget for ContextMenu {
                             self.rect.x0 + 4.0,
                             y + 1.0,
                             self.rect.x1 - 4.0,
-                            y + ROW_HEIGHT - 1.0,
+                            y + row_height - 1.0,
                         );
                         let hl_shape = RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.sm));
                         // Matches the dropdown / autocomplete row hover.
@@ -374,16 +534,28 @@ impl Widget for ContextMenu {
                             &hl_shape,
                         );
                     }
-                    let label_y = y + (ROW_HEIGHT - f64::from(text_size)) / 2.0;
-                    text_renderer.draw_text(
-                        scene,
-                        label,
-                        text_size,
-                        theme.tokens.colors.text_primary,
-                        transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
-                        None,
-                    );
-                    y += ROW_HEIGHT;
+                    let (_, label_height) = text_renderer.measure_style(label, None, &style);
+                    let label_y = y + (row_height - f64::from(label_height)) / 2.0;
+                    if self.bounds.is_some() {
+                        text_renderer.draw_style(
+                            scene,
+                            label,
+                            theme.tokens.colors.text_primary,
+                            transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
+                            None,
+                            &style,
+                        );
+                    } else {
+                        text_renderer.draw_text(
+                            scene,
+                            label,
+                            text_size,
+                            theme.tokens.colors.text_primary,
+                            transform.pre_translate(Vec2::new(self.rect.x0 + 10.0, label_y)),
+                            None,
+                        );
+                    }
+                    y += row_height;
                 }
                 MenuItem::Separator => {
                     let sep_y = y + SEPARATOR_HEIGHT / 2.0;
@@ -404,6 +576,7 @@ impl Widget for ContextMenu {
                 }
             }
         }
+        scene.pop_layer();
     }
 
     fn handle_event(
@@ -457,6 +630,15 @@ impl Widget for ContextMenu {
                 }
                 _ => {}
             },
+            WindowEvent::MouseWheel { delta, .. } if self.bounds.is_some() => {
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * self.row_height,
+                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                };
+                self.scroll_offset = (self.scroll_offset - delta).clamp(0.0, self.max_scroll());
+                self.hovered = self.item_at([self.last_cursor.x, self.last_cursor.y]);
+                *handled = true;
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -758,6 +940,46 @@ mod tests {
     }
 
     #[test]
+    fn bounded_wheel_hit_testing_and_keyboard_activation_share_scroll_offset() {
+        let mut menu = ContextMenu::new();
+        for index in 0..20 {
+            menu.push(MenuItem::action(format!("Command {index}"), || {}));
+        }
+        menu.open_anchored(
+            Rect::new(10.0, 10.0, 30.0, 30.0),
+            Rect::new(0.0, 0.0, 180.0, 100.0),
+        );
+        menu.layout_within(&mut TextRenderer::new(), &Theme::dark());
+        let point = menu.get_rect().center();
+        dispatch(&mut menu, &cursor_at(point));
+        let wheel = |y| WindowEvent::MouseWheel {
+            device_id: synth_device(),
+            delta: MouseScrollDelta::LineDelta(0.0, y),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        assert!(dispatch(&mut menu, &wheel(-100.0)));
+        assert_eq!(menu.scroll_offset, menu.max_scroll());
+        let last = menu.item_rect(19).unwrap().center();
+        assert_eq!(menu.item_at([last.x, last.y]), Some(19));
+        dispatch(&mut menu, &cursor_at(last));
+        dispatch(&mut menu, &left_press());
+        assert_eq!(menu.take_selection(), Some(19));
+        assert_eq!(menu.take_selection(), None);
+        menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
+        menu.focus_first_action();
+        for _ in 0..19 {
+            dispatch(&mut menu, &key(NamedKey::ArrowDown));
+        }
+        assert_eq!(menu.hovered(), Some(19));
+        assert!(menu.item_rect(19).is_some());
+        dispatch(&mut menu, &key(NamedKey::Enter));
+        assert_eq!(menu.take_selection(), Some(19));
+        menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
+        dispatch(&mut menu, &wheel(100.0));
+        assert_eq!(menu.scroll_offset, 0.0);
+    }
+
+    #[test]
     fn modal_capture_when_open() {
         let (m, _f) = open_menu();
         assert!(
@@ -766,5 +988,81 @@ mod tests {
         );
         let closed = ContextMenu::new();
         assert!(Widget::modal_capture(&closed).is_none());
+    }
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_menu_measures_scales_and_clamps_at_all_edges() {
+        let viewport = Rect::new(10.0, 20.0, 110.0, 95.0);
+        for anchor in [
+            Rect::new(10.0, 20.0, 30.0, 40.0),
+            Rect::new(90.0, 20.0, 110.0, 40.0),
+            Rect::new(10.0, 75.0, 30.0, 95.0),
+            Rect::new(90.0, 75.0, 110.0, 95.0),
+        ] {
+            let mut menu = ContextMenu::new();
+            for _ in 0..8 {
+                menu.push(MenuItem::action(
+                    "Sehr lange übersetzte Aktion 共有 العربية",
+                    || {},
+                ));
+            }
+            menu.open_anchored(anchor, viewport);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            menu.layout_within(&mut text, &Theme::dark().with_text_scale(2.0));
+            assert_eq!(menu.get_rect().intersect(viewport), menu.get_rect());
+            assert!(menu.row_height > ROW_HEIGHT);
+            menu.focus_item(7);
+            assert!(menu.scroll_offset > 0.0);
+            let last = menu.item_rect(7).unwrap();
+            assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(7));
+            assert!(menu.item_rect(0).is_none());
+            menu.move_hover(1);
+            assert_eq!(menu.hovered(), Some(0));
+            assert_eq!(menu.scroll_offset, 0.0);
+        }
+    }
+    #[test]
+    fn width_uses_shaping_and_legacy_open_resets_bounded_geometry() {
+        let mut narrow = ContextMenu::new();
+        narrow.push(MenuItem::action("iii", || {}));
+        let mut wide = ContextMenu::new();
+        wide.push(MenuItem::action("WWW", || {}));
+        let mut text = TextRenderer::new();
+        for menu in [&mut narrow, &mut wide] {
+            menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 1000.0, 1000.0));
+            menu.layout_within(&mut text, &Theme::dark());
+        }
+        assert!(wide.get_rect().width() > narrow.get_rect().width());
+        wide.open_at([900.0, 950.0]);
+        assert_eq!(
+            wide.get_rect(),
+            Rect::new(
+                900.0,
+                950.0,
+                900.0 + MENU_WIDTH,
+                950.0 + ROW_HEIGHT + 2.0 * PADDING
+            )
+        );
+        assert_eq!(wide.scroll_offset, 0.0);
+    }
+    #[test]
+    fn tiny_viewport_keeps_focused_rows_reachable() {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("First", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Last", || {}));
+        let viewport = Rect::new(0.0, 0.0, 4.0, 4.0);
+        menu.open_anchored(viewport, viewport);
+        menu.layout_within(&mut TextRenderer::new(), &Theme::dark());
+        menu.focus_item(2);
+        assert_eq!(menu.get_rect(), viewport);
+        let last = menu.item_rect(2).unwrap();
+        assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(2));
     }
 }
