@@ -646,6 +646,9 @@ impl ApiTesterApp {
         let cancel_sink = sink.clone();
         let form_cancel = Button::new("api.form-cancel", "Cancel", None)
             .on_effect(move || cancel_sink.borrow_mut().push(Cmd::CancelForm));
+        // The rail is for finding work, not a wall of destructive/global
+        // commands. Keep only the two workspace entry points here; request
+        // and variable mutations remain contextual resource actions.
         let management = [
             (
                 "api.new-collection",
@@ -653,45 +656,9 @@ impl ApiTesterApp {
                 Cmd::OpenForm(FormMode::NewCollection),
             ),
             (
-                "api.save-request",
-                "Save request",
-                Cmd::OpenForm(FormMode::SaveRequest),
-            ),
-            (
-                "api.rename-collection",
-                "Rename collection",
-                Cmd::OpenForm(FormMode::RenameCollection),
-            ),
-            (
-                "api.rename-request",
-                "Rename request",
-                Cmd::OpenForm(FormMode::RenameRequest),
-            ),
-            ("api.delete-request", "Delete request", Cmd::DeleteRequest),
-            (
                 "api.new-environment",
                 "New environment",
                 Cmd::OpenForm(FormMode::NewEnvironment),
-            ),
-            (
-                "api.rename-environment",
-                "Rename environment",
-                Cmd::OpenForm(FormMode::RenameEnvironment),
-            ),
-            (
-                "api.delete-environment",
-                "Delete environment",
-                Cmd::DeleteEnvironment,
-            ),
-            (
-                "api.new-variable",
-                "Add variable",
-                Cmd::OpenForm(FormMode::NewVariable),
-            ),
-            (
-                "api.delete-variable",
-                "Delete variable",
-                Cmd::OpenForm(FormMode::DeleteVariable),
             ),
         ];
         let manage_buttons = management
@@ -1337,12 +1304,6 @@ impl ApiTesterApp {
                 y += 78.0 * scale;
                 l.collection_manage_label = Point::new(control_x, y);
                 y += 18.0 * scale;
-                l.manage.extend(action_rows(5, y));
-                y += 5.0 * 38.0 * scale + 12.0 * scale;
-                l.environment_manage_label = Point::new(control_x, y);
-                y += 18.0 * scale;
-                l.manage.extend(action_rows(3, y));
-                y += 3.0 * 38.0 * scale + 12.0 * scale;
                 l.manage.extend(action_rows(2, y));
                 y += 2.0 * 38.0 * scale + 16.0 * scale;
             }
@@ -1456,22 +1417,7 @@ impl ApiTesterApp {
         }
         Self::draw_section_label(scene, t, tr, theme, l.collections_label, "COLLECTIONS");
         Self::draw_section_label(scene, t, tr, theme, l.history_label, "HISTORY");
-        Self::draw_section_label(
-            scene,
-            t,
-            tr,
-            theme,
-            l.collection_manage_label,
-            "COLLECTIONS & REQUESTS",
-        );
-        Self::draw_section_label(
-            scene,
-            t,
-            tr,
-            theme,
-            l.environment_manage_label,
-            "ENVIRONMENTS",
-        );
+        Self::draw_section_label(scene, t, tr, theme, l.collection_manage_label, "WORKSPACE");
         if let Some(form) = self.form {
             Self::draw_section_label(scene, t, tr, theme, l.form_heading, form.heading());
         }
