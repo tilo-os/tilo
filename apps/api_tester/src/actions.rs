@@ -204,6 +204,12 @@ pub enum ApiTesterAction {
         key: String,
         value: String,
     },
+    /// Rename a variable without reading or serializing its secret value.
+    RenameVariable {
+        env_id: String,
+        variable_id: String,
+        key: String,
+    },
     /// Delete a variable by key from an environment.
     DeleteVariable { env_id: String, variable_id: String },
 }
@@ -305,6 +311,17 @@ impl ApiTesterAction {
                         variable.id.clone_from(variable_id);
                         e.variables.push(variable);
                     }
+                }
+            }
+            ApiTesterAction::RenameVariable {
+                env_id,
+                variable_id,
+                key,
+            } => {
+                if let Some(e) = find_environment_mut(envs, env_id)
+                    && let Some(v) = e.variables.iter_mut().find(|v| v.id == *variable_id)
+                {
+                    v.key.clone_from(key);
                 }
             }
             ApiTesterAction::DeleteVariable {
@@ -413,6 +430,14 @@ impl Action for ApiTesterAction {
                 value,
             } => {
                 ApiDoc::set_variable(doc, &root, env_id, variable_id, key, value);
+                Ok(())
+            }
+            ApiTesterAction::RenameVariable {
+                env_id,
+                variable_id,
+                key,
+            } => {
+                ApiDoc::rename_variable(doc, &root, env_id, variable_id, key);
                 Ok(())
             }
             ApiTesterAction::DeleteVariable {
@@ -538,6 +563,18 @@ pub fn set_variable_action(
     }
 }
 
+pub fn rename_variable_action(
+    env_id: Uuid,
+    variable_id: impl Into<String>,
+    key: &str,
+) -> ApiTesterAction {
+    ApiTesterAction::RenameVariable {
+        env_id: env_id.to_string(),
+        variable_id: variable_id.into(),
+        key: key.to_string(),
+    }
+}
+
 pub fn delete_variable_action(env_id: Uuid, variable_id: impl Into<String>) -> ApiTesterAction {
     ApiTesterAction::DeleteVariable {
         env_id: env_id.to_string(),
@@ -559,7 +596,11 @@ fn split_kv(arg: &str) -> (String, String) {
 // Resource tree
 // ===========================================================================
 
-fn immediate(id: &str, label: impl Into<String>, action: &ApiTesterAction) -> ActionSpec {
+pub(crate) fn immediate(
+    id: &str,
+    label: impl Into<String>,
+    action: &ApiTesterAction,
+) -> ActionSpec {
     let label = label.into();
     ActionSpec::immediate(id, label.clone(), API_TESTER_ACTION_TYPE, action).unwrap_or_else(|_| {
         // The fallible builder's fallback. `ActionSpec`'s fields are
@@ -819,7 +860,7 @@ fn add_environment_children(
         ));
 
         for variable in &e.variables {
-            node = node.with_child(variable_resource(eid, variable));
+            node = node.with_child(variable_resource(eid, &variable.id, &variable.key));
         }
         env_root = env_root.with_child(node);
     }
@@ -829,15 +870,14 @@ fn add_environment_children(
 
 /// One stable, secret-safe variable resource. Kept separate so environment
 /// traversal remains small and callers can materialize a single address later.
-fn variable_resource(eid: Uuid, variable: &KeyValue) -> Resource {
-    let rename_id = variable.id.clone();
-    let set_value_id = variable.id.clone();
-    let key = variable.key.clone();
-    let value = variable.value.clone();
+pub(crate) fn variable_resource(eid: Uuid, variable_id: &str, key: &str) -> Resource {
+    let rename_id = variable_id.to_string();
+    let set_value_id = variable_id.to_string();
+    let key = key.to_string();
     Resource::new(
-        format!("api_tester.variable:{eid}:{}", variable.id),
+        format!("api_tester.variable:{eid}:{variable_id}"),
         "api_tester.variable",
-        format!("Variable {}", variable.key),
+        format!("Variable {key}"),
     )
     .with_action(ActionSpec::prompted(
         "rename",
@@ -846,11 +886,10 @@ fn variable_resource(eid: Uuid, variable: &KeyValue) -> Resource {
         "new key…",
         ExecutionLocus::ClientLocal,
         move |next_key: &str| {
-            encode(&set_variable_action(
+            encode(&rename_variable_action(
                 eid,
                 rename_id.clone(),
                 next_key.trim(),
-                &value,
             ))
         },
     ))
@@ -872,7 +911,7 @@ fn variable_resource(eid: Uuid, variable: &KeyValue) -> Resource {
     .with_action(immediate(
         "delete",
         "Delete variable",
-        &delete_variable_action(eid, &variable.id),
+        &delete_variable_action(eid, variable_id),
     ))
 }
 
@@ -881,86 +920,9 @@ impl ResourceProvider for crate::app::ApiTesterApp {
         provide_root_resources(doc)
     }
 
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        exact_resource(doc, id)
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        self.resource_from_catalog(id)
     }
-}
-
-fn exact_resource(doc: &AutoCommit, id: &str) -> Option<Resource> {
-    let root: ObjId = ROOT;
-    if let Some(raw) = id.strip_prefix("api_tester.collection:") {
-        let mut row = ApiDoc::collections(doc, &root)
-            .into_iter()
-            .find(|row| row.id.to_string() == raw)?;
-        row.requests.clear();
-        return add_collection_children(Resource::new("exact", "exact", "exact"), &[row], None)
-            .children
-            .into_iter()
-            .next();
-    }
-    if let Some(raw) = id.strip_prefix("api_tester.request:") {
-        for mut collection in ApiDoc::collections(doc, &root) {
-            if let Some(request) = collection
-                .requests
-                .iter()
-                .find(|row| row.id.to_string() == raw)
-                .cloned()
-            {
-                collection.requests = vec![request];
-                return add_collection_children(
-                    Resource::new("exact", "exact", "exact"),
-                    &[collection],
-                    None,
-                )
-                .children
-                .into_iter()
-                .next()?
-                .children
-                .into_iter()
-                .next();
-            }
-        }
-    }
-    if let Some(raw) = id.strip_prefix("api_tester.environment:") {
-        let mut row = ApiDoc::environments(doc, &root)
-            .into_iter()
-            .find(|row| row.id.to_string() == raw)?;
-        row.variables.clear();
-        return add_environment_children(Resource::new("exact", "exact", "exact"), &[row], None)
-            .children
-            .into_iter()
-            .next()?
-            .children
-            .into_iter()
-            .next();
-    }
-    if let Some(raw) = id.strip_prefix("api_tester.variable:") {
-        for mut environment in ApiDoc::environments(doc, &root) {
-            if let Some(variable) = environment
-                .variables
-                .iter()
-                .find(|row| format!("{}:{}", environment.id, row.id) == raw)
-                .cloned()
-            {
-                environment.variables = vec![variable];
-                return add_environment_children(
-                    Resource::new("exact", "exact", "exact"),
-                    &[environment],
-                    None,
-                )
-                .children
-                .into_iter()
-                .next()?
-                .children
-                .into_iter()
-                .next()?
-                .children
-                .into_iter()
-                .next();
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -1174,8 +1136,11 @@ mod tests {
 
     #[test]
     fn bounded_directory_resolves_each_canonical_deep_address() {
-        let app = crate::app::ApiTesterApp::new_demo();
+        let mut app = crate::app::ApiTesterApp::new_demo();
         let (doc, collection, request, environment) = seeded();
+        let collections = ApiDoc::collections(&doc, &ROOT);
+        let environments = ApiDoc::environments(&doc, &ROOT);
+        app.refresh_search_records(&collections, &environments);
         let variable = ApiDoc::environments(&doc, &ROOT)[0].variables[0].id.clone();
         let root = <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &doc);
         assert_eq!(root.len(), 1, "directory is bounded to the workspace root");
@@ -1199,6 +1164,25 @@ mod tests {
             assert_eq!(exact.id.0, id);
             assert!(exact.actions.iter().any(|candidate| candidate.id == action));
         }
+    }
+
+    #[test]
+    fn variable_rename_keeps_the_existing_secret_value_in_its_own_crdt_field() {
+        let root: ObjId = ROOT;
+        let mut doc = AutoCommit::new();
+        let mut environment = Environment::new("Production");
+        let environment_id = environment.id;
+        let variable = KeyValue::new("token", "keep-this-secret");
+        let variable_id = variable.id.clone();
+        environment.variables.push(variable);
+        ApiDoc::set_environments(&mut doc, &root, &[environment]);
+
+        rename_variable_action(environment_id, variable_id, "api_token")
+            .apply(&mut doc)
+            .expect("key-only rename applies");
+        let variable = &ApiDoc::environments(&doc, &root)[0].variables[0];
+        assert_eq!(variable.key, "api_token");
+        assert_eq!(variable.value, "keep-this-secret");
     }
 
     #[test]

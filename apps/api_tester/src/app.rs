@@ -963,6 +963,19 @@ impl ApiTesterApp {
             .refresh(&self.collections, &self.environments);
     }
 
+    pub(crate) fn resource_from_catalog(&self, id: &str) -> Option<qos_actions::Resource> {
+        self.search_provider.resource(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_search_records(
+        &mut self,
+        collections: &[Collection],
+        environments: &[Environment],
+    ) {
+        self.search_provider.refresh(collections, environments);
+    }
+
     /// Number shown on a request-builder tab badge (kept for the tests + the
     /// var hint; the tab strip itself no longer paints badges).
     #[cfg(test)]
@@ -3715,6 +3728,31 @@ mod tests {
             a.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
                 .is_none(),
             "terminal delivery is at most once"
+        );
+    }
+
+    #[test]
+    fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
+        let mut a = app();
+        let mut collection = Collection::new("Load test");
+        collection.requests = (0..100_001)
+            .map(|index| Request::new(format!("Request {index}")))
+            .collect();
+        let request = collection.requests.last().expect("late request").id;
+        a.collections = vec![collection];
+        a.environments.clear();
+        a.refresh_search();
+
+        let doc = AutoCommit::new();
+        let id = format!("api_tester.request:{request}");
+        let resource = <ApiTesterApp as qos_actions::ResourceProvider>::resource(&a, &doc, &id)
+            .expect("late exact address resolves");
+        assert_eq!(resource.id.0, id);
+        assert!(resource.actions.iter().any(|action| action.id == "send"));
+        assert_eq!(
+            a.search_provider.last_exact_inspected(),
+            1,
+            "the ResourceProvider performs one indexed address lookup"
         );
     }
 }
