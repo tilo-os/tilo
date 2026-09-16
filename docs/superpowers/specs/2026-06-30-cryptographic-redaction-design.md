@@ -1,7 +1,8 @@
 # Cryptographic redaction (Phase 9, second half)
 
 **Date:** 2026-06-30
-**Status:** Design accepted; implementation lands alongside this doc
+**Status:** Implemented design record; current protocol and UI projections live
+in `crates/collab/collab-types`, `shell`, and `ui`.
 **Companion to:** `2026-06-29-spaces-channels-and-cryptographic-roles.md` §"Phase 9"
 **Replaces:** the half-sentence mention of `RedactRequest` in the parent spec
 

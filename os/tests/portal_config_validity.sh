@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Validate the xdg-desktop-portal config files (Sandbox Phase 4.3
-# follow-up). The checks cover:
+# Validate the xdg-desktop-portal config files. The checks cover:
 #
 #   1. The .portal file declares the right backend bus name and lists
 #      every interface our `quick_desktop::portal::serve()` registers.

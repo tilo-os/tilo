@@ -1,7 +1,7 @@
 # Files → app drag-and-drop (Wayland)
 
-**Status: implemented 2026-08-22** on branch `files-to-app-dnd`. Parts A, B, C landed as
-designed; see "What changed in practice" at the end for the two things the tree taught us.
+**Status: implemented 2026-08-22.** Parts A, B, and C landed as designed; see
+"What changed in practice" for the durable protocol decisions.
 
 **Goal.** In the native compositor, a file dragged out of the built-in Files app and
 released over a sandboxed `ui` app's window is delivered to that app as a drop, and the
