@@ -72,7 +72,7 @@ fn resource_component(value: &str) -> String {
         .collect()
 }
 
-fn catalog_resource_id(kind: &str, components: &[&str]) -> String {
+pub(crate) fn catalog_resource_id(kind: &str, components: &[&str]) -> String {
     std::iter::once(kind.to_string())
         .chain(
             components
@@ -197,6 +197,9 @@ pub struct DbClientApp {
     /// the bottom-right corner, then fades — so the editor/results region can
     /// span all the way to the window bottom.
     status_bubble: ui::StatusBubble,
+    /// Retained, revisioned global-search projection. It is rebuilt only when
+    /// the live catalog or collaborative query collection changes.
+    search_index: crate::search::DbSearchIndex,
     /// The last summary the bubble showed, so it is poked only on a real change
     /// rather than every frame (draw recomputes the label unconditionally).
     last_status_label: Option<String>,
@@ -314,6 +317,7 @@ impl DbClientApp {
             bound_data_gen: usize::MAX,
             dirty: true,
             status_bubble: ui::StatusBubble::new(),
+            search_index: crate::search::DbSearchIndex::default(),
             last_status_label: None,
             shots_status: false,
         };
@@ -1310,6 +1314,10 @@ impl Widget for DbClientApp {
         vec![root]
     }
 
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: OperationKind,
@@ -1456,6 +1464,7 @@ impl Widget for DbClientApp {
         let sql_text = EditorDoc::sql_text(state);
         self.editor.bind_text(sql_text);
         self.editor.pull(state);
+        self.search_index.sync(&self.session, state);
     }
 
     fn build_layout(
