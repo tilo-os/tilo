@@ -28,7 +28,7 @@ pub(crate) struct TabVisual {
     pub media_playing: bool,
 }
 pub struct BrowserTabStrip {
-    inner: TabBar,
+    inner: Box<TabBar>,
     tabs: Vec<TabDescriptor>,
     pinned: HashSet<u64>,
     visible_ids: Vec<u64>,
@@ -44,7 +44,7 @@ pub struct BrowserTabStrip {
 }
 impl BrowserTabStrip {
     pub fn new(tabs: Vec<TabDescriptor>, active: u64) -> Self {
-        let mut inner = TabBar::new("browser", tabs.clone(), active);
+        let mut inner = Box::new(TabBar::new("browser", tabs.clone(), active));
         inner.set_show_maximize(false);
         Self {
             inner,
@@ -91,6 +91,7 @@ impl BrowserTabStrip {
         let i = self.tabs.iter().position(|t| t.id == id)?;
         self.tabs.remove(i);
         self.pinned.remove(&id);
+        self.visuals.remove(&id);
         self.inner.remove_tab(id);
         self.refresh_visible();
         Some(i)
@@ -146,6 +147,10 @@ impl BrowserTabStrip {
             },
         );
     }
+    #[cfg(test)]
+    pub fn visual_count(&self) -> usize {
+        self.visuals.len()
+    }
     pub fn take_toggle_mute(&mut self) -> Option<u64> {
         self.pending_toggle_mute.take()
     }
@@ -169,12 +174,6 @@ impl BrowserTabStrip {
     }
     pub fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.viewport_dirty) || self.inner.take_structure_dirty()
-    }
-    pub fn needs_animation_frame(&self) -> bool {
-        self.inner.needs_animation_frame()
-    }
-    pub fn set_motion_reduced(&mut self, r: bool) {
-        self.inner.set_motion_reduced(r)
     }
     fn refresh_visible(&mut self) {
         self.refresh_visible_for(self.inner.active_id());
@@ -332,16 +331,41 @@ impl BrowserTabStrip {
         Rect::new(x0, tab.center().y - 8.0, x0 + 16.0, tab.center().y + 8.0)
     }
     fn has_hidden_before(&self) -> bool {
-        self.visible_ids
-            .first()
-            .and_then(|id| self.tabs.iter().position(|t| t.id == *id))
-            .is_some_and(|i| i > 0)
+        self.partition_has_hidden(false, true) || self.partition_has_hidden(true, true)
     }
     fn has_hidden_after(&self) -> bool {
-        self.visible_ids
-            .last()
-            .and_then(|id| self.tabs.iter().position(|t| t.id == *id))
-            .is_some_and(|i| i + 1 < self.tabs.len())
+        self.partition_has_hidden(false, false) || self.partition_has_hidden(true, false)
+    }
+    fn partition_has_hidden(&self, pinned: bool, before: bool) -> bool {
+        let partition: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|tab| self.pinned.contains(&tab.id) == pinned)
+            .map(|tab| tab.id)
+            .collect();
+        let visible: Vec<_> = self
+            .visible_ids
+            .iter()
+            .copied()
+            .filter(|id| self.pinned.contains(id) == pinned)
+            .collect();
+        let Some(edge) = (if before {
+            visible.first()
+        } else {
+            visible.last()
+        }) else {
+            return !partition.is_empty();
+        };
+        partition
+            .iter()
+            .position(|id| id == edge)
+            .is_some_and(|index| {
+                if before {
+                    index > 0
+                } else {
+                    index + 1 < partition.len()
+                }
+            })
     }
 }
 impl Widget for BrowserTabStrip {
