@@ -30,7 +30,16 @@ const MAX_AUTOMATIC_MODEL_BYTES: u64 = 5_000_000_000;
 impl LocalHistoryNarrator {
     /// Start one bounded background generation when the evidence changes.
     pub fn request(&mut self, request: &NarrativeRequest) {
-        let prompt = prompt_for(request);
+        self.request_prompt(request, prompt_for(request));
+    }
+
+    /// Status uses the same private runner and citation contract, but a much
+    /// tighter first-person prompt than the away recap.
+    pub fn request_status(&mut self, request: &NarrativeRequest) {
+        self.request_prompt(request, status_prompt_for(request));
+    }
+
+    fn request_prompt(&mut self, _request: &NarrativeRequest, prompt: String) {
         let key = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         if self.completed_key.as_deref() == Some(&key)
             || (self.last_key.as_deref() == Some(&key)
@@ -58,9 +67,15 @@ impl LocalHistoryNarrator {
     /// Return a result only while it still describes the request on screen.
     /// A slower generation must never overwrite a newer deterministic digest.
     pub fn take_for(&mut self, request: &NarrativeRequest) -> Option<GroundedNarrative> {
-        let expected = blake3::hash(prompt_for(request).as_bytes())
-            .to_hex()
-            .to_string();
+        self.take_for_prompt(prompt_for(request))
+    }
+
+    pub fn take_status_for(&mut self, request: &NarrativeRequest) -> Option<GroundedNarrative> {
+        self.take_for_prompt(status_prompt_for(request))
+    }
+
+    fn take_for_prompt(&mut self, prompt: String) -> Option<GroundedNarrative> {
+        let expected = blake3::hash(prompt.as_bytes()).to_hex().to_string();
         let narrative = self
             .pending
             .lock()
@@ -162,6 +177,20 @@ fn generate(prompt: &str) -> Option<GroundedNarrative> {
 }
 
 fn prompt_for(request: &NarrativeRequest) -> String {
+    evidence_prompt(
+        request,
+        "Rewrite the workspace activity evidence as one clear, factual catch-up sentence. Never invent intent, status, outcomes, names, or facts. Use 45 words or fewer.",
+    )
+}
+
+fn status_prompt_for(request: &NarrativeRequest) -> String {
+    evidence_prompt(
+        request,
+        "Write a short present-tense status describing what the local participant appears to be working toward right now. Use a natural verb phrase, no name or pronoun, and 12 words or fewer. Infer only from the supplied recent actions; never invent an outcome or motivation.",
+    )
+}
+
+fn evidence_prompt(request: &NarrativeRequest, instruction: &str) -> String {
     let mut evidence = Vec::new();
     for source in request.sources.iter().take(24) {
         evidence.push(serde_json::json!({
@@ -173,9 +202,7 @@ fn prompt_for(request: &NarrativeRequest) -> String {
         }));
     }
     format!(
-        "Rewrite the workspace activity evidence as one clear, factual catch-up sentence. \
-Never invent intent, status, outcomes, names, or facts. Use 45 words or fewer. \
-Return JSON only: {{\"text\":\"...\",\"source_ids\":[\"32 lowercase hex chars\"]}}. \
+        "{instruction} Return JSON only: {{\"text\":\"...\",\"source_ids\":[\"32 lowercase hex chars\"]}}. \
 Include only source_ids that directly support the sentence, and at least one.\nEvidence: {}",
         serde_json::Value::Array(evidence)
     )
@@ -300,5 +327,14 @@ mod tests {
             Some("giant:70b"),
             "an explicit override is informed opt-in"
         );
+    }
+
+    #[test]
+    fn status_prompt_is_short_first_person_work_not_a_catch_up_story() {
+        let prompt = status_prompt_for(&request(1, "Prepare Q2 close"));
+        assert!(prompt.contains("12 words or fewer"));
+        assert!(prompt.contains("no name or pronoun"));
+        assert!(prompt.contains("Prepare Q2 close"));
+        assert!(!prompt.contains("catch-up sentence"));
     }
 }

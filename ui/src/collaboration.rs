@@ -558,6 +558,12 @@ pub enum PresencePayload {
     /// authenticated event envelope; this payload never describes a mouse or
     /// keyboard gesture and therefore cannot create a synthetic cursor.
     Interaction(Box<qos_actions::SemanticInteraction>),
+    /// Short room-scoped intention. `automatic` distinguishes a local-model
+    /// suggestion from participant-authored words; empty text clears it.
+    Status {
+        text: String,
+        automatic: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -1010,6 +1016,9 @@ fn presence_payload_bytes(payload: &PresencePayload, meter: &mut ByteMeter) {
     }
     if let PresencePayload::Interaction(update) = payload {
         serialized_bytes(update.as_ref(), meter);
+    }
+    if let PresencePayload::Status { text, .. } = payload {
+        meter.string_capacity(text);
     }
 }
 
@@ -3473,6 +3482,9 @@ async fn dispatch_sdk_request(
                         let _ = presence.publish_interaction(&key_bytes, &json).await;
                     }
                 }
+                PresencePayload::Status { text, automatic } => {
+                    let _ = presence.publish_status(&key_bytes, &text, automatic).await;
+                }
             }
         }
         CollabRequest::FetchScrollback {
@@ -3915,6 +3927,9 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
                         serde_json::from_str(&json).ok()?;
                     update.validate().ok()?;
                     PresencePayload::Interaction(Box::new(update))
+                }
+                runtime_collab::PresencePayload::Status { text, automatic } => {
+                    PresencePayload::Status { text, automatic }
                 }
                 runtime_collab::PresencePayload::Arrived => PresencePayload::Arrived,
                 // `Cursor` is fully handled and returned by the outer match, so

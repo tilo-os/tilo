@@ -1397,6 +1397,30 @@ impl FrameBuilder {
         &self.presence
     }
 
+    /// Put an authenticated remote-presence payload through the same fold
+    /// that a received peer packet uses. Deterministic product proofs need
+    /// this seam so they can render intent without standing up a network
+    /// relay; it is unavailable in production-only builds.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn apply_remote_presence_for_shots(
+        &mut self,
+        user: String,
+        key: ui::presence::PresenceKey,
+        payload: ui::collaboration::PresencePayload,
+    ) {
+        if let ui::collaboration::PresencePayload::Interaction(update) = payload {
+            let _ = self.presence.observe_interaction(*update);
+        } else {
+            self.presence.apply_remote_presence(user, key, payload);
+        }
+    }
+
+    #[cfg(feature = "hosted-test-control")]
+    pub fn set_remote_display_name_for_shots(&mut self, user: &str, name: &str) {
+        self.presence
+            .set_display_name(ui::permissions::UserId(user.to_string()), name.to_string());
+    }
+
     /// Convenience for the offscreen scene-set path: `relayout` then
     /// `paint`, for when state mutations between scenes can change layout.
     pub fn paint_settled(&mut self) -> Scene {

@@ -13,7 +13,7 @@
 //! [`ShellNetwork::peer_labels`] — a frame's own `user` field is never
 //! trusted, since a peer naming itself could name anybody.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,7 @@ use crate::shell::network::ShellNetwork;
 /// A room's last-published cursor position and when it went out, keyed
 /// by room — what [`should_publish_cursor`] rate-limits against.
 type CursorPublishHistory = HashMap<String, ((f64, f64), Instant)>;
+type DepartureKey = (u64, String, std::time::SystemTime);
 
 /// Bridges the session's collaboration broker and its peers for
 /// pointer presence. Held by the compositor for the life of the session.
@@ -36,10 +37,13 @@ pub struct PeerPresence {
     cursor: Arc<Mutex<Option<(f64, f64)>>>,
     /// Inbound presence from other hosts, filled by [`ShellNetwork::tick`].
     inbound: Arc<Mutex<Vec<crate::shell::network::InboundPresence>>>,
-    /// Relationship cues arrive through the authenticated typed-presence
-    /// route rather than the legacy desktop cursor queue. They are drained
-    /// into the same render-only [`PresenceCtx`] projection in [`Self::pump`].
-    follow_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
+    /// Tab location, follow cues, short statuses, and semantic work arrive through the
+    /// authenticated typed-presence route rather than the legacy desktop
+    /// cursor queue. They are drained into the same render-only
+    /// [`PresenceCtx`] projection in [`Self::pump`].
+    typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
+    departures: Arc<crate::shell::network::PeerDepartureHistory>,
+    seen_departures: Mutex<HashSet<DepartureKey>>,
     subscription: Arc<RoomSubscription>,
     /// The rooms this session is in, mirrored from [`Self::set_rooms`]
     /// so a room this session has left stops being remembered below.
@@ -59,6 +63,76 @@ pub const MIN_PUBLISH_GAP: Duration = Duration::from_millis(33);
 /// restates it. Presence is gossip: a host that joins after somebody
 /// stopped moving has never heard where they are.
 pub const CURSOR_KEEPALIVE: Duration = Duration::from_secs(1);
+
+fn typed_presence_authorized(key: &PresenceKey, payload: &PresencePayload, room: &str) -> bool {
+    match payload {
+        PresencePayload::Following { .. } | PresencePayload::Status { .. } => {
+            matches!(key, PresenceKey::Workspace { id } if id == room)
+        }
+        PresencePayload::Arrived | PresencePayload::Left => {
+            !room.is_empty()
+                && matches!(
+                    key,
+                    PresenceKey::Tab { id } if u64::from_str_radix(id, 16).is_ok()
+                )
+        }
+        PresencePayload::Interaction(update) => {
+            !room.is_empty()
+                && matches!(
+                    key,
+                    PresenceKey::Resource { app, id, kind }
+                        if update.resource.id == *id
+                            && update.resource.kind == *kind
+                            && update
+                                .action
+                                .app
+                                .as_ref()
+                                .is_none_or(|owner| owner.id == *app)
+                )
+        }
+        _ => false,
+    }
+}
+
+fn fold_typed_presence(
+    updates: Vec<(String, PresenceKey, PresencePayload)>,
+    presence: &mut PresenceCtx,
+) -> bool {
+    let changed = !updates.is_empty();
+    for (user, key, payload) in updates {
+        if let PresencePayload::Interaction(update) = payload {
+            let kind = update.actor.kind;
+            let sequence = update.sequence;
+            let update = (*update)
+                .normalized_by_broker(qos_actions::InteractionActor { id: user, kind }, sequence);
+            let _ = presence.observe_interaction(update);
+        } else if matches!(payload, PresencePayload::Left) && matches!(key, PresenceKey::Tab { .. })
+        {
+            // Here Tab/Left is app lifecycle, not the legacy desktop
+            // pointer leaving a viewport. Clear only this location.
+            presence.remove_presence(&key, &ui::permissions::UserId(user));
+        } else {
+            presence.apply_remote_presence(user, key, payload);
+        }
+    }
+    changed
+}
+
+fn departure_presence_ids(
+    session_handle: u64,
+    participant_name: Option<&str>,
+    active_labels: &std::collections::BTreeMap<u64, String>,
+) -> Vec<String> {
+    let mut ids = vec![format!("peer@{session_handle}")];
+    if let Some(name) = participant_name
+        && !active_labels
+            .values()
+            .any(|active| active.eq_ignore_ascii_case(name))
+    {
+        ids.push(name.to_string());
+    }
+    ids
+}
 
 /// Should this session put its pointer on the wire again? `last` is
 /// what it last published for this room and when. Pure so the decision
@@ -102,26 +176,34 @@ impl PeerPresence {
         let inbound = net.inbound_presence_handle();
         let rooms_mirror = rooms.clone();
         let net_for_desktop = Arc::clone(&net);
+        let net_for_subscription = Arc::clone(&net);
 
         let sink_cursor = Arc::clone(&cursor);
-        let follow_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>> =
+        let typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>> =
             Arc::new(Mutex::new(Vec::new()));
-        let sink_follow = Arc::clone(&follow_inbound);
+        let sink_typed = Arc::clone(&typed_inbound);
         let subscription = broker.subscribe_rooms(
             rooms,
             Box::new(move |event, route| {
                 if let CollabEvent::RemotePresenceUpdate {
                     user_id,
                     key,
-                    payload: payload @ PresencePayload::Following { .. },
+                    payload,
                 } = event
+                    && matches!(
+                        payload,
+                        PresencePayload::Following { .. }
+                            | PresencePayload::Status { .. }
+                            | PresencePayload::Interaction(_)
+                            | PresencePayload::Arrived
+                            | PresencePayload::Left
+                    )
                 {
-                    // Follow markers must carry the room they were routed to;
-                    // otherwise a forged application key could pin a cue in
-                    // an unrelated workspace.
-                    if matches!(key, PresenceKey::Workspace { id } if id == &route.cluster_id)
-                        && let Ok(mut queue) = sink_follow.lock()
-                    {
+                    // Room-scoped values must name the delivery room. A
+                    // resource-scoped interaction is authorized by the room
+                    // route itself, then retained only as roster activity.
+                    let authorized = typed_presence_authorized(key, payload, &route.cluster_id);
+                    if authorized && let Ok(mut queue) = sink_typed.lock() {
                         queue.push((user_id.clone(), key.clone(), payload.clone()));
                     }
                     return;
@@ -153,14 +235,28 @@ impl PeerPresence {
                 else {
                     return;
                 };
-                net.publish_presence(key_str, point);
+                net_for_subscription.publish_presence(key_str, point);
             }),
         );
 
+        let departures = net.peer_departure_history();
+        let seen_departures = departures
+            .snapshot()
+            .into_iter()
+            .map(|departure| {
+                (
+                    departure.session_handle,
+                    departure.route.cluster_id,
+                    departure.observed_at,
+                )
+            })
+            .collect();
         Self {
             cursor,
             inbound,
-            follow_inbound,
+            typed_inbound,
+            departures,
+            seen_departures: Mutex::new(seen_departures),
             subscription,
             rooms: Mutex::new(rooms_mirror),
             last_published: Mutex::new(HashMap::new()),
@@ -255,16 +351,50 @@ impl PeerPresence {
             fold_inbound(drained, presence, &|room| net.peer_labels(room), &|room| {
                 mine.iter().any(|r| r == room)
             });
-        let relationships = self
-            .follow_inbound
+        let typed = self
+            .typed_inbound
             .lock()
             .map(|mut queue| std::mem::take(&mut *queue))
             .unwrap_or_default();
-        let relationship_changed = !relationships.is_empty();
-        for (user, key, payload) in relationships {
-            presence.apply_remote_presence(user, key, payload);
-        }
-        cursor_changed || relationship_changed
+        // Attribution is normalized to the authenticated envelope identity
+        // inside the fold; JSON supplied by an app cannot rename its actor.
+        let typed_changed = fold_typed_presence(typed, presence);
+        let departures = self.departures.snapshot();
+        let active_keys = departures
+            .iter()
+            .map(|departure| {
+                (
+                    departure.session_handle,
+                    departure.route.cluster_id.clone(),
+                    departure.observed_at,
+                )
+            })
+            .collect::<HashSet<_>>();
+        let departure_changed = self.seen_departures.lock().is_ok_and(|mut seen| {
+            seen.retain(|key| active_keys.contains(key));
+            let mut changed = false;
+            for departure in departures {
+                let key = (
+                    departure.session_handle,
+                    departure.route.cluster_id.clone(),
+                    departure.observed_at,
+                );
+                if !seen.insert(key) {
+                    continue;
+                }
+                let active_labels = self.net.active_session_labels(&departure.route.cluster_id);
+                for id in departure_presence_ids(
+                    departure.session_handle,
+                    departure.participant_name.as_deref(),
+                    &active_labels,
+                ) {
+                    presence.unregister_peer(&id);
+                }
+                changed = true;
+            }
+            changed
+        });
+        cursor_changed || typed_changed || departure_changed
     }
 
     /// Write the active workspace's room's people into the tree, where
@@ -295,7 +425,24 @@ impl PeerPresence {
             // Two ways to be present: moving cursor, or CRDT participation.
             let mut arrived = handles_seen_in(presence, &ws.room.to_string());
             arrived.extend(replica.participants_in(ws.room));
-            let rows = room_roster(ws, &labels, &arrived, local);
+            let mut rows = room_roster(ws, &labels, &arrived, local);
+            for row in &mut rows {
+                let presence_id = presence
+                    .names
+                    .iter()
+                    .find_map(|(id, name)| name.eq_ignore_ascii_case(&row.name).then_some(id))
+                    .cloned()
+                    .unwrap_or_else(|| ui::permissions::UserId(row.id.clone()));
+                row.active_tab = presence.here.iter().find_map(|(key, users)| {
+                    let PresenceKey::Tab { id } = key else {
+                        return None;
+                    };
+                    users
+                        .contains(&presence_id)
+                        .then(|| u64::from_str_radix(id, 16).ok())
+                        .flatten()
+                });
+            }
             let unchanged = ws.collaborators == rows && tree.collaborators == rows;
             let active = ws.id;
             // Drop the read guard as soon as it's no longer needed, rather
@@ -457,7 +604,163 @@ pub fn room_roster(
 mod tests {
     use super::*;
     use crate::shell::network::InboundPresence;
+    use std::time::SystemTime;
     use ui::permissions::UserId;
+
+    fn interaction(actor: &str) -> PresencePayload {
+        PresencePayload::Interaction(Box::new(qos_actions::SemanticInteraction {
+            version: qos_actions::INTERACTION_VERSION,
+            invocation: qos_actions::InvocationId::new(),
+            sequence: 1,
+            actor: qos_actions::InteractionActor {
+                id: actor.to_string(),
+                kind: qos_actions::InteractionActorKind::Person,
+            },
+            phase: qos_actions::InteractionPhase::Applying,
+            action: qos_actions::InteractionAction {
+                id: "edit".into(),
+                label: "Editing".into(),
+                app: None,
+            },
+            resource: qos_actions::ActionResource {
+                id: "report:q3".into(),
+                kind: "document".into(),
+                label: "Q3 report".into(),
+            },
+            anchor: qos_actions::InteractionAnchor::Resource,
+            group: None,
+        }))
+    }
+
+    #[test]
+    fn shell_observes_remote_action_and_intent_without_spoofed_attribution() {
+        let room = PresenceKey::Workspace {
+            id: "room-7".into(),
+        };
+        let tab = PresenceKey::Tab { id: "2a".into() };
+        let resource = PresenceKey::Resource {
+            app: "org.qos.Writer".into(),
+            id: "report:q3".into(),
+            kind: "document".into(),
+        };
+        let status = PresencePayload::Status {
+            text: "Preparing the board review".into(),
+            automatic: true,
+        };
+        assert!(typed_presence_authorized(&room, &status, "room-7"));
+        assert!(!typed_presence_authorized(&room, &status, "another-room"));
+        assert!(typed_presence_authorized(
+            &resource,
+            &interaction("forged-id"),
+            "room-7"
+        ));
+        assert!(!typed_presence_authorized(
+            &PresenceKey::Resource {
+                app: "org.qos.Writer".into(),
+                id: "another-report".into(),
+                kind: "document".into(),
+            },
+            &interaction("forged-id"),
+            "room-7"
+        ));
+        assert!(typed_presence_authorized(
+            &tab,
+            &PresencePayload::Arrived,
+            "room-7"
+        ));
+
+        let mut presence = PresenceCtx::default();
+        assert!(fold_typed_presence(
+            vec![
+                ("ada".into(), room, status),
+                ("ada".into(), resource, interaction("forged-id")),
+                ("ada".into(), tab.clone(), PresencePayload::Arrived),
+            ],
+            &mut presence,
+        ));
+        assert_eq!(
+            presence
+                .status_for(&UserId("ada".into()), SystemTime::now())
+                .map(|value| value.text.as_str()),
+            Some("Preparing the board review")
+        );
+        let visible = presence.visible_interactions(Instant::now());
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].actor.id, "ada");
+        assert_eq!(visible[0].action.label, "Editing");
+        assert_eq!(
+            presence.here.get(&tab),
+            Some(&vec![UserId("ada".into())]),
+            "the shell retains the app's active tab for the People location line"
+        );
+        let next_tab = PresenceKey::Tab { id: "2b".into() };
+        assert!(fold_typed_presence(
+            vec![("ada".into(), next_tab.clone(), PresencePayload::Arrived,)],
+            &mut presence,
+        ));
+        assert!(presence.here.get(&tab).is_none_or(std::vec::Vec::is_empty));
+        assert_eq!(
+            presence.here.get(&next_tab),
+            Some(&vec![UserId("ada".into())])
+        );
+        assert!(fold_typed_presence(
+            vec![("ada".into(), next_tab.clone(), PresencePayload::Left)],
+            &mut presence,
+        ));
+        assert!(
+            presence
+                .here
+                .get(&next_tab)
+                .is_none_or(std::vec::Vec::is_empty),
+            "closing the tab clears its roster location without disconnecting Ada"
+        );
+        assert!(
+            presence
+                .status_for(&UserId("ada".into()), SystemTime::now())
+                .is_some(),
+            "tab lifecycle does not erase room-scoped intent"
+        );
+    }
+
+    #[test]
+    fn abrupt_departure_clears_named_presence_unless_another_device_is_live() {
+        let mut presence = PresenceCtx::default();
+        let ada = UserId("ada".into());
+        let old_transport = UserId("peer@41".into());
+        let tab = PresenceKey::Tab { id: "2a".into() };
+        presence.register_presence(&tab, ada.clone());
+        presence.register_presence(&tab, old_transport.clone());
+        presence.apply_remote_presence(
+            "ada".into(),
+            PresenceKey::Workspace {
+                id: "room-7".into(),
+            },
+            PresencePayload::Status {
+                text: "Preparing the board review".into(),
+                automatic: false,
+            },
+        );
+        let PresencePayload::Interaction(update) = interaction("ada") else {
+            unreachable!();
+        };
+        assert!(presence.observe_interaction(*update).unwrap());
+
+        let ids = departure_presence_ids(41, Some("ada"), &Default::default());
+        assert_eq!(ids, vec!["peer@41", "ada"]);
+        for id in ids {
+            presence.unregister_peer(&id);
+        }
+        assert!(presence.here.values().all(std::vec::Vec::is_empty));
+        assert!(presence.status_for(&ada, SystemTime::now()).is_none());
+        assert!(presence.visible_interactions(Instant::now()).is_empty());
+
+        let still_live = std::collections::BTreeMap::from([(73, "ada".to_string())]);
+        assert_eq!(
+            departure_presence_ids(41, Some("ada"), &still_live),
+            vec!["peer@41"],
+            "one device leaving must not erase the person's other live session"
+        );
+    }
 
     #[test]
     fn a_session_that_has_said_nothing_speaks() {

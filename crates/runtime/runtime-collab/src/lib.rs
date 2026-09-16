@@ -2000,6 +2000,26 @@ impl PresenceHandle {
         Ok(())
     }
 
+    /// Publish or clear (`text == ""`) the local participant's short status.
+    /// The broker authenticates authorship; `automatic` is presentation
+    /// provenance, not authority.
+    pub async fn publish_status(
+        &self,
+        key_bytes: &[u8],
+        text: &str,
+        automatic: bool,
+    ) -> Result<(), NotAvailable> {
+        let mut req = self.inner.publish_status_request();
+        {
+            let mut b = req.get();
+            b.set_key_bytes(key_bytes);
+            b.set_text(text);
+            b.set_automatic(automatic);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Publish "the local user has arrived at the keyed object".
     ///
     /// # Errors
@@ -2084,6 +2104,10 @@ pub enum PresencePayload {
     /// enclosing broker-attributed [`PresenceEvent::user_id`], never this
     /// caller-controlled payload.
     InteractionJson(String),
+    Status {
+        text: String,
+        automatic: bool,
+    },
     Arrived,
     Left,
 }
@@ -2169,6 +2193,14 @@ fn decode_presence_payload(
                 })?
                 .to_owned(),
         ),
+        W::Status(value) => PresencePayload::Status {
+            text: value
+                .get_text()?
+                .to_str()
+                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?
+                .to_owned(),
+            automatic: value.get_automatic(),
+        },
         W::Arrived(()) => PresencePayload::Arrived,
         W::Left(()) => PresencePayload::Left,
     })

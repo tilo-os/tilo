@@ -553,6 +553,10 @@ interface PresenceHandle {
   # not contain (and cannot override) identity. Unlike pointer/caret presence,
   # this describes what an action is doing without inventing input gestures.
   publishInteraction @9 (keyBytes :Data, interactionJson :Text) -> ();
+
+  # Short transient intention. Empty text clears it; automatic distinguishes
+  # a local-model suggestion from words the participant explicitly authored.
+  publishStatus @10 (keyBytes :Data, text :Text, automatic :Bool) -> ();
 }
 
 interface PresenceStream {
@@ -638,6 +642,11 @@ struct PresencePayload {
     # union arm so non-Rust peers can preserve/forward evolving semantic
     # targets without understanding app-specific anchor variants.
     interactionJson @12 :Text;
+
+    status :group {
+      text @13 :Text;
+      automatic @14 :Bool;
+    }
   }
 }
 

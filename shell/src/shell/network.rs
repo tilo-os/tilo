@@ -1424,6 +1424,36 @@ impl ShellNetwork {
         replica.tree.read().room_peer_labels(room)
     }
 
+    /// Live session handles and their admitted display names for one room.
+    /// Unlike [`Self::peer_labels`], this projection is deliberately
+    /// ephemeral: [`WorkspaceTree::retire_session`] removes a device as soon
+    /// as the transport reports departure. Presence cleanup uses it to avoid
+    /// erasing a person's status when another device of theirs is still here.
+    pub fn active_session_labels(
+        &self,
+        cluster_id: &str,
+    ) -> std::collections::BTreeMap<u64, String> {
+        let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
+            return std::collections::BTreeMap::new();
+        };
+        let Ok(replica) = self.replica.lock() else {
+            return std::collections::BTreeMap::new();
+        };
+        replica
+            .tree
+            .read()
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.room == room)
+            .flat_map(|workspace| &workspace.collaborators)
+            .filter_map(|participant| {
+                participant
+                    .session
+                    .map(|session| (session, participant.name.clone()))
+            })
+            .collect()
+    }
+
     /// Snapshot recent transport departures, oldest first. This is bounded
     /// session diagnostics, not a durable participant roster.
     pub fn peer_departures(&self) -> Vec<PeerDeparture> {
