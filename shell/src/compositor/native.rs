@@ -5984,6 +5984,74 @@ pub fn run() -> ! {
             for controller in crate::shell::device_fabric_runtime::take_spatial_input_releases() {
                 let _ = state.release_personal_fabric_input(&controller);
             }
+            for event in crate::shell::device_fabric_runtime::take_personal_display_events() {
+                use crate::shell::device_fabric_runtime::PersonalDisplayEvent;
+                match event {
+                    PersonalDisplayEvent::Started {
+                        session_id, source, ..
+                    } => {
+                        let input_net = Arc::clone(net);
+                        let input_source = source.clone();
+                        let sink = Arc::new(move |event: crate::network::streaming::InputEvent| {
+                            use crate::network::streaming::InputEvent;
+                            let mapped = match event {
+                                InputEvent::PointerMotion { x, y } => Some(
+                                    crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+                                        x: spatial_coord(x),
+                                        y: spatial_coord(y),
+                                    },
+                                ),
+                                InputEvent::PointerButton { button, pressed } => Some(
+                                    crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                                        button,
+                                        pressed,
+                                    },
+                                ),
+                                InputEvent::Key {
+                                    keysym,
+                                    pressed,
+                                    modifiers,
+                                } => Some(crate::shell::device_fabric::FabricInputEvent::Key {
+                                    keycode: keysym,
+                                    pressed,
+                                    modifiers,
+                                }),
+                                InputEvent::PointerEnter { .. }
+                                | InputEvent::PointerLeave { .. }
+                                | InputEvent::KeyboardFocus { .. } => None,
+                            };
+                            if let Some(mapped) = mapped {
+                                let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+                                    &input_net,
+                                    &input_source,
+                                    mapped,
+                                );
+                            }
+                        });
+                        frame_builder
+                            .host_mut()
+                            .mount_personal_display(session_id, sink);
+                    }
+                    PersonalDisplayEvent::Frame {
+                        session_id,
+                        sequence,
+                        annex_b,
+                        ..
+                    } => {
+                        let outcome = frame_builder
+                            .host_mut()
+                            .push_personal_display_frame(session_id, &annex_b);
+                        crate::shell::device_fabric_runtime::report_personal_display_decode(
+                            net, session_id, sequence, outcome,
+                        );
+                    }
+                    PersonalDisplayEvent::Ended { session_id } => {
+                        let _ = frame_builder
+                            .host_mut()
+                            .unmount_personal_display(session_id);
+                    }
+                }
+            }
             for event in crate::shell::device_fabric_runtime::take_nearby_drop_events() {
                 use crate::shell::device_fabric_runtime::NearbyDropEvent;
                 let fabric = net.device_fabric();
@@ -6629,7 +6697,23 @@ pub fn run() -> ! {
             // Neither capture path transmits the lock screen: receiver
             // sessions may remain connected, but no fresh frame reveals
             // password entry, notification counts, or unlock timing.
-            if !session.is_locked() && frame_builder.host().projection_capture_requested() {
+            let personal_display_profile =
+                crate::shell::device_fabric_runtime::personal_display_capture_profile();
+            projection_capture.set_personal_profile(personal_display_profile);
+            if crate::shell::device_fabric_runtime::take_personal_display_keyframe_request() {
+                projection_capture.request_keyframe();
+            }
+            if let Some(net) = peer_sync.as_ref() {
+                while let Some(packet) = projection_capture.take_packet() {
+                    let _ = crate::shell::device_fabric_runtime::publish_personal_display_packet(
+                        net, &packet,
+                    );
+                }
+            }
+            if !session.is_locked()
+                && (frame_builder.host().projection_capture_requested()
+                    || personal_display_profile.is_some())
+            {
                 let viewport = frame_builder.viewport();
                 #[allow(
                     clippy::cast_possible_truncation,

@@ -43,6 +43,35 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// contains no application payload.
 const PEER_DEPARTURE_HISTORY_CAPACITY: usize = 64;
 const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
+const PERSONAL_DISPLAY_QUEUE_CAPACITY: usize = 16;
+
+fn queue_personal_display_message(
+    queue: &mut VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>,
+    message: crate::shell::device_fabric::PersonalDisplayMessage,
+) {
+    use crate::shell::device_fabric::PersonalDisplayMessage;
+    if let PersonalDisplayMessage::Frame { session_id, .. } = &message
+        && let Some(existing) = queue.iter_mut().rev().find(|existing| {
+            matches!(existing, PersonalDisplayMessage::Frame { session_id: candidate, .. } if candidate == session_id)
+        })
+    {
+        *existing = message;
+        return;
+    }
+    if queue.len() >= PERSONAL_DISPLAY_QUEUE_CAPACITY {
+        if let Some(old_frame) = queue
+            .iter()
+            .position(|queued| matches!(queued, PersonalDisplayMessage::Frame { .. }))
+        {
+            queue.remove(old_frame);
+        } else if matches!(message, PersonalDisplayMessage::Frame { .. }) {
+            return;
+        } else {
+            queue.pop_front();
+        }
+    }
+    queue.push_back(message);
+}
 const MAX_PERSONAL_MEDIA_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_PERSONAL_MEDIA_CACHE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 const MIN_PERSONAL_MEDIA_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -849,6 +878,9 @@ pub struct ShellNetwork {
     /// Validated, ephemeral exact-target actions awaiting the shell runtime.
     personal_fabric_actions:
         Mutex<VecDeque<crate::shell::device_fabric::PersonalFabricActionEnvelope>>,
+    /// Authenticated display lifecycle and latest-wins frames. This queue is
+    /// deliberately separate from actions so video cannot starve control.
+    personal_display_messages: Mutex<VecDeque<crate::shell::device_fabric::PersonalDisplayMessage>>,
     /// Bounded session-local replay filter for action request ids.
     personal_fabric_action_replays: Mutex<PersonalFabricReplayWindow>,
     /// Streaming, content-verified cache for explicit device-local media
@@ -1207,6 +1239,7 @@ impl ShellNetwork {
             device_fabric: Mutex::new(device_fabric),
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
+            personal_display_messages: Mutex::new(VecDeque::new()),
             personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
             personal_media_cache_root: personal_media_cache_root(),
             personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
@@ -2876,6 +2909,85 @@ impl ShellNetwork {
             .map_or_else(|_| Vec::new(), |mut actions| actions.drain(..).collect())
     }
 
+    /// Send one display lifecycle/frame message to its exact certified peer.
+    /// Saved placement is the durable authorization; absent or stale bindings
+    /// fail closed before bytes reach the actor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when identity, placement authorization, addressing,
+    /// message validation, or the bounded actor channel is unavailable.
+    pub fn send_personal_display(
+        &self,
+        peer: &crate::shell::personal_continuity::DeviceId,
+        message: crate::shell::device_fabric::PersonalDisplayMessage,
+    ) -> Result<(), String> {
+        let user_public_key = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let local = self
+            .personal_continuity_device
+            .as_ref()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        message
+            .validate_at(local, peer, now_unix_millis())
+            .map_err(|error| error.to_string())?;
+        if !self.display_route_authorized(&message) {
+            return Err("display stream is not authorized by a saved placement".into());
+        }
+        let peer_bytes: [u8; 32] = hex::decode(peer.as_str())
+            .map_err(|_| "invalid certified display id".to_string())?
+            .try_into()
+            .map_err(|_| "invalid certified display id".to_string())?;
+        let target = iroh::EndpointId::from_bytes(&peer_bytes)
+            .map_err(|_| "invalid certified display id".to_string())?;
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if !self.join_topic(ws) {
+            return Err("personal display transport is unavailable".into());
+        }
+        self.cmd_tx
+            .try_send(NetCmd::PublishPersonalFabricTarget {
+                ws,
+                user_public_key,
+                target,
+                payload: PersonalFabricPayload::Display(message),
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn take_personal_display_messages(
+        &self,
+    ) -> Vec<crate::shell::device_fabric::PersonalDisplayMessage> {
+        self.personal_display_messages
+            .lock()
+            .map_or_else(|_| Vec::new(), |mut queue| queue.drain(..).collect())
+    }
+
+    fn display_route_authorized(
+        &self,
+        message: &crate::shell::device_fabric::PersonalDisplayMessage,
+    ) -> bool {
+        use crate::shell::device_fabric::PersonalDisplayMessage;
+        let (source, target) = match message {
+            PersonalDisplayMessage::Offer { source, target, .. }
+            | PersonalDisplayMessage::Accept { source, target, .. }
+            | PersonalDisplayMessage::Frame { source, target, .. }
+            | PersonalDisplayMessage::Feedback { source, target, .. }
+            | PersonalDisplayMessage::End { source, target, .. } => (source, target),
+        };
+        self.device_fabric
+            .lock()
+            .ok()
+            .and_then(|fabric| fabric.snapshots().get(target).cloned())
+            .is_some_and(|snapshot| {
+                snapshot.presence.online
+                    && snapshot.presence.capabilities.video_output
+                    && snapshot
+                        .display
+                        .is_some_and(|display| display.stream_source.as_ref() == Some(source))
+            })
+    }
+
     /// Replace this machine's self-authored fabric snapshot and advertise it
     /// to currently connected, certified devices of the same person.
     ///
@@ -3320,6 +3432,28 @@ impl ShellNetwork {
                     return;
                 };
                 self.dispatch_personal_media_transfer(source, frame);
+            }
+            PersonalFabricPayload::Display(message) => {
+                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    identity.device_pubkey,
+                )) else {
+                    return;
+                };
+                let Some(local) = self.personal_continuity_device.as_ref() else {
+                    return;
+                };
+                if message
+                    .validate_at(&source, local, now_unix_millis())
+                    .is_err()
+                    || !self.display_route_authorized(&message)
+                {
+                    tracing::warn!(peer = %peer, "dropping unauthorized personal display traffic");
+                    return;
+                }
+                let Ok(mut queue) = self.personal_display_messages.lock() else {
+                    return;
+                };
+                queue_personal_display_message(&mut queue, message);
             }
         }
     }
@@ -4639,6 +4773,7 @@ pub(crate) fn shell_network_for_test(
         device_fabric: Mutex::new(crate::shell::device_fabric::DeviceFabric::default()),
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
+        personal_display_messages: Mutex::new(VecDeque::new()),
         personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
         personal_media_cache_root: None,
         personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
@@ -4667,6 +4802,49 @@ mod tests {
     fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
         crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
             .expect("valid test device")
+    }
+
+    #[test]
+    fn personal_display_frames_are_latest_wins_without_evicting_lifecycle() {
+        use crate::shell::device_fabric::PersonalDisplayMessage;
+        let source = test_device(1);
+        let target = test_device(2);
+        let end = |byte| PersonalDisplayMessage::End {
+            session_id: [byte; 16],
+            source: source.clone(),
+            target: target.clone(),
+        };
+        let frame = |sequence| PersonalDisplayMessage::Frame {
+            session_id: [99; 16],
+            source: source.clone(),
+            target: target.clone(),
+            sequence,
+            presentation_time_us: sequence,
+            keyframe: sequence == 1,
+            width: 640,
+            height: 360,
+            annex_b: vec![0, 0, 0, 1],
+        };
+        let mut queue = VecDeque::new();
+        for byte in 1..u8::try_from(PERSONAL_DISPLAY_QUEUE_CAPACITY).unwrap() {
+            queue_personal_display_message(&mut queue, end(byte));
+        }
+        queue_personal_display_message(&mut queue, frame(1));
+        queue_personal_display_message(&mut queue, frame(2));
+        assert_eq!(queue.len(), PERSONAL_DISPLAY_QUEUE_CAPACITY);
+        assert!(
+            queue.iter().any(|message| matches!(
+                message,
+                PersonalDisplayMessage::Frame { sequence: 2, .. }
+            ))
+        );
+        queue_personal_display_message(&mut queue, end(77));
+        assert_eq!(queue.len(), PERSONAL_DISPLAY_QUEUE_CAPACITY);
+        assert!(
+            queue
+                .iter()
+                .all(|message| matches!(message, PersonalDisplayMessage::End { .. }))
+        );
     }
 
     #[test]
