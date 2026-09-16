@@ -741,9 +741,6 @@ pub struct App {
     fullscreen_active: bool,
 
     autosave: Option<crate::persist::Autosave>,
-    /// Explicit frontier for the primary app/record collaboration route.
-    /// Never shares Automerge's implicit save cursor with snapshots or disk.
-    document_frontier: crate::state::DocumentFrontier,
     /// When present the live document is one record's, named by the root
     /// widget via [`crate::widget::Widget::record_intent`].
     records: Option<crate::record::RecordSet>,
@@ -861,12 +858,11 @@ impl App {
         reason = "construction explicitly initializes all retained application state before applying startup projections"
     )]
     pub fn with_collaboration_manager(
-        mut state: State,
+        state: State,
         root_widget: Box<dyn Widget>,
         collab_manager: CollaborationManager,
     ) -> Self {
         let configured_theme = Theme::configured();
-        let document_frontier = crate::state::DocumentFrontier::at_document(&mut state.doc);
         let mut app = Self {
             state,
             root_widget,
@@ -931,7 +927,6 @@ impl App {
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
-            document_frontier,
             records: None,
             room_index: None,
             room_index_frontier: None,
@@ -3879,7 +3874,7 @@ impl App {
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if self.collab_manager.is_connected() {
-            let (delta, heads) = self.document_frontier.pending_delta(&mut self.state.doc);
+            let (delta, heads) = self.state.pending_outbound_delta();
             if !delta.is_empty() {
                 tracing::debug!(
                     target: "qos.state",
@@ -3892,7 +3887,7 @@ impl App {
                 if self.collab_manager.send(
                     crate::collaboration::CollabRequest::document_incremental(delta),
                 ) {
-                    self.document_frontier.advance(heads);
+                    self.state.advance_outbound(heads);
                 }
             }
         }
@@ -4068,12 +4063,7 @@ impl App {
             decrypted_payload.unwrap_or(&envelope.payload),
         ) {
             Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                if let Ok(mut incoming) = State::load(&data) {
-                    let _ = self.state.doc.merge(&mut incoming.doc);
-                    true
-                } else {
-                    false
-                }
+                self.state.merge_snapshot(&data).is_ok()
             }
             Ok(collab_types::DocumentMutation::Incremental(data)) => {
                 self.state.load_incremental(&data).is_ok()
@@ -4084,7 +4074,6 @@ impl App {
             }
         };
         if applied {
-            self.document_frontier.rebase(&mut self.state.doc);
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout_dirty = true;
@@ -5537,8 +5526,7 @@ impl App {
         );
         match switched {
             Some(id) => {
-                self.document_frontier =
-                    crate::state::DocumentFrontier::at_document(&mut self.state.doc);
+                self.state.rebase_outbound();
                 // Preserve the launcher's unqualified route for the room
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
