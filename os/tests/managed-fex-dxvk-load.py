@@ -34,6 +34,18 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def native_load_logged(lines, module_path):
+    for line in lines:
+        if ':loaddll:' not in line or not re.search(r":\s*native\s*$", line, flags=re.IGNORECASE):
+            continue
+        logged = re.search(r'Loaded L"([^"]+)"', line)
+        # Wine's debugstr_w escapes each backslash; GetModuleFileNameA returns
+        # ordinary Windows separators. Decode only the escaping needed here.
+        if logged and logged[1].replace("\\\\", "\\").lower() == module_path.lower():
+            return True
+    return False
+
+
 def assess(output, bits, prefix, dxvk):
     lines = [line.strip() for line in output.splitlines()]
     results = []
@@ -44,10 +56,7 @@ def assess(output, bits, prefix, dxvk):
         directories = "system32" if bits == 64 else "system32|syswow64"
         match = re.fullmatch(r"c:\\windows\\(" + directories + r")\\" + re.escape(dll),
                              module_path, flags=re.IGNORECASE)
-        native = bool(match) and any(
-            ':loaddll:' in line and module_path.lower() in line.lower()
-            and re.search(r":\s*native\s*$", line, flags=re.IGNORECASE)
-            for line in lines)
+        native = bool(match) and native_load_logged(lines, module_path)
         selected = prefix / "drive_c/windows" / match[1].lower() / dll if match else None
         source = dxvk / f"x{bits}" / dll
         hashes_match = bool(selected and selected.is_file() and source.is_file()
