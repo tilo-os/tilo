@@ -27,9 +27,7 @@ fn typed_socket_fans_out_incremental_and_presence() {
     let mut peer_b = broker.manager("peer-b");
     thread::sleep(Duration::from_millis(100));
 
-    peer_a.send(CollabRequest::DocumentIncremental {
-        data: b"hello".to_vec(),
-    });
+    peer_a.send(CollabRequest::document_incremental(b"hello".to_vec()));
     thread::sleep(Duration::from_millis(100));
     let events = peer_b.poll();
     assert_eq!(
@@ -85,9 +83,7 @@ fn route_specific_send_never_leaks_onto_the_primary_route() {
 
     sender.send_to_route(
         RouteSpec::app("photos", Uuid::nil()),
-        CollabRequest::DocumentIncremental {
-            data: b"photo-edit".to_vec(),
-        },
+        CollabRequest::document_incremental(b"photo-edit".to_vec()),
     );
     thread::sleep(Duration::from_millis(100));
 

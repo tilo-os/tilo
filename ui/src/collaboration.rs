@@ -100,16 +100,16 @@ pub enum CollabRequest {
         /// Informational only — never used for routing or grants.
         handle: Option<String>,
     },
-    /// Complete document state. The SDK wraps this mutation in a signed
-    /// envelope from the certified launcher identity before transmission.
-    DocumentSnapshot {
-        data: Vec<u8>,
+    /// A typed complete snapshot or incremental change set. The SDK wraps the
+    /// mutation in a signed envelope from the certified launcher identity.
+    /// Keeping the kind in `DocumentMutation` avoids parallel request and wire
+    /// enums drifting apart.
+    Document {
+        mutation: DocumentMutation,
     },
-    /// Incremental document changes. The SDK wraps this mutation in a signed
-    /// envelope from the certified launcher identity before transmission.
-    DocumentIncremental {
-        data: Vec<u8>,
-    },
+    /// Ask the broker to select one existing holder of this exact route as a
+    /// snapshot responder. Safe to retry while no holder is available.
+    RequestDocumentSnapshot,
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
@@ -244,6 +244,20 @@ pub enum CollabRequest {
         run_id: u64,
         lease: String,
     },
+}
+
+impl CollabRequest {
+    pub fn document_snapshot(data: Vec<u8>) -> Self {
+        Self::Document {
+            mutation: DocumentMutation::Snapshot(data),
+        }
+    }
+
+    pub fn document_incremental(data: Vec<u8>) -> Self {
+        Self::Document {
+            mutation: DocumentMutation::Incremental(data),
+        }
+    }
 }
 
 /// A broker directory request awaiting main-thread authority.  This crosses
@@ -384,6 +398,11 @@ pub enum CollabEvent {
     /// it is never published to collaboration peers.
     FollowChanged {
         peer_id: Option<String>,
+    },
+    /// The broker selected this connection as the sole snapshot responder for
+    /// a late joiner on the same document route.
+    DocumentSnapshotRequested {
+        route: RouteSpec,
     },
     RemoteCursorMoved {
         user_id: String,
@@ -556,7 +575,7 @@ pub struct Collaborator {
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
 /// `NoIdentity` is the common case — call before the shell provisions an
-/// identity — and callers can fall back to plain `DocumentIncremental`.
+/// identity — and callers can fall back to `document_incremental`.
 #[derive(Debug)]
 pub enum SignedSendError {
     /// No [`SigningIdentity`] bound (see [`CollaborationManager::with_identity`]).
@@ -856,9 +875,11 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(handle);
             }
         }
-        CollabRequest::DocumentSnapshot { data } | CollabRequest::DocumentIncremental { data } => {
-            meter.bytes(data);
-        }
+        CollabRequest::Document { mutation } => match mutation {
+            DocumentMutation::Snapshot(data) | DocumentMutation::Incremental(data) => {
+                meter.bytes(data);
+            }
+        },
         CollabRequest::SignedOperation { envelope } => meter.bytes(&envelope.payload),
         CollabRequest::Presence { key, payload } => {
             serialized_bytes(key, &mut meter);
@@ -867,6 +888,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::FetchScrollback { .. }
         | CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
+        | CollabRequest::RequestDocumentSnapshot
         | CollabRequest::PublishedInvocationStatus { .. }
         | CollabRequest::CancelPublishedInvocation { .. } => {}
         CollabRequest::PublishActions { app_id, actions } => {
@@ -1112,6 +1134,12 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         CollabEvent::FollowChanged { peer_id } => {
             if let Some(peer_id) = peer_id {
                 meter.string_capacity(peer_id);
+            }
+        }
+        CollabEvent::DocumentSnapshotRequested { route } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
             }
         }
         CollabEvent::RemoteCursorMoved { user_id, .. } => meter.string_capacity(user_id),
@@ -2678,7 +2706,7 @@ async fn ensure_sdk_route(
     spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     let encryption = std::sync::Arc::new(std::sync::Mutex::new(None));
     spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
-    spawn_context_stream(&channel, inbound_tx).await;
+    spawn_context_stream(&channel, spec.clone(), inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
     spawn_realtime_stream(&channel, inbound_tx).await;
@@ -2687,6 +2715,11 @@ async fn ensure_sdk_route(
     // has to infer task work from room traffic.
     spawn_task_run_stream(&channel, inbound_tx).await;
     let presence = spawn_presence_stream(&channel, inbound_tx).await;
+    // Subscriptions are installed first so an existing holder's response
+    // cannot race ahead of our document stream.
+    if let Err(error) = channel.request_document_snapshot().await {
+        tracing::warn!(%error, "collab: late-join snapshot request failed");
+    }
 
     routes.insert(
         channel_id,
@@ -2751,11 +2784,23 @@ async fn spawn_op_stream(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
-async fn spawn_context_stream(channel: &runtime_collab::ChannelHandle, inbound_tx: &InboundBridge) {
+async fn spawn_context_stream(
+    channel: &runtime_collab::ChannelHandle,
+    route: RouteSpec,
+    inbound_tx: &InboundBridge,
+) {
     if let Ok(stream) = channel.subscribe_context().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(context) = stream.read().await {
+                if context.snapshot_requested {
+                    if !tx.send_durable(CollabEvent::DocumentSnapshotRequested {
+                        route: route.clone(),
+                    }) {
+                        break;
+                    }
+                    continue;
+                }
                 if let Some(peer_id) = context.follow_changed {
                     if !tx.send_durable(CollabEvent::FollowChanged { peer_id }) {
                         break;
@@ -3385,21 +3430,11 @@ async fn dispatch_sdk_request(
                 let _ = route.channel.send(&bytes).await;
             }
         }
-        CollabRequest::DocumentSnapshot { data } => {
-            send_document_mutation(
-                route,
-                signer,
-                collab_types::DocumentMutation::Snapshot(data),
-            )
-            .await;
+        CollabRequest::Document { mutation } => {
+            send_document_mutation(route, signer, mutation).await;
         }
-        CollabRequest::DocumentIncremental { data } => {
-            send_document_mutation(
-                route,
-                signer,
-                collab_types::DocumentMutation::Incremental(data),
-            )
-            .await;
+        CollabRequest::RequestDocumentSnapshot => {
+            let _ = route.channel.request_document_snapshot().await;
         }
         CollabRequest::Presence { key, payload } => {
             let Some(presence) = route.presence.as_ref() else {
@@ -4509,11 +4544,8 @@ mod tests {
     fn saturated_outbound_bridge_sheds_only_presence_then_fails_closed() {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
-        let document = || {
-            SdkCommand::Primary(CollabRequest::DocumentIncremental {
-                data: b"durable".to_vec(),
-            })
-        };
+        let document =
+            || SdkCommand::Primary(CollabRequest::document_incremental(b"durable".to_vec()));
         let presence = || {
             SdkCommand::Primary(CollabRequest::Presence {
                 key: PresenceKey::Tab {
@@ -4534,7 +4566,9 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(QueuedSdkCommand {
-                command: SdkCommand::Primary(CollabRequest::DocumentIncremental { data }),
+                command: SdkCommand::Primary(CollabRequest::Document {
+                    mutation: DocumentMutation::Incremental(data),
+                }),
                 ..
             })
                 if data == b"durable"
@@ -4604,10 +4638,10 @@ mod tests {
         let state = BridgeState::new();
         let mut data = Vec::with_capacity(5 * 1024 * 1024);
         data.push(0);
-        let oversized = SdkCommand::Primary(CollabRequest::DocumentSnapshot {
+        let oversized = SdkCommand::Primary(CollabRequest::Document {
             // Capacity, not just logical length, is charged: a caller must
             // not park a mostly-empty giant allocation on the UI bridge.
-            data,
+            mutation: collab_types::DocumentMutation::Snapshot(data),
         });
 
         assert!(!enqueue_sdk_command(&tx, oversized, &state));
@@ -4621,9 +4655,8 @@ mod tests {
         let state = BridgeState::new();
         let mut admitted = 0;
         loop {
-            let command = SdkCommand::Primary(CollabRequest::DocumentIncremental {
-                data: vec![0; 64 * 1024],
-            });
+            let command =
+                SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 64 * 1024]));
             if !enqueue_sdk_command(&tx, command, &state) {
                 break;
             }
@@ -4640,9 +4673,10 @@ mod tests {
         let (tx, mut rx) = tokio_mpsc::channel(2);
         let state = BridgeState::new();
         let document = || {
-            SdkCommand::Primary(CollabRequest::DocumentIncremental {
-                data: vec![0; 3 * 1024 * 1024],
-            })
+            SdkCommand::Primary(CollabRequest::document_incremental(vec![
+                0;
+                3 * 1024 * 1024
+            ]))
         };
 
         // Consuming its queued wrapper drops its reservation before the next
@@ -4701,9 +4735,9 @@ mod tests {
         );
         // Whichever backend it settled on, the app goes on calling these
         // every frame. Neither may panic.
-        mgr.send(CollabRequest::DocumentSnapshot {
-            data: b"after the broker died".to_vec(),
-        });
+        mgr.send(CollabRequest::document_snapshot(
+            b"after the broker died".to_vec(),
+        ));
         let _ = mgr.poll();
     }
 
@@ -4717,9 +4751,7 @@ mod tests {
         }
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
-        mgr.send(CollabRequest::DocumentSnapshot {
-            data: b"nope".to_vec(),
-        });
+        mgr.send(CollabRequest::document_snapshot(b"nope".to_vec()));
         assert!(mgr.poll().is_empty(), "no events on Disabled backend");
     }
 

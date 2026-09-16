@@ -18,6 +18,7 @@
 //! the breakpoint default-reconciliation use the shared [`FlapState`] kernel.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::Write;
 use std::time::Instant;
 
@@ -32,7 +33,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use qos_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, RetryPolicy};
+use qos_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -59,10 +60,50 @@ const TOGGLE_SIZE: f64 = 26.0;
 /// The single externally-invokable effect protocol for live database work.
 /// Unlike document actions, these payloads contain only stable object ids and
 /// SQL/table names — never passwords or live driver handles.
-const DB_OPERATION_TYPE: &str = "db_client.operation";
+pub(crate) const DB_OPERATION_TYPE: &str = "db_client.operation";
+
+/// Encode arbitrary catalog text into a path component without the ambiguity
+/// of delimiter-joined ids (`a:b` vs `a`, `b`). Labels remain human-readable;
+/// only machine identities use this representation.
+fn resource_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
+    for byte in value.bytes() {
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
+}
+
+pub(crate) fn catalog_resource_id(kind: &str, components: &[&str]) -> String {
+    std::iter::once(kind.to_string())
+        .chain(
+            components
+                .iter()
+                .map(|component| resource_component(component)),
+        )
+        .collect::<Vec<_>>()
+        .join("/")
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-enum DbClientOperation {
+pub(crate) enum DbClientOperation {
+    /// Reveal a catalog location in the local navigator. It never touches the
+    /// database or shared document, but it is a real view transition rather
+    /// than a decorative/no-op search target.
+    FocusCatalog {
+        connection_id: String,
+        schema: Option<String>,
+    },
+    /// Bring the current result back into view after resolving its generation.
+    ShowResult {
+        connection_id: String,
+        result_generation: usize,
+    },
+    /// Re-run a bounded, per-device history entry. History itself remains
+    /// private to a peer and is re-resolved before the external effect starts.
+    RunHistory {
+        connection_id: String,
+        generation: usize,
+    },
     RunQuery {
         connection_id: String,
         sql: String,
@@ -72,6 +113,7 @@ enum DbClientOperation {
     },
     BrowseTable {
         connection_id: String,
+        schema: String,
         table: String,
     },
     ExportCsv {
@@ -84,7 +126,7 @@ enum DbClientOperation {
     clippy::expect_used,
     reason = "DbClientOperation contains only serializable strings, so this cannot fail without a broken serializer"
 )]
-fn encode_operation(operation: &DbClientOperation) -> EncodedAction {
+pub(crate) fn encode_operation(operation: &DbClientOperation) -> EncodedAction {
     EncodedAction::encode_operation(DB_OPERATION_TYPE, operation)
         .expect("database operation payload is serializable")
 }
@@ -174,6 +216,9 @@ pub struct DbClientApp {
     /// the bottom-right corner, then fades — so the editor/results region can
     /// span all the way to the window bottom.
     status_bubble: ui::StatusBubble,
+    /// Retained, revisioned global-search projection. It is rebuilt only when
+    /// the live catalog or collaborative query collection changes.
+    search_index: crate::search::DbSearchIndex,
     /// The last summary the bubble showed, so it is poked only on a real change
     /// rather than every frame (draw recomputes the label unconditionally).
     last_status_label: Option<String>,
@@ -188,6 +233,79 @@ impl Default for DbClientApp {
 }
 
 impl DbClientApp {
+    fn perform_navigator_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        if let Some(id) = target
+            .strip_prefix("db.connection.remove:")
+            .filter(|_| matches!(action, Action::Activate))
+            .and_then(|id| Uuid::parse_str(id).ok())
+        {
+            let Some(index) = self
+                .session
+                .connections
+                .iter()
+                .position(|item| item.id == id)
+            else {
+                return false;
+            };
+            self.remove_connection(index, state);
+            return true;
+        }
+        if let Some(id) = target
+            .strip_prefix("db.connection:")
+            .filter(|_| matches!(action, Action::Activate | Action::Focus))
+            .and_then(|id| Uuid::parse_str(id).ok())
+        {
+            return self
+                .execute_operation(DbClientOperation::Connect {
+                    connection_id: id.to_string(),
+                })
+                .is_ok();
+        }
+        if let Some(name) = target
+            .strip_prefix("db.schema:")
+            .filter(|_| matches!(action, Action::Activate))
+        {
+            if self
+                .session
+                .schema
+                .schemas
+                .iter()
+                .any(|schema| schema.name == name)
+            {
+                self.tree.toggle_schema(name);
+                return true;
+            }
+            return false;
+        }
+        let Some((schema, name)) = target
+            .strip_prefix("db.table:")
+            .filter(|_| matches!(action, Action::Activate | Action::Focus))
+            .and_then(|address| address.split_once('\0'))
+        else {
+            return false;
+        };
+        if self.session.schema.find_relation(schema, name).is_none() {
+            return false;
+        }
+        let relation = crate::model::RelationRef {
+            schema: schema.to_string(),
+            name: name.to_string(),
+        };
+        self.session.select_relation(relation.clone());
+        self.tree.set_selected(relation);
+        if self.split_layout() == SplitLayout::Overlay {
+            self.flap.close();
+        }
+        true
+    }
+
     /// The live app: starts on the user's saved connections (empty on a fresh
     /// machine) and never fabricates a sample database or profiles.
     pub fn new() -> Self {
@@ -291,6 +409,7 @@ impl DbClientApp {
             bound_data_gen: usize::MAX,
             dirty: true,
             status_bubble: ui::StatusBubble::new(),
+            search_index: crate::search::DbSearchIndex::default(),
             last_status_label: None,
             shots_status: false,
         };
@@ -335,6 +454,18 @@ impl DbClientApp {
     /// invocation arrives, so their payload is never authority by itself.
     fn execute_operation(&mut self, operation: DbClientOperation) -> Result<(), String> {
         match operation {
+            DbClientOperation::FocusCatalog {
+                connection_id,
+                schema,
+            } => self.focus_catalog(&connection_id, schema.as_deref())?,
+            DbClientOperation::ShowResult {
+                connection_id,
+                result_generation,
+            } => self.show_result(&connection_id, result_generation)?,
+            DbClientOperation::RunHistory {
+                connection_id,
+                generation,
+            } => self.run_history(&connection_id, generation)?,
             DbClientOperation::RunQuery { connection_id, sql } => {
                 let id = Uuid::parse_str(&connection_id)
                     .map_err(|_| "invalid database connection id".to_string())?;
@@ -363,6 +494,7 @@ impl DbClientApp {
             }
             DbClientOperation::BrowseTable {
                 connection_id,
+                schema,
                 table,
             } => {
                 let id = Uuid::parse_str(&connection_id)
@@ -370,10 +502,13 @@ impl DbClientApp {
                 if self.session.active_connection_id() != Some(id) || !self.session.connected {
                     return Err("the table's connection is no longer open".to_string());
                 }
-                if self.session.schema.find_table(&table).is_none() {
+                if self.session.schema.find_relation(&schema, &table).is_none() {
                     return Err("table is no longer available in the active schema".to_string());
                 }
-                self.session.select_table(&table);
+                self.session.select_relation(crate::model::RelationRef {
+                    schema,
+                    name: table,
+                });
             }
             DbClientOperation::ExportCsv {
                 connection_id,
@@ -416,6 +551,58 @@ impl DbClientApp {
             }
         }
         self.dirty = true;
+        Ok(())
+    }
+
+    fn focus_catalog(&mut self, connection_id: &str, schema: Option<&str>) -> Result<(), String> {
+        let id = Uuid::parse_str(connection_id)
+            .map_err(|_| "invalid database connection id".to_string())?;
+        if self.session.active_connection_id() != Some(id) {
+            return Err("the catalog connection is no longer active".to_string());
+        }
+        if let Some(schema) = schema {
+            if !self
+                .session
+                .schema
+                .schemas
+                .iter()
+                .any(|candidate| candidate.name == schema)
+            {
+                return Err("schema is no longer available in the active catalog".into());
+            }
+            self.tree.reveal_schema(schema);
+        }
+        self.flap.open();
+        Ok(())
+    }
+
+    fn show_result(&mut self, connection_id: &str, generation: usize) -> Result<(), String> {
+        let id = Uuid::parse_str(connection_id)
+            .map_err(|_| "invalid database connection id".to_string())?;
+        if self.session.active_connection_id() != Some(id)
+            || self.session.query_gen != generation
+            || self.session.query_result.is_none()
+        {
+            return Err("the query result is no longer current".into());
+        }
+        self.session.tab = MainTab::Query;
+        Ok(())
+    }
+
+    fn run_history(&mut self, connection_id: &str, generation: usize) -> Result<(), String> {
+        let id = Uuid::parse_str(connection_id)
+            .map_err(|_| "invalid database connection id".to_string())?;
+        let sql = self
+            .session
+            .query_history
+            .iter()
+            .find(|entry| entry.connection_id == id && entry.generation == generation)
+            .map(|entry| entry.sql.clone())
+            .ok_or_else(|| "the local history entry is no longer available".to_string())?;
+        if self.session.active_connection_id() != Some(id) || !self.session.connected {
+            return Err("the history entry's connection is no longer open".into());
+        }
+        self.session.run_query(&sql);
         Ok(())
     }
 
@@ -657,6 +844,201 @@ impl DbClientApp {
     fn flap_animating(&self) -> bool {
         self.flap.is_animating(self.split_layout())
     }
+
+    /// A stable, complete semantic sidebar tree for the app's custom-painted
+    /// connection roster and schema browser.
+    fn sidebar_accessibility(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let connection_count = self.session.connections.len();
+        let connections = self
+            .session
+            .connections
+            .iter()
+            .enumerate()
+            .map(|(index, connection)| {
+                let mut children = vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(&connection.name)
+                        .with_description(connection.subtitle())
+                        .with_action_target(format!("db.connection:{}", connection.id))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .selected(index == self.session.active)
+                                .busy(index == self.session.active && self.session.busy()),
+                        ),
+                ];
+                if !connection.is_sample {
+                    children.push(
+                        AccessNode::new(Role::Button)
+                            .with_name(format!("Remove {}", connection.name))
+                            .with_action_target(format!("db.connection.remove:{}", connection.id))
+                            .with_state(AccessState::new().focusable(true)),
+                    );
+                }
+                AccessNode::new(Role::ListItem)
+                    .with_hashed_key(connection.id)
+                    .with_position(index + 1, connection_count)
+                    .with_children(children)
+            })
+            .collect();
+        let mut tree_items = Vec::new();
+        for schema in &self.session.schema.schemas {
+            let tables = schema
+                .tables
+                .iter()
+                .map(|table| {
+                    AccessNode::new(Role::TreeItem)
+                        .with_name(&table.name)
+                        .with_description(match table.kind {
+                            crate::model::RelationKind::Table => "Table",
+                            crate::model::RelationKind::View => "View",
+                        })
+                        .with_action_target(format!("db.table:{}\0{}", schema.name, table.name))
+                        .with_state(AccessState::new().focusable(true).selected(
+                            self.session.selected_relation.as_ref()
+                                == Some(&crate::model::RelationRef {
+                                    schema: schema.name.clone(),
+                                    name: table.name.clone(),
+                                }),
+                        ))
+                })
+                .collect();
+            tree_items.push(
+                AccessNode::new(Role::TreeItem)
+                    .with_name(&schema.name)
+                    .with_action_target(format!("db.schema:{}", schema.name))
+                    .with_state(AccessState::new().focusable(true).expanded(true))
+                    .with_children(tables),
+            );
+        }
+        AccessNode::new(Role::Group)
+            .with_name("Database navigator")
+            .with_hashed_key("db.sidebar")
+            .with_children(vec![
+                AccessNode::new(Role::List)
+                    .with_name("Connections")
+                    .with_hashed_key("db.connections")
+                    .with_children(connections),
+                AccessNode::new(Role::Button)
+                    .with_name("New connection")
+                    .with_description("Shortcut: Control N")
+                    .with_action_target("db.new-connection")
+                    .with_state(AccessState::new().focusable(true)),
+                AccessNode::new(Role::Tree)
+                    .with_name("Schema")
+                    .with_hashed_key("db.schema-tree")
+                    .with_children(tree_items),
+            ])
+    }
+
+    fn workspace_accessibility(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+
+        let tabs = MainTab::all()
+            .into_iter()
+            .map(|tab| {
+                AccessNode::new(Role::Tab)
+                    .with_name(tab.label())
+                    .with_action_target(format!("db.tab:{}", tab.label().to_ascii_lowercase()))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .selected(tab == self.session.tab),
+                    )
+            })
+            .collect();
+        let mut panel_children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Query tools")
+                .with_hashed_key("db.query-toolbar")
+                .with_children(vec![
+                    AccessNode::new(Role::Button)
+                        .with_name("Run query")
+                        .with_description("Shortcut: Control Enter")
+                        .with_action_target("db.query.run")
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .disabled(!self.session.connected || self.session.busy()),
+                        ),
+                    AccessNode::new(Role::Button)
+                        .with_name("SQL snippets")
+                        .with_action_target("db.query.snippets")
+                        .with_state(AccessState::new().focusable(true)),
+                ]),
+            AccessNode::new(Role::MultilineTextInput)
+                .with_name("SQL query")
+                .with_value(self.editor.value())
+                .with_action_target("db.editor.sql")
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.editor.is_focused())
+                        .multiline(true),
+                ),
+        ];
+        if let Some(result) = &self.session.query_result {
+            panel_children.push(
+                AccessNode::new(Role::Table)
+                    .with_name("Query results")
+                    .with_value(result.message())
+                    .with_hashed_key("db.query-results"),
+            );
+        }
+        panel_children.push(
+            AccessNode::new(Role::StaticText)
+                .with_name(self.status_bubble_label())
+                .with_hashed_key("db.status")
+                .with_live(Politeness::Polite),
+        );
+        AccessNode::new(Role::Group)
+            .with_name("Database workspace")
+            .with_hashed_key("db.workspace")
+            .with_children(vec![
+                AccessNode::new(Role::TabBar)
+                    .with_name("Workspace views")
+                    .with_hashed_key("db.tabs")
+                    .with_children(tabs),
+                AccessNode::new(Role::TabPanel)
+                    .with_name(self.session.tab.label())
+                    .with_hashed_key("db.tab-panel")
+                    .with_children(panel_children),
+            ])
+    }
+
+    fn full_accessibility(&self) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let mut children = vec![self.sidebar_accessibility(), self.workspace_accessibility()];
+        if self.show_toggle() {
+            children.push(
+                AccessNode::new(Role::ToggleButton)
+                    .with_name("Toggle database navigator")
+                    .with_action_target("db.sidebar.toggle")
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(self.flap.is_open(self.split_layout())),
+                    ),
+            );
+        }
+        AccessNode::new(Role::Window)
+            .with_name("Database Client")
+            .with_description("Collaborative database connections and SQL workspace")
+            .with_bounds(self.rect)
+            .with_children(children)
+    }
+
+    fn select_accessible_tab(&mut self, tab: MainTab) {
+        self.session.tab = tab;
+        if tab == MainTab::Data {
+            self.session.load_table_data();
+        }
+        self.relayout();
+        self.dirty = true;
+    }
 }
 
 /// Conservative editor-side safety check. It deliberately asks for review on
@@ -793,7 +1175,7 @@ impl Widget for DbClientApp {
         clippy::too_many_lines,
         reason = "the resource tree intentionally keeps every externally searchable database capability in one auditable definition"
     )]
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("database", "database.workspace", "Database");
         let active_id = self.session.active_connection_id();
         let query_connection_id = active_id.map_or_else(String::new, |id| id.to_string());
@@ -811,7 +1193,13 @@ impl Widget for DbClientApp {
                 })
             },
         );
-        query = query.execution(ExecutionMode::Background { cancellable: true });
+        // Prompted SQL may be a read, but agents cannot soundly classify an
+        // arbitrary dialect statement from this transport envelope. Declare
+        // the conservative write/confirmation contract; the editor keeps its
+        // lighter in-app path for clearly read-only SQL.
+        query = query
+            .execution(ExecutionMode::Background { cancellable: true })
+            .destructive();
         if !self.session.connected {
             query = query.unavailable(
                 "not_connected",
@@ -819,161 +1207,59 @@ impl Widget for DbClientApp {
             );
         }
         root.actions.push(query);
-        for connection in &self.session.connections {
-            let id = connection.id;
-            let mut resource = Resource::new(
-                format!("connection:{id}"),
-                "database.connection",
-                connection.name.clone(),
+        let sql = EditorDoc::read_sql(doc);
+        if !sql.trim().is_empty() {
+            root.actions.push(
+                ActionSpec::prompted(
+                    "save_query",
+                    "Save current query",
+                    "Query name",
+                    "Saved query",
+                    qos_actions::ExecutionLocus::ClientLocal,
+                    move |name| {
+                        crate::actions::encode(&crate::actions::save_query_action(
+                            Uuid::new_v4(),
+                            name,
+                            &sql,
+                        ))
+                    },
+                )
+                .reversible(),
             );
-            if let Ok(spec) = ActionSpec::operation(
-                "connect",
-                "Connect",
-                OperationKind::Effect,
-                DB_OPERATION_TYPE,
-                &DbClientOperation::Connect {
-                    connection_id: id.to_string(),
-                },
-            ) {
-                resource.actions.push(
-                    spec.retry_policy(RetryPolicy::Idempotent)
-                        .execution(ExecutionMode::Background { cancellable: false }),
-                );
-            }
-            if !self.demo {
-                let remove = crate::actions::remove_connection_action(id);
-                if let Ok(spec) = ActionSpec::immediate(
-                    "remove",
-                    "Remove saved connection",
-                    crate::actions::DB_ACTION_TYPE,
-                    &remove,
-                ) {
-                    resource.actions.push(spec.destructive());
-                }
-                resource.actions.push(
-                    ActionSpec::prompted(
-                        "rename",
-                        "Rename",
-                        "Connection name",
-                        &connection.name,
-                        qos_actions::ExecutionLocus::ClientLocal,
-                        move |name| {
-                            crate::actions::encode(&crate::actions::rename_connection_action(
-                                id, name,
-                            ))
-                        },
-                    )
-                    .reversible()
-                    .retry_policy(RetryPolicy::Idempotent),
-                );
-            }
-
-            // Catalog resources are meaningful only for the live selected
-            // connection. We do not fabricate schemas for disconnected
-            // profiles merely to make search look fuller than the backend is.
-            if active_id == Some(id) && self.session.connected {
-                let mut schema = Resource::new(
-                    format!("schema:{id}:live"),
-                    "database.schema",
-                    "Live schema",
-                );
-                for schema_info in &self.session.schema.schemas {
-                    for table in &schema_info.tables {
-                        let table_name = table.name.clone();
-                        let mut table_resource = Resource::new(
-                            format!("table:{id}:{table_name}"),
-                            "database.table",
-                            table_name.clone(),
-                        );
-                        if let Ok(spec) = ActionSpec::operation(
-                            "browse",
-                            "Browse rows",
-                            OperationKind::Effect,
-                            DB_OPERATION_TYPE,
-                            &DbClientOperation::BrowseTable {
-                                connection_id: id.to_string(),
-                                table: table_name.clone(),
-                            },
-                        ) {
-                            table_resource.actions.push(
-                                spec.retry_policy(RetryPolicy::Idempotent)
-                                    .execution(ExecutionMode::Background { cancellable: false }),
-                            );
-                        }
-                        for column in &table.columns {
-                            table_resource.children.push(Resource::new(
-                                format!("column:{id}:{table_name}:{}", column.name),
-                                "database.column",
-                                column.name.clone(),
-                            ));
-                        }
-                        schema.children.push(table_resource);
-                    }
-                }
-                resource.children.push(schema);
-
-                // Export snapshots the current bounded result, then uses the
-                // host save portal; neither a path nor any result data is
-                // replicated into the workspace document.
-                if let Some(result) = &self.session.query_result {
-                    let mut results = Resource::new(
-                        format!("query-result:{id}:{}", self.session.query_gen),
-                        "database.query-result",
-                        result.message(),
-                    );
-                    if let Ok(export) = ActionSpec::operation(
-                        "export_csv",
-                        "Export CSV",
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &DbClientOperation::ExportCsv {
-                            connection_id: id.to_string(),
-                            result_generation: self.session.query_gen,
-                        },
-                    ) {
-                        results.actions.push(
-                            export.execution(ExecutionMode::Background { cancellable: false }),
-                        );
-                    }
-                    resource.children.push(results);
-                }
-
-                // Transactions use the same live connection and effect path
-                // as normal SQL. Commit/rollback stay explicit resource
-                // actions, so assistants never need to synthesize an opaque
-                // side channel for transactional work.
-                let mut transaction = Resource::new(
-                    format!("transaction:{id}"),
-                    "database.transaction",
-                    "Transaction",
-                );
-                for (action_id, label, sql, destructive) in [
-                    ("begin", "Begin transaction", "BEGIN", false),
-                    ("commit", "Commit transaction", "COMMIT", true),
-                    ("rollback", "Roll back transaction", "ROLLBACK", false),
-                ] {
-                    if let Ok(spec) = ActionSpec::operation(
-                        action_id,
-                        label,
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &DbClientOperation::RunQuery {
-                            connection_id: id.to_string(),
-                            sql: sql.to_string(),
-                        },
-                    ) {
-                        transaction.actions.push(if destructive {
-                            spec.destructive()
-                        } else {
-                            spec
-                        });
-                    }
-                }
-                resource.children.push(transaction);
-            }
-            root.children.push(resource);
         }
         vec![root]
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // Remote directory enumeration never walks a live schema. Deeper
+        // catalog entries are reached through the retained SearchCatalog and
+        // resolved by their canonical resource ids.
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        (id == "database")
+            .then(|| self.resources(doc).pop())
+            .flatten()
+            .or_else(|| self.search_index.resource(id))
     }
 
     fn invoke_resource_operation(
@@ -984,7 +1270,9 @@ impl Widget for DbClientApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != DB_OPERATION_TYPE {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View)
+            || type_id != DB_OPERATION_TYPE
+        {
             return Ok(false);
         }
         let operation: DbClientOperation =
@@ -1002,8 +1290,21 @@ impl Widget for DbClientApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect || type_id != DB_OPERATION_TYPE {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View)
+            || type_id != DB_OPERATION_TYPE
+        {
             return Ok(None);
+        }
+        if kind == OperationKind::View {
+            return self
+                .invoke_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )
+                    })
+                });
         }
         if self.resource_operation.is_some() || self.session.busy() {
             return Err("another database operation is already running".into());
@@ -1122,6 +1423,16 @@ impl Widget for DbClientApp {
         let sql_text = EditorDoc::sql_text(state);
         self.editor.bind_text(sql_text);
         self.editor.pull(state);
+        if let Err(error) = self
+            .search_index
+            .sync_for_app(&self.session, state, !self.demo)
+        {
+            // Preserve the last known-good catalogue for existing palette
+            // entries, but make a rejected rebuild visible rather than
+            // silently advertising stale discovery as current.
+            self.session.status = RunStatus::Error(error);
+            self.dirty = true;
+        }
     }
 
     fn build_layout(
@@ -1463,14 +1774,75 @@ impl Widget for DbClientApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        if let Some(dialog) = self.modal.accessibility() {
+            return Some(dialog);
+        }
         if self.session.connections.is_empty() {
             // The retained EmptyState child owns the Group + Button semantics;
             // returning them here too would duplicate the subtree.
             return None;
         }
-        (self.session.tab == MainTab::Query)
-            .then(|| self.editor.accessibility())
-            .flatten()
+        Some(self.full_accessibility())
+    }
+
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        use ui::a11y::Action;
+
+        if self.modal.is_open() {
+            if !target.starts_with("db.modal.") {
+                return false;
+            }
+            if let Some(profile) = self.modal.perform_semantic_action(target, action) {
+                self.save_connection(profile, state);
+            }
+            self.dirty = true;
+            return true;
+        }
+        if target.starts_with("db.connection")
+            || target.starts_with("db.schema:")
+            || target.starts_with("db.table:")
+        {
+            let handled = self.perform_navigator_semantic_action(target, action, state);
+            self.dirty |= handled;
+            return handled;
+        }
+        match target {
+            "db.new-connection" if matches!(action, Action::Activate | Action::Focus) => {
+                self.modal.open_new();
+            }
+            "db.sidebar.toggle" if matches!(action, Action::Activate | Action::ToggleCheck) => {
+                self.flap.toggle(self.split_layout());
+            }
+            "db.query.run" if matches!(action, Action::Activate) => self.run_current_query(),
+            "db.query.snippets" if matches!(action, Action::Activate) => {
+                self.snippets_open = !self.snippets_open;
+            }
+            "db.editor.sql" if let Action::SetValue(value) = action => {
+                EditorDoc::set_sql(state, value);
+                self.editor.pull(state);
+            }
+            "db.editor.sql" if matches!(action, Action::Focus | Action::Activate) => {
+                self.editor.set_focused(true);
+            }
+            "db.tab:query" if matches!(action, Action::Activate) => {
+                self.select_accessible_tab(MainTab::Query);
+            }
+            "db.tab:data" if matches!(action, Action::Activate) => {
+                self.select_accessible_tab(MainTab::Data);
+            }
+            "db.tab:structure" if matches!(action, Action::Activate) => {
+                self.select_accessible_tab(MainTab::Structure);
+            }
+            _ => return false,
+        }
+        self.dirty = true;
+        true
     }
 
     fn perform_action(
@@ -2001,16 +2373,16 @@ impl DbClientApp {
             && let Some(click) = self.tree.hit(c)
         {
             match click {
-                TreeClick::ToggleTable(name) => {
-                    self.tree.toggle(&name);
+                TreeClick::ToggleTable(relation) => {
+                    self.tree.toggle(relation);
                 }
-                TreeClick::SelectTable(name) => {
-                    self.session.select_table(&name);
+                TreeClick::SelectTable(relation) => {
+                    self.session.select_relation(relation.clone());
                     // Auto-switch to Data when picking a table from the tree.
                     if self.session.tab == MainTab::Structure {
                         // keep structure
                     }
-                    self.tree.set_selected(&name);
+                    self.tree.set_selected(relation);
                     // On a narrow window the sidebar is an overlay; pick a
                     // table and the flap steps aside to reveal its rows.
                     if self.split_layout() == SplitLayout::Overlay {
@@ -2356,8 +2728,8 @@ impl DbClientApp {
         }
 
         // Selected-table breadcrumb on the right of the tab bar.
-        if let Some(name) = &self.session.selected_table {
-            let crumb = format!("main · {name}");
+        if let Some(relation) = &self.session.selected_relation {
+            let crumb = format!("{} · {}", relation.schema, relation.name);
             let (cw, _) = tr.measure(&crumb, 12.0, None);
             tr.draw_text(
                 scene,
@@ -2467,10 +2839,11 @@ impl DbClientApp {
         scene.fill(Fill::NonZero, t, p.panel_bg, None, &toolbar);
 
         // Run button.
+        let enlarged_text = theme.text_scale > 1.25;
         let run = Rect::new(
             toolbar.x0 + 10.0,
             toolbar.y0 + 6.0,
-            toolbar.x0 + 160.0,
+            toolbar.x0 + if enlarged_text { 150.0 } else { 160.0 },
             toolbar.y1 - 6.0,
         );
         self.run_btn = run;
@@ -2488,20 +2861,22 @@ impl DbClientApp {
             t * Affine::translate((run.x0 + 14.0, run.y0 + 7.0)),
             None,
         );
-        tr.draw_text(
-            scene,
-            "⌘↵",
-            12.0,
-            Color::from_rgba8(255, 255, 255, 190),
-            t * Affine::translate((run.x1 - 32.0, run.y0 + 7.0)),
-            None,
-        );
+        if !enlarged_text {
+            tr.draw_text(
+                scene,
+                "⌘↵",
+                12.0,
+                Color::from_rgba8(255, 255, 255, 190),
+                t * Affine::translate((run.x1 - 32.0, run.y0 + 7.0)),
+                None,
+            );
+        }
 
         // Snippets button.
         let snip = Rect::new(
             run.x1 + 8.0,
             toolbar.y0 + 6.0,
-            run.x1 + 118.0,
+            run.x1 + if enlarged_text { 164.0 } else { 118.0 },
             toolbar.y1 - 6.0,
         );
         self.snippet_btn = snip;
@@ -2563,6 +2938,14 @@ impl DbClientApp {
 
         // Grid.
         if let Some(res) = &self.session.query_result {
+            // The status line is real text, not a decoration: reserve its
+            // scaled line box so 200% text never paints underneath the result
+            // header. Relayout establishes the ordinary geometry; this small
+            // draw-time correction follows the active theme scale.
+            let grid = self.grid.rect();
+            let top = self.editor.rect().y1 + 8.0 + 20.0 * f64::from(theme.text_scale);
+            self.grid
+                .set_rect(Rect::new(grid.x0, top.min(grid.y1), grid.x1, grid.y1));
             self.grid.draw(scene, t, tr, theme, res);
         }
 
@@ -2629,12 +3012,15 @@ impl DbClientApp {
         );
         scene.fill(Fill::NonZero, t, p.panel_bg, None, &toolbar);
 
-        match (&self.session.selected_table, &self.session.data_result) {
-            (Some(name), Some(res)) => {
+        match (&self.session.selected_relation, &self.session.data_result) {
+            (Some(relation), Some(res)) => {
                 let total = self.session.selected_table_rows();
                 let from = self.session.data_offset + 1;
                 let to = (self.session.data_offset + res.rows.len()).min(total as usize);
-                let info = format!("{name}   ·   rows {from}–{to} of {total}");
+                let info = format!(
+                    "{}.{}   ·   rows {from}–{to} of {total}",
+                    relation.schema, relation.name
+                );
                 tr.draw_text(
                     scene,
                     &info,
@@ -3122,15 +3508,56 @@ mod behavior_tests {
     }
 
     #[test]
-    fn root_forwards_the_embedded_editors_platform_contract() {
-        let (app, _doc) = synced();
+    fn accessibility_exports_the_full_workspace_and_routes_sql_edits() {
+        use ui::a11y::Action as A11yAction;
+
+        let (mut app, mut doc) = synced();
         let a11y = app
             .accessibility()
-            .expect("query tab exposes the editor's accessibility node");
+            .expect("connected app exposes a semantic window");
 
-        assert_eq!(a11y.role, Role::MultilineTextInput);
+        assert_eq!(a11y.role, Role::Window);
+        assert_eq!(a11y.name.as_deref(), Some("Database Client"));
+        assert!(
+            a11y.children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Database navigator"))
+        );
+        assert!(
+            a11y.children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("Database workspace"))
+        );
+        assert!(app.perform_semantic_action(
+            "db.editor.sql",
+            &A11yAction::SetValue("SELECT 42".into()),
+            &mut doc,
+            &ROOT,
+        ));
+        assert_eq!(crate::doc::EditorDoc::read_sql(&doc), "SELECT 42");
         assert!(app.is_focused(), "startup typing focus reaches the editor");
-        assert!(app.ime_purpose().is_some(), "focused editor enables IME");
+        assert!(
+            app.perform_semantic_action("db.tab:data", &A11yAction::Activate, &mut doc, &ROOT,)
+        );
+        assert_eq!(app.session.tab, MainTab::Data);
+    }
+
+    #[test]
+    fn semantic_new_connection_opens_an_accessible_secret_safe_dialog() {
+        use ui::a11y::Action as A11yAction;
+
+        let (mut app, mut doc) = synced();
+        assert!(app.perform_semantic_action(
+            "db.new-connection",
+            &A11yAction::Activate,
+            &mut doc,
+            &ROOT,
+        ));
+        let dialog = app.accessibility().expect("open modal is accessible");
+        assert_eq!(dialog.role, Role::Dialog);
+        assert!(dialog.children.iter().any(|node| {
+            node.name.as_deref() == Some("Password") && node.state.protected && node.value.is_none()
+        }));
     }
 
     /// Running a query is external: Ctrl+Enter dispatches work to the engine
@@ -3246,35 +3673,75 @@ mod behavior_tests {
         let (mut app, doc) = synced();
         app.session.connections[0].password = "never-publish-this".into();
         let resources = app.resources(&doc);
-        let connection = &resources[0].children[0];
-        assert!(
-            connection
-                .children
-                .iter()
-                .any(|resource| resource.kind == "database.schema")
-        );
-        assert!(
-            connection
-                .children
-                .iter()
-                .any(|resource| resource.kind == "database.query-result")
-        );
-        let transaction = connection
-            .children
+        assert_eq!(resources.len(), 1, "root discovery is bounded");
+        assert!(resources[0].children.is_empty());
+        let connection = app.session.active_connection().unwrap().id.to_string();
+        let schema = &app.session.schema.schemas[0];
+        let relation = &schema.tables[0];
+        let relation_id =
+            catalog_resource_id("relation", &[&connection, &schema.name, &relation.name]);
+        let resolved = app
+            .resource(&doc, &relation_id)
+            .expect("exact relation resolves");
+        assert_eq!(resolved.id.as_str(), relation_id);
+        assert!(resolved.actions.iter().any(|action| action.id == "browse"));
+        let run_sql = resources[0]
+            .actions
             .iter()
-            .find(|resource| resource.kind == "database.transaction")
-            .expect("live connection publishes transaction effects");
-        assert_eq!(transaction.actions.len(), 3);
-        let labels = resources[0]
-            .children
-            .iter()
-            .map(|resource| resource.label.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(
-            !labels.contains("never-publish-this"),
-            "resource labels must not reveal secret fields"
+            .find(|action| action.id == "query")
+            .expect("Run SQL is an exported action");
+        assert_eq!(run_sql.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(
+            run_sql.contract.confirmation,
+            qos_actions::ConfirmationPolicy::Confirm,
+            "an arbitrary SQL envelope is never advertised as harmless"
         );
+        assert!(
+            app.resource(&doc, "database")
+                .expect("root resolves exactly")
+                .actions
+                .iter()
+                .any(|action| action.id == "query"),
+            "directory and exact root resolution publish the same actionable root"
+        );
+    }
+
+    #[test]
+    fn relation_resources_and_browse_payloads_remain_schema_qualified() {
+        let (mut app, mut doc) = synced();
+        let original = app.session.schema.schemas[0].tables[0].clone();
+        app.session.schema.schemas.push(crate::model::SchemaInfo {
+            name: "other:schema".into(),
+            tables: vec![original.clone()],
+        });
+        app.search_index.sync(&app.session, &mut doc).unwrap();
+        let connection = app.session.active_connection().unwrap().id.to_string();
+        let first_id = catalog_resource_id(
+            "relation",
+            &[
+                &connection,
+                &app.session.schema.schemas[0].name,
+                &original.name,
+            ],
+        );
+        let second_id =
+            catalog_resource_id("relation", &[&connection, "other:schema", &original.name]);
+        assert_ne!(first_id, second_id, "encoded ids cannot collide on colons");
+        let resolved = app
+            .resource(&doc, &second_id)
+            .expect("exact relation resolves");
+        let browse = resolved
+            .actions
+            .iter()
+            .find(|action| action.id == "browse")
+            .unwrap();
+        let encoded = browse.build_json(&serde_json::Map::new()).unwrap();
+        let operation: DbClientOperation = serde_json::from_slice(&encoded.payload).unwrap();
+        assert!(matches!(
+            operation,
+            DbClientOperation::BrowseTable { schema, table, .. }
+                if schema == "other:schema" && table == original.name
+        ));
     }
 
     #[test]
