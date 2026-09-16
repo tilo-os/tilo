@@ -13,7 +13,7 @@
 //! the same pattern the toolkit's `DataTable` uses for its column rects.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use automerge::{AutoCommit, ObjId};
@@ -32,6 +32,10 @@ use ui::presence::PresenceCtx;
 use ui::qos_actions::{
     ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ControlInvocation,
     OperationKind, PermissionRequirement, Resource, RetryPolicy, RiskLevel,
+};
+use ui::search::{
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
+    SearchResult,
 };
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -71,6 +75,12 @@ enum ProcAction {
 /// visible Stop/Kill affordances.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum MonitorOperation {
+    /// Select one exact process lifetime in the Monitor view. This is a safe
+    /// view operation used by global search; it never sends an OS signal.
+    Inspect {
+        pid: u32,
+        started_at: u64,
+    },
     Refresh,
     /// Copy a process's PID through the platform clipboard bridge. Although
     /// safe, this is still an OS-facing effect and must use the same stable
@@ -200,6 +210,15 @@ const TOAST_MS: u64 = 2200;
 /// the popover options stay in lock-step.
 const INTERVAL_OPTIONS: [u64; 5] = [1000, 1500, 2000, 3000, 5000];
 
+/// A process table can contain thousands of kernel entries. Keep the
+/// contextual resource projection small; exact process resources remain
+/// resolvable on demand through [`Widget::resource`].
+const MAX_CONTEXT_PROCESS_RESOURCES: usize = 64;
+/// Process names originate with the operating system and are rendered in
+/// global/remote action surfaces. Bound and flatten them before publishing so
+/// an unusual process name cannot force unbounded text shaping or line breaks.
+const MAX_PROCESS_RESOURCE_LABEL_CHARS: usize = 160;
+
 /// Press-and-hold duration on the interval pill that opens the option popover
 /// instead of cycling. A release before this fires the plain click-to-cycle.
 const LONG_PRESS_MS: u128 = 350;
@@ -229,6 +248,225 @@ fn interval_label(ms: u64) -> String {
         format!("{}s", ms / 1000)
     } else {
         format!("{:.1}s", ms as f32 / 1000.0)
+    }
+}
+
+/// A stable one-line label for a process resource. The identity stays in the
+/// opaque PID-generation id; this display label is deliberately bounded.
+fn process_resource_label(process: &ProcessInfo) -> String {
+    let mut label = String::new();
+    let mut chars = process.name.chars();
+    for _ in 0..MAX_PROCESS_RESOURCE_LABEL_CHARS {
+        let Some(ch) = chars.next() else {
+            return format!("{} ({})", label, process.pid);
+        };
+        label.push(if ch.is_control() { ' ' } else { ch });
+    }
+    if chars.next().is_some() {
+        label.push('…');
+    }
+    format!("{} ({})", label, process.pid)
+}
+
+/// The always-addressable root of Monitor's live process catalogue.
+fn monitor_process_root_resource() -> Resource {
+    let mut root = Resource::new("processes", "monitor.processes", "Processes");
+    if let Ok(refresh) = ActionSpec::operation(
+        "refresh",
+        "Refresh processes",
+        OperationKind::Effect,
+        MONITOR_OPERATION_TYPE,
+        &MonitorOperation::Refresh,
+    ) {
+        root.actions.push(refresh.with_contract(ActionContract {
+            permission: PermissionRequirement::Read,
+            retry: RetryPolicy::Idempotent,
+            ..ActionContract::default()
+        }));
+    }
+    root
+}
+
+/// One exact, PID-generation-bound process resource. This is shared by the
+/// bounded contextual catalogue and lazy direct resolution, keeping every
+/// visible, searched, and agent-invoked action contract identical.
+fn monitor_process_resource(process: &ProcessInfo) -> Resource {
+    let mut resource = Resource::new(
+        process_resource_id(process.pid, process.started_at),
+        "monitor.process",
+        process_resource_label(process),
+    );
+    if let Ok(inspect) = ActionSpec::operation(
+        "inspect",
+        "Show process details",
+        OperationKind::View,
+        MONITOR_OPERATION_TYPE,
+        &MonitorOperation::Inspect {
+            pid: process.pid,
+            started_at: process.started_at,
+        },
+    ) {
+        resource
+            .actions
+            .push(inspect.with_contract(ActionContract::view()));
+    }
+    if let Ok(copy) = ActionSpec::operation(
+        "copy-pid",
+        "Copy PID",
+        OperationKind::Effect,
+        MONITOR_OPERATION_TYPE,
+        &MonitorOperation::CopyPid {
+            pid: process.pid,
+            started_at: process.started_at,
+        },
+    ) {
+        resource.actions.push(copy.with_contract(ActionContract {
+            permission: PermissionRequirement::Read,
+            retry: RetryPolicy::Idempotent,
+            ..ActionContract::default()
+        }));
+    }
+    for (verb, label, signal) in [
+        ("stop", "Stop process", MonitorSignal::Stop),
+        ("kill", "Force kill", MonitorSignal::Kill),
+    ] {
+        if let Ok(spec) = ActionSpec::operation(
+            verb,
+            label,
+            OperationKind::Effect,
+            MONITOR_OPERATION_TYPE,
+            &MonitorOperation::Signal {
+                pid: process.pid,
+                started_at: process.started_at,
+                signal,
+            },
+        ) {
+            resource.actions.push(spec.with_contract(ActionContract {
+                permission: PermissionRequirement::Admin,
+                risk: if signal == MonitorSignal::Kill {
+                    RiskLevel::Destructive
+                } else {
+                    RiskLevel::Privileged
+                },
+                confirmation: if signal == MonitorSignal::Kill {
+                    ConfirmationPolicy::Confirm
+                } else {
+                    ConfirmationPolicy::None
+                },
+                retry: RetryPolicy::AtMostOnce,
+                ..ActionContract::default()
+            }));
+        }
+    }
+    resource
+}
+
+/// Retained, bounded-search index over the current live process snapshot.
+/// It is refreshed only when the sampler replaces that snapshot, never while
+/// the user types, and search hits resolve back to the exact PID generation.
+#[derive(Clone)]
+struct MonitorProcessSearchProvider {
+    catalog: SearchCatalog,
+    snapshot: Arc<RwLock<HashMap<String, ProcessInfo>>>,
+}
+
+impl MonitorProcessSearchProvider {
+    fn new(processes: &[ProcessInfo]) -> Self {
+        let provider = Self {
+            catalog: SearchCatalog::new("Processes"),
+            snapshot: Arc::new(RwLock::new(HashMap::new())),
+        };
+        provider.refresh(processes);
+        provider
+    }
+
+    fn indexed_text(value: &str) -> String {
+        value
+            .chars()
+            .take(MAX_PROCESS_RESOURCE_LABEL_CHARS)
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect()
+    }
+
+    fn refresh(&self, processes: &[ProcessInfo]) {
+        let mut current = HashMap::with_capacity(processes.len());
+        for process in processes {
+            let id = process_resource_id(process.pid, process.started_at);
+            let _ = self.catalog.upsert(
+                id.clone(),
+                format!(
+                    "{}\u{1f}{}\u{1f}{}",
+                    Self::indexed_text(&process.name),
+                    Self::indexed_text(&process.user),
+                    process.pid
+                ),
+                SearchResult::for_action(
+                    "Processes",
+                    process_resource_label(process),
+                    ActionAddress::new(id.clone(), "inspect"),
+                )
+                .with_subtitle(format!(
+                    "PID {} · {}",
+                    process.pid,
+                    Self::indexed_text(&process.user)
+                )),
+            );
+            current.insert(id, process.clone());
+        }
+        let mut snapshot = self
+            .snapshot
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for id in snapshot.keys().filter(|id| !current.contains_key(*id)) {
+            self.catalog.remove(id);
+        }
+        *snapshot = current;
+    }
+}
+
+impl SearchProvider for MonitorProcessSearchProvider {
+    fn name(&self) -> &'static str {
+        "Processes"
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.catalog.stats().generation)
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        self.catalog.cursor_is_current(cursor)
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        self.catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
+    }
+
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        self.catalog
+            .query_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        (address.action == "inspect")
+            .then(|| {
+                self.snapshot
+                    .read()
+                    .ok()?
+                    .get(&address.resource)
+                    .map(monitor_process_resource)
+            })
+            .flatten()
     }
 }
 
@@ -381,6 +619,9 @@ impl Hit {
 pub struct MonitorApp {
     model: MonitorModel,
     sampler: Sampler,
+    /// Retained global-search/directory index. Its entries carry the same
+    /// PID-generation ids as every resource action and update only per sample.
+    process_search: MonitorProcessSearchProvider,
     prefs: Prefs,
 
     // view state
@@ -551,9 +792,11 @@ impl MonitorApp {
     }
 
     fn build(model: MonitorModel, selected_pid: Option<u32>, last_refresh: Instant) -> Self {
+        let process_search = MonitorProcessSearchProvider::new(&model.processes);
         Self {
             model,
             sampler: Sampler::new(),
+            process_search,
             prefs: Prefs::default(),
             tab: Tab::Processes,
             sort_key: SortKey::Cpu,
@@ -622,6 +865,7 @@ impl MonitorApp {
     fn refresh_live_snapshot(&mut self) {
         let selected_before = self.selected_identity();
         self.sampler.refresh(&mut self.model);
+        self.process_search.refresh(&self.model.processes);
         self.last_refresh = Instant::now();
         self.clear_recycled_selection(selected_before);
         self.record_proc_cpu();
@@ -855,6 +1099,21 @@ impl MonitorApp {
         confirmation: SignalConfirmation,
     ) -> Result<(), String> {
         match operation {
+            MonitorOperation::Inspect { pid, started_at } => {
+                let current = self
+                    .model
+                    .processes
+                    .iter()
+                    .any(|process| process.pid == *pid && process.started_at == *started_at);
+                if !current {
+                    return Err("process is no longer running".into());
+                }
+                self.selected_pid = Some(*pid);
+                if self.is_narrow() {
+                    self.proc_push.show_detail();
+                }
+                Ok(())
+            }
             MonitorOperation::Refresh => {
                 self.refresh_live_snapshot();
                 Ok(())
@@ -902,24 +1161,33 @@ impl MonitorApp {
     }
 
     /// Dispatch the real signal and reflect it in the local model. Live: the
-    /// sampler sends the actual SIGTERM/SIGKILL via the process handle.
+    /// sampler sends the actual SIGTERM/SIGKILL via the process handle, then
+    /// immediately rebuilds the snapshot.  Dispatch acceptance is not proof
+    /// that a process has exited (even SIGKILL may still be observable until
+    /// the kernel reaps it), so only that fresh snapshot may remove the row.
     /// Sample/offscreen: the signal call is a no-op (the pid isn't a real
-    /// process), but we still drop the row so the UI responds — the next live
-    /// refresh would do the same once the process actually exits.
+    /// process), so drop the seeded row locally to make the deterministic
+    /// interaction observable.
     fn do_stop(&mut self, pid: u32, started_at: u64, kind: StopKind) -> bool {
         // Sample/offscreen rows are deliberately synthetic, so a system call
         // cannot find their pids. Treat their action as a local simulation;
-        // live rows only disappear after the OS accepted the signal.
+        // live rows only disappear when the following sampler snapshot no
+        // longer contains that exact process generation.
         if !self.sample_only && !self.sampler.signal_if_current(pid, started_at, kind) {
             return false;
         }
-        // SIGKILL removes the row immediately (it cannot survive); SIGTERM is
-        // a request, so on a *live* system we'd wait for the next refresh —
-        // but in the seeded/offscreen model there's no live refresh, so we
-        // drop it here too to keep the action observable.
-        self.model.processes.retain(|p| p.pid != pid);
-        if self.selected_pid == Some(pid) {
-            self.selected_pid = None;
+        if self.sample_only {
+            self.model
+                .processes
+                .retain(|p| p.pid != pid || p.started_at != started_at);
+            self.process_search.refresh(&self.model.processes);
+            if self.selected_pid == Some(pid) {
+                self.selected_pid = None;
+            }
+        } else {
+            // This preserves a still-running process in the detail pane and
+            // refreshes search from exactly the snapshot reflected on screen.
+            self.refresh_live_snapshot();
         }
         self.confirm_stop = None;
         self.confirm_dialog = None;
@@ -1848,23 +2116,28 @@ impl MonitorApp {
         let overall = m.cpu_overall();
         let xs = theme.tokens.typography.scale.xs;
         let sm = theme.tokens.typography.scale.sm;
-        if inner.width() >= 300.0 {
+        let scale = f64::from(theme.text_scale);
+        if inner.width() >= 300.0 * scale {
             // Ring on the left, stats column on the right.
-            let center = Point::new(inner.x0 + 62.0, inner.center().y + 8.0);
+            // Every immediate-mode offset follows the text scale too. The
+            // card's height already scales in `resources_overview_h`; without
+            // scaling these positions a 200% card left its labels piled up at
+            // the top and most of the card empty.
+            let center = Point::new(inner.x0 + 62.0 * scale, inner.center().y + 8.0 * scale);
             charts::ring_gauge(
                 scene,
                 t,
                 tr,
                 center,
-                44.0,
-                9.0,
+                44.0 * scale,
+                9.0 * scale,
                 overall / 100.0,
                 charts::load_color(theme, overall / 100.0),
                 theme,
                 &format!("{overall:.0}%"),
                 "CPU LOAD",
             );
-            let sx = inner.x0 + 138.0;
+            let sx = inner.x0 + 138.0 * scale;
             let procs = self.model.processes.len();
             let threads: usize = self.model.processes.iter().map(|p| p.threads).sum();
             let stats = [
@@ -1878,7 +2151,7 @@ impl MonitorApp {
                 ("Processes", format!("{procs}")),
                 ("Threads", format!("{threads}")),
             ];
-            let mut sy = inner.y0 + 30.0;
+            let mut sy = inner.y0 + 30.0 * scale;
             for (label, value) in stats {
                 tr.draw_text(
                     scene,
@@ -1894,22 +2167,22 @@ impl MonitorApp {
                     &value,
                     sm,
                     c.text_primary,
-                    t * Affine::translate((sx, sy + 15.0)),
+                    t * Affine::translate((sx, sy + 15.0 * scale)),
                     None,
                     TextWeight::Semibold,
                 );
-                sy += 40.0;
+                sy += 40.0 * scale;
             }
         } else {
             // Narrow/stacked: centred ring with the load average beneath it.
-            let center = Point::new(inner.center().x, inner.y0 + 84.0);
+            let center = Point::new(inner.center().x, inner.y0 + 84.0 * scale);
             charts::ring_gauge(
                 scene,
                 t,
                 tr,
                 center,
-                44.0,
-                9.0,
+                44.0 * scale,
+                9.0 * scale,
                 overall / 100.0,
                 charts::load_color(theme, overall / 100.0),
                 theme,
@@ -1926,7 +2199,10 @@ impl MonitorApp {
                 &la,
                 xs,
                 c.text_dim,
-                t * Affine::translate((inner.center().x - f64::from(lw) / 2.0, inner.y1 - 12.0)),
+                t * Affine::translate((
+                    inner.center().x - f64::from(lw) / 2.0,
+                    inner.y1 - 12.0 * scale,
+                )),
                 None,
             );
         }
@@ -4731,10 +5007,13 @@ impl MonitorApp {
             ));
         }
         if self.interval_popover.is_open() {
-            let menu = self.interval_popover.rect();
             for (index, ms) in INTERVAL_OPTIONS.iter().copied().enumerate() {
-                let y0 = menu.y0 + 6.0 + index as f64 * 30.0;
-                let row = Rect::new(menu.x0, y0, menu.x1, y0 + 30.0);
+                // The reusable menu owns its own scale-aware row geometry.
+                // Reusing it here keeps semantic hit bounds aligned with the
+                // painted/clickable rows when Popover's spacing evolves.
+                let Some(row) = self.interval_popover.item_rect(index) else {
+                    continue;
+                };
                 targets.push((
                     format!("monitor.interval:{ms}"),
                     row,
@@ -4922,77 +5201,48 @@ impl Widget for MonitorApp {
     }
 
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("processes", "monitor.processes", "Processes");
-        if let Ok(refresh) = ActionSpec::operation(
-            "refresh",
-            "Refresh processes",
-            OperationKind::Effect,
-            MONITOR_OPERATION_TYPE,
-            &MonitorOperation::Refresh,
-        ) {
-            root.actions.push(refresh.with_contract(ActionContract {
-                permission: PermissionRequirement::Read,
-                retry: RetryPolicy::Idempotent,
-                ..ActionContract::default()
-            }));
-        }
-        for process in &self.model.processes {
-            let mut resource = Resource::new(
-                process_resource_id(process.pid, process.started_at),
-                "monitor.process",
-                format!("{} ({})", process.name, process.pid),
-            );
-            if let Ok(copy) = ActionSpec::operation(
-                "copy-pid",
-                "Copy PID",
-                OperationKind::Effect,
-                MONITOR_OPERATION_TYPE,
-                &MonitorOperation::CopyPid {
-                    pid: process.pid,
-                    started_at: process.started_at,
-                },
-            ) {
-                resource.actions.push(copy.with_contract(ActionContract {
-                    permission: PermissionRequirement::Read,
-                    retry: RetryPolicy::Idempotent,
-                    ..ActionContract::default()
-                }));
-            }
-            for (verb, label, signal) in [
-                ("stop", "Stop process", MonitorSignal::Stop),
-                ("kill", "Force kill", MonitorSignal::Kill),
-            ] {
-                if let Ok(spec) = ActionSpec::operation(
-                    verb,
-                    label,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &MonitorOperation::Signal {
-                        pid: process.pid,
-                        started_at: process.started_at,
-                        signal,
-                    },
-                ) {
-                    resource.actions.push(spec.with_contract(ActionContract {
-                        permission: PermissionRequirement::Admin,
-                        risk: if signal == MonitorSignal::Kill {
-                            RiskLevel::Destructive
-                        } else {
-                            RiskLevel::Privileged
-                        },
-                        confirmation: if signal == MonitorSignal::Kill {
-                            ConfirmationPolicy::Confirm
-                        } else {
-                            ConfirmationPolicy::None
-                        },
-                        retry: RetryPolicy::AtMostOnce,
-                        ..ActionContract::default()
-                    }));
-                }
-            }
-            root.children.push(resource);
-        }
+        let mut root = monitor_process_root_resource();
+        root.children.extend(
+            self.model
+                .processes
+                .iter()
+                .take(MAX_CONTEXT_PROCESS_RESOURCES)
+                .map(monitor_process_resource),
+        );
         vec![root]
+    }
+
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // One compact root exposes the safe contextual sample. Individual
+        // process ids are resolved lazily below, avoiding an all-process
+        // materialization in the broker's cursor-based directory.
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "processes" {
+            return Some(monitor_process_root_resource());
+        }
+        let (pid, started_at) = parse_process_resource_id(id)?;
+        self.model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid && process.started_at == started_at)
+            .map(monitor_process_resource)
     }
 
     fn invoke_resource_operation(
@@ -5003,16 +5253,26 @@ impl Widget for MonitorApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect {
-            return Ok(false);
-        }
         if type_id != MONITOR_OPERATION_TYPE {
             return Ok(false);
         }
         let operation: MonitorOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        let expected_kind = match &operation {
+            MonitorOperation::Inspect { .. } => OperationKind::View,
+            MonitorOperation::Refresh
+            | MonitorOperation::CopyPid { .. }
+            | MonitorOperation::Signal { .. } => OperationKind::Effect,
+        };
+        if kind != expected_kind {
+            return Err("Monitor operation kind does not match its payload".into());
+        }
         self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
         Ok(true)
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        vec![Box::new(self.process_search.clone())]
     }
 
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
@@ -6909,12 +7169,15 @@ mod tests {
         a.open_interval_popover();
         assert!(a.interval_popover.is_open());
         // Resolve the body geometry, then click the "3s" row (index 3).
+        // Ask the owning primitive for its actual item rect: its private
+        // padding/row metrics are intentionally free to evolve without
+        // silently retargeting this integration test to a neighbouring value.
         let mut tr = TextRenderer::new();
         a.interval_popover.place(&mut tr, &Theme::dark());
         let click = a
             .interval_popover
             .item_rect(3)
-            .expect("3s option is laid out")
+            .expect("the advertised 3s option has a hit rect")
             .center();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -6933,6 +7196,36 @@ mod tests {
             doc.get_heads().is_empty(),
             "interval choice is device-local"
         );
+    }
+
+    /// Screen-reader option bounds must be the Popover's real hit geometry,
+    /// not a duplicate of its private padding/row constants. This catches the
+    /// same kind of visual primitive change that previously retargeted the
+    /// pointer regression from 3s to 2s.
+    #[test]
+    fn interval_popover_semantic_rows_match_primitive_geometry() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
+        a.hit.interval = Rect::new(500.0, 8.0, 560.0, 32.0);
+        a.open_interval_popover();
+        let mut tr = TextRenderer::new();
+        a.interval_popover.place(&mut tr, &Theme::dark());
+        let targets = a.accessibility_targets();
+        for (index, ms) in INTERVAL_OPTIONS.iter().copied().enumerate() {
+            let target = format!("monitor.interval:{ms}");
+            let semantic_row = targets
+                .iter()
+                .find(|(candidate, _, _)| candidate == &target)
+                .map(|(_, rect, _)| *rect)
+                .expect("an open interval menu publishes every option");
+            assert_eq!(
+                semantic_row,
+                a.interval_popover
+                    .item_rect(index)
+                    .expect("the item has painted geometry"),
+                "semantic row {index} is exactly the pointer row"
+            );
+        }
     }
 
     /// Keyboard nav in the open popover: ↓ moves the highlight, Enter applies
@@ -7920,6 +8213,91 @@ mod tests {
             "no inaccessible local dialog is opened"
         );
         assert!(a.model.processes.iter().all(|process| process.pid != pid));
+    }
+
+    #[test]
+    fn process_resource_catalogue_is_bounded_and_omitted_generation_resolves_exactly() {
+        let mut a = app();
+        let template = a.model.processes[0].clone();
+        for offset in 0..=MAX_CONTEXT_PROCESS_RESOURCES {
+            let mut process = template.clone();
+            process.pid = 90_000 + u32::try_from(offset).expect("small test offset");
+            process.started_at = 7_000 + u64::try_from(offset).expect("small test offset");
+            process.name = format!("worker-{offset}");
+            a.model.processes.push(process);
+        }
+        let target = a.model.processes.last().expect("added process").clone();
+        let resources = Widget::resources(&a, &AutoCommit::new());
+        let root = resources.first().expect("process root");
+        assert_eq!(
+            root.children.len(),
+            MAX_CONTEXT_PROCESS_RESOURCES,
+            "the contextual catalogue cannot grow with the OS process count"
+        );
+        let target_id = process_resource_id(target.pid, target.started_at);
+        assert!(
+            !root
+                .children
+                .iter()
+                .any(|resource| resource.id.0 == target_id),
+            "a tail process is intentionally omitted from the eager page"
+        );
+        let resolved = Widget::resource(&a, &AutoCommit::new(), &target_id)
+            .expect("an omitted exact PID generation stays agent-resolvable");
+        assert_eq!(resolved.id.0, target_id);
+        assert!(resolved.actions.iter().any(|action| action.id == "kill"));
+
+        let page = Widget::action_directory_resource_page(&a, &AutoCommit::new(), b"", 1)
+            .expect("Monitor publishes a bounded directory page");
+        assert_eq!(page.resources.len(), 1, "one root obeys max_results=1");
+        assert!(page.exhausted);
+        assert!(page.next_cursor.is_empty());
+        let empty = Widget::action_directory_resource_page(&a, &AutoCommit::new(), b"", 0)
+            .expect("zero-size page is still a valid response");
+        assert!(empty.resources.is_empty(), "max_results is a hard ceiling");
+    }
+
+    #[test]
+    fn tail_processes_are_searchable_and_resolve_to_their_current_generation() {
+        let mut a = app();
+        let mut tail = a.model.processes[0].clone();
+        tail.pid = 99_991;
+        tail.started_at = 88_881;
+        tail.name = "searchable-tail-worker".into();
+        a.model.processes.push(tail.clone());
+        a.process_search.refresh(&a.model.processes);
+
+        let provider = a.search_providers().pop().expect("process provider");
+        let hit = provider
+            .search_limited("tail-worker", 1)
+            .pop()
+            .expect("the omitted catalogue tail remains globally searchable");
+        let address = hit.action_address().expect("search result has an action");
+        assert_eq!(
+            address.resource,
+            process_resource_id(tail.pid, tail.started_at)
+        );
+        assert_eq!(address.action, "inspect");
+        assert!(
+            provider.resolve_action_resource(&address).is_some(),
+            "the search address materializes the exact resource, not a PID-only fallback"
+        );
+    }
+
+    #[test]
+    fn process_resource_labels_are_single_line_and_bounded() {
+        let mut process = app().model.processes[0].clone();
+        process.name = format!(
+            "line\nbreak\t{}",
+            "x".repeat(MAX_PROCESS_RESOURCE_LABEL_CHARS + 8)
+        );
+        let label = process_resource_label(&process);
+        assert!(!label.contains('\n'));
+        assert!(!label.contains('\t'));
+        assert!(
+            label.chars().count() <= MAX_PROCESS_RESOURCE_LABEL_CHARS + 16,
+            "the bounded process name plus a tiny PID suffix is safe to publish"
+        );
     }
 
     /// Process effects are bound to a PID generation, not merely a reusable

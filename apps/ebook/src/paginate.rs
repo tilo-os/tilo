@@ -475,86 +475,148 @@ struct WordFlags {
     mono: bool,
 }
 
-/// Measure and push the single fragment `w[byte_start..byte_end]` as a
-/// `Word`. Returns its char count, so the caller can advance `chars_before`.
-#[allow(clippy::too_many_arguments)]
-fn push_one_fragment(
-    words: &mut Vec<Word>,
-    w: &str,
-    byte_start: usize,
-    byte_end: usize,
-    fragment_index: usize,
-    chars_before: usize,
+struct FragmentBuildCtx<'a> {
+    words: &'a mut Vec<Word>,
+    style: &'a BlockStyle,
+    settings: &'a Settings,
+    language: &'a str,
+    text: &'a mut TextRenderer,
+}
+
+struct SourceWord<'a> {
+    text: &'a str,
     char_start: usize,
     source_byte_start: usize,
     flags: WordFlags,
+    family: &'a FontChoice,
+}
+
+#[derive(Clone, Copy)]
+struct FragmentSlice {
+    byte_start: usize,
+    byte_end: usize,
+    index: usize,
+    chars_before: usize,
+}
+
+struct BlockComposition<'a> {
+    words: &'a [Word],
+    canonical_text: &'a str,
+    style: &'a BlockStyle,
+    settings: &'a Settings,
+    content_width: f32,
+    base_family: &'a FontChoice,
+    block_top: f32,
+    line_height: f32,
+}
+
+struct LineComposition<'a, 'text> {
+    words: &'a [Word],
+    bidi: &'a BidiInfo<'text>,
+    style: &'a BlockStyle,
+    base_family: &'a FontChoice,
+    space_width: f32,
+    line_height: f32,
+    text: &'a mut TextRenderer,
+}
+
+#[derive(Clone, Copy)]
+struct LinePlacement {
+    paragraph_rtl: bool,
+    text_width: f32,
+    justify: bool,
+    block_top: f32,
+}
+
+/// Measure and push the single fragment `w[byte_start..byte_end]` as a
+/// `Word`. Returns its char count, so the caller can advance `chars_before`.
+fn push_one_fragment(
+    ctx: &mut FragmentBuildCtx<'_>,
+    source: &SourceWord<'_>,
+    slice: FragmentSlice,
     breaks: &WordBreaks,
     hyphen_width: f32,
-    st: &BlockStyle,
-    settings: &Settings,
-    tr: &mut TextRenderer,
-    word_family: &FontChoice,
 ) -> usize {
     let WordFlags {
         space_before,
         bold,
         italic,
         mono,
-    } = flags;
-    let fragment = w.get(byte_start..byte_end).unwrap_or_default();
+    } = source.flags;
+    let fragment = source
+        .text
+        .get(slice.byte_start..slice.byte_end)
+        .unwrap_or_default();
     let hyphen_break_before =
-        fragment_index != 0 && breaks.hyphen.binary_search(&byte_start).is_ok();
+        slice.index != 0 && breaks.hyphen.binary_search(&slice.byte_start).is_ok();
     let natural_break_before =
-        fragment_index != 0 && breaks.unicode.binary_search(&byte_start).is_ok();
-    let stretch_before = if natural_break_before && settings.composition.justified() {
-        script_stretch_before(w, byte_start, st.size)
+        slice.index != 0 && breaks.unicode.binary_search(&slice.byte_start).is_ok();
+    let stretch_before = if natural_break_before && ctx.settings.composition.justified() {
+        script_stretch_before(source.text, slice.byte_start, ctx.style.size)
     } else {
         0.0
     };
     let fragment_chars = fragment.chars().count();
-    let fragment_width = tr
-        .measure_font(fragment, st.size, None, weight(bold), italic, word_family)
+    let fragment_width = ctx
+        .text
+        .measure_font(
+            fragment,
+            ctx.style.size,
+            None,
+            weight(bold),
+            italic,
+            source.family,
+        )
         .0;
-    let end_protrusion = if byte_end == w.len() {
+    let end_protrusion = if slice.byte_end == source.text.len() {
         fragment.chars().last().map_or(0.0, |character| {
-            let fraction = if settings.composition.justified() {
+            let fraction = if ctx.settings.composition.justified() {
                 punctuation_protrusion(character)
             } else {
                 0.0
             };
-            protrusion_width(character, fraction, st, bold, italic, tr, word_family)
+            protrusion_width(
+                character,
+                fraction,
+                ctx.style,
+                bold,
+                italic,
+                ctx.text,
+                source.family,
+            )
         })
     } else {
         0.0
     };
-    let start_protrusion =
-        if settings.composition.justified() && fragment_index == 0 && breaks.opening_fraction > 0.0
-        {
-            fragment.chars().next().map_or(0.0, |character| {
-                protrusion_width(
-                    character,
-                    breaks.opening_fraction,
-                    st,
-                    bold,
-                    italic,
-                    tr,
-                    word_family,
-                )
-            })
-        } else {
-            0.0
-        };
-    words.push(Word {
+    let start_protrusion = if ctx.settings.composition.justified()
+        && slice.index == 0
+        && breaks.opening_fraction > 0.0
+    {
+        fragment.chars().next().map_or(0.0, |character| {
+            protrusion_width(
+                character,
+                breaks.opening_fraction,
+                ctx.style,
+                bold,
+                italic,
+                ctx.text,
+                source.family,
+            )
+        })
+    } else {
+        0.0
+    };
+    ctx.words.push(Word {
         text: fragment.to_string(),
         bold,
         italic,
         mono,
         math: None,
         w: fragment_width,
-        space_before: fragment_index == 0 && space_before,
-        char_start: char_start + chars_before,
+        space_before: slice.index == 0 && space_before,
+        char_start: source.char_start + slice.chars_before,
         char_len: fragment_chars,
-        source_byte_start: source_byte_start + byte_start,
+        source_byte_start: source.source_byte_start + slice.byte_start,
         hyphen_break_before,
         hyphen_width_before: if hyphen_break_before {
             hyphen_width
@@ -572,49 +634,33 @@ fn push_one_fragment(
 
 /// Split one whitespace-separated source word `w` into hyphenation/line-break
 /// fragments and push each as a `Word` (measured, with protrusion).
-#[allow(clippy::too_many_arguments)]
-fn push_word_fragments(
-    words: &mut Vec<Word>,
-    w: &str,
-    char_start: usize,
-    source_byte_start: usize,
-    flags: WordFlags,
-    st: &BlockStyle,
-    settings: &Settings,
-    language: &str,
-    tr: &mut TextRenderer,
-    word_family: &FontChoice,
-) {
-    let breaks = word_break_boundaries(w, settings, language);
-    let hyphen_width = tr
+fn push_word_fragments(ctx: &mut FragmentBuildCtx<'_>, source: &SourceWord<'_>) {
+    let breaks = word_break_boundaries(source.text, ctx.settings, ctx.language);
+    let hyphen_width = ctx
+        .text
         .measure_font(
             "-",
-            st.size,
+            ctx.style.size,
             None,
-            weight(flags.bold),
-            flags.italic,
-            word_family,
+            weight(source.flags.bold),
+            source.flags.italic,
+            source.family,
         )
         .0;
     let mut byte_start = 0;
     let mut chars_before = 0;
     for (fragment_index, &byte_end) in breaks.boundaries.iter().enumerate() {
         let fragment_chars = push_one_fragment(
-            words,
-            w,
-            byte_start,
-            byte_end,
-            fragment_index,
-            chars_before,
-            char_start,
-            source_byte_start,
-            flags,
+            ctx,
+            source,
+            FragmentSlice {
+                byte_start,
+                byte_end,
+                index: fragment_index,
+                chars_before,
+            },
             &breaks,
             hyphen_width,
-            st,
-            settings,
-            tr,
-            word_family,
         );
         byte_start = byte_end;
         chars_before += fragment_chars;
@@ -675,21 +721,25 @@ fn build_words(
             canon.push_str(w);
             char_pos += char_len;
             push_word_fragments(
-                &mut words,
-                w,
-                char_start,
-                source_byte_start,
-                WordFlags {
-                    space_before,
-                    bold,
-                    italic,
-                    mono,
+                &mut FragmentBuildCtx {
+                    words: &mut words,
+                    style: st,
+                    settings,
+                    language,
+                    text: tr,
                 },
-                st,
-                settings,
-                language,
-                tr,
-                word_family,
+                &SourceWord {
+                    text: w,
+                    char_start,
+                    source_byte_start,
+                    flags: WordFlags {
+                        space_before,
+                        bold,
+                        italic,
+                        mono,
+                    },
+                    family: word_family,
+                },
             );
         }
     }
@@ -699,40 +749,25 @@ fn build_words(
 /// Build the `LineRun`s for one composed line, in visual order, ligating
 /// adjacent fragments that rejoin their source word. Returns the runs and the
 /// final horizontal cursor position (used by the caller for RTL alignment).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "threads the same per-line composition context (words/bidi/style/font/glue-width) \
-              as its sibling compose_one_line/compose_block_lines, which carry the same allow; \
-              splitting it into a context struct would only move the coupling, not remove it"
-)]
-fn line_runs(
-    words: &[Word],
-    bidi: &BidiInfo<'_>,
-    line: &ComposedLine,
-    line_height: f32,
-    st: &BlockStyle,
-    base_family: &FontChoice,
-    space_w: f32,
-    tr: &mut TextRenderer,
-) -> (Vec<LineRun>, f32) {
+fn line_runs(ctx: &mut LineComposition<'_, '_>, line: &ComposedLine) -> (Vec<LineRun>, f32) {
     let mut runs: Vec<LineRun> = Vec::with_capacity(line.end - line.start);
     let mut x = 0.0;
-    let order = visual_order(words, line.start, line.end, bidi);
+    let order = visual_order(ctx.words, line.start, line.end, ctx.bidi);
     let mut previous_index = None;
     for (offset, word_index) in order.into_iter().enumerate() {
-        let Some(word) = words.get(word_index) else {
+        let Some(word) = ctx.words.get(word_index) else {
             continue; // an out-of-range order index: skip (should not happen)
         };
         if offset == 0 {
             x -= word.start_protrusion * line.glyph_scale;
         } else if let Some(previous) = previous_index
-            && let Some(boundary) = words.get(word_index.max(previous))
+            && let Some(boundary) = ctx.words.get(word_index.max(previous))
         {
             // Glue belongs to the logical boundary between visually adjacent
             // items. In an RTL run that boundary is carried by the item with
             // the greater logical index.
             if boundary.space_before {
-                x += space_w * line.glue_scale;
+                x += ctx.space_width * line.glue_scale;
             } else if boundary.natural_break_before {
                 let adjustment = if line.adjustment_ratio >= 0.0 {
                     boundary.stretch_before * line.adjustment_ratio
@@ -760,18 +795,21 @@ fn line_runs(
             let family = if word.mono {
                 &FontChoice::Monospace
             } else {
-                base_family
+                ctx.base_family
             };
             x = previous.x
-                + tr.measure_font(
-                    &previous.text,
-                    st.size,
-                    None,
-                    weight(word.bold),
-                    word.italic,
-                    family,
-                )
-                .0 * line.glyph_scale;
+                + ctx
+                    .text
+                    .measure_font(
+                        &previous.text,
+                        ctx.style.size,
+                        None,
+                        weight(word.bold),
+                        word.italic,
+                        family,
+                    )
+                    .0
+                    * line.glyph_scale;
             previous_index = Some(word_index);
             continue;
         }
@@ -780,7 +818,7 @@ fn line_runs(
             y: word
                 .math
                 .as_ref()
-                .map_or_else(|| 0.0, |math| (line_height - math.height as f32) * 0.5),
+                .map_or_else(|| 0.0, |math| (ctx.line_height - math.height as f32) * 0.5),
             text: word.text.clone(),
             display_text: word.text.clone(),
             bold: word.bold,
@@ -799,27 +837,17 @@ fn line_runs(
 /// Build one visually-ordered `LaidLine` from a composed line's word range: its
 /// runs, a trailing discretionary hyphen when the next word continues past
 /// this line, and right-alignment for a fully-consumed RTL line.
-#[allow(clippy::too_many_arguments)]
 fn compose_one_line(
-    words: &[Word],
-    bidi: &BidiInfo<'_>,
+    ctx: &mut LineComposition<'_, '_>,
     line: &ComposedLine,
     line_idx: usize,
-    paragraph_rtl: bool,
-    text_width: f32,
-    justify: bool,
-    line_height: f32,
-    block_top: f32,
-    st: &BlockStyle,
-    base_family: &FontChoice,
-    space_w: f32,
-    tr: &mut TextRenderer,
+    placement: LinePlacement,
 ) -> LaidLine {
-    let (mut runs, x) = line_runs(words, bidi, line, line_height, st, base_family, space_w, tr);
+    let (mut runs, x) = line_runs(ctx, line);
 
-    if let Some(next_word) = words.get(line.end)
+    if let Some(next_word) = ctx.words.get(line.end)
         && next_word.hyphen_break_before
-        && let Some(source) = words.get(line.end - 1)
+        && let Some(source) = ctx.words.get(line.end - 1)
         && let Some(last) = runs.iter_mut().find(|run| {
             run.char_start <= source.char_start
                 && run.char_start + run.char_len == source.char_start + source.char_len
@@ -827,17 +855,17 @@ fn compose_one_line(
     {
         last.display_text.push('-');
     }
-    if paragraph_rtl && (line.end == words.len() || !justify) {
-        let offset = (text_width - x).max(0.0);
+    if placement.paragraph_rtl && (line.end == ctx.words.len() || !placement.justify) {
+        let offset = (placement.text_width - x).max(0.0);
         for run in &mut runs {
             run.x += offset;
         }
     }
     LaidLine {
-        y: block_top + line_idx as f32 * line_height,
+        y: placement.block_top + line_idx as f32 * ctx.line_height,
         glyph_scale: line.glyph_scale,
         adjustment_ratio: line.adjustment_ratio,
-        rtl: paragraph_rtl,
+        rtl: placement.paragraph_rtl,
         runs,
     }
 }
@@ -847,30 +875,23 @@ fn compose_one_line(
 /// quotations use adjustable inter-word glue; headings and lists retain
 /// natural ragged spacing while still benefiting from paragraph-wide break
 /// selection.
-#[allow(clippy::too_many_arguments)]
 fn compose_block_lines(
-    words: &[Word],
-    canon: &str,
-    st: &BlockStyle,
-    settings: &Settings,
-    content_w: f32,
-    base_family: &FontChoice,
-    tr: &mut TextRenderer,
-    block_top: f32,
-    line_height: f32,
+    text: &mut TextRenderer,
+    composition: &BlockComposition<'_>,
 ) -> Vec<LaidLine> {
-    let text_width = (content_w - st.indent).max(40.0);
-    let space_w = measure_space(tr, st.size, base_family);
-    let bidi = BidiInfo::new(canon, None);
+    let text_width = (composition.content_width - composition.style.indent).max(40.0);
+    let space_width = measure_space(text, composition.style.size, composition.base_family);
+    let bidi = BidiInfo::new(composition.canonical_text, None);
     let paragraph_rtl = bidi
         .paragraphs
         .first()
         .is_some_and(|paragraph| paragraph.level.is_rtl());
-    let boxes: Vec<_> = words
+    let boxes: Vec<_> = composition
+        .words
         .iter()
         .map(|word| ParagraphBox {
             width: word.w,
-            glue_before: if word.space_before { space_w } else { 0.0 },
+            glue_before: if word.space_before { space_width } else { 0.0 },
             stretch_before: word.stretch_before,
             shrink_before: word.shrink_before,
             break_before: word.space_before
@@ -883,37 +904,41 @@ fn compose_block_lines(
         })
         .collect();
     let mut options = ParagraphOptions::new(text_width);
-    options.justify = settings.composition.justified()
-        && matches!(st.kind, LayoutKind::Paragraph | LayoutKind::Quote);
+    options.justify = composition.settings.composition.justified()
+        && matches!(
+            composition.style.kind,
+            LayoutKind::Paragraph | LayoutKind::Quote
+        );
     // At accessibility sizes, favour predictable natural glyph metrics over
     // the subtle expansion used for book-like justification. On a narrow
     // phone one expanded line can otherwise exceed its measured paint box,
     // leaving the final word visibly clipped instead of reflowing.
-    if !settings.composition.justified() || settings.font_scale >= 1.35 {
+    if !composition.settings.composition.justified() || composition.settings.font_scale >= 1.35 {
         options.max_glyph_expansion = 0.0;
     }
     let composed = compose_paragraph(&boxes, options);
     let mut lines: Vec<LaidLine> = Vec::with_capacity(composed.len());
+    let placement = LinePlacement {
+        paragraph_rtl,
+        text_width,
+        justify: options.justify,
+        block_top: composition.block_top,
+    };
+    let mut line_ctx = LineComposition {
+        words: composition.words,
+        bidi: &bidi,
+        style: composition.style,
+        base_family: composition.base_family,
+        space_width,
+        line_height: composition.line_height,
+        text,
+    };
     for (line_idx, line) in composed.iter().enumerate() {
-        lines.push(compose_one_line(
-            words,
-            &bidi,
-            line,
-            line_idx,
-            paragraph_rtl,
-            text_width,
-            options.justify,
-            line_height,
-            block_top,
-            st,
-            base_family,
-            space_w,
-            tr,
-        ));
+        lines.push(compose_one_line(&mut line_ctx, line, line_idx, placement));
     }
     if lines.is_empty() {
         lines.push(LaidLine {
-            y: block_top,
+            y: composition.block_top,
             glyph_scale: 1.0,
             adjustment_ratio: 0.0,
             rtl: paragraph_rtl,
@@ -1056,15 +1081,17 @@ pub fn layout_chapter(
 
         let block_top = y;
         let lines = compose_block_lines(
-            &words,
-            &canon,
-            &st,
-            settings,
-            content_w,
-            base_family,
             tr,
-            block_top,
-            line_height,
+            &BlockComposition {
+                words: &words,
+                canonical_text: &canon,
+                style: &st,
+                settings,
+                content_width: content_w,
+                base_family,
+                block_top,
+                line_height,
+            },
         );
 
         let bullet = match block {
