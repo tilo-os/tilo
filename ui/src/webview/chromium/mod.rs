@@ -455,9 +455,9 @@ impl WebViewEngine for ChromiumEngine {
         let _ = self
             .tx
             .push(json!({"op":"visibility","tab":self.tab,"visible":visible}));
-        if !visible {
-            *self.shared.frames.lock().unwrap() = None;
-        }
+        // A newly composed WebView needs the retained page pixels immediately.
+        // Keep this one frame until CEF asynchronously repaints on activation.
+        // The old composition already retained the same Arc-backed pixels.
     }
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         self.shared.open_tabs.lock().unwrap().drain(..).collect()
@@ -562,6 +562,18 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         .ok_or("missing event name")?;
     let text = |key: &str| value.get(key).is_some_and(Value::is_string);
     let valid = match event {
+        "find_result" => {
+            valid_id(value)
+                && ["count", "active"].iter().all(|key| {
+                    value[*key]
+                        .as_i64()
+                        .is_some_and(|n| (-1..=i32::MAX as i64).contains(&n))
+                })
+                && value["final"].is_boolean()
+        }
+        "zoom" => value["level"]
+            .as_f64()
+            .is_some_and(|level| level.is_finite() && (-5.0..=9.0).contains(&level)),
         "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
         "permission_closed" => valid_id(value),
         "download_prompt" => valid_id(value) && text("url") && text("name"),
@@ -618,6 +630,10 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
 
 fn command_within_limits(command: &WebViewCommand) -> bool {
     match command {
+        WebViewCommand::Find { id, text, .. } => {
+            *id > 0 && *id <= i32::MAX as u32 && text.len() <= 4096
+        }
+        WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
         WebViewCommand::RequestNavigationHistory { request_id } => {
             *request_id > 0 && *request_id <= i32::MAX as u32
         }
@@ -725,6 +741,13 @@ impl CommandQueue {
 
 fn decode_event(value: &Value) -> Option<WebViewEvent> {
     Some(match value["event"].as_str()? {
+        "find_result" => WebViewEvent::FindResult {
+            id: value["id"].as_u64()? as u32,
+            count: value["count"].as_i64()? as i32,
+            active: value["active"].as_i64()? as i32,
+            final_update: value["final"].as_bool()?,
+        },
+        "zoom" => WebViewEvent::ZoomChanged(value["level"].as_f64()?),
         "uri" => WebViewEvent::UriChanged(value["url"].as_str()?.into()),
         "title" => WebViewEvent::TitleChanged(value["title"].as_str()?.into()),
         "progress" => WebViewEvent::LoadProgress(value["progress"].as_f64()?.clamp(0.0, 1.0)),
@@ -824,6 +847,14 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::DownloadDecision { id, allow } => {
             json!({"op":"download_decision","id":id,"allow":allow})
         }
+        WebViewCommand::Find {
+            id,
+            text,
+            forward,
+            next,
+        } => json!({"op":"find","id":id,"text":text,"forward":forward,"next":next}),
+        WebViewCommand::StopFinding => json!({"op":"stop_find"}),
+        WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
         WebViewCommand::CancelDownload { id } => json!({"op":"download_cancel","id":id}),
         WebViewCommand::SetNativeFilterRules { rules, enabled } => {
             json!({"op":"filter_rules","rules":&*rules,"enabled":enabled})
