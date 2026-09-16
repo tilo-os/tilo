@@ -2927,9 +2927,26 @@ impl ShellNetwork {
     pub fn share_wifi_credential(
         &self,
         ssid: &str,
-        security: &str,
+        security: os_actions::WifiSecurity,
         password: &str,
     ) -> Result<(), String> {
+        if !security.supports_portable_passphrase() {
+            return Err(match security {
+                os_actions::WifiSecurity::Enterprise => {
+                    "enterprise Wi-Fi requires identity, EAP method, and certificate setup on this device"
+                }
+                os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Owe => {
+                    "this Wi-Fi security mode has no portable passphrase"
+                }
+                os_actions::WifiSecurity::Unknown => {
+                    "unrecognized Wi-Fi security cannot be shared safely"
+                }
+                os_actions::WifiSecurity::Wpa2 | os_actions::WifiSecurity::Wpa3 => {
+                    "Wi-Fi security could not be validated for sharing"
+                }
+            }
+            .to_string());
+        }
         let local = self
             .personal_continuity_device
             .clone()
@@ -2967,12 +2984,19 @@ impl ShellNetwork {
 
     /// Decrypt a retained credential only for this certified device.
     /// The returned string is intended for an immediate `NetworkManager` call.
-    pub fn shared_wifi_password(&self, ssid: &str) -> Option<String> {
+    pub fn shared_wifi_password(
+        &self,
+        ssid: &str,
+        security: os_actions::WifiSecurity,
+    ) -> Option<String> {
+        if !security.supports_portable_passphrase() {
+            return None;
+        }
         let recipient_key = &self.host_identity.as_ref()?.device_signing_key;
         self.device_fabric()
             .merged_wifi()
             .into_values()
-            .filter(|credential| credential.ssid == ssid)
+            .filter(|credential| credential.ssid == ssid && credential.security == security)
             .find_map(|credential| {
                 crate::shell::device_fabric_secrets::open_wifi_credential(
                     &credential,
@@ -3002,6 +3026,9 @@ impl ShellNetwork {
         let credentials = self.device_fabric().merged_wifi().into_values();
         let mut changed = false;
         for credential in credentials {
+            if !credential.security.supports_portable_passphrase() {
+                continue;
+            }
             let current =
                 crate::shell::device_fabric_secrets::wifi_envelope_recipients(&credential)
                     .map_err(|error| error.to_string())?;
@@ -3014,7 +3041,7 @@ impl ShellNetwork {
             ) else {
                 continue;
             };
-            self.share_wifi_credential(&credential.ssid, &credential.security, &password)?;
+            self.share_wifi_credential(&credential.ssid, credential.security, &password)?;
             changed = true;
         }
         Ok(changed)
