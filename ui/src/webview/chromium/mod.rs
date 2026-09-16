@@ -331,6 +331,9 @@ impl ChromiumEngine {
                             let _ = ready_tx.try_send(());
                         }
                         let tab = value["tab"].as_u64().unwrap_or(1) as u32;
+                        if value["event"] == "closed" {
+                            reader_routes.lock().unwrap().remove(&tab);
+                        }
                         if let Some(shared) = route(&reader_routes, tab) {
                             if value["event"] == "open_tab" {
                                 if let Some(url) = value["url"].as_str() {
@@ -424,7 +427,6 @@ impl WebViewEngine for ChromiumEngine {
             .routes
             .lock()
             .map_err(|_| "Tab routes unavailable")?;
-        routes.retain(|_, route| route.strong_count() > 0);
         if routes.len() >= 32 {
             return Err("At most 32 tabs can be open".into());
         }
@@ -530,7 +532,13 @@ impl WebViewEngine for ChromiumEngine {
 
 impl Drop for ChromiumEngine {
     fn drop(&mut self) {
-        self.runtime.routes.lock().unwrap().remove(&self.tab);
+        // Reserve native capacity until OnBeforeClose acknowledges destruction.
+        // A dead route cannot receive events, but still counts against the bound.
+        self.runtime
+            .routes
+            .lock()
+            .unwrap()
+            .insert(self.tab, Weak::new());
         let _ = self.tx.push(json!({"op":"close_tab","tab":self.tab}));
     }
 }

@@ -21,6 +21,8 @@ struct Tab {
 /// A bounded collection of retained documents in one shared browser runtime.
 pub struct BrowserTabs {
     tabs: Vec<Tab>,
+    // Host node bindings remain alive until the next structure rebuild.
+    retired: Vec<Box<BrowserWidget>>,
     active_id: u64,
     next_id: u64,
     bar: TabBar,
@@ -28,11 +30,14 @@ pub struct BrowserTabs {
     rect: Rect,
     dirty: bool,
     focus_new_address: bool,
+    layout_active_id: Option<u64>,
+    address_focus_node: Option<NodeId>,
     cursor: Point,
 }
 
 impl BrowserTabs {
-    pub fn new(widget: BrowserWidget) -> Self {
+    pub fn new(mut widget: BrowserWidget) -> Self {
+        widget.set_tab_identity(1);
         let mut bar = TabBar::new("browser", vec![TabDescriptor::new(1, "New tab")], 1);
         bar.set_show_maximize(false);
         Self {
@@ -40,6 +45,7 @@ impl BrowserTabs {
                 id: 1,
                 widget: Box::new(widget),
             }],
+            retired: Vec::new(),
             active_id: 1,
             next_id: 2,
             bar,
@@ -47,6 +53,8 @@ impl BrowserTabs {
             rect: Rect::ZERO,
             dirty: true,
             focus_new_address: false,
+            layout_active_id: None,
+            address_focus_node: None,
             cursor: Point::ORIGIN,
         }
     }
@@ -80,10 +88,12 @@ impl BrowserTabs {
         let engine = self.active().engine_handle().create_tab()?;
         engine.set_visible(false);
         let headless = self.active().is_headless();
-        let widget = BrowserWidget::with_engine(engine, headless)
+        let mut widget = BrowserWidget::with_engine(engine, headless)
             .with_initial_uri(url.unwrap_or_else(|| "about:blank".into()));
+        widget.share_history_pause(self.active());
         let id = self.next_id;
         self.next_id += 1;
+        widget.set_tab_identity(id);
         self.tabs.push(Tab {
             id,
             widget: Box::new(widget),
@@ -102,6 +112,7 @@ impl BrowserTabs {
         }
         self.active().engine_handle().set_visible(false);
         self.active_id = id;
+        self.address_focus_node = None;
         self.bar.set_active(id);
         self.active().engine_handle().set_visible(true);
         self.active_mut().refresh_shared_history();
@@ -129,6 +140,7 @@ impl BrowserTabs {
             self.closed.remove(0);
         }
         self.closed.push(tab.widget.tab_url().to_owned());
+        self.retired.push(tab.widget);
         self.bar.remove_tab(id);
         self.bar.finalize_close(id);
         self.bar.set_active(self.active_id);
@@ -232,9 +244,6 @@ impl Widget for BrowserTabs {
                 tracing::warn!(%error, "Cannot open link tab");
             }
         }
-        if self.focus_new_address && self.active_mut().focus_tab_address() {
-            self.focus_new_address = false;
-        }
     }
     fn build_layout(
         &mut self,
@@ -242,8 +251,20 @@ impl Widget for BrowserTabs {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.retired.clear();
         let bar = self.bar.build_layout(taffy, theme, nodes);
         let page = self.active_mut().build_layout(taffy, theme, nodes);
+        self.layout_active_id = Some(self.active_id);
+        let focus_address = self.focus_new_address || self.address_focus_node.is_some();
+        self.address_focus_node = None;
+        if focus_address && self.active_mut().focus_tab_address() {
+            self.focus_new_address = false;
+            self.address_focus_node = nodes.iter().find_map(|(id, widget)| {
+                // Nodes were built immediately above and all widgets are retained.
+                let widget = unsafe { &**widget };
+                (widget.test_id() == Some("browser.url_input")).then_some(*id)
+            });
+        }
         let root = taffy.parent_node(
             Style {
                 display: taffy::Display::Flex,
@@ -310,6 +331,15 @@ impl Widget for BrowserTabs {
     ) {
         if *handled {
             return;
+        }
+        // A switch can be followed by another input before the host rebuilds.
+        // Retained compositions still contain NodeIds from their previous tree.
+        if self.layout_active_id != Some(self.active_id) {
+            *handled = true;
+            return;
+        }
+        if let Some(address) = self.address_focus_node.take() {
+            *focus = Some(address);
         }
         if matches!(
             event,
@@ -409,8 +439,17 @@ impl Widget for BrowserTabs {
         self.active_mut()
             .perform_semantic_action(target, action, state, path)
     }
-    fn resources(&self, doc: &AutoCommit) -> Vec<ui::qos_actions::Resource> {
-        self.active().resources(doc)
+    fn poll_resource_operation(
+        &mut self,
+        invocation: ui::qos_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<ui::qos_actions::InvocationUpdate> {
+        self.tabs.iter_mut().find_map(|tab| {
+            tab.widget
+                .poll_resource_operation(invocation, cancellation_requested, doc, path)
+        })
     }
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         self.active().search_providers()
@@ -446,22 +485,32 @@ impl Widget for BrowserTabs {
     fn take_floating_surface_request(
         &mut self,
     ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.active_mut().take_floating_surface_request()
+        self.tabs
+            .iter_mut()
+            .find_map(|tab| tab.widget.take_floating_surface_request())
     }
     fn take_capture_studio_request(&mut self) -> Option<ui::widget::CaptureMode> {
         self.active_mut().take_capture_studio_request()
     }
     fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.active_mut().take_floating_surface_source_updates()
+        self.tabs
+            .iter_mut()
+            .flat_map(|tab| tab.widget.take_floating_surface_source_updates())
+            .collect()
     }
     fn active_floating_surface_ids(&self) -> Vec<String> {
-        self.active().active_floating_surface_ids()
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.widget.active_floating_surface_ids())
+            .collect()
     }
     fn on_floating_surface_host_message(
         &mut self,
         message: &ui::floating_surface::FloatingSurfaceHostMessage,
     ) {
-        self.active_mut().on_floating_surface_host_message(message);
+        for tab in &mut self.tabs {
+            tab.widget.on_floating_surface_host_message(message);
+        }
     }
     fn modal_capture(&self) -> Option<Rect> {
         self.active().modal_capture()
@@ -495,6 +544,12 @@ impl Widget for BrowserTabs {
         self.rect
     }
 }
+impl Drop for BrowserTabs {
+    fn drop(&mut self) {
+        self.active_mut().clear_history_on_workspace_exit();
+    }
+}
+
 impl AppWidget for BrowserTabs {
     fn app_kind(&self) -> AppKind {
         AppKind::Browser
@@ -589,5 +644,186 @@ mod tests {
         assert_eq!(tabs.active_id, first);
         assert!(tabs.open(None, true).is_err());
         assert_eq!(tabs.tabs.len(), 32);
+    }
+    #[test]
+    fn resources_are_owned_only_by_the_page() {
+        let tabs = workspace();
+        assert!(tabs.resources(&AutoCommit::new()).is_empty());
+        assert!(!tabs.active().resources(&AutoCommit::new()).is_empty());
+    }
+
+    #[test]
+    fn new_tab_address_is_focused_after_layout() {
+        let mut tabs = workspace();
+        tabs.open(None, false).unwrap();
+        let mut doc = AutoCommit::new();
+        tabs.sync(&mut doc, &automerge::ROOT);
+        let mut tree = TaffyTree::new();
+        tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+        fn focused(widget: &dyn Widget) -> bool {
+            (widget.test_id() == Some("browser.url_input") && widget.is_focused())
+                || widget.children().iter().any(|child| focused(*child))
+        }
+        assert!(focused(&tabs));
+    }
+
+    #[test]
+    fn switching_before_rebuild_does_not_dispatch_stale_layout_nodes() {
+        let mut tabs = workspace();
+        let mut tree = TaffyTree::new();
+        for _ in 0..128 {
+            tree.new_leaf(Style::default()).unwrap();
+        }
+        tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+        tabs.open(None, false).unwrap();
+        let mut tree = TaffyTree::new();
+        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+        tabs.activate(1);
+        tabs.handle_event(
+            &WindowEvent::Focused(true),
+            1.0,
+            &Default::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut false,
+            &mut None,
+            root,
+            &tree,
+        );
+    }
+
+    #[test]
+    fn history_pause_is_shared_by_existing_and_new_tabs() {
+        let mut tabs = workspace();
+        tabs.open(None, true).unwrap();
+        tabs.active_mut().debug_show_history_paused();
+        assert!(tabs.tabs.iter().all(|tab| tab.widget.history_paused()));
+        tabs.open(None, false).unwrap();
+        assert!(tabs.active().history_paused());
+    }
+
+    #[test]
+    fn background_navigation_keeps_its_invocation_route() {
+        let mut tabs = workspace();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        tabs.sync(&mut doc, &root);
+        let resources = tabs.active().resources(&doc);
+        let page = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.0 == "browser.page")
+            .unwrap();
+        let navigate = page
+            .actions
+            .iter()
+            .find(|action| action.id == "navigate")
+            .unwrap();
+        let args = serde_json::from_value(serde_json::json!({"url": "https://one.test"})).unwrap();
+        let encoded = navigate.build_json(&args).unwrap();
+        let invocation = ui::qos_actions::InvocationId::new();
+        tabs.start_resource_operation(
+            invocation,
+            navigate.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &root,
+        )
+        .unwrap();
+        tabs.open(None, false).unwrap();
+        tabs.sync(&mut doc, &root);
+        assert!(matches!(
+            tabs.poll_resource_operation(invocation, false, &doc, &root),
+            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
+    }
+    #[test]
+    fn pip_host_adoption_and_close_route_to_original_background_tab() {
+        let mut tabs = workspace();
+        let first = tabs.active_id;
+        tabs.active_mut().debug_show_active_pip();
+        let id = tabs.active().active_floating_surface_ids()[0].clone();
+        tabs.open(None, false).unwrap();
+        assert_ne!(tabs.active_id, first);
+        tabs.on_floating_surface_host_message(
+            &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                id: id.clone(),
+                rect: [0.0, 0.0, 400.0, 300.0],
+            },
+        );
+        assert!(tabs.active().active_floating_surface_ids().is_empty());
+        assert_eq!(tabs.active_floating_surface_ids(), vec![id.clone()]);
+        tabs.active_mut().debug_show_active_pip();
+        let second = tabs.active().active_floating_surface_ids()[0].clone();
+        assert_ne!(id, second);
+        tabs.on_floating_surface_host_message(
+            &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
+        );
+        assert_eq!(tabs.active_floating_surface_ids(), vec![second]);
+    }
+    #[test]
+    fn background_pip_delivers_request_and_completes_invocation() {
+        let engine = TestEngine::new();
+        engine.set_media_element(Some(ui::webview::MediaElementInfo {
+            element_id: "media:one".into(),
+            viewport_rect: [0.1, 0.1, 0.8, 0.8],
+            intrinsic_size: [1920, 1080],
+            label: "Video".into(),
+        }));
+        let mut tabs = BrowserTabs::new(BrowserWidget::with_engine(Arc::new(Engine(engine)), true));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        tabs.sync(&mut doc, &root);
+        let mut tree = TaffyTree::new();
+        let node = tree
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::length(900.0),
+                    height: Dimension::length(600.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        tree.compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        )
+        .unwrap();
+        tabs.active_mut().apply_layout(&tree, node, Point::ORIGIN);
+        let resources = tabs.active().resources(&doc);
+        let page = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.0 == "browser.page")
+            .unwrap();
+        let pip = page
+            .actions
+            .iter()
+            .find(|action| action.id == "picture-in-picture")
+            .unwrap();
+        let invocation = ui::qos_actions::InvocationId::new();
+        tabs.start_resource_operation(
+            invocation,
+            pip.kind,
+            pip.operation_type.as_deref().unwrap(),
+            br#"{"operation":"toggle-picture-in-picture"}"#,
+            &doc,
+            &root,
+        )
+        .unwrap();
+        tabs.open(None, false).unwrap();
+        tabs.sync(&mut doc, &root);
+        let request = tabs
+            .take_floating_surface_request()
+            .expect("background tab request is delivered");
+        assert_eq!(request.id, "browser.media-pip.1");
+        assert!(matches!(
+            tabs.poll_resource_operation(invocation, false, &doc, &root),
+            Some(ui::qos_actions::InvocationUpdate::Succeeded { .. })
+        ));
     }
 }
