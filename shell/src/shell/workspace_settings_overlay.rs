@@ -1673,7 +1673,8 @@ impl WorkspaceSettingsOverlay {
         let input_rect = self.name_rect();
         let input = RoundedRect::from_rect(input_rect, f64::from(tokens.radii.sm));
         scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &input);
-        let editing = state.editing_workspace_name.is_some();
+        let can_rename = is_active_workspace_owner(state);
+        let editing = can_rename && state.editing_workspace_name.is_some();
         let border_color = if editing {
             colors.accent[5]
         } else {
@@ -1686,10 +1687,14 @@ impl WorkspaceSettingsOverlay {
             None,
             &input,
         );
-        let shown = state
-            .editing_workspace_name
-            .as_deref()
-            .unwrap_or(active_name);
+        let shown = if editing {
+            state
+                .editing_workspace_name
+                .as_deref()
+                .unwrap_or(active_name)
+        } else {
+            active_name
+        };
         let input_size = tokens.typography.scale.base;
         text_renderer.draw_text(
             scene,
@@ -1709,6 +1714,15 @@ impl WorkspaceSettingsOverlay {
                 input_rect.y0 + 6.0 + f64::from(input_size),
             );
             scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
+        } else if !can_rename {
+            text_renderer.draw_text(
+                scene,
+                "Only a workspace administrator can rename this workspace.",
+                tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((identity_card.x0 + 16.0, identity_card.y1 - 12.0).into()),
+                None,
+            );
         }
         editing
     }
@@ -2036,11 +2050,7 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
     if let Some(forced) = state.test_only_owner_override {
         return forced;
     }
-    let user = state.active_local_user();
-    let tree = state.tree();
-    tree.active_workspace().is_some_and(|workspace| {
-        tree.governs_room(workspace.room) && workspace.may_administer(&user)
-    })
+    state.can_rename_active_workspace()
 }
 
 #[cfg(test)]
