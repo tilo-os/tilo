@@ -361,8 +361,7 @@ impl ReaderShortcut {
 }
 
 /// An in-progress inline rename (font display name or scheme name), backed by
-/// the toolkit's reusable [`ui::widget::EditableLabel`] rather than a
-/// hand-rolled character buffer.
+/// the toolkit's reusable [`ui::widget::EditableLabel`].
 struct Rename {
     target: RenameTarget,
     field: ui::widget::EditableLabel,

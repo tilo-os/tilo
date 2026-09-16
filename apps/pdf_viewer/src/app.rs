@@ -346,9 +346,7 @@ enum EditTarget {
 }
 
 /// A live inline text edit (comment body, thread reply, or signer name),
-/// backed by the shared multiline [`TextInput`] so it gets real caret,
-/// selection (shift+arrows / drag), clipboard (Ctrl+C/V/X), focus ring, a11y,
-/// and theming instead of a hand-rolled buffer + caret. The text is local until
+/// backed by the shared multiline [`TextInput`]. The text is local until
 /// committed, so a burst of keystrokes is a single undo step. `Enter` commits
 /// (the input is `with_enter_submits`), `Shift+Enter` inserts a newline.
 struct Editing {

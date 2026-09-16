@@ -8094,10 +8094,8 @@ mod tests {
         feed_key(a, Key::Named(named))
     }
 
-    /// Ctrl+V pastes the system clipboard into the focused search field via the
-    /// shared `TextInput` — the hand-rolled field had no clipboard at all. Primes
-    /// the real clipboard, checks it round-trips, then drives Ctrl+V through the
-    /// real event path and asserts the pasted text reached `model.query`.
+    /// Verifies Ctrl+V from the system clipboard reaches the focused search
+    /// field through the normal event path.
     #[test]
     fn ctrl_v_pastes_into_the_search_field() {
         let mut a = app_at(1280.0, 720.0);

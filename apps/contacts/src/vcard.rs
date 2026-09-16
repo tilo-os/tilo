@@ -1,6 +1,5 @@
-//! vCard import/export — hand-rolled parser + serializer covering the
-//! 3.0 (RFC 2426) and 4.0 (RFC 6350) flavours an address book actually
-//! meets in the wild.
+//! Dependency-free vCard import/export covering the 3.0 (RFC 2426) and 4.0
+//! (RFC 6350) variants used by address books.
 //!
 //! We deliberately keep this small and dependency-free: contacts only
 //! needs the property set a person/organization card uses — `FN`, `N`,

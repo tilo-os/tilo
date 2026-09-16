@@ -1,9 +1,8 @@
 //! In-tree minimal manifest shim.
 //!
-//! The canonical manifest crate (`qos-pkg`) is being built in parallel.
-//! This module defines just enough of the shape `qos-launcher` needs
-//! today so we can iterate without blocking on the other agent. When
-//! `qos-pkg` lands, replace [`MinimalManifest`] with the published type.
+//! This module decodes the launcher-facing subset of the canonical manifest
+//! schema. [`MinimalManifest`] keeps the launcher independent of the full
+//! package model while sharing its policy types.
 //!
 //! ### Assumed manifest shape (TOML)
 //!
@@ -24,22 +23,11 @@
 //!
 //! ### `[sandbox.fs]` is not part of the vocabulary
 //!
-//! A manifest used to name the paths it wanted, and the launcher bound
-//! them — so the sandbox enforced a policy written by the thing it was
-//! sandboxing. `write = ["~"]`, `write = ["/"]` and similarly broad
-//! entries were all accepted and faithfully bound read-write. Signing
-//! didn't help: it proves who wrote the manifest, not that what it asks
-//! for is reasonable.
-//!
-//! So the field is gone, and a manifest that still carries one is
-//! refused rather than ignored — see [`enforce_fs_policy`]. Ignoring it
-//! would leave the app running with less access than expected, a
-//! mysterious bug instead of a policy.
-//!
-//! What replaces it: **writes** via [`crate::appdir`] (one directory per
-//! room), **reads** via [`crate::profile`] (one fixed system list), and
-//! **anything else** via [`crate::capabilities`] (a grant the user
-//! consented to) — one route, not two.
+//! `[sandbox.fs]` is rejected rather than interpreted: filesystem writes use
+//! [`crate::appdir`], system reads use [`crate::profile`], and other access
+//! requires an explicit [`crate::capabilities`] grant. This prevents a package
+//! from defining the boundary meant to contain it; rejecting the field also
+//! avoids silently running an app with less access than its manifest requested.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

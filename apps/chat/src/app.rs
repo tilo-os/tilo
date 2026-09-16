@@ -489,13 +489,9 @@ pub struct ChatApp {
     pub(crate) draft_main: String,
     pub(crate) draft_thread: String,
 
-    /// The message composers — shared multiline [`TextInput`]s (Enter sends,
-    /// Shift+Enter inserts a newline) so the composer gets real caret,
-    /// selection, clipboard (Ctrl+C/V/X), focus ring, a11y, and theming for
-    /// free instead of a hand-rolled `String` + caret index. One per surface:
-    /// the main timeline and the open thread. Both are local-mode; each
-    /// keystroke is written back into the per-channel/thread draft `Text` in
-    /// the CRDT (diff-spliced) so a draft stays collaborative + persistent.
+    /// The message composers are shared multiline [`TextInput`]s: Enter sends,
+    /// Shift+Enter inserts a newline, and each maintains a collaborative,
+    /// persistent CRDT draft for its surface.
     pub(crate) composer_main: TextInput,
     pub(crate) composer_thread: TextInput,
 

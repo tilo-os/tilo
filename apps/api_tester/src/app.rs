@@ -1,16 +1,9 @@
 //! Root widget for the API tester.
 //!
-//! # A retained widget tree, not a single painter
+//! # Retained controls over painted chrome
 //!
-//! This app used to be one full-window leaf `Widget` that painted its whole
-//! surface and hit-tested a private `Vec<(Rect, Action)>` table. That gave a
-//! nice picture but no *structure*: the keyboard could not move between
-//! controls, and a screen reader saw a single opaque canvas — the "honest
-//! boundary" the hand-rolled-UI audit calls out.
-//!
-//! It is now a **container** that still paints its own chrome (panels,
-//! dividers, section labels, the response body) but composes **real focusable
-//! child widgets** for every control:
+//! The app paints its panels, dividers, section labels, and response body, and
+//! composes focusable child widgets for every control:
 //!
 //! - the HTTP method + environment pickers are [`Dropdown`]s (a11y `ComboBox`),
 //! - the URL and body editors are [`TextInput`]s (a11y `TextInput`),
@@ -20,13 +13,9 @@
 //! - each sidebar / history row is a [`NavRow`](crate::navrow::NavRow) (a11y
 //!   `Button`).
 //!
-//! Every one of these is registered in the taffy tree in [`build_layout`], so
-//! the host [`ui::App`] walks them into its `focusable_order` (Tab / Shift-Tab
-//! / arrow navigation) and the AccessKit bridge emits an AT-SPI node per
-//! control. Because the controls are hand-positioned over the painted chrome
-//! (via each widget's `apply_layout_external`), the layout — and therefore the
-//! look — is preserved while the app becomes fully keyboard- and
-//! screen-reader-navigable.
+//! [`build_layout`] registers every control in the Taffy tree for keyboard
+//! navigation and AccessKit export. Their external layout rects align them with
+//! the painted chrome.
 //!
 //! ```text
 //! ┌──────────┬───────────────────────────────────────────┐

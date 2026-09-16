@@ -2030,7 +2030,7 @@ fn write_all_pwrite(fd: RawFd, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Narrow host paths a dynamically-linked ELF needs to `execve()`.
-/// Excludes `/usr/bin` etc. — stopgap until every app carries a qos-runtime bundle.
+/// Excludes `/usr/bin` and other non-runtime paths.
 fn minimal_loader_binds() -> &'static [&'static str] {
     &[
         // Dynamic loader itself.
