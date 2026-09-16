@@ -113,6 +113,21 @@ pub struct PeerView {
 }
 
 impl PeerView {
+    /// Shell-owned display sessions are not app-tree children, so the trusted
+    /// host supplies their viewport directly.
+    pub fn set_shell_viewport(&mut self, rect: Rect) {
+        if self.rect != rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+    }
+
+    fn content_rect(&self) -> Rect {
+        let Some(frame) = self.latest.as_ref() else {
+            return self.rect;
+        };
+        aspect_fit_rect(self.rect, frame.width, frame.height)
+    }
     /// A fresh metrics handle is created — see [`Self::new_with_metrics`]
     /// to share one instead.
     pub fn new(surface_id: SurfaceId, local_peer: PeerId) -> Self {
@@ -459,7 +474,7 @@ impl Widget for PeerView {
             &self.rect,
         );
 
-        let rect = self.rect;
+        let rect = self.content_rect();
 
         if let Some(image) = self.ensure_image() {
             // Scale + translate so the natural-size image fills `rect`.
@@ -510,19 +525,17 @@ impl Widget for PeerView {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = Point::new(position.x, position.y);
-                let inside = point.x >= self.rect.x0
-                    && point.x <= self.rect.x1
-                    && point.y >= self.rect.y0
-                    && point.y <= self.rect.y1;
+                let content = self.content_rect();
+                let inside = content.contains(point);
                 self.set_pointer_inside(inside);
-                if inside && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+                if inside && content.width() > 0.0 && content.height() > 0.0 {
                     let (width, height) = self.latest.as_ref().map_or_else(
                         || (self.rect.width(), self.rect.height()),
                         |frame| (f64::from(frame.width), f64::from(frame.height)),
                     );
-                    let x = ((point.x - self.rect.x0) / self.rect.width() * width)
+                    let x = ((point.x - content.x0) / content.width() * width)
                         .clamp(0.0, width.max(1.0) - 1.0);
-                    let y = ((point.y - self.rect.y0) / self.rect.height() * height)
+                    let y = ((point.y - content.y0) / content.height() * height)
                         .clamp(0.0, height.max(1.0) - 1.0);
                     self.record_pointer_motion(x, y);
                     *handled = true;
@@ -588,6 +601,16 @@ impl Widget for PeerView {
     }
 }
 
+fn aspect_fit_rect(viewport: Rect, width: u32, height: u32) -> Rect {
+    if width == 0 || height == 0 || viewport.width() <= 0.0 || viewport.height() <= 0.0 {
+        return viewport;
+    }
+    let scale = (viewport.width() / f64::from(width)).min(viewport.height() / f64::from(height));
+    let fitted_width = f64::from(width) * scale;
+    let fitted_height = f64::from(height) * scale;
+    Rect::from_center_size(viewport.center(), (fitted_width, fitted_height))
+}
+
 impl AppWidget for PeerView {
     fn app_kind(&self) -> AppKind {
         // No dedicated `Peer` variant yet; `Settings` is the catch-all.
@@ -643,6 +666,16 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn personal_display_aspect_fit_preserves_pixels_and_letterboxes() {
+        let viewport = Rect::new(0.0, 0.0, 1000.0, 1000.0);
+        let fitted = aspect_fit_rect(viewport, 1920, 1080);
+        assert!(fitted.x0.abs() < 0.001);
+        assert!((fitted.x1 - 1000.0).abs() < 0.001);
+        assert!((fitted.height() - 562.5).abs() < 0.001);
+        assert!((fitted.y0 - 218.75).abs() < 0.001);
     }
 
     #[test]
