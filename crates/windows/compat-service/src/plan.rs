@@ -26,6 +26,10 @@ const STEAM_RUNTIME_HOST: &str =
 const UMU_FOLDERS_MOUNT: &str = "/tmp/qos-runtime";
 const STEAM_RUNTIME_MOUNT: &str = "/tmp/qos-runtime/umu/steamrt3";
 const STEAM_PLATFORM: &str = "sniper_platform_3.0.20260805.254768";
+const X86_ROOTFS_HOST: &str = "/usr/lib/qos/windows-runners/x86";
+const TRANSLATED_HELPER: &str = "/usr/libexec/qos-windows-runtime";
+const EMULATOR_MANIFEST: &str = "/usr/share/qos/windows/fex-emulator.json";
+const GRAPHICS_MANIFEST: &str = "/usr/share/qos/windows/fex-graphics-provider.json";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeBind {
@@ -40,9 +44,75 @@ pub struct RuntimeImage {
     environment: Vec<(&'static str, String)>,
     needs_nested_runtime: bool,
     runtime_lock_mount: Option<PathBuf>,
+    translated: bool,
 }
 
 impl RuntimeImage {
+    fn seccomp_profile(&self) -> Option<SeccompProfile> {
+        if self.needs_nested_runtime {
+            None
+        } else if self.translated {
+            Some(SeccompProfile::QosJit)
+        } else {
+            Some(SeccompProfile::QosDefault)
+        }
+    }
+
+    fn translate_for_arm(&mut self, layer: Layer) {
+        self.translated = true;
+        self.sandbox_entrypoint = PathBuf::from(TRANSLATED_HELPER);
+        if layer == Layer::Wine {
+            self.binds.clear();
+            for resource in [
+                "usr/lib64/wine-wow64",
+                "usr/lib/wine-wow64",
+                "usr/share/wine",
+            ] {
+                self.binds.push(RuntimeBind {
+                    host: Path::new(X86_ROOTFS_HOST).join(resource),
+                    sandbox: Path::new("/").join(resource),
+                });
+            }
+        }
+        self.binds.extend([
+            runtime_bind(TRANSLATED_HELPER, TRANSLATED_HELPER),
+            runtime_bind("/usr/bin/FEX", "/usr/bin/FEX"),
+            runtime_bind("/usr/bin/FEXServer", "/usr/bin/FEXServer"),
+            runtime_bind("/usr/bin/FEXOfflineCompiler", "/usr/bin/FEXOfflineCompiler"),
+            runtime_bind("/usr/share/fex-emu", "/usr/share/fex-emu"),
+            runtime_bind(X86_ROOTFS_HOST, crate::translated::ROOTFS),
+        ]);
+        if layer == Layer::Proton {
+            self.binds.extend([
+                runtime_bind(EMULATOR_MANIFEST, EMULATOR_MANIFEST),
+                runtime_bind(GRAPHICS_MANIFEST, GRAPHICS_MANIFEST),
+            ]);
+            self.environment.extend([
+                ("STEAM_COMPAT_EMULATOR", EMULATOR_MANIFEST.to_string()),
+                (
+                    "STEAM_COMPAT_GRAPHICS_PROVIDER",
+                    GRAPHICS_MANIFEST.to_string(),
+                ),
+                (
+                    "STEAM_COMPAT_MACHINE_ARCHITECTURE",
+                    "aarch64-linux-gnu".to_string(),
+                ),
+                (
+                    "PRESSURE_VESSEL_GRAPHICS_PROVIDER_aarch64_linux_gnu",
+                    "/".to_string(),
+                ),
+                (
+                    "PRESSURE_VESSEL_GRAPHICS_PROVIDER_x86_64_linux_gnu",
+                    crate::translated::ROOTFS.to_string(),
+                ),
+                (
+                    "PRESSURE_VESSEL_GRAPHICS_PROVIDER_i386_linux_gnu",
+                    crate::translated::ROOTFS.to_string(),
+                ),
+            ]);
+        }
+    }
+
     pub fn host_paths(&self) -> impl Iterator<Item = &Path> {
         self.binds.iter().map(|binding| binding.host.as_path())
     }
@@ -68,6 +138,16 @@ impl SystemRuntimeRegistry {
 
 impl RuntimeRegistry for SystemRuntimeRegistry {
     fn resolve(&self, layer: Layer, runner: &Runner) -> Result<RuntimeImage, PlanError> {
+        Self::resolve_for_host(layer, runner, std::env::consts::ARCH)
+    }
+}
+
+impl SystemRuntimeRegistry {
+    fn resolve_for_host(
+        layer: Layer,
+        runner: &Runner,
+        host: &str,
+    ) -> Result<RuntimeImage, PlanError> {
         validate_runner_token(&runner.family)?;
         validate_runner_token(&runner.version)?;
         let expected_family = match layer {
@@ -80,7 +160,7 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
         {
             return Err(PlanError::RunnerLayerMismatch);
         }
-        match layer {
+        let mut image = match layer {
             Layer::Wine if runner.version == "system" => Ok(RuntimeImage {
                 binds: vec![
                     runtime_bind("/usr/bin/wine", "/usr/bin/wine"),
@@ -91,6 +171,7 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
                 environment: Vec::new(),
                 needs_nested_runtime: false,
                 runtime_lock_mount: None,
+                translated: false,
             }),
             Layer::Wine => Err(PlanError::RunnerNotInstalled(format!(
                 "wine {}",
@@ -122,6 +203,7 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
                         ),
                     ],
                     needs_nested_runtime: true,
+                    translated: false,
                     runtime_lock_mount: Some(
                         Path::new(STEAM_RUNTIME_MOUNT)
                             .join(STEAM_PLATFORM)
@@ -153,7 +235,13 @@ impl RuntimeRegistry for SystemRuntimeRegistry {
                 runner.family, runner.version
             ))),
             Layer::Vm => Err(PlanError::VmIsNotCapsule),
+        }?;
+        match host {
+            "x86_64" => {}
+            "aarch64" => image.translate_for_arm(layer),
+            _ => return Err(PlanError::UnsupportedHostArchitecture(host.to_string())),
         }
+        Ok(image)
     }
 }
 
@@ -475,7 +563,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             setenv(&mut argv, key, value);
         }
         launcher::sandbox::push_workspace_id(&mut argv, workspace_id);
-        if !runtime.needs_nested_runtime {
+        if runtime.seccomp_profile().is_some() {
             argv.extend(["--seccomp".to_string(), crate::SECCOMP_CHILD_FD.to_string()]);
         }
         argv.extend([
@@ -509,6 +597,15 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         }
         argv.push("--".to_string());
         argv.push(runtime.sandbox_entrypoint().display().to_string());
+        if runtime.translated {
+            let mode = match (capsule.layer, capsule.settings.architecture) {
+                (Layer::Wine, Architecture::Win32) => "wine32",
+                (Layer::Wine, Architecture::Win64) => "wine64",
+                (Layer::Proton, _) => "proton",
+                (Layer::Vm, _) => return Err(PlanError::VmIsNotCapsule),
+            };
+            argv.push(mode.to_string());
+        }
         argv.push(
             Path::new(PREFIX_MOUNT)
                 .join(&program.prefix_relative_executable)
@@ -519,7 +616,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
 
         Ok(CapsuleCommandPlan {
             bwrap_argv: argv,
-            seccomp_profile: (!runtime.needs_nested_runtime).then_some(SeccompProfile::QosDefault),
+            seccomp_profile: runtime.seccomp_profile(),
             capsule_id: capsule.id.clone(),
             runner_label: format!("{} {}", capsule.runner.family, capsule.runner.version),
             network,
@@ -734,6 +831,8 @@ pub enum ResourceError {
 
 #[derive(Debug, Error)]
 pub enum PlanError {
+    #[error("Windows compatibility is not packaged for host architecture {0}")]
+    UnsupportedHostArchitecture(String),
     #[error(transparent)]
     Capsule(#[from] CapsuleError),
     #[error("VM route was sent to the capsule planner")]
@@ -829,22 +928,24 @@ mod tests {
 
     #[test]
     fn immutable_registry_matches_containerfile_artifacts() {
-        let registry = SystemRuntimeRegistry::new();
-        let wine = registry
-            .resolve(Layer::Wine, &Runner::new("wine", "system").unwrap())
-            .unwrap();
+        let wine = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Wine,
+            &Runner::new("wine", "system").unwrap(),
+            "x86_64",
+        )
+        .unwrap();
         assert!(
             wine.host_paths()
                 .any(|path| path == Path::new("/usr/bin/wine"))
         );
         assert_eq!(wine.sandbox_entrypoint(), Path::new("/usr/bin/wine"));
 
-        let proton = registry
-            .resolve(
-                Layer::Proton,
-                &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
-            )
-            .unwrap();
+        let proton = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Proton,
+            &Runner::new("umu-proton", "UMU-Proton-10.0-4").unwrap(),
+            "x86_64",
+        )
+        .unwrap();
         assert!(
             proton
                 .host_paths()
@@ -871,6 +972,118 @@ mod tests {
                 .contains(&("UMU_RUNTIME_UPDATE", "0".to_string()))
         );
         assert!(proton.needs_nested_runtime);
+    }
+
+    struct TestHostRegistry(&'static str);
+
+    impl RuntimeRegistry for TestHostRegistry {
+        fn resolve(&self, layer: Layer, runner: &Runner) -> Result<RuntimeImage, PlanError> {
+            SystemRuntimeRegistry::resolve_for_host(layer, runner, self.0)
+        }
+    }
+
+    #[test]
+    fn host_architecture_selects_runtime_and_syscall_policy() {
+        for host in ["x86_64", "aarch64"] {
+            for layer in [Layer::Wine, Layer::Proton] {
+                for architecture in [Architecture::Win32, Architecture::Win64] {
+                    let mut route = route(layer);
+                    route.settings.architecture = architecture;
+                    let (_directory, store, state, program) = setup(&route);
+                    let session = session();
+                    let registry = TestHostRegistry(host);
+                    let planner = SandboxPlanner::new(&store, &registry, &session).unwrap();
+                    let command = planner
+                        .plan(
+                            &route,
+                            &state,
+                            &program,
+                            &CapabilityPlan::empty(),
+                            "workspace",
+                            &LaunchLease::deny_all("lease"),
+                        )
+                        .unwrap();
+                    let expected_filter = match (host, layer) {
+                        (_, Layer::Proton) => None,
+                        ("aarch64", _) => Some(SeccompProfile::QosJit),
+                        _ => Some(SeccompProfile::QosDefault),
+                    };
+                    assert_eq!(command.seccomp_profile, expected_filter);
+                    assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
+                    assert!(
+                        command
+                            .bwrap_argv
+                            .iter()
+                            .any(|arg| arg == "--net-restricted")
+                    );
+                    if host == "aarch64" {
+                        let mode = match (layer, architecture) {
+                            (Layer::Proton, _) => "proton",
+                            (_, Architecture::Win32) => "wine32",
+                            (_, Architecture::Win64) => "wine64",
+                        };
+                        assert!(
+                            command
+                                .bwrap_argv
+                                .windows(2)
+                                .any(|args| args == [TRANSLATED_HELPER, mode])
+                        );
+                        assert!(command.bwrap_argv.windows(3).any(|args| {
+                            args == ["--ro-bind", X86_ROOTFS_HOST, crate::translated::ROOTFS]
+                        }));
+                        if layer == Layer::Wine {
+                            assert!(!command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine"));
+                        }
+                    } else {
+                        assert!(
+                            !command
+                                .bwrap_argv
+                                .iter()
+                                .any(|arg| arg == TRANSLATED_HELPER)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_host_architecture_fails_closed() {
+        let error = SystemRuntimeRegistry::resolve_for_host(
+            Layer::Wine,
+            &Runner::new("wine", "system").unwrap(),
+            "riscv64",
+        )
+        .unwrap_err();
+        assert!(matches!(error, PlanError::UnsupportedHostArchitecture(host) if host == "riscv64"));
+    }
+
+    #[test]
+    fn shipped_fex_manifests_match_the_fixed_mount_contract() {
+        let emulator: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../os/usr/share/qos/windows/fex-emulator.json"
+        ))
+        .unwrap();
+        let graphics: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../os/usr/share/qos/windows/fex-graphics-provider.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            emulator["emulator_v0"]["environment"]["FEX_ROOTFS"],
+            crate::translated::ROOTFS
+        );
+        assert_eq!(
+            emulator["emulator_v0"]["container_environment"]["FEX_ROOTFS"],
+            ""
+        );
+        assert_eq!(
+            emulator["emulator_v0"]["argv"],
+            serde_json::json!(["/usr/bin/FEX"])
+        );
+        assert_eq!(
+            graphics["graphics_provider_v0"]["root"],
+            crate::translated::ROOTFS
+        );
     }
 
     #[test]
@@ -936,7 +1149,12 @@ mod tests {
         );
         assert!(command.bwrap_argv.iter().any(|arg| arg == "--seccomp"));
         assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
-        assert!(command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine"));
+        let expected_entry = if std::env::consts::ARCH == "aarch64" {
+            TRANSLATED_HELPER
+        } else {
+            "/usr/bin/wine"
+        };
+        assert!(command.bwrap_argv.iter().any(|arg| arg == expected_entry));
         assert!(
             command
                 .bwrap_argv

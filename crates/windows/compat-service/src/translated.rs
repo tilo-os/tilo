@@ -10,7 +10,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-const ROOTFS: &str = "/opt/qos/x86";
+pub(crate) const ROOTFS: &str = "/opt/qos/x86";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Run a guest command while retaining a ready, monitored FEX server.

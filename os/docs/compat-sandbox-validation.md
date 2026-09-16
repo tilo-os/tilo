@@ -72,9 +72,10 @@ output, and wineserver cleanup/wait. The result is retained in
 external networking disabled, and the normal Podman filter enabled as well.
 
 This establishes a syscall-policy requirement for the translated runtime.
-Production Wine policy has not been weakened or changed to JIT based on this
-diagnostic. A trusted runtime selection and complete capsule integration are
-still required; catalogue-supplied settings must not grant a weaker filter.
+Trusted ARM runtime selection now chooses the JIT profile for translated
+Wine, as described below. Catalogue-supplied settings cannot select the host
+architecture, interpreter, or syscall profile. Complete capsule integration
+is still required.
 
 ## Capsule descriptor handoff
 
@@ -143,7 +144,38 @@ python3 /test.py --helper /helper --output-dir /results
 ```
 
 The OS recipe builds and installs the helper at
-`/usr/libexec/qos-windows-runtime`. Trusted host-architecture selection,
-FEX/guest packaging, Proton manifest configuration, and end-to-end capsule
-acceptance remain integration work; merely installing this helper does not
-complete ARM runtime support.
+`/usr/libexec/qos-windows-runtime`.
+
+## Trusted host architecture selection
+
+The runtime registry selects native Wine on x86-64 and the managed FEX helper
+on AArch64. ARM Wine uses the JIT syscall profile; native Wine retains the
+default profile. Proton retains its existing nested-runtime policy. Unknown
+host architectures fail closed. The Windows application's declared bitness
+selects only the fixed Wine mode, not the host interpreter or sandbox policy.
+
+ARM plans mount the guest filesystem read-only at `/opt/qos/x86`, bind native
+FEX executables, and expose Wine's guest resources at their expected paths.
+Proton uses the shipped emulator and graphics-provider manifests to hand off
+to native ARM pressure-vessel. The manifests preserve the host/guest library
+separation and clear FEX_ROOTFS inside the nested runtime.
+
+On 2026-09-16, all 58 service tests and strict Clippy passed with Rust 1.97.1.
+The architecture matrix covers both Windows bitnesses, both compatibility
+layers, and both supported host architectures, including retained network
+restrictions. The managed Proton integration test additionally ran the real
+qOS supervisor and shipped manifests with networking disabled and all
+capabilities dropped. UMU verified the pinned runtime offline, skipped updates,
+and Proton wrote the expected Windows console marker into a fresh prefix.
+
+Reproduce with `os/tests/managed-fex-proton-smoke.py` in the disposable container
+layout documented in that test:
+
+```sh
+python3 /test.py --helper /helper --runtime /runtime --proton /proton \
+  --output-dir /results
+```
+
+FEX/guest production packaging, complete native helper bindings, and the full
+outer capsule/Landlock launch remain acceptance requirements. The standalone
+container test does not establish those gates or graphical application support.
