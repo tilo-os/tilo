@@ -138,7 +138,7 @@ class Session:
             "NIRIOS_HEADLESS_SIZE": "1280x1400",
             # The app prints `collab connected=` under this, which is
             # the line that told us which path was disabled.
-            "QUICK_COLLAB_DEBUG": "1",
+            "RUST_LOG": "qos.state=debug",
             "RUST_LOG": "info",
         }
         if store_config is not None:

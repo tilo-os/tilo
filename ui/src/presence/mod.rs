@@ -1216,13 +1216,14 @@ impl PresenceCtx {
             }
             return match payload {
                 // A Tab-keyed arrival moves a focus dot; only a scope
-                // arrival is a join asking to be sent the document.
+                // arrival affects participant-level presence.
                 Arrived if !matches!(key, PresenceKey::Tab { .. }) => {
-                    // `eprintln!`, not `tracing`: an app installs no
-                    // subscriber, so a `debug!` here would reach nobody.
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!("[app] own participant {user_id}: not painting it as a peer");
-                    }
+                    tracing::debug!(
+                        target: "qos.state",
+                        event = "presence_self_filtered",
+                        %user_id,
+                        "ignored own participant in peer rendering"
+                    );
                     RemotePresenceEffect::PeerArrived
                 }
                 _ => RemotePresenceEffect::None,

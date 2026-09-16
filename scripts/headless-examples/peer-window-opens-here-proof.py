@@ -154,7 +154,7 @@ class Session:
             # itself off, and the only symptom is a missing peer.* action.
             "QOS_PEER_KEY_PATH": os.path.join(self.dir, "keys", "peer-key"),
             "NIRIOS_HEADLESS_SIZE": "1280x1400",
-            "QUICK_COLLAB_DEBUG": "1",
+            "RUST_LOG": "qos.state=debug",
             "RUST_LOG": "info",
         }
         for var, binary in (("QOS_INSTALL_BIN", "qos-install"),

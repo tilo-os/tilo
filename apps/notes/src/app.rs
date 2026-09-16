@@ -745,9 +745,12 @@ impl NotesApp {
                 // First shared state we've seen — adopt it wholesale,
                 // discarding our locally-seeded welcome so we don't push
                 // a duplicate page tree.
-                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    eprintln!("[notes] ADOPT {} remote page(s)", doc_pages.len());
-                }
+                tracing::debug!(
+                    target: "qos.state",
+                    event = "notes_state_adopted",
+                    pages = doc_pages.len(),
+                    "adopting initial shared Notes state"
+                );
                 let ids: Vec<PageId> = doc_pages.iter().map(|p| p.id).collect();
                 self.workspace.data.pages = doc_pages;
                 self.known_in_doc.extend(ids);
@@ -764,13 +767,13 @@ impl NotesApp {
             }
         } else if !self.seeded && self.started.elapsed() > SEED_GRACE {
             // Doc still empty after the grace window — we're the origin.
-            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                eprintln!(
-                    "[notes] SEED own welcome ({} page(s)) after {:?} empty",
-                    self.workspace.pages().len(),
-                    self.started.elapsed()
-                );
-            }
+            tracing::debug!(
+                target: "qos.state",
+                event = "notes_state_seeded",
+                pages = self.workspace.pages().len(),
+                empty_for_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "seeding initial local Notes state"
+            );
             for p in self.workspace.pages().to_vec() {
                 self.perform_action(state, &actions::upsert_page_action(&p));
                 let body = storage::read_page_body(&self.root, p.id).unwrap_or_default();
