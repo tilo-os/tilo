@@ -2098,6 +2098,68 @@ impl CapnpBrokerState {
                 })
             })
             .collect::<Vec<_>>();
+        let profile_resource =
+            crate::shell::workspace_settings::permission_profile_resource_with_access(
+                &workspace, true,
+            );
+        let profile_actions = qos_actions::door::survey(&[profile_resource])
+            .into_iter()
+            .filter(|descriptor| {
+                let verb = match descriptor.contract.permission {
+                    qos_actions::PermissionRequirement::None => return true,
+                    qos_actions::PermissionRequirement::Read => Verb::Read,
+                    qos_actions::PermissionRequirement::Comment => Verb::Comment,
+                    qos_actions::PermissionRequirement::Write => Verb::Write,
+                    qos_actions::PermissionRequirement::Invite => Verb::Invite,
+                    qos_actions::PermissionRequirement::Admin => Verb::Admin,
+                };
+                workspace.decide(
+                    &caller,
+                    &ResourceRef::Action {
+                        app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                        action: descriptor.address.action.clone(),
+                    },
+                    verb,
+                ) == CapDecision::Allow
+            })
+            .map(|descriptor| {
+                let input = match descriptor.input {
+                    qos_actions::InputSpec::None => serde_json::json!({"kind": "none"}),
+                    qos_actions::InputSpec::Text {
+                        prompt,
+                        placeholder,
+                        collects,
+                    } => serde_json::json!({
+                        "kind": "text",
+                        "prompt": prompt,
+                        "placeholder": placeholder,
+                        "wants_content": collects == qos_actions::Collects::Content,
+                    }),
+                };
+                serde_json::json!({
+                    "resource": descriptor.address.resource,
+                    "action": descriptor.address.action,
+                    "resource_kind": descriptor.resource_kind,
+                    "resource_label": descriptor.resource_label,
+                    "action_label": descriptor.action_label,
+                    "description": descriptor.description,
+                    "operation_kind": descriptor.kind,
+                    "params": descriptor.params,
+                    "contract": descriptor.contract,
+                    "input": input,
+                })
+            })
+            .collect::<Vec<_>>();
+        if !profile_actions.is_empty() {
+            surfaces.push(serde_json::json!({
+                "peer_id": 0,
+                "app_id": crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
+                "cluster_id": cluster_id,
+                "record_id": "workspace-governance",
+                "live": true,
+                "actions": profile_actions,
+            }));
+        }
         for app in crate::shell::launcher::gui_apps()
             .into_iter()
             .filter(|app| !live_apps.contains(&app.package_id))
@@ -2167,6 +2229,176 @@ impl CapnpBrokerState {
                 subscribers.remove(&peer);
             }
         }
+    }
+
+    /// Execute the shell-owned permission-profile surface advertised with
+    /// peer id zero. Unlike an application action there is no UI process to
+    /// forward to: the broker already owns the workspace capability authority,
+    /// so it validates, mutates, records history, and returns one terminal
+    /// lifecycle update atomically under that authority.
+    fn invoke_workspace_profile_action(
+        &self,
+        cluster_id: &str,
+        actor: &BrokerActor,
+        resource_id: &str,
+        action_id: &str,
+        argument: Option<&str>,
+        confirmation: &serde_json::Value,
+    ) -> Result<(u64, qos_actions::InvocationUpdate), String> {
+        fn find_resource<'a>(
+            resource: &'a qos_actions::Resource,
+            id: &str,
+        ) -> Option<&'a qos_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource);
+            }
+            resource
+                .children
+                .iter()
+                .find_map(|child| find_resource(child, id))
+        }
+
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| "the action broker has no workspace authority".to_string())?;
+        let mut tree = membership.write();
+        let workspace_index = tree
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room.to_string() == cluster_id)
+            .ok_or_else(|| "the application workspace is no longer hosted".to_string())?;
+        let caller = if actor.is_agent {
+            tree.workspaces[workspace_index]
+                .actor_for_agent(actor.id.strip_prefix("agent:").unwrap_or(&actor.id))
+        } else {
+            tree.workspaces[workspace_index].actor_for_person(&actor.id)
+        };
+        let surface = crate::shell::workspace_settings::permission_profile_resource_with_access(
+            &tree.workspaces[workspace_index],
+            true,
+        );
+        let resource = find_resource(&surface, resource_id)
+            .ok_or_else(|| "unknown workspace governance resource".to_string())?;
+        let spec = resource
+            .actions
+            .iter()
+            .find(|candidate| candidate.id == action_id)
+            .ok_or_else(|| "unknown workspace governance action".to_string())?;
+        if confirmation
+            .get("confirm")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            return Err("explicit confirmation is required".into());
+        }
+        if tree.workspaces[workspace_index].decide(
+            &caller,
+            &ResourceRef::Action {
+                app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                action: action_id.into(),
+            },
+            Verb::Admin,
+        ) != CapDecision::Allow
+        {
+            return Err("the caller is not allowed to manage permission profiles".into());
+        }
+        let json = argument
+            .and_then(|value| value.strip_prefix(qos_actions::ARGUMENTS_JSON_PREFIX))
+            .ok_or_else(|| "workspace governance action requires typed arguments".to_string())?;
+        let arguments = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(json)
+            .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+        let encoded = spec
+            .build_json(&arguments)
+            .map_err(|error| format!("invalid workspace governance arguments: {error}"))?;
+        if encoded.type_id == qos_actions::resource::INVALID_ARGUMENTS_TYPE {
+            return Err(format!(
+                "invalid workspace governance arguments: {}",
+                String::from_utf8_lossy(&encoded.payload)
+            ));
+        }
+        if encoded.type_id != crate::shell::workspace_settings::PERMISSION_PROFILE_ACTION_TYPE {
+            return Err("workspace governance action encoded an unexpected operation".into());
+        }
+        let operation = serde_json::from_slice::<
+            crate::shell::workspace_settings::PermissionProfileOperation,
+        >(&encoded.payload)
+        .map_err(|error| format!("invalid workspace governance operation: {error}"))?;
+        let workspace_id = tree.workspaces[workspace_index].id;
+        match operation {
+            crate::shell::workspace_settings::PermissionProfileOperation::Save {
+                name,
+                description,
+                rules,
+            } => {
+                let profile = collab_types::PermissionProfile {
+                    name,
+                    description,
+                    rules,
+                };
+                tree.workspaces[workspace_index]
+                    .save_permission_profile_as_actor(&caller, profile.clone())
+                    .map_err(|error| error.to_string())?;
+                tree.doc_upsert_permission_profile(workspace_id, &profile);
+            }
+            crate::shell::workspace_settings::PermissionProfileOperation::Assign {
+                profile,
+                subject_kind,
+                subject,
+                expires_unix,
+            } => {
+                let subject = match subject_kind.trim().to_ascii_lowercase().as_str() {
+                    "person" => collab_types::Subject::person(subject.trim()),
+                    "app" => collab_types::Subject::app(subject.trim()),
+                    "agent" => collab_types::Subject::agent(subject.trim()),
+                    _ => return Err("subject_kind must be person, app, or agent".into()),
+                };
+                let expiry = (expires_unix > 0)
+                    .then_some(expires_unix)
+                    .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
+                let ids = tree.workspaces[workspace_index]
+                    .assign_permission_profile_as_actor(&caller, &profile, subject, expiry)
+                    .map_err(|error| error.to_string())?;
+                let capabilities = tree.workspaces[workspace_index]
+                    .capabilities
+                    .iter()
+                    .filter(|capability| ids.contains(&capability.id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for capability in capabilities {
+                    tree.doc_insert_capability(workspace_id, &capability);
+                }
+            }
+        }
+        let id = self.invocation_id.fetch_add(1, Ordering::Relaxed);
+        let invocation = qos_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let update = qos_actions::InvocationUpdate::Succeeded {
+            invocation,
+            output: qos_actions::ActionOutput::default(),
+        };
+        let context = qos_actions::ActionContext::for_resource(
+            &spec.label,
+            resource.id.as_str(),
+            &resource.kind,
+            &resource.label,
+        )
+        .with_app(
+            crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID,
+            "Workspace permissions",
+        );
+        let _ = tree.append_workspace_effect_receipt(
+            workspace_id,
+            invocation,
+            &actor.id,
+            context,
+            qos_actions::EffectReceiptStatus::Succeeded,
+        );
+        tree.external_revision = tree.external_revision.wrapping_add(1);
+        tree.flush_to_disk();
+        drop(tree);
+        self.record_completion(id, actor.id.clone(), update.clone());
+        self.publish_action_catalogue();
+        Ok((id, update))
     }
 
     /// Address one operation back to the exact connection that published it.
@@ -5149,6 +5381,31 @@ impl channel_handle::Server for CapnpChannelHandle {
         let state = self.state.clone();
         let cluster = self.route().cluster_id;
         Promise::from_future(async move {
+            if requested_peer_id == 0
+                && matches!(
+                    action.as_str(),
+                    crate::shell::state::PROFILE_SAVE_ACTION_ID
+                        | crate::shell::state::PROFILE_ASSIGN_ACTION_ID
+                )
+            {
+                let actor = current.broker_actor();
+                let (id, update) = state
+                    .invoke_workspace_profile_action(
+                        &cluster,
+                        &actor,
+                        &resource,
+                        &action,
+                        argument.as_deref(),
+                        &confirmation,
+                    )
+                    .map_err(capnp::Error::failed)?;
+                results.get().set_id(id);
+                results.get().set_update_json(
+                    &serde_json::to_string(&update)
+                        .map_err(|error| capnp::Error::failed(error.to_string()))?,
+                );
+                return Ok(());
+            }
             let offered = state
                 .surfaces
                 .lock()
@@ -8791,6 +9048,114 @@ mod tests {
                 .contains("new-window"),
             "archived launchable descriptors are not directly invokable through this protocol"
         );
+    }
+
+    #[test]
+    fn broker_catalogue_agent_can_create_and_assign_a_permission_profile() {
+        let mut workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(32),
+            "Governance room",
+        );
+        workspace.set_owner("owner");
+        for action in [
+            crate::shell::state::PROFILE_SAVE_ACTION_ID,
+            crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
+        ] {
+            workspace.grant_capability(collab_types::CapOverride::grant(
+                collab_types::Subject::agent("architect"),
+                collab_types::Scope::Action {
+                    app: crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID.into(),
+                    action: action.into(),
+                },
+                collab_types::Verb::Admin,
+            ));
+        }
+        let cluster = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let membership = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(membership.clone()),
+            None,
+        );
+        let actor = BrokerActor {
+            id: "agent:architect".into(),
+            is_agent: true,
+        };
+        let catalogue = state
+            .action_catalogue_json_for(&cluster, &actor)
+            .expect("authorized agent catalogue");
+        assert!(catalogue.contains(crate::shell::state::PROFILE_SAVE_ACTION_ID));
+        assert!(catalogue.contains(crate::shell::state::WORKSPACE_GOVERNANCE_APP_ID));
+
+        let rules = serde_json::to_value(vec![collab_types::PermissionProfileRule::grant(
+            collab_types::Scope::Action {
+                app: "dev.qos.notes".into(),
+                action: "note.open".into(),
+            },
+            collab_types::Verb::Read,
+        )])
+        .unwrap();
+        let save_arguments = format!(
+            "{}{}",
+            qos_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({
+                "name": "Notes reader",
+                "description": "Read one Notes action",
+                "rules": rules,
+            })
+        );
+        let root_id = format!("workspace.permissions:{cluster}");
+        let (_, saved) = state
+            .invoke_workspace_profile_action(
+                &cluster,
+                &actor,
+                &root_id,
+                crate::shell::state::PROFILE_SAVE_ACTION_ID,
+                Some(&save_arguments),
+                &serde_json::json!({"confirm": true}),
+            )
+            .expect("broker-owned save succeeds");
+        assert!(matches!(
+            saved,
+            qos_actions::InvocationUpdate::Succeeded { .. }
+        ));
+
+        let assign_arguments = format!(
+            "{}{}",
+            qos_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::json!({
+                "profile": "Notes reader",
+                "subject": "alice",
+                "subject_kind": "person",
+            })
+        );
+        state
+            .invoke_workspace_profile_action(
+                &cluster,
+                &actor,
+                &root_id,
+                crate::shell::state::PROFILE_ASSIGN_ACTION_ID,
+                Some(&assign_arguments),
+                &serde_json::json!({"confirm": true}),
+            )
+            .expect("broker-owned assignment succeeds");
+
+        let tree = membership.read();
+        let workspace = &tree.workspaces[0];
+        assert!(workspace.allows(
+            &workspace.actor_for_person(&"alice".into()),
+            &collab_types::ResourceRef::Action {
+                app: "dev.qos.notes".into(),
+                action: "note.open".into(),
+            },
+            collab_types::Verb::Read,
+        ));
+        assert_eq!(workspace.effect_receipts.len(), 2);
     }
 
     #[allow(

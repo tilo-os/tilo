@@ -154,6 +154,109 @@ fn apply_ownership_action(
     }
 }
 
+fn apply_permission_profile_action(
+    state: &ChromeState,
+    action_id: &str,
+    arguments: &ActionArgs,
+) -> Result<(), ActionError> {
+    let actor = state.active_local_user();
+    let mut tree = state.tree_mut();
+    let workspace_id = tree
+        .active_workspace()
+        .map(|workspace| workspace.id)
+        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
+    let room = tree
+        .active_workspace()
+        .map(|workspace| workspace.room)
+        .ok_or_else(|| ActionError::Refused("no active workspace".into()))?;
+    if !tree.governs_room(room) {
+        return Err(ActionError::Refused(
+            "this device is not the workspace governance authority".into(),
+        ));
+    }
+    match action_id {
+        "profile.save" => {
+            let rules = serde_json::from_value::<Vec<collab_types::PermissionProfileRule>>(
+                serde_json::Value::Array(arguments.array("rules").unwrap_or_default().to_vec()),
+            )
+            .map_err(|error| ActionError::Refused(format!("invalid permission rules: {error}")))?;
+            let profile = collab_types::PermissionProfile {
+                name: arguments.text("name").unwrap_or_default().to_string(),
+                description: arguments
+                    .text("description")
+                    .unwrap_or_default()
+                    .to_string(),
+                rules,
+            };
+            tree.active_workspace_mut()
+                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
+                .save_permission_profile_as(&actor, profile.clone())
+                .map_err(|error| ActionError::Refused(error.to_string()))?;
+            tree.doc_upsert_permission_profile(workspace_id, &profile);
+        }
+        "profile.assign" => {
+            let profile = arguments
+                .text("profile")
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| ActionError::Refused("permission role is missing".into()))?;
+            let subject_id = arguments.text("subject").unwrap_or_default().trim();
+            if subject_id.is_empty() {
+                return Err(ActionError::Refused(
+                    "choose a collaborator, app, or agent identity".into(),
+                ));
+            }
+            let subject = match arguments
+                .text("subject_kind")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "person" => collab_types::Subject::person(subject_id),
+                "app" => collab_types::Subject::app(subject_id),
+                "agent" => collab_types::Subject::agent(subject_id),
+                _ => {
+                    return Err(ActionError::Refused(
+                        "subject_kind must be person, app, or agent".into(),
+                    ));
+                }
+            };
+            let expiry = arguments
+                .integer("expires_unix")
+                .and_then(|value| u64::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
+            let ids = tree
+                .active_workspace_mut()
+                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
+                .assign_permission_profile_as(&actor, profile, subject, expiry)
+                .map_err(|error| ActionError::Refused(error.to_string()))?;
+            let written = tree
+                .active_workspace()
+                .map(|workspace| {
+                    workspace
+                        .capabilities
+                        .iter()
+                        .filter(|capability| ids.contains(&capability.id))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            for capability in written {
+                tree.doc_insert_capability(workspace_id, &capability);
+            }
+        }
+        _ => {
+            return Err(ActionError::Refused(
+                "unknown permission role action".into(),
+            ));
+        }
+    }
+    tree.flush_to_disk();
+    Ok(())
+}
+
 fn apply_ownership_proposal(
     state: &ChromeState,
     arguments: &ActionArgs,
@@ -1076,6 +1179,56 @@ impl SearchProvider for ActionsProvider {
                 }
             }
         }
+        let profile_resource = {
+            let tree = ctx.chrome.tree();
+            tree.active_workspace().map(|workspace| {
+                crate::shell::workspace_settings::permission_profile_resource(workspace, &actor)
+            })
+        };
+        if let Some(resource) = profile_resource {
+            let mut surfaces = vec![(resource.id.as_str().to_string(), resource.actions)];
+            surfaces.extend(
+                resource
+                    .children
+                    .into_iter()
+                    .map(|child| (child.id.as_str().to_string(), child.actions)),
+            );
+            for (resource_id, actions) in surfaces {
+                for action in actions {
+                    let subtitle = action.description.clone().unwrap_or_else(|| {
+                        "Manage reusable least-privilege workspace roles".into()
+                    });
+                    let Some(score) = match_score(
+                        &needle_lower,
+                        &action.label.to_lowercase(),
+                        &subtitle.to_lowercase(),
+                        &action.id,
+                    ) else {
+                        continue;
+                    };
+                    let action_id = action.id.clone();
+                    let params = action.params().to_vec();
+                    out.push(SearchResult {
+                        kind: ResourceKind::Action,
+                        provider_id: self.id().to_string(),
+                        id: format!("{}#{}", resource_id, action.id),
+                        title: action.label,
+                        subtitle: Some(subtitle),
+                        score,
+                        params,
+                        contract: Some(action.contract),
+                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, arguments| {
+                            let mut state = chrome.borrow_mut();
+                            apply_permission_profile_action(&state, &action_id, arguments)?;
+                            state.bump();
+                            Ok(())
+                        }),
+                        on_invoke: None,
+                        on_begin_invoke: None,
+                    });
+                }
+            }
+        }
         out
     }
 }
@@ -1678,5 +1831,90 @@ mod tests {
                 .all(|action| !action.id.starts_with("ownership.")),
             "the canonical resource must not have a divergent static duplicate"
         );
+    }
+
+    #[test]
+    fn an_agent_can_create_a_role_then_assign_it_through_the_headless_actions() {
+        use crate::shell::search::action_api::ArgValue;
+
+        let chrome = chrome_with_room();
+        let mut doc = AutoCommit::new();
+        let provider = ActionsProvider::new();
+        let rules = serde_json::to_string(&vec![collab_types::PermissionProfileRule::grant(
+            collab_types::Scope::Action {
+                app: "dev.qos.notes".into(),
+                action: "note.open".into(),
+            },
+            collab_types::Verb::Read,
+        )])
+        .unwrap();
+
+        let save = {
+            let state = chrome.borrow();
+            provider
+                .query(SearchContext {
+                    needle: "profile.save",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|result| result.id.ends_with("#profile.save"))
+                .expect("the role creation action is headlessly discoverable")
+        };
+        let save_args = ActionArgs::bind(
+            &save.params,
+            [
+                ("name".into(), ArgValue::Text("Notes reader".into())),
+                (
+                    "description".into(),
+                    ArgValue::Text("May inspect individual notes".into()),
+                ),
+                (
+                    "rules".into(),
+                    ArgValue::Array(serde_json::from_str(&rules).expect("test rules are JSON")),
+                ),
+            ],
+        )
+        .unwrap();
+        (save.on_open)(&mut doc, &automerge::ROOT, &chrome, &save_args).unwrap();
+
+        let assign = {
+            let state = chrome.borrow();
+            provider
+                .query(SearchContext {
+                    needle: "assign permission role",
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|result| result.id.ends_with("#profile.assign"))
+                .expect("the new role immediately becomes assignable")
+        };
+        let assign_args = ActionArgs::bind(
+            &assign.params,
+            [
+                ("profile".into(), ArgValue::Text("Notes reader".into())),
+                ("subject".into(), ArgValue::Text("researcher".into())),
+                ("subject_kind".into(), ArgValue::Text("agent".into())),
+            ],
+        )
+        .unwrap();
+        (assign.on_open)(&mut doc, &automerge::ROOT, &chrome, &assign_args).unwrap();
+
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let workspace = tree.active_workspace().unwrap();
+        assert!(workspace.allows(
+            &workspace.actor_for_agent("researcher"),
+            &crate::shell::state::ResourceRef::Action {
+                app: "dev.qos.notes".into(),
+                action: "note.open".into(),
+            },
+            crate::shell::state::Verb::Read,
+        ));
     }
 }
