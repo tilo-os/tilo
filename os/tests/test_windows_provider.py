@@ -32,6 +32,12 @@ class ProviderTests(unittest.TestCase):
         self.fex.write("usr/lib/qos/fex/cmake-cache.txt", b"TUNE_CPU:STRING=none\nTUNE_ARCH:STRING=generic\n")
         self.fex.write("usr/lib/qos/fex/inputs.env", f"FEX_BUILDROOT_REF={REF}\nFEX_X86_SDK_REF={REF}\n".encode())
         self.fex.write("usr/lib/qos/fex/buildroot-packages.txt", b"fixture\n")
+        patches = PROVIDER.load("apply-fex-patches").patch_record(DEV.parent / "external-assets/fex-patches")
+        self.fex.write("usr/lib/qos/fex/downstream-patches.json", json.dumps(patches).encode())
+        self.fex.write("usr/share/qos/fex/patches/series.json", json.dumps(patches).encode())
+        for patch in patches["patches"]:
+            self.fex.write("usr/share/qos/fex/patches/" + patch["file"],
+                (DEV.parent / "external-assets/fex-patches" / patch["file"]).read_bytes())
         self.guest.write("usr/lib/wine/i386-unix/wine", elf(32, 3)).chmod(0o755)
         self.guest.write("usr/lib64/wine/x86_64-unix/wine", elf(64, 62)).chmod(0o755)
         (self.guest.root / "usr/lib64/wine/i386-unix").symlink_to("/usr/lib/wine/i386-unix")
@@ -93,6 +99,22 @@ class ProviderTests(unittest.TestCase):
     def test_nonportable_fex_is_rejected(self):
         self.fex.write("usr/lib/qos/fex/cmake-cache.txt", b"TUNE_CPU:STRING=native\nTUNE_ARCH:STRING=generic\n")
         with self.assertRaisesRegex(ValueError, "portable"):
+            self.validate()
+
+    def test_unpatched_fex_is_rejected(self):
+        (self.fex.root / "usr/lib/qos/fex/downstream-patches.json").unlink()
+        with self.assertRaises(ValueError):
+            self.validate()
+
+    def test_other_patch_series_is_rejected(self):
+        self.fex.write("usr/lib/qos/fex/downstream-patches.json", b'{"patches": []}')
+        with self.assertRaisesRegex(ValueError, "downstream patches"):
+            self.validate()
+
+    def test_changed_shipped_patch_is_rejected(self):
+        patches = PROVIDER.load("apply-fex-patches").patch_record(DEV.parent / "external-assets/fex-patches")
+        self.fex.write("usr/share/qos/fex/patches/" + patches["patches"][0]["file"], b"changed")
+        with self.assertRaisesRegex(ValueError, "checksum"):
             self.validate()
 
     def test_os_delta_cannot_impersonate_complete_guest(self):
