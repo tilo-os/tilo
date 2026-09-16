@@ -243,3 +243,28 @@ mapping), `cpu_count.32` (12 CPUID IDs versus 119 reported CPUs), and
 `syscalls_efault.64` (all 20 assertions pass, but upstream marks it an expected
 failure). These results do not constitute runtime acceptance; preserve the
 failures and investigate the fixture and implementation separately.
+
+A rerun with `--tmpfs /dev/shm:rw,exec,nosuid,nodev,size=64m` passed both
+`smc-shared-1` variants: these cases explicitly request `PROT_EXEC` on a
+`shm_open` mapping. The dedicated validation container needs an executable
+shared-memory mount for that test contract. This does not change the product's
+sandbox configuration. The expanded result is now 105 passes, two upstream
+skips, and the three other failures above across 110 cases (10.69 seconds).
+
+## Initial Wine runtime check
+
+The diagnostic Fedora 44 runtime image
+`localhost/qos-fex-wine-runtime:fedora44-dev` completed its package transaction
+and full filesystem export, followed by the upstream host-directory exclusions.
+Its image ID is
+`2c94250fbe81422bf0c3854958d67c1eea5baf39a20c0d932dbf06174143dace`.
+Both `/usr/bin/wine64 --version` and `/usr/bin/wine32 --version` report Wine 11.0
+(Staging) when explicitly launched through native ARM FEX.
+
+Actual console execution is **not passing**. With separate user-owned temporary
+homes and win64/win32 prefixes, both `cmd /c echo` checks exit 53 because
+`kernel32.dll` cannot be loaded (`c0000135`). The packaged DLLs exist in Fedora's
+`wine-wow64/wine/{x86_64,i386}-windows` directories. Explicit `WINEDLLPATH` did
+not resolve the failure. Preserve this distinction between version startup and
+working Windows applications; prefix creation, DLL loading, graphics, and
+sandbox integration remain acceptance requirements.
