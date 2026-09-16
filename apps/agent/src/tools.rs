@@ -842,6 +842,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn one_published_operation_can_be_planned_repeatedly_with_distinct_arguments() {
+        let mut revealed = Revealed::new();
+        let _ = operations(&json!({"kind": "files.entry"}), &room(), &mut revealed);
+        let operation = "files.entry:/home/q/harbour.png#rename";
+        let call = json!({
+            "steps": [
+                {"operation": operation, "arguments": {"value": "first.png"}},
+                {"operation": operation, "arguments": {"value": "second.png"}}
+            ],
+            "why": "the same canonical operation applies to two requested values",
+            "then": null
+        });
+        let answer = read_plan(&call, &revealed, STEPS).expect("both uses were listed");
+        assert_eq!(answer.actions, vec![operation, operation]);
+        assert_ne!(answer.arguments.first(), answer.arguments.last());
+    }
+
     /// A kind crosses applications by construction: the filter is the
     /// resource's own kind tag, which is shared across the OS.
     #[test]

@@ -91,6 +91,13 @@ fn arguments_for_step(
     Ok(arguments)
 }
 
+fn dispatched_action_key(
+    id: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> String {
+    format!("{id}\0{}", serde_json::Value::Object(arguments.clone()))
+}
+
 #[derive(Debug)]
 enum TaskActionStop {
     Cancelled,
@@ -1685,34 +1692,36 @@ impl Session {
                 }
                 // A surveyed operation, named by address. Guarded by
                 // `dispatched_this_turn`: a clause asked again mid-plan can
-                // come back naming a step this turn already performed, and
-                // without the guard "put it in the open document" placed
-                // the same image twice.
+                // come back naming the exact step this turn already performed.
+                // Include bound arguments in the identity: assigning one role
+                // to Ada and Lin, or creating several roles, is intentional
+                // repeated use of one canonical action rather than a duplicate.
                 Instruction::Perform {
                     id,
                     arguments,
                     confirmation,
                 } => {
-                    if self.dispatched_this_turn.contains(id) {
+                    let arguments =
+                        match arguments_for_step(step.carries, arguments, previous.as_ref()) {
+                            Ok(arguments) => arguments,
+                            Err(why) => {
+                                self.splice_reply(
+                                    &blocks,
+                                    ins_id,
+                                    &format!("{}: I couldn't do that - {why}", self.cfg.name),
+                                )?;
+                                self.finish_run()?;
+                                return Ok(true);
+                            }
+                        };
+                    let dispatch_key = dispatched_action_key(id, &arguments);
+                    if self.dispatched_this_turn.contains(&dispatch_key) {
                         true
                     } else {
-                        let arguments =
-                            match arguments_for_step(step.carries, arguments, previous.as_ref()) {
-                                Ok(arguments) => arguments,
-                                Err(why) => {
-                                    self.splice_reply(
-                                        &blocks,
-                                        ins_id,
-                                        &format!("{}: I couldn't do that - {why}", self.cfg.name),
-                                    )?;
-                                    self.finish_run()?;
-                                    return Ok(true);
-                                }
-                            };
                         let id = id.clone();
                         match self.perform(&id, &arguments, confirmation)? {
                             Ok(performed) => {
-                                self.dispatched_this_turn.insert(id);
+                                self.dispatched_this_turn.insert(dispatch_key);
                                 outcome = Some(performed);
                                 true
                             }
@@ -2342,6 +2351,26 @@ mod tests {
         assert_eq!(
             bound.get(qos_actions::PROMPTED_PARAM),
             Some(&serde_json::Value::String("rendered-photo".into()))
+        );
+    }
+
+    #[test]
+    fn repeated_action_ids_remain_distinct_when_arguments_differ() {
+        let ada = serde_json::Map::from_iter([(
+            "subject".into(),
+            serde_json::Value::String("ada".into()),
+        )]);
+        let lin = serde_json::Map::from_iter([(
+            "subject".into(),
+            serde_json::Value::String("lin".into()),
+        )]);
+        assert_eq!(
+            dispatched_action_key("profile.assign", &ada),
+            dispatched_action_key("profile.assign", &ada)
+        );
+        assert_ne!(
+            dispatched_action_key("profile.assign", &ada),
+            dispatched_action_key("profile.assign", &lin)
         );
     }
 

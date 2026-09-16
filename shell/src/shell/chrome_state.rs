@@ -394,6 +394,8 @@ pub struct ChromeState {
     /// Bumped on every tree mutation. Widgets poll this in `update` to
     /// re-sync caches — cheaper than diffing, simpler than an event bus.
     pub revision: u64,
+    /// Last non-UI tree mutation observed by the compositor tick.
+    observed_external_tree_revision: u64,
     /// Passive, private history awareness for the top bar. Never serialized
     /// into or replicated with [`WorkspaceTree`].
     pub activity_glance: ActivityGlance,
@@ -514,6 +516,7 @@ impl ChromeState {
             workspace_settings_anchor: vello::kurbo::Rect::ZERO,
             ws_grant_draft: crate::shell::workspace_settings::GrantDraft::default(),
             revision: 0,
+            observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             activity_focus_request: None,
             pending_grants: VecDeque::new(),
@@ -695,6 +698,18 @@ impl ChromeState {
 
     pub fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// Fold broker/portal mutations of the shared tree into retained chrome's
+    /// ordinary revision stream. Returns true exactly once per observed epoch.
+    pub fn sync_external_tree_revision(&mut self) -> bool {
+        let external = self.tree().external_revision;
+        if external == self.observed_external_tree_revision {
+            return false;
+        }
+        self.observed_external_tree_revision = external;
+        self.bump();
+        true
     }
 
     /// Publish a compact history reduction. A semantic no-op deliberately
@@ -2041,5 +2056,18 @@ mod active_tab_tests {
         let before = st.strip_focus().1;
         assert!(!st.focus_strip_index(count + 5));
         assert_eq!(st.strip_focus().1, before);
+    }
+
+    #[test]
+    fn broker_tree_epoch_invalidates_chrome_exactly_once() {
+        let cell = ChromeState::new(WorkspaceTree::default());
+        let mut state = cell.borrow_mut();
+        let initial = state.revision;
+        assert!(!state.sync_external_tree_revision());
+        state.tree_mut().external_revision = 1;
+        assert!(state.sync_external_tree_revision());
+        assert_eq!(state.revision, initial.wrapping_add(1));
+        assert!(!state.sync_external_tree_revision());
+        assert_eq!(state.revision, initial.wrapping_add(1));
     }
 }
