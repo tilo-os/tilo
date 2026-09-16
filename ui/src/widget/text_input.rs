@@ -6922,6 +6922,86 @@ mod tests {
     }
 
     #[test]
+    fn multiline_trailing_lf_keeps_measure_draw_hit_and_caret_scroll_in_sync() {
+        let text = "let value = 1;\n";
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut input = TextInput::local()
+                .multiline(true)
+                .with_mono()
+                .with_gutter(true)
+                .with_current_line_highlight(true)
+                .with_initial_value(text);
+            input.set_highlighter(crate::widget::code_editor::Language::Rust.highlighter());
+            input.set_focus(true);
+            input.set_cursor_pos(text.len());
+
+            let mut renderer = TextRenderer::new();
+            renderer.set_text_scale(theme.text_scale);
+            let measured = Widget::measure(
+                &mut input,
+                taffy::Size {
+                    width: Some(240.0),
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(240.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            );
+            let viewport_height =
+                f64::from(input.multiline_style(scale).line_height_px()) + ML_PAD_Y * 2.0;
+            input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, viewport_height));
+            draw_with_theme(&mut input, &theme);
+
+            let drawn_height = input.content_height() as f32;
+            assert!(
+                measured.height >= drawn_height && measured.height - drawn_height < 1.0,
+                "pixel-ceiled measure {measured:?} agrees with attributed draw height {drawn_height} at {scale}x"
+            );
+            let layout = input
+                .single_layout
+                .as_ref()
+                .expect("draw retained attributed multiline layout");
+            let (_, eof_top, eof_height) =
+                layout.caret_geometry(input.text_to_layout_byte(text.len()));
+            assert_eq!(
+                layout.visual_line_index(text.len()).saturating_add(1),
+                layout.buffer.layout_runs().count(),
+                "EOF stays on the final visual row even when large text wraps"
+            );
+            assert_eq!(layout.logical_line_origins().len(), 2);
+            assert!(
+                (eof_top + eof_height - layout.height()).abs() < 0.01,
+                "EOF caret reaches the bottom of the final row"
+            );
+
+            let caret = input.caret_rect(&theme, text.len());
+            assert_eq!(
+                input.byte_at_point(Point::new(caret.x0 + 1.0, caret.center().y)),
+                text.len(),
+                "clicking the final empty row returns EOF"
+            );
+            let view_height = input.rect.height() - ML_PAD_Y * 2.0;
+            let expected_scroll = (f64::from(layout.height()) - view_height).max(0.0);
+            assert!(expected_scroll > 0.0);
+            assert!(
+                (input.scroll_y() - expected_scroll).abs() < 0.01,
+                "caret-follow scroll remains at the EOF row"
+            );
+            assert!(input.gutter_width() > 0.0);
+            assert!(
+                input
+                    .code_row_colors(&theme)
+                    .iter()
+                    .any(|(_, color)| *color != theme.text_primary),
+                "syntax attribution survives terminal-row normalization"
+            );
+        }
+    }
+
+    #[test]
     fn multiline_measure_uses_build_layout_theme_scale_when_renderer_is_stale() {
         let text = "The layout theme owns accessibility scale even when a retained renderer still carries its previous frame value.";
         let mut input = TextInput::local().multiline(true).with_initial_value(text);
