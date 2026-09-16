@@ -1,7 +1,11 @@
 //! Non-authoritative folder discovery for setup estimates.
 
+use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+use cap_primitives::fs::{FollowSymlinks, Metadata};
+use cap_std::fs::Dir;
 
 #[cfg(not(target_os = "linux"))]
 use std::process::Command;
@@ -32,6 +36,102 @@ pub struct FolderScan {
     pub skipped: Vec<SkippedEntry>,
 }
 
+fn metadata_nofollow(parent: &fs::File, path: &Path) -> std::io::Result<Metadata> {
+    cap_primitives::fs::stat(parent, path, FollowSymlinks::No)
+}
+
+fn open_directory_nofollow(
+    parent: &fs::File,
+    path: &Path,
+    expected: &Metadata,
+) -> std::io::Result<fs::File> {
+    if expected.is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "directory is a symbolic link",
+        ));
+    }
+    if !expected.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "path is not a directory",
+        ));
+    }
+
+    let opened = cap_primitives::fs::open_dir_nofollow(parent, path)?;
+    let observed = Metadata::from_file(&opened)?;
+    if !same_directory_identity(expected, &observed) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "directory changed while it was being opened",
+        ));
+    }
+    Ok(opened)
+}
+
+fn same_directory_identity(left: &Metadata, right: &Metadata) -> bool {
+    use cap_fs_ext::MetadataExt;
+
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+fn root_parent_and_name(root: &Path) -> (PathBuf, OsString) {
+    match root.file_name() {
+        Some(name) => {
+            let parent = root.parent().filter(|path| !path.as_os_str().is_empty());
+            (
+                parent.unwrap_or_else(|| Path::new(".")).to_path_buf(),
+                name.to_os_string(),
+            )
+        }
+        None => (root.to_path_buf(), OsString::from(".")),
+    }
+}
+
+fn pin_selected_root(root: &Path) -> Result<fs::File, String> {
+    let (parent_path, name) = root_parent_and_name(root);
+    let parent =
+        cap_primitives::fs::open_ambient_dir(&parent_path, cap_primitives::ambient_authority())
+            .map_err(|error| format!("cannot open parent of {}: {error}", root.display()))?;
+    let name = Path::new(&name);
+    let expected = metadata_nofollow(&parent, name)
+        .map_err(|error| format!("cannot inspect {}: {error}", root.display()))?;
+    if expected.is_symlink() {
+        return Err(format!(
+            "selected folder is a symbolic link: {}",
+            root.display()
+        ));
+    }
+    open_directory_nofollow(&parent, name, &expected)
+        .map_err(|error| format!("cannot open selected folder {}: {error}", root.display()))
+}
+
+fn open_descendant(root: &fs::File, relative: &Path) -> std::io::Result<Dir> {
+    let mut current = root.try_clone()?;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "folder scan path contains a non-normal component",
+            ));
+        };
+        let path = Path::new(name);
+        let expected = metadata_nofollow(&current, path)?;
+        current = open_directory_nofollow(&current, path, &expected)?;
+    }
+    Ok(Dir::from_std_file(current))
+}
+
+fn empty_scan(root: &Path) -> FolderScan {
+    FolderScan {
+        source: root.to_path_buf(),
+        file_count: 0,
+        bytes: 0,
+        empty_directories: Vec::new(),
+        skipped: Vec::new(),
+    }
+}
+
 /// Enumerate regular files beneath `root` without following symbolic links.
 ///
 /// # Errors
@@ -40,36 +140,37 @@ pub struct FolderScan {
 /// be read, or when a count or byte total overflows. Errors below a readable
 /// root are returned in [`FolderScan::skipped`] so the estimate remains useful.
 pub fn scan_folder(root: &Path) -> Result<FolderScan, String> {
-    let metadata = fs::symlink_metadata(root)
-        .map_err(|error| format!("cannot inspect {}: {error}", root.display()))?;
-    if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "selected folder is a symbolic link: {}",
-            root.display()
-        ));
-    }
-    if !metadata.is_dir() {
-        return Err(format!("selected path is not a folder: {}", root.display()));
-    }
+    let pinned_root = pin_selected_root(root)?;
+    // Store root-relative paths rather than handles or open iterators. Each
+    // path is later walked from `pinned_root` with no-follow opens, keeping the
+    // descriptor count bounded by the current depth while preventing escape.
+    let mut pending = vec![PathBuf::new()];
+    let mut scan = empty_scan(root);
 
-    // Store paths rather than open iterators so a wide tree cannot retain one
-    // descriptor for every discovered child directory.
-    let mut pending = vec![(root.to_path_buf(), true)];
-    let mut scan = FolderScan {
-        source: root.to_path_buf(),
-        file_count: 0,
-        bytes: 0,
-        empty_directories: Vec::new(),
-        skipped: Vec::new(),
-    };
-
-    while let Some((directory, is_root)) = pending.pop() {
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if is_root => {
+    while let Some(relative_directory) = pending.pop() {
+        let directory = root.join(&relative_directory);
+        let opened = match open_descendant(&pinned_root, &relative_directory) {
+            Ok(opened) => opened,
+            Err(error) if relative_directory.as_os_str().is_empty() => {
                 return Err(format!(
                     "cannot read selected folder {}: {error}",
-                    directory.display()
+                    root.display()
+                ));
+            }
+            Err(error) => {
+                scan.skipped.push(SkippedEntry {
+                    path: directory,
+                    reason: SkipReason::ReadError(error.to_string()),
+                });
+                continue;
+            }
+        };
+        let entries = match opened.entries() {
+            Ok(entries) => entries,
+            Err(error) if relative_directory.as_os_str().is_empty() => {
+                return Err(format!(
+                    "cannot read selected folder {}: {error}",
+                    root.display()
                 ));
             }
             Err(error) => {
@@ -95,8 +196,9 @@ pub fn scan_folder(root: &Path) -> Result<FolderScan, String> {
                 }
             };
             saw_entry = true;
-            let path = entry.path();
-            let metadata = match fs::symlink_metadata(&path) {
+            let name = entry.file_name();
+            let path = directory.join(&name);
+            let metadata = match entry.metadata() {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     scan.skipped.push(SkippedEntry {
@@ -122,7 +224,7 @@ pub fn scan_folder(root: &Path) -> Result<FolderScan, String> {
                     .checked_add(metadata.len())
                     .ok_or_else(|| "folder byte estimate overflowed".to_string())?;
             } else if file_type.is_dir() {
-                pending.push((path, false));
+                pending.push(relative_directory.join(name));
             } else {
                 scan.skipped.push(SkippedEntry {
                     path,
@@ -289,6 +391,25 @@ mod tests {
 
         assert_eq!(scan.bytes, 3);
         assert_eq!(fs::metadata(file).unwrap().len(), 18);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nofollow_open_rejects_a_directory_replaced_by_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let selected = parent.path().join("selected");
+        fs::create_dir(&selected).unwrap();
+        fs::write(outside.path().join("secret"), b"outside").unwrap();
+        let parent_handle = fs::File::open(parent.path()).unwrap();
+        let expected = metadata_nofollow(&parent_handle, Path::new("selected")).unwrap();
+
+        fs::remove_dir(&selected).unwrap();
+        symlink(outside.path(), &selected).unwrap();
+
+        assert!(open_directory_nofollow(&parent_handle, Path::new("selected"), &expected).is_err());
     }
 
     #[cfg(not(target_os = "linux"))]
