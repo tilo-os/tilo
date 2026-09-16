@@ -372,3 +372,39 @@ initial automatic-driver run terminated with SIGILL, which remains unresolved;
 the narrower transfer success does not clear that failure. These are software
 Vulkan results, not physical GPU acceptance, Windows DXVK acceptance, or proof
 of a 32-bit Vulkan guest thunk.
+
+### Vulkan debug callback failure
+
+A native ARM `vulkaninfo --summary` control passed with automatic driver
+selection in the same diagnostic container where FEX exited 132 (SIGILL).
+The container used native `vulkan-tools-1.4.341.0-1.fc44.aarch64` and the existing
+native loader/Mesa stack. A debugger run passed FEX's handled SIGBUS and SIGSEGV
+signals to reach the unhandled SIGILL. The native stack returned from
+`libvulkan_powervr_mesa.so` to address `0x5555555756a0`, where instruction bytes
+were `f3 0f 1e fa`: an x86 ENDBR64 entry being executed as ARM instructions.
+This is evidence of an untranslated guest callback reaching native code.
+
+`os/tests/fixtures/fex-vulkan-callback.c` provides a deterministic additional
+contract. It enables `VK_EXT_debug_utils`, creates a messenger with a guest
+callback and user-data pointer, submits an explicit message, and requires that
+callback to receive the message and user data exactly once. Compile it using
+the same native/guest commands as the buffer fixture. The native ARM control
+printed `QOS_VULKAN_CALLBACK_PASS`; FEX terminated with SIGILL even when using
+only the native llvmpipe driver. Explicit software-driver selection therefore
+does not solve callback support.
+
+The pinned upstream implementation strips the older debug-report structure
+from instance creation, leaves the debug-utils callback structure on the chain,
+and substitutes dummy callbacks in separate custom messenger implementations.
+The latest upstream `main` inspected on 2026-09-16 retained the same
+[`vkCreateInstance` handling](https://github.com/FEX-Emu/FEX/blob/main/ThunkLibs/libvulkan/Host.cpp).
+A complete repair must preserve callback delivery, argument conversion, user
+data, and lifetime for both direct entry points and functions returned by
+`vkGetInstanceProcAddr`; merely suppressing messages or forcing one driver is
+not acceptance. Keep this fixture failing until that contract is satisfied.
+
+Evidence logs in the preparation workspace:
+`fex-vulkan-native-comparison.log`, `fex-vulkan-backtrace.log`, and
+`fex-vulkan-callback-validation.log`. The callback defect remains a release
+blocker for this translated Vulkan path. Passing transfer/readback tests do not
+waive it or establish Windows DXVK compatibility.
