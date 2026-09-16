@@ -2788,6 +2788,68 @@ impl ShellNetwork {
         result
     }
 
+    /// Stream an immutable Nearby spool object from a receiver-confirmed
+    /// checkpoint to one exact certified transport peer.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start_nearby_transfer(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        transfer_id: [u8; 16],
+        request_id: [u8; 16],
+        total_bytes: u64,
+        resume_offset: u64,
+        prefix_hash: [u8; 32],
+        content_hash: [u8; 32],
+        path: &Path,
+    ) -> Result<(), String> {
+        let user_public_key = self
+            .personal_continuity_user
+            .ok_or_else(|| "this device has no certified personal identity".to_string())?;
+        let source = self
+            .personal_continuity_device
+            .as_ref()
+            .ok_or_else(|| "this device has no personal fabric identity".to_string())?;
+        if source == target || !self.certified_secret_recipients().contains(target) {
+            return Err("target is not another enrolled personal device".into());
+        }
+        let target_bytes: [u8; 32] = hex::decode(target.as_str())
+            .map_err(|_| "invalid transfer target")?
+            .try_into()
+            .map_err(|_| "invalid transfer target")?;
+        let transport_target =
+            iroh::EndpointId::from_bytes(&target_bytes).map_err(|_| "invalid transfer target")?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(|error| error.to_string())?;
+        if !file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .is_file()
+        {
+            return Err("nearby spool object is unsafe".into());
+        }
+        let ws = personal_continuity_topic_id(&user_public_key);
+        if !self.join_topic(ws) {
+            return Err("personal fabric transport is unavailable".into());
+        }
+        self.cmd_tx
+            .try_send(NetCmd::PublishNearbyTransfer {
+                ws,
+                user_public_key,
+                target: transport_target,
+                transfer_id,
+                request_id,
+                total_bytes,
+                resume_offset,
+                prefix_hash,
+                content_hash,
+                file,
+            })
+            .map_err(|error| error.to_string())
+    }
+
     fn record_outgoing_personal_media_transfer(&self, transfer: OutgoingPersonalMediaTransfer) {
         let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock() else {
             return;
@@ -3362,6 +3424,25 @@ impl ShellNetwork {
                     status,
                 });
             }
+            NetEvent::NearbyTransferProgress {
+                target,
+                transfer_id,
+                sent_bytes,
+                total_bytes,
+                status,
+            } => {
+                if let Ok(target) =
+                    crate::shell::personal_continuity::DeviceId::new(hex::encode(target.as_bytes()))
+                {
+                    crate::shell::device_fabric_runtime::record_nearby_transfer_progress(
+                        target,
+                        transfer_id,
+                        sent_bytes.min(total_bytes),
+                        total_bytes,
+                        status,
+                    );
+                }
+            }
         }
     }
 
@@ -3454,6 +3535,16 @@ impl ShellNetwork {
                     return;
                 };
                 queue_personal_display_message(&mut queue, message);
+            }
+            PersonalFabricPayload::NearbyTransfer(frame) => {
+                let Ok(source) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    identity.device_pubkey,
+                )) else {
+                    return;
+                };
+                crate::shell::device_fabric_runtime::handle_nearby_transfer_frame(
+                    self, &source, frame,
+                );
             }
         }
     }

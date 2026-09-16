@@ -2799,9 +2799,9 @@ fn nearby_drop_candidate(
         return Err(());
     };
     let metadata = std::fs::symlink_metadata(path).map_err(|_| ())?;
-    if !metadata.is_file()
-        || metadata.len() == 0
-        || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
+    if metadata.file_type().is_symlink()
+        || (!metadata.is_file() && !metadata.is_dir())
+        || (metadata.is_file() && metadata.len() == 0)
     {
         return Err(());
     }
@@ -2993,7 +2993,7 @@ mod spatial_edge_tests {
     }
 
     #[test]
-    fn only_one_bounded_regular_file_can_arm_a_nearby_drop() {
+    fn one_safe_file_or_folder_can_arm_a_nearby_drop() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("note.txt");
         std::fs::write(&path, b"hello").unwrap();
@@ -3001,6 +3001,15 @@ mod spatial_edge_tests {
             nearby_drop_candidate(Some(std::slice::from_ref(&path))),
             Ok(Some(path.clone()))
         );
+        let folder = temp.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        assert_eq!(
+            nearby_drop_candidate(Some(std::slice::from_ref(&folder))),
+            Ok(Some(folder))
+        );
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(nearby_drop_candidate(Some(&[link])).is_err());
         assert!(nearby_drop_candidate(Some(&[path.clone(), path])).is_err());
         assert!(nearby_drop_candidate(Some(&[])).is_err());
     }

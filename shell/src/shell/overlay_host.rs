@@ -17683,14 +17683,10 @@ impl ShellOverlayHost {
                         .saturating_mul(100)
                         .checked_div(transfer.total_bytes)
                         .unwrap_or(0);
-                    format!("Sending media · {percent}% · source stays active")
+                    format!("Sending securely · {percent}% · resumable")
                 }
-                FabricTransferStatus::Sent => {
-                    "Media sent · waiting for destination app · source stays active".into()
-                }
-                FabricTransferStatus::Failed => {
-                    "Media transfer failed · source kept playing".into()
-                }
+                FabricTransferStatus::Sent => "Transfer sent securely".into(),
+                FabricTransferStatus::Failed => "Transfer failed · source remains available".into(),
             };
         }
         if device.controls_local && device.local_can_control {
