@@ -83,9 +83,8 @@ cleanup_builds() {
     rm -rf "$base_target_dir" "$head_target_dir"
 }
 
-# Extend the earlier scratch/worktree cleanup now that the build directories
-# have been resolved.  The paths are rooted below Cargo's target directory and
-# include the exact comparison revision, never an unresolved glob.
+# Clean the scratch worktree and build directories. Paths are rooted below
+# Cargo's target directory and include the exact comparison revision.
 trap 'cleanup_builds; cleanup' EXIT
 
 run_clippy() {

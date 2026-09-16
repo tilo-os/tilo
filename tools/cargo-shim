@@ -31,9 +31,8 @@ fi
 
 _route() { [ -n "${QCARGO_DEBUG:-}" ] && echo "qcargo: $1" >&2; return 0; }
 
-# Job count is bounded by memory, not cores: rustc peaks around 7 GB on the larger
-# crates here. CARGO_BUILD_JOBS is not in sccache's cache key (measured), so deriving
-# it per-machine does not fragment the cache. CARGO_TARGET_DIR is in the key — see below.
+# Job count is bounded by memory, not cores. CARGO_BUILD_JOBS is not in sccache's
+# cache key, so deriving it per-machine does not fragment the cache.
 readonly GB_PER_RUSTC=7
 derive_jobs() {
   local cores mem_gb by_mem
@@ -46,9 +45,8 @@ derive_jobs() {
 
 # sccache ceiling: 20% of the filesystem, floor 64G, cap 200G.
 #
-# One full debug+test build of this workspace is ~2,200 cacheable units, a few GB
-# compressed. Dependencies never change unless Cargo.lock does; workspace members turn
-# over whenever a shared crate is touched. 200G holds roughly 40 branch-versions.
+# The cache ceiling keeps room for multiple workspace builds without consuming
+# the whole filesystem.
 derive_cache_size() {
   local kb gb
   kb=$(df -Pk "${SCCACHE_DIR:-$HOME/.cache}" 2>/dev/null | awk 'NR==2{print $2}')
@@ -66,8 +64,7 @@ use_sccache() {
   export SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE:-$(derive_cache_size)}"
 }
 
-# Never set CARGO_TARGET_DIR. sccache hashes it into the Rust cache key: measured, a
-# clean rebuild of one crate hits with it unset and misses with it set to the same path.
+# Never set CARGO_TARGET_DIR; it participates in sccache's Rust cache key.
 
 # distrobox preserves $PWD, so this resolves identically on both sides of the boundary.
 find_marker() {
