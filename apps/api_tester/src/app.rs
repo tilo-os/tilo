@@ -1312,7 +1312,14 @@ impl ApiTesterApp {
             // picker leads the sidebar. Keep room above it for the ENV caption.
             let mut y = s.y0 + (PAD + 48.0) * scale - self.sidebar_scroll;
             let control_x = s.x0 + PAD;
-            l.rail_close = Rect::new(s.x1 - PAD - 76.0, s.y0 + PAD, s.x1 - PAD, s.y0 + 48.0);
+            let close_w = 88.0 * scale;
+            let close_h = 36.0 * scale;
+            l.rail_close = Rect::new(
+                s.x1 - PAD - close_w,
+                s.y0 + PAD,
+                s.x1 - PAD,
+                s.y0 + PAD + close_h,
+            );
             let control_w = s.width() - PAD * 2.0;
             let action_rows = |count: usize, at: f64| {
                 (0..count).map(move |index| {
@@ -1362,7 +1369,10 @@ impl ApiTesterApp {
                     l.history_label = Point::new(s.x0 + PAD, y);
                     y += 24.0 * scale;
                 }
-                let nav_h = ROW_H * scale;
+                // Rows need both scaled type height and breathing room; a
+                // bare `ROW_H * scale` still lets a large collection label
+                // visually touch the following request row.
+                let nav_h = (ROW_H + 10.0) * scale;
                 if y + nav_h > s.y1 - PAD {
                     // Off the bottom — park the row off-screen so it still has a
                     // valid (empty) rect.
@@ -2503,27 +2513,6 @@ impl ApiTesterApp {
                 Cmd::OpenForm(mode) => self.open_form(mode),
                 Cmd::CancelForm => self.form = None,
                 Cmd::SubmitForm => self.submit_form(state, path),
-                Cmd::DeleteRequest => {
-                    if let Some((collection_index, request_index)) = self.selected
-                        && let Some(collection) = self.collections.get(collection_index)
-                        && let Some(request) = collection.requests.get(request_index)
-                    {
-                        self.perform(
-                            state,
-                            path,
-                            &actions::delete_request_action(collection.id, request.id),
-                        );
-                    }
-                }
-                Cmd::DeleteEnvironment => {
-                    if let Some(environment_id) = self.active_env {
-                        self.perform(
-                            state,
-                            path,
-                            &actions::delete_environment_action(environment_id),
-                        );
-                    }
-                }
             }
         }
         self.dirty = true;
