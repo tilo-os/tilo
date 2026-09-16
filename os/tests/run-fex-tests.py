@@ -12,8 +12,38 @@ import argparse
 import os
 from pathlib import Path
 import select
+import signal
 import subprocess
 import sys
+
+
+def run_ctest(command, environment, server, log_path):
+    """Stop the suite if its server dies instead of reporting client failures."""
+    tests = subprocess.Popen(command, env=environment, start_new_session=True)
+    try:
+        while server.poll() is None:
+            try:
+                result = tests.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                continue
+            if server.poll() is None:
+                return result
+            break
+        raise RuntimeError(f"FEXServer exited during validation; see {log_path}")
+    finally:
+        if tests.poll() is None:
+            try:
+                os.killpg(tests.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                tests.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(tests.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                tests.wait()
 
 
 def main() -> int:
@@ -30,6 +60,14 @@ def main() -> int:
 
     environment = os.environ.copy()
     environment["FEX_ROOTFS"] = str(rootfs)
+    # FEX falls back to '/' when HOME does not exist. A fresh build directory
+    # must work without an earlier test run having created this state.
+    home = build / "home"
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    environment["HOME"] = str(home)
+    environment["XDG_CONFIG_HOME"] = str(home / ".config")
+    environment["XDG_DATA_HOME"] = str(home / ".local/share")
+    environment["XDG_CACHE_HOME"] = str(home / ".cache")
     log_path = build / "Testing/Temporary/FEXServer.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     extra = args.ctest_args
@@ -56,10 +94,10 @@ def main() -> int:
                     raise RuntimeError(f"FEXServer failed during startup; see {log_path}")
                 os.close(read_fd)
                 read_fd = -1
-                return subprocess.call(
+                return run_ctest(
                     ["ctest", "--test-dir", str(build), "--output-on-failure",
                      "--parallel", "2", "--timeout", "302", *extra],
-                    env=environment,
+                    environment, server, log_path,
                 )
             finally:
                 server.terminate()
