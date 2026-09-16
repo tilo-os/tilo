@@ -358,7 +358,7 @@ def launch_word_processor(session: Session, room: str, brief: str,
         # an app that is up but not collaborating looks exactly like an
         # app that is up and collaborating, and the difference is the
         # whole question this script asks.
-        "QUICK_COLLAB_DEBUG": "1",
+        "RUST_LOG": "qos.state=debug",
     })
     log_path = os.path.join(session.dir, "word-processor.log")
     before = {f.get("surface_id") for f in session.frames()}
