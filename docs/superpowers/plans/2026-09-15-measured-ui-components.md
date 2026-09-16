@@ -70,6 +70,12 @@ Confirmed double scaling: RichTextLine::build_layout at442 calls `inner.set_font
 - [ ] Preserve original Scratchpad file backed up at `.superpowers/app-ui-2026-09-15/scratchpad-original/lib.rs`; minimal diff only, do not stage pre-existing untracked app/manifests. Save the app-only patch in this task's report workspace; framework changes may be committed independently. The user explicitly authorized improving every app; owner task is finished, so no permission pause.
 - [ ] Recapture Scratchpad wide/narrow/200%, inspect empty writing area, edit and save via existing action binding, then reopen isolated profile and verify persisted body. Confirm field remains scrollable for long content and footer stays reachable.
 
+
+- [ ] Integration-discovered first-wheel symptom: the Scratchpad capture harness fails to move the outer scroll area. A visible final-line fixture now reproduces1079.375px content inside1079px bounds, consuming the first wheel in0.375px internal overflow. Earlier trailing-empty-line fixtures did not reproduce the same content extent. Keep exact behavioral evidence and normal theme construction. Scope includes a narrowly verified intrinsic multiline measurement correction in `ui/src/widget/text_input.rs` (round-up containment is a candidate, not a substitute for diagnosis). Add a real first-wheel regression and preserve explicit/manual heights, single-line behavior and current shaped caret/selection/measurement guarantees. Do not globally alter scroll event consumption. Report the source addition and exact RED/GREEN evidence.
+
+
+- [ ] Verified second-click focus defect: Scrollable currently preassigns its own focus before child dispatch; an already-focused TextInput consumes the press without assigning focus again, so typing is lost. Defer background focus fallback until a child leaves the press unhandled; retain scrollbar focus, explicit child focus changes and outside-pane behavior. Test repeated click/typing with opt-in and default Scrollable plus existing pane/bar focus cases.
+
 ### Task 4: Measured Toolbar with reachable overflow
 
 **Files:** `ui/src/widget/toolbar.rs`, scoped additions in `ui/src/widget/context_menu.rs`; reuse existing Widget overlay/focus hooks (`ui/src/widget/mod.rs`) without changing that trait. Do not confuse widget Toolbar with `ui/src/chrome/toolbar.rs`.
@@ -139,3 +145,16 @@ Three separate approximate sizing paths currently disagree: `measure_item_axis`1
 - [ ] Make attributed styles available before relevant measurement and painting, not only after plain measurement. Mark-only changes, theme/renderer scale, text edits and actual model/undo/redo adoption invalidate correct caches. Preserve complete UTF-8 spans and IME preedit behavior; any reused signature must cover all accepted style/decor inputs.
 - [ ] Focused RED/GREEN: glyph-count/weights show no duplicate plain run; add/remove bold on unchanged text refreshes layout; marked end caret/selection/pixel-byte inversion agree at1×/2×; overlapping bold/link click at true edge; UTF-8/preedit adjacent to marked text; code background and underline/strike follow shaped ranges. Reuse existing tests and don't mirror implementation without an observable invariant.
 - [ ] Run affected TextInput/RichTextLine/BlockEditor module tests, relevant rich-text tests and scoped check. Fresh Notes normal/narrow/2× screenshot acceptance plus actual caret/selection/link route; root independently inspects pixels. Preserve ordinary writing density.
+
+### Task 7: Preserve the final empty line in attributed text
+
+**Execution order:** after Task4, before Task6. Shared2/3 accepted; this separate defect was discovered during writing-surface verification.
+**Files:** `ui/src/richtext.rs`, focused regressions in `ui/src/widget/text_input.rs`; do not modify Scrollable or app source.
+**Evidence:** `.superpowers/app-ui-2026-09-15/trailing-line-diagnosis.md` and its direct-rustc public API probe. cosmic-text 0.19.0 set_rich_text drops the final empty paragraph after LF, while set_text retains it. Metadata still contains the line, producing an EOF caret on row zero and wrong pointer mapping.
+
+- [ ] Establish RED for plain versus styled `"x\n"`: equal two-line height, EOF caret on the final row, visual-line index, logical-line band and below-content hit returns EOF. Controls: `"x"`, `"x\ny"`, `"\n"`, multiple trailing LF and split attributed spans, at 1× and 2×.
+- [ ] Normalize at the RichTextLayout attributed shaping boundary before shaping: final empty BufferLine, no artificial visible character or byte offset change, final effective run attrs/metrics and alignment preserved. Confirm actual cosmic-text APIs before implementation. Do not switch measurement to the broken styled height or special-case Scrollable.
+- [ ] TextInput integration: measure then draw a multiline trailing-LF value; content height agrees within documented pixel ceiling, EOF caret remains at final row, clicking that row maps to `text.len()`, and caret-follow scroll stays at the end. Preserve attributed styling, current-line/gutter geometry and default/manual dimensions.
+- [ ] Run focused richtext/TextInput/CodeEditor regressions and Scrollable integration suite, scoped check and format. Record exact RED/GREEN; no broad suite/dependency upgrade. Report any final-empty-line style ambiguity before expanding scope. Selection LF-only decoration redesign is excluded.
+
+**Report:** `.superpowers/sdd/2026-09-15-measured-ui-components/task-7-report.md`. No subagents, no push. Commit only exact owned paths using `git commit --only` and verify the resulting file list.
