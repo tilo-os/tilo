@@ -85,14 +85,14 @@ fi
 [ -f "$QOS_OS_DIR/base-snapshot.env" ] && . "$QOS_OS_DIR/base-snapshot.env"
 [ -n "${BASE_REF:-}" ] || die "no BASE_REF — run the mirror-base CI job first"
 # The digest-pinned frozen RPM repo the build installs from (written by
-# os/dev/snapshot-rpms.sh / the snapshot-rpms CI job). Cross-time reproducible.
+# the snapshot-rpms CI job). Cross-time reproducible.
 # shellcheck disable=SC1091
 # An explicit RPMS_REF is useful for validating a just-built snapshot before it
 # is published and pinned. Do not let the tracked default silently overwrite it.
 _qos_rpms_ref_override="${RPMS_REF:-}"
 [ -f "$QOS_OS_DIR/rpms-snapshot.env" ] && . "$QOS_OS_DIR/rpms-snapshot.env"
 RPMS_REF="${_qos_rpms_ref_override:-${RPMS_REF:-}}"
-[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run ./os/dev/snapshot-rpms.sh (or the snapshot-rpms CI job) first"
+[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — run the snapshot-rpms workflow or follow os/docs/rpm-snapshot-packaging.md"
 # The digest-pinned qos-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # qos-kernel-core out of it.  Cross-time reproducible.
