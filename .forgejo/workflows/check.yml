@@ -115,6 +115,7 @@ jobs:
           python3 os/tests/test_windows_guest_contract.py
           python3 os/tests/test_windows_guest_payload.py
           python3 os/tests/test_windows_guest_dxvk.py
+          python3 os/tests/test_windows_provider.py
           python3 os/tests/test_windows_dxvk_load_evidence.py
           python3 os/tests/test_wine_rpm_contract.py
           python3 os/tests/test_wine_rpm_merge.py
