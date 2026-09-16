@@ -29,6 +29,8 @@ test -s /usr/share/tilo-apps/registry.toml
 grep -Fxq 'id = "dev.tilo.settings"' /usr/share/tilo-apps/registry.toml
 test -f /usr/lib/tilo-runtime/2026.07/bundle.toml
 test -s /etc/tilo/runtime-bundle-trusted-publishers.txt
+tilo-runtime-bundle verify /usr/lib/tilo-runtime/2026.07 \
+    --require-publisher "$(head -n 1 /etc/tilo/runtime-bundle-trusted-publishers.txt)"
 for unit in tilo-app-host tilo-model-storage tilo-models tilo-model-gateway tilo-ush; do
     test -f "/usr/lib/systemd/user/$unit.service"
 done
