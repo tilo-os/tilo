@@ -292,6 +292,21 @@ pub enum PersonalFabricAction {
         transfer_id: [u8; 16],
         accepted: bool,
     },
+    /// Ephemeral, policy-redacted notification state. Authorship comes only
+    /// from the authenticated envelope source; the payload names no device.
+    NotificationProject {
+        notification: crate::notifications::ContinuityNotificationProjection,
+    },
+    NotificationRetire {
+        id: crate::notifications::ContinuityNotificationId,
+    },
+    NotificationDismiss {
+        id: crate::notifications::ContinuityNotificationId,
+    },
+    NotificationInvoke {
+        id: crate::notifications::ContinuityNotificationId,
+        action_key: String,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -657,6 +672,27 @@ impl PersonalFabricActionEnvelope {
                 ..
             } => {
                 if request_id == &[0; 16] || transfer_id == &[0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::NotificationProject { notification } => {
+                if !notification.validate_at(now_unix_ms) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::NotificationRetire { id }
+            | PersonalFabricAction::NotificationDismiss { id } => {
+                if id.epoch == [0; 16] || id.token == [0; 16] {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::NotificationInvoke { id, action_key } => {
+                if id.epoch == [0; 16]
+                    || id.token == [0; 16]
+                    || action_key.is_empty()
+                    || action_key.len() > 128
+                    || action_key.chars().any(char::is_control)
+                {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2296,6 +2332,61 @@ mod tests {
         })
         .unwrap();
         assert_eq!(nearby.first(), Some(&13));
+        let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
+            id: crate::notifications::ContinuityNotificationId {
+                epoch: [1; 16],
+                token: [2; 16],
+            },
+        })
+        .unwrap();
+        assert_eq!(notification.first(), Some(&21));
+    }
+
+    #[test]
+    fn notification_actions_are_source_bound_bounded_and_fresh() {
+        let source = id("source");
+        let target = id("target");
+        let notification = crate::notifications::ContinuityNotificationProjection {
+            id: crate::notifications::ContinuityNotificationId {
+                epoch: [1; 16],
+                token: [2; 16],
+            },
+            app_id: "dev.qos.mail".into(),
+            app_name: "Mail".into(),
+            title: "New message".into(),
+            body: "Preview".into(),
+            body_redacted: false,
+            actions: vec![("reply".into(), "Reply".into())],
+            urgency: 1,
+            expires_unix_ms: 20_000,
+        };
+        let envelope = PersonalFabricActionEnvelope {
+            request_id: [3; 16],
+            source: source.clone(),
+            target: target.clone(),
+            issued_unix_ms: 10_000,
+            action: PersonalFabricAction::NotificationProject { notification },
+        };
+        assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
+        assert_eq!(
+            envelope.validate_at(&id("spoof"), &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
+
+        let invalid = PersonalFabricActionEnvelope {
+            action: PersonalFabricAction::NotificationInvoke {
+                id: crate::notifications::ContinuityNotificationId {
+                    epoch: [1; 16],
+                    token: [2; 16],
+                },
+                action_key: "bad\naction".into(),
+            },
+            ..envelope
+        };
+        assert_eq!(
+            invalid.validate_at(&source, &target, 10_000),
+            Err(FabricError::InvalidAction)
+        );
     }
 
     #[test]

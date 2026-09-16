@@ -4,7 +4,7 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::io::{Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
@@ -15,6 +15,9 @@ use rand_core::{OsRng, RngCore};
 use serde_json::{Map, Value};
 
 use crate::network::actor::{PersonalMediaTransferStatus, PersonalNearbyTransferFrame};
+use crate::notifications::{
+    ContinuityNotificationCommand, ContinuityOutboundEvent, NotificationBridge,
+};
 
 use crate::compositor::selection::{
     SharedSelection, merge_shared_clipboard_history, shareable_clipboard_history,
@@ -616,10 +619,11 @@ pub struct DeviceFabricRuntime {
     pending_incoming_media:
         BTreeMap<[u8; 16], (crate::shell::personal_continuity::DeviceId, String)>,
     waiting_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
+    notification_bridge: NotificationBridge,
 }
 
 impl DeviceFabricRuntime {
-    pub fn new(network: &ShellNetwork) -> Self {
+    pub fn new(network: &ShellNetwork, notification_bridge: NotificationBridge) -> Self {
         let counter = network.device_fabric().max_counter();
         Self {
             counter,
@@ -631,6 +635,7 @@ impl DeviceFabricRuntime {
             settings_origin_initialized: false,
             pending_incoming_media: BTreeMap::new(),
             waiting_incoming_media: BTreeMap::new(),
+            notification_bridge,
         }
     }
 
@@ -643,6 +648,7 @@ impl DeviceFabricRuntime {
     ) {
         pump_bluetooth_handoffs(network);
         self.handle_fabric_actions(network);
+        self.pump_notification_continuity(network);
         resume_nearby_transfers(network);
         pump_personal_displays(network);
         self.retry_waiting_media(network);
@@ -769,6 +775,9 @@ impl DeviceFabricRuntime {
     fn handle_fabric_actions(&mut self, network: &ShellNetwork) {
         prune_spatial_leases(network);
         for envelope in network.take_personal_fabric_actions() {
+            if self.handle_notification_action(network, &envelope) {
+                continue;
+            }
             match envelope.action {
                 PersonalFabricAction::ResumeMedia {
                     session_id,
@@ -844,6 +853,113 @@ impl DeviceFabricRuntime {
                 }
                 action => handle_spatial_action(envelope.source, &envelope.target, action),
             }
+        }
+    }
+
+    fn handle_notification_action(
+        &self,
+        network: &ShellNetwork,
+        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    ) -> bool {
+        match &envelope.action {
+            PersonalFabricAction::NotificationProject { notification } => {
+                let source_label = {
+                    let fabric = network.device_fabric();
+                    let Some(source) = fabric
+                        .snapshots()
+                        .get(&envelope.source)
+                        .filter(|snapshot| snapshot.presence.online)
+                    else {
+                        return true;
+                    };
+                    source.presence.label.clone()
+                };
+                let _ = self.notification_bridge.receive_continuity_projection(
+                    envelope.source.as_str(),
+                    &source_label,
+                    notification.clone(),
+                    unix_ms(),
+                );
+            }
+            PersonalFabricAction::NotificationRetire { id } => {
+                let _ = self
+                    .notification_bridge
+                    .retire_remote_continuity(envelope.source.as_str(), *id);
+            }
+            PersonalFabricAction::NotificationDismiss { id } => {
+                let _ = self.notification_bridge.apply_continuity_command(
+                    *id,
+                    &ContinuityNotificationCommand::Dismiss,
+                    unix_ms(),
+                );
+            }
+            PersonalFabricAction::NotificationInvoke { id, action_key } => {
+                let _ = self.notification_bridge.apply_continuity_command(
+                    *id,
+                    &ContinuityNotificationCommand::Invoke {
+                        action_key: action_key.clone(),
+                    },
+                    unix_ms(),
+                );
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    fn pump_notification_continuity(&self, network: &ShellNetwork) {
+        let Some((local, _)) = network.local_device_fabric_identity() else {
+            let _ = self
+                .notification_bridge
+                .retain_remote_continuity_sources(&HashSet::new());
+            return;
+        };
+        let peers = network
+            .device_fabric()
+            .snapshots()
+            .values()
+            .filter(|snapshot| snapshot.owner != local && snapshot.presence.online)
+            .map(|snapshot| snapshot.owner.clone())
+            .collect::<Vec<_>>();
+        let online_sources = peers
+            .iter()
+            .map(|peer| peer.as_str().to_string())
+            .collect::<HashSet<_>>();
+        let _ = self
+            .notification_bridge
+            .retain_remote_continuity_sources(&online_sources);
+        for event in self.notification_bridge.drain_continuity_outbound() {
+            for peer in &peers {
+                let action = match &event {
+                    ContinuityOutboundEvent::Project(notification) => {
+                        PersonalFabricAction::NotificationProject {
+                            notification: notification.clone(),
+                        }
+                    }
+                    ContinuityOutboundEvent::Retire(id) => {
+                        PersonalFabricAction::NotificationRetire { id: *id }
+                    }
+                };
+                let _ = network.send_personal_fabric_action(peer, action);
+            }
+        }
+        for egress in self.notification_bridge.drain_continuity_command_egress() {
+            let Ok(target) = crate::shell::personal_continuity::DeviceId::new(egress.target_device)
+            else {
+                continue;
+            };
+            let action = match egress.command {
+                ContinuityNotificationCommand::Dismiss => {
+                    PersonalFabricAction::NotificationDismiss { id: egress.id }
+                }
+                ContinuityNotificationCommand::Invoke { action_key } => {
+                    PersonalFabricAction::NotificationInvoke {
+                        id: egress.id,
+                        action_key,
+                    }
+                }
+            };
+            let _ = network.send_personal_fabric_action(&target, action);
         }
     }
 
@@ -1360,7 +1476,11 @@ fn handle_spatial_action(
         | PersonalFabricAction::NearbyTransferReady { .. }
         | PersonalFabricAction::NearbyTransferCancel { .. }
         | PersonalFabricAction::NearbyTransferRestart { .. }
-        | PersonalFabricAction::NearbyTransferResult { .. } => {}
+        | PersonalFabricAction::NearbyTransferResult { .. }
+        | PersonalFabricAction::NotificationProject { .. }
+        | PersonalFabricAction::NotificationRetire { .. }
+        | PersonalFabricAction::NotificationDismiss { .. }
+        | PersonalFabricAction::NotificationInvoke { .. } => {}
     }
 }
 
