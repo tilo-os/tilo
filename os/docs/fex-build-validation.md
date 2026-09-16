@@ -83,6 +83,31 @@ These checks used existing local diagnostic input images. They do not constitute
 a build of the complete new Containerfile against promoted immutable inputs,
 or release acceptance.
 
+### Existing frozen RPM input audit
+
+After registry authentication was restored on 2026-09-16, the exact tracked
+`RPMS_REF` was pulled and inspected without executing it or installing packages.
+The image is amd64, ID
+`69d60f03794d94b7ced9ab5c401f777ecc539e4da7acf4bd45202e57ca2a0a2f`.
+Its 1,240 RPM headers report 860 x86_64 entries (including the kernel source RPM)
+and 380 noarch entries, with no AArch64 or i686 entries. Its direct-spec manifest
+matches all 173 current x86-64 requirements. Similar package names on ARM do not
+make these binary packages usable there; the image preflight now rejects an
+architecture mismatch before comparing package manifests.
+
+The x86 Wine-core package supplies `wine64`, `wineserver64` and both Windows PE
+DLL trees, but not the `wine32`/`wineserver32` executables required by the current
+separate 32-bit runner. The snapshot is an installation transaction delta against
+the pinned OS base, not a complete guest-rootfs repository. Missing Python,
+shell or coreutils RPMs in this delta do not alone prove a broken OS transaction.
+It cannot substitute for the separately frozen complete guest filesystem.
+
+The mounted inspection was unmounted afterward. Package headers, direct specs,
+entrypoint listings and the gap report are preserved as `rpms-pinned-*` files in
+the preparation tree. The pinned Fedora base does resolve for ARM64; the tracked
+kernel artifact returned `manifest unknown`, so the separately validated local
+ARM kernel remains a preparation artifact rather than that missing published pin.
+
 The buildroot compiles NASM natively into `/usr/local/bin`. NASM emits x86 test
 programs; it is not an x86 executable and does not require emulation to run.
 Keep `/usr/local/bin` before `/usr/bin` when configuring and building FEX.
