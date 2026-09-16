@@ -3271,8 +3271,8 @@ fn tab_drag() -> Scenario {
 ///
 /// Coordinates use the bootstrap default's first strip:
 ///   - viewport 1600×900 (default driver size)
-///   - sidebar wheel takes ~200 px of left padding via
-///     `Column::with_extra_left_padding(SIDEBAR_WIDTH_PX)`
+///   - sidebar wheel takes ~200 px of the group row's leading inset, bounded by
+///     `sidebar_wheel_disc::SIDEBAR_RESERVE_PX`
 ///   - the lone Wide group (800 px) sits roughly at x ∈ [224, 1024]
 ///   - tab pills live in the bar inside that group, around y≈80
 ///   - releasing at (1100, 80) is right of the source group → `gap_idx=1`

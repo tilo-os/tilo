@@ -1145,7 +1145,7 @@ pub(crate) fn build_workspace_root_with_scene_parts(
                     // Reserves canvas-x [0, SIDEBAR_WIDTH] for the wheel
                     // disc (which lives in the overlay layer) so wheel and
                     // strip share the same canvas and pan together.
-                    .with_leading_inset(f64::from(sidebar_wheel_chrome::SIDEBAR_WIDTH_PX)),
+                    .with_leading_inset(f64::from(sidebar_wheel_disc::SIDEBAR_RESERVE_PX)),
             );
             // Captured before unsizing into `Box<dyn Widget>`; the
             // coercion preserves the address, valid for the host's lifetime.
