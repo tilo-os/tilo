@@ -44,8 +44,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use qos_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
-    ExecutionMode, OperationKind, Resource, ResourceProvider,
+    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc, EncodedAction,
+    ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResourceProvider,
 };
 
 use crate::doc::ApiDoc;
@@ -72,6 +72,62 @@ pub enum ApiTesterOperation {
     /// deliberately a View operation: it is navigation, not a fabricated
     /// successful HTTP run and not a collaborative mutation.
     ReplayHistory { history_id: String },
+    /// Open one of the request builder's visible contextual workflows.
+    RequestMenu { action: String },
+    /// Open one of the active environment's visible contextual workflows.
+    EnvironmentMenu { action: String },
+}
+
+pub const REQUEST_MENU_CHOICES: &[&str] = &["Save request…", "Rename request…", "Delete request…"];
+pub const ENVIRONMENT_MENU_CHOICES: &[&str] =
+    &["Rename environment…", "Add variable…", "Delete variable…"];
+
+fn menu_resource(
+    id: &str,
+    label: &str,
+    action_id: &str,
+    choices: &'static [&'static str],
+    operation: fn(String) -> ApiTesterOperation,
+) -> Resource {
+    let spec = ActionSpec::typed_operation(
+        action_id,
+        label,
+        "Choose an action",
+        OperationKind::View,
+        API_TESTER_OPERATION_TYPE,
+        vec![
+            ActionParam::required_owned("action", ParamType::Text, label.to_string())
+                .with_choices(choices.iter().copied()),
+        ],
+        move |args| {
+            EncodedAction::encode_operation(
+                API_TESTER_OPERATION_TYPE,
+                &operation(args.text("action").unwrap_or_default().to_string()),
+            )
+            .expect("API Tester menu operations contain only serializable strings")
+        },
+    );
+    Resource::new(id, id, label).with_action(spec)
+}
+
+pub fn request_menu_resource() -> Resource {
+    menu_resource(
+        "api_tester.request_menu",
+        "Request actions",
+        "open",
+        REQUEST_MENU_CHOICES,
+        |action| ApiTesterOperation::RequestMenu { action },
+    )
+}
+
+pub fn environment_menu_resource() -> Resource {
+    menu_resource(
+        "api_tester.environment_menu",
+        "Environment actions",
+        "open",
+        ENVIRONMENT_MENU_CHOICES,
+        |action| ApiTesterOperation::EnvironmentMenu { action },
+    )
 }
 
 /// The builder's current request is an addressable local-effect resource so
@@ -649,6 +705,8 @@ fn workspace_root() -> Resource {
         "API workspace",
     );
     root = root.with_child(active_request_resource());
+    root = root.with_child(request_menu_resource());
+    root = root.with_child(environment_menu_resource());
 
     // Workspace-level: create a collection / environment (prompted for a name;
     // the id is minted once when the argument is committed, then baked into the
@@ -777,8 +835,8 @@ mod tests {
 
     /// An empty document still publishes the workspace root with the create
     /// actions (so the first collection can be made from Ctrl+K), plus the
-    /// device-local current-request effect resource, but no collection /
-    /// environment children and no environments node.
+    /// device-local current-request and contextual menu resources, but no
+    /// collection / environment records.
     #[test]
     fn empty_doc_publishes_workspace_with_create_actions_only() {
         let doc = AutoCommit::new();
@@ -789,11 +847,17 @@ mod tests {
         assert!(root.actions.iter().any(|a| a.id == "new-collection"));
         assert!(root.actions.iter().any(|a| a.id == "new-environment"));
         assert_eq!(
-            root.children.len(),
-            2,
-            "current request and history directory"
+            root.children
+                .iter()
+                .map(|resource| resource.kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "api_tester.active_request",
+                "api_tester.request_menu",
+                "api_tester.environment_menu",
+                "api_tester.history",
+            ]
         );
-        assert_eq!(root.children[0].kind, "api_tester.active_request");
     }
 
     #[test]
