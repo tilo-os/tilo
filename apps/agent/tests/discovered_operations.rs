@@ -174,10 +174,7 @@ fn run(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
                 let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
@@ -484,10 +481,7 @@ fn drive_photo_peer(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 send(
                     &mut photo_peer,
                     &CollabRequest::document_snapshot(photo_replica.save()),
@@ -567,10 +561,7 @@ fn drive_word_processor_peer(
             continue;
         };
         match event {
-            CollabEvent::RemotePresenceUpdate {
-                payload: PresencePayload::Arrived,
-                ..
-            } => {
+            CollabEvent::DocumentSnapshotRequested { .. } => {
                 let snap = CollabRequest::document_snapshot(wp_replica.save());
                 send(&mut wp_peer, &snap).unwrap();
             }

@@ -107,6 +107,9 @@ pub enum CollabRequest {
     Document {
         mutation: DocumentMutation,
     },
+    /// Ask the broker to select one existing holder of this exact route as a
+    /// snapshot responder. Safe to retry while no holder is available.
+    RequestDocumentSnapshot,
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
     /// connected peer as `CollabEvent::RemotePresenceUpdate`.
@@ -388,6 +391,11 @@ pub enum CollabEvent {
     /// it is never published to collaboration peers.
     FollowChanged {
         peer_id: Option<String>,
+    },
+    /// The broker selected this connection as the sole snapshot responder for
+    /// a late joiner on the same document route.
+    DocumentSnapshotRequested {
+        route: RouteSpec,
     },
     RemoteCursorMoved {
         user_id: String,
@@ -864,6 +872,7 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::FetchScrollback { .. }
         | CollabRequest::OpenWorkspaceControl { .. }
         | CollabRequest::CloseWorkspaceControl { .. }
+        | CollabRequest::RequestDocumentSnapshot
         | CollabRequest::PublishedInvocationStatus { .. }
         | CollabRequest::CancelPublishedInvocation { .. } => {}
         CollabRequest::PublishActions { app_id, actions } => {
@@ -1099,6 +1108,12 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
         CollabEvent::FollowChanged { peer_id } => {
             if let Some(peer_id) = peer_id {
                 meter.string_capacity(peer_id);
+            }
+        }
+        CollabEvent::DocumentSnapshotRequested { route } => {
+            meter.string_capacity(&route.app_id);
+            if let Some(record) = &route.record {
+                meter.string_capacity(record);
             }
         }
         CollabEvent::RemoteCursorMoved { user_id, .. } => meter.string_capacity(user_id),
@@ -2660,7 +2675,7 @@ async fn ensure_sdk_route(
     spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     let encryption = std::sync::Arc::new(std::sync::Mutex::new(None));
     spawn_op_stream(&channel, inbound_tx, std::sync::Arc::clone(&encryption)).await;
-    spawn_context_stream(&channel, inbound_tx).await;
+    spawn_context_stream(&channel, spec.clone(), inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
     // This intentionally fails quietly for person sessions. An admitted
@@ -2668,6 +2683,11 @@ async fn ensure_sdk_route(
     // has to infer task work from room traffic.
     spawn_task_run_stream(&channel, inbound_tx).await;
     let presence = spawn_presence_stream(&channel, inbound_tx).await;
+    // Subscriptions are installed first so an existing holder's response
+    // cannot race ahead of our document stream.
+    if let Err(error) = channel.request_document_snapshot().await {
+        tracing::warn!(%error, "collab: late-join snapshot request failed");
+    }
 
     routes.insert(
         channel_id,
@@ -2732,11 +2752,23 @@ async fn spawn_op_stream(
     clippy::future_not_send,
     reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
 )]
-async fn spawn_context_stream(channel: &runtime_collab::ChannelHandle, inbound_tx: &InboundBridge) {
+async fn spawn_context_stream(
+    channel: &runtime_collab::ChannelHandle,
+    route: RouteSpec,
+    inbound_tx: &InboundBridge,
+) {
     if let Ok(stream) = channel.subscribe_context().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
             while let Ok(context) = stream.read().await {
+                if context.snapshot_requested {
+                    if !tx.send_durable(CollabEvent::DocumentSnapshotRequested {
+                        route: route.clone(),
+                    }) {
+                        break;
+                    }
+                    continue;
+                }
                 if let Some(peer_id) = context.follow_changed {
                     if !tx.send_durable(CollabEvent::FollowChanged { peer_id }) {
                         break;
@@ -3340,6 +3372,9 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::Document { mutation } => {
             send_document_mutation(route, signer, mutation).await;
+        }
+        CollabRequest::RequestDocumentSnapshot => {
+            let _ = route.channel.request_document_snapshot().await;
         }
         CollabRequest::Presence { key, payload } => {
             let Some(presence) = route.presence.as_ref() else {
