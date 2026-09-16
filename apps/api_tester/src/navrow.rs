@@ -69,6 +69,17 @@ pub struct NavRow {
 }
 
 impl NavRow {
+    fn rail_label(label: &str, theme: &Theme, max_chars: usize) -> String {
+        if theme.text_scale <= 1.25 || label.chars().count() <= max_chars {
+            return label.to_owned();
+        }
+        let mut compact = label
+            .chars()
+            .take(max_chars.saturating_sub(1))
+            .collect::<String>();
+        compact.push('…');
+        compact
+    }
     pub fn new(
         id: impl Into<String>,
         kind: NavKind,
@@ -427,9 +438,10 @@ impl NavRow {
             None,
             TextWeight::Bold,
         );
+        let label = Self::rail_label(label, theme, 12);
         tr.draw_text(
             scene,
-            label,
+            &label,
             theme.tokens.typography.scale.sm,
             if selected { c.text_primary } else { c.text_dim },
             t * Affine::translate((r.x0 + 64.0, label_y)),
@@ -465,9 +477,10 @@ impl NavRow {
             None,
             TextWeight::Bold,
         );
+        let label = Self::rail_label(label, theme, 12);
         tr.draw_text(
             scene,
-            label,
+            &label,
             theme.tokens.typography.scale.sm,
             c.text_dim,
             t * Affine::translate((r.x0 + 46.0, label_y)),
