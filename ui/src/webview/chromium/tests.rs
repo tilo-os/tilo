@@ -209,3 +209,36 @@ fn rejected_navigation_is_visible_and_does_not_change_current_uri() {
     assert_eq!(*engine.shared.uri.lock().unwrap(), "https://old.example");
     assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed {uri,error} if uri == "https://new.example" && error.contains("not queued"))));
 }
+
+#[test]
+fn capability_commands_and_events_round_trip() {
+    assert_eq!(
+        encode_command(WebViewCommand::PermissionDecision {
+            id: 7,
+            allow: false
+        })
+        .unwrap(),
+        json!({"op":"permission_decision","id":7,"allow":false})
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::SetClearOnExit(true)).unwrap(),
+        json!({"op":"clear_on_exit","enabled":true})
+    );
+    assert_eq!(
+        decode_event(
+            &json!({"event":"permission_prompt","id":7,"origin":"https://example.org","permissions":"camera"})
+        ),
+        Some(WebViewEvent::PermissionRequested {
+            id: 7,
+            origin: "https://example.org".into(),
+            permissions: "camera".into()
+        })
+    );
+    assert!(
+        validate_event(
+            &json!({"event":"permission_prompt","id":-1,"origin":"x","permissions":"camera"})
+        )
+        .is_err()
+    );
+    assert!(validate_event(&json!({"event":"download","id":1,"state":"invented"})).is_err());
+}

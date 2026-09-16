@@ -51,3 +51,5 @@ pub mod search_provider;
 pub mod settings;
 
 pub use browser_widget::BrowserWidget;
+
+mod capabilities;
