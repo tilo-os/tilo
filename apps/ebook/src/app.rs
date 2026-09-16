@@ -56,7 +56,8 @@ use crate::comment_overlay::{CommentAction, CommentOverlay, CommentSemanticOutco
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::input_controls::{
-    NoteAction, NoteComposer, NoteSemanticOutcome, NumberControls, NumberField,
+    InputEventCtx, InputPaintCtx, NoteAction, NoteComposer, NoteSemanticOutcome, NoteView,
+    NumberControls, NumberField,
 };
 use crate::local_library::LocalLibrary;
 use crate::model::{
@@ -72,8 +73,7 @@ use crate::reader_bubble::{
 };
 use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{
-    ReadingSettings, ReadingSettingsAction, ReadingSettingsEventCtx, ReadingSettingsPaintCtx,
-    ReadingSettingsView,
+    ReadingSettings, ReadingSettingsAction, ReadingSettingsPaintCtx, ReadingSettingsView,
 };
 use crate::shelf_controls::{
     ShelfBarView, ShelfControlAction, ShelfControls, ShelfMenuView, ShelfPaintCtx,
@@ -5231,44 +5231,8 @@ impl BooksApp {
         handled: &mut bool,
     ) -> bool {
         let mut input_handled = false;
-        let (comment_text, comment_submitted) = self.comment_overlay.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            node_id,
-            taffy,
-            &mut input_handled,
-        );
-        if let Some((id, text)) = comment_text {
-            self.set_annotation_text(doc, id, &text);
-        }
-        if comment_submitted {
-            input_handled = true;
-        }
-
-        let (note_text, submit) = self.note_composer.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            node_id,
-            taffy,
-            &mut input_handled,
-        );
-        if let Some(text) = note_text {
-            self.set_composing_text(doc, &text);
-        }
-        if submit {
-            self.finish_composing(doc);
-            input_handled = true;
-        }
-
-        let settings_actions = self
-            .reading_settings
-            .handle_event(&mut ReadingSettingsEventCtx {
+        let (comment_text, comment_submitted) =
+            self.comment_overlay.handle_event(&mut InputEventCtx {
                 event,
                 scale_factor,
                 modifiers,
@@ -5278,20 +5242,55 @@ impl BooksApp {
                 taffy,
                 handled: &mut input_handled,
             });
+        if let Some((id, text)) = comment_text {
+            self.set_annotation_text(doc, id, &text);
+        }
+        if comment_submitted {
+            input_handled = true;
+        }
+
+        let (note_text, submit) = self.note_composer.handle_event(&mut InputEventCtx {
+            event,
+            scale_factor,
+            modifiers,
+            state: doc,
+            root: path,
+            node_id,
+            taffy,
+            handled: &mut input_handled,
+        });
+        if let Some(text) = note_text {
+            self.set_composing_text(doc, &text);
+        }
+        if submit {
+            self.finish_composing(doc);
+            input_handled = true;
+        }
+
+        let settings_actions = self.reading_settings.handle_event(&mut InputEventCtx {
+            event,
+            scale_factor,
+            modifiers,
+            state: doc,
+            root: path,
+            node_id,
+            taffy,
+            handled: &mut input_handled,
+        });
         for action in settings_actions {
             self.dispatch_reading_settings(action, doc);
         }
 
-        let changes = self.number_controls.handle_event(
+        let changes = self.number_controls.handle_event(&mut InputEventCtx {
             event,
             scale_factor,
             modifiers,
-            doc,
-            path,
+            state: doc,
+            root: path,
             node_id,
             taffy,
-            &mut input_handled,
-        );
+            handled: &mut input_handled,
+        });
         for (field, value) in changes {
             match field {
                 NumberField::FontScale => {
@@ -6289,10 +6288,12 @@ impl BooksApp {
             field,
             value,
             Rect::new(minus_x, by, right_x, by + btn),
-            scene,
-            t,
-            tr,
-            theme,
+            &mut InputPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
         );
         minus_x
     }
@@ -8801,8 +8802,19 @@ impl BooksApp {
         let Some(annotation) = self.annotations.iter().find(|a| a.id == id) else {
             return;
         };
-        self.note_composer
-            .draw(scene, t, tr, theme, self.rect, anchor_y, annotation);
+        self.note_composer.draw(
+            &mut InputPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &NoteView {
+                bounds: self.rect,
+                anchor_y,
+                annotation,
+            },
+        );
     }
 
     /// Paint the contents + annotations rails: either docked (flush, page
