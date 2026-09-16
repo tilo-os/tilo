@@ -2142,8 +2142,12 @@ pub fn spawn_launch(
             kind: LaunchEventKind::Started { pid: child.id() },
         });
 
-        // Relay stdout on its own thread so a chatty app can't fill the
-        // pipe and wedge the process while we're reading stderr.
+        // Drain both pipes concurrently. A GUI normally keeps both streams
+        // open for its entire lifetime, so reading either one to EOF before
+        // `wait` would turn the launch supervisor into a second lifetime
+        // wait. Worse, a child filling the other pipe would deadlock both
+        // processes. The joins below happen only after the child exits and
+        // closes its inherited descriptors.
         if let Some(stdout) = child.stdout.take() {
             let tag = app.package_id.clone();
             let _ = std::thread::Builder::new()
@@ -2157,19 +2161,29 @@ pub fn spawn_launch(
 
         // stderr is both echoed and kept (last N lines) for the failure
         // notification.
-        let mut tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
-        if let Some(stderr) = child.stderr.take() {
-            relay_capped_lines(stderr, |line| {
-                eprintln!("[app {} stderr] {line}", app.package_id);
-                if tail.len() == STDERR_TAIL_LINES {
-                    tail.pop_front();
-                }
-                tail.push_back(line);
-            });
-        }
+        let stderr_tag = app.package_id.clone();
+        let stderr_drain = child.stderr.take().and_then(|stderr| {
+            std::thread::Builder::new()
+                .name("qos-app-stderr".to_string())
+                .spawn(move || {
+                    let mut tail = VecDeque::with_capacity(STDERR_TAIL_LINES);
+                    relay_capped_lines(stderr, |line| {
+                        eprintln!("[app {stderr_tag} stderr] {line}");
+                        if tail.len() == STDERR_TAIL_LINES {
+                            tail.pop_front();
+                        }
+                        tail.push_back(line);
+                    });
+                    tail
+                })
+                .ok()
+        });
 
         let launcher_pid = child.id();
         let status = child.wait();
+        let tail = stderr_drain
+            .and_then(|drain| drain.join().ok())
+            .unwrap_or_default();
         unregister_launched_process(launcher_pid);
         let kind = match status {
             Ok(status) if status.success() => LaunchEventKind::Exited,
@@ -2739,6 +2753,55 @@ mod tests {
         );
     }
     #[cfg(target_os = "linux")]
+    #[test]
+    fn live_child_with_open_stderr_does_not_block_exit_supervision() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("live-gui");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf 'starting without closing stderr\\n' >&2\nsleep 0.15\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+
+        let _ = drain_events();
+        spawn_launch(
+            "dev.tilo.live-gui".into(),
+            "Live GUI".into(),
+            LaunchCommand {
+                program: script,
+                args: Vec::new(),
+                env: Vec::new(),
+                service_identity: None,
+                portal_workspace_id: None,
+                managed_agent_id: None,
+            },
+        )
+        .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut saw_started = false;
+        let mut saw_exit = false;
+        while Instant::now() < deadline && !saw_exit {
+            for event in drain_events() {
+                match event.kind {
+                    LaunchEventKind::Started { .. } => saw_started = true,
+                    LaunchEventKind::Exited => saw_exit = true,
+                    other => panic!("unexpected launch event: {other:?}"),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(saw_started, "the child was reported started");
+        assert!(
+            saw_exit,
+            "the supervisor must wait for a live GUI child without synchronously blocking on its open stderr pipe"
+        );
+    }
     use std::io::Write;
 
     #[test]
