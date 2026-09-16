@@ -83,7 +83,32 @@ fn operation_spec(
     kind: OperationKind,
     operation: &BackupOperation,
 ) -> Option<ActionSpec> {
-    ActionSpec::operation(id, label, kind, BACKUPS_OPERATION_TYPE, operation).ok()
+    let spec = ActionSpec::operation(id, label, kind, BACKUPS_OPERATION_TYPE, operation).ok()?;
+    // A backup is deliberately local to this device.  Its contract must say
+    // more than "effect": agents need to know which calls can be retried and
+    // which one crosses the user's recovery-folder boundary.
+    Some(match operation {
+        BackupOperation::Setup => spec
+            .with_description("Choose a local source and a destination outside it.")
+            .retry_policy(RetryPolicy::AtMostOnce),
+        BackupOperation::BackupNow => spec
+            .with_description("Create one new checksummed local snapshot.")
+            .retry_policy(RetryPolicy::AtMostOnce),
+        BackupOperation::Verify { .. } => spec
+            .with_description("Read every file in this stored snapshot and verify its checksum.")
+            .requiring(qos_actions::PermissionRequirement::Read)
+            .retry_policy(RetryPolicy::Idempotent),
+        BackupOperation::Restore { .. } => spec
+            .with_description(
+                "Choose a new or empty local folder, then restore and verify the whole snapshot.",
+            )
+            .destructive()
+            .retry_policy(RetryPolicy::AtMostOnce),
+        BackupOperation::OpenSource { .. }
+        | BackupOperation::OpenDestination { .. }
+        | BackupOperation::OpenSnapshot { .. }
+        | BackupOperation::OpenSchedule { .. } => spec,
+    })
 }
 
 /// Every collaborative operation the Backups app exports on its stored
@@ -305,14 +330,14 @@ pub fn provide_resources(
             format!("backups.schedule:{}", source.id),
             "backups.schedule",
             format!(
-                "{} schedule · {}",
+                "{} cadence · {} (observed)",
                 source.kind.label(),
                 source.cadence.label()
             ),
         );
         if let Some(spec) = operation_spec(
             "open",
-            "Show schedule",
+            "Show global retention policy",
             OperationKind::View,
             &BackupOperation::OpenSchedule { source_id },
         ) {
@@ -347,7 +372,11 @@ pub fn provide_resources(
     }
     backups = backups.with_child(destinations);
 
-    let mut snapshots = Resource::new("backups.snapshots", "backups.snapshot-set", "Snapshots");
+    let mut snapshots = Resource::new(
+        "backups.snapshots",
+        "backups.snapshot-set",
+        "Snapshot versions and runs",
+    );
     for snapshot in catalog.snapshots.iter().take(128) {
         snapshots = snapshots.with_child(snapshot_resource(snapshot, configured));
     }
@@ -413,6 +442,52 @@ fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
             )
         });
     }
+    let mut run = Resource::new(
+        format!("backups.run:{}", snapshot.id),
+        "backups.run",
+        format!(
+            "Completed {} run · {}",
+            snapshot.kind.label(),
+            snapshot.time
+        ),
+    );
+    if let Some(spec) = operation_spec(
+        "open",
+        "Show run result",
+        OperationKind::View,
+        &BackupOperation::OpenSnapshot {
+            snapshot_id: snapshot.id.clone(),
+        },
+    ) {
+        run = run.with_action(spec);
+    }
+    resource = resource.with_child(run);
+    // The selected folder is an explicit child resource rather than an
+    // unspoken side effect of Restore.  This gives palette/agent users the
+    // same truthful "new or empty folder" contract the restore sheet shows.
+    let mut restore_target = Resource::new(
+        format!("backups.restore-target:{}", snapshot.id),
+        "backups.restore-target",
+        "Restore target · choose a new or empty local folder",
+    );
+    if let Some(spec) = operation_spec(
+        "restore",
+        "Restore into a new or empty folder…",
+        OperationKind::Effect,
+        &BackupOperation::Restore {
+            snapshot_id: snapshot.id.clone(),
+        },
+    ) {
+        restore_target = restore_target.with_action(if configured {
+            spec
+        } else {
+            spec.unavailable(
+                "not_configured",
+                "This local repository is not configured on this device",
+            )
+        });
+    }
+    resource = resource.with_child(restore_target);
     resource
 }
 
@@ -590,6 +665,55 @@ mod tests {
             "a 999-count field can't increment: {m_actions:?}"
         );
         assert!(m_actions.contains(&"decrement"), "{m_actions:?}");
+    }
+
+    #[test]
+    fn local_effects_publish_honest_retry_risk_and_restore_target_contracts() {
+        let resources = provide_resources(&RetentionPolicy::default(), &Catalog::sample(), true);
+        let workspace = resources
+            .iter()
+            .find(|resource| resource.kind == "backups.workspace")
+            .expect("backup workspace root");
+        let snapshots = workspace
+            .children
+            .iter()
+            .find(|resource| resource.id.as_str() == "backups.snapshots")
+            .expect("snapshot collection");
+        let snapshot = snapshots.children.first().expect("sample snapshot");
+        let verify = snapshot
+            .actions
+            .iter()
+            .find(|action| action.id == "verify")
+            .expect("verify action");
+        assert_eq!(verify.contract.retry, RetryPolicy::Idempotent);
+        assert_eq!(
+            verify.contract.permission,
+            qos_actions::PermissionRequirement::Read
+        );
+        let restore = snapshot
+            .actions
+            .iter()
+            .find(|action| action.id == "restore")
+            .expect("restore action");
+        assert_eq!(restore.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert!(
+            restore.contract.validate_declaration().is_empty(),
+            "the destructive restore contract declares its required confirmation"
+        );
+        let target = snapshot
+            .children
+            .iter()
+            .find(|child| child.kind == "backups.restore-target")
+            .expect("explicit restore target resource");
+        assert!(target.label.contains("new or empty"));
+        assert_eq!(target.actions.len(), 1);
+        assert!(
+            snapshot
+                .children
+                .iter()
+                .any(|child| child.kind == "backups.run"),
+            "every stored version exposes its completed run in the history tree"
+        );
     }
 
     #[test]
