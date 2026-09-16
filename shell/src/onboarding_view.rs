@@ -411,6 +411,9 @@ pub struct OnboardingView {
     /// `false` shows the post-mint backup step; `true` shows the concise
     /// desktop hand-off. Persisted separately so a crash cannot skip backup.
     identity_ready_page: bool,
+    /// Settings can reopen the proven backup ceremony for an existing
+    /// identity. That is a short modal task, not a second first-login flow.
+    portable_backup_only: bool,
     /// A persistence error is distinct from identity creation failure: the
     /// current screen remains valid, but advancing is blocked until crash
     /// recovery state can be written or removed safely.
@@ -460,6 +463,20 @@ impl OnboardingView {
     /// Build recovery-only trusted chrome for a host desktop session.
     pub fn new_for_host_desktop_recovery(identity_dir: PathBuf) -> Self {
         Self::new_in_context(identity_dir, OnboardingContext::HostDesktop, true)
+    }
+
+    /// Build the trusted export-and-verify page for the active identity.
+    ///
+    /// Settings is deliberately only a discovery surface: the passphrase,
+    /// destination picker, and portable-backup cryptography remain in this
+    /// shell-owned ceremony.
+    pub fn new_for_portable_backup(identity_dir: PathBuf) -> Result<Self, String> {
+        let identity_path = runtime_identity::resolve_active_identity(&identity_dir)
+            .unwrap_or_else(|| identity_dir.join("primary.json"));
+        let identity = crate::onboarding::existing_identity_at(&identity_path)?;
+        let mut view = Self::new_in_context(identity_dir, OnboardingContext::FullSystem, false);
+        view.begin_portable_backup_for(identity);
+        Ok(view)
     }
 
     /// Reopen the introduction after first login without repeating or
@@ -606,6 +623,7 @@ impl OnboardingView {
             backup_was_verified: false,
             backup_skip_acknowledged: false,
             identity_ready_page: false,
+            portable_backup_only: false,
             progress_error: None,
             tour_page: None,
             tour_only: false,
@@ -648,6 +666,26 @@ impl OnboardingView {
     pub fn presents_desktop_context(&self) -> bool {
         self.tour_only
     }
+
+     /// Reset this trusted view to the existing-identity backup step. Kept in
+    /// one place so Settings enters the exact same export, picker, and
+    /// verification flow as first-login onboarding.
+    fn begin_portable_backup_for(&mut self, identity: MintedIdentity) {
+        self.flow = Onboarding::new();
+        self.flow.resume_created(identity);
+        self.error = None;
+        self.backup_error = None;
+        self.backup_saved = None;
+        self.backup_was_verified = false;
+        self.backup_skip_acknowledged = false;
+        self.identity_ready_page = false;
+        self.portable_backup_only = true;
+        self.progress_error = None;
+        self.tour_page = None;
+        self.tour_only = false;
+         self.finished = false;
+         self.invalidation.both();
+     }
 
     fn restore_pending_progress_from_disk(&mut self) {
         // Recovery mode was selected because the private Secret Service key
@@ -782,6 +820,7 @@ impl OnboardingView {
         self.backup_saved = None;
         self.backup_was_verified = false;
         self.identity_ready_page = false;
+        self.portable_backup_only = false;
         self.tour_page = None;
         let minted = MintedIdentity {
             fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
@@ -935,7 +974,7 @@ impl OnboardingView {
     }
 
     fn backup_decision_footer(&self, theme: &Theme) -> Box<dyn Widget> {
-        if self.backup_was_verified {
+        if self.portable_backup_only || self.backup_was_verified {
             return self.identity_actions();
         }
         Box::new(
@@ -1044,6 +1083,26 @@ impl OnboardingView {
                 ),
             ]),
             Screen::Done if self.identity_ready_page => Self::finish_action(),
+            Screen::Done if self.portable_backup_only => footer_actions(vec![
+                Box::new(
+                    Button::new(
+                        "onboarding.backup.cancel.button",
+                        "Cancel",
+                        Some(KEY_FINISH),
+                    )
+                    .fit_content(40.0),
+                ),
+                Box::new(
+                    Button::new(
+                        "onboarding.backup.done.button",
+                        "Done",
+                        Some(KEY_BACKUP_CONTINUE),
+                    )
+                    .fit_content(40.0)
+                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .with_enabled(self.backup_was_verified),
+                ),
+            ]),
             Screen::Done => footer_actions(vec![Box::new(
                 Button::new(
                     "onboarding.backup.continue.button",
@@ -2261,7 +2320,17 @@ impl Widget for OnboardingView {
 
         if read_bool(state, root, KEY_BACKUP_CONTINUE) {
             let _ = state.put(root, KEY_BACKUP_CONTINUE, ScalarValue::Boolean(false));
-            if self.flow.is_done()
+            if self.portable_backup_only
+                && self.flow.is_done()
+                && self.backup_was_verified
+                && self.finish_persisted_progress()
+            {
+                self.finished = true;
+                clear_secret(&self.backup_passphrase);
+                clear_secret(&self.backup_confirmation);
+                self.invalidation.both();
+            } else if !self.portable_backup_only
+                && self.flow.is_done()
                 && self.tour_page.is_none()
                 && !self.identity_ready_page
                 && (self.backup_was_verified || self.backup_skip_acknowledged)
@@ -2470,7 +2539,8 @@ impl Widget for OnboardingView {
             // A reopened, tour-only flow exposes “Skip tour” on every page.
             // Its action is KEY_FINISH, so it must dismiss from every page,
             // not only from the final hand-off page.
-            self.finished = self.tour_only
+            self.finished = self.portable_backup_only
+                || self.tour_only
                 || ((at_tour_end || skipping_tour)
                     && self.flow.is_done()
                     && self.finish_persisted_progress());
@@ -3932,6 +4002,61 @@ mod tests {
         assert_eq!(
             load_progress(progress.path()).expect("ready progress"),
             Some(PersistedStage::ReadyToEnterBackedUp)
+        );
+    }
+
+    #[test]
+    fn existing_identity_backup_entry_reuses_the_verified_backup_screen() {
+        let mut view = OnboardingView::with_all_handlers(
+            Box::new(|| Err("unused".to_string())),
+            Box::new(|_, _| Err("unused".to_string())),
+            Box::new(|_, _, _| Ok(())),
+        );
+
+        view.begin_portable_backup_for(MintedIdentity {
+            fingerprint: "ab".repeat(32),
+            path: PathBuf::from("/identity/primary.json"),
+        });
+
+        assert_eq!(view.flow().screen(), Screen::Done);
+        assert!(!view.identity_ready_page);
+        assert!(!view.backup_was_verified);
+        assert!(!view.finished());
+        let theme = Theme::dark();
+        let composition = view.build_composition(&theme, PANEL_MAX_HEIGHT);
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.backup.button").is_some(),
+            "the existing identity route must expose the same shell-owned export control"
+        );
+    }
+
+    #[test]
+    fn verified_existing_identity_backup_returns_directly_to_desktop() {
+        let progress = TempDir::new().expect("backup progress directory");
+        let mut view = OnboardingView::with_all_handlers(
+            Box::new(|| Err("unused".to_string())),
+            Box::new(|_, _| Err("unused".to_string())),
+            Box::new(|_, _, _| Ok(())),
+        );
+        view.begin_portable_backup_for(MintedIdentity {
+            fingerprint: "cd".repeat(32),
+            path: PathBuf::from("/identity/primary.json"),
+        });
+        view.identity_dir = Some(progress.path().to_path_buf());
+        view.backup_was_verified = true;
+        store_progress(progress.path(), PersistedStage::IdentityReadyBackedUp)
+            .expect("verified backup progress");
+
+        let mut doc = AutoCommit::new();
+        press(&mut doc, KEY_BACKUP_CONTINUE);
+        view.sync(&mut doc, &automerge::ROOT);
+
+        assert!(view.finished());
+        assert!(!view.identity_ready_page);
+        assert!(view.tour_page.is_none());
+        assert!(
+            !has_pending_progress(progress.path()),
+            "leaving Settings after verification must not resurrect first-login setup"
         );
     }
 
