@@ -1031,6 +1031,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_owned_default_has_an_explicit_continuity_policy() {
+        let region = RegionSettings::default().to_json_merged("");
+        let document = SystemPrefs::default().to_json_merged(&region);
+        let parsed = settings_store::parse(&document);
+        let missing = settings_store::continuity::unclassified_leaves(&parsed);
+        assert!(
+            missing.is_empty(),
+            "new settings must explicitly choose personal, device-local, secret, or derived: \
+             {missing:?}"
+        );
+    }
+
+    #[test]
     fn defaults_are_sensible() {
         let p = SystemPrefs::default();
         assert!(p.audio.event_sounds);
