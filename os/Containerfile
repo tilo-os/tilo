@@ -1683,14 +1683,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # qos-rpm-snapshot-package[aarch64]: qt6-qtdeclarative
 # qos-rpm-snapshot-package[aarch64]: alsa-lib
 # qos-rpm-snapshot-package[aarch64]: libdrm
-# qos-rpm-snapshot-package[aarch64]: wayland-libs-client
+# qos-rpm-snapshot-package[aarch64]: libwayland-client
 # qos-rpm-snapshot-package[aarch64]: vulkan-loader
 ARG QOS_WINDOWS_ARCH
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     test "$(uname -m)" = "$QOS_WINDOWS_ARCH" && \
     case "$(uname -m)" in \
       x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; \
-      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm wayland-libs-client vulkan-loader' ;; \
+      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm libwayland-client vulkan-loader' ;; \
       *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
     esac && dnf install -y --setopt=reposdir=/repo \
     $windows_packages \
