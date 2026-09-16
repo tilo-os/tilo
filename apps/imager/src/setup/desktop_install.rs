@@ -667,6 +667,29 @@ mod native {
         args: &[OsString],
         read_only: bool,
     ) -> Result<Output, String> {
+        run_command_with_capture_check(program, args, read_only, || Ok(()))
+    }
+
+    pub(super) fn run_command_with_capture_check(
+        program: &str,
+        args: &[OsString],
+        read_only: bool,
+        mut capture_check: impl FnMut() -> Result<(), String>,
+    ) -> Result<Output, String> {
+        // Configure capture before spawning: a setup failure must never leave
+        // a begun package transaction with closed or undrained output sinks.
+        let (mut stdout, stdout_writer) =
+            std::io::pipe().map_err(|_| "Cannot create native stdout capture.")?;
+        let (mut stderr, stderr_writer) =
+            std::io::pipe().map_err(|_| "Cannot create native stderr capture.")?;
+        for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+            // SAFETY: both descriptors belong to live pipe readers held here.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err("Cannot configure command output capture.".into());
+            }
+        }
         let mut child = Command::new(program)
             .args(args)
             .env_clear()
@@ -675,53 +698,66 @@ mod native {
             .env("HOME", "/root")
             .env("DEBIAN_FRONTEND", "noninteractive")
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(stdout_writer)
+            .stderr(stderr_writer)
             .spawn()
             .map_err(|_| format!("Cannot execute {program}."))?;
-        let capture = (|| {
-            let mut stdout = child.stdout.take().ok_or("Missing command stdout.")?;
-            let mut stderr = child.stderr.take().ok_or("Missing command stderr.")?;
-            for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
-                // SAFETY: both descriptors belong to live pipes held above.
-                let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-                if flags < 0
-                    || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-                {
-                    return Err("Cannot configure command output capture.".into());
+        // Readers belong to this outer scope, not the fallible capture work.
+        // Keep draining after errors and do not close either pipe until the
+        // child is reaped: closing is an implicit SIGPIPE/EPIPE cancellation.
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut overflow = false;
+        let mut capture_error = None;
+        let start = Instant::now();
+        let capture = loop {
+            for result in [
+                capture_check(),
+                drain(&mut stdout, &mut out, &mut overflow),
+                drain(&mut stderr, &mut err, &mut overflow),
+            ] {
+                if let Err(error) = result {
+                    capture_error.get_or_insert(error);
                 }
             }
-            let mut out = Vec::new();
-            let mut err = Vec::new();
-            let mut overflow = false;
-            let start = Instant::now();
-            loop {
-                drain(&mut stdout, &mut out, &mut overflow)?;
-                drain(&mut stderr, &mut err, &mut overflow)?;
-                if let Some(status) = child
-                    .try_wait()
-                    .map_err(|_| "Cannot track native command.")?
-                {
-                    drain(&mut stdout, &mut out, &mut overflow)?;
-                    drain(&mut stderr, &mut err, &mut overflow)?;
-                    if read_only && overflow {
-                        return Err("Read-only command exceeded its output bound.".into());
+            if read_only && let Some(error) = capture_error.take() {
+                break Err(error);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    for result in [
+                        drain(&mut stdout, &mut out, &mut overflow),
+                        drain(&mut stderr, &mut err, &mut overflow),
+                    ] {
+                        if let Err(error) = result {
+                            capture_error.get_or_insert(error);
+                        }
                     }
-                    return Ok(Output {
+                    if let Some(error) = capture_error {
+                        break Err(error);
+                    }
+                    if read_only && overflow {
+                        break Err("Read-only command exceeded its output bound.".into());
+                    }
+                    break Ok(Output {
                         code: status.code().unwrap_or(-1),
                         stdout: String::from_utf8_lossy(&out).into_owned(),
                         stderr: String::from_utf8_lossy(&err).into_owned(),
                     });
                 }
-                if read_only && (start.elapsed() > Duration::from_secs(15) || overflow) {
-                    return Err("Read-only command exceeded its time/output bound.".into());
+                Ok(None) => (),
+                Err(_) => {
+                    capture_error.get_or_insert_with(|| "Cannot track native command.".into());
                 }
-                std::thread::sleep(Duration::from_millis(10));
             }
-        })();
+            if read_only && (start.elapsed() > Duration::from_secs(15) || overflow) {
+                break Err("Read-only command exceeded its time/output bound.".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
         if capture.is_err() {
-            // Only read-only queries may be killed. A begun native transaction
-            // always runs to its terminal status, even after an IO failure.
+            // Only read-only queries may be killed. Native errors reach this
+            // point only after try_wait has established the terminal status.
             if read_only {
                 let _ = child.kill();
             }
@@ -1431,5 +1467,35 @@ mod tests {
         let link = temp.path().join("link");
         std::os::unix::fs::symlink(&path, &link).unwrap();
         assert!(pin_input(&link).is_err());
+    }
+    #[test]
+    fn capture_error_keeps_begun_transaction_pipes_alive_through_terminal_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("terminal-work-completed");
+        let script = "set -e; sleep 0.05; /usr/bin/yes credential-bearing-stdout | /usr/bin/head -c 262144; /usr/bin/yes credential-bearing-stderr | /usr/bin/head -c 262144 >&2; : > \"$1\"";
+        let mut injected = false;
+        let result = native::run_command_with_capture_check(
+            "/bin/sh",
+            &[
+                "-c".into(),
+                script.into(),
+                "recording-transaction".into(),
+                marker.as_os_str().into(),
+            ],
+            false,
+            || {
+                if std::mem::replace(&mut injected, true) {
+                    Ok(())
+                } else {
+                    Err("Injected capture failure.".into())
+                }
+            },
+        );
+        assert!(injected);
+        assert!(result.is_err(), "capture failure must never become success");
+        assert!(
+            marker.is_file(),
+            "capture failure must not interrupt terminal native work"
+        );
     }
 }
