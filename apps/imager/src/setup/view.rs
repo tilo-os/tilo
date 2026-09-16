@@ -27,6 +27,8 @@ use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
 
 type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
+type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
+type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
 
 const INSTALL_UNAVAILABLE: &str = "Installation is not available in this build yet.";
 
@@ -79,6 +81,7 @@ pub struct SetupApp {
     known_folders: Vec<KnownFolder>,
     worker_tx: Sender<WorkerMessage>,
     worker_rx: Receiver<WorkerMessage>,
+    worker_launcher: WorkerLauncher,
     picker_rx: Option<ui::PortalChannel>,
     pending_scans: usize,
     known_folder_lookup_pending: bool,
@@ -108,28 +111,31 @@ impl SetupApp {
         } else {
             HostOs::Other
         };
-        let mut app = Self::with_capabilities(SetupCapabilities {
-            platform: Capabilities {
-                host,
-                desktop_session: false,
-                internal_dual_boot: false,
+        let mut app = Self::with_worker_launcher(
+            SetupCapabilities {
+                platform: Capabilities {
+                    host,
+                    desktop_session: false,
+                    internal_dual_boot: false,
+                },
+                connected_folders: false,
             },
-            connected_folders: false,
-        });
-        app.known_folder_lookup_pending = true;
-        app.status = "Looking up familiar folders…".into();
-        let tx = app.worker_tx.clone();
-        let _ = std::thread::Builder::new()
-            .name("imager-known-folders".into())
-            .spawn(move || {
-                let _ = tx.send(WorkerMessage::KnownFolders(known_folders::discover()));
-            });
+            launch_worker,
+        );
+        app.start_known_folder_lookup();
         app
     }
 
     /// Deterministic constructor for tests and screenshot fixtures.
     #[must_use]
     pub fn with_capabilities(capabilities: SetupCapabilities) -> Self {
+        Self::with_worker_launcher(capabilities, launch_worker)
+    }
+
+    fn with_worker_launcher(
+        capabilities: SetupCapabilities,
+        worker_launcher: WorkerLauncher,
+    ) -> Self {
         let (worker_tx, worker_rx) = mpsc::channel();
         Self {
             controller: Rc::new(RefCell::new(SetupController::new(capabilities.platform))),
@@ -139,6 +145,7 @@ impl SetupApp {
             known_folders: unavailable_suggestions("Known-folder lookup has not run."),
             worker_tx,
             worker_rx,
+            worker_launcher,
             picker_rx: None,
             pending_scans: 0,
             known_folder_lookup_pending: false,
@@ -290,23 +297,71 @@ impl SetupApp {
     }
 
     fn start_scan(&mut self, source: PathBuf) {
+        if let Some(error) = self.scan_source_error(&source) {
+            self.status = error;
+            self.status_is_error = true;
+            self.structure_dirty = true;
+            return;
+        }
         let destination = PathBuf::from("/home/qos").join(
             source
                 .file_name()
                 .unwrap_or_else(|| std::ffi::OsStr::new("Imported folder")),
         );
+        let source_label = source.display().to_string();
         let tx = self.worker_tx.clone();
         self.pending_scans = self.pending_scans.saturating_add(1);
-        self.status = format!("Scanning {}…", source.display());
-        let _ = std::thread::Builder::new()
-            .name("imager-folder-scan".into())
-            .spawn(move || {
+        self.status = format!("Scanning {source_label}…");
+        if let Err(error) = (self.worker_launcher)(
+            "imager-folder-scan",
+            Box::new(move || {
                 let result = folders::scan_folder(&source);
                 let _ = tx.send(WorkerMessage::ScanFinished {
                     destination,
                     result,
                 });
-            });
+            }),
+        ) {
+            self.pending_scans = self.pending_scans.saturating_sub(1);
+            self.status = format!("Folder scan could not start for {source_label}: {error}");
+            self.status_is_error = true;
+            self.structure_dirty = true;
+        }
+    }
+
+    fn start_known_folder_lookup(&mut self) {
+        self.known_folder_lookup_pending = true;
+        self.status = "Looking up familiar folders…".into();
+        let tx = self.worker_tx.clone();
+        if let Err(error) = (self.worker_launcher)(
+            "imager-known-folders",
+            Box::new(move || {
+                let _ = tx.send(WorkerMessage::KnownFolders(known_folders::discover()));
+            }),
+        ) {
+            self.known_folder_lookup_pending = false;
+            self.known_folders = unavailable_suggestions("Known-folder lookup could not start.");
+            self.status = format!("Known-folder lookup could not start: {error}");
+            self.status_is_error = true;
+            self.structure_dirty = true;
+        }
+    }
+
+    fn scan_source_error(&self, source: &Path) -> Option<String> {
+        let source_label = source.display();
+        if system_folder_reason(source).is_some() {
+            return Some(format!(
+                "{source_label} is a system folder and cannot be added to setup."
+            ));
+        }
+        self.controller
+            .borrow()
+            .folders()
+            .iter()
+            .any(|folder| {
+                folder.scan.source.starts_with(source) || source.starts_with(&folder.scan.source)
+            })
+            .then(|| format!("{source_label} is already covered by another selected folder."))
     }
 
     fn apply_worker_message(&mut self, message: WorkerMessage) {
@@ -326,21 +381,8 @@ impl SetupApp {
                 match result {
                     Ok(scan) => {
                         let source = scan.source.display().to_string();
-                        if system_folder_reason(&scan.source).is_some() {
-                            self.status = format!(
-                                "{source} is a system folder and cannot be added to setup."
-                            );
-                            self.status_is_error = true;
-                            self.structure_dirty = true;
-                            return;
-                        }
-                        let overlaps = self.controller.borrow().folders().iter().any(|folder| {
-                            folder.scan.source.starts_with(&scan.source)
-                                || scan.source.starts_with(&folder.scan.source)
-                        });
-                        if overlaps {
-                            self.status =
-                                format!("{source} is already covered by another selected folder.");
+                        if let Some(error) = self.scan_source_error(&scan.source) {
+                            self.status = error;
                             self.status_is_error = true;
                             self.structure_dirty = true;
                             return;
@@ -548,30 +590,56 @@ impl SetupApp {
             .with_initial_value(&destination)
             .with_accessible_name(format!("Destination for {source}"))
             .disabled(true);
-        let copy = self
+        let mode_button_label = |mode: FolderMode, label: &str| {
+            if folder.mode == mode {
+                if folder.mode_overridden {
+                    format!("Selected: {label}")
+                } else {
+                    format!("Common: {label}")
+                }
+            } else {
+                label.to_string()
+            }
+        };
+        let mut copy = self
             .button(
                 &format!("setup.folder.{index}.copy"),
-                "Copy",
+                &mode_button_label(FolderMode::Copy, "Copy"),
                 SetupCommand::SetFolderMode(index, FolderMode::Copy),
             )
             .with_enabled(true);
-        let connected = self
+        if folder.mode == FolderMode::Copy {
+            copy = copy.primary();
+        }
+        let mut connected = self
             .button(
                 &format!("setup.folder.{index}.connected"),
-                "Connected",
+                &mode_button_label(FolderMode::Connected, "Connected"),
                 SetupCommand::SetFolderMode(index, FolderMode::Connected),
             )
             .with_enabled(self.capabilities.connected_folders);
-        let later = self.button(
+        if folder.mode == FolderMode::Connected {
+            connected = connected.primary();
+        }
+        let mut later = self.button(
             &format!("setup.folder.{index}.later"),
-            "Later",
+            &mode_button_label(FolderMode::Later, "Later"),
             SetupCommand::SetFolderMode(index, FolderMode::Later),
         );
-        let follow = self.button(
-            &format!("setup.folder.{index}.follow"),
-            "Use common choice",
-            SetupCommand::ClearFolderMode(index),
-        );
+        if folder.mode == FolderMode::Later {
+            later = later.primary();
+        }
+        let follow = self
+            .button(
+                &format!("setup.folder.{index}.follow"),
+                if folder.mode_overridden {
+                    "Use common choice"
+                } else {
+                    "Using common choice"
+                },
+                SetupCommand::ClearFolderMode(index),
+            )
+            .with_enabled(folder.mode_overridden);
         let remove = self.button(
             &format!("setup.folder.{index}.remove"),
             "Remove",
@@ -826,6 +894,14 @@ impl SetupApp {
             )),
         )
     }
+}
+
+fn launch_worker(name: &str, task: WorkerTask) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(task)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 fn unavailable_suggestions(reason: &str) -> Vec<KnownFolder> {
@@ -1205,6 +1281,55 @@ mod tests {
         assert!(!app.status.contains("ready to copy"));
     }
 
+    fn fail_worker_launch(_: &str, _: WorkerTask) -> Result<(), String> {
+        Err("test launcher refused the worker".into())
+    }
+
+    fn panic_worker_launch(_: &str, _: WorkerTask) -> Result<(), String> {
+        panic!("a rejected source reached the worker launcher")
+    }
+
+    #[test]
+    fn worker_launch_failures_clear_pending_state() {
+        let mut scan_app =
+            SetupApp::with_worker_launcher(supported_fixture().capabilities, fail_worker_launch);
+        scan_app.start_scan(PathBuf::from(TEST_SOURCE_ROOT).join("Documents"));
+
+        assert_eq!(scan_app.pending_scans, 0);
+        assert!(!scan_app.needs_idle_sync());
+        assert!(scan_app.status.contains("could not start"));
+
+        let mut lookup_app =
+            SetupApp::with_worker_launcher(supported_fixture().capabilities, fail_worker_launch);
+        lookup_app.start_known_folder_lookup();
+
+        assert!(!lookup_app.known_folder_lookup_pending);
+        assert!(!lookup_app.needs_idle_sync());
+        assert!(lookup_app.status.contains("could not start"));
+    }
+
+    #[test]
+    fn protected_and_overlapping_sources_are_rejected_before_worker_launch() {
+        let mut protected =
+            SetupApp::with_worker_launcher(supported_fixture().capabilities, panic_worker_launch);
+        protected.start_scan(PathBuf::from(TEST_SYSTEM_ROOT));
+
+        assert_eq!(protected.pending_scans, 0);
+        assert!(protected.status.contains("system folder"));
+
+        let mut overlapping =
+            SetupApp::with_worker_launcher(supported_fixture().capabilities, panic_worker_launch);
+        overlapping.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Ok(scan("Documents", 12)),
+        });
+        overlapping.start_scan(PathBuf::from(TEST_SOURCE_ROOT).join("Documents/Projects"));
+
+        assert_eq!(overlapping.pending_scans, 0);
+        assert_eq!(overlapping.controller().folders().len(), 1);
+        assert!(overlapping.status.contains("already covered"));
+    }
+
     #[test]
     fn overlapping_scan_is_deduplicated_with_an_explanation() {
         let mut app = supported_fixture();
@@ -1259,20 +1384,69 @@ mod tests {
     }
 
     #[test]
-    fn enter_and_space_semantic_activation_reach_the_same_controller_commands() {
+    fn inherited_and_overridden_folder_modes_have_visible_selection_feedback() {
+        let mut inherited = supported_fixture();
+        inherited.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        inherited.apply_command(SetupCommand::Next);
+        inherited.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Ok(scan("Documents", 12)),
+        });
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(inherited), (1180, 820));
+        harness
+            .perform_named("setup.folder.0.copy", &Action::Focus)
+            .unwrap();
+        assert_eq!(
+            harness.focused_access_node().and_then(|node| node.name),
+            Some("Common: Copy".into())
+        );
+
+        let mut overridden = supported_fixture();
+        overridden.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        overridden.apply_command(SetupCommand::Next);
+        overridden.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Ok(scan("Documents", 12)),
+        });
+        overridden.apply_command(SetupCommand::SetFolderMode(0, FolderMode::Connected));
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(overridden), (1180, 820));
+        harness
+            .perform_named("setup.folder.0.connected", &Action::Focus)
+            .unwrap();
+        assert_eq!(
+            harness.focused_access_node().and_then(|node| node.name),
+            Some("Selected: Connected".into())
+        );
+    }
+
+    #[test]
+    fn enter_and_space_keyboard_events_reach_controller_commands() {
         let app = supported_fixture();
         let observed = app.controller_handle();
         let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (1180, 820));
 
         harness
-            .perform_named("setup.experience.desktop", &Action::Activate)
+            .perform_named("setup.experience.full", &Action::Focus)
             .unwrap();
+        harness.key("Enter");
 
-        assert_eq!(observed.borrow().plan().experience, Experience::Desktop);
+        assert_eq!(observed.borrow().plan().experience, Experience::FullOs);
+
+        harness.perform_named("setup.next", &Action::Focus).unwrap();
+        harness.key("Space");
+        assert_eq!(observed.borrow().page(), SetupPage::Folders);
+    }
+
+    #[test]
+    fn assistive_activation_reaches_controller_command() {
+        let app = supported_fixture();
+        let observed = app.controller_handle();
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (1180, 820));
 
         harness
-            .perform_named("setup.next", &Action::Activate)
+            .perform_named("setup.experience.full", &Action::Activate)
             .unwrap();
-        assert_eq!(observed.borrow().page(), SetupPage::Folders);
+
+        assert_eq!(observed.borrow().plan().experience, Experience::FullOs);
     }
 }
