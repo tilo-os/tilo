@@ -2,8 +2,6 @@
 
 Start with a user goal, describe the visible route, set an interaction budget, and assert the resulting product state. Input dispatch alone never means success.
 
-Latest measured closure: [48-run repaired matrix](superpowers/audits/2026-09-15-fixed-ux-bench-results.md).
-
 ## Run
 
 On macOS, from the repository root:
