@@ -2567,18 +2567,21 @@ mod tests {
                 ssid: "Home_Network".to_string(),
                 signal: 4,
                 secure: true,
+                security: os_actions::WifiSecurity::Wpa3,
                 connected: true,
             },
             WifiNetworkInfo {
                 ssid: "Cafe_Guest".to_string(),
                 signal: 3,
                 secure: false,
+                security: os_actions::WifiSecurity::Open,
                 connected: false,
             },
             WifiNetworkInfo {
                 ssid: "Neighbour_5G".to_string(),
                 signal: 2,
                 secure: true,
+                security: os_actions::WifiSecurity::Wpa2,
                 connected: false,
             },
         ]
@@ -2734,6 +2737,7 @@ mod tests {
             ssid: "NewSpot".to_string(),
             signal: 4,
             secure: false,
+            security: os_actions::WifiSecurity::Open,
             connected: false,
         }];
         pane.lister = {

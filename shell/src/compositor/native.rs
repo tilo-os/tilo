@@ -3522,6 +3522,41 @@ fn install_device_fabric_bridge(
 /// Start the authenticated peer transport and install the chrome commands
 /// that use it. Kept as one operation so first-login can call the exact same
 /// path after the identity ceremony releases the desktop.
+fn visible_wifi_security(ssid: &str) -> Result<Option<os_actions::WifiSecurity>, String> {
+    os_actions::list_wifi_networks().map(|networks| {
+        networks
+            .into_iter()
+            .find(|network| network.ssid == ssid)
+            .map(|network| network.security)
+    })
+}
+
+fn install_wifi_secret_bridge(
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
+    wifi_net: Arc<crate::shell::network::ShellNetwork>,
+) {
+    host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
+        crate::shell::overlay_host::WifiSecretAction::Lookup { ssid } => {
+            let Some(security) = visible_wifi_security(&ssid)? else {
+                return Ok(None);
+            };
+            Ok(wifi_net.shared_wifi_password(&ssid, security))
+        }
+        crate::shell::overlay_host::WifiSecretAction::Share { ssid, password } => {
+            let security = visible_wifi_security(&ssid)?
+                .ok_or_else(|| "could not verify the connected Wi-Fi security mode".to_string())?;
+            if matches!(
+                security,
+                os_actions::WifiSecurity::Open | os_actions::WifiSecurity::Owe
+            ) {
+                return Ok(None);
+            }
+            wifi_net.share_wifi_credential(&ssid, security, &password)?;
+            Ok(None)
+        }
+    }));
+}
+
 fn spawn_session_peer_sync(
     frame_builder: &mut FrameBuilder,
     state: &mut State,
@@ -3535,19 +3570,7 @@ fn spawn_session_peer_sync(
             let _ = handle.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             let net = Arc::new(handle);
-            let wifi_net = Arc::clone(&net);
-            frame_builder
-                .host_mut()
-                .set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
-                    crate::shell::overlay_host::WifiSecretAction::Lookup { ssid } => {
-                        Ok(wifi_net.shared_wifi_password(&ssid))
-                    }
-                    crate::shell::overlay_host::WifiSecretAction::Share { ssid, password } => {
-                        wifi_net
-                            .share_wifi_credential(&ssid, "wpa2", &password)
-                            .map(|()| None)
-                    }
-                }));
+            install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
             install_device_fabric_bridge(frame_builder.host_mut(), Arc::clone(&net));
             let stream_net = Arc::clone(&net);
             state.set_legacy_stream_publisher(Arc::new(move |message| {
