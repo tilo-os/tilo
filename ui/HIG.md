@@ -227,6 +227,48 @@ When a polish pattern recurs (a media/participant grid, a stat tile, a huddle
 overlay, a segmented control), promote it to a `ui` primitive so the *nice*
 version is the default and no app has to re-earn it.
 
+### 7a. Let content determine ordinary layout
+
+Choose a shared composition by what the region contains:
+
+| Region | Starting point | Decisions supplied by the framework |
+|---|---|---|
+| Account or settings form | `FormPage`, `Form`, `Section`, `Field` | One page gutter, readable width, related-field spacing, measured label placement, wrapping and scrolling |
+| Card with a title, content and actions | `Card::composed` with a header and footer | Content height, consistent card gutter, footer containment and alignment |
+| Small primary/secondary action group | `Actions` | Measured unspecified button sizes, wrapping and trailing alignment |
+| Empty list or first-use pane | `EmptyState` | Wrapped title/message, measured action height, centering and decorative shedding |
+| Authored canvas or custom arrangement | `Manual` or existing layout primitives | Shared child measurement and ordinary control behavior; the author chooses geometry |
+
+Give primary content the remaining workspace. Empty optional docks should not
+reserve a large area before they have useful content. A short query or request
+can start compact and retain a visible resize route. Bound prose and forms to a
+readable width; keep document, image, map and editing canvases useful at full
+workspace width. These are different content needs, so a single global maximum
+width or larger global gap cannot produce good balance.
+
+Keep related title, explanation and action rows close enough to read as a group,
+with a larger separation before the next group. Avoid repeating a page title
+inside its first section or wrapping each grouping in another padded surface.
+When commands or panes no longer fit, use wrapping, a labelled disclosure, or
+the existing overview/detail navigation. Preserve selected state and the return
+route through the transition.
+
+For custom text painting, measure and draw with the same style and width.
+Theme typography tokens are already resolved logical sizes; pass those styles
+through `TextRenderer::renderer_input_style` once before calling the legacy
+renderer-relative APIs. Base font sizes supplied to editor controls remain base
+sizes. Do not compensate for a scale mismatch with smaller fonts or offsets.
+
+An empty state's title and action can exceed a physically small pane even after
+decoration is removed. Retained callers can use `EmptyState::into_scrollable()`;
+immediate callers use `minimum_essential_height` and provide their own scroll
+owner. Check the action after scrolling, including pointer and keyboard use.
+
+Explicit dimensions remain authored choices. Use guided overrides or fully
+[manual composition](MANUAL_LAYOUT.md) wherever the default does not express the
+intended layout. Evaluate the resulting reading order, useful content area,
+containment and action reachability rather than counting custom pixel values.
+
 ---
 
 ## 8. Never hand-roll an interactive primitive
