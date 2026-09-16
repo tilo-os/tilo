@@ -3048,6 +3048,24 @@ fn autoconfig_lookup(_email: &str) -> Option<crate::autoconfig::Autoconfig> {
 // =============================== Widget impl ===============================
 
 impl MailApp {
+    /// The retained search index is deliberately independent from the visible
+    /// mailbox. Keep an indexing fault addressable until a later successful
+    /// snapshot clears it, instead of hiding it in a transient toast.
+    pub(crate) fn mail_search_error(&self) -> Option<String> {
+        self.mail_search_provider.last_error()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_mail_search_snapshot_failure(&self) {
+        self.mail_search_provider.inject_snapshot_failure_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refresh_mail_search_for_test(&self) -> Result<(), String> {
+        let state = self.shared.borrow();
+        self.mail_search_provider.refresh(&state.mailbox)
+    }
+
     /// Route events to the open compose modal and report whether it consumed
     /// them.
     #[allow(
@@ -3155,8 +3173,13 @@ impl Widget for MailApp {
             self.maybe_auto_refresh();
         }
         self.persist_active_account_if_changed();
-        self.mail_search_provider
-            .refresh(&self.shared.borrow().mailbox);
+        let search_refresh = {
+            let state = self.shared.borrow();
+            self.mail_search_provider.refresh(&state.mailbox)
+        };
+        if let Err(error) = search_refresh {
+            self.shared.borrow_mut().status = Some(error);
+        }
         self.nav.sync(state, path);
     }
 
@@ -3427,8 +3450,13 @@ impl Widget for MailApp {
     /// alongside the actions the app exports. The provider never touches the
     /// IMAP engine, so a Ctrl+K query stays synchronous.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        self.mail_search_provider
-            .refresh(&self.shared.borrow().mailbox);
+        let search_refresh = {
+            let state = self.shared.borrow();
+            self.mail_search_provider.refresh(&state.mailbox)
+        };
+        if let Err(error) = search_refresh {
+            self.shared.borrow_mut().status = Some(error);
+        }
         vec![Box::new(self.mail_search_provider.clone())]
     }
 
