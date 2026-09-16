@@ -422,6 +422,7 @@ enum ContextEnvelope {
     FollowChanged {
         peer_id: Option<String>,
     },
+    SnapshotRequested,
 }
 
 /// Input contract published for one live application action.
@@ -1112,6 +1113,36 @@ pub struct CapnpBrokerState {
 }
 
 impl CapnpBrokerState {
+    /// Direct a late-join snapshot request to one established subscriber on
+    /// the exact route. Lowest broker peer id makes selection deterministic;
+    /// the requester is excluded so it never snapshots its own empty state.
+    fn request_document_snapshot(&self, channel_id: &str, requester: u64) -> bool {
+        let Ok(mut channels) = self.channels.lock() else {
+            return false;
+        };
+        let Some(channel) = channels.get_mut(channel_id) else {
+            return false;
+        };
+        channel.context.sort_by_key(|subscriber| subscriber.peer_id);
+        let Some(index) = channel
+            .context
+            .iter()
+            .position(|subscriber| subscriber.peer_id != requester)
+        else {
+            return false;
+        };
+        if channel.context[index]
+            .tx
+            .send(ContextEnvelope::SnapshotRequested)
+            .is_ok()
+        {
+            true
+        } else {
+            channel.context.remove(index);
+            false
+        }
+    }
+
     const MAX_RETAINED_INVOCATIONS: usize = 256;
     const INVOCATION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
     const CANCELLATION_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -3039,6 +3070,7 @@ impl CapnpBrokerState {
                 );
             }
             CollabEvent::ScrollbackBatch { .. }
+            | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::ActionCatalogue { .. }
@@ -3389,6 +3421,23 @@ impl CapnpChannelHandle {
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    fn request_document_snapshot(
+        self: Rc<Self>,
+        _params: channel_handle::RequestDocumentSnapshotParams,
+        _results: channel_handle::RequestDocumentSnapshotResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let _ = self
+            .state
+            .request_document_snapshot(&self.channel_id, self.peer_id);
+        Promise::ok(())
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "receipt validation and persistence share one RPC boundary so acknowledgement cannot precede durable local state"
@@ -6334,6 +6383,10 @@ impl context_stream::Server for ContextStreamServer {
                     ctx.set_follow_target(peer_id.as_deref().unwrap_or(""));
                     return Ok(());
                 }
+                ContextEnvelope::SnapshotRequested => {
+                    ctx.set_snapshot_requested(true);
+                    return Ok(());
+                }
             };
             let collab_count = u32::try_from(collaborators.len()).map_err(|_| {
                 capnp::Error::failed("context: too many collaborators to encode".into())
@@ -6780,6 +6833,33 @@ mod tests {
     use collab_types::{CapOverride, Ed25519PublicKey, Role, Subject, sign_op};
     use ed25519_dalek::Signer as _;
     use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn late_join_snapshot_request_selects_exactly_one_existing_holder() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        let channel = "dev.qos.notes#room:test#record:daily";
+        let mut first = state.subscribe_context(channel, 7);
+        let mut second = state.subscribe_context(channel, 9);
+        let _requester = state.subscribe_context(channel, 12);
+
+        assert!(state.request_document_snapshot(channel, 12));
+        assert!(matches!(
+            first.try_recv(),
+            Ok(ContextEnvelope::SnapshotRequested)
+        ));
+        assert!(second.try_recv().is_err(), "only one holder may respond");
+        assert!(
+            !state.request_document_snapshot("missing", 12),
+            "a route without a holder is retryable, not falsely acknowledged"
+        );
+    }
 
     #[test]
     fn launch_content_rejects_bad_or_missing_hash_and_keeps_plain_launch_empty() {

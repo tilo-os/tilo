@@ -3792,8 +3792,8 @@ impl App {
         self.presence_broadcast_scope.clone_from(&key);
         // Reset the throttle so a new scope's first move fires immediately.
         self.last_pointer_broadcast = None;
-        // Announce arrival so peers already in the room reply with a full
-        // snapshot (the late-join handshake).
+        // Arrival remains ephemeral presence only. Document catch-up is a
+        // broker-directed request with one selected snapshot responder.
         if let Some(k) = key {
             if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                 crate::diag!(
@@ -4197,6 +4197,12 @@ impl App {
                     Some(peer_id) => self.follow(peer_id),
                     None => self.unfollow(),
                 },
+                CollabEvent::DocumentSnapshotRequested { .. } => {
+                    let data = self.state.save();
+                    let _ = self
+                        .collab_manager
+                        .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
                         cursor.x = x;
@@ -4437,6 +4443,12 @@ impl App {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
             },
+            CollabEvent::DocumentSnapshotRequested { .. } => {
+                let data = self.state.save();
+                let _ = self
+                    .collab_manager
+                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
+            }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
             }
@@ -4651,14 +4663,7 @@ impl App {
                     );
                 }
             }
-            RemotePresenceEffect::PeerArrived => {
-                let data = self.state.save();
-                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    crate::diag!("[app] recv Arrived; replying full state {}B", data.len());
-                }
-                self.collab_manager
-                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
-            }
+            RemotePresenceEffect::PeerArrived => {}
         }
     }
 
@@ -5564,12 +5569,14 @@ impl App {
                 }
                 self.needs_sync = true;
                 self.layout_dirty = true;
-                // `Arrived` asks peers already holding the document to reply
-                // with a full snapshot, so a window opening a file someone
-                // else is editing hears its existing content too.
+                // Presence announces the location; document catch-up is an
+                // independently directed broker request on the new route.
                 if let Some(scope) = self.presence_broadcast_scope.clone() {
                     self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
+                let _ = self
+                    .collab_manager
+                    .send(crate::collaboration::CollabRequest::RequestDocumentSnapshot);
                 true
             }
             None => false,
