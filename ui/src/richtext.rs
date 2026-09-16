@@ -5,8 +5,8 @@
 //! [`crate::text_render::TextRenderer::draw_rich`].
 
 use cosmic_text::{
-    Affinity, Align, Attrs, Buffer, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight,
-    Wrap,
+    Affinity, Align, Attrs, AttrsList, Buffer, BufferLine, Cursor, Family, FontSystem, LineEnding,
+    Metrics, Shaping, Style, Weight, Wrap,
 };
 
 use crate::text_break::OffsetMap;
@@ -355,6 +355,22 @@ impl RichTextLayout {
             Shaping::Advanced,
             align.to_cosmic(),
         );
+        // cosmic-text 0.19's rich setter omits the final empty paragraph after
+        // an LF, unlike its plain setter. Restore that line at this boundary so
+        // attributed and plain layouts expose the same bytes and geometry.
+        if full_text.ends_with('\n') {
+            let terminal_attrs = built
+                .last()
+                .map_or_else(|| base.clone(), |(_, attrs)| attrs.clone());
+            let mut terminal_line = BufferLine::new(
+                "",
+                LineEnding::None,
+                AttrsList::new(&terminal_attrs),
+                Shaping::Advanced,
+            );
+            terminal_line.set_align(align.to_cosmic());
+            buffer.lines.push(terminal_line);
+        }
         let reserved_hyphen_width = if align == TextAlign::Left {
             discretionary_hyphen_width
         } else {
@@ -820,6 +836,13 @@ impl RichTextLayout {
 mod tests {
     use super::*;
 
+    fn assert_near(actual: f32, expected: f32, message: &str) {
+        assert!(
+            (actual - expected).abs() < 0.01,
+            "{message}: expected {expected}, got {actual}"
+        );
+    }
+
     fn layout(text: &str, width: f32) -> RichTextLayout {
         let mut fs = crate::font_catalog::fixture_font_system();
         RichTextLayout::shape(
@@ -860,6 +883,109 @@ mod tests {
         let rects = layout.selection_rects(0, 5);
         assert_eq!(rects.len(), 1);
         assert!(rects[0].2 > rects[0].0);
+    }
+
+    #[test]
+    fn attributed_terminal_lf_preserves_the_plain_layout_final_row() {
+        use crate::text_render::TextStyle;
+
+        for scale in [1.0, 2.0] {
+            let style = TextStyle::new(16.0 * scale).with_line_height(1.25);
+            let fixtures = [
+                ("x", vec![RichSpan::new("x")], 1usize),
+                ("x\ny", vec![RichSpan::new("x\ny")], 2),
+                ("x\n", vec![RichSpan::new("x\n")], 2),
+                ("\n", vec![RichSpan::new("\n")], 2),
+                ("x\n\n", vec![RichSpan::new("x\n\n")], 3),
+                (
+                    "x\n",
+                    vec![
+                        RichSpan::new("x").bold(true),
+                        RichSpan::new("\n").italic(true),
+                    ],
+                    2,
+                ),
+            ];
+
+            for (text, spans, expected_rows) in fixtures {
+                let mut fs = crate::font_catalog::fixture_font_system();
+                let plain = RichTextLayout::shape_plain(&mut fs, text, &style, Some(300.0));
+                let styled = RichTextLayout::shape_styled(
+                    &mut fs,
+                    &spans,
+                    &style,
+                    Some(300.0),
+                    TextAlign::Left,
+                    vec![],
+                    vec![],
+                );
+
+                assert_near(
+                    styled.height(),
+                    plain.height(),
+                    &format!("{text:?} styled and plain heights at {scale}x"),
+                );
+                let plain_eof = plain.caret_geometry(text.len());
+                let styled_eof = styled.caret_geometry(text.len());
+                assert_near(
+                    styled_eof.1,
+                    plain_eof.1,
+                    &format!("{text:?} EOF caret top at {scale}x"),
+                );
+                assert_near(
+                    styled_eof.2,
+                    plain_eof.2,
+                    &format!("{text:?} EOF caret height at {scale}x"),
+                );
+                assert_eq!(
+                    styled.visual_line_index(text.len()),
+                    expected_rows - 1,
+                    "{text:?} EOF visual row at {scale}x"
+                );
+                assert_eq!(
+                    styled.logical_line_bands(text.len()).len(),
+                    1,
+                    "{text:?} EOF logical line has one shaped band at {scale}x"
+                );
+                assert_eq!(
+                    styled.hit(0.0, styled.height() + style.line_height_px()),
+                    text.len(),
+                    "{text:?} hit below content resolves to EOF at {scale}x"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_empty_row_inherits_the_final_run_metrics_and_alignment() {
+        use crate::text_render::TextStyle;
+
+        let style = TextStyle::new(16.0).with_line_height(1.25);
+        let mut final_run = RichSpan::new("\n").bold(true).italic(true);
+        final_run.size = Some(24.0);
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let layout = RichTextLayout::shape_styled(
+            &mut fs,
+            &[RichSpan::new("x"), final_run],
+            &style,
+            Some(300.0),
+            TextAlign::Center,
+            vec![],
+            vec![],
+        );
+
+        let final_line = layout.buffer.lines.last().expect("terminal empty line");
+        let attrs = final_line.attrs_list().defaults();
+        assert_eq!(final_line.text(), "");
+        assert_eq!(final_line.ending(), cosmic_text::LineEnding::None);
+        assert_eq!(final_line.align(), Some(Align::Center));
+        assert_eq!(attrs.weight, Weight::BOLD);
+        assert_eq!(attrs.style, Style::Italic);
+        assert_eq!(
+            attrs.metrics_opt,
+            Some(Metrics::new(24.0, 30.0).into()),
+            "the final empty row keeps the last effective run's metrics"
+        );
     }
 
     #[test]
