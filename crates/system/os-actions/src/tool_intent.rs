@@ -137,8 +137,7 @@ impl ToolIntent {
             Self::Firewall { .. } => Some("dev.tilo.firewall"),
             Self::Disks { .. } => Some("dev.tilo.disks"),
             Self::Backups { .. } => Some("dev.tilo.backups"),
-            Self::WorkspaceSettings { .. } => None,
-            Self::IdentityBackup => None,
+            Self::WorkspaceSettings { .. } | Self::IdentityBackup => None,
         }
     }
 }
