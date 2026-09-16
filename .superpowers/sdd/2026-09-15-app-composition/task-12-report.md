@@ -115,3 +115,66 @@ Exact artifact hashes are in `task12-db-client/SHA256SUMS`.
 - The automatic editor height is bounded by a three-line minimum and by the current fixed 56px grid reservation plus result strip and bottom padding. Very long queries remain scrollable instead of consuming the whole window.
 - Manual resize and drawer interaction evidence is behavioral/semantic; no capture-only state hook was added because `main.rs` and shot entry points are outside Task 12 ownership.
 - No `session.rs`, shared UI component, capture entry, dependency, Data layout, or Structure layout file changed.
+
+## Fix round 1 — menu integration and mounted acceptance
+
+The scoped review found two menu integration defects. An open resize menu received modified Enter before the app's reserved shortcut path, so `Ctrl`/`Cmd`+`Enter` could select Increase instead of running the query. An open menu also retained the divider anchor and viewport from the moment it opened. The fix routes the existing reserved shortcut handler ahead of menu dispatch and calls the shared `ContextMenu::reanchor` API from Query relayout with the newly computed divider and main viewport. The canonical query run/confirmation path is unchanged, and reanchoring preserves the menu's highlighted item.
+
+The mounted long-query acceptance test exposed one related retained-child focus defect. `DbClientApp::set_focus(false)` cascaded blur into the editor and divider when the host moved focus between individually mapped child nodes. In shared `CompositionFocus::restore`, mapped nodes are visited in `HashMap` iteration order and each node receives its own `set_focus(should_focus)` call; a root entry visited after the target child could therefore blur the child that restore had just focused. Native and headless explicit focus setters likewise target individual mapped nodes. Removing the app root's cascade leaves those host-owned child transitions authoritative and lets a real editor pointer focus remain active, so typing, caret placement, and wheel scrolling work while the automatic pane is clamped. No shared UI or session code changed.
+
+### RED/GREEN evidence
+
+Focused RED runs established the defects before their fixes:
+
+```text
+CARGO_BUILD_JOBS=4 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p db_client --lib modified_enter_runs_once_ahead_of_the_open_resize_menu -- --nocapture
+# RED: query generation did not advance while the open menu consumed modified Enter
+
+CARGO_BUILD_JOBS=4 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p db_client --lib open_resize_menu_reanchors_and_keeps_every_action_mapped_after_resize -- --nocapture
+# RED: after resize, menu x0 remained 276 while the recomputed divider x0 was 8
+
+CARGO_BUILD_JOBS=4 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p db_client --lib mounted_clamped_long_query_remains_editable_and_scrollable -- --nocapture
+# RED: real wheel input left scroll_y at 0 because the retained editor had lost focus
+```
+
+The final regressions cover:
+
+- An open resize menu plus real `Ctrl`+`Enter`: query generation advances exactly once, requested and effective heights remain unchanged, and no resize item is selected.
+- Wide to narrow to short relayout while the menu stays open: the menu and all three semantic rows remain bounded and anchored; the preserved highlighted Decrease row, pointer Increase row, and semantic Reset each invoke the matching production action.
+- Eight connection profiles at 480×900: the real drawer trigger opens and closes the overlay, the query split stays stable, and a lower connection row remains bounded and activates the correct profile.
+- Sixty SQL lines at 800×480: a real editor click, selection, text input, and wheel event preserve the edit and caret and produce positive editor scroll while keeping at least the 56px usable result region. A manual request then survives 800×700 to 800×480 clamping.
+
+Final verification from the fix source:
+
+```text
+cargo fmt -p db_client -- --check
+# passed
+
+CARGO_BUILD_JOBS=4 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p db_client --lib -- --nocapture
+# 83 passed; 0 failed; 0 ignored
+
+CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 cargo check -p db_client --lib
+# passed
+
+CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 cargo build -p db_client
+# passed
+```
+
+The fix transcripts are `task12-db-client/cargo-test-db-client-lib-fix1.log`, `task12-db-client/cargo-check-db-client-lib-fix1.log`, and `task12-db-client/cargo-build-db-client-fix1.log`.
+
+### Fix visual evidence and provenance
+
+`task12-db-client/menu-open-short-800x480.png` is Driver-rendered evidence of the real open menu after resizing to 800×480. It shows three bounded, legible rows with Decrease highlighted. The connection drawer remains open from the resize sequence, and its scrim dims the query area; this image is therefore an interaction-state capture, not the default collapsed short-window view. The semantic/pointer regression validates all three action mappings in the same route. Capture entry points were not changed.
+
+Fix artifact SHA-256 values (also recorded separately in `task12-db-client/SHA256SUMS-fix1`; the original `SHA256SUMS` remains the provenance manifest for the original candidate):
+
+```text
+5b0521ca4b866acb285e0b5d54adc19b6323a8df43fb26eabebaa92a231c8bcb  target/debug/db_client
+863bb54b9445d5fbfe2632e8e652a902807971109fbed842508d8e8a7a07cdbb  apps/db_client/src/app.rs
+e741540b58d6f3fb283e23ebd89cd9f0d97d55f3839f8873029ea2936c656544  task12-db-client/menu-open-short-800x480.png
+5613006f1d0bae3d8ec50619bf849d8dd11f56752db54847d9db82e387af9c40  task12-db-client/cargo-test-db-client-lib-fix1.log
+5e699bd569f5b1a0f53ec8b23e3380f5e23dd3ca1191115e56ec1618ac69a269  task12-db-client/cargo-check-db-client-lib-fix1.log
+9cbcb1d591c3d83af5b4bfa55a68e6937e70185c907fcdf7e068f5701903d7db  task12-db-client/cargo-build-db-client-fix1.log
+```
+
+The controller captured all six default views from the fix binary under a stable expected-binary guard and found them byte-identical to the previously inspected settled defaults. Visual acceptance therefore carries to the fix binary. The known true-2× result-strip/grid/header/chrome collisions remain assigned to Task 14.
