@@ -11299,11 +11299,13 @@ impl Widget for ShellOverlayHost {
             }
         }
         if let Some(onboarding) = self.onboarding.as_mut() {
-            let child_node = taffy
-                .children(node_id)
-                .ok()
-                .and_then(|children| children.first().copied())
-                .unwrap_or(node_id);
+            // A first-login ceremony is the first child of its dedicated
+            // tree, but a tour reopened from Search is appended after the
+            // live desktop so that the desktop remains visible beneath it.
+            // Route against the node captured when onboarding was built;
+            // using `children.first()` here sends contextual-tour pointer
+            // events through the desktop's taffy subtree instead.
+            let child_node = self.onboarding_node.unwrap_or(node_id);
             onboarding.handle_event(
                 event,
                 scale_factor,
@@ -20530,6 +20532,7 @@ mod tests {
         host: ShellOverlayHost,
         chrome: crate::shell::chrome_state::Chrome,
         taffy: TaffyTree<()>,
+        node_map: StdHashMap<NodeId, *mut dyn Widget>,
         root_node: NodeId,
     }
 
@@ -20585,8 +20588,57 @@ mod tests {
             host,
             chrome,
             taffy,
+            node_map,
             root_node: child,
         }
+    }
+
+    #[test]
+    fn contextual_desktop_tour_routes_pointer_input_to_its_own_layout_node() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        chrome.borrow_mut().overlays.desktop_tour = true;
+        let mut document = AutoCommit::new();
+        host.sync(&mut document, &automerge::ROOT);
+        let mut h = build_harness_with_host(host, chrome);
+
+        let next = h
+            .node_map
+            .values()
+            .find_map(|&pointer| unsafe {
+                ((*pointer).test_id() == Some("onboarding.tour.next.button"))
+                    .then(|| (*pointer).get_rect())
+            })
+            .expect("contextual tour exposes its Continue button");
+        assert!(next.area() > 0.0, "Continue must have clickable geometry");
+
+        let mut focus = None;
+        for event in [
+            cursor_moved_at(next.center()),
+            left_button_pressed(),
+            left_button_released(),
+        ] {
+            let mut handled = false;
+            h.host.handle_event(
+                &event,
+                1.0,
+                &Modifiers::default(),
+                &mut document,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                h.root_node,
+                &h.taffy,
+            );
+            assert!(handled, "the visible tour must own {event:?}");
+        }
+        assert!(matches!(
+            document.get(&automerge::ROOT, crate::onboarding_view::KEY_TOUR_NEXT),
+            Ok(Some((Value::Scalar(value), _)))
+                if matches!(value.as_ref(), ScalarValue::Boolean(true))
+        ));
     }
 
     #[test]
@@ -21285,6 +21337,14 @@ mod tests {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn left_button_released() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
             button: MouseButton::Left,
         }
     }
