@@ -13,7 +13,7 @@ use crate::store::{
 };
 
 const PREFIX_MOUNT: &str = "/run/qos/capsule/prefix";
-const HOME_MOUNT: &str = "/run/qos/capsule/home";
+pub(crate) const HOME_MOUNT: &str = "/run/qos/capsule/home";
 const FILES_MOUNT: &str = "/run/qos/files";
 const SHIM_HOST: &str = "/usr/bin/qos-launcher";
 const SHIM_MOUNT: &str = "/qos-launcher";
@@ -410,6 +410,7 @@ pub struct CapsuleCommandPlan {
     // private so a plan cannot be copied after its authority-bearing handles.
     launch_paths: LaunchPaths,
     pub(crate) runtime_lock_required: bool,
+    pub(crate) identity_uid: u32,
 }
 
 impl CapsuleCommandPlan {
@@ -505,6 +506,16 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             argv.extend(["--dir".to_string(), directory.to_string()]);
         }
         launcher::profile::push_system_profile(&mut argv, network == NetworkShape::Unrestricted);
+        for (fd, destination) in [
+            (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
+            (crate::execute::GROUP_CHILD_FD, "/etc/group"),
+        ] {
+            argv.extend([
+                "--ro-bind-data".to_string(),
+                fd.to_string(),
+                destination.to_string(),
+            ]);
+        }
         for binding in &runtime.binds {
             bind(&mut argv, "--ro-bind", &binding.host, &binding.sandbox);
         }
@@ -533,6 +544,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             launcher::profile::landlock_ro_paths(network == NetworkShape::Unrestricted);
         let mut landlock_write = launcher::profile::landlock_rw_device_paths();
         landlock_read.extend(runtime.binds.iter().map(|binding| binding.sandbox.clone()));
+        landlock_read.extend([PathBuf::from("/etc/passwd"), PathBuf::from("/etc/group")]);
         // This names the private tmpfs mounted above, never the host's /tmp.
         // Wine and translated runtimes need temporary files and local sockets.
         landlock_write.extend([
@@ -630,6 +642,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
             lease_id: lease.id.clone(),
             launch_paths,
             runtime_lock_required: runtime.runtime_lock_mount.is_some(),
+            identity_uid: self.session.uid,
         })
     }
 }
@@ -716,6 +729,8 @@ fn push_fixed_environment(
 ) -> Result<(), PlanError> {
     for (key, value) in [
         ("HOME", HOME_MOUNT),
+        ("USER", "qos"),
+        ("LOGNAME", "qos"),
         ("XDG_DATA_HOME", "/run/qos/capsule/home/.local/share"),
         ("XDG_CONFIG_HOME", "/run/qos/capsule/home/.config"),
         ("XDG_CACHE_HOME", "/run/qos/capsule/home/.cache"),
@@ -1140,6 +1155,39 @@ mod tests {
             )
             .unwrap();
         assert!(command.bwrap_argv.iter().any(|arg| arg == "--clearenv"));
+        assert_eq!(command.identity_uid, host.uid);
+        for (fd, path) in [
+            (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
+            (crate::execute::GROUP_CHILD_FD, "/etc/group"),
+        ] {
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| args == ["--ro-bind-data", fd.to_string().as_str(), path])
+            );
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(2)
+                    .any(|args| args == ["--ro", path])
+            );
+            assert!(
+                !command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| matches!(args[0].as_str(), "--bind" | "--ro-bind")
+                        && args[1] == path)
+            );
+        }
+        for key in ["USER", "LOGNAME"] {
+            assert!(
+                command
+                    .bwrap_argv
+                    .windows(3)
+                    .any(|args| args == ["--setenv", key, "qos"])
+            );
+        }
         assert!(command.bwrap_argv.iter().any(|arg| arg == "--unshare-all"));
         assert!(
             command
@@ -1222,6 +1270,10 @@ mod tests {
         let immutable_lock = directory.path().join("runtime.ref");
         std::fs::write(&immutable_lock, "immutable").unwrap();
         command.runtime_lock_required = true;
+        // This fixture runs as the invoking user, independently of the fixed
+        // session UID used by planner-only unit tests.
+        // SAFETY: geteuid only reads the current process credentials.
+        command.identity_uid = unsafe { libc::geteuid() };
         command.bwrap_argv.splice(
             0..0,
             [
@@ -1230,6 +1282,12 @@ mod tests {
                 "--ro-bind".to_string(),
                 immutable_lock.display().to_string(),
                 "/runtime/.ref".to_string(),
+                "--ro-bind-data".to_string(),
+                crate::execute::PASSWD_CHILD_FD.to_string(),
+                "/etc/passwd".to_string(),
+                "--ro-bind-data".to_string(),
+                crate::execute::GROUP_CHILD_FD.to_string(),
+                "/etc/group".to_string(),
                 "--bind-data".to_string(),
                 crate::execute::RUNTIME_LOCK_CHILD_FD.to_string(),
                 "/runtime/.ref".to_string(),
@@ -1240,6 +1298,9 @@ mod tests {
             .last_mut()
             .unwrap()
             .push_str("; test ! -s /runtime/.ref; printf private > /runtime/.ref");
+        command.bwrap_argv.last_mut().unwrap().push_str(
+            "; test \"$(getent passwd $(id -u))\" = \"qos:x:$(id -u):$(id -g):qOS capsule:/run/qos/capsule/home:/usr/bin/nologin\"; test \"$(getent group $(id -g))\" = \"qos:x:$(id -g):\"; test \"$(wc -l < /etc/passwd)\" = 1; test \"$(wc -l < /etc/group)\" = 1; if (printf bad >> /etc/passwd) 2>/dev/null; then exit 1; fi; if (printf bad >> /etc/group) 2>/dev/null; then exit 1; fi; test ! -e /etc/shadow",
+        );
         for profile in [None, Some(SeccompProfile::QosDefault)] {
             command.seccomp_profile = profile;
             if profile.is_some() {
@@ -1255,6 +1316,159 @@ mod tests {
                 "immutable"
             );
         }
+    }
+
+    // Run these explicitly in a disposable native ARM container, with the
+    // production artifacts mounted at their fixed host paths. Provide a real
+    // architecture-matching Wine/Proton cmd.exe via QOS_ARM_CAPSULE_CMD_EXE,
+    // writable /run/user/<uid>, and a dummy /dev/dri/renderD128. A Unix listener
+    // below supplies the mandatory Wayland bind; it is closed before execution
+    // so clients fail promptly instead of waiting for a fake display server.
+    // Neither stub tests graphics.
+    // Use an external 240-second timeout and tear down the container on failure:
+    // the production executor waits synchronously for its owned process.
+    // These tests deliberately omit the Landlock executable shim because WSL's
+    // ABI 3 cannot satisfy qOS's required ABI 5. They prove namespace execution,
+    // not Landlock or full production sandbox acceptance. No production policy
+    // is changed, and every generated mount, fd, environment and seccomp option
+    // remains intact. The generated unshare-all retains an offline namespace.
+    #[test]
+    #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
+    fn generated_arm_wine32_namespace_executes_windows_console() {
+        generated_arm_namespace_console(Layer::Wine, Architecture::Win32);
+    }
+
+    #[test]
+    #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
+    fn generated_arm_wine64_namespace_executes_windows_console() {
+        generated_arm_namespace_console(Layer::Wine, Architecture::Win64);
+    }
+
+    #[test]
+    #[ignore = "requires disposable native ARM runtime container; namespace-only acceptance"]
+    fn generated_arm_proton_namespace_executes_windows_console() {
+        generated_arm_namespace_console(Layer::Proton, Architecture::Win64);
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep the namespace fixture and its exact production-plan adjustment auditable together"
+    )]
+    fn generated_arm_namespace_console(layer: Layer, architecture: Architecture) {
+        use crate::SandboxExecutor;
+        use std::os::unix::net::UnixListener;
+
+        assert_eq!(std::env::consts::ARCH, "aarch64");
+        let mut route = route(layer);
+        route.settings.architecture = architecture;
+        route
+            .settings
+            .environment
+            .insert("WINEDEBUG".into(), "-all".into());
+        if layer == Layer::Proton {
+            route.proton_recipe = Some("umu-0".into());
+        }
+        let (_directory, store, state, mut program) = setup(&route);
+        let marker = "QOS_GENERATED_ARM_CAPSULE_PASS";
+        program.prefix_relative_executable = PathBuf::from("drive_c/qos-console.exe");
+        program.arguments = vec![
+            "/d".into(),
+            "/c".into(),
+            format!("echo {marker}>C:\\qos-namespace-marker.txt"),
+        ];
+        let prefix = store.prefix_path(&state.id);
+        let executable = prefix.join(&program.prefix_relative_executable);
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        copy_arm_console_fixture(&executable, architecture);
+        // SAFETY: geteuid has no preconditions and does not mutate process state.
+        let uid = unsafe { libc::geteuid() };
+        let runtime = PathBuf::from(format!("/run/user/{uid}"));
+        std::fs::create_dir_all(&runtime).unwrap();
+        let socket = runtime.join(format!("qos-console-{}", std::process::id()));
+        let listener = UnixListener::bind(&socket).unwrap();
+        drop(listener);
+        let host = HostSession {
+            uid,
+            wayland_socket: socket.clone(),
+            render_node: PathBuf::from("/dev/dri/renderD128"),
+        };
+        assert!(
+            host.render_node.exists(),
+            "provide a dummy render-node bind source"
+        );
+        let planner = SandboxPlanner::new(&store, &SystemRuntimeRegistry, &host).unwrap();
+        let mut command = planner
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "namespace-test",
+                &LaunchLease::deny_all("namespace-test"),
+            )
+            .unwrap();
+        assert_eq!(command.network, NetworkShape::Offline);
+        assert!(command.bwrap_argv.iter().any(|arg| arg == "--unshare-all"));
+        assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
+        assert_eq!(
+            command.seccomp_profile,
+            if layer == Layer::Wine {
+                Some(SeccompProfile::QosJit)
+            } else {
+                None
+            }
+        );
+        // Remove exactly the executable shim and its arguments. Keep its
+        // read-only bind as well as all other production namespace arguments.
+        let shim = command
+            .bwrap_argv
+            .windows(2)
+            .position(|args| args == [SHIM_MOUNT, launcher::landlock_shim::SANDBOX_EXEC_SUBCOMMAND])
+            .unwrap();
+        let separator = command.bwrap_argv[shim..]
+            .iter()
+            .position(|arg| arg == "--")
+            .unwrap()
+            .checked_add(shim)
+            .unwrap();
+        command.bwrap_argv.drain(shim..=separator);
+        let outcome = crate::BwrapExecutor.execute(&command);
+        std::fs::remove_file(socket).unwrap();
+        assert!(
+            outcome.as_ref().is_ok_and(|result| result.success),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(prefix.join("drive_c/qos-namespace-marker.txt"))
+                .expect("Windows must create the marker in the retained capsule prefix")
+                .trim(),
+            marker,
+        );
+    }
+
+    fn copy_arm_console_fixture(destination: &Path, architecture: Architecture) {
+        let source = std::env::var_os("QOS_ARM_CAPSULE_CMD_EXE")
+            .expect("set QOS_ARM_CAPSULE_CMD_EXE to the matching runtime's cmd.exe");
+        let bytes = std::fs::read(source).unwrap();
+        assert_eq!(
+            &bytes[..2],
+            b"MZ",
+            "fixture must be a Windows PE executable"
+        );
+        let pe = usize::try_from(u32::from_le_bytes(bytes[60..64].try_into().unwrap())).unwrap();
+        let signature_end = pe.checked_add(4).unwrap();
+        let machine_end = pe.checked_add(6).unwrap();
+        assert_eq!(&bytes[pe..signature_end], b"PE\0\0");
+        let machine = u16::from_le_bytes(bytes[signature_end..machine_end].try_into().unwrap());
+        assert_eq!(
+            machine,
+            match architecture {
+                Architecture::Win32 => 0x014c,
+                Architecture::Win64 => 0x8664,
+            },
+            "fixture architecture must match the selected capsule"
+        );
+        std::fs::write(destination, bytes).unwrap();
     }
 
     #[test]
