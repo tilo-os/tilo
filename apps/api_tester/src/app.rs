@@ -141,8 +141,6 @@ enum Cmd {
     ToggleCollection(usize),
     LoadRequest(usize, usize),
     ReplayHistory(usize),
-    RequestAction(String),
-    EnvironmentAction(String),
     OpenForm(FormMode),
     SubmitForm,
     CancelForm,
@@ -400,6 +398,17 @@ impl ApiTesterApp {
             .expect("active request resource publishes a nullary send action")
     }
 
+    fn menu_binding(resource: qos_actions::Resource) -> qos_actions::ActionBinding<String> {
+        let spec = resource
+            .actions
+            .first()
+            .expect("menu resources always publish their typed open action");
+        qos_actions::ActionBinding::new(&resource, spec, |action| {
+            serde_json::Map::from_iter([("action".to_string(), serde_json::Value::String(action))])
+        })
+        .expect("menu choices match their exported action schema")
+    }
+
     /// The live app: no fabricated saved collections/history and NO canned
     /// response — the response pane is empty until a real Send. It opens on a
     /// single blank starter request.
@@ -625,7 +634,6 @@ impl ApiTesterApp {
         env_options.extend(model.environments.iter().map(|e| e.name.clone()));
         let env_dropdown = Dropdown::new(env_options, ENV_PATH).with_id("api.env");
         let environment_action_state = ui::LocalState::new("Environment actions".to_string());
-        let environment_sink = sink.clone();
         let environment_actions = Dropdown::from_state(
             vec![
                 "Environment actions".to_string(),
@@ -637,11 +645,7 @@ impl ApiTesterApp {
         )
         .with_id("api.environment-actions")
         .with_accessible_name("Environment actions")
-        .on_change(move |choice| {
-            environment_sink
-                .borrow_mut()
-                .push(Cmd::EnvironmentAction(choice.to_string()));
-        });
+        .on_action(Self::menu_binding(actions::environment_menu_resource()));
 
         // Send — the accent primary action.
         let send_button = Button::new("api.send", "Send", None)
@@ -659,7 +663,6 @@ impl ApiTesterApp {
                     .push(Cmd::OpenForm(FormMode::SaveRequest));
             });
         let request_action_state = ui::LocalState::new("Request actions".to_string());
-        let request_sink = sink.clone();
         let request_actions = Dropdown::from_state(
             vec![
                 "Request actions".to_string(),
@@ -671,11 +674,7 @@ impl ApiTesterApp {
         )
         .with_id("api.request-actions")
         .with_accessible_name("Request actions")
-        .on_change(move |choice| {
-            request_sink
-                .borrow_mut()
-                .push(Cmd::RequestAction(choice.to_string()));
-        });
+        .on_action(Self::menu_binding(actions::request_menu_resource()));
 
         // Request-builder tabs.
         let tab_sink = sink.clone();
@@ -2645,24 +2644,6 @@ impl ApiTesterApp {
                         self.request.url = h.url;
                     }
                 }
-                Cmd::RequestAction(action) => {
-                    match action.as_str() {
-                        "Save request…" => self.open_form(FormMode::SaveRequest),
-                        "Rename request…" => self.open_form(FormMode::RenameRequest),
-                        "Delete request…" => self.open_form(FormMode::DeleteRequest),
-                        _ => {}
-                    }
-                    self.request_actions.set_selected("Request actions");
-                }
-                Cmd::EnvironmentAction(action) => {
-                    match action.as_str() {
-                        "Rename environment…" => self.open_form(FormMode::RenameEnvironment),
-                        "Add variable…" => self.open_form(FormMode::NewVariable),
-                        "Delete variable…" => self.open_form(FormMode::DeleteVariable),
-                        _ => {}
-                    }
-                    self.environment_actions.set_selected("Environment actions");
-                }
                 Cmd::OpenForm(mode) => self.open_form(mode),
                 Cmd::CancelForm => self.form = None,
                 Cmd::SubmitForm => self.submit_form(state, path),
@@ -2699,6 +2680,30 @@ impl ApiTesterApp {
         });
         self.form_key_input.set_text("");
         self.form_value_input.set_text("");
+    }
+
+    fn open_request_menu_action(&mut self, action: &str) -> Result<(), String> {
+        let mode = match action {
+            "Save request…" => FormMode::SaveRequest,
+            "Rename request…" => FormMode::RenameRequest,
+            "Delete request…" => FormMode::DeleteRequest,
+            _ => return Err(format!("unknown request action `{action}`")),
+        };
+        self.open_form(mode);
+        self.request_actions.set_selected("Request actions");
+        Ok(())
+    }
+
+    fn open_environment_menu_action(&mut self, action: &str) -> Result<(), String> {
+        let mode = match action {
+            "Rename environment…" => FormMode::RenameEnvironment,
+            "Add variable…" => FormMode::NewVariable,
+            "Delete variable…" => FormMode::DeleteVariable,
+            _ => return Err(format!("unknown environment action `{action}`")),
+        };
+        self.open_form(mode);
+        self.environment_actions.set_selected("Environment actions");
+        Ok(())
     }
 
     #[allow(
@@ -3265,6 +3270,18 @@ impl Widget for ApiTesterApp {
                 self.error = None;
                 self.dirty = true;
             }
+            crate::actions::ApiTesterOperation::RequestMenu { action } => {
+                if kind != qos_actions::OperationKind::View {
+                    return Ok(false);
+                }
+                self.open_request_menu_action(&action)?;
+            }
+            crate::actions::ApiTesterOperation::EnvironmentMenu { action } => {
+                if kind != qos_actions::OperationKind::View {
+                    return Ok(false);
+                }
+                self.open_environment_menu_action(&action)?;
+            }
         }
         Ok(true)
     }
@@ -3654,22 +3671,42 @@ mod tests {
     #[test]
     fn visible_context_menus_open_real_request_and_environment_workflows() {
         let mut a = app();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
-        a.seed_workspace(&mut doc, &root);
 
-        a.sink
-            .borrow_mut()
-            .push(Cmd::RequestAction("Rename request…".to_string()));
-        assert!(a.drain_commands(&mut doc, &root));
+        let request = serde_json::to_vec(&crate::actions::ApiTesterOperation::RequestMenu {
+            action: "Rename request…".to_string(),
+        })
+        .expect("operation encodes");
+        assert_eq!(
+            a.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::API_TESTER_OPERATION_TYPE,
+                &request,
+                &doc,
+                &root,
+            ),
+            Ok(true)
+        );
         assert_eq!(a.form, Some(FormMode::RenameRequest));
         assert_eq!(a.request_actions.selected(), "Request actions");
 
         a.form = None;
-        a.sink
-            .borrow_mut()
-            .push(Cmd::EnvironmentAction("Add variable…".to_string()));
-        assert!(a.drain_commands(&mut doc, &root));
+        let environment =
+            serde_json::to_vec(&crate::actions::ApiTesterOperation::EnvironmentMenu {
+                action: "Add variable…".to_string(),
+            })
+            .expect("operation encodes");
+        assert_eq!(
+            a.invoke_resource_operation(
+                qos_actions::OperationKind::View,
+                crate::actions::API_TESTER_OPERATION_TYPE,
+                &environment,
+                &doc,
+                &root,
+            ),
+            Ok(true)
+        );
         assert_eq!(a.form, Some(FormMode::NewVariable));
         assert_eq!(a.environment_actions.selected(), "Environment actions");
     }
