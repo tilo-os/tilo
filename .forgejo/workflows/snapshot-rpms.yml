@@ -15,6 +15,7 @@ on:
       # for a package that was added to one of the Containerfiles.
       - os/Containerfile
       - os/Containerfile.rpms
+      - os/dev/verify-rpm-snapshot-signatures.sh
       - os/external-assets/github-assets.tsv
       - os/dev/cache-github-assets.sh
       - os/dev/derive-rpm-package-set.py
