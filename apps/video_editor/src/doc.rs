@@ -1348,10 +1348,31 @@ impl VideoDoc {
     }
 }
 
+/// Named parameters for a deterministic demo clip placement. Source and
+/// timeline times sit beside normalized values, so positional arguments would
+/// make accidental transposition far too easy.
+struct DemoPlacement {
+    track: Uuid,
+    media: Uuid,
+    start: f64,
+    source: std::ops::Range<f64>,
+    palette: u8,
+    opacity: f64,
+    volume: f64,
+    transition: Transition,
+    filters: Filters,
+    fade_in: f64,
+    fade_out: f64,
+}
+
 /// A short documentary-style cut: drone B-roll under an interview, an
 /// overlaid logo and a sunset insert with a dissolve, narration on A1 and
 /// an ambient bed on A2. Built deterministically so screenshots are
 /// stable across runs.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the sample project is a declarative fixture whose sequence mirrors the visible edit"
+)]
 pub fn sample_project() -> Project {
     let mut p = Project::new("Coastline_Doc_v3");
     // A cut this far along has a format: it is 1080p at 30, and the next clip
@@ -1447,23 +1468,6 @@ pub fn sample_project() -> Project {
     let a2 = mk_track("A2", TrackKind::Audio, 2);
     let (v1id, v2id, a1id, a2id) = (v1.id, v2.id, a1.id, a2.id);
     p.tracks = vec![v1, v2, a1, a2];
-
-    // A demo placement is intentionally named: source and timeline times sit
-    // beside several normalized values, and the former positional helper let
-    // any of them be transposed without a type error.
-    struct DemoPlacement {
-        track: Uuid,
-        media: Uuid,
-        start: f64,
-        source: std::ops::Range<f64>,
-        palette: u8,
-        opacity: f64,
-        volume: f64,
-        transition: Transition,
-        filters: Filters,
-        fade_in: f64,
-        fade_out: f64,
-    }
 
     let mut place = |placement: DemoPlacement| {
         p.clips.push(Clip {
