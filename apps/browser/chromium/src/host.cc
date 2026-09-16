@@ -1,6 +1,8 @@
 #include "host.h"
 #include "protocol.h"
 #include "key_mapping.h"
+#include "request_filter.h"
+#include "document_scripts.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
@@ -94,26 +96,31 @@ double Number(CefRefPtr<CefDictionaryValue> d,const char* key) {
 class Client;
 CefRefPtr<Client> client;
 bool closing=false;
+CefRefPtr<qos::RequestFilter> request_filter;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
-                     public CefDisplayHandler, public CefLoadHandler {
+                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler {
  public:
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
   CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+  CefRefPtr<CefFrameHandler> GetFrameHandler() override { return this; }
+  void OnFrameCreated(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame) override { SendFilters(frame);SendScripts(frame); }
   void GetViewRect(CefRefPtr<CefBrowser>,CefRect& rect) override { rect=CefRect(0,0,width_,height_); }
   bool GetScreenInfo(CefRefPtr<CefBrowser>,CefScreenInfo& info) override {
     info.device_scale_factor=scale_;info.rect=info.available_rect=CefRect(0,0,width_,height_);return true;
   }
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_=browser;
+    document_scripts_=new qos::DocumentScripts(browser,[this] { FlushNavigation(); },[] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
+    document_scripts_->Attach();
     auto d=CefDictionaryValue::Create();d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event("ready",d);
     if(closing) browser_->GetHost()->CloseBrowser(true);
   }
   bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
-    if(browser_ && browser->IsSame(browser_)) { browser_=nullptr;Event("closed");CefQuitMessageLoop(); }
+    if(browser_ && browser->IsSame(browser_)) { document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");CefQuitMessageLoop(); }
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,WindowOpenDisposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     browser->GetMainFrame()->LoadURL(url);return true;
@@ -149,17 +156,36 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     output->Send(2,std::move(body));
   }
-  void SendScripts() {
-    if(!browser_) return;
+  bool OnProcessMessageReceived(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
+    if(source!=PID_RENDERER || message->GetName()!="qos.config") return false;
+    SendFilters(frame);SendScripts(frame);return true;
+  }
+  void SendFilters(CefRefPtr<CefFrame> frame) {
+    if(!frame) return;
+    auto message=CefProcessMessage::Create("qos.filters");auto args=message->GetArgumentList();
+    args->SetString(0,filter_rules_);args->SetBool(1,filter_enabled_);
+    frame->SendProcessMessage(PID_RENDERER,message);
+  }
+  void SendScripts(CefRefPtr<CefFrame> frame=nullptr) {
+    if(!frame) { if(!browser_) return;frame=browser_->GetMainFrame(); }
     auto message=CefProcessMessage::Create("qos.scripts");auto args=message->GetArgumentList();
-    for(size_t i=0;i<scripts_.size();++i) args->SetString(i,scripts_[i]);
-    browser_->GetMainFrame()->SendProcessMessage(PID_RENDERER,message);
+    args->SetString(0,qos::ScriptSource(scripts_));
+    frame->SendProcessMessage(PID_RENDERER,message);
+  }
+  void FlushNavigation() {
+    if(!document_scripts_ || document_scripts_->Busy()) return;
+    auto pending=std::move(pending_navigation_);pending_navigation_.clear();
+    for(auto& command:pending) Command(command);
   }
   void Command(CefRefPtr<CefDictionaryValue> d) {
     CEF_REQUIRE_UI_THREAD();
     std::string op=d->GetString("op");
     if(op=="shutdown") { CloseHost();return; }
     if(!browser_ || closing) return;
+    if((op=="navigate" || op=="back" || op=="forward" || op=="reload") && document_scripts_->Busy()) {
+      if(pending_navigation_.size()>=256) { StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();return; }
+      pending_navigation_.push_back(d->Copy(false));return;
+    }
     auto host=browser_->GetHost();auto frame=browser_->GetMainFrame();
     if(op=="navigate") frame->LoadURL(d->GetString("url"));
     else if(op=="back") browser_->GoBack();
@@ -180,13 +206,20 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
         if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
     } else if(op=="key") Key(d);
-    else if(op=="scripts") { scripts_.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts_.push_back(list->GetString(i));SendScripts(); }
+    else if(op=="scripts") { scripts_.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts_.push_back(list->GetString(i));document_scripts_->Configure(qos::ScriptSource(scripts_));SendScripts(); }
     else if(op=="devtools") { CefWindowInfo window;
       host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
     } else if(op=="clear_data") {
       host->GetRequestContext()->GetCookieManager(nullptr)->DeleteCookies("","",nullptr);
       host->GetRequestContext()->ClearHttpCache(nullptr);host->GetRequestContext()->ClearHttpAuthCredentials(nullptr);
-    } else if(op=="filter_rules") StringEvent("error","message","Native request filter is not linked in this development build");
+    } else if(op=="filter_rules") {
+      const auto rules=d->GetString("rules").ToString();
+      const bool enabled=d->GetType("enabled")==VTYPE_NULL ? filter_enabled_ : d->GetBool("enabled");
+      if(!request_filter->Configure(rules,enabled)) { StringEvent("error","message","Native request filter compilation failed; previous rules retained");return; }
+      filter_rules_=rules;filter_enabled_=enabled;
+      std::vector<CefString> ids;browser_->GetFrameIdentifiers(ids);
+      for(const auto& id:ids) SendFilters(browser_->GetFrameByIdentifier(id));
+    }
     else { StringEvent("error","message","Unknown command: "+op);CloseHost(); }
   }
   void Key(CefRefPtr<CefDictionaryValue> d) {
@@ -211,6 +244,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   CefRefPtr<CefBrowser> browser_;
  private:
+  CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
+  std::string filter_rules_;bool filter_enabled_=true;
   int width_=1280,height_=800,pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   float scale_=1;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_;
   IMPLEMENT_REFCOUNTING(Client);
@@ -220,7 +255,9 @@ class App final : public CefApp,public CefBrowserProcessHandler {
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
   void OnContextInitialized() override {
     client=new Client;CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=30;
-    if(!CefBrowserHost::CreateBrowser(window,client,"about:blank",settings,nullptr,nullptr)) CefQuitMessageLoop();
+    request_filter=new qos::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
+    auto context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
+    if(!CefBrowserHost::CreateBrowser(window,client,"about:blank",settings,nullptr,context)) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
 };
@@ -243,7 +280,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     auto list=d->GetList("scripts");for(size_t i=0;i<list->GetSize();++i) if(list->GetType(i)!=VTYPE_STRING) return false;
     return true;
   }
-  if(op=="filter_rules") return type("rules",VTYPE_STRING) && type("enabled",VTYPE_BOOL);
+  if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
   return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="shutdown";
 }
 void ReadCommands(std::atomic<bool>& stop) {
@@ -289,6 +326,6 @@ int RunHost(int argc,char** argv) {
 #endif
   if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
   std::atomic<bool> stop{false};std::thread reader([&]{ReadCommands(stop);});
-  CefRunMessageLoop();stop=true;reader.join();client=nullptr;CefShutdown();writer.Stop();output=nullptr;
+  CefRunMessageLoop();stop=true;reader.join();client=nullptr;request_filter=nullptr;CefShutdown();writer.Stop();output=nullptr;
   return writer.Failed()?1:0;
 }

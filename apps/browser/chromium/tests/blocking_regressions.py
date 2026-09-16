@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Local HTTP integration tests: real sandboxed CEF + the native Rust matcher."""
+import http.server
+import json
+import threading
+import time
+import unittest
+from urllib.parse import urlsplit
+from native_regressions import Host
+
+PAGE = b'''<!doctype html><title>blocking fixture</title>
+<script>window.earlyScript=window.docStartReady===true;setTimeout(()=>document.title="early-"+window.earlyScript,300)</script>
+<div class="sponsor">advertisement</div><div id="domain-ad">domain advertisement</div>
+<script src="/ad.js"></script><script src="/ad.js?allow"></script>
+<script src="/replace.js" onload="window.redirectLoaded=true"></script>
+<script src="/image-only.js"></script><script src="/first.js"></script>
+<script>
+fetch('/fetch-ad').catch(()=>{});
+fetch('/empty-response').then(r=>r.text()).then(t=>window.emptyReplacement=t).catch(()=>{});
+new Worker('/worker.js');
+navigator.serviceWorker.register('/sw.js');
+let third=document.createElement('script');third.src=location.href.replace('127.0.0.1','localhost')+'third.js';document.head.append(third);
+setTimeout(()=>{let ad=document.createElement('div');ad.className='late-ad';document.body.append(ad)},150);
+</script>'''
+RULES = '\n'.join(['/ad.js$script', '@@/ad.js?allow$script', '/image-only.js$image',
+                   '/first.js$third-party', '/third.js$third-party', '/sw-ad$xmlhttprequest', '/fetch-ad$xmlhttprequest', '/worker-ad$xmlhttprequest',
+                   '##.sponsor', '##.late-ad', '127.0.0.1###domain-ad'])
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.server.requests.append(self.path)
+        path=urlsplit(self.path).path
+        self.send_response(200)
+        self.send_header('Cache-Control','no-store')
+        if getattr(self.server,'csp',False): self.send_header('Content-Security-Policy',"script-src 'self' 'unsafe-inline'")
+        self.send_header('Content-Type','text/html' if path=='/' else 'text/javascript')
+        self.end_headers()
+        body=b"self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(fetch('/sw-ad').catch(()=>{}).then(()=>fetch('/sw-ready'))));" if path=='/sw.js' else PAGE if path=='/' else b"fetch('/worker-ad').catch(()=>{})" if path=='/worker.js' else b'window.originalReplacement=true;' if path=='/replace.js' else b'void 0;'
+        self.wfile.write(body)
+    def log_message(self,*args): pass
+
+class BlockingRegressions(unittest.TestCase):
+    def setUp(self):
+        self.server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        self.server.requests=[]
+        threading.Thread(target=self.server.serve_forever,daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.host=Host()
+        self.addCleanup(self.host.close)
+        self.url=f'http://127.0.0.1:{self.server.server_port}/'
+    def config(self,enabled=True,rules=RULES):
+        self.host.send(op='filter_rules',rules=rules,enabled=enabled)
+    def loaded(self):
+        self.host.navigate(self.url)
+        self.host.settle(.5)
+    def styles(self):
+        self.host.send(op='scripts',scripts=["document.title=JSON.stringify({styles:['.sponsor','.late-ad','#domain-ad'].map(s=>getComputedStyle(document.querySelector(s)).display),nonce:"+str(time.monotonic_ns())+"})"])
+        return json.loads(self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{'))['title'])['styles']
+    def test_network_exceptions_resource_type_party_and_worker(self):
+        self.config()
+        self.loaded()
+        self.assertNotIn('/ad.js',self.server.requests)
+        self.assertNotIn('/fetch-ad',self.server.requests)
+        self.assertNotIn('/worker-ad',self.server.requests)
+        self.assertNotIn('/sw-ad',self.server.requests)
+        self.assertNotIn('/third.js',self.server.requests)
+        self.assertIn('/sw-ready',self.server.requests)
+        for allowed in ['/ad.js?allow','/image-only.js','/first.js','/worker.js']:
+            self.assertIn(allowed,self.server.requests)
+    def test_document_start_scripts(self):
+        self.host.send(op='scripts',scripts=['window.docStartReady=true'])
+        self.loaded()
+        self.assertEqual(self.host.latest_title(),'early-true')
+        self.host.navigate(self.url.replace('127.0.0.1','localhost'))
+        self.assertEqual(self.host.latest_title(),'early-true')
+    def test_rapid_document_script_configuration_changes(self):
+        self.host.send(op='scripts',scripts=['window.docStartReady=true'])
+        self.loaded()
+        self.host.send(op='scripts',scripts=['window.docStartReady=false'])
+        self.host.send(op='scripts',scripts=['window.docStartReady=true'])
+        self.host.navigate(self.url+'?second')
+        self.assertEqual(self.host.latest_title(),'early-true')
+    def test_document_start_with_content_security_policy(self):
+        self.server.csp=True
+        self.host.send(op='scripts',scripts=['window.docStartReady=true'])
+        self.loaded()
+        self.assertEqual(self.host.latest_title(),'early-true')
+    def test_redirect_replacement_and_scriptlet_resources(self):
+        self.config(rules=RULES+'\n/replace.js$script,redirect=noopjs\n/empty-response$xmlhttprequest,redirect=empty\n127.0.0.1##+js(set-constant, qosFixture, true)')
+        self.loaded()
+        self.host.send(op='scripts',scripts=["document.title=JSON.stringify({loaded:window.redirectLoaded===true,original:window.originalReplacement===true,scriptlet:window.qosFixture===true,empty:window.emptyReplacement===''})"])
+        event=self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{'))
+        self.assertEqual(json.loads(event['title']),{'loaded':True,'original':False,'scriptlet':True,'empty':True})
+        self.assertNotIn('/replace.js',self.server.requests)
+    def test_initial_and_dynamic_cosmetic_selectors(self):
+        self.config()
+        self.loaded()
+        self.assertEqual(self.styles(),['none','none','none'])
+    def test_cosmetic_toggle_updates_existing_document(self):
+        self.config()
+        self.loaded()
+        self.assertEqual(self.styles(),['none','none','none'])
+        self.config(False)
+        self.host.settle(.2)
+        self.assertEqual(self.styles(),['block','block','block'])
+        self.config(True)
+        self.host.settle(.2)
+        self.assertEqual(self.styles(),['none','none','none'])
+    def test_disable_reenable_and_null_preserves_enabled(self):
+        self.config(False)
+        self.config(None)
+        self.loaded()
+        self.assertIn('/ad.js',self.server.requests)
+        self.assertEqual(self.styles(),['block','block','block'])
+        self.server.requests.clear()
+        self.config(True)
+        self.config(None)
+        self.host.send(op='reload')
+        self.host.until(lambda e:e['event']=='loaded' and e['url']==self.url)
+        self.host.settle(.7)
+        self.assertNotIn('/ad.js',self.server.requests)
+        # A new script configuration guarantees a fresh query on this document.
+        self.assertEqual(self.styles(),['none','none','none'])
+    def test_internal_pages_exclude_cosmetics(self):
+        self.config(rules='##body\nchrome://version##body')
+        self.host.navigate('chrome://version/')
+        self.assertEqual(self.host.latest_title(),'About Version')
+        self.assertFalse(any(e['event']=='error' for e in self.host.seen))
+
+if __name__=='__main__': unittest.main(verbosity=2)
