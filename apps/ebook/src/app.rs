@@ -6745,21 +6745,34 @@ impl BooksApp {
             None,
         );
 
-        // Surface a picker failure (dismissed/unavailable) right under the CTA.
-        if let Some(err) = &self.load_error {
-            let (ew, _) = tr.measure(err, 12.5, Some((body_w) as f32));
-            tr.draw_text(
-                scene,
-                err,
-                12.5,
-                c.semantic.danger,
-                t * Affine::translate((
-                    cx - f64::from(ew.min(body_w as f32)) / 2.0,
-                    cta_y + cta_h + 44.0,
-                )),
-                Some(body_w as f32),
-            );
-        }
+        Self::draw_library_load_error(
+            ctx,
+            self.load_error.as_deref(),
+            cx,
+            body_w,
+            cta_y + cta_h + 44.0,
+        );
+    }
+
+    /// Surface a picker failure directly beneath the empty-library action.
+    fn draw_library_load_error(
+        ctx: &mut EbookPaintCtx<'_>,
+        error: Option<&str>,
+        center_x: f64,
+        width: f64,
+        y: f64,
+    ) {
+        let Some(error) = error else { return };
+        let (error_width, _) = ctx.text.measure(error, 12.5, Some(width as f32));
+        ctx.text.draw_text(
+            ctx.scene,
+            error,
+            12.5,
+            ctx.theme.tokens.colors.semantic.danger,
+            ctx.transform
+                * Affine::translate((center_x - f64::from(error_width.min(width as f32)) / 2.0, y)),
+            Some(width as f32),
+        );
     }
 
     /// The filtered + sorted display order of the shelf: original library
@@ -11055,7 +11068,7 @@ impl BooksApp {
         );
         y += 18.0;
         let renaming_this =
-            matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(id.to_string()));
+            matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(id.clone()));
         if renaming_this {
             let field_rect = Rect::new(
                 view.content.x0 - 6.0,
@@ -11085,7 +11098,7 @@ impl BooksApp {
             );
             self.push_hit(
                 Rect::new(view.content.x0, y - 2.0, view.content.x1 - 60.0, y + 26.0),
-                Action::BeginRenameScheme(id.to_string()),
+                Action::BeginRenameScheme(id.clone()),
             );
         }
         y + 40.0
