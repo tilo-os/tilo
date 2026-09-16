@@ -9,58 +9,23 @@ the composefs digest. This is a build-time input, never a target-side path API.
 """
 
 import hashlib
-import json
 import re
-import stat
 import struct
 import sys
 from pathlib import Path
-from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, read_definition
+from hardware_profile import ARCH_CONFIG, DEFINITION_PATH, PROFILE_PATH, read_definition, read_profile, trusted_path
 
 
-PROFILE = Path("usr/lib/qos/hardware-profile.json")
-FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256"}
-
-
-def trusted_path(root: Path, relative: Path, *, regular: bool) -> Path:
-    """Reject writable, non-root-owned or redirected image inputs."""
-    current = root
-    for index, part in enumerate(("", *relative.parts)):
-        if part:
-            current = current / part
-        info = current.lstat()
-        if stat.S_ISLNK(info.st_mode):
-            raise ValueError(f"hardware profile input contains a symlink: {current}")
-        if info.st_uid != 0 or info.st_mode & 0o022:
-            raise ValueError(f"hardware profile input must be root-owned and not group/world writable: {current}")
-        want_file = regular and index == len(relative.parts)
-        if want_file:
-            if not stat.S_ISREG(info.st_mode):
-                raise ValueError(f"hardware profile input is not a regular file: {current}")
-        elif not stat.S_ISDIR(info.st_mode):
-            raise ValueError(f"hardware profile input is not a directory: {current}")
-    return current
+PROFILE = PROFILE_PATH
 
 
 def resolve_profile(root: Path, kver: str, architecture: str) -> Path | None:
-    candidate = root / PROFILE
-    # lexists behavior matters: a dangling symlink is an invalid profile, not
-    # an instruction to silently fall back to the generic boot path.
-    if not candidate.exists() and not candidate.is_symlink():
+    data = read_profile(root)
+    if data is None:
         return None
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", kver):
         raise ValueError("invalid kernel version for hardware profile")
-    profile = trusted_path(root, PROFILE, regular=True)
-    if profile.stat().st_size > 16384:
-        raise ValueError("hardware profile is too large")
-    data = json.loads(profile.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or set(data) != FIELDS:
-        raise ValueError("hardware profile has missing or unknown fields")
-    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
-        raise ValueError("unsupported hardware profile schema")
     definition = read_definition(trusted_path(root, DEFINITION_PATH, regular=True))
-    if data["id"] != definition["id"]:
-        raise ValueError("hardware profile id does not match its image-owned definition")
     if architecture not in ARCH_CONFIG or data["architecture"] != architecture or definition["architecture"] != architecture:
         raise ValueError("hardware profile requires a matching native image architecture")
     # The reviewed definition is copied into the sealed rootfs. It binds the
