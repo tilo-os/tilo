@@ -3879,13 +3879,17 @@ impl App {
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if self.collab_manager.is_connected() {
-            let delta = self.document_frontier.take_delta(&mut self.state.doc);
+            let (delta, heads) = self.document_frontier.pending_delta(&mut self.state.doc);
             if !delta.is_empty() {
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                     crate::diag!("[app] broadcast doc delta {}B", delta.len());
                 }
-                self.collab_manager
-                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
+                if self
+                    .collab_manager
+                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+                {
+                    self.document_frontier.advance(heads);
+                }
             }
         }
         self.broadcast_room_index_delta();
@@ -3908,21 +3912,27 @@ impl App {
         let frontier = self
             .room_index_frontier
             .get_or_insert_with(|| crate::state::DocumentFrontier::at_document(room));
-        let delta = frontier.take_delta(room);
+        let (delta, heads) = frontier.pending_delta(room);
         if delta.is_empty() {
             return;
         }
         if let Some(manager) = self.room_collab_manager.as_mut() {
-            if manager.is_connected() {
-                manager
-                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
+            if manager.is_connected()
+                && manager
+                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+            {
+                frontier.advance(heads);
             }
         } else if self.records.is_some() && self.collab_manager.is_connected() {
             // Before the first record checkout the primary manager is the
             // room route. It becomes `room_collab_manager` at that checkout.
             // Do not advance this cursor for ordinary (non-record) apps.
-            self.collab_manager
-                .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta });
+            if self
+                .collab_manager
+                .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+            {
+                frontier.advance(heads);
+            }
         }
     }
 
