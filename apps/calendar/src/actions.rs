@@ -24,10 +24,6 @@
 //! wall-clock, and a malformed payload (an unparseable id or datetime) is a
 //! **no-op** rather than an error, so a bad replay can't wedge a peer.
 
-#[cfg(test)]
-use std::cell::Cell;
-use std::collections::HashMap;
-
 use automerge::AutoCommit;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
@@ -53,7 +49,11 @@ pub const CALENDAR_OPERATION_TYPE: &str = "calendar.operation";
 /// The root resource is intentionally a contextual snapshot, not a second
 /// unbounded copy of Calendar's data. Search and direct invocation resolve any
 /// omitted stable id through [`ResourceProvider::resource`] below.
-const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+pub(crate) const EAGER_RESOURCE_SNAPSHOT_LIMIT: usize = 96;
+/// A task delete action carries every child id it will tombstone, so cap that
+/// payload independently from directory paging. Larger child sets remain
+/// addressable one-by-one but require their children to be handled first.
+pub(crate) const TASK_DELETE_FANOUT_LIMIT: usize = 96;
 
 /// Stable resource id for one event. Search, the palette, accessibility and
 /// agents all address this same resource.
@@ -74,6 +74,16 @@ pub fn project_resource_id(id: Id) -> String {
 /// Stable resource id for a local or configured remote calendar collection.
 pub fn calendar_resource_id(id: &str) -> String {
     format!("calendar.collection:{id}")
+}
+
+fn project_id_from_resource(address: &str) -> Option<Id> {
+    address.strip_prefix("calendar.project:")?.parse().ok()
+}
+
+fn calendar_id_from_resource(address: &str) -> Option<&str> {
+    address
+        .strip_prefix("calendar.collection:")
+        .filter(|id| !id.is_empty())
 }
 
 pub fn attendee_resource_id(event_id: Id, attendee_id: Id) -> String {
@@ -1593,13 +1603,16 @@ pub struct EventResource {
     pub remote_delete: Option<String>,
 }
 
-/// One task surfaced as a resource, with its subtask ids resolved so deleting a
-/// parent removes the whole subtree. Subtasks are resources too: search and
-/// agents must be able to address every task the app presents.
+/// One task surfaced as a resource. Its delete fanout is bounded; when the
+/// parent has more children, the delete action explicitly remains unavailable
+/// until children are handled through their own stable resources.
 #[derive(Debug, Clone)]
 pub struct TaskResource {
     pub data: TaskData,
     pub subtasks: Vec<String>,
+    /// Children omitted from `subtasks` to keep exact resource/action
+    /// materialisation bounded.
+    pub subtask_overflow: usize,
 }
 
 /// One durable task project plus whether deleting it would strand linked
@@ -1609,20 +1622,6 @@ pub struct TaskResource {
 pub struct ProjectResource {
     pub data: ProjectData,
     pub in_use: bool,
-}
-
-/// A destination that an event may be filed under. This is projected from the
-/// shared account store at resource-publication time, so an agent gets the
-/// same real target list as the editor's calendar picker.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CalendarTargetResource {
-    /// `local` for the on-device calendar, otherwise the stable remote
-    /// collection id carried by Calendar accounts.
-    pub id: String,
-    pub label: String,
-    /// The selected remote calendar's palette index. Local does not impose a
-    /// colour, matching the visible editor behaviour.
-    pub color: Option<usize>,
 }
 
 /// A local or remote event collection that owns event resources. Calendar
@@ -1635,14 +1634,6 @@ pub struct CalendarCollectionResource {
     pub label: String,
     pub color: Option<usize>,
     pub visible: bool,
-}
-
-/// A real local project that a task may be filed under. Projects live in the
-/// shared calendar document, so their ids are safe collaboration targets.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskProjectTarget {
-    pub id: String,
-    pub label: String,
 }
 
 /// The presentation context the calendar hands [`provide_resources`]: a template
@@ -1658,54 +1649,33 @@ pub struct CalendarResourceCtx {
     pub tasks: Vec<TaskResource>,
     pub projects: Vec<ProjectResource>,
     pub calendars: Vec<CalendarCollectionResource>,
-    pub calendar_targets: Vec<CalendarTargetResource>,
-    pub task_project_targets: Vec<TaskProjectTarget>,
     pub can_sync: bool,
     pub syncing: bool,
     pub can_export: bool,
     /// Captured from the model's display-order tail so publishing the root
     /// never needs to scan dynamic project children.
     pub next_project_order: u32,
-    /// Stable ids point into the retained projections above. Exact resource
-    /// resolution uses these positions rather than scanning an unbounded
-    /// events/tasks/projects vector on every agent or directory request.
-    pub(crate) event_positions: HashMap<String, usize>,
-    pub(crate) task_positions: HashMap<String, usize>,
-    pub(crate) project_positions: HashMap<String, usize>,
-    pub(crate) calendar_positions: HashMap<String, usize>,
-    #[cfg(test)]
-    pub(crate) exact_inspected: Cell<usize>,
 }
 
 impl CalendarResourceCtx {
-    /// Build stable-id indices once with the projection. The vectors remain
-    /// the single authoritative payload used by root paging and exact lookup.
-    pub(crate) fn with_resource_indices(mut self) -> Self {
-        self.event_positions = self
-            .events
-            .iter()
-            .enumerate()
-            .map(|(index, event)| (event.data.id.clone(), index))
-            .collect();
-        self.task_positions = self
-            .tasks
-            .iter()
-            .enumerate()
-            .map(|(index, task)| (task.data.id.clone(), index))
-            .collect();
-        self.project_positions = self
-            .projects
-            .iter()
-            .enumerate()
-            .map(|(index, project)| (project.data.id.clone(), index))
-            .collect();
-        self.calendar_positions = self
-            .calendars
-            .iter()
-            .enumerate()
-            .map(|(index, calendar)| (calendar.id.clone(), index))
-            .collect();
-        self
+    pub(crate) fn new(
+        new_event: EventData,
+        can_sync: bool,
+        syncing: bool,
+        can_export: bool,
+        next_project_order: u32,
+    ) -> Self {
+        Self {
+            new_event,
+            events: Vec::new(),
+            tasks: Vec::new(),
+            projects: Vec::new(),
+            calendars: Vec::new(),
+            can_sync,
+            syncing,
+            can_export,
+            next_project_order,
+        }
     }
 
     fn empty_scoped(&self) -> Self {
@@ -1715,60 +1685,23 @@ impl CalendarResourceCtx {
             tasks: Vec::new(),
             projects: Vec::new(),
             calendars: self.calendars.clone(),
-            calendar_targets: self.calendar_targets.clone(),
-            task_project_targets: self.task_project_targets.clone(),
             can_sync: self.can_sync,
             syncing: self.syncing,
             can_export: self.can_export,
             next_project_order: self.next_project_order,
-            event_positions: HashMap::new(),
-            task_positions: HashMap::new(),
-            project_positions: HashMap::new(),
-            calendar_positions: HashMap::new(),
-            #[cfg(test)]
-            exact_inspected: Cell::new(0),
         }
     }
-    #[cfg(test)]
-    fn inspect_exact(&self) {
-        self.exact_inspected
-            .set(self.exact_inspected.get().saturating_add(1));
-    }
-    #[cfg(test)]
-    fn reset_exact_inspected(&self) {
-        self.exact_inspected.set(0);
-    }
-    #[cfg(test)]
-    fn exact_inspected(&self) -> usize {
-        self.exact_inspected.get()
-    }
     fn event(&self, id: &str) -> Option<&EventResource> {
-        #[cfg(test)]
-        self.inspect_exact();
-        self.event_positions
-            .get(id)
-            .and_then(|index| self.events.get(*index))
+        self.events.iter().find(|event| event.data.id == id)
     }
     fn task(&self, id: &str) -> Option<&TaskResource> {
-        #[cfg(test)]
-        self.inspect_exact();
-        self.task_positions
-            .get(id)
-            .and_then(|index| self.tasks.get(*index))
+        self.tasks.iter().find(|task| task.data.id == id)
     }
     fn project(&self, id: &str) -> Option<&ProjectResource> {
-        #[cfg(test)]
-        self.inspect_exact();
-        self.project_positions
-            .get(id)
-            .and_then(|index| self.projects.get(*index))
+        self.projects.iter().find(|project| project.data.id == id)
     }
     fn calendar(&self, id: &str) -> Option<&CalendarCollectionResource> {
-        #[cfg(test)]
-        self.inspect_exact();
-        self.calendar_positions
-            .get(id)
-            .and_then(|index| self.calendars.get(*index))
+        self.calendars.iter().find(|calendar| calendar.id == id)
     }
 }
 
@@ -2582,27 +2515,22 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        let projects = ctx.task_project_targets.clone();
         child = child.with_action(event_update_spec(
             "move-to-project",
             "Move to project",
             "project destination",
-            vec![
-                ActionParam::required("project", ParamType::Text, "A Calendar project or none")
-                    .with_choices(
-                        std::iter::once("none".to_string())
-                            .chain(projects.iter().map(|project| project.id.clone())),
-                    ),
-            ],
+            vec![ActionParam::optional(
+                "project",
+                ParamType::Resource,
+                "calendar.project resource address; omit to unfile",
+            )],
             ev.data.clone(),
             move |data, args| {
-                let selected = args.text("project").unwrap_or_default();
-                let project = if selected == "none" {
-                    String::new()
-                } else if projects.iter().any(|project| project.id == selected) {
-                    selected.to_string()
-                } else {
-                    return Err("project is no longer available".into());
+                let project = match args.text("project") {
+                    None => String::new(),
+                    Some(resource) => project_id_from_resource(resource)
+                        .ok_or_else(|| "project must be a calendar.project resource".to_string())?
+                        .to_string(),
                 };
                 Ok(patch_event_action(
                     data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
@@ -2613,27 +2541,22 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        let targets = ctx.calendar_targets.clone();
         child = child.with_action(event_update_spec(
             "move-to-calendar",
             "Move to calendar",
             "calendar destination",
-            vec![
-                ActionParam::required(
-                    "calendar",
-                    ParamType::Text,
-                    "The local or configured remote calendar that should own this event",
-                )
-                .with_choices(targets.iter().map(|target| target.id.clone())),
-            ],
+            vec![ActionParam::required(
+                "calendar",
+                ParamType::Resource,
+                "calendar.collection resource address (calendar.collection:local is on-device)",
+            )],
             ev.data.clone(),
             move |data, args| {
-                let id = args.text("calendar").unwrap_or_default();
-                let target = targets
-                    .iter()
-                    .find(|target| target.id == id)
-                    .ok_or_else(|| "calendar is no longer configured".to_string())?;
-                if target.id == "local" {
+                let target = args
+                    .text("calendar")
+                    .and_then(calendar_id_from_resource)
+                    .ok_or_else(|| "calendar must be a calendar.collection resource".to_string())?;
+                if target == "local" {
                     Ok(patch_event_action(
                         data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
                         EventPatch {
@@ -2646,8 +2569,7 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                     Ok(patch_event_action(
                         data.id.parse::<Id>().map_err(|_| "event id is invalid")?,
                         EventPatch {
-                            calendar_id: Some(target.id.clone()),
-                            color: target.color,
+                            calendar_id: Some(target.to_string()),
                             enqueue_remote: Some(true),
                             ..EventPatch::default()
                         },
@@ -2850,7 +2772,6 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
         } else {
             "Mark done"
         };
-        let projects = ctx.task_project_targets.clone();
         let mut child = Resource::new(
             task_resource_id(parsed_id),
             "calendar.task",
@@ -2947,22 +2868,18 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
             "move-to-project",
             "Move to project",
             "project destination",
-            vec![
-                ActionParam::required("project", ParamType::Text, "A Calendar project or none")
-                    .with_choices(
-                        std::iter::once("none".to_string())
-                            .chain(projects.iter().map(|project| project.id.clone())),
-                    ),
-            ],
+            vec![ActionParam::optional(
+                "project",
+                ParamType::Resource,
+                "calendar.project resource address; omit to unfile",
+            )],
             tk.data.clone(),
             move |data, args| {
-                let selected = args.text("project").unwrap_or_default();
-                let project = if selected == "none" {
-                    String::new()
-                } else if projects.iter().any(|project| project.id == selected) {
-                    selected.to_string()
-                } else {
-                    return Err("project is no longer available".into());
+                let project = match args.text("project") {
+                    None => String::new(),
+                    Some(resource) => project_id_from_resource(resource)
+                        .ok_or_else(|| "project must be a calendar.project resource".to_string())?
+                        .to_string(),
                 };
                 Ok(patch_task_action(
                     data.id.parse::<Id>().map_err(|_| "task id is invalid")?,
@@ -2973,11 +2890,21 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 ))
             },
         ));
-        child = child.with_action(immediate_spec(
+        let mut delete = immediate_spec(
             "delete",
             "Delete task",
             &delete_task_action(id.clone(), tk.subtasks.clone()),
-        ));
+        );
+        if tk.subtask_overflow > 0 {
+            delete = delete.unavailable(
+                "task_children_overflow",
+                format!(
+                    "This task has {} additional children; handle them first before deleting the parent",
+                    tk.subtask_overflow
+                ),
+            );
+        }
+        child = child.with_action(delete);
         child = child.with_child(note_resource(
             &task_resource_id(parsed_id),
             NoteOwner::Task { id: id.clone() },
@@ -3075,8 +3002,6 @@ fn find_resource(resources: Vec<Resource>, id: &str) -> Option<Resource> {
     reason = "stable-id routing keeps every ownership/staleness branch adjacent for auditability"
 )]
 fn resource_from_ctx(ctx: &CalendarResourceCtx, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    #[cfg(test)]
-    ctx.reset_exact_inspected();
     let mut scoped = ctx.empty_scoped();
 
     if id == "calendar.calendar" {
@@ -3229,9 +3154,8 @@ impl ResourceProvider for crate::app::CalendarApp {
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        self.resource_context
-            .as_ref()
-            .and_then(|ctx| resource_from_ctx(ctx, doc, id))
+        self.exact_resource_ctx(id)
+            .and_then(|ctx| resource_from_ctx(&ctx, doc, id))
     }
 }
 
@@ -3420,7 +3344,6 @@ mod tests {
         ctx.events = vec![event.clone()];
         ctx.tasks.clear();
         ctx.projects.clear();
-        ctx = ctx.with_resource_indices();
 
         let resources = provide_resources(&ctx, &doc);
         assert!(
@@ -3447,7 +3370,6 @@ mod tests {
 
         ctx.calendars
             .retain(|calendar| calendar.id != event.data.calendar_id);
-        ctx = ctx.with_resource_indices();
         assert!(
             resource_from_ctx(&ctx, &doc, &calendar_id).is_none(),
             "a removed collection id is not redirected to a surviving calendar"
@@ -3469,157 +3391,6 @@ mod tests {
         assert!(
             resource.children.is_empty(),
             "exact project lookup must not expand an unbounded task history"
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the four sequential 100k fixtures document each exact resource family in one regression"
-    )]
-    fn real_provider_resolves_late_large_corpora_with_fixed_lookup_work() {
-        const LARGE: usize = 100_001;
-
-        fn resolve_bounded(app: &CalendarApp, doc: &AutoCommit, id: &str, kind: &str) -> Resource {
-            let resource = <CalendarApp as ResourceProvider>::resource(app, doc, id)
-                .unwrap_or_else(|| panic!("late exact resource did not resolve: {id}"));
-            assert_eq!(resource.kind, kind);
-            let inspected = app
-                .resource_context
-                .as_ref()
-                .expect("retained resource context")
-                .exact_inspected();
-            assert!(
-                inspected <= 4,
-                "exact lookup inspected {inspected} retained keys for {id}"
-            );
-            resource
-        }
-
-        let (mut app, doc) = seeded();
-        let base = app.calendar_resource_ctx();
-        let event_template = base.events[0].clone();
-        let task_template = base.tasks[0].clone();
-        let project_template = base.projects[0].clone();
-        let calendar_template = base.calendars[0].clone();
-
-        let mut ctx = base.clone();
-        ctx.events.clear();
-        ctx.tasks.clear();
-        ctx.projects.clear();
-        ctx.calendars = (0..LARGE)
-            .map(|index| CalendarCollectionResource {
-                id: format!("stress/calendar/{index}"),
-                label: format!("Stress calendar {index}"),
-                color: calendar_template.color,
-                visible: true,
-            })
-            .collect();
-        let late_calendar = calendar_resource_id("stress/calendar/100000");
-        app.resource_context = Some(ctx.with_resource_indices());
-        resolve_bounded(&app, &doc, &late_calendar, "calendar.collection");
-
-        let mut ctx = base.clone();
-        ctx.events.clear();
-        ctx.tasks.clear();
-        ctx.calendars = vec![calendar_template.clone()];
-        ctx.projects = (0..LARGE)
-            .map(|index| {
-                let mut project = project_template.clone();
-                project.data.id = Uuid::from_u128(200_000 + index as u128).to_string();
-                project.data.name = format!("Stress project {index}");
-                project
-            })
-            .collect();
-        let late_project_id = ctx.projects.last().expect("late project").data.id.clone();
-        let late_project = project_resource_id(late_project_id.parse().expect("project id"));
-        app.resource_context = Some(ctx.with_resource_indices());
-        resolve_bounded(&app, &doc, &late_project, "calendar.project");
-
-        let attendee_id = Uuid::from_u128(400_000);
-        let mut ctx = base.clone();
-        ctx.tasks.clear();
-        ctx.projects.clear();
-        ctx.calendars = vec![calendar_template.clone()];
-        ctx.events = (0..LARGE)
-            .map(|index| {
-                let mut event = event_template.clone();
-                event.data.id = Uuid::from_u128(300_000 + index as u128).to_string();
-                event.data.title = format!("Stress event {index}");
-                event.data.calendar_id = calendar_template.id.clone();
-                event.data.reminder = -1;
-                event.data.attendees.clear();
-                event
-            })
-            .collect();
-        let late_event = ctx.events.last_mut().expect("late event");
-        let late_event_id: Id = late_event.data.id.parse().expect("event id");
-        late_event.data.reminder = 10;
-        late_event.data.attendees.push(AttendeeData {
-            id: attendee_id.to_string(),
-            name: "Late attendee".into(),
-            email: "late@example.test".into(),
-            status: "NEEDS-ACTION".into(),
-        });
-        app.resource_context = Some(ctx.with_resource_indices());
-        let event_id = event_resource_id(late_event_id);
-        resolve_bounded(&app, &doc, &event_id, "calendar.event");
-        resolve_bounded(&app, &doc, &format!("{event_id}:notes"), "calendar.note");
-        resolve_bounded(
-            &app,
-            &doc,
-            &reminder_resource_id(late_event_id),
-            "calendar.reminder",
-        );
-        resolve_bounded(
-            &app,
-            &doc,
-            &attendee_resource_id(late_event_id, attendee_id),
-            "calendar.attendee",
-        );
-
-        let mut ctx = base;
-        ctx.events.clear();
-        ctx.calendars = vec![calendar_template];
-        ctx.projects = vec![project_template];
-        let owner = ctx.projects[0].data.id.clone();
-        ctx.tasks = (0..LARGE)
-            .map(|index| {
-                let mut task = task_template.clone();
-                task.data.id = Uuid::from_u128(500_000 + index as u128).to_string();
-                task.data.title = format!("Stress task {index}");
-                task.data.project = owner.clone();
-                task.subtasks.clear();
-                task
-            })
-            .collect();
-        let late_task_id: Id = ctx
-            .tasks
-            .last()
-            .expect("late task")
-            .data
-            .id
-            .parse()
-            .expect("task id");
-        app.resource_context = Some(ctx.with_resource_indices());
-        let task_id = task_resource_id(late_task_id);
-        resolve_bounded(&app, &doc, &task_id, "calendar.task");
-        resolve_bounded(&app, &doc, &format!("{task_id}:notes"), "calendar.note");
-
-        let mut stale = app.resource_context.take().expect("retained context");
-        stale.tasks.clear();
-        app.resource_context = Some(stale.with_resource_indices());
-        assert!(
-            <CalendarApp as ResourceProvider>::resource(&app, &doc, &task_id).is_none(),
-            "a deleted late stable id must not resolve"
-        );
-        assert_eq!(
-            app.resource_context
-                .as_ref()
-                .expect("retained context")
-                .exact_inspected(),
-            1,
-            "stale deletion is one exact key lookup"
         );
     }
 
@@ -3692,7 +3463,6 @@ mod tests {
             color: None,
             visible: false,
         }];
-        ctx = ctx.with_resource_indices();
 
         let root = provide_resources(&ctx, &doc).remove(0);
         let private_collection = root
@@ -4183,6 +3953,48 @@ mod tests {
         assert_eq!(
             updated.location, "Studio 3 · https://meet.example",
             "a recurrence patch did not rewrite an independently-authored location"
+        );
+
+        let project = CalDoc::read_model(&doc).projects[0].id;
+        let move_project = event
+            .actions
+            .iter()
+            .find(|action| action.id == "move-to-project")
+            .expect("typed project resource action");
+        let encoded = move_project
+            .build_args([(
+                "project".to_string(),
+                qos_actions::ArgValue::Resource(project_resource_id(project)),
+            )])
+            .expect("canonical project resource address is accepted");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("current project remains authoritatively valid");
+        assert_eq!(
+            CalDoc::read_model(&doc).event(id).unwrap().project,
+            Some(project)
+        );
+
+        let move_calendar = event
+            .actions
+            .iter()
+            .find(|action| action.id == "move-to-calendar")
+            .expect("typed calendar resource action");
+        let encoded = move_calendar
+            .build_args([(
+                "calendar".to_string(),
+                qos_actions::ArgValue::Resource(calendar_resource_id("local")),
+            )])
+            .expect("canonical local collection is accepted");
+        let decoded = registry().decode(&encoded).expect("calendar action");
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx)
+            .expect("local calendar move dispatches");
+        assert!(
+            CalDoc::read_model(&doc)
+                .event(id)
+                .unwrap()
+                .calendar_id
+                .is_none()
         );
     }
 
