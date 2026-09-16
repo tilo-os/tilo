@@ -1638,6 +1638,9 @@ pub fn launch_media_handoff(
         crate::shell::device_fabric::MediaSourceLocator::RemoteStream { url } => {
             launch_with_context(package_id, room, None, Some(url), None, Some(state))
         }
+        crate::shell::device_fabric::MediaSourceLocator::AppResource { uri } => {
+            launch_with_context(package_id, room, None, Some(uri), None, Some(state))
+        }
     }
 }
 

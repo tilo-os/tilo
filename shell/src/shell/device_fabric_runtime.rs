@@ -366,6 +366,9 @@ pub fn request_media_handoff(
         media::handoff::HandoffSource::RemoteStream { url } => {
             MediaSourceLocator::RemoteStream { url: url.clone() }
         }
+        media::handoff::HandoffSource::AppResource { uri } => {
+            MediaSourceLocator::AppResource { uri: uri.clone() }
+        }
         media::handoff::HandoffSource::LocalFile { .. } => {
             return Err(
                 "This file is device-local. Add it to Files to hydrate it on another device."
