@@ -6,15 +6,12 @@
 //! ## Responsive layout
 //!
 //! The gallery is the app's **primary navigation sidebar**. On a wide window
-//! it stays docked beside the preview + customizer (the original
-//! side-by-side studio layout). When the window is narrower than
-//! [`BREAKPOINT`] the gallery collapses into an overlay *flap*: the preview +
+//! it stays docked beside the preview + customizer. When the window is narrower
+//! than [`BREAKPOINT`] the gallery collapses into an overlay *flap*: the preview +
 //! customizer take the full width and the gallery, closed by default, slides
 //! in over a dimming scrim when summoned by the top-bar hamburger. The
 //! breakpoint is driven by the app's own allocated width and the eased
-//! reveal uses the shared [`FlapState`] kernel (the same algorithm every
-//! other adaptive-sidebar app in the suite shares), so no collapse logic is
-//! hand-rolled here.
+//! reveal uses the shared [`FlapState`] kernel.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

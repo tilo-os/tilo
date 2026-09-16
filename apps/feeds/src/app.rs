@@ -6528,11 +6528,8 @@ mod tests {
 
     // --- add-subscription dialog (real ModalDialog + real TextInput) -------
 
-    /// The add-subscription dialog hosts a real [`ui::widget::TextInput`], so
-    /// the shared clipboard core works: seed the clipboard, paste with Ctrl+V
-    /// through the app's real event path, and the URL lands in the field.
-    /// Submitting then runs the real `subscribe` path. This is the proof the
-    /// hand-rolled fake field (no clipboard, "Press enter to add") is gone.
+    /// Verifies Ctrl+V reaches the add-subscription field and submission uses
+    /// the normal `subscribe` path.
     #[test]
     fn add_subscription_modal_pastes_url_and_subscribes() {
         use winit::event::Modifiers;

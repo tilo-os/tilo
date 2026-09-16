@@ -1793,10 +1793,9 @@ pub struct WordProcessorWidget {
     /// Follow the available canvas width until the user explicitly operates a
     /// zoom control. This makes a narrow/tiled editor readable on first open.
     auto_fit_page: bool,
-    /// One-shot headless visual-review staging. Deferred until the base frame
-    /// has populated its real toolbar hit map, preserving production anchors.
+    /// One-shot headless staging, deferred until toolbar geometry is laid out.
     stage_template_picker: bool,
-    /// One-shot staging for the compact-toolbar overflow menu.
+    /// One-shot headless staging for the compact-toolbar overflow menu.
     stage_toolbar_overflow: bool,
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
     /// the canvas top offset so no control is ever clipped.
@@ -2826,13 +2825,13 @@ impl WordProcessorWidget {
         self.dirty = true;
     }
 
-    /// Stage the real "New ▾" menu for the next headless overlay pass.
+    /// Stage the template picker for the next headless overlay pass.
     pub fn stage_template_picker_for_shot(&mut self) {
         self.stage_template_picker = true;
     }
 
     /// Stage the compact-toolbar overflow menu for the next headless overlay
-    /// pass, using the same typed actions as keyboard or pointer activation.
+    /// pass.
     pub fn stage_toolbar_overflow_for_shot(&mut self) {
         self.stage_toolbar_overflow = true;
     }

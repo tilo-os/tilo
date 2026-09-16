@@ -6,19 +6,16 @@
 //! transient floating bubble rather than a permanent strip, so the content
 //! spans to the window bottom.
 //!
-//! Layout is hand-rolled rather than delegated to Taffy because the panes are
-//! a fixed split that responds to the viewport rect — a single full-bleed
-//! leaf node is handed to Taffy and every sub-rect is computed from it. Event
-//! routing dispatches to the schema tree, the tab bar, the editor and the
-//! results grid by hit-testing their rects.
+//! The fixed pane split is computed from the viewport rect within one
+//! full-bleed Taffy leaf. Event routing hit-tests the schema tree, tab bar,
+//! editor, and results grid.
 //!
 //! The connections + schema sidebar is responsive. On a wide window it stays
 //! docked beside the main panel (the desktop layout above). When the window
 //! is narrower than [`BREAKPOINT`] the sidebar collapses into an overlay flap
 //! that slides over the main panel behind a dimming scrim — closed by default
 //! and summoned with the hamburger toggle in the tab bar. The eased slide and
-//! the breakpoint default-reconciliation are handled by the toolkit's shared
-//! [`FlapState`] kernel rather than hand-rolled here.
+//! the breakpoint default-reconciliation use the shared [`FlapState`] kernel.
 
 use std::collections::HashMap;
 use std::io::Write;

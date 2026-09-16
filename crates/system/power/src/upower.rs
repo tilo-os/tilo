@@ -102,10 +102,8 @@ impl UPowerMonitor {
     ///
     /// # Errors
     ///
-    /// Never actually returns an error today — every property read falls back to a default
-    /// (`0`/`false`) rather than propagating a D-Bus failure, so a flaky bus read degrades to
-    /// a stale reading instead of an error. `Result` is kept for symmetry with the rest of
-    /// this type's methods.
+    /// Property read failures fall back to defaults (`0`/`false`), so a flaky
+    /// D-Bus read yields a stale reading rather than an error.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -136,9 +134,8 @@ impl UPowerMonitor {
     ///
     /// # Errors
     ///
-    /// Never actually returns an error today — every property read falls back to a default
-    /// rather than propagating a D-Bus failure. `Result` is kept for symmetry with the rest
-    /// of this type's methods.
+    /// Property read failures fall back to defaults rather than propagating a
+    /// D-Bus error.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,

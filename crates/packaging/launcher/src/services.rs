@@ -25,18 +25,8 @@
 //! makes bwrap block reading for an EOF that never arrives, hanging the
 //! launch before it ever execs the app.
 //!
-//! ### Open design question — where to mediate the handoff?
-//!
-//! Three plausible mediation points: inherited descriptors (this
-//! module's choice — simplest, no broker, fd at a known number), a
-//! dedicated broker over `SCM_RIGHTS` (richer — revoke/audit/hot-swap —
-//! but adds latency and a daemon dependency), or the compositor itself
-//! handing fds to an inherited launcher (tightest coupling, hardest to
-//! test).
-//!
-//! Today we pick option 1. If revocation/auditing matters later, the
-//! launcher's API stays the same — only `resolve_service_binds` changes
-//! to dial the broker instead of opening the socket directly.
+//! The launcher receives inherited descriptors directly: this keeps the
+//! handoff local, avoids another daemon, and gives each service a fixed fd.
 
 use std::collections::BTreeMap;
 use std::io::Write;
