@@ -552,7 +552,7 @@ impl ContextMenu {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surface_white_10,
+            crate::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.overlay, 26),
             None,
             &track,
         );
