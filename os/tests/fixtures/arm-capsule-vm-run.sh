@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export PATH=/usr/bin:/usr/sbin:/bin:/sbin
+echo QOS_ARM_CAPSULE_CPU_FEATURES
+grep '^Features' /proc/cpuinfo | sort -u
 bind_file() {
     mkdir -p "$(dirname "$2")"
     touch "$2"
