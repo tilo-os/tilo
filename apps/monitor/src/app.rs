@@ -189,14 +189,6 @@ const SEARCH_MIN_W: f64 = 160.0;
 /// Preferred search-box width when there is room to spare (wide windows).
 const SEARCH_PREF_W: f64 = 320.0;
 
-// `ui::widget::ContextMenu` lays itself out with private constants; we mirror
-// them here so the app's hit-testing + on-screen-nudge match the primitive's
-// drawn geometry exactly. Keep in sync with `context_menu.rs`.
-const CONTEXT_MENU_W: f64 = 220.0;
-const CONTEXT_MENU_ROW_H: f64 = 28.0;
-const CONTEXT_MENU_SEP_H: f64 = 9.0;
-const CONTEXT_MENU_PAD: f64 = 6.0;
-
 /// How long the "PID copied" toast stays up after a Copy PID action before it
 /// expires on its own. The redraw loop keeps ticking (`needs_animation_frame`
 /// is always true), so the toast clears itself without any further input.
@@ -989,48 +981,22 @@ impl MonitorApp {
             set(ProcAction::Kill(pid)),
         ));
 
-        // Anchor so the menu stays on-screen: nudge left/up if it would spill
-        // past the app's right/bottom edge.
-        let mh = Self::context_menu_height(&menu);
-        let mw = CONTEXT_MENU_W;
-        let mut x = pos.x;
-        let mut y = pos.y;
-        if x + mw > self.rect.x1 {
-            x = (self.rect.x1 - mw).max(self.rect.x0);
-        }
-        if y + mh > self.rect.y1 {
-            y = (self.rect.y1 - mh).max(self.rect.y0);
-        }
+        // Let the shared primitive compute its intrinsic geometry, then
+        // re-anchor that exact rectangle inside the app viewport.
+        menu.open_at([pos.x as f32, pos.y as f32]);
+        let bounds = menu.get_rect();
+        let x = pos.x.clamp(
+            self.rect.x0,
+            (self.rect.x1 - bounds.width()).max(self.rect.x0),
+        );
+        let y = pos.y.clamp(
+            self.rect.y0,
+            (self.rect.y1 - bounds.height()).max(self.rect.y0),
+        );
         menu.open_at([x as f32, y as f32]);
         self.context = menu;
         self.context_pid = Some(pid);
         self.selected_pid = Some(pid);
-        self.layout_context_menu();
-    }
-
-    /// Run the `ContextMenu` primitive's own `build_layout`/`apply_layout`
-    /// passes against a throwaway one-node taffy tree so its internal `rect`
-    /// matches the anchored position. The menu is a hand-drawn child of this
-    /// app (it isn't in the host's widget tree), so we drive its layout
-    /// contract here — honoring the primitive rather than poking its private
-    /// rect — before drawing it or hit-testing its rows.
-    fn layout_context_menu(&mut self) {
-        use std::collections::HashMap;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = self
-            .context
-            .build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let _ = taffy.compute_layout(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(CONTEXT_MENU_W as f32),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-        );
-        // `apply_layout` prefers the open menu's stored anchor over the taffy
-        // origin, so the origin we pass is irrelevant when open.
-        self.context.apply_layout(&taffy, node, Point::ZERO);
     }
 
     fn close_context_menu(&mut self) {
@@ -1152,39 +1118,14 @@ impl MonitorApp {
         }
     }
 
-    /// Per-item rects of the open context menu, mirroring the primitive's own
-    /// fixed geometry (`ROW_HEIGHT`/`SEPARATOR_HEIGHT`/`PADDING`) so a click
-    /// maps to the row under the cursor. Returns `(item_index, rect)` for
-    /// action rows only (separators aren't clickable).
+    /// Per-action bounds reported by the shared context-menu primitive.
     fn context_menu_item_rects(&self) -> Vec<(usize, Rect)> {
-        let r = self.context.get_rect();
-        let mut out = Vec::new();
-        let mut y = r.y0 + CONTEXT_MENU_PAD;
-        for (idx, item) in self.context.items().iter().enumerate() {
-            match item {
-                MenuItem::Action { .. } => {
-                    out.push((idx, Rect::new(r.x0, y, r.x1, y + CONTEXT_MENU_ROW_H)));
-                    y += CONTEXT_MENU_ROW_H;
-                }
-                MenuItem::Separator => y += CONTEXT_MENU_SEP_H,
-            }
-        }
-        out
-    }
-
-    /// Total height the menu occupies — mirrors the primitive's `build_layout`
-    /// height math so the on-screen-nudge in `open_context_menu` is accurate.
-    fn context_menu_height(menu: &ContextMenu) -> f64 {
-        let items: f64 = menu
+        self.context
             .items()
             .iter()
-            .map(|i| match i {
-                MenuItem::Action { .. } => CONTEXT_MENU_ROW_H,
-                MenuItem::Separator => CONTEXT_MENU_SEP_H,
-            })
-            .sum::<f64>()
-            .max(CONTEXT_MENU_ROW_H);
-        CONTEXT_MENU_PAD * 2.0 + items
+            .enumerate()
+            .filter_map(|(index, _)| self.context.item_rect(index).map(|rect| (index, rect)))
+            .collect()
     }
 
     // ---- text helpers ----------------------------------------------------
@@ -5662,8 +5603,14 @@ impl MonitorApp {
             .map(|(rp, rect)| (*rp, *rect));
         if let Some((pid, rect)) = target {
             let anchor = Point::new(rect.x0 + 60.0, rect.y0 + ROW_H);
-            self.last_cursor = Point::new(anchor.x + 20.0, anchor.y + CONTEXT_MENU_ROW_H * 3.5);
             self.open_context_menu(pid, anchor);
+            self.last_cursor = self
+                .context
+                .items()
+                .iter()
+                .position(|item| item.label().is_some_and(|label| label.starts_with("Stop")))
+                .and_then(|index| self.context.item_rect(index))
+                .map_or(anchor, |rect| rect.center());
         }
     }
 
@@ -6964,9 +6911,11 @@ mod tests {
         // Resolve the body geometry, then click the "3s" row (index 3).
         let mut tr = TextRenderer::new();
         a.interval_popover.place(&mut tr, &Theme::dark());
-        let row = a.interval_popover.rect();
-        // Row 3 centre: y0 + PAD_Y(6) + 3.5 * ROW_H(30).
-        let click = Point::new(row.center().x, row.y0 + 6.0 + 3.5 * 30.0);
+        let click = a
+            .interval_popover
+            .item_rect(3)
+            .expect("3s option is laid out")
+            .center();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let mut h = false;
