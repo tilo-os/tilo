@@ -96,6 +96,30 @@ fn build_test_widget_io() -> (
     (widget, write_rx, pty_out_tx)
 }
 
+#[test]
+fn embedded_terminal_only_requests_frames_for_queued_output() {
+    let (mut widget, _writes, output) = build_test_widget_io();
+    let mut doc = AutoCommit::new();
+
+    assert!(
+        !widget.needs_animation_frame(),
+        "an idle embedded terminal must not pin its host to continuous redraws"
+    );
+
+    output.send(b"embedded output".to_vec()).unwrap();
+    assert!(
+        widget.needs_animation_frame(),
+        "queued PTY bytes must request a frame until the host pumps them"
+    );
+    assert!(widget.update(&mut doc, &ROOT));
+    widget.sync(&mut doc, &ROOT);
+    assert!(widget.grid_text().contains("embedded output"));
+    assert!(
+        !widget.needs_animation_frame(),
+        "the terminal must return to idle after its output queue is drained"
+    );
+}
+
 /// Drain and concatenate everything the PTY-write channel has buffered.
 fn drain_writes(rx: &crossbeam_channel::Receiver<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
