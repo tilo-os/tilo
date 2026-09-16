@@ -3496,6 +3496,16 @@ fn install_device_fabric_bridge(
                         &target,
                     )?;
                 }
+                DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                    request_id,
+                    approved,
+                } => {
+                    crate::shell::device_fabric_runtime::authorize_bluetooth_handoff(
+                        &fabric_net,
+                        request_id,
+                        approved,
+                    )?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }

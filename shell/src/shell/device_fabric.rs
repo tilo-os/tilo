@@ -232,6 +232,20 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         address: String,
     },
+    /// The target discovered the exact address locally and its compositor
+    /// issued this one-shot grant after an explicit local approval.
+    BluetoothHandoffPairingOffered {
+        request_id: [u8; 16],
+        address: String,
+        authorization: [u8; 16],
+    },
+    /// Echo the target-issued grant only after the source released the
+    /// accessory. The target consumes it before asking `BlueZ` to pair.
+    BluetoothHandoffPairingCommit {
+        request_id: [u8; 16],
+        address: String,
+        authorization: [u8; 16],
+    },
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -251,6 +265,10 @@ impl PersonalFabricActionEnvelope {
     ///
     /// Returns an error for a replay-shaped, misaddressed, oversized, or
     /// semantically invalid action.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "all authenticated action payload rules stay in one exhaustive validator so a new wire variant cannot bypass review"
+    )]
     pub fn validate_at(
         &self,
         transport_source: &DeviceId,
@@ -321,6 +339,20 @@ impl PersonalFabricActionEnvelope {
                 address,
             } => {
                 if request_id == &[0; 16] || !valid_bluetooth_address(address) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::BluetoothHandoffPairingOffered {
+                request_id,
+                address,
+                authorization,
+            }
+            | PersonalFabricAction::BluetoothHandoffPairingCommit {
+                request_id,
+                address,
+                authorization,
+            } => {
+                if !valid_bluetooth_pairing_action(request_id, address, authorization) {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1152,6 +1184,14 @@ pub(super) fn valid_bluetooth_address(address: &str) -> bool {
         })
 }
 
+fn valid_bluetooth_pairing_action(
+    request_id: &[u8; 16],
+    address: &str,
+    authorization: &[u8; 16],
+) -> bool {
+    request_id != &[0; 16] && authorization != &[0; 16] && valid_bluetooth_address(address)
+}
+
 /// Whether a settings-store leaf is deliberately part of a person's fabric.
 ///
 /// This is an allowlist rather than a denylist: a newly-added setting stays
@@ -1757,6 +1797,15 @@ mod tests {
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)
         );
+        assert_eq!(
+            envelope(PersonalFabricAction::BluetoothHandoffPairingOffered {
+                request_id: [5; 16],
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                authorization: [0; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
     }
 
     #[test]
@@ -1783,6 +1832,14 @@ mod tests {
         assert_eq!(placement.first(), Some(&2));
         assert_eq!(input.first(), Some(&5));
         assert_eq!(bluetooth.first(), Some(&6));
+        let pairing =
+            postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPairingOffered {
+                request_id: [2; 16],
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                authorization: [4; 16],
+            })
+            .unwrap();
+        assert_eq!(pairing.first(), Some(&11));
     }
 
     #[test]

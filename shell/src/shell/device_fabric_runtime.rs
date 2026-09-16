@@ -28,7 +28,8 @@ const MAX_QUEUED_SPATIAL_INPUT: usize = 256;
 const MAX_SPATIAL_INPUT_FLUSH_PER_FRAME: usize = 32;
 const MAX_PENDING_INCOMING_MEDIA: usize = 16;
 const INCOMING_MEDIA_WAIT: Duration = Duration::from_secs(60 * 60);
-const BLUETOOTH_HANDOFF_WAIT: Duration = Duration::from_secs(45);
+const BLUETOOTH_HANDOFF_WAIT: Duration = Duration::from_secs(75);
+const BLUETOOTH_HANDOFF_DISCOVERY: Duration = Duration::from_secs(6);
 const MAX_BLUETOOTH_HANDOFFS: usize = 32;
 
 #[derive(Clone)]
@@ -95,10 +96,13 @@ fn spatial_input_state() -> &'static Mutex<SpatialInputState> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BluetoothHandoffPhase {
     AwaitingReady,
-    CheckingPairing,
+    InspectingTarget,
+    AwaitingLocalAuthorization,
+    PairingReady,
     Ready,
     DisconnectingSource,
     AwaitingFinish,
+    PairingTarget,
     ConnectingTarget,
     AwaitingAcceptance,
 }
@@ -110,6 +114,7 @@ struct BluetoothHandoffTransaction {
     name: String,
     outbound: bool,
     phase: BluetoothHandoffPhase,
+    authorization: Option<[u8; 16]>,
     started: Instant,
 }
 
@@ -126,12 +131,23 @@ impl BluetoothHandoffTransaction {
             && self.address.eq_ignore_ascii_case(address)
             && self.phase == phase
     }
+
+    fn accepts_pairing_authorization(
+        &self,
+        peer: &crate::shell::personal_continuity::DeviceId,
+        address: &str,
+        authorization: [u8; 16],
+    ) -> bool {
+        self.matches(peer, address, false, BluetoothHandoffPhase::PairingReady)
+            && self.authorization == Some(authorization)
+    }
 }
 
 #[derive(Debug)]
 enum BluetoothWorkerOutcome {
-    PairingChecked(Result<bool, String>),
+    TargetInspected(Result<os_actions::BluetoothHandoffTarget, String>),
     SourceDisconnected(Result<(), String>),
+    TargetPaired(Result<(), String>),
     TargetConnected(Result<(), String>),
     SourceReconnected(Result<(), String>),
 }
@@ -168,16 +184,18 @@ impl BluetoothHandoffState {
         let result_tx = self.result_tx.clone();
         std::thread::spawn(move || {
             let outcome = match operation {
-                BluetoothWorkerOperation::CheckPairing => BluetoothWorkerOutcome::PairingChecked(
-                    os_actions::bluez::paired_devices().map(|devices| {
-                        devices
-                            .iter()
-                            .any(|device| device.address.eq_ignore_ascii_case(&address))
-                    }),
+                BluetoothWorkerOperation::InspectTarget => BluetoothWorkerOutcome::TargetInspected(
+                    os_actions::inspect_bluetooth_handoff_target(
+                        &address,
+                        BLUETOOTH_HANDOFF_DISCOVERY,
+                    ),
                 ),
                 BluetoothWorkerOperation::DisconnectSource => {
                     BluetoothWorkerOutcome::SourceDisconnected(os_actions::bt_disconnect(&address))
                 }
+                BluetoothWorkerOperation::PairTarget => BluetoothWorkerOutcome::TargetPaired(
+                    os_actions::pair_bluetooth_handoff(&address),
+                ),
                 BluetoothWorkerOperation::ConnectTarget => {
                     BluetoothWorkerOutcome::TargetConnected(os_actions::bt_connect(&address))
                 }
@@ -196,8 +214,9 @@ impl BluetoothHandoffState {
 
 #[derive(Clone, Copy, Debug)]
 enum BluetoothWorkerOperation {
-    CheckPairing,
+    InspectTarget,
     DisconnectSource,
+    PairTarget,
     ConnectTarget,
     ReconnectSource,
 }
@@ -427,7 +446,9 @@ impl DeviceFabricRuntime {
                 | PersonalFabricAction::BluetoothHandoffPrepared { .. }
                 | PersonalFabricAction::BluetoothHandoffCommit { .. }
                 | PersonalFabricAction::BluetoothHandoffFinished { .. }
-                | PersonalFabricAction::BluetoothHandoffAccepted { .. }) => {
+                | PersonalFabricAction::BluetoothHandoffAccepted { .. }
+                | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
+                | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }) => {
                     handle_bluetooth_handoff_action(
                         network,
                         envelope.request_id,
@@ -618,7 +639,9 @@ fn handle_spatial_action(
         | PersonalFabricAction::BluetoothHandoffPrepared { .. }
         | PersonalFabricAction::BluetoothHandoffCommit { .. }
         | PersonalFabricAction::BluetoothHandoffFinished { .. }
-        | PersonalFabricAction::BluetoothHandoffAccepted { .. } => {}
+        | PersonalFabricAction::BluetoothHandoffAccepted { .. }
+        | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
+        | PersonalFabricAction::BluetoothHandoffPairingCommit { .. } => {}
     }
 }
 
@@ -647,14 +670,15 @@ fn handle_bluetooth_handoff_action(
                         address: address.clone(),
                         name,
                         outbound: false,
-                        phase: BluetoothHandoffPhase::CheckingPairing,
+                        phase: BluetoothHandoffPhase::InspectingTarget,
+                        authorization: None,
                         started: Instant::now(),
                     },
                 );
                 state.start_worker(
                     envelope_request_id,
                     address.clone(),
-                    BluetoothWorkerOperation::CheckPairing,
+                    BluetoothWorkerOperation::InspectTarget,
                 );
                 true
             });
@@ -695,12 +719,45 @@ fn handle_bluetooth_handoff_action(
                 state.transactions.remove(&request_id);
                 tracing::warn!(
                     accessory = address,
-                    "Bluetooth handoff target does not have this accessory paired"
+                    "Bluetooth handoff target declined or could not verify this accessory"
                 );
                 return;
             }
             if let Some(transaction) = state.transactions.get_mut(&request_id) {
                 transaction.phase = BluetoothHandoffPhase::DisconnectingSource;
+            }
+            state.start_worker(
+                request_id,
+                address,
+                BluetoothWorkerOperation::DisconnectSource,
+            );
+        }
+        PersonalFabricAction::BluetoothHandoffPairingOffered {
+            request_id,
+            address,
+            authorization,
+        } => {
+            let Ok(mut state) = bluetooth_handoff_state().lock() else {
+                return;
+            };
+            let valid = state
+                .transactions
+                .get(&request_id)
+                .is_some_and(|transaction| {
+                    transaction.matches(
+                        source,
+                        &address,
+                        true,
+                        BluetoothHandoffPhase::AwaitingReady,
+                    )
+                });
+            if !valid {
+                return;
+            }
+            if let Some(transaction) = state.transactions.get_mut(&request_id) {
+                transaction.phase = BluetoothHandoffPhase::DisconnectingSource;
+                transaction.authorization = Some(authorization);
+                transaction.started = Instant::now();
             }
             state.start_worker(
                 request_id,
@@ -729,6 +786,44 @@ fn handle_bluetooth_handoff_action(
                     request_id,
                     address.clone(),
                     BluetoothWorkerOperation::ConnectTarget,
+                );
+                true
+            });
+            if !accepted {
+                let _ = network.send_personal_fabric_action(
+                    source,
+                    PersonalFabricAction::BluetoothHandoffFinished {
+                        request_id,
+                        address,
+                        connected: false,
+                    },
+                );
+            }
+        }
+        PersonalFabricAction::BluetoothHandoffPairingCommit {
+            request_id,
+            address,
+            authorization,
+        } => {
+            let accepted = bluetooth_handoff_state().lock().is_ok_and(|mut state| {
+                let valid = state
+                    .transactions
+                    .get(&request_id)
+                    .is_some_and(|transaction| {
+                        transaction.accepts_pairing_authorization(source, &address, authorization)
+                    });
+                if !valid {
+                    return false;
+                }
+                if let Some(transaction) = state.transactions.get_mut(&request_id) {
+                    transaction.phase = BluetoothHandoffPhase::PairingTarget;
+                    transaction.authorization = None;
+                    transaction.started = Instant::now();
+                }
+                state.start_worker(
+                    request_id,
+                    address.clone(),
+                    BluetoothWorkerOperation::PairTarget,
                 );
                 true
             });
@@ -880,33 +975,39 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
     let request_id = result.request_id;
     let address = result.address;
     match result.outcome {
-        BluetoothWorkerOutcome::PairingChecked(check) => {
-            let ready = check.unwrap_or_else(|error| {
-                tracing::warn!(%error, "could not inspect local Bluetooth bonds");
-                false
-            });
-            let transaction = bluetooth_handoff_state().lock().ok().and_then(|mut state| {
-                let valid = state
-                    .transactions
-                    .get(&request_id)
-                    .is_some_and(|transaction| {
-                        !transaction.outbound
-                            && transaction.address.eq_ignore_ascii_case(&address)
-                            && transaction.phase == BluetoothHandoffPhase::CheckingPairing
-                    });
-                if !valid {
+        BluetoothWorkerOutcome::TargetInspected(inspection) => {
+            let inspected = match inspection {
+                Ok(inspected) => Some(inspected),
+                Err(error) => {
+                    tracing::warn!(%error, "could not verify Bluetooth accessory on target");
+                    None
+                }
+            };
+            let response = bluetooth_handoff_state().lock().ok().and_then(|mut state| {
+                let transaction = state.transactions.get_mut(&request_id)?;
+                if transaction.outbound
+                    || !transaction.address.eq_ignore_ascii_case(&address)
+                    || transaction.phase != BluetoothHandoffPhase::InspectingTarget
+                {
                     return None;
                 }
-                if ready {
-                    if let Some(transaction) = state.transactions.get_mut(&request_id) {
+                match inspected {
+                    Some(os_actions::BluetoothHandoffTarget::Paired) => {
                         transaction.phase = BluetoothHandoffPhase::Ready;
+                        Some((transaction.clone(), true))
                     }
-                    state.transactions.get(&request_id).cloned()
-                } else {
-                    state.transactions.remove(&request_id)
+                    Some(os_actions::BluetoothHandoffTarget::Pairable) => {
+                        transaction.phase = BluetoothHandoffPhase::AwaitingLocalAuthorization;
+                        None
+                    }
+                    None => {
+                        let transaction = transaction.clone();
+                        state.transactions.remove(&request_id);
+                        Some((transaction, false))
+                    }
                 }
             });
-            if let Some(transaction) = transaction
+            if let Some((transaction, ready)) = response
                 && network
                     .send_personal_fabric_action(
                         &transaction.peer,
@@ -952,14 +1053,19 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                 }
                 return;
             };
+            let action = transaction.authorization.map_or_else(
+                || PersonalFabricAction::BluetoothHandoffCommit {
+                    request_id,
+                    address: address.clone(),
+                },
+                |authorization| PersonalFabricAction::BluetoothHandoffPairingCommit {
+                    request_id,
+                    address: address.clone(),
+                    authorization,
+                },
+            );
             if network
-                .send_personal_fabric_action(
-                    &transaction.peer,
-                    PersonalFabricAction::BluetoothHandoffCommit {
-                        request_id,
-                        address: address.clone(),
-                    },
-                )
+                .send_personal_fabric_action(&transaction.peer, action)
                 .is_err()
                 && let Ok(mut state) = bluetooth_handoff_state().lock()
             {
@@ -971,7 +1077,17 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                 );
             }
         }
-        BluetoothWorkerOutcome::TargetConnected(connected) => {
+        outcome @ (BluetoothWorkerOutcome::TargetPaired(_)
+        | BluetoothWorkerOutcome::TargetConnected(_)) => {
+            let (connected, expected_phase) = match outcome {
+                BluetoothWorkerOutcome::TargetPaired(result) => {
+                    (result, BluetoothHandoffPhase::PairingTarget)
+                }
+                BluetoothWorkerOutcome::TargetConnected(result) => {
+                    (result, BluetoothHandoffPhase::ConnectingTarget)
+                }
+                _ => return,
+            };
             let success = connected.is_ok();
             if let Err(error) = connected {
                 tracing::warn!(%error, "Bluetooth accessory could not connect on target");
@@ -983,7 +1099,7 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                     .is_some_and(|transaction| {
                         !transaction.outbound
                             && transaction.address.eq_ignore_ascii_case(&address)
-                            && transaction.phase == BluetoothHandoffPhase::ConnectingTarget
+                            && transaction.phase == expected_phase
                     });
                 if !valid {
                     return None;
@@ -1031,9 +1147,9 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
     }
 }
 
-/// Move one already-paired Bluetooth accessory to another certified qOS
-/// device without ever copying its bond keys. The target must independently
-/// know the same address before the source releases its connection.
+/// Move one Bluetooth accessory to another certified qOS device without ever
+/// copying its bond keys. An existing target bond is reused; a newly discovered
+/// accessory requires an explicit, transaction-bound approval on the target.
 ///
 /// # Errors
 ///
@@ -1052,6 +1168,19 @@ pub fn request_bluetooth_handoff(
         || name.chars().any(char::is_control)
     {
         return Err("that Bluetooth accessory identity is invalid".into());
+    }
+    let accessory = os_actions::list_bt_devices()?
+        .into_iter()
+        .find(|device| device.mac.eq_ignore_ascii_case(address) && device.connected)
+        .ok_or_else(|| {
+            "only a paired accessory currently connected to this device can be handed off"
+                .to_string()
+        })?;
+    if accessory.name.is_empty()
+        || accessory.name.len() > 128
+        || accessory.name.chars().any(char::is_control)
+    {
+        return Err("the local Bluetooth accessory name is invalid".into());
     }
     let (local, _) = network
         .local_device_fabric_identity()
@@ -1080,7 +1209,7 @@ pub fn request_bluetooth_handoff(
         target,
         PersonalFabricAction::BluetoothHandoffPrepare {
             address: address.to_ascii_uppercase(),
-            name: name.to_string(),
+            name: accessory.name.clone(),
         },
     )?;
     let mut state = bluetooth_handoff_state()
@@ -1091,14 +1220,82 @@ pub fn request_bluetooth_handoff(
         BluetoothHandoffTransaction {
             peer: target.clone(),
             address: address.to_ascii_uppercase(),
-            name: name.to_string(),
+            name: accessory.name,
             outbound: true,
             phase: BluetoothHandoffPhase::AwaitingReady,
+            authorization: None,
             started: Instant::now(),
         },
     );
     drop(state);
     Ok(request_id)
+}
+
+/// Resolve one target-local approval prompt for a newly discovered accessory.
+/// Approval creates a fresh one-shot token bound to this transaction; denial
+/// and every failed send remove the pending request.
+///
+/// # Errors
+///
+/// Returns an error when the prompt is stale, belongs to an outbound handoff,
+/// or its authenticated response cannot be delivered to the source.
+pub fn authorize_bluetooth_handoff(
+    network: &ShellNetwork,
+    request_id: [u8; 16],
+    approved: bool,
+) -> Result<(), String> {
+    let (transaction, authorization) = {
+        let mut state = bluetooth_handoff_state()
+            .lock()
+            .map_err(|_| "Bluetooth handoff coordinator is unavailable".to_string())?;
+        let transaction = state
+            .transactions
+            .get_mut(&request_id)
+            .filter(|transaction| {
+                !transaction.outbound
+                    && transaction.phase == BluetoothHandoffPhase::AwaitingLocalAuthorization
+            })
+            .ok_or_else(|| "that Bluetooth handoff approval is no longer pending".to_string())?;
+        let transaction = transaction.clone();
+        let authorization = if approved {
+            let mut authorization = [0; 16];
+            while authorization == [0; 16] {
+                OsRng.fill_bytes(&mut authorization);
+            }
+            if let Some(pending) = state.transactions.get_mut(&request_id) {
+                pending.phase = BluetoothHandoffPhase::PairingReady;
+                pending.authorization = Some(authorization);
+                pending.started = Instant::now();
+            }
+            Some(authorization)
+        } else {
+            state.transactions.remove(&request_id);
+            None
+        };
+        drop(state);
+        (transaction, authorization)
+    };
+
+    let action = if let Some(authorization) = authorization {
+        PersonalFabricAction::BluetoothHandoffPairingOffered {
+            request_id,
+            address: transaction.address.clone(),
+            authorization,
+        }
+    } else {
+        PersonalFabricAction::BluetoothHandoffPrepared {
+            request_id,
+            address: transaction.address.clone(),
+            ready: false,
+        }
+    };
+    if let Err(error) = network.send_personal_fabric_action(&transaction.peer, action) {
+        if let Ok(mut state) = bluetooth_handoff_state().lock() {
+            state.transactions.remove(&request_id);
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Initiate a transactional move of one locally playing session. The source
@@ -1186,6 +1383,69 @@ fn fabric_transfer_views(
         .collect()
 }
 
+fn bluetooth_authorization_views(
+    fabric: &crate::shell::device_fabric::DeviceFabric,
+) -> Vec<crate::shell::overlay_host::BluetoothHandoffAuthorizationView> {
+    use crate::shell::overlay_host::BluetoothHandoffAuthorizationView;
+
+    let mut authorizations = bluetooth_handoff_state().lock().map_or_else(
+        |_| Vec::new(),
+        |state| {
+            state
+                .transactions
+                .iter()
+                .filter(|(_, transaction)| {
+                    !transaction.outbound
+                        && transaction.phase == BluetoothHandoffPhase::AwaitingLocalAuthorization
+                })
+                .map(
+                    |(request_id, transaction)| BluetoothHandoffAuthorizationView {
+                        request_id: *request_id,
+                        accessory_name: transaction.name.clone(),
+                        source_label: fabric.snapshots().get(&transaction.peer).map_or_else(
+                            || transaction.peer.as_str().to_string(),
+                            |snapshot| snapshot.presence.label.clone(),
+                        ),
+                    },
+                )
+                .collect::<Vec<_>>()
+        },
+    );
+    authorizations.sort_by(|left, right| {
+        left.source_label
+            .cmp(&right.source_label)
+            .then_with(|| left.accessory_name.cmp(&right.accessory_name))
+    });
+    authorizations
+}
+
+fn active_spatial_control_devices(
+    now_unix_ms: u64,
+) -> (
+    Vec<crate::shell::personal_continuity::DeviceId>,
+    Vec<crate::shell::personal_continuity::DeviceId>,
+) {
+    spatial_input_state().lock().map_or_else(
+        |_| (Vec::new(), Vec::new()),
+        |spatial| {
+            (
+                spatial
+                    .issued
+                    .values()
+                    .filter(|lease| lease.validate_at(now_unix_ms).is_ok())
+                    .map(|lease| lease.controller.clone())
+                    .collect(),
+                spatial
+                    .received
+                    .values()
+                    .filter(|lease| lease.validate_at(now_unix_ms).is_ok())
+                    .map(|lease| lease.target.clone())
+                    .collect(),
+            )
+        },
+    )
+}
+
 /// Build the bounded presentation model for Quick Settings. Every remote row
 /// comes from a snapshot authored by that certified device; local `PipeWire`
 /// outputs are deliberately kept separate from personal-fabric identities.
@@ -1198,26 +1458,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
     let local_id = network
         .local_device_fabric_identity()
         .map(|(device, _)| device);
-    let now = unix_ms();
-    let (issued_to, received_from) = spatial_input_state().lock().map_or_else(
-        |_| (Vec::new(), Vec::new()),
-        |spatial| {
-            (
-                spatial
-                    .issued
-                    .values()
-                    .filter(|lease| lease.validate_at(now).is_ok())
-                    .map(|lease| lease.controller.clone())
-                    .collect::<Vec<_>>(),
-                spatial
-                    .received
-                    .values()
-                    .filter(|lease| lease.validate_at(now).is_ok())
-                    .map(|lease| lease.target.clone())
-                    .collect::<Vec<_>>(),
-            )
-        },
-    );
+    let (issued_to, received_from) = active_spatial_control_devices(unix_ms());
     let mut devices = fabric
         .snapshots()
         .values()
@@ -1288,8 +1529,10 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
     });
 
     let transfers = fabric_transfer_views(network);
+    let bluetooth_authorizations = bluetooth_authorization_views(&fabric);
 
     DeviceFabricView {
+        bluetooth_authorizations,
         devices,
         local_media,
         local_outputs,
@@ -1869,6 +2112,7 @@ mod tests {
             name: "Headphones".into(),
             outbound: true,
             phase: BluetoothHandoffPhase::AwaitingReady,
+            authorization: None,
             started: Instant::now(),
         };
         assert!(transaction.matches(
@@ -1901,6 +2145,16 @@ mod tests {
             true,
             BluetoothHandoffPhase::AwaitingFinish
         ));
+
+        let authorized = BluetoothHandoffTransaction {
+            outbound: false,
+            phase: BluetoothHandoffPhase::PairingReady,
+            authorization: Some([7; 16]),
+            ..transaction
+        };
+        assert!(authorized.accepts_pairing_authorization(&target, "aa:bb:cc:dd:ee:ff", [7; 16]));
+        assert!(!authorized.accepts_pairing_authorization(&target, "AA:BB:CC:DD:EE:FF", [8; 16]));
+        assert!(!authorized.accepts_pairing_authorization(&other, "AA:BB:CC:DD:EE:FF", [7; 16]));
     }
 
     #[test]
