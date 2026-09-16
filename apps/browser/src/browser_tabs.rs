@@ -638,11 +638,23 @@ impl Widget for BrowserTabs {
     ) -> NodeId {
         self.retired.clear();
         if self.recovery.is_some() {
-            return self
+            let panel = self
                 .recovery_panel
                 .as_mut()
                 .unwrap()
                 .build_layout(taffy, theme, nodes);
+            let root = taffy.parent_node(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Style::default()
+                },
+                &[panel],
+            );
+            nodes.insert(root, std::ptr::from_mut::<dyn Widget>(self));
+            return root;
         }
         let bar = self.bar.build_layout(taffy, theme, nodes);
         let page = self.active_mut().build_layout(taffy, theme, nodes);
@@ -679,13 +691,6 @@ impl Widget for BrowserTabs {
         root
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if self.recovery.is_some() {
-            self.recovery_panel
-                .as_mut()
-                .unwrap()
-                .apply_layout(taffy, node, origin);
-            return;
-        }
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
@@ -697,6 +702,16 @@ impl Widget for BrowserTabs {
             (f64::from(layout.size.width), f64::from(layout.size.height)),
         );
         if let Ok(children) = taffy.children(node) {
+            if self.recovery.is_some() {
+                if let Some(panel) = children.first() {
+                    self.recovery_panel.as_mut().unwrap().apply_layout(
+                        taffy,
+                        *panel,
+                        self.rect.origin(),
+                    );
+                }
+                return;
+            }
             if let Some(bar) = children.first() {
                 self.bar.apply_layout(taffy, *bar, self.rect.origin());
             }
@@ -738,6 +753,16 @@ impl Widget for BrowserTabs {
         taffy: &TaffyTree<()>,
     ) {
         if *handled {
+            return;
+        }
+        if self.recovery.is_some() {
+            if let Ok(children) = taffy.children(node) {
+                if let Some(panel) = children.first() {
+                    self.recovery_panel.as_mut().unwrap().handle_event(
+                        event, scale, modifiers, state, path, handled, focus, *panel, taffy,
+                    );
+                }
+            }
             return;
         }
         if self.tab_menu.is_open() {
@@ -1206,6 +1231,163 @@ mod tests {
         assert!(fresh.clean_exit);
         assert_eq!(fresh.tabs.len(), 1);
         assert_eq!(fresh.tabs[0].url, "about:blank");
+    }
+
+    #[test]
+    fn recovery_layout_has_workspace_bounds_and_root_identity() {
+        let (_dir, mut tabs) = recovery_fixture();
+        let (tree, root, nodes) = recovery_layout(&mut tabs);
+        assert_eq!(tabs.rect, Rect::new(0.0, 0.0, 800.0, 620.0));
+        assert_eq!(unsafe { (&*nodes[&root]).name() }, tabs.name());
+        assert_eq!(tree.children(root).unwrap().len(), 1);
+    }
+
+    fn recovery_fixture() -> (tempfile::TempDir, BrowserTabs) {
+        use crate::session::{SavedTab, SessionMode, SessionStore, Snapshot};
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::open(dir.path(), SessionMode::Normal)
+            .unwrap()
+            .unwrap();
+        store
+            .save(&Snapshot {
+                version: 1,
+                tabs: vec![SavedTab {
+                    url: "https://restored.test/".into(),
+                    pinned: true,
+                }],
+                active: 0,
+                clean_exit: false,
+            })
+            .unwrap();
+        (dir, workspace().with_session(store).unwrap())
+    }
+
+    fn recovery_layout(
+        tabs: &mut BrowserTabs,
+    ) -> (TaffyTree<()>, NodeId, HashMap<NodeId, *mut dyn Widget>) {
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        tree.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(800.0),
+                height: taffy::AvailableSpace::Definite(620.0),
+            },
+        )
+        .unwrap();
+        tabs.apply_layout(&tree, root, Point::ORIGIN);
+        (tree, root, nodes)
+    }
+
+    #[test]
+    fn recovery_choices_accept_pointer_and_keyboard_through_workspace() {
+        for keyboard in [false, true] {
+            for restore in [false, true] {
+                let (_dir, mut tabs) = recovery_fixture();
+                let (tree, root, nodes) = recovery_layout(&mut tabs);
+                let id = if restore {
+                    "browser.session.restore"
+                } else {
+                    "browser.session.fresh"
+                };
+                let (&button_node, &button) = nodes
+                    .iter()
+                    .find(|(_, w)| unsafe { (&***w).test_id() == Some(id) })
+                    .unwrap();
+                let center = unsafe { (&*button).get_rect() }.center();
+                let mut doc = AutoCommit::new();
+                let mut focus = None;
+                let device_id = unsafe { std::mem::zeroed() };
+                let events = if keyboard {
+                    focus = Some(button_node);
+                    unsafe {
+                        (&mut *button).set_focus(true);
+                    }
+                    let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+                    key.logical_key = Key::Named(NamedKey::Enter);
+                    key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                        winit::keyboard::NativeKeyCode::Unidentified,
+                    );
+                    key.location = winit::keyboard::KeyLocation::Standard;
+                    key.state = ElementState::Pressed;
+                    vec![WindowEvent::KeyboardInput {
+                        device_id,
+                        event: key,
+                        is_synthetic: false,
+                    }]
+                } else {
+                    vec![
+                        WindowEvent::CursorMoved {
+                            device_id,
+                            position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+                        },
+                        WindowEvent::MouseInput {
+                            device_id,
+                            state: ElementState::Pressed,
+                            button: winit::event::MouseButton::Left,
+                        },
+                        WindowEvent::MouseInput {
+                            device_id,
+                            state: ElementState::Released,
+                            button: winit::event::MouseButton::Left,
+                        },
+                    ]
+                };
+                for event in events {
+                    let mut handled = false;
+                    tabs.handle_event(
+                        &event,
+                        1.0,
+                        &Default::default(),
+                        &mut doc,
+                        &automerge::ROOT,
+                        &mut handled,
+                        &mut focus,
+                        root,
+                        &tree,
+                    );
+                    if keyboard {
+                        assert!(
+                            !handled,
+                            "workspace must allow the host activation-key fallback"
+                        );
+                        // The host's unconsumed Enter path activates its focused node.
+                        assert!(unsafe {
+                            (&mut *nodes[&focus.unwrap()]).perform_action(
+                                &ui::a11y::Action::Activate,
+                                &mut doc,
+                                &automerge::ROOT,
+                            )
+                        });
+                    }
+                }
+                let invocation = tabs
+                    .take_control_invocation()
+                    .expect("ordinary input must emit the button's canonical action");
+                assert_eq!(invocation.address.resource, format!("qos.control:{id}"));
+                tabs.start_resource_operation(
+                    ui::qos_actions::InvocationId::new(),
+                    ui::qos_actions::OperationKind::Effect,
+                    "qos.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap(),
+                    &doc,
+                    &automerge::ROOT,
+                )
+                .unwrap()
+                .unwrap();
+                tabs.sync(&mut doc, &automerge::ROOT);
+                assert!(tabs.recovery.is_none());
+                assert_eq!(
+                    tabs.session_snapshot(false).tabs[0].url,
+                    if restore {
+                        "https://restored.test/"
+                    } else {
+                        "about:blank"
+                    }
+                );
+            }
+        }
     }
 
     #[test]
