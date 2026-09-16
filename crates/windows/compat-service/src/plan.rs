@@ -1367,10 +1367,10 @@ mod tests {
         assert_eq!(std::env::consts::ARCH, "aarch64");
         let mut route = route(layer);
         route.settings.architecture = architecture;
-        route
-            .settings
-            .environment
-            .insert("WINEDEBUG".into(), "-all".into());
+        route.settings.environment.insert(
+            "WINEDEBUG".into(),
+            std::env::var("QOS_ARM_CAPSULE_WINEDEBUG").unwrap_or_else(|_| "-all".into()),
+        );
         if layer == Layer::Proton {
             route.proton_recipe = Some("umu-0".into());
         }

@@ -212,8 +212,8 @@ These diagnostic fixtures remove only the executable Landlock shim because
 the WSL kernel lacks the required ABI. Generated mounts, clean environment,
 offline network namespace, seccomp and descriptor transfer remain intact.
 Their results must never substitute for full qOS-kernel capsule acceptance.
-The initial Wine64 run timed out during prefix initialization; its remaining
-runtime integration checks are still pending.
+The initial Wine64 run timed out during prefix initialization. The managed
+C-drive fix described below resolves that specific failure.
 
 The generated Proton namespace passed on 2026-09-16 after adding three exact
 native helper bindings: `readlink`, `getopt`, and `true`. The ARM handoff failed
@@ -228,3 +228,30 @@ It retained the generated private runtime lock, identity files, descriptor
 handoff and network namespace. Missing locale-generation inputs, session-bus
 IPC fallback, and the diagnostic container's machine-id warning remain visible
 in the log; this console result does not establish those acceptance gates.
+
+## Managed C-drive initialization
+
+The generated Wine namespace revealed an architecture-independent prefix bug:
+qOS precreated `dosdevices` for its managed `Q:` mapping, preventing Wine's
+fresh-prefix branch from creating `C:`. Windows system-directory lookups then
+failed despite `drive_c/windows/system32` existing. A controlled diagnostic
+with only `C: -> ../drive_c` added passed; the unchanged case timed out.
+
+Capsule preparation now creates the anchored `drive_c` directory and requires
+that exact relative `C:` link. Missing links in older prefixes are repaired
+without changing stored content. Replaced links, regular files or directories
+at `C:` are rejected, and a symlinked `drive_c` directory is not followed.
+The private `C:` and grant-only `Q:` mappings remain separate from the removed
+default `Z:` mapping.
+
+After removing the temporary diagnostic mapping hook and rebuilding, the actual
+generated Wine32, Wine64 and Proton ARM namespaces all passed on 2026-09-16
+(18.45, 27.01 and 29.29 seconds respectively). Each required a real Windows
+file marker; Wine retained the production JIT filter. The service suite passed
+63 tests and strict Clippy. Logs are `capsule-wine32-c-drive-fixed.log`,
+`capsule-wine64-c-drive-fixed.log`, and `capsule-proton-c-drive-fixed.log` in
+the preparation tree. The test-only `QOS_ARM_CAPSULE_WINEDEBUG` override can
+enable diagnostic channels without changing production defaults.
+
+These remain namespace-only console checks. Full Landlock, graphics, audio,
+IPC and final-image acceptance requirements above are unchanged.
