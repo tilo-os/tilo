@@ -268,3 +268,18 @@ homes and win64/win32 prefixes, both `cmd /c echo` checks exit 53 because
 not resolve the failure. Preserve this distinction between version startup and
 working Windows applications; prefix creation, DLL loading, graphics, and
 sandbox integration remain acceptance requirements.
+
+Run the repeatable console check inside a dedicated native ARM container with
+an init process, no network, a private executable `/tmp`, a read-only guest
+rootfs, and a writable results directory:
+
+```sh
+python3 /qos/os/tests/fex-wine-smoke.py \
+  --rootfs /rootfs --output-dir /results
+```
+
+It starts FEXServer with the readiness handshake, creates independent temporary
+win64 and win32 prefixes, and requires both a successful exit and the expected
+Windows `cmd.exe` output for each architecture. It records version, console,
+cleanup, and server logs plus `result.json`, and returns nonzero on failure.
+Run with normal FEX settings; diagnostic JIT overrides are not acceptance.
