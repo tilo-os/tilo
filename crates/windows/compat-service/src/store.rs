@@ -599,8 +599,8 @@ impl CapsuleStore {
 
     /// Open the prefix and home directories through anchored, no-follow
     /// descriptors. The returned descriptors are held by the command plan;
-    /// its bind sources address these open handles through `/proc/<pid>/fd`,
-    /// not attacker-replaceable pathnames.
+    /// the executor passes these handles directly to Bubblewrap rather than
+    /// reopening attacker-replaceable pathnames.
     pub(crate) fn open_launch_paths(&self, id: &str) -> Result<LaunchPaths, CapsuleError> {
         let capsule = self.capsule_directory(id, false)?;
         let data = Self::open_child_dir(&capsule, "data", false)?;
@@ -667,7 +667,7 @@ impl CapsuleStore {
 }
 
 /// Anchored capsule mount sources. Keep the descriptors alive until Bubblewrap
-/// has opened the `/proc/<service-pid>/fd/<n>` source paths.
+/// has inherited and consumed the directory descriptors.
 #[derive(Debug)]
 pub(crate) struct LaunchPaths {
     prefix: File,
@@ -675,12 +675,13 @@ pub(crate) struct LaunchPaths {
 }
 
 impl LaunchPaths {
-    pub(crate) fn prefix_source(&self) -> PathBuf {
+    // Discovery runs in this process and can safely use its retained handle.
+    fn prefix_source(&self) -> PathBuf {
         fd_path(&self.prefix)
     }
 
-    pub(crate) fn home_source(&self) -> PathBuf {
-        fd_path(&self.home)
+    pub(crate) fn directory_fds(&self) -> [std::os::fd::RawFd; 2] {
+        [self.prefix.as_raw_fd(), self.home.as_raw_fd()]
     }
 }
 
