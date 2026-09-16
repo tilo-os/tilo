@@ -585,3 +585,35 @@ was automatic; no Vulkan ICD override hid the thunk failure. These results
 resolve the missing tools/drivers fixture problems and reproduce the remaining
 Vulkan bridge failure with the complete Clang 21 build. They do not establish
 physical GPU, shader workload, DXVK, or Proton acceptance.
+
+### OpenGL pixel rendering on both guest architectures
+
+`os/tests/fixtures/fex-gl-pixels.c` creates a GLX context, clears a 16×16 RGBA
+surface, and verifies all 1,024 returned color channels (one unit of rounding
+tolerance). It synchronizes OpenGL and X11 and completes context/display
+cleanup before printing `QOS_GL_PIXELS_PASS`. It can exercise a window with
+`--window`, or a pbuffer with no argument; retain both cases.
+
+Build the native control with `clang -std=c11 -Wall -Wextra -Werror` and
+`-lGL -lX11`. Cross-build with the existing SDK, explicit x86-64/i686 targets,
+and lld. Link the guest rootfs's `usr/lib64/libGL.so.1` and `libX11.so.6` for
+x86-64, and their `usr/lib` counterparts for i686. Verify each ELF architecture.
+Run against Xvfb with software rendering, the complete rootfs, and the installed
+FEX runtime. For thunk comparisons, select upstream `Data/CI/GLThunks.json` with
+`FEX_THUNKCONFIG`; leave it unset for instruction translation alone.
+
+All five window cases passed: native ARM, x86-64 with/without thunks, and i686
+with/without thunks. The native and thunked renderer reported llvmpipe with
+128-bit vectors; the translated guest renderer reported 256-bit vectors. These
+tests used an ordinary UID, no capabilities, no external network, and the
+default container seccomp filter. Results are retained in
+`fex-gl-window-pixels-validation.log`.
+
+The pbuffer comparison remains failing. Native ARM and all four guest cases
+reported X11 `BadMatch` in `X_ShmPutImage`, despite matching 24-bit visual/display
+depth and RGBA8 framebuffer selection. Native ARM, untranslated-graphics x86-64,
+and both i686 cases exited 1; thunked x86-64 exited 139 after the X error.
+`fex-gl-pbuffer-validation.log` preserves those results. Because the native
+control also fails, this is not evidence of a translation-only defect. Do not
+count the earlier successful local pixel readback as complete pbuffer acceptance
+or hide the error by ignoring X11 failures.
