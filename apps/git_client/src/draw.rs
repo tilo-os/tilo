@@ -18,6 +18,32 @@ use ui::widget::Avatar;
 
 use crate::model::ChangeKind;
 
+/// The mutable resources shared by one immediate-mode paint pass.
+///
+/// Views previously threaded these three values through every entry point and
+/// helper independently. Keeping them together makes it impossible to pair a
+/// scene with the wrong text renderer or transform while a view is split into
+/// smaller drawing responsibilities.
+pub struct PaintCtx<'a> {
+    pub scene: &'a mut Scene,
+    pub text: &'a mut TextRenderer,
+    pub transform: Affine,
+}
+
+impl<'a> PaintCtx<'a> {
+    pub fn new(scene: &'a mut Scene, text: &'a mut TextRenderer, transform: Affine) -> Self {
+        Self {
+            scene,
+            text,
+            transform,
+        }
+    }
+
+    pub fn parts(&mut self) -> (&mut Scene, &mut TextRenderer, Affine) {
+        (self.scene, self.text, self.transform)
+    }
+}
+
 /// Fill a plain rectangle.
 pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
     scene.fill(Fill::NonZero, t, color, None, &rect);
@@ -74,7 +100,10 @@ pub fn text(
 }
 
 /// Weighted text variant.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a thin pass-through over TextRenderer::draw_text_weighted's geometry and text-style parameters"
+)]
 pub fn text_weighted(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -99,7 +128,10 @@ pub fn text_weighted(
 }
 
 /// Monospace styled text (for code, hashes, diff bodies).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a low-level text primitive whose arguments directly select content, geometry, and colour"
+)]
 pub fn mono(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -131,7 +163,10 @@ pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
 
 /// A small rounded "pill" with a label — used for ref decorations, badges,
 /// ahead/behind counts. Returns the advance width consumed (pill + gap).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a low-level drawing primitive whose arguments directly describe its geometry, label, and palette"
+)]
 pub fn pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,
