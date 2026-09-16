@@ -131,8 +131,6 @@ const SPELL_EDIT_SETTLE: Duration = Duration::from_millis(250);
 const EXTERNAL_SPELLCHECK_DELAY: Duration = Duration::from_millis(100);
 const ML_PAD_X: f64 = 10.0;
 const ML_PAD_Y: f64 = 8.0;
-/// Approximate glyph advance; used identically for gutter geometry and
-/// drawing so both stay aligned despite being approximate.
 const GUTTER_DIGIT_RATIO: f64 = 0.62;
 const GUTTER_PAD_L: f64 = 8.0;
 const GUTTER_PAD_R: f64 = 12.0;
@@ -220,6 +218,9 @@ pub struct TextInput {
     scroll_x: f64,
     last_edit_time: Option<Instant>,
     font_size_override: Option<f32>,
+    /// Theme scale captured during `build_layout`; direct measurement falls
+    /// back to the renderer when no themed layout pass has occurred.
+    layout_text_scale: Option<f32>,
     /// Renders without the rounded-rect chrome, for block-editor cells that
     /// should read as document copy, not a form field.
     plain: bool,
@@ -284,6 +285,8 @@ pub struct TextInput {
     goal_x: Option<f64>,
     scroll_y: f64,
     gutter: bool,
+    /// Width measured from the same scaled line-number style used to paint.
+    measured_gutter_width: f64,
     highlight_current_line: bool,
     /// `None` renders the whole body in one colour; `Some` colours per [`Span`] via `token_color`.
     highlighter: Option<Box<dyn Highlighter>>,
@@ -385,6 +388,7 @@ impl TextInput {
             path_was_present: false,
             external_buffer: None,
             font_size_override: None,
+            layout_text_scale: None,
             plain: false,
             bound_text: None,
             local_author: None,
@@ -419,6 +423,7 @@ impl TextInput {
             goal_x: None,
             scroll_y: 0.0,
             gutter: false,
+            measured_gutter_width: 0.0,
             highlight_current_line: false,
             highlighter: None,
             tab_spaces: None,
@@ -1019,6 +1024,13 @@ impl TextInput {
         self.code_gutter_w()
     }
 
+    #[cfg(test)]
+    pub(crate) fn shaped_font_size_for_test(&self) -> Option<f32> {
+        self.single_layout
+            .as_ref()
+            .map(|layout| layout.buffer.metrics().font_size)
+    }
+
     /// Requires a prior `draw` to have built the metrics.
     pub fn byte_at_point(&self, point: Point) -> usize {
         self.position_at_point(point).byte
@@ -1053,6 +1065,15 @@ impl TextInput {
 
     /// Single source of truth for both the local and any peer caret, so they line up.
     pub fn text_band(&self) -> (f64, f64) {
+        if !self.multiline
+            && !self.masked()
+            && let Some(layout) = &self.single_layout
+        {
+            return (
+                self.single_origin.y,
+                f64::from(layout.buffer.metrics().line_height),
+            );
+        }
         let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
         let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
@@ -1209,6 +1230,11 @@ impl TextInput {
     }
 
     fn line_height(&self) -> f64 {
+        if self.multiline_shaped
+            && let Some(layout) = &self.single_layout
+        {
+            return f64::from(layout.buffer.metrics().line_height);
+        }
         f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
     }
 
@@ -1565,23 +1591,9 @@ impl TextInput {
         &mut self,
         tr: &mut TextRenderer,
         theme: &Theme,
-        size: f32,
+        style: &TextStyle,
         available_width: f32,
-    ) -> TextStyle {
-        let family = self.family.clone().unwrap_or(if self.mono {
-            FontChoice::Monospace
-        } else {
-            FontChoice::SansSerif
-        });
-        // RichTextLayout owns its own cosmic-text shaping metrics rather than
-        // going through TextRenderer::draw_text, so it must receive the
-        // accessibility scale explicitly. Without this, multiline editors
-        // stayed visually tiny while the surrounding chrome and static text
-        // correctly followed Theme::text_scale.
-        let layout_size = size * theme.text_scale;
-        let style = TextStyle::new(layout_size)
-            .with_line_height(LINE_HEIGHT_RATIO)
-            .with_family(family.clone());
+    ) {
         self.refresh_highlight();
         let display = self.layout_display_text();
         let spans = self.highlighted_display_spans(theme);
@@ -1593,7 +1605,7 @@ impl TextInput {
             display
         );
         let signature = Self::attributed_signature(
-            self.shaped_signature(&display, &family, layout_size, Some(available_width)),
+            self.shaped_signature(&display, &style.family, style.size, Some(available_width)),
             &spans,
         );
         if self.single_layout.is_none() || self.shaped_layout_signature != signature {
@@ -1613,7 +1625,39 @@ impl TextInput {
             self.single_layout = Some(layout);
             self.shaped_layout_signature = signature;
         }
-        style
+    }
+
+    fn multiline_style(&self, scale: f32) -> TextStyle {
+        let family = self.family.clone().unwrap_or(if self.mono {
+            FontChoice::Monospace
+        } else {
+            FontChoice::SansSerif
+        });
+        TextStyle::new(self.effective_font_size() * scale)
+            .with_line_height(LINE_HEIGHT_RATIO)
+            .with_family(family)
+    }
+
+    fn update_gutter_metrics(
+        &mut self,
+        tr: &mut TextRenderer,
+        renderer_style: &TextStyle,
+        scale: f32,
+    ) {
+        if !self.gutter || !self.multiline {
+            self.measured_gutter_width = 0.0;
+            return;
+        }
+        let lines = self
+            .text
+            .bytes()
+            .filter(|&byte| byte == b'\n')
+            .count()
+            .saturating_add(1);
+        let label = lines.max(10).to_string();
+        let (number_width, _) = tr.measure_style(&label, None, renderer_style);
+        self.measured_gutter_width =
+            f64::from(number_width) + (GUTTER_PAD_L + GUTTER_PAD_R) * f64::from(scale);
     }
 
     /// Keeps the caret in view by adjusting `self.scroll_y`. Only re-centres
@@ -1781,13 +1825,16 @@ impl TextInput {
         shape: &RoundedRect,
     ) {
         let size = self.effective_font_size();
+        let style = self.multiline_style(theme.text_scale);
+        let renderer_style = tr.renderer_input_style(&style);
+        self.update_gutter_metrics(tr, &renderer_style, theme.text_scale);
         let left = self.ml_left();
         #[allow(
             clippy::cast_possible_truncation,
             reason = "widget width is a bounded on-screen size for vello/layout math, never near f32's range"
         )]
         let available_width = (self.rect.width() - left - ML_PAD_X).max(1.0) as f32;
-        let style = self.ensure_shaped_layout(tr, theme, size, available_width);
+        self.ensure_shaped_layout(tr, theme, &style, available_width);
 
         let caret_position = if self.preedit.is_empty() {
             self.text_to_layout_position(self.caret_position())
@@ -1861,7 +1908,7 @@ impl TextInput {
             transform,
             tr,
             theme,
-            &style,
+            &renderer_style,
             caret_byte,
             gutter_width,
         );
@@ -2235,6 +2282,16 @@ impl TextInput {
     /// with no presence path or permission scope.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
+        self.refresh_multiline_origin();
+    }
+
+    fn refresh_multiline_origin(&mut self) {
+        if self.multiline && self.multiline_shaped {
+            self.single_origin = Point::new(
+                self.rect.x0 + self.ml_left(),
+                self.rect.y0 + ML_PAD_Y - self.scroll_y,
+            );
+        }
     }
 
     #[must_use]
@@ -2374,6 +2431,9 @@ impl TextInput {
     fn code_gutter_w(&self) -> f64 {
         if !self.gutter || !self.multiline {
             return 0.0;
+        }
+        if self.measured_gutter_width > 0.0 {
+            return self.measured_gutter_width;
         }
         let lines = self
             .text
@@ -3511,9 +3571,13 @@ impl Widget for TextInput {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if self.layout_text_scale != Some(theme.text_scale) {
+            self.layout_text_scale = Some(theme.text_scale);
+            self.model_layout_dirty |= self.multiline;
+        }
         // Multiline is measured (grows with content, see `measure`); single-line is a fixed 40px row.
         let height = if self.multiline {
             Dimension::auto()
@@ -3539,6 +3603,7 @@ impl Widget for TextInput {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        self.refresh_multiline_origin();
     }
 
     /// Single-line keeps its fixed row height from `build_layout` (ZERO
@@ -3557,6 +3622,51 @@ impl Widget for TextInput {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 400.0,
         });
+        if !self.masked() {
+            let scale = self
+                .layout_text_scale
+                .unwrap_or_else(|| text_renderer.text_scale());
+            let style = self.multiline_style(scale);
+            let renderer_style = text_renderer.renderer_input_style(&style);
+            self.update_gutter_metrics(text_renderer, &renderer_style, scale);
+            let available_width = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0) as f32;
+            let display = self.layout_display_text();
+            let signature =
+                self.shaped_signature(&display, &style.family, style.size, Some(available_width));
+            if self.single_layout.is_none() || self.shaped_layout_signature != signature {
+                let mut layout = RichTextLayout::shape_plain(
+                    &mut text_renderer.font_system,
+                    &display,
+                    &style,
+                    Some(available_width),
+                );
+                if !self.preedit.is_empty() {
+                    let start = self.cursor_pos.min(self.text.len());
+                    layout.add_underline(start..start.saturating_add(self.preedit.len()));
+                }
+                self.single_layout = Some(layout);
+                self.shaped_layout_signature = signature;
+            }
+            self.multiline_shaped = true;
+            self.lines.clear();
+            self.refresh_multiline_origin();
+            let height = self
+                .single_layout
+                .as_ref()
+                .map_or(f64::from(style.line_height_px()), |layout| {
+                    f64::from(layout.height())
+                })
+                + ML_PAD_Y * 2.0;
+            self.model_layout_dirty = false;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "content height is a bounded on-screen size for taffy layout, never near f32's range"
+            )]
+            return taffy::Size {
+                width,
+                height: height as f32,
+            };
+        }
         let avail_w = (f64::from(width) - self.ml_left() - ML_PAD_X).max(1.0);
         self.build_lines(text_renderer, avail_w);
         #[allow(
@@ -6747,6 +6857,196 @@ mod tests {
             large_height >= normal_height * 1.9,
             "editor paragraph geometry scales with the theme ({large_height} vs {normal_height})"
         );
+    }
+
+    #[test]
+    fn multiline_measure_uses_the_same_scaled_shaped_rows_as_draw() {
+        let text = "A long wrapping line whose measured height must match the caret rows produced by the shaped draw path at large text.";
+        let mut input = TextInput::local()
+            .multiline(true)
+            .with_font_size(14.0)
+            .with_initial_value(text);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(2.0);
+        let measured = Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(180.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(180.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+
+        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured.height)));
+        let theme = Theme::dark().with_text_scale(2.0);
+        draw_with_theme(&mut input, &theme);
+        let layout = input
+            .single_layout
+            .as_ref()
+            .expect("shaped multiline layout");
+        let expected_height = layout.height() + (ML_PAD_Y * 2.0) as f32;
+        assert!(
+            (measured.height - expected_height).abs() < 0.1,
+            "measure {measured:?} must use drawn shaped height {expected_height}"
+        );
+        let last_row = layout.visual_line_index(input.text_to_layout_byte(text.len()));
+        let caret = input.caret_rect(&theme, text.len());
+        assert_eq!(
+            (caret.y0 / caret.height()).floor() as usize,
+            last_row,
+            "caret row and shaped visual row index agree"
+        );
+    }
+
+    #[test]
+    fn multiline_measure_uses_build_layout_theme_scale_when_renderer_is_stale() {
+        let text = "The layout theme owns accessibility scale even when a retained renderer still carries its previous frame value.";
+        let mut input = TextInput::local().multiline(true).with_initial_value(text);
+        let large = Theme::dark().with_text_scale(2.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let _ = Widget::build_layout(&mut input, &mut taffy, &large, &mut node_map);
+
+        let mut renderer = TextRenderer::new();
+        assert_eq!(renderer.text_scale(), 1.0, "stale renderer precondition");
+        let measured_large = Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(180.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(180.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured_large.height)));
+        draw_with_theme(&mut input, &large);
+        let drawn_large = input.content_height() as f32;
+        assert!((measured_large.height - drawn_large).abs() < 0.1);
+
+        let normal = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = std::collections::HashMap::new();
+        let _ = Widget::build_layout(&mut input, &mut taffy, &normal, &mut node_map);
+        let measured_normal = Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(180.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(180.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        input.apply_layout_external(Rect::new(
+            0.0,
+            0.0,
+            180.0,
+            f64::from(measured_normal.height),
+        ));
+        draw_with_theme(&mut input, &normal);
+        assert!((measured_normal.height - input.content_height() as f32).abs() < 0.1);
+        assert!(
+            measured_large.height > measured_normal.height * 1.8,
+            "same instance remeasures from large text back to normal"
+        );
+    }
+
+    #[test]
+    fn measured_multiline_pointer_geometry_tracks_applied_origin_before_draw() {
+        let text = "first wrapped row continues for a while before the second hard line\nsecond";
+        let mut input = TextInput::local().multiline(true).with_initial_value(text);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(2.0);
+        let measured = Widget::measure(
+            &mut input,
+            taffy::Size {
+                width: Some(180.0),
+                height: None,
+            },
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(180.0),
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut renderer,
+        );
+        input.apply_layout_external(Rect::new(
+            100.0,
+            50.0,
+            280.0,
+            50.0 + f64::from(measured.height),
+        ));
+        let second = text.find('\n').expect("hard break") + 1;
+        let (x, top, height) = input
+            .single_layout
+            .as_ref()
+            .expect("measurement retained shaped rows")
+            .caret_geometry(input.text_to_layout_byte(second));
+        let point = Point::new(
+            input.rect.x0 + input.ml_left() + f64::from(x) + 1.0,
+            input.rect.y0 + ML_PAD_Y + f64::from(top + height / 2.0),
+        );
+        assert_eq!(
+            input.byte_at_point(point),
+            second,
+            "pointer uses the applied widget origin before the first draw"
+        );
+    }
+
+    #[test]
+    fn scaled_multiline_geometry_refreshes_across_model_undo_redo_replay() {
+        let long = "undo and redo replay model text through the same widget, including a long line that wraps at large text";
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut input = TextInput::local().multiline(true).with_initial_value(long);
+        input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, 400.0));
+        draw_with_theme(&mut input, &theme);
+        let long_height = input.content_height();
+        let long_rows = input
+            .single_layout
+            .as_ref()
+            .expect("redo source layout")
+            .buffer
+            .layout_runs()
+            .count();
+        assert!(long_rows > 1, "precondition: large text wraps");
+
+        input.set_text("undo");
+        input.set_cursor_pos(input.value().len());
+        draw_with_theme(&mut input, &theme);
+        assert_eq!(
+            input
+                .single_layout
+                .as_ref()
+                .expect("undo layout")
+                .buffer
+                .layout_runs()
+                .count(),
+            1
+        );
+        assert!(input.content_height() < long_height);
+
+        input.set_text(long);
+        input.set_cursor_pos(long.len());
+        draw_with_theme(&mut input, &theme);
+        assert_eq!(
+            input
+                .single_layout
+                .as_ref()
+                .expect("redo layout")
+                .buffer
+                .layout_runs()
+                .count(),
+            long_rows
+        );
+        assert!((input.content_height() - long_height).abs() < 0.1);
     }
 
     /// Mirrors the handler's own `padding_x = 10.0`; assumes `scroll_x == 0`.

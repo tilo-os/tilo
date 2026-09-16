@@ -434,12 +434,11 @@ impl Widget for RichTextLine {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The inner input owns the shaped document text (which bypasses
-        // `TextRenderer`'s global scale), so hand it the effective size here.
-        // Keeping its row height on the same scale prevents large-text lines
-        // from painting into their neighbours.
+        // Font overrides remain base values. TextInput's shaped layout applies
+        // the theme scale exactly once; the row height is resolved here because
+        // this wrapper owns the surrounding document geometry.
         let scale = theme.text_scale;
-        self.inner.set_font_size(self.font_size * scale);
+        self.inner.set_font_size(self.font_size);
         // font_size * 1.5 so headings end up taller than paragraph rows without a measure pass.
         let height = (self.font_size * scale * 1.5).max(20.0 * scale);
         let node = taffy.leaf_node(Style {
@@ -924,6 +923,7 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::marks::Mark;
     use winit::event::KeyEvent;
     use winit::keyboard::{
         Key, KeyLocation, ModifiersKeyState, ModifiersState, NamedKey, PhysicalKey, SmolStr,
@@ -982,6 +982,70 @@ mod tests {
             &mut focus_target,
             fake_node,
             &taffy,
+        );
+    }
+
+    fn layout_and_draw(line: &mut RichTextLine, theme: &Theme, width: f32) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map = HashMap::new();
+        let node = line.build_layout(&mut taffy, theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("rich line layout");
+        line.apply_layout(&taffy, node, Point::ZERO);
+
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        let mut scene = Scene::new();
+        line.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut renderer,
+            theme,
+            &PresenceCtx::empty(),
+        );
+    }
+
+    #[test]
+    fn base_font_override_scales_once_across_relayout_caret_selection_and_pointer() {
+        let mut line = RichTextLine::new().with_text("alpha beta").with_size(16.0);
+        line.set_marks(vec![MarkSpan::new(0..5, Mark::Code)]);
+        line.inner_mut().set_selection(0, 5);
+
+        let normal = Theme::dark();
+        layout_and_draw(&mut line, &normal, 320.0);
+        assert_eq!(line.inner().shaped_font_size_for_test(), Some(16.0));
+        assert!((line.caret_rect(&normal, 5).height() - 20.0).abs() < 0.1);
+        assert!((line.selection_rect(&normal, 0, 5).height() - 20.0).abs() < 0.1);
+
+        let large = Theme::dark().with_text_scale(2.0);
+        layout_and_draw(&mut line, &large, 320.0);
+        assert_eq!(line.inner().shaped_font_size_for_test(), Some(32.0));
+        let caret = line.caret_rect(&large, 5);
+        assert!(
+            (caret.height() - 40.0).abs() < 0.1,
+            "scaled caret height was {}",
+            caret.height()
+        );
+        let selection = line.selection_rect(&large, 0, 5);
+        assert!(
+            (selection.height() - 40.0).abs() < 0.1,
+            "scaled selection height was {}",
+            selection.height()
+        );
+
+        let target = 6;
+        let x = line.pixel_x_for_byte(&large, target);
+        assert_eq!(
+            line.byte_for_pixel_x(&large, x),
+            target,
+            "pointer inverse lands on the scaled shaped caret stop"
         );
     }
 

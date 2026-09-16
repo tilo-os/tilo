@@ -3376,19 +3376,37 @@ fn draw_numbered_prefix(
     let num = ctx.ordinals.get(idx).copied().unwrap_or(1).max(1);
     let label = format!("{num}.");
     let (label_w, _) = ctx.text_renderer.measure(&label, font_size, None);
-    // Matches RichTextLine's line height so the ordinal
-    // sits on the item text's baseline.
-    let line_height = f64::from(font_size * ctx.theme.text_scale) * 1.25;
-    let text_y = line_rect.y0 + (line_rect.height() - line_height) / 2.0;
-    let x = (line_rect.x0 - 6.0 - f64::from(label_w)).max(prefix_x0);
+    let origin = numbered_prefix_origin(
+        line_rect,
+        prefix_x0,
+        f64::from(label_w),
+        font_size,
+        ctx.theme.text_scale,
+    );
     ctx.text_renderer.draw_text(
         ctx.scene,
         &label,
         font_size,
         ctx.theme.tokens.colors.text_primary,
-        translated(ctx.transform, x, text_y),
+        translated(ctx.transform, origin.x, origin.y),
         None,
     );
+}
+
+fn numbered_prefix_origin(
+    line_rect: Rect,
+    prefix_x0: f64,
+    label_width: f64,
+    font_size: f32,
+    text_scale: f32,
+) -> Point {
+    // Matches RichTextLine's resolved shaped line height so the ordinal sits
+    // on the item text's baseline at every accessibility scale.
+    let line_height = f64::from(font_size * text_scale) * 1.25;
+    Point::new(
+        (line_rect.x0 - 6.0 - label_width).max(prefix_x0),
+        line_rect.y0 + (line_rect.height() - line_height) / 2.0,
+    )
 }
 
 fn draw_checklist_prefix(
@@ -5577,6 +5595,92 @@ mod tests {
             "converting to a code block switches the cell to monospace"
         );
         assert!(!Block::paragraph("hi").line.inner().is_mono());
+    }
+
+    fn layout_and_draw_editor(editor: &mut BlockEditor, theme: &Theme) {
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = editor.build_layout(&mut taffy, theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("block editor layout");
+        editor.apply_layout(&taffy, node, Point::ZERO);
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(theme.text_scale);
+        editor.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut renderer,
+            theme,
+            &PresenceCtx::empty(),
+        );
+    }
+
+    #[test]
+    fn heading_paragraph_inline_code_and_numbered_prefix_scale_once() {
+        let heading = Block::heading(1, "Heading");
+        let mut paragraph = Block::paragraph("inline code");
+        paragraph
+            .line
+            .set_marks(vec![MarkSpan::new(0..6, Mark::Code)]);
+        paragraph.line.inner_mut().set_selection(0, 6);
+        let numbered = Block::numbered(0, "numbered");
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![heading, paragraph, numbered]);
+
+        layout_and_draw_editor(&mut editor, &Theme::dark());
+        assert_eq!(
+            editor.blocks[0].line.inner().shaped_font_size_for_test(),
+            Some(28.0)
+        );
+        assert_eq!(
+            editor.blocks[1].line.inner().shaped_font_size_for_test(),
+            Some(16.0)
+        );
+
+        let large = Theme::dark().with_text_scale(2.0);
+        layout_and_draw_editor(&mut editor, &large);
+        assert_eq!(
+            editor.blocks[0].line.inner().shaped_font_size_for_test(),
+            Some(56.0)
+        );
+        for index in [1, 2] {
+            assert_eq!(
+                editor.blocks[index]
+                    .line
+                    .inner()
+                    .shaped_font_size_for_test(),
+                Some(32.0)
+            );
+        }
+        let selection = editor.blocks[1].line.selection_rect(&large, 0, 6);
+        assert!((selection.height() - 40.0).abs() < 0.1);
+
+        let numbered_line = &editor.blocks[2].line;
+        let line_rect = numbered_line.get_rect();
+        let gutter = prefix_gutter_for(&editor.blocks[2].kind) * 2.0;
+        let mut renderer = TextRenderer::new();
+        renderer.set_text_scale(2.0);
+        let (label_width, _) = renderer.measure("1.", 16.0, None);
+        let origin = numbered_prefix_origin(
+            line_rect,
+            line_rect.x0 - gutter,
+            f64::from(label_width),
+            16.0,
+            2.0,
+        );
+        let caret = numbered_line.caret_rect(&large, 0);
+        assert!(
+            (origin.y - caret.y0).abs() < 0.1,
+            "numbered prefix and shaped item share a baseline band"
+        );
+        assert!(origin.x < line_rect.x0);
     }
 
     #[test]
