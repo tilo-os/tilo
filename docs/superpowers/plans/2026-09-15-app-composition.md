@@ -32,55 +32,19 @@ Source inspected on 2026-09-15; baseline evidence is `docs/superpowers/audits/20
 
 `Container::with_centered_max_width`, intrinsic-height Columns, CardGrid and Button::fit_content are available. Store can use these existing paths; confirm intrinsic measurement actually reaches CardGrid before removing its fixed height.
 
-### Task 1: Reclaim editing height
+### Task 1: Reclaim editing height (umbrella; execute Tasks10–14)
 
-#### API Tester: saved objects first; compact adjustable request region
+Source preflight split the original cross-app task into five independent implementation/review passes. The exact requirements now live in Tasks10–14 below. Do not dispatch this umbrella separately or count it complete until all five passes are accepted.
 
-**Files:** `apps/api_tester/src/app.rs`, `responsive.rs`, `navrow.rs`; extend `tests/a11y.rs` and app tests.
+| Pass | Required outcome |
+| --- | --- |
+| 10 | Code Editor dock starts collapsed with visible pointer/keyboard reopening |
+| 11 | API Tester saved objects first, disclosed maintenance, measured adjustable request region |
+| 12 | DB Client content-aware query height with manual split override |
+| 13 | Code Editor app-local measured text, caret/scroll and dock geometry |
+| 14 | DB Client measured grid/chrome preserving sort, scroll and split preference |
 
-**Current:** `build_widgets` (~655) creates ten `manage_buttons` before saved collections. `compute_layout` (~1196) reserves 42% of remaining height, minimum 150, for editor regardless of content. Body field, response status/switcher and scroll body derive from those rectangles.
-
-- [ ] Keep environment selector and saved collections/requests high in the rail; keep New collection/Save request near their targets. Put rename/delete and environment-variable maintenance behind clearly labelled Collection/Request/Environment actions. Reuse the existing `Cmd::OpenForm(FormMode::...)`, `Cmd::DeleteRequest`, `Cmd::DeleteEnvironment` sink and Buttons; do not implement alternative document mutations.
-- [ ] Add local disclosure state and expose only visible buttons through layout, `draw_sidebar`, `handle_event`, `children`/`children_mut`, test rectangles and focus traversal. A closed menu's old rectangles must be cleared. Retain the ten stable `api.*` identifiers; selected-object actions announce their target and retain existing availability rules.
-- [ ] Add local `request_height_override: Option<f64>` plus drag state and one divider rect to `Layout`. Automatic height fits the active Params/Headers row block including its add-row, Auth fields, or a useful Body editor viewport, bounded so a response region remains usable. Compute from actual visible row/text metrics; do not grow on every keystroke once manually resized.
-- [ ] Apply the override in `compute_layout`, update body input placement and `draw_editor`/`draw_response`, handle divider events before editor selection, and add named Increase request area / Decrease request area / Reset request area controls to the same command path. Clamp effective geometry for short windows without overwriting the stored user preference; restore when the window grows.
-- [ ] Keep Send, all request tabs and response modes reachable with disclosure open/closed. `active_send_binding`, outgoing variable interpolation and existing canonical-action tests stay unchanged.
-
-**Acceptance:** Default rail shows saved requests before maintenance; three parameter rows no longer leave a large void above the response. Pointer select/edit/Send and keyboard Send work. Test drag, keyboard resize, Reset, Body/Auth tab switches, narrow rail open/Escape, 800×480 shrink/grow, and resize preference survival. Capture Params with response, Body and expanded management at 1200/800/480.
-
-#### DB Client: query/result divider
-
-**Files:** `apps/db_client/src/app.rs`, only if needed `session.rs`; tests in app.rs.
-
-**Current:** `relayout` (~552/602) uses `(avail * 0.42).clamp(120,360)` then a 30px result strip. `editor` and `grid` own text/selection; `draw_query_tab`, `click_query_toolbar`, `on_key_pressed`, `handle_event`, `accessibility`, `perform_action` are integration paths.
-
-- [ ] Introduce local automatic/manual query height using the A1 policy, with default based on query line metrics plus a small editing allowance (not the whole content fraction). Reserve toolbar and result-message height first. Keep Data/Structure tab geometry unchanged.
-- [ ] Add a separator below editor; one computed rectangle controls paint and drag. Named keyboard height controls/Reset route through the same setter. Keep Run/snippets/transaction commands and editor shortcut handling ahead of unrelated global keys.
-- [ ] Store the manual preference on the app, not query CRDT; preserve it across result updates and Query/Data/Structure switching. Preserve editor caret and result selection on relayout.
-
-**Acceptance:** Four-line demo query yields substantially more visible result rows; long query remains editable/scrollable. Drag and keyboard resizing survive Run and tab changes. Short-height view keeps Run, a usable editor and result strip reachable. Test connection drawer and many connections to ensure no regression outside query layout.
-
-#### Code Editor: empty dock initially collapsed
-
-**Files:** `apps/code_editor/src/app.rs`, `bottom_panel.rs` only if required for toggle placement.
-
-**Current:** constructor (~607) initializes `panel_visible: true`; `build_editor_column` (~3267), draw and accessibility conditionally include panel. Existing action dispatch (~2358–2391), terminal paths and status controls already set visibility.
-
-- [ ] Default `panel_visible` to false when no restored explicit preference exists. Do not continuously auto-close the panel whenever Problems count reaches zero; explicit user opening is authoritative.
-- [ ] Audit existing Toggle panel, Problems and Terminal actions, command palette/status entry points and `accessibility` (~4305) so opening is still visible to pointer and keyboard users. Keep existing manual dock sizing and terminal-open behavior.
-- [ ] Update tests that assume launch-visible; retain tests that intentionally open Problems/Terminal. Do not invent preference persistence if the app currently has no storage for it.
-
-**Acceptance:** Fresh empty Problems dock consumes no code height; click/keyboard toggle opens it, explicit open remains through empty diagnostics updates, terminal commands open the correct dock and closing/reopening preserves contents. Capture fresh/Problems/Terminal at 800×700 and 480×900.
-
-
-#### Confirmed scale findings in the same app pass
-
-After shared measured components land, close these existing findings alongside the normal-size work. Additional app-local source files named here are in scope. Preserve the base-versus-resolved font contract and use one geometry model for paint and interaction.
-
-| App | Additional work | Verification |
-|---|---|---|
-| 1 Code Editor | Corrected-review-1: app-local `editor_view.rs:94` LINE_HEIGHT20 drives draw1399/1516 and hit1319. Add effective line/font metrics for paint, scroll, caret, selection, completion/search anchors. `bottom_panel.rs:23/31` tabs grow from measured height; preserve manually resized dock. Shared CodeEditor/TextInput fix does not touch this app-local editor. | Multiline code2×, click exact caret before/after scroll, selection/diagnostic/completion/search, tabs and terminal; Problems default-collapse remains separate behavior. |
-| 1 DB Client | `app.rs:595` tabs/toolbar/result-strip heights; app-local `grid.rs::GridView` fixed rows/headers and cached columns. Refresh metrics on scale without `bind` resetting sort/scroll. | Query+Data, sorted scrolled selection, header sort and result count, editor gutter after shared task. |
+All original findings remain assigned. Current source has no manual Code Editor dock resize or DB row selection; preserve actual existing state without inventing those features. API Params/Auth surfaces are read-only painted chrome; preserve Body/form editing and Send rather than adding a new editor. Source-only preflight: `.superpowers/app-ui-2026-09-15/editing-workspace-preflight.md`.
 
 ### Task 2: Route workspaces when panes do not fit
 
@@ -342,6 +306,84 @@ After shared measured components land, close these existing findings alongside t
 | App | Additional work | Verification |
 |---|---|---|
 | 9 Word Processor | Corrected-review-2 `widget.rs:3714/3739` layout bar estimates, toolbar11205. Measure chips/status first, omit optional hint when insufficient, grow auto bar/hits together; Styles/More/zoom measured overflow. | Toggle Margins/Spacing and zoom, exact caret inverse transform and IME after layout-bar height change; authored/export page sizes unchanged. |
+
+
+
+## Task1 execution split (source preflight ruling)
+
+Task1 is now an umbrella for Tasks10–14 and must not be dispatched as one cross-app patch. Its acceptance requires all five passes. Source-only evidence: `.superpowers/app-ui-2026-09-15/editing-workspace-preflight.md`. This split preserves every confirmed finding while isolating interaction changes from larger app-local text metric repairs. Execute sequentially, independent review each; shared measured components are already dependencies.
+
+### Task 10: Code Editor initial dock composition
+
+#### Code Editor: empty dock initially collapsed
+
+**Files:** `apps/code_editor/src/app.rs`, `bottom_panel.rs` only if required for toggle placement.
+
+**Current:** constructor (~607) initializes `panel_visible: true`; `build_editor_column` (~3267), draw and accessibility conditionally include panel. Existing action dispatch (~2358–2391), terminal paths and status controls already set visibility.
+
+- [ ] Default `panel_visible` to false when no restored explicit preference exists. Do not continuously auto-close the panel whenever Problems count reaches zero; explicit user opening is authoritative.
+- [ ] Audit existing Toggle panel, Problems and Terminal actions, command palette/status entry points and `accessibility` (~4305) so opening is still visible to pointer and keyboard users. Preserve the existing fixed dock sizing and terminal-open behavior; source preflight found no manual dock sizing path.
+- [ ] Update tests that assume launch-visible; retain tests that intentionally open Problems/Terminal. Do not invent preference persistence if the app currently has no storage for it.
+
+**Acceptance:** Fresh empty Problems dock consumes no code height; click/keyboard toggle opens it, explicit open remains through empty diagnostics updates, terminal commands open the correct dock and closing/reopening preserves contents. Capture fresh/Problems/Terminal at 800×700 and 480×900.
+
+- [ ] Add a compact visible retained dock trigger in existing chrome, bound to the existing ToggleBottomPanel command, with expanded/pressed state. The former status bar is a noninteractive bubble, so it is not an existing pointer entry point. Do not add new preference persistence or dock resizing. Scale repair remains Task13; do not close its finding in this pass.
+
+**Verification:** Apply the controller validation contract below and existing Task1 route requirements for this app. Read the source preflight section for current anchors and harnesses. Preserve other apps and capture entry points.
+
+### Task 11: API Tester navigation and request composition
+
+#### API Tester: saved objects first; compact adjustable request region
+
+**Files:** `apps/api_tester/src/app.rs`, `responsive.rs`, `navrow.rs`; extend `tests/a11y.rs` and app tests.
+
+**Current:** `build_widgets` (~655) creates ten `manage_buttons` before saved collections. `compute_layout` (~1196) reserves 42% of remaining height, minimum 150, for editor regardless of content. Body field, response status/switcher and scroll body derive from those rectangles.
+
+- [ ] Keep environment selector and saved collections/requests high in the rail; keep New collection/Save request near their targets. Put rename/delete and environment-variable maintenance behind clearly labelled Collection/Request/Environment actions. Reuse the existing `Cmd::OpenForm(FormMode::...)`, `Cmd::DeleteRequest`, `Cmd::DeleteEnvironment` sink and Buttons; do not implement alternative document mutations.
+- [ ] Add local disclosure state and expose only visible buttons through layout, `draw_sidebar`, `handle_event`, `children`/`children_mut`, test rectangles and focus traversal. A closed menu's old rectangles must be cleared. Retain the ten stable `api.*` identifiers; selected-object actions announce their target and retain existing availability rules.
+- [ ] Add local `request_height_override: Option<f64>` plus drag state and one divider rect to `Layout`. Automatic height fits the active Params/Headers row block including its add-row, Auth fields, or a useful Body editor viewport, bounded so a response region remains usable. Compute from actual visible row/text metrics; do not grow on every keystroke once manually resized.
+- [ ] Apply the override in `compute_layout`, update body input placement and `draw_editor`/`draw_response`, handle divider events before editor selection, and add named Increase request area / Decrease request area / Reset request area controls to the same command path. Clamp effective geometry for short windows without overwriting the stored user preference; restore when the window grows.
+- [ ] Keep Send, all request tabs and response modes reachable with disclosure open/closed. `active_send_binding`, outgoing variable interpolation and existing canonical-action tests stay unchanged.
+
+**Acceptance:** Default rail shows saved requests before maintenance; three parameter rows no longer leave a large void above the response. Pointer select/edit/Send and keyboard Send work. Test drag, keyboard resize, Reset, Body/Auth tab switches, narrow rail open/Escape, 800×480 shrink/grow, and resize preference survival. Capture Params with response, Body and expanded management at 1200/800/480.
+
+- [ ] Source ruling: Params/Auth are currently painted read-only chrome; do not introduce new editing capabilities. Preserve existing Body editing, forms, method selection and canonical Send. Include truthful 2× geometry in this app pass. An explicit ordered visible sidebar inventory must be shared by child enumeration, placement, drawing and focus; avoid positional zip after filtering. Include disclosure state in ChildSig.
+
+**Verification:** Apply the controller validation contract below and existing Task1 route requirements for this app. Read the source preflight section for current anchors and harnesses. Preserve other apps and capture entry points.
+
+### Task 12: DB Client automatic and manual query pane
+
+#### DB Client: query/result divider
+
+**Files:** `apps/db_client/src/app.rs`, only if needed `session.rs`; tests in app.rs.
+
+**Current:** `relayout` (~552/602) uses `(avail * 0.42).clamp(120,360)` then a 30px result strip. `editor` and `grid` own text/selection; `draw_query_tab`, `click_query_toolbar`, `on_key_pressed`, `handle_event`, `accessibility`, `perform_action` are integration paths.
+
+- [ ] Introduce local automatic/manual query height using the A1 policy, with default based on query line metrics plus a small editing allowance (not the whole content fraction). Reserve toolbar and result-message height first. Keep Data/Structure tab geometry unchanged.
+- [ ] Add a separator below editor; one computed rectangle controls paint and drag. Named keyboard height controls/Reset route through the same setter. Keep Run/snippets/transaction commands and editor shortcut handling ahead of unrelated global keys.
+- [ ] Store the manual preference on the app, not query CRDT; preserve it across result updates and Query/Data/Structure switching. Preserve editor caret and result selection on relayout.
+
+**Acceptance:** Four-line demo query yields substantially more visible result rows; long query remains editable/scrollable. Drag and keyboard resizing survive Run and tab changes. Short-height view keeps Run, a usable editor and result strip reachable. Test connection drawer and many connections to ensure no regression outside query layout.
+
+- [ ] Source ruling: current GridView has no selected-row state; preserve actual sort/order/hover/scroll and editor caret, without inventing selection. Preserve existing fixed row metrics until Task14; shared editor line_height is already authoritative. Existing immediate Snippets popup is not an accessible overflow route; divider needs a real focus/semantic action path. Do not add permanent resize button stacks.
+
+**Verification:** Apply the controller validation contract below and existing Task1 route requirements for this app. Read the source preflight section for current anchors and harnesses. Preserve other apps and capture entry points.
+
+### Task 13: Code Editor app-local text and dock metrics
+
+**Depends on Task10. Files:** `apps/code_editor/src/editor_view.rs`, `bottom_panel.rs`, narrowly required app geometry integration. This is the app-local editor, not shared CodeEditor/TextInput.
+
+- [ ] Replace fixed line/font/cell/gutter geometry with one effective measured metric snapshot. Use it in drawing, scroll and page movement, point-to-caret, selection, diagnostics, completion/search anchors and semantic bounds. Before-first-draw input needs a valid effective metric; measurement refinement invalidates geometry without changing caret/document state.
+- [ ] Bottom panel automatic tab/row heights must contain resolved text; preserve the existing fixed panel choices and Task10 visibility/trigger behavior. There is no manual panel-resize preference in current source. Preserve terminal rendering contracts.
+- [ ] Test multiline code at1→2→1, same logical caret after click/scroll, drag selection, diagnostic/completion/search geometry, tabs and terminal paths. Focused app/editor tests; capture normal/narrow/2× and short with populated code and open panel. Confirm code height remains available with the default dock collapsed.
+
+### Task 14: DB Client grid and query chrome metrics
+
+**Depends on Task12. Files:** `apps/db_client/src/grid.rs`, `app.rs` metric integration only.
+
+- [ ] Replace automatic row/header/font/column width caches with measured GridMetrics; share metrics in draw, hit testing, visible rows and scrolling. Refresh on font/scale generation without `bind`, which resets scroll/order. Preserve actual sort, order, hover and both scroll axes. Do not invent selected-row state absent from current GridView.
+- [ ] Query tabs, toolbar and result strip must use corresponding measured band heights. Feed them into Task12's single query layout and preserve the requested manual split height separately from effective clamps.
+- [ ] Test Query and Data populated tables, sorting then nonzero scroll across1→2→1, correct header hit and row mapping, result count/gutter, Run and Query/Data/Structure navigation. Normal/narrow/2×/short captures and existing focused tests. Existing user column widths, if supported, remain authoritative.
 
 ## Controller validation contract for every task
 

@@ -88,6 +88,7 @@ Three separate approximate sizing paths currently disagree: `measure_item_axis`1
 - [ ] Implement overflow using existing ContextMenu selection drain: menu maps each visible menu entry back to original ToolbarItem index; use `take_selection()` to call the original FnMut, preserving command ownership. Include only hidden buttons and meaningful separators. Widget draws it through draw_overlay and routes popup input before underlying buttons. Reuse dismissal/positioning infrastructure; do not create another floating-window system.
 - [ ] Add focusable command/overflow semantics, keyboard opening, arrow navigation, Enter activation, Escape close and focus return. Popup must remain within host bounds and scroll if taller than viewport. A toggled boolean is not acceptance.
 - [ ] Tests with `WWW` versus `iii`, non-Latin text, long translations, both orientations, widths less than chip width, scale changes and resize after opening. Every original callback reachable exactly once through pointer and keyboard; invisible item rectangles zero; separator-only overflow prohibited; accessibility exposes commands.
+- [ ] Retain actual rendered test-fixture images at ordinary width and narrow2×, overflow open and final hidden command reachable. Reuse the tested widget/renderer path rather than adding an app; record source/binary/theme/viewport provenance for controller visual inspection.
 
 
 ### Task 5: Intrinsic card and section minimum propagation
