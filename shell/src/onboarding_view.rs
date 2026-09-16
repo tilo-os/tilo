@@ -671,7 +671,7 @@ impl OnboardingView {
         self.tour_only
     }
 
-     /// Reset this trusted view to the existing-identity backup step. Kept in
+    /// Reset this trusted view to the existing-identity backup step. Kept in
     /// one place so Settings enters the exact same export, picker, and
     /// verification flow as first-login onboarding.
     fn begin_portable_backup_for(&mut self, identity: MintedIdentity) {
@@ -687,9 +687,9 @@ impl OnboardingView {
         self.progress_error = None;
         self.tour_page = None;
         self.tour_only = false;
-         self.finished = false;
-         self.invalidation.both();
-     }
+        self.finished = false;
+        self.invalidation.both();
+    }
 
     fn restore_pending_progress_from_disk(&mut self) {
         // Recovery mode was selected because the private Secret Service key
