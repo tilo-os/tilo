@@ -1318,6 +1318,25 @@ impl Widget for DbClientApp {
         vec![Box::new(self.search_index.provider())]
     }
 
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // Remote directory enumeration never walks a live schema. Deeper
+        // catalog entries are reached through the retained SearchCatalog and
+        // resolved by their canonical resource ids.
+        let resources = (cursor.is_empty() && max_results > 0)
+            .then(|| vec![Resource::new("database", "database.workspace", "Database")])
+            .unwrap_or_default();
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+
     fn invoke_resource_operation(
         &mut self,
         kind: OperationKind,
