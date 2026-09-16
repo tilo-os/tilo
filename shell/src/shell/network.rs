@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
-use std::os::unix::fs::OpenOptionsExt as _;
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
@@ -43,7 +43,10 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// contains no application payload.
 const PEER_DEPARTURE_HISTORY_CAPACITY: usize = 64;
 const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
-const MAX_PERSONAL_MEDIA_BYTES: u64 = 1024 * 1024 * 1024 * 1024;
+const MAX_PERSONAL_MEDIA_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const MAX_PERSONAL_MEDIA_CACHE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const MIN_PERSONAL_MEDIA_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const PERSONAL_MEDIA_LEASE: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
 const MAX_INCOMING_PERSONAL_MEDIA_TRANSFERS: usize = 8;
 const MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS: usize = 64;
 
@@ -68,8 +71,98 @@ fn personal_media_cache_root() -> Option<PathBuf> {
     // authorized again because transfer ids/actions are session-local.
     let incoming = root.join("incoming");
     let _ = std::fs::remove_dir_all(&incoming);
-    std::fs::create_dir_all(&incoming).ok()?;
+    ensure_private_dir(&incoming).ok()?;
+    let _ = prune_personal_media_objects(
+        &root,
+        &std::collections::BTreeSet::new(),
+        MAX_PERSONAL_MEDIA_CACHE_BYTES,
+    );
     Some(root)
+}
+
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[derive(Debug)]
+struct PersonalMediaCacheObject {
+    path: PathBuf,
+    bytes: u64,
+    modified: SystemTime,
+}
+
+fn personal_media_cache_objects(root: &Path) -> Vec<PersonalMediaCacheObject> {
+    let mut objects = Vec::new();
+    let Ok(hash_dirs) = std::fs::read_dir(root.join("objects")) else {
+        return objects;
+    };
+    for hash_dir in hash_dirs.flatten() {
+        let Ok(hash_metadata) = std::fs::symlink_metadata(hash_dir.path()) else {
+            continue;
+        };
+        if !hash_metadata.file_type().is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(hash_dir.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let Ok(metadata) = std::fs::symlink_metadata(file.path()) else {
+                continue;
+            };
+            if metadata.file_type().is_file() {
+                objects.push(PersonalMediaCacheObject {
+                    path: file.path(),
+                    bytes: metadata.len(),
+                    modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                });
+            }
+        }
+    }
+    objects
+}
+
+/// Remove oldest unprotected objects until at most `target_bytes` remain.
+/// Symlinks and non-files are never followed or counted.
+fn prune_personal_media_objects(
+    root: &Path,
+    protected: &std::collections::BTreeSet<PathBuf>,
+    target_bytes: u64,
+) -> u64 {
+    let mut objects = personal_media_cache_objects(root);
+    let mut retained = objects
+        .iter()
+        .fold(0_u64, |total, object| total.saturating_add(object.bytes));
+    objects.sort_by_key(|object| object.modified);
+    for object in objects {
+        if retained <= target_bytes {
+            break;
+        }
+        if protected.contains(&object.path) || std::fs::remove_file(&object.path).is_err() {
+            continue;
+        }
+        retained = retained.saturating_sub(object.bytes);
+        if let Some(parent) = object.path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+    retained
+}
+
+fn available_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    info.f_bavail.checked_mul(info.f_frsize)
 }
 
 struct IncomingPersonalMediaTransfer {
@@ -92,6 +185,8 @@ struct PersonalMediaTransferState {
         (crate::shell::personal_continuity::DeviceId, [u8; 16]),
         PathBuf,
     >,
+    completed_order: VecDeque<(crate::shell::personal_continuity::DeviceId, [u8; 16])>,
+    leased_until: std::collections::BTreeMap<PathBuf, std::time::Instant>,
 }
 
 fn discard_personal_media_transfer(
@@ -102,6 +197,62 @@ fn discard_personal_media_transfer(
         let _ = std::fs::remove_file(transfer.part_path);
     }
     state.authorized.remove(key);
+}
+
+impl PersonalMediaTransferState {
+    fn expire_media_leases(&mut self) {
+        let now = std::time::Instant::now();
+        self.leased_until.retain(|_, until| *until > now);
+    }
+
+    fn protected_paths(&mut self) -> std::collections::BTreeSet<PathBuf> {
+        self.expire_media_leases();
+        self.completed
+            .values()
+            .cloned()
+            .chain(self.leased_until.keys().cloned())
+            .collect()
+    }
+
+    fn incoming_reserved_bytes(&self) -> u64 {
+        self.incoming.values().fold(0_u64, |total, transfer| {
+            total.saturating_add(transfer.total_bytes)
+        })
+    }
+
+    fn incoming_remaining_bytes(&self) -> u64 {
+        self.incoming.values().fold(0_u64, |total, transfer| {
+            total.saturating_add(transfer.total_bytes.saturating_sub(transfer.received_bytes))
+        })
+    }
+
+    fn evict_oldest_completed(&mut self) -> bool {
+        let oldest = loop {
+            if let Some(candidate) = self.completed_order.pop_front() {
+                if self.completed.contains_key(&candidate) {
+                    break Some(candidate);
+                }
+                continue;
+            }
+            break self.completed.keys().next().cloned();
+        };
+        let Some(oldest) = oldest else {
+            return false;
+        };
+        let Some(path) = self.completed.remove(&oldest) else {
+            return false;
+        };
+        self.expire_media_leases();
+        let still_referenced = self.completed.values().any(|candidate| candidate == &path)
+            || self.leased_until.contains_key(&path);
+        if !still_referenced {
+            let _ = std::fs::remove_file(&path);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+        true
+    }
 }
 
 pub(crate) struct PreparedPersonalMediaTransfer {
@@ -3066,8 +3217,26 @@ impl ShellNetwork {
                 {
                     return;
                 }
+                let reserved = state.incoming_reserved_bytes();
+                let Some(object_budget) = MAX_PERSONAL_MEDIA_CACHE_BYTES
+                    .checked_sub(reserved)
+                    .and_then(|remaining| remaining.checked_sub(total_bytes))
+                else {
+                    return;
+                };
+                let protected = state.protected_paths();
+                if prune_personal_media_objects(root, &protected, object_budget) > object_budget {
+                    return;
+                }
+                let disk_required = state
+                    .incoming_remaining_bytes()
+                    .saturating_add(total_bytes)
+                    .saturating_add(MIN_PERSONAL_MEDIA_FREE_BYTES);
+                if available_bytes(root).is_none_or(|available| available < disk_required) {
+                    return;
+                }
                 let incoming_dir = root.join("incoming");
-                if std::fs::create_dir_all(&incoming_dir).is_err() {
+                if ensure_private_dir(&incoming_dir).is_err() {
                     return;
                 }
                 let part_path = incoming_dir.join(format!(
@@ -3147,7 +3316,7 @@ impl ShellNetwork {
                 }
                 drop(transfer.file);
                 let object_dir = root.join("objects").join(hex::encode(content_hash));
-                if std::fs::create_dir_all(&object_dir).is_err() {
+                if ensure_private_dir(&object_dir).is_err() {
                     let _ = std::fs::remove_file(transfer.part_path);
                     return;
                 }
@@ -3173,12 +3342,13 @@ impl ShellNetwork {
                     let _ = std::fs::remove_file(transfer.part_path);
                     return;
                 }
-                if state.completed.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS
-                    && let Some(oldest) = state.completed.keys().next().cloned()
-                {
-                    state.completed.remove(&oldest);
+                while state.completed.len() >= MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS {
+                    if !state.evict_oldest_completed() {
+                        break;
+                    }
                 }
-                state.completed.insert(key, object_path);
+                state.completed.insert(key.clone(), object_path);
+                state.completed_order.push_back(key);
             }
             PersonalMediaTransferFrame::Abort { transfer_id } => {
                 discard_personal_media_transfer(&mut state, &(source, transfer_id));
@@ -3196,7 +3366,18 @@ impl ShellNetwork {
         self.personal_media_transfers
             .lock()
             .ok()
-            .and_then(|state| state.completed.get(&(source.clone(), transfer_id)).cloned())
+            .and_then(|mut state| {
+                let path = state
+                    .completed
+                    .get(&(source.clone(), transfer_id))
+                    .cloned()?;
+                let now = std::time::Instant::now();
+                state.leased_until.insert(
+                    path.clone(),
+                    now.checked_add(PERSONAL_MEDIA_LEASE).unwrap_or(now),
+                );
+                Some(path)
+            })
     }
 
     fn dispatch_personal_fabric_action(
@@ -4345,6 +4526,69 @@ mod tests {
     fn test_device(byte: u8) -> crate::shell::personal_continuity::DeviceId {
         crate::shell::personal_continuity::DeviceId::new(hex::encode([byte; 32]))
             .expect("valid test device")
+    }
+
+    #[test]
+    fn personal_media_cache_prunes_only_unprotected_regular_objects() {
+        use std::os::unix::fs::symlink;
+
+        let cache = tempfile::tempdir().unwrap();
+        let first_dir = cache.path().join("objects").join("11".repeat(32));
+        let second_dir = cache.path().join("objects").join("22".repeat(32));
+        ensure_private_dir(&first_dir).unwrap();
+        ensure_private_dir(&second_dir).unwrap();
+        let protected_path = first_dir.join("keep.mp4");
+        let evictable_path = second_dir.join("old.mp4");
+        std::fs::write(&protected_path, [1_u8; 4]).unwrap();
+        std::fs::write(&evictable_path, [2_u8; 4]).unwrap();
+        let outside = cache.path().join("outside");
+        std::fs::write(&outside, b"do not follow").unwrap();
+        symlink(&outside, second_dir.join("link.mp4")).unwrap();
+
+        let retained = prune_personal_media_objects(
+            cache.path(),
+            &std::collections::BTreeSet::from([protected_path.clone()]),
+            4,
+        );
+        assert_eq!(retained, 4);
+        assert!(protected_path.exists());
+        assert!(!evictable_path.exists());
+        assert_eq!(std::fs::read(outside).unwrap(), b"do not follow");
+    }
+
+    #[test]
+    fn player_lease_keeps_evicted_transfer_object_alive() {
+        let cache = tempfile::tempdir().unwrap();
+        let object_dir = cache.path().join("objects").join("33".repeat(32));
+        ensure_private_dir(&object_dir).unwrap();
+        let path = object_dir.join("film.mkv");
+        std::fs::write(&path, b"film").unwrap();
+        let key = (test_device(0x44), [0x55; 16]);
+        let mut state = PersonalMediaTransferState::default();
+        state.completed.insert(key.clone(), path.clone());
+        state.completed_order.push_back(key);
+        let now = std::time::Instant::now();
+        state.leased_until.insert(
+            path.clone(),
+            now.checked_add(PERSONAL_MEDIA_LEASE).unwrap_or(now),
+        );
+
+        assert!(state.evict_oldest_completed());
+        assert!(path.exists());
+        assert!(state.completed.is_empty());
+    }
+
+    #[test]
+    fn personal_media_directories_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let cache = tempfile::tempdir().unwrap();
+        let private = cache.path().join("private");
+        ensure_private_dir(&private).unwrap();
+        assert_eq!(
+            std::fs::metadata(private).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
     }
 
     #[test]
