@@ -141,27 +141,99 @@ A complete outcome includes installed version and the verified session entry.
   login success from package installation.
 - [ ] Run focused tests and Clippy; commit reviewed task files.
 
-## Task 4: Guided UI, login continuation and target evidence
+## Task 4: Guided Desktop installation UI
 
-**Files:** Modify setup/view.rs and controller integration; extend
-`docs/regression/2026-09-16-guided-setup.md` and host package verification scripts.
+**Files:** Modify setup/view.rs and controller.rs; create focused
+setup/desktop_flow.rs (or equivalent coordinator module) if needed to keep the
+view free of process orchestration; extend existing screenshot scenarios/tests.
+
+**Interfaces:** A Desktop flow coordinator consumes live readiness, verified
+download and helper events; publishes an explicit UI state; retains the reviewed
+selection and folder choices through cancellation/refusal/failure/retry. It
+never treats a screenshot fixture as production capability evidence.
 
 - [ ] Drive Desktop availability from the live readiness worker. Show the
   selected package version and host before authorization, and retain folder
-  choices across install failure/retry.
+  choices across install failure/retry. Recheck readiness when stale and keep
+  unavailable options visibly explained.
 - [ ] Wire verified download, helper progress and installed-session verification
-  into the UI. After installation, explain how to select qOS at the next login;
-  do not log out the current desktop automatically or change its default.
-- [ ] Pass only secret-free migration continuation to the qOS session. Identity
-  setup remains in its trusted first-login boundary. Copy starts only when the
-  reviewed source and qOS destination are both resolved.
-- [ ] Exercise failed authorization, package-manager error, worker loss and
-  already-installed matching version through the actual controller. Inspect
-  compact and normal screenshots and keyboard navigation.
-- [ ] In supported native guests, log into qOS, finish identity setup, import a
-  real selected folder, log out and return to the original desktop. Confirm
-  source bytes and the prior session still work. Retain evidence per distro and
-  architecture; enable only combinations with completed evidence.
+  into the UI off its thread. Bound event handling; do not block on worker joins.
+  Report download cancellation separately from a begun native transaction,
+  whose terminal outcome must remain tracked when the view closes.
+- [ ] After installation, explain how to select qOS at the next login; do not
+  log out the current desktop automatically or change its default. Matching
+  already-installed packages still require the helper's session verification.
+- [ ] Replace Desktop's fabricated /home/qos destination estimates with explicit
+  unresolved destination state or a real user-resolved, visibly reviewed
+  destination. This task must not start copying before Task5 has resolved and
+  authorized the actual target. Preserve the actual selected folders/modes for
+  continuation rather than treating installation as migration completion.
+- [ ] Exercise failed authorization, package-manager error, worker loss,
+  download error/cancellation, retry and already-installed matching version
+  through the actual coordinator/controller. Inspect compact and normal
+  screenshots and keyboard navigation. Commit only reviewed integration hunks.
+
+## Task 5: Durable first-login continuation and delivered import UI
+
+**Files:** Add a focused setup/desktop_continuation.rs module; modify import_view.rs
+and Task4 coordinator integration. Extend the actual host-package build/staging
+and installed-payload checks if needed to deliver the import UI. Modify the
+trusted shell login-completion/application-launch integration only at narrow
+identified entry points. Record exact additional paths in the task brief before
+dispatch; preserve concurrent shell/packaging edits.
+
+**Interfaces:** A bounded private device-local continuation binds selected
+source identities, modes and explicit destination intent to a reviewed setup
+revision. The target-side import coordinator resolves real destinations and
+uses the existing MigrationStore/MigrationWorker; it does not duplicate copy
+logic. Persisted choices are not filesystem authority.
+
+- [ ] Write failing tests for malformed/oversized state, platform/path mismatch,
+  source substitution, missing source, replays, interrupted acknowledgement,
+  duplicate launches, Later/per-folder overrides and completion before identity.
+- [ ] Persist only secret-free migration continuation. Identity setup remains
+  in its trusted first-login boundary. Never provision identity from a host app
+  window, start import before trusted completion, or export migration state
+  into collaborative documents.
+- [ ] Resolve the real current-user qOS destination, show source/destination and
+  collisions, and begin Copy only after both reviewed endpoints are resolved
+  and revalidated. Keep local Copy distinct from Connected. A source edit,
+  unavailable mount or destination substitution must remain a pending/error
+  outcome and cannot silently advance the plan.
+- [ ] Resume the reviewed folder list using existing durable copy jobs. Retain
+  per-folder terminal outcomes, skips and conflicts. Reopening continuation must
+  not duplicate completed work or overwrite destination edits. Decide later
+  remains accessible through the later Add folders surface.
+- [ ] Deliver the actual import UI/service in host packages through the existing
+  supported application path or a narrowly documented native integration. The
+  currently built package has only shell/launcher/unlock-helper; a development
+  binary or missing executable is not a production handoff. Add meaningful
+  package content/startup checks and preserve the existing session contract.
+- [ ] Exercise actual coordinator-to-continuation-to-copy tests, inspect compact
+  and normal first-login/import UI captures, and commit scoped changes. Root
+  coordinates native builds, package mutation and graphical sessions.
+
+## Task 6: Native graphical lifecycle and release evidence
+
+**Files:** Extend docs/regression/2026-09-16-guided-setup.md and native host package
+verification scripts. Production catalog entries are separate authenticated
+release artifacts and remain absent until their evidence is genuine.
+
+- [ ] Rebuild and install the real final package in disposable supported guests.
+  Log into qOS through the display manager, finish trusted identity setup,
+  continue the selected real folder import and verify source/destination bytes.
+- [ ] Log out and return to the original desktop. Confirm prior session files,
+  default selection, portal environment and original files still work. Retain
+  per-distro/architecture evidence; a headless startup test alone is insufficient.
+- [ ] Exercise native failed authorization and resumed migration, plus delayed
+  source availability. Record actual package digest/version and final helper/UI
+  build identity so evidence cannot be attached to a different payload.
+- [ ] Populate release evidence only from completed native runs and reviewed
+  authenticated artifacts. Enable only supported exact combinations; never
+  fabricate runtime evidence to bypass the catalog gate.
+- [ ] Run the final Desktop component review, including previously deferred
+  catalog/download/folder lint findings and HTTP fixture flakes. Apply its one
+  scoped fix wave and re-review; preserve the full Windows/FullOS/Connected goal.
 
 ## Coverage boundary
 
