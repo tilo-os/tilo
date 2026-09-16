@@ -484,7 +484,7 @@ class Session:
             # has a home of its own. If that beat ever reports that
             # nobody answered, this line is what says whether the two
             # apps were even listening on the same channel.
-            QUICK_COLLAB_DEBUG="1",
+            RUST_LOG="qos.state=debug",
         )
         # The packaging chain, when it is on disk. Passed by path rather
         # than found on PATH so the run measures the binaries built for it.
