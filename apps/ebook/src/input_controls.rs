@@ -36,6 +36,21 @@ pub(crate) struct InputEventCtx<'a> {
     pub handled: &'a mut bool,
 }
 
+impl InputEventCtx<'_> {
+    pub(crate) fn reborrow<'a>(&'a mut self, handled: &'a mut bool) -> InputEventCtx<'a> {
+        InputEventCtx {
+            event: self.event,
+            scale_factor: self.scale_factor,
+            modifiers: self.modifiers,
+            state: self.state,
+            root: self.root,
+            node_id: self.node_id,
+            taffy: self.taffy,
+            handled,
+        }
+    }
+}
+
 /// Paint services shared by the reader's retained input widgets.
 pub(crate) struct InputPaintCtx<'a> {
     pub scene: &'a mut Scene,
