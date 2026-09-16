@@ -795,9 +795,9 @@ impl Widget for ToggleGroup {
             .radius(radius);
         Self::paint(scene, transform, text_renderer, theme, &face);
 
-        // Non-solid treatments intentionally have no resting outline, but
-        // keyboard focus must remain unmistakable on every style.
-        if self.is_focused && self.style != SegmentedStyle::Solid {
+        // Keyboard focus must remain unmistakable on every style. For Solid,
+        // this focus stroke intentionally covers the resting standard border.
+        if self.is_focused {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
