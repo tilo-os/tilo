@@ -111,6 +111,17 @@ jobs:
           bash scripts/ci-run.sh "cargo check --workspace --all-targets" --
           cargo check --workspace --locked --all-targets
 
+      # Source-level protocol checks prevent an app from opting out, but only
+      # the laid-out production root can prove that visible effect controls
+      # resolve to live resources/actions (and that no stale or legacy binding
+      # remains). qos-dev builds the graphical apps as one Cargo graph, then
+      # runs every binary's deterministic --native-audit entry point.
+      - name: Certify every production app action surface
+        run: >-
+          bash tools/ci-measure.sh "nightly native app certification" --
+          bash scripts/ci-run.sh "qos-dev certify --workspace" --
+          cargo run --locked -p qos-dev -- certify --workspace
+
       # `cargo check --all-targets` type-checks examples but neither links nor
       # runs their test harnesses. Reuse the test-profile artifacts above to do
       # both here, once per day rather than in a separate job or on every pull

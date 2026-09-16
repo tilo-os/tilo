@@ -5092,11 +5092,29 @@ impl Widget for PasswordsSurface {
                     .with_children(controls),
             ];
         }
-        Some(
-            AccessNode::new(Role::Window)
-                .with_name("Passwords")
-                .with_children(children),
-        )
+        fn normalize_sibling_keys(node: &mut AccessNode, path: &str) {
+            if node.children.iter().any(|child| child.key.is_some()) {
+                for (index, child) in node.children.iter_mut().enumerate() {
+                    if child.key.is_none() {
+                        child.key = Some(ui::a11y::hash_key(&(
+                            path,
+                            child.role,
+                            child.name.as_deref(),
+                            index,
+                        )));
+                    }
+                }
+            }
+            for (index, child) in node.children.iter_mut().enumerate() {
+                normalize_sibling_keys(child, &format!("{path}/{index}"));
+            }
+        }
+
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("Passwords")
+            .with_children(children);
+        normalize_sibling_keys(&mut root, "passwords");
+        Some(root)
     }
     fn perform_semantic_action(
         &mut self,

@@ -29,8 +29,8 @@ pub enum ChangesHit {
     /// Toggle staging on a single file.
     ToggleStage(ChangeArea, usize),
     /// Bulk action header buttons.
-    StageAll,
-    UnstageAll,
+    StageAll(ChangeArea),
+    UnstageAll(ChangeArea),
     /// Activate the commit button.
     Commit,
     /// Focus the message input.
@@ -176,7 +176,7 @@ impl ChangesColumn {
         y: f64,
         is_staged: bool,
     ) -> f64 {
-        let mut y = Self::section_header(ctx, title, files, y, is_staged);
+        let mut y = Self::section_header(ctx, title, files, change_area, y, is_staged);
 
         if files.is_empty() {
             let c = &ctx.theme.tokens.colors;
@@ -208,6 +208,7 @@ impl ChangesColumn {
         ctx: &mut ChangesPaintCtx<'_>,
         title: &str,
         files: &[FileChange],
+        change_area: ChangeArea,
         y: f64,
         is_staged: bool,
     ) -> f64 {
@@ -274,9 +275,9 @@ impl ChangesColumn {
             ctx.regions.push(HitRegion {
                 rect: Rect::new(lx - 4.0, y, area.x1, y + SECTION_H),
                 hit: if is_staged {
-                    ChangesHit::UnstageAll
+                    ChangesHit::UnstageAll(change_area)
                 } else {
-                    ChangesHit::StageAll
+                    ChangesHit::StageAll(change_area)
                 },
             });
         }
