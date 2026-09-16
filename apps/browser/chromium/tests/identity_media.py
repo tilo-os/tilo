@@ -11,8 +11,11 @@ class Page(http.server.BaseHTTPRequestHandler):
         if self.path=="/icon.png":
             body=base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
             self.send_response(200);self.send_header("Content-Type","image/png")
+        elif self.path=="/frame":
+            body=("<button id=p onclick='a.play()'>play</button><button id=s onclick='a.pause()'>pause</button><audio id=a loop src='data:audio/wav;base64,"+WAV+"'></audio>").encode()
+            self.send_response(200);self.send_header("Content-Type","text/html")
         else:
-            body=("<link rel='icon' type='image/png' href='/icon.png'><title>media fixture</title><button id=p onclick='a.play()'>play</button><button id=s onclick='a.pause()'>pause</button><audio id=a loop src='data:audio/wav;base64,"+WAV+"'></audio>").encode()
+            body=("<link rel='icon' type='image/png' href='/icon.png'><title>media fixture</title><button id=p onclick='a.play()'>play</button><button id=s onclick='a.pause()'>pause</button><audio id=a loop src='data:audio/wav;base64,"+WAV+"'></audio><iframe src='/frame' style='position:absolute;left:0;top:50px;width:200px;height:80px;border:0'></iframe>").encode()
             self.send_response(200);self.send_header("Content-Type","text/html")
         self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
     def log_message(self,*_):pass
@@ -49,11 +52,23 @@ with tempfile.TemporaryDirectory(prefix="qos-identity-") as profile:
         if event["event"]=="favicon":favicon=event
     assert favicon["page_url"]==base+"/" and favicon["width"]<=64 and favicon["height"]<=64
     send(op="mouse_button",button="left",down=True,x=25,y=12);send(op="mouse_button",button="left",down=False,x=25,y=12)
-    until(lambda e:e["event"]=="media_state" and e["playing"])
+    playing=until(lambda e:e["event"]=="media_state" and e["playing"])
+    assert playing["document_generation"]>0
     send(op="audio_muted",muted=True);assert until(lambda e:e["event"]=="audio_muted")["muted"]
     send(op="audio_muted",muted=False);assert not until(lambda e:e["event"]=="audio_muted")["muted"]
     send(op="mouse_button",button="left",down=True,x=75,y=12);send(op="mouse_button",button="left",down=False,x=75,y=12)
     until(lambda e:e["event"]=="media_state" and not e["playing"])
-    send(op="navigate",url=base+"/next");until(lambda e:e["event"]=="uri" and e["url"].endswith("/next"))
-    send(op="shutdown");p.wait(timeout=15);print("PASS: bounded favicon, media start/pause, native mute round-trip and navigation scope")
+    send(op="mouse_button",button="left",down=True,x=25,y=62);send(op="mouse_button",button="left",down=False,x=25,y=62)
+    iframe_playing=until(lambda e:e["event"]=="media_state" and e["playing"])
+    send(op="mouse_button",button="left",down=True,x=75,y=62);send(op="mouse_button",button="left",down=False,x=75,y=62)
+    until(lambda e:e["event"]=="media_state" and not e["playing"] and e["document_generation"]==iframe_playing["document_generation"])
+    send(op="mouse_button",button="left",down=True,x=25,y=12);send(op="mouse_button",button="left",down=False,x=25,y=12)
+    before_reload=until(lambda e:e["event"]=="media_state" and e["playing"])
+    send(op="navigate",url=base+"/")
+    reset=until(lambda e:e["event"]=="media_state" and not e["playing"] and e["document_generation"]>before_reload["document_generation"])
+    assert reset["page_url"]==base+"/"
+    send(op="navigate",url=base+"/next")
+    until(lambda e:e["event"]=="uri" and e["url"].endswith("/next"))
+    until(lambda e:e["event"]=="media_state" and not e["playing"] and e["page_url"].endswith("/next"))
+    send(op="shutdown");p.wait(timeout=15);print("PASS: bounded favicon, frame-aggregated media start/pause, reload/navigation reset and native mute round-trip")
 server.shutdown()

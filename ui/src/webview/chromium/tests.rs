@@ -14,10 +14,11 @@ fn bounded_identity_events_decode_and_reject_oversize_favicons() {
     assert!(decode_event(&serde_json::json!({"event":"favicon","page_url":"https://fixture.test/","width":65,"height":1,"png":"AA=="})).is_none());
     assert_eq!(
         decode_event(
-            &serde_json::json!({"event":"media_state","page_url":"https://fixture.test/","playing":true})
+            &serde_json::json!({"event":"media_state","page_url":"https://fixture.test/","document_generation":7,"playing":true})
         ),
         Some(WebViewEvent::MediaPlayingChanged {
             page_url: "https://fixture.test/".into(),
+            document_generation: 7,
             playing: true
         })
     );
