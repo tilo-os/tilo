@@ -40,6 +40,7 @@ reqwest = { workspace = true, features = ["blocking"], default-features = true }
 dirs.workspace = true
 sha2.workspace = true
 base64.workspace = true
+png.workspace = true
 url.workspace = true
 
 # Extension packages: .xpi (Firefox) and .crx (Chrome) are zip archives
@@ -64,8 +65,6 @@ taffy.workspace = true
 tempfile.workspace = true
 # block_on for the headless dmabuf probe examples
 pollster.workspace = true
-# dump raw engine frames to PNG in the startup-flicker capture example
-png.workspace = true
 
 # Zero-copy composite probe — needs the WPE engine's dmabuf import.
 [[example]]

@@ -414,6 +414,14 @@ impl Widget for BrowserTabs {
         if self.bar.active_id() != self.active_id {
             self.activate(self.bar.active_id());
         }
+        if let Some(id) = self.bar.take_toggle_mute() {
+            let muted = self
+                .tabs
+                .iter()
+                .find(|tab| tab.id == id)
+                .is_some_and(|tab| tab.widget.tab_muted());
+            self.set_muted(id, !muted);
+        }
         let mut requests = Vec::new();
         let mut closed = Vec::new();
         for tab in &mut self.tabs {
@@ -423,6 +431,7 @@ impl Widget for BrowserTabs {
             }
             requests.extend(tab.widget.engine_handle().take_new_tab_requests());
             let title = tab.widget.tab_title();
+            self.bar.set_visual(tab.id, tab.widget.tab_visual());
             if let Some(desc) = self
                 .bar
                 .tabs_mut()
@@ -666,6 +675,16 @@ impl Widget for BrowserTabs {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if matches!(action, ui::a11y::Action::Activate)
+            && let Some(index) = target
+                .strip_prefix("tab-menu:")
+                .and_then(|value| value.parse::<usize>().ok())
+        {
+            self.apply_tab_menu(index);
+            self.tab_menu.close();
+            self.dirty = true;
+            return true;
+        }
         if self
             .bar
             .perform_semantic_action(target, action, state, path)
@@ -713,6 +732,70 @@ impl Widget for BrowserTabs {
             children.push(tab.widget.as_mut());
         }
         children
+    }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let menu_children = if self.tab_menu.is_open() {
+            self.tab_menu_actions
+                .iter()
+                .enumerate()
+                .filter_map(|(index, action)| {
+                    let label = match (*action)? {
+                        TabMenuAction::Duplicate => "Duplicate",
+                        TabMenuAction::TogglePin => {
+                            if self
+                                .tab_menu_target
+                                .is_some_and(|id| self.bar.is_pinned(id))
+                            {
+                                "Unpin"
+                            } else {
+                                "Pin"
+                            }
+                        }
+                        TabMenuAction::ToggleMute => {
+                            if self
+                                .tab_menu_target
+                                .and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
+                                .is_some_and(|tab| tab.widget.tab_muted())
+                            {
+                                "Unmute"
+                            } else {
+                                "Mute"
+                            }
+                        }
+                        TabMenuAction::Close => "Close",
+                        TabMenuAction::CloseOthers => "Close Others",
+                        TabMenuAction::CloseRight => "Close to Right",
+                        TabMenuAction::Reopen => "Reopen Closed Tab",
+                    };
+                    Some(
+                        AccessNode::new(Role::MenuItem)
+                            .with_name(label)
+                            .with_action_target(format!("tab-menu:{index}"))
+                            .with_hashed_key(format!("tab-menu:{index}")),
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut children = Vec::new();
+        if self.tab_menu.is_open() {
+            children.push(
+                AccessNode::new(Role::Menu)
+                    .with_name("Tab actions")
+                    .with_state(AccessState {
+                        expanded: Some(true),
+                        ..Default::default()
+                    })
+                    .with_children(menu_children),
+            );
+        }
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Browser tabs")
+                .with_children(children),
+        )
     }
     fn take_structure_dirty(&mut self) -> bool {
         let dirty = std::mem::take(&mut self.dirty);
@@ -762,7 +845,11 @@ impl Widget for BrowserTabs {
         }
     }
     fn modal_capture(&self) -> Option<Rect> {
-        self.active().modal_capture()
+        if self.tab_menu.is_open() {
+            Some(self.tab_menu.get_rect())
+        } else {
+            self.active().modal_capture()
+        }
     }
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.active().cursor_shape(point)
@@ -915,6 +1002,55 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_exports_tabs_new_tab_and_open_context_menu_actions() {
+        use ui::a11y::Role;
+        let mut tabs = workspace();
+        tabs.open(Some("https://two.test".into()), false).unwrap();
+        let strip = tabs.bar.accessibility().expect("tab strip semantics");
+        assert_eq!(strip.role, Role::TabBar);
+        assert!(strip.children.iter().any(|node| node.role == Role::Tab));
+        assert!(
+            strip.children.iter().any(|node| {
+                node.role == Role::Button && node.name.as_deref() == Some("New tab")
+            })
+        );
+
+        tabs.open_tab_menu(2, Point::new(20.0, 20.0));
+        let workspace = tabs.accessibility().expect("workspace semantics");
+        let menu = workspace
+            .children
+            .iter()
+            .find(|node| node.role == Role::Menu)
+            .expect("open tab menu");
+        assert!(
+            menu.children.iter().any(|node| {
+                node.role == Role::MenuItem && node.name.as_deref() == Some("Mute")
+            })
+        );
+        let mute_target = menu
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Mute"))
+            .and_then(|node| node.action_target.clone())
+            .expect("mute action route");
+        let mut doc = AutoCommit::new();
+        assert!(tabs.perform_semantic_action(
+            &mute_target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(
+            tabs.tabs
+                .iter()
+                .find(|tab| tab.id == 2)
+                .unwrap()
+                .widget
+                .tab_muted()
+        );
+    }
+
+    #[test]
     fn switching_retains_independent_documents_and_reorder_keeps_identity() {
         let mut tabs = workspace();
         let first = tabs.active_id;
@@ -1000,6 +1136,19 @@ mod tests {
         }
         tabs.activate(*tabs.tabs.last().map(|tab| &tab.id).unwrap());
         tabs.bar.debug_layout(800.0);
+        let semantics = tabs.bar.accessibility().expect("overflow semantics");
+        assert!(
+            semantics
+                .children
+                .iter()
+                .any(|node| node.action_target.as_deref() == Some("tab-overflow-before"))
+        );
+        assert!(
+            semantics
+                .children
+                .iter()
+                .any(|node| node.action_target.as_deref() == Some("tab-overflow-after"))
+        );
         let mut tree = TaffyTree::new();
         let node = tabs
             .bar
@@ -1034,6 +1183,17 @@ mod tests {
         assert!(
             tabs.bar.new_tab_rect().width() >= 28.0,
             "new-tab control remains fixed and hittable"
+        );
+        assert!(
+            tabs.bar.controls_are_outside_tabs(),
+            "overflow buttons and new-tab control use reserved geometry outside tab pills"
+        );
+        let visible_media = tabs.bar.visible_ids()[2];
+        tabs.bar
+            .set_fixture_visual(visible_media, None, false, true, false);
+        assert!(
+            tabs.bar.media_control_precedes_title(visible_media),
+            "media control occupies the reserved leading glyph slot before title text"
         );
         let all_ids: Vec<_> = tabs.tabs.iter().map(|tab| tab.id).collect();
         for id in &all_ids {

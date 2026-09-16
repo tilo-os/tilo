@@ -2,6 +2,7 @@
 //! Generic `TabBar` users retain their existing fit-to-width behavior.
 use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::{
     presence::PresenceCtx,
@@ -11,12 +12,21 @@ use ui::{
 };
 use vello::{
     Scene,
-    kurbo::{Affine, Point, Rect},
+    kurbo::{Affine, BezPath, Point, Rect, Stroke},
+    peniko::{Color, Fill, ImageBrush},
 };
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 const PINNED_WIDTH: f64 = 44.0;
 const MIN_TAB_WIDTH: f64 = 120.0;
 const NEW_TAB_WIDTH: f64 = 36.0;
+const OVERFLOW_WIDTH: f64 = 24.0;
+#[derive(Clone, Default)]
+pub(crate) struct TabVisual {
+    pub favicon: Option<vello::peniko::ImageData>,
+    pub loading: bool,
+    pub muted: bool,
+    pub media_playing: bool,
+}
 pub struct BrowserTabStrip {
     inner: TabBar,
     tabs: Vec<TabDescriptor>,
@@ -26,6 +36,11 @@ pub struct BrowserTabStrip {
     cursor: Point,
     viewport_dirty: bool,
     inner_node: Option<NodeId>,
+    visuals: HashMap<u64, TabVisual>,
+    pending_toggle_mute: Option<u64>,
+    reduced_motion: bool,
+    spinner_started: std::time::Instant,
+    rect: Rect,
 }
 impl BrowserTabStrip {
     pub fn new(tabs: Vec<TabDescriptor>, active: u64) -> Self {
@@ -40,6 +55,11 @@ impl BrowserTabStrip {
             cursor: Point::ORIGIN,
             viewport_dirty: false,
             inner_node: None,
+            visuals: HashMap::new(),
+            pending_toggle_mute: None,
+            reduced_motion: false,
+            spinner_started: std::time::Instant::now(),
+            rect: Rect::ZERO,
         }
     }
     pub fn tabs(&self) -> &[TabDescriptor] {
@@ -105,6 +125,30 @@ impl BrowserTabStrip {
     pub fn take_new_tab(&mut self) -> Option<()> {
         self.inner.take_new_tab()
     }
+    pub(crate) fn set_visual(&mut self, id: u64, visual: TabVisual) {
+        self.visuals.insert(id, visual);
+    }
+    pub fn set_fixture_visual(
+        &mut self,
+        id: u64,
+        favicon: Option<vello::peniko::ImageData>,
+        loading: bool,
+        media_playing: bool,
+        muted: bool,
+    ) {
+        self.set_visual(
+            id,
+            TabVisual {
+                favicon,
+                loading,
+                muted,
+                media_playing,
+            },
+        );
+    }
+    pub fn take_toggle_mute(&mut self) -> Option<u64> {
+        self.pending_toggle_mute.take()
+    }
     pub fn take_context_menu(&mut self) -> Option<(u64, Point)> {
         self.inner.take_context_menu()
     }
@@ -148,7 +192,8 @@ impl BrowserTabStrip {
             .filter(|t| !self.pinned.contains(&t.id))
             .cloned()
             .collect();
-        let available = (self.viewport_width - NEW_TAB_WIDTH).max(PINNED_WIDTH);
+        let available =
+            (self.viewport_width - NEW_TAB_WIDTH - 2.0 * OVERFLOW_WIDTH).max(PINNED_WIDTH);
         let active_pinned = pinned.iter().position(|tab| tab.id == active);
         let max_pinned = if active_pinned.is_some() {
             (available / PINNED_WIDTH).floor() as usize
@@ -218,6 +263,24 @@ impl BrowserTabStrip {
         self.inner.tab_rects().get(index).copied()
     }
     #[cfg(any(test, debug_assertions))]
+    pub fn controls_are_outside_tabs(&self) -> bool {
+        let (left, _) = self.overflow_rects();
+        left.x0 >= self.inner.bar_rect().x1 - 0.5 && self.inner.new_tab_rect().x1 <= left.x0 + 0.5
+    }
+    #[cfg(any(test, debug_assertions))]
+    pub fn media_control_precedes_title(&self, id: u64) -> bool {
+        let Some(index) = self.visible_ids.iter().position(|visible| *visible == id) else {
+            return false;
+        };
+        self.pinned.contains(&id)
+            || self.media_rect(index).x1
+                <= self
+                    .inner
+                    .tab_rects()
+                    .get(index)
+                    .map_or(0.0, |tab| tab.x0 + 32.0)
+    }
+    #[cfg(any(test, debug_assertions))]
     pub fn new_tab_rect(&self) -> Rect {
         self.inner.new_tab_rect()
     }
@@ -237,6 +300,49 @@ impl BrowserTabStrip {
         };
         self.set_active(self.tabs[next].id);
     }
+    fn overflow_rects(&self) -> (Rect, Rect) {
+        let anchor = self.rect.x1;
+        let y0 = self.rect.y0 + 6.0;
+        let y1 = self.rect.y1 - 6.0;
+        (
+            Rect::new(
+                anchor - 2.0 * OVERFLOW_WIDTH,
+                y0,
+                anchor - OVERFLOW_WIDTH,
+                y1,
+            ),
+            Rect::new(anchor - OVERFLOW_WIDTH, y0, anchor, y1),
+        )
+    }
+    fn media_rect(&self, index: usize) -> Rect {
+        let Some(id) = self.visible_ids.get(index) else {
+            return Rect::ZERO;
+        };
+        self.leading_rect(index, *id)
+    }
+    fn leading_rect(&self, index: usize, id: u64) -> Rect {
+        let Some(tab) = self.inner.tab_rects().get(index) else {
+            return Rect::ZERO;
+        };
+        let x0 = if self.pinned.contains(&id) {
+            tab.center().x - 8.0
+        } else {
+            tab.x0 + 9.0
+        };
+        Rect::new(x0, tab.center().y - 8.0, x0 + 16.0, tab.center().y + 8.0)
+    }
+    fn has_hidden_before(&self) -> bool {
+        self.visible_ids
+            .first()
+            .and_then(|id| self.tabs.iter().position(|t| t.id == *id))
+            .is_some_and(|i| i > 0)
+    }
+    fn has_hidden_after(&self) -> bool {
+        self.visible_ids
+            .last()
+            .and_then(|id| self.tabs.iter().position(|t| t.id == *id))
+            .is_some_and(|i| i + 1 < self.tabs.len())
+    }
 }
 impl Widget for BrowserTabStrip {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
@@ -254,23 +360,43 @@ impl Widget for BrowserTabStrip {
             child,
             Style {
                 size: Size {
-                    width: Dimension::percent(1.0),
+                    width: Dimension::auto(),
                     height: Dimension::length(44.0),
                 },
+                min_size: Size {
+                    width: Dimension::length(0.0),
+                    height: Dimension::length(44.0),
+                },
+                flex_grow: 1.0,
+                flex_shrink: 1.0,
                 ..Style::default()
             },
         );
         self.inner_node = Some(child);
+        let controls = ui::widget::TaffyTreeExt::leaf_node(
+            t,
+            Style {
+                size: Size {
+                    width: Dimension::length(48.0),
+                    height: Dimension::length(44.0),
+                },
+                flex_grow: 0.0,
+                flex_shrink: 0.0,
+                ..Style::default()
+            },
+        );
         let node = ui::widget::TaffyTreeExt::parent_node(
             t,
             Style {
+                display: taffy::Display::Flex,
+                flex_direction: taffy::FlexDirection::Row,
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::length(44.0),
                 },
                 ..Style::default()
             },
-            &[child],
+            &[child, controls],
         );
         n.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -278,6 +404,13 @@ impl Widget for BrowserTabStrip {
     fn apply_layout(&mut self, t: &TaffyTree<()>, node: NodeId, origin: Point) {
         if let Ok(l) = t.layout(node) {
             let width = f64::from(l.size.width);
+            self.rect = Rect::from_origin_size(
+                (
+                    origin.x + f64::from(l.location.x),
+                    origin.y + f64::from(l.location.y),
+                ),
+                (width, f64::from(l.size.height)),
+            );
             if (width - self.viewport_width).abs() > 1.0 {
                 self.viewport_width = width;
                 self.viewport_dirty = true;
@@ -295,7 +428,112 @@ impl Widget for BrowserTabStrip {
         theme: &Theme,
         p: &PresenceCtx,
     ) {
-        self.inner.draw(s, x, tr, theme, p)
+        self.inner.draw(s, x, tr, theme, p);
+        let ink = theme.tokens.colors.text_primary;
+        for (index, id) in self.visible_ids.iter().copied().enumerate() {
+            let Some(visual) = self.visuals.get(&id) else {
+                continue;
+            };
+            let icon = self.leading_rect(index, id);
+            if visual.loading || visual.favicon.is_some() || visual.media_playing || visual.muted {
+                s.fill(
+                    Fill::NonZero,
+                    x,
+                    theme.tokens.colors.surfaces.base,
+                    None,
+                    &icon.inflate(3.0, 3.0).to_rounded_rect(10.0),
+                );
+            }
+            if visual.media_playing || visual.muted {
+                let c = icon.center();
+                s.fill(
+                    Fill::NonZero,
+                    x,
+                    ink,
+                    None,
+                    &Rect::new(c.x - 7.0, c.y - 4.0, c.x - 3.0, c.y + 4.0),
+                );
+                let mut wave = BezPath::new();
+                wave.move_to((c.x - 3.0, c.y - 4.0));
+                wave.line_to((c.x + 2.0, c.y - 7.0));
+                wave.line_to((c.x + 2.0, c.y + 7.0));
+                wave.line_to((c.x - 3.0, c.y + 4.0));
+                wave.close_path();
+                s.fill(Fill::NonZero, x, ink, None, &wave);
+                if visual.muted {
+                    let mut slash = BezPath::new();
+                    slash.move_to((c.x - 7.0, c.y - 7.0));
+                    slash.line_to((c.x + 7.0, c.y + 7.0));
+                    s.stroke(
+                        &Stroke::new(2.0),
+                        x,
+                        Color::from_rgba8(220, 65, 75, 255),
+                        None,
+                        &slash,
+                    );
+                }
+            } else if visual.loading {
+                let phase = if self.reduced_motion {
+                    0.0
+                } else {
+                    (self.spinner_started.elapsed().as_millis() % 1000) as f64 / 1000.0
+                };
+                let mut arc = BezPath::new();
+                let c = icon.center();
+                let start = phase * std::f64::consts::TAU;
+                for step in 0..=12 {
+                    let a = start + (step as f64 / 12.0) * std::f64::consts::TAU * 0.72;
+                    let point = Point::new(c.x + a.cos() * 6.5, c.y + a.sin() * 6.5);
+                    if step == 0 {
+                        arc.move_to(point);
+                    } else {
+                        arc.line_to(point);
+                    }
+                }
+                s.stroke(&Stroke::new(2.0), x, ink, None, &arc);
+            } else if let Some(image) = &visual.favicon {
+                let brush = ImageBrush::new(image.clone());
+                let sx = icon.width() / f64::from(image.width.max(1));
+                let sy = icon.height() / f64::from(image.height.max(1));
+                let bx = Affine::translate((icon.x0, icon.y0)) * Affine::scale_non_uniform(sx, sy);
+                s.fill(Fill::NonZero, x, &brush, Some(bx), &icon);
+            }
+        }
+        let (left, right) = self.overflow_rects();
+        for (rect, enabled, forward) in [
+            (left, self.has_hidden_before(), false),
+            (right, self.has_hidden_after(), true),
+        ] {
+            s.fill(
+                Fill::NonZero,
+                x,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &rect.to_rounded_rect(6.0),
+            );
+            let c = rect.center();
+            let mut arrow = BezPath::new();
+            if forward {
+                arrow.move_to((c.x - 2.0, c.y - 5.0));
+                arrow.line_to((c.x + 3.0, c.y));
+                arrow.line_to((c.x - 2.0, c.y + 5.0));
+            } else {
+                arrow.move_to((c.x + 2.0, c.y - 5.0));
+                arrow.line_to((c.x - 3.0, c.y));
+                arrow.line_to((c.x + 2.0, c.y + 5.0));
+            }
+            s.stroke(
+                &Stroke::new(2.0),
+                x,
+                if enabled {
+                    ink
+                } else {
+                    theme.tokens.colors.text_dim
+                },
+                None,
+                &arrow,
+            );
+        }
     }
     fn handle_event(
         &mut self,
@@ -311,6 +549,36 @@ impl Widget for BrowserTabStrip {
     ) {
         if let WindowEvent::CursorMoved { position, .. } = e {
             self.cursor = Point::new(position.x / scale, position.y / scale);
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = e
+        {
+            let (left, right) = self.overflow_rects();
+            if left.contains(self.cursor) && self.has_hidden_before() {
+                self.overflow_step(false);
+                *h = true;
+                return;
+            }
+            if right.contains(self.cursor) && self.has_hidden_after() {
+                self.overflow_step(true);
+                *h = true;
+                return;
+            }
+            for (index, id) in self.visible_ids.iter().copied().enumerate() {
+                if self
+                    .visuals
+                    .get(&id)
+                    .is_some_and(|v| v.media_playing || v.muted)
+                    && self.media_rect(index).contains(self.cursor)
+                {
+                    self.pending_toggle_mute = Some(id);
+                    *h = true;
+                    return;
+                }
+            }
         }
         if let WindowEvent::MouseWheel { delta, .. } = e
             && self.inner.bar_rect().contains(self.cursor)
@@ -336,6 +604,23 @@ impl Widget for BrowserTabStrip {
         s: &mut AutoCommit,
         p: &ObjId,
     ) -> bool {
+        if matches!(a, ui::a11y::Action::Activate) {
+            if target == "tab-overflow-before" && self.has_hidden_before() {
+                self.overflow_step(false);
+                return true;
+            }
+            if target == "tab-overflow-after" && self.has_hidden_after() {
+                self.overflow_step(true);
+                return true;
+            }
+            if let Some(id) = target
+                .strip_prefix("tab-mute:")
+                .and_then(|v| v.parse().ok())
+            {
+                self.pending_toggle_mute = Some(id);
+                return true;
+            }
+        }
         self.inner.perform_semantic_action(target, a, s, p)
     }
     fn take_structure_dirty(&mut self) -> bool {
@@ -343,8 +628,10 @@ impl Widget for BrowserTabStrip {
     }
     fn needs_animation_frame(&self) -> bool {
         self.inner.needs_animation_frame()
+            || (!self.reduced_motion && self.visuals.values().any(|v| v.loading))
     }
     fn set_motion_reduced(&mut self, r: bool) {
+        self.reduced_motion = r;
         self.inner.set_motion_reduced(r)
     }
     fn name(&self) -> &'static str {
@@ -354,6 +641,72 @@ impl Widget for BrowserTabStrip {
         Some("browser.tab-strip")
     }
     fn get_rect(&self) -> Rect {
-        self.inner.get_rect()
+        self.rect
+    }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        let mut node = self.inner.accessibility()?;
+        for (index, child) in node.children.iter_mut().enumerate() {
+            let identity = child
+                .action_target
+                .clone()
+                .unwrap_or_else(|| format!("tab-child:{index}"));
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            identity.hash(&mut hasher);
+            child.key = Some(hasher.finish());
+        }
+        for (index, id) in self.visible_ids.iter().copied().enumerate() {
+            if let Some(visual) = self.visuals.get(&id) {
+                if let Some(tab) = node
+                    .children
+                    .iter_mut()
+                    .find(|n| n.action_target.as_deref() == Some(&format!("tab:{id}")))
+                {
+                    tab.state.busy = visual.loading;
+                    if visual.media_playing {
+                        tab.description = Some("Media playing".into());
+                    }
+                    if visual.muted {
+                        tab.description = Some("Audio muted".into());
+                    }
+                    if visual.media_playing || visual.muted {
+                        tab.children.push(
+                            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                                .with_name(if visual.muted {
+                                    "Unmute tab"
+                                } else {
+                                    "Mute tab"
+                                })
+                                .with_action_target(format!("tab-mute:{id}"))
+                                .with_hashed_key(format!("tab-mute:{id}"))
+                                .with_bounds(self.media_rect(index)),
+                        );
+                    }
+                }
+            }
+        }
+        let (left, right) = self.overflow_rects();
+        node.children.push(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                .with_name("Previous hidden tab")
+                .with_action_target("tab-overflow-before")
+                .with_hashed_key("tab-overflow-before")
+                .with_state(ui::a11y::AccessState {
+                    disabled: !self.has_hidden_before(),
+                    ..Default::default()
+                })
+                .with_bounds(left),
+        );
+        node.children.push(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Button)
+                .with_name("Next hidden tab")
+                .with_action_target("tab-overflow-after")
+                .with_hashed_key("tab-overflow-after")
+                .with_state(ui::a11y::AccessState {
+                    disabled: !self.has_hidden_after(),
+                    ..Default::default()
+                })
+                .with_bounds(right),
+        );
+        Some(node)
     }
 }
