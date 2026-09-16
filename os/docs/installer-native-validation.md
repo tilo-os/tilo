@@ -21,14 +21,15 @@ which uses fixture data rather than performing installation actions.
 
 The native test run passed 146 library tests and four binary tests, with no
 failures or ignored tests. The release executable is an AArch64 ELF with SHA-256
-`3a4f28c09e3e1251cc1dbf5b8d282a3ea17c46f8a45369ed1b86409c1957864f`.
+`52874c02c0b0e7e99e5f9a93ffb178c9f8bbbf2dfc78cf340e74558f0d8b011d`.
 All dynamic dependencies resolved in the Fedora 42 WSL build environment.
 
-That initial local artifact used Fedora Rust 1.94.1. The environment has since
-been corrected to use the repository-pinned Rust 1.97.1 through rustup. All 150
-installer tests also passed with 1.97.1; its release rebuild and screen rerun
-remain pending. Do not treat the initial binary hash as pinned-toolchain
-release evidence.
+The initial diagnostic used Fedora Rust 1.94.1. The environment was corrected
+to use the repository-pinned Rust 1.97.1 through rustup, and all 150 tests,
+the release build, and all 19 screen renders passed again. The hash above is
+the pinned-toolchain artifact. Its inspected 800×600 review screen is
+byte-identical to the earlier rendering (SHA-256
+`ea0dcbdba8e1b60ac727fcab383594421ca400446be91854ad659113465c51d6`).
 
 All 16 screen states rendered at 1280×800, plus disk, account, and review at
 800×600. This includes alongside-install, recovery, and failure states. The
