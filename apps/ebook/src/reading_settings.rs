@@ -34,6 +34,21 @@ pub(crate) enum ReadingSettingsAction {
     SetScheme(String),
 }
 
+/// Event-routing services shared by the quick settings' numeric editors.
+/// The host constructs this once at its widget boundary so the component API
+/// exposes one coherent interaction contract instead of mirroring every
+/// argument required by [`NumberControls`].
+pub(crate) struct ReadingSettingsEventCtx<'a> {
+    pub event: &'a WindowEvent,
+    pub scale_factor: f64,
+    pub modifiers: Modifiers,
+    pub state: &'a mut AutoCommit,
+    pub root: &'a ObjId,
+    pub node_id: NodeId,
+    pub taffy: &'a TaffyTree<()>,
+    pub handled: &'a mut bool,
+}
+
 #[derive(Clone)]
 struct Hit {
     rect: Rect,
@@ -234,28 +249,20 @@ impl ReadingSettings {
             .map(|hit| hit.action.clone())
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_event(
         &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
+        ctx: &mut ReadingSettingsEventCtx<'_>,
     ) -> Vec<ReadingSettingsAction> {
         self.numbers
             .handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                root,
-                node_id,
-                taffy,
-                handled,
+                ctx.event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                ctx.state,
+                ctx.root,
+                ctx.node_id,
+                ctx.taffy,
+                ctx.handled,
             )
             .into_iter()
             .filter_map(|(field, value)| match field {
