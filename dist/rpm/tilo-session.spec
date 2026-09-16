@@ -25,6 +25,13 @@
 # build.
 %global debug_package %{nil}
 
+# The signed Tilo runtime is already stripped before its bundle manifest is
+# hashed and signed. Fedora's generic brp-strip pass would mutate the bundled
+# ELF loader and shared libraries after that signature was created, leaving a
+# formally packaged but unusable runtime. Keep the ordinary post-processing
+# chain, but make its strip helpers no-ops for this prebuilt, signed payload.
+%global __strip /bin/true
+
 Name:           tilo-session
 Version:        %{tilo_version}
 Release:        1%{?dist}
