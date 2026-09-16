@@ -376,7 +376,7 @@ pub fn provide_resources(
     let mut snapshots = Resource::new(
         "backups.snapshots",
         "backups.snapshot-set",
-        "Snapshot versions and runs",
+        "Snapshot versions and runs · recent page",
     );
     for snapshot in catalog.snapshots.iter().take(128) {
         snapshots = snapshots.with_child(snapshot_resource(snapshot, configured));
@@ -386,6 +386,38 @@ pub fn provide_resources(
     // Keep the long-standing policy root first: automation clients that began
     // at the original public root retain a stable traversal order.
     vec![root, backups]
+}
+
+/// Resolve one stable resource without requiring it to be in the contextual
+/// recent-history page. Search result addresses use these ids, so an older
+/// recovery point remains agent-invokable with the same Verify/Restore tree.
+pub fn resource(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+    id: &str,
+) -> Option<Resource> {
+    if id == "backups.policy" || id == "backups" {
+        return provide_resources(policy, catalog, configured)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == id);
+    }
+    let snapshot_id = id
+        .strip_prefix("backups.snapshot:")
+        .or_else(|| id.strip_prefix("backups.run:"))
+        .or_else(|| id.strip_prefix("backups.restore-target:"))?;
+    let snapshot = catalog
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.id == snapshot_id)?;
+    let snapshot_resource = snapshot_resource(snapshot, configured);
+    if id.starts_with("backups.snapshot:") {
+        return Some(snapshot_resource);
+    }
+    snapshot_resource
+        .children
+        .into_iter()
+        .find(|child| child.id.as_str() == id)
 }
 
 fn snapshot_resource(snapshot: &Snapshot, configured: bool) -> Resource {
@@ -500,6 +532,15 @@ impl ResourceProvider for crate::app::BackupsApp {
             &BackupsDoc::policy(doc, &ROOT),
             self.resource_catalog(),
             self.is_configured(),
+        )
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        resource(
+            &BackupsDoc::policy(doc, &ROOT),
+            self.resource_catalog(),
+            self.is_configured(),
+            id,
         )
     }
 }
