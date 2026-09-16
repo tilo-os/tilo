@@ -407,6 +407,7 @@ impl ImageEditorApp {
         {
             Ok(_) => {
                 ProjectDoc::write(state, &self.project);
+                ProjectDoc::sync_connections(state, &self.project);
                 self.rendered_project = None;
                 self.notice = "Connection updated".into();
             }
@@ -459,6 +460,7 @@ impl ImageEditorApp {
         {
             self.editor.select_only(self.project.output.clone());
         }
+        ProjectDoc::restore_history_snapshot(state, &self.project);
         ProjectDoc::write(state, &self.project);
         self.rendered_project = None;
         self.rebuild_crop_editor();
@@ -488,14 +490,15 @@ impl ImageEditorApp {
     fn add(&mut self, state: &mut AutoCommit, op: Operation, title: &str) {
         self.checkpoint();
         let stem = title.to_lowercase();
+        let actor = state.get_actor().to_hex_string();
         loop {
             self.serial = self.serial.saturating_add(1);
-            let candidate = format!("{stem}-{}", self.serial);
+            let candidate = format!("{stem}-{actor}-{}", self.serial);
             if !self.project.graph.nodes.contains_key(&candidate) {
                 break;
             }
         }
-        let id = format!("{stem}-{}", self.serial);
+        let id = format!("{stem}-{actor}-{}", self.serial);
         if self.project.insert_before_output(&id, title, op) {
             self.editor.select_only(id);
             ProjectDoc::write(state, &self.project);
@@ -878,6 +881,7 @@ impl ImageEditorApp {
         } else {
             self.editor.select_only(self.project.output.clone());
         }
+        let _ = ProjectDoc::remove_adjustment(state, &id);
         ProjectDoc::write(state, &self.project);
         self.rendered_project = None;
         self.rebuild_crop_editor();
@@ -1980,6 +1984,7 @@ impl Widget for ImageEditorApp {
                         {
                             Ok(_) => {
                                 ProjectDoc::write(state, &self.project);
+                                ProjectDoc::sync_connections(state, &self.project);
                                 self.rendered_project = None;
                                 self.notice = "Connection updated".into();
                             }
@@ -2267,6 +2272,7 @@ impl Widget for ImageEditorApp {
                                     ) {
                                         Ok(_) => {
                                             ProjectDoc::write(state, &self.project);
+                                            ProjectDoc::sync_connections(state, &self.project);
                                             self.rendered_project = None;
                                             self.notice = "Connection updated".into();
                                         }
@@ -2456,7 +2462,10 @@ impl Widget for ImageEditorApp {
                     }
                     let mut removed = 0usize;
                     for id in deletable {
-                        removed += usize::from(self.project.remove_adjustment(&id));
+                        if self.project.remove_adjustment(&id) {
+                            let _ = ProjectDoc::remove_adjustment(state, &id);
+                            removed += 1;
+                        }
                     }
                     if removed > 0 {
                         self.editor.select_only(self.project.output.clone());
@@ -3319,7 +3328,10 @@ mod portal_tests {
             .iter()
             .map(|(id, _)| id.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(preview_ids, ["source", "exposure-1", "output"]);
+        assert_eq!(preview_ids.len(), 3);
+        assert_eq!(preview_ids[0], "source");
+        assert!(preview_ids[1].starts_with("exposure-"));
+        assert_eq!(preview_ids[2], "output");
     }
 
     #[test]
@@ -3339,7 +3351,15 @@ mod portal_tests {
             Operation::Contrast { amount: 0.2 },
             "Contrast",
         );
-        app.editor.select_only("crop-1");
+        let crop = app
+            .project
+            .operations
+            .iter()
+            .find_map(|(id, operation)| {
+                matches!(operation, Operation::Crop { .. }).then(|| id.clone())
+            })
+            .unwrap();
+        app.editor.select_only(crop.clone());
         app.rebuild_preview();
         app.rebuild_crop_editor();
         assert!(app.crop_editor.is_some());
@@ -3352,7 +3372,7 @@ mod portal_tests {
         });
         app.commit_crop_editor(&mut document);
         assert!(matches!(
-            app.project.operations.get("crop-1"),
+            app.project.operations.get(&crop),
             Some(Operation::Crop { x, y, width, height })
                 if (*x, *y, *width, *height) == (0.25, 0.0, 0.5, 0.5)
         ));
@@ -3360,7 +3380,12 @@ mod portal_tests {
             crate::engine::evaluate(&app.project).unwrap().dimensions(),
             (4, 3)
         );
-        assert!(app.project.operations.contains_key("contrast-2"));
+        assert!(
+            app.project
+                .operations
+                .values()
+                .any(|operation| matches!(operation, Operation::Contrast { .. }))
+        );
         assert_eq!(app.notice, "Crop updated. Later steps were recomputed.");
     }
 }
