@@ -63,11 +63,8 @@ impl ChangesColumn {
     /// (area + index). `message` is the live commit message; `caret` shows
     /// a blinking caret when the box is focused. Returns hit regions for
     /// click routing.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
+        paint: &mut draw::PaintCtx<'_>,
         theme: &Theme,
         area: Rect,
         model: &RepoModel,
@@ -75,6 +72,7 @@ impl ChangesColumn {
         scroll: f64,
         message: &str,
     ) -> ChangesDraw {
+        let (scene, tr, t) = paint.parts();
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.raised);
         draw::vline(scene, t, area.x1, area.y0, area.y1, c.border_standard);
