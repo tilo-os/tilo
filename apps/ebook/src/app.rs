@@ -7359,6 +7359,16 @@ struct ReaderLineOutput<'a> {
     comment_box: &'a mut CommentBoxBounds,
 }
 
+struct ReaderTopbarLayout {
+    viewport: Rect,
+    left_control_x: f64,
+    icon_size: f64,
+    bookmark_size: f64,
+    type_width: f64,
+    type_label_width: f32,
+    control_y: f64,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -7523,11 +7533,7 @@ impl BooksApp {
         layout: ChapterLayout,
         view: &ReaderChromeView<'_>,
     ) {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
         let palette = view.palette;
         let geom = view.geometry;
         let mode = view.mode;
@@ -7552,7 +7558,7 @@ impl BooksApp {
             geom.full_content_x + f64::from(geom.full_content_w),
             geom.paper_y + geom.paper_h - 13.0,
         );
-        paint::progress(scene, t, pbar, frac, palette.rule, palette.accent);
+        paint::progress(ctx.scene, t, pbar, frac, palette.rule, palette.accent);
 
         // restore the layout cache (key drives reuse next frame)
         self.layout = Some(layout);
@@ -7561,13 +7567,13 @@ impl BooksApp {
         self.annotations = annos;
 
         // ---- chrome: top bar, floating page bubble, selection HUD, drawers -
-        self.draw_reader_topbar(scene, t, tr, theme, &lib, c);
+        self.draw_reader_topbar(ctx, &lib);
         self.reader_bubble.draw(
             &mut ReaderBubblePaintCtx {
-                scene,
+                scene: &mut *ctx.scene,
                 transform: t,
-                text: tr,
-                theme,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
             },
             ReaderBubbleView {
                 viewport: self.rect,
@@ -7583,30 +7589,26 @@ impl BooksApp {
             },
         );
         // Floating selection toolbar over the page (under any overlay rail).
-        self.draw_selection_hud(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            geom.paper_x,
-            geom.paper_w,
-            geom.body_y0,
-            geom.body_y1,
-            sel_anchor,
-        );
-        self.draw_rails(scene, t, tr, theme, &lib, geom.body_y0, geom.body_y1, c);
+        self.draw_selection_hud(ctx, view);
+        self.draw_rails(ctx, &lib, geom);
         // The on-page note composer (anchored near the passage) floats over the
         // page instead of shunting note-writing off to a separate screen.
-        self.draw_note_composer(scene, t, tr, theme, c, sel_anchor.map(|(_, y)| y));
+        self.draw_note_composer(
+            &mut *ctx.scene,
+            t,
+            &mut *ctx.text,
+            ctx.theme,
+            &ctx.theme.tokens.colors,
+            sel_anchor.map(|(_, y)| y),
+        );
         // The floating comment overlay for a clicked highlight (its own composer
         // lives inside it, so the standalone note composer above stands down).
         self.comment_overlay.draw(
             &mut InputPaintCtx {
-                scene,
+                scene: &mut *ctx.scene,
                 transform: t,
-                text: tr,
-                theme,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
             },
             &CommentOverlayView {
                 viewport: self.rect,
@@ -7619,10 +7621,10 @@ impl BooksApp {
         // stack; only the available reader span is supplied by the host.
         self.reading_settings.draw(
             &mut ReadingSettingsPaintCtx {
-                scene,
+                scene: &mut *ctx.scene,
                 transform: t,
-                text: tr,
-                theme,
+                text: &mut *ctx.text,
+                theme: ctx.theme,
             },
             &ReadingSettingsView {
                 viewport: self.rect,
@@ -8593,21 +8595,13 @@ impl BooksApp {
 
     /// A floating toolbar shown while a paragraph is selected: highlight
     /// colours + Note, reachable at any width even with the rail collapsed.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_selection_hud(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        paper_x: f64,
-        paper_w: f64,
-        body_y0: f64,
-        body_y1: f64,
-        anchor: Option<(f64, f64)>,
-    ) {
+    fn draw_selection_hud(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &ReaderChromeView<'_>) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        let geom = view.geometry;
         // Hide the picker while a note is being composed (the composer takes
         // over) or when there's no active selection/block.
         let has_sel = self.sel.is_some_and(|s| !s.is_empty());
@@ -8638,11 +8632,11 @@ impl BooksApp {
             })
             .collect();
         // Anchor above the selection; fall back to the page centre near the top.
-        let anchor_pt = anchor.map_or_else(
-            || Point::new(paper_x + paper_w / 2.0, body_y0 + 54.0),
+        let anchor_pt = view.selection_anchor.map_or_else(
+            || Point::new(geom.paper_x + geom.paper_w / 2.0, geom.body_y0 + 54.0),
             |(x, y)| Point::new(x, y),
         );
-        let bounds = Rect::new(self.rect.x0, body_y0, self.rect.x1, body_y1);
+        let bounds = Rect::new(self.rect.x0, geom.body_y0, self.rect.x1, geom.body_y1);
         let hud = ui::SelectionHud::draw(
             scene,
             t,
@@ -8720,20 +8714,15 @@ impl BooksApp {
     /// Paint the contents + annotations rails: either docked (flush, page
     /// already inset) or an overlay flap over the page behind a dimming
     /// scrim. The shared [`FlapState`] kernel supplies `reveal`/`slide`.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_rails(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        lib: &[Book],
-        body_y0: f64,
-        body_y1: f64,
-        c: &ui::tokens::colors::Colors,
-    ) {
+    fn draw_rails(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Book], geom: &ReaderPageGeometry) {
         use vello::peniko::Fill;
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        let body_y0 = geom.body_y0;
+        let body_y1 = geom.body_y1;
         let r = self.rect;
         let toc_layout = self.toc_layout();
         let notes_layout = self.notes_layout();
@@ -8795,17 +8784,12 @@ impl BooksApp {
         }
     }
 
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_reader_topbar(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        lib: &[Book],
-        c: &ui::tokens::colors::Colors,
-    ) {
+    fn draw_reader_topbar(&mut self, ctx: &mut EbookPaintCtx<'_>, lib: &[Book]) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
         let r = self.rect;
         let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOP_BAR);
         paint::fill_rect(scene, t, bar, c.surfaces.raised);
@@ -8844,36 +8828,49 @@ impl BooksApp {
         // centre: title (+ author, when it fits). The title is clamped to the
         // gap between the left controls and the right controls and ellipsised
         // rather than allowed to collide with either cluster on a narrow window.
-        self.draw_reader_topbar_title(scene, t, tr, c, lib, r, x, s, s_bm, aa_w);
+        let layout = ReaderTopbarLayout {
+            viewport: r,
+            left_control_x: x,
+            icon_size: s,
+            bookmark_size: s_bm,
+            type_width: aa_w,
+            type_label_width: aa_label_w,
+            control_y: cy,
+        };
+        self.draw_reader_topbar_title(ctx, lib, &layout);
 
         // right: reading-settings ("Aa") pill + bookmark toggle + notes toggle
-        self.draw_reader_topbar_right(scene, t, tr, theme, c, r, s, s_bm, aa_w, aa_label_w, cy);
+        self.draw_reader_topbar_right(ctx, &layout);
     }
 
     /// The centre title (+ author, when it fits), clamped between the left
     /// controls and the right cluster and ellipsised rather than colliding
     /// with either on a narrow window.
-    #[allow(clippy::too_many_arguments)]
     fn draw_reader_topbar_title(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
+        ctx: &mut EbookPaintCtx<'_>,
         lib: &[Book],
-        r: Rect,
-        x: f64,
-        s: f64,
-        s_bm: f64,
-        aa_w: f64,
+        layout: &ReaderTopbarLayout,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let c = &ctx.theme.tokens.colors;
+        let r = layout.viewport;
         let Some(book) = lib.get(self.book_idx) else {
             return;
         };
-        let left_bound = x + s + 12.0;
+        let left_bound = layout.left_control_x + layout.icon_size + 12.0;
         // Right cluster, walking in from the edge: notes icon, bookmark,
         // then the "Aa" pill — the title clears the left edge of that pill.
-        let right_bound = r.x1 - 14.0 - s - 4.0 - s_bm - 8.0 - aa_w - 12.0;
+        let right_bound = r.x1
+            - 14.0
+            - layout.icon_size
+            - 4.0
+            - layout.bookmark_size
+            - 8.0
+            - layout.type_width
+            - 12.0;
         let avail = (right_bound - left_bound).max(40.0);
 
         let auth = format!("   {}", book.author);
@@ -8913,21 +8910,22 @@ impl BooksApp {
     /// ("Aa") pill — relocated off the removed bottom strip so typography
     /// stays one tap away. Opens the same type/spacing/theme popover, with
     /// the same active state + hit target.
-    #[allow(clippy::too_many_arguments)]
     fn draw_reader_topbar_right(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        r: Rect,
-        s: f64,
-        s_bm: f64,
-        aa_w: f64,
-        aa_label_w: f32,
-        cy: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        layout: &ReaderTopbarLayout,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        let r = layout.viewport;
+        let s = layout.icon_size;
+        let s_bm = layout.bookmark_size;
+        let aa_w = layout.type_width;
+        let aa_label_w = layout.type_label_width;
+        let cy = layout.control_y;
         let bookmarked = self.annotations.iter().any(|a| {
             a.kind == AnnoKind::Bookmark
                 && a.chapter == self.chapter
