@@ -9905,6 +9905,16 @@ impl ShellOverlayHost {
         {
             return true;
         }
+        // Quick Settings is a modal input owner even when the key is not one
+        // of its navigation controls. Keep ordinary text and unknown keys
+        // from falling through to the focused client (a terminal must not
+        // receive characters typed while the popover is open). F1 remains the
+        // explicit desktop-help escape hatch above, and Escape is handled by
+        // the dismissal ladder immediately above.
+        if self.overlay_flags().quick_settings {
+            *handled = true;
+            return true;
+        }
         self.handle_workspace_rename_key(logical_key, modifiers, handled)
     }
 
@@ -13583,6 +13593,24 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if self.route_dropped_file_event(event, handled) {
+            return;
+        }
+        // The shell keyboard helper intentionally handles only pressed keys;
+        // absorb releases here as well so a key held across a QS opening
+        // cannot be delivered to the client behind the modal.
+        if self.overlay_flags().quick_settings
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        state: ElementState::Released,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            *handled = true;
             return;
         }
         self.release_follow_for_local_key(event);
@@ -21113,6 +21141,65 @@ mod palette_dispatch_tests {
     }
 
     #[test]
+    fn quick_settings_absorbs_text_keys_but_keeps_f1_help_escape_hatch() {
+        let (mut host, chrome) = host_with_chrome();
+        chrome.borrow_mut().overlays.quick_settings = true;
+        let mut handled = false;
+
+        // An ordinary character must stop at the shell instead of reaching
+        // the focused client underneath the popover.
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Character("x".into()),
+            Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(!chrome.borrow().overlays.shortcut_help);
+
+        // F1 is the documented desktop-help escape hatch. It opens the guide
+        // above QS and therefore never falls through to the client either.
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::F1),
+            Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(chrome.borrow().overlays.shortcut_help);
+
+        // Escape first dismisses the guide, then the underlying QS popover.
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Escape),
+            Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(!chrome.borrow().overlays.shortcut_help);
+
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Escape),
+            Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(!chrome.borrow().overlays.quick_settings);
+    }
+
+    #[test]
     fn clicking_a_painted_shortcut_starts_capture_and_escape_only_cancels_capture() {
         let (mut host, chrome) = host_with_chrome();
         chrome.borrow_mut().overlays.shortcut_help = true;
@@ -22772,6 +22859,22 @@ mod overlay_event_absorb_tests {
         }
     }
 
+    fn key_released(key: Key) -> WindowEvent {
+        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
+        event.logical_key = key;
+        event.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        event.location = KeyLocation::Standard;
+        event.state = ElementState::Released;
+        event.repeat = false;
+        event.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: false,
+        }
+    }
+
     /// One production paint, so the chip / scope rects a click router
     /// (or an assertion) reads are the ones that were actually drawn.
     fn paint_scene(h: &mut AbsorbHarness, theme: &Theme) -> vello::Scene {
@@ -23118,6 +23221,22 @@ mod overlay_event_absorb_tests {
         assert!(
             !log.iter().any(|s| s == "MouseInput::Released"),
             "content.handle_event must NOT see Released when QS absorbs it; log = {:?}",
+            *log
+        );
+    }
+
+    #[test]
+    fn overlay_absorbs_keyboard_text_and_release_when_qs_open() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        h.log.borrow_mut().clear();
+
+        assert!(pump(&mut h, &key_pressed(Key::Character("x".into()))));
+        assert!(pump(&mut h, &key_released(Key::Character("x".into()))));
+        let log = h.log.borrow();
+        assert!(
+            log.is_empty(),
+            "keyboard input must not reach the focused client while QS is open; log = {:?}",
             *log
         );
     }

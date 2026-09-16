@@ -454,6 +454,13 @@ impl QuickSettingsRoot {
         let y = self.panel.y0 + pad + self.scaled(Self::HEADER);
         Rect::new(x, y, x + w, y + self.scaled(Self::ACTIONS))
     }
+    fn power_focus_index(control_count: usize) -> usize {
+        // Keep the trailing power-profile row after the two sliders and all
+        // visible controls. This is also the index used by keyboard
+        // activation; using a separate offset here makes the painted focus
+        // ring target a different control from Enter.
+        Self::CONTROL_FOCUS_START.saturating_add(control_count)
+    }
     fn edit_rect(&self) -> Rect {
         Rect::new(
             self.panel.x1 - self.scaled(Self::PAD + 32.0),
@@ -648,6 +655,10 @@ impl QuickSettingsRoot {
             }
             if edit_count.checked_add(1) == Some(i) {
                 self.edit_mode = false;
+                // Done is removed by the structural transition. Do not leave
+                // its edit-mode index pointing at an unrelated root action
+                // (for example History/Notifications) on the next frame.
+                self.keyboard_focus = None;
                 return RootAction::LayoutChanged;
             }
             return RootAction::None;
@@ -683,7 +694,7 @@ impl QuickSettingsRoot {
             let mut p = PendingRootActions::default();
             return Self::toggle(c, state, &mut p).unwrap_or(RootAction::Changed(p));
         }
-        let base = Self::CONTROL_FOCUS_START.saturating_add(controls.len());
+        let base = Self::power_focus_index(controls.len());
         if i == base {
             return Self::cycle_power(state);
         }
@@ -1231,7 +1242,7 @@ impl QuickSettingsRoot {
             );
         }
         let r = self.power_geometry(self.panel, state);
-        let power_focus = 8_usize.saturating_add(self.visible_controls(state).len());
+        let power_focus = Self::power_focus_index(self.visible_controls(state).len());
         Button::paint(
             scene,
             transform,
@@ -1828,7 +1839,7 @@ impl QuickSettingsRoot {
             [0] if !self.edit_mode => Some(self.edit_rect()),
             [i] if !self.edit_mode => {
                 let action = i.checked_sub(1)?;
-                (action < 4).then(|| self.action(action))
+                (action < Self::ACTION_COUNT).then(|| self.action(action))
             }
             _ => None,
         }
@@ -1957,12 +1968,58 @@ mod tests {
             (1, RootAction::OpenSettings),
             (2, RootAction::Privacy),
             (3, RootAction::OpenNotifications),
-            (4, RootAction::OpenPowerMenu),
+            (4, RootAction::OpenClipboard),
+            (5, RootAction::OpenDevices),
+            (6, RootAction::OpenPowerMenu),
         ] {
             assert!(root.focus_accessibility_path(&[path], &state));
+            assert!(root.accessibility_rect_for_path(&[path]).is_some());
             assert_eq!(root.keyboard_focus, Some(path));
             assert_eq!(root.activate_focused(PANEL, &mut state), expected);
         }
+    }
+    #[test]
+    fn power_profile_focus_matches_its_enter_action() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        let control_count = root.visible_controls(&state).len();
+        let focus = QuickSettingsRoot::power_focus_index(control_count);
+
+        // The renderer uses this same index for the visible Power profile
+        // row. Enter must therefore cycle that row, not the preceding control.
+        root.keyboard_focus = Some(focus);
+        let previous = state.power_profile;
+        let action = root.activate_focused(PANEL, &mut state);
+        assert_eq!(
+            focus,
+            QuickSettingsRoot::CONTROL_FOCUS_START + control_count
+        );
+        assert_eq!(
+            action,
+            RootAction::Changed(PendingRootActions {
+                power: Some(state.power_profile),
+                ..Default::default()
+            })
+        );
+        assert_ne!(state.power_profile, previous);
+    }
+
+    #[test]
+    fn finishing_edit_clears_removed_done_focus_before_root_activation() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        root.edit_mode = true;
+        let edit_count = root.edit_controls(&state).len();
+        root.keyboard_focus = Some(edit_count.saturating_add(1));
+
+        assert_eq!(
+            root.activate_focused(PANEL, &mut state),
+            RootAction::LayoutChanged
+        );
+        assert!(!root.edit_mode());
+        assert_eq!(root.keyboard_focus, None);
     }
     #[test]
     fn edit_focus_order_covers_visible_rows_available_controls_and_footer() {
