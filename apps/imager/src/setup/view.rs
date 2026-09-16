@@ -1,0 +1,1278 @@
+//! Retained, process-local UI for the guided setup flow.
+
+use std::cell::{Ref, RefCell};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver, Sender};
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::a11y::Politeness;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::tokens::typography::TextRole;
+use ui::widget::{
+    Button, Card, Column, Container, Row, Scrollable, Spacer, Text, TextInput, Widget,
+};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Fill;
+use winit::event::{Modifiers, WindowEvent};
+
+use super::controller::{SetupController, SetupPage};
+use super::folders::{self, FolderScan};
+use super::known_folders::{self, KnownFolder, KnownFolderKind};
+use super::model::{Capabilities, Experience, FolderMode, HostOs};
+
+type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
+
+const INSTALL_UNAVAILABLE: &str = "Installation is not available in this build yet.";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetupCapabilities {
+    pub platform: Capabilities,
+    pub connected_folders: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SetupCommand {
+    ChooseExperience(Experience),
+    SetMode(FolderMode),
+    SetFolderMode(usize, FolderMode),
+    ClearFolderMode(usize),
+    RemoveFolder(usize),
+    AddSuggested(usize),
+    AddFolder,
+    ToggleHelp,
+    Next,
+    Back,
+}
+
+#[derive(Debug)]
+enum WorkerMessage {
+    KnownFolders(Vec<KnownFolder>),
+    ScanFinished {
+        destination: PathBuf,
+        result: Result<FolderScan, String>,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReviewSnapshot {
+    default_mode: FolderMode,
+    folder_count: usize,
+}
+
+/// Interactive retained root for setup. All choices stay process-local.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent worker, presentation, and invalidation flags do not form one state machine"
+)]
+pub struct SetupApp {
+    controller: Rc<RefCell<SetupController>>,
+    capabilities: SetupCapabilities,
+    chosen_experience: Option<Experience>,
+    commands: CommandSink,
+    known_folders: Vec<KnownFolder>,
+    worker_tx: Sender<WorkerMessage>,
+    worker_rx: Receiver<WorkerMessage>,
+    picker_rx: Option<ui::PortalChannel>,
+    pending_scans: usize,
+    known_folder_lookup_pending: bool,
+    show_help: bool,
+    status: String,
+    status_is_error: bool,
+    composed: Option<Box<dyn Widget>>,
+    rect: Rect,
+    structure_dirty: bool,
+}
+
+impl Default for SetupApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SetupApp {
+    /// Start live setup with only capabilities backed by actual adapters.
+    /// Platform identity alone never enables Desktop or Full qOS.
+    #[must_use]
+    pub fn new() -> Self {
+        let host = if cfg!(target_os = "windows") {
+            HostOs::Windows
+        } else if cfg!(target_os = "linux") {
+            HostOs::Linux
+        } else {
+            HostOs::Other
+        };
+        let mut app = Self::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host,
+                desktop_session: false,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+        app.known_folder_lookup_pending = true;
+        app.status = "Looking up familiar folders…".into();
+        let tx = app.worker_tx.clone();
+        let _ = std::thread::Builder::new()
+            .name("imager-known-folders".into())
+            .spawn(move || {
+                let _ = tx.send(WorkerMessage::KnownFolders(known_folders::discover()));
+            });
+        app
+    }
+
+    /// Deterministic constructor for tests and screenshot fixtures.
+    #[must_use]
+    pub fn with_capabilities(capabilities: SetupCapabilities) -> Self {
+        let (worker_tx, worker_rx) = mpsc::channel();
+        Self {
+            controller: Rc::new(RefCell::new(SetupController::new(capabilities.platform))),
+            capabilities,
+            chosen_experience: None,
+            commands: Rc::new(RefCell::new(Vec::new())),
+            known_folders: unavailable_suggestions("Known-folder lookup has not run."),
+            worker_tx,
+            worker_rx,
+            picker_rx: None,
+            pending_scans: 0,
+            known_folder_lookup_pending: false,
+            show_help: false,
+            status: "Choose an available experience to begin.".into(),
+            status_is_error: false,
+            composed: None,
+            rect: Rect::ZERO,
+            structure_dirty: true,
+        }
+    }
+
+    #[must_use]
+    pub fn for_shot(scenario: &str) -> Self {
+        let mut app = Self::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Linux,
+                desktop_session: true,
+                internal_dual_boot: true,
+            },
+            connected_folders: scenario == "setup-folders-connected",
+        });
+        app.known_folders = KnownFolderKind::ALL
+            .into_iter()
+            .map(|kind| KnownFolder {
+                kind,
+                path: Some(PathBuf::from("/home/ada").join(kind.label())),
+                unavailable_reason: None,
+            })
+            .collect();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        if scenario != "setup-experience" {
+            app.apply_command(SetupCommand::Next);
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: PathBuf::from("/home/qos/Documents"),
+                result: Ok(shot_scan("Documents", 38, 2_460_000_000)),
+            });
+            app.apply_worker_message(WorkerMessage::ScanFinished {
+                destination: PathBuf::from("/home/qos/Pictures"),
+                result: Ok(shot_scan("Pictures", 814, 6_820_000_000)),
+            });
+        }
+        if scenario == "setup-folders-later" {
+            app.apply_command(SetupCommand::SetMode(FolderMode::Later));
+        } else if scenario == "setup-folders-connected" {
+            app.apply_command(SetupCommand::SetMode(FolderMode::Connected));
+        } else if scenario == "setup-review" {
+            app.apply_command(SetupCommand::Next);
+        }
+        app
+    }
+
+    fn controller(&self) -> Ref<'_, SetupController> {
+        self.controller.borrow()
+    }
+
+    #[cfg(test)]
+    fn controller_handle(&self) -> Rc<RefCell<SetupController>> {
+        Rc::clone(&self.controller)
+    }
+
+    #[cfg(test)]
+    fn review_snapshot(&self) -> ReviewSnapshot {
+        let controller = self.controller();
+        ReviewSnapshot {
+            default_mode: controller.default_mode(),
+            folder_count: controller.plan().folders.len(),
+        }
+    }
+
+    fn apply_command(&mut self, command: SetupCommand) {
+        self.status_is_error = false;
+        match command {
+            SetupCommand::ChooseExperience(experience) => {
+                if self.controller.borrow_mut().choose_experience(experience) {
+                    self.chosen_experience = Some(experience);
+                    self.status = format!("{} selected.", experience_label(experience));
+                } else {
+                    self.status =
+                        experience_unavailable_reason(self.capabilities.platform, experience);
+                    self.status_is_error = true;
+                }
+            }
+            SetupCommand::SetMode(mode) => {
+                if mode == FolderMode::Connected && !self.capabilities.connected_folders {
+                    self.status = "Folder syncing is not available in this build yet.".into();
+                    self.status_is_error = true;
+                } else {
+                    self.controller.borrow_mut().set_mode(mode);
+                    self.status = format!("{} selected for folders.", mode_label(mode));
+                }
+            }
+            SetupCommand::SetFolderMode(index, mode) => {
+                if mode == FolderMode::Connected && !self.capabilities.connected_folders {
+                    self.status = "Folder syncing is not available in this build yet.".into();
+                    self.status_is_error = true;
+                } else if self.controller.borrow_mut().set_folder_mode(index, mode) {
+                    self.status = format!("Folder policy changed to {}.", mode_label(mode));
+                }
+            }
+            SetupCommand::ClearFolderMode(index) => {
+                if self
+                    .controller
+                    .borrow_mut()
+                    .clear_folder_mode_override(index)
+                {
+                    self.status = "Folder now follows the common choice.".into();
+                }
+            }
+            SetupCommand::RemoveFolder(index) => {
+                if self.controller.borrow_mut().remove_folder(index) {
+                    self.status = "Folder removed from this setup plan.".into();
+                }
+            }
+            SetupCommand::AddSuggested(index) => {
+                let path = self
+                    .known_folders
+                    .get(index)
+                    .and_then(|known| known.path.clone());
+                if let Some(path) = path {
+                    self.start_scan(path);
+                } else {
+                    self.status = "That suggested folder is unavailable on this computer.".into();
+                    self.status_is_error = true;
+                }
+            }
+            SetupCommand::AddFolder => {
+                if self.picker_rx.is_none() {
+                    self.picker_rx = Some(folders::pick_folder());
+                    self.status = "Choose a folder in the system dialog.".into();
+                }
+            }
+            SetupCommand::ToggleHelp => {
+                self.show_help = !self.show_help;
+            }
+            SetupCommand::Next => match self.controller.borrow_mut().next() {
+                Ok(()) => self.status = "Choices saved for this review.".into(),
+                Err(error) => {
+                    self.status = error;
+                    self.status_is_error = true;
+                }
+            },
+            SetupCommand::Back => {
+                self.controller.borrow_mut().back();
+                self.status = "Your choices are retained while you make changes.".into();
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    fn start_scan(&mut self, source: PathBuf) {
+        let destination = PathBuf::from("/home/qos").join(
+            source
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("Imported folder")),
+        );
+        let tx = self.worker_tx.clone();
+        self.pending_scans = self.pending_scans.saturating_add(1);
+        self.status = format!("Scanning {}…", source.display());
+        let _ = std::thread::Builder::new()
+            .name("imager-folder-scan".into())
+            .spawn(move || {
+                let result = folders::scan_folder(&source);
+                let _ = tx.send(WorkerMessage::ScanFinished {
+                    destination,
+                    result,
+                });
+            });
+    }
+
+    fn apply_worker_message(&mut self, message: WorkerMessage) {
+        match message {
+            WorkerMessage::KnownFolders(folders) => {
+                self.known_folders = folders;
+                self.known_folder_lookup_pending = false;
+                self.status =
+                    "Familiar folders are ready to choose. None are selected automatically.".into();
+                self.status_is_error = false;
+            }
+            WorkerMessage::ScanFinished {
+                destination,
+                result,
+            } => {
+                self.pending_scans = self.pending_scans.saturating_sub(1);
+                match result {
+                    Ok(scan) => {
+                        let source = scan.source.display().to_string();
+                        if system_folder_reason(&scan.source).is_some() {
+                            self.status = format!(
+                                "{source} is a system folder and cannot be added to setup."
+                            );
+                            self.status_is_error = true;
+                            self.structure_dirty = true;
+                            return;
+                        }
+                        let overlaps = self.controller.borrow().folders().iter().any(|folder| {
+                            folder.scan.source.starts_with(&scan.source)
+                                || scan.source.starts_with(&folder.scan.source)
+                        });
+                        if overlaps {
+                            self.status =
+                                format!("{source} is already covered by another selected folder.");
+                            self.status_is_error = true;
+                            self.structure_dirty = true;
+                            return;
+                        }
+                        match self.controller.borrow_mut().add_folder(scan, destination) {
+                            Ok(()) => {
+                                self.status = format!("{source} is ready to copy after review.");
+                                self.status_is_error = false;
+                            }
+                            Err(error) => {
+                                self.status = error;
+                                self.status_is_error = true;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.status = format!("Folder scan failed: {error}");
+                        self.status_is_error = true;
+                    }
+                }
+            }
+        }
+        self.structure_dirty = true;
+    }
+
+    fn poll_background(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(message) = self.worker_rx.try_recv() {
+            self.apply_worker_message(message);
+            changed = true;
+        }
+        let picker = self.picker_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(outcome) = picker {
+            self.picker_rx = None;
+            changed = true;
+            match outcome {
+                ui::PortalOutcome::Opened(path) => self.start_scan(path),
+                ui::PortalOutcome::Cancelled => self.status = "No folder was added.".into(),
+                ui::PortalOutcome::Failed(error) => {
+                    self.status = format!("The folder dialog could not open: {error}");
+                    self.status_is_error = true;
+                }
+            }
+        }
+        changed
+    }
+
+    fn drain_commands(&mut self) -> bool {
+        let commands = std::mem::take(&mut *self.commands.borrow_mut());
+        let changed = !commands.is_empty();
+        for command in commands {
+            self.apply_command(command);
+        }
+        changed
+    }
+
+    fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
+        let sink = Rc::clone(&self.commands);
+        Button::new(id, label, None)
+            .fit_content(40.0)
+            .on_effect(move || sink.borrow_mut().push(command))
+    }
+
+    fn experience_body(&self) -> Box<dyn Widget> {
+        let mut body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new("Choose your qOS experience")
+                    .with_role(TextRole::Title)
+                    .with_heading_level(1),
+            ))
+            .push(Box::new(Text::new(
+                "Setup keeps your current operating system. Options that are not ready in this build stay unavailable.",
+            ).dimmed()));
+
+        for experience in [Experience::Desktop, Experience::FullOs] {
+            let supported = self.capabilities.platform.supports(experience);
+            let selected = self.chosen_experience == Some(experience);
+            let description = match experience {
+                Experience::Desktop => {
+                    "Add the qOS desktop session to a supported Linux installation."
+                }
+                Experience::FullOs => {
+                    "Install qOS alongside your current operating system and keep the current OS as the startup default."
+                }
+            };
+            let mut choose = self
+                .button(
+                    match experience {
+                        Experience::Desktop => "setup.experience.desktop",
+                        Experience::FullOs => "setup.experience.full",
+                    },
+                    if selected { "Selected" } else { "Choose" },
+                    SetupCommand::ChooseExperience(experience),
+                )
+                .with_enabled(supported);
+            if selected {
+                choose = choose.primary();
+            }
+            let mut card_body = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(Text::new(description)))
+                .push(Box::new(choose));
+            if !supported {
+                card_body = card_body.push(Box::new(
+                    Text::new(&experience_unavailable_reason(
+                        self.capabilities.platform,
+                        experience,
+                    ))
+                    .dimmed(),
+                ));
+            }
+            body = body.push(Box::new(Card::titled(
+                experience_label(experience),
+                Box::new(card_body),
+            )));
+        }
+        Box::new(body)
+    }
+
+    fn mode_card(&self, mode: FolderMode, title: &str, explanation: &str) -> Card {
+        let selected = self.controller().default_mode() == mode;
+        let enabled = mode != FolderMode::Connected || self.capabilities.connected_folders;
+        let mut button = self
+            .button(
+                match mode {
+                    FolderMode::Copy => "setup.mode.copy",
+                    FolderMode::Connected => "setup.mode.connected",
+                    FolderMode::Later => "setup.mode.later",
+                },
+                if selected { "Selected" } else { "Choose" },
+                SetupCommand::SetMode(mode),
+            )
+            .with_enabled(enabled);
+        if selected {
+            button = button.primary();
+        }
+        let detail = if mode == FolderMode::Connected && !enabled {
+            format!("{explanation} Folder syncing is not available in this build yet.")
+        } else {
+            explanation.to_string()
+        };
+        Card::new(Box::new(
+            Row::new()
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_flex_grow()
+                        .with_child(Box::new(
+                            Column::new()
+                                .with_no_padding()
+                                .with_intrinsic_height()
+                                .with_gap(4.0)
+                                .push(Box::new(Text::new(title).with_role(TextRole::Heading)))
+                                .push(Box::new(Text::new(&detail).dimmed())),
+                        )),
+                ))
+                .push(Box::new(button)),
+        ))
+    }
+
+    fn known_folder_card(&self, index: usize, known: &KnownFolder) -> Card {
+        let (detail, enabled) = known.path.as_ref().map_or_else(
+            || {
+                (
+                    known
+                        .unavailable_reason
+                        .clone()
+                        .unwrap_or_else(|| "Unavailable".into()),
+                    false,
+                )
+            },
+            |path| (path.display().to_string(), true),
+        );
+        let add = self
+            .button(
+                &format!("setup.suggestion.{}", known.kind.label().to_lowercase()),
+                if enabled { "Add" } else { "Unavailable" },
+                SetupCommand::AddSuggested(index),
+            )
+            .with_enabled(enabled);
+        Card::titled(
+            known.kind.label(),
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(Text::new(&detail).dimmed()))
+                    .push(Box::new(add)),
+            ),
+        )
+    }
+
+    fn selected_folder_card(&self, index: usize, folder: &super::controller::FolderChoice) -> Card {
+        let source = folder.scan.source.display().to_string();
+        let details = format!(
+            "{} files · {} · source: {source}",
+            folder.scan.file_count,
+            format_bytes(folder.scan.bytes)
+        );
+        let destination = folder.destination.display().to_string();
+        let destination_field = TextInput::local()
+            .with_initial_value(&destination)
+            .with_accessible_name(format!("Destination for {source}"))
+            .disabled(true);
+        let copy = self
+            .button(
+                &format!("setup.folder.{index}.copy"),
+                "Copy",
+                SetupCommand::SetFolderMode(index, FolderMode::Copy),
+            )
+            .with_enabled(true);
+        let connected = self
+            .button(
+                &format!("setup.folder.{index}.connected"),
+                "Connected",
+                SetupCommand::SetFolderMode(index, FolderMode::Connected),
+            )
+            .with_enabled(self.capabilities.connected_folders);
+        let later = self.button(
+            &format!("setup.folder.{index}.later"),
+            "Later",
+            SetupCommand::SetFolderMode(index, FolderMode::Later),
+        );
+        let follow = self.button(
+            &format!("setup.folder.{index}.follow"),
+            "Use common choice",
+            SetupCommand::ClearFolderMode(index),
+        );
+        let remove = self.button(
+            &format!("setup.folder.{index}.remove"),
+            "Remove",
+            SetupCommand::RemoveFolder(index),
+        );
+        Card::titled(
+            source,
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(Text::new(&details).dimmed()))
+                    .push(Box::new(
+                        Text::new("Destination").with_role(TextRole::Label),
+                    ))
+                    .push(Box::new(destination_field))
+                    .push(Box::new(
+                        Row::new()
+                            .push(Box::new(copy))
+                            .push(Box::new(connected))
+                            .push(Box::new(later)),
+                    ))
+                    .push(Box::new(
+                        Row::new().push(Box::new(follow)).push(Box::new(remove)),
+                    )),
+            ),
+        )
+    }
+
+    fn folders_body(&self) -> Box<dyn Widget> {
+        let mut body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new("Bring your files into qOS")
+                    .with_role(TextRole::Title)
+                    .with_heading_level(1),
+            ))
+            .push(Box::new(Text::new(
+                "Choose a common behavior. Suggestions are never selected automatically, shared, or uploaded.",
+            ).dimmed()))
+            .push(Box::new(self.mode_card(
+                FolderMode::Copy,
+                "Copy selected folders — recommended",
+                "Your originals stay where they are; later changes do not carry between systems.",
+            )))
+            .push(Box::new(self.mode_card(
+                FolderMode::Connected,
+                "Keep selected folders connected",
+                "Keep a local qOS copy and carry changes over when synchronization runs.",
+            )))
+            .push(Box::new(self.mode_card(
+                FolderMode::Later,
+                "Decide later",
+                "Start empty and add folders anytime.",
+            )))
+            .push(Box::new(self.button(
+                "setup.help",
+                if self.show_help { "Hide guidance" } else { "Help me choose" },
+                SetupCommand::ToggleHelp,
+            )));
+        if self.show_help {
+            body = body.push(Box::new(Card::titled(
+                "Help me choose",
+                Box::new(Text::new(
+                    "If you are trying qOS or are unsure, choose Copy. If you will keep working in both systems, Connected may fit when folder syncing is available for this computer. You can always decide later.",
+                )),
+            )));
+        }
+        body = body.push(Box::new(
+            Text::new("Suggested folders")
+                .with_role(TextRole::Heading)
+                .with_heading_level(2),
+        ));
+        for (index, known) in self.known_folders.iter().enumerate() {
+            body = body.push(Box::new(self.known_folder_card(index, known)));
+        }
+        body = body.push(Box::new(self.button(
+            "setup.add-folder",
+            "Add folder…",
+            SetupCommand::AddFolder,
+        )));
+
+        let controller = self.controller();
+        if !controller.folders().is_empty() {
+            body = body.push(Box::new(
+                Text::new("Selected folders")
+                    .with_role(TextRole::Heading)
+                    .with_heading_level(2),
+            ));
+            for (index, folder) in controller.folders().iter().enumerate() {
+                body = body.push(Box::new(self.selected_folder_card(index, folder)));
+            }
+        }
+        drop(controller);
+        Box::new(body)
+    }
+
+    fn review_body(&self) -> Box<dyn Widget> {
+        let controller = self.controller();
+        let plan = controller.plan();
+        let retained = match self.capabilities.platform.host {
+            HostOs::Windows => "Windows remains installed",
+            HostOs::Linux => "Your Linux installation remains installed",
+            HostOs::Other => "Your current operating system remains installed",
+        };
+        let folders = if plan.folders.is_empty() {
+            "No folders are scheduled. You can add them later.".to_string()
+        } else {
+            plan.folders
+                .iter()
+                .map(|folder| {
+                    format!(
+                        "{} → {} · {} · {}",
+                        folder.source.display(),
+                        folder.destination.display(),
+                        mode_label(folder.mode),
+                        format_bytes(folder.bytes)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let estimate = plan.required_bytes().map_or_else(
+            |_| "Space estimate is unavailable because the total overflowed.".to_string(),
+            |bytes| {
+                format!(
+                    "Estimated qOS space for selected files: {}",
+                    format_bytes(bytes)
+                )
+            },
+        );
+        let connected_blocker = plan
+            .folders
+            .iter()
+            .any(|folder| folder.mode == FolderMode::Connected)
+            .then_some("Folder syncing is not available in this build yet.");
+        let mut blockers = INSTALL_UNAVAILABLE.to_string();
+        if let Some(blocker) = connected_blocker {
+            blockers.push('\n');
+            blockers.push_str(blocker);
+        }
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(
+                    Text::new("Review qOS setup")
+                        .with_role(TextRole::Title)
+                        .with_heading_level(1),
+                ))
+                .push(Box::new(Card::titled(
+                    "Operating systems",
+                    Box::new(Text::new(&format!(
+                        "{retained}. qOS setup uses {}. Your existing OS stays the startup default initially.",
+                        experience_label(plan.experience)
+                    ))),
+                )))
+                .push(Box::new(Card::titled(
+                    "Folder policies",
+                    Box::new(Text::new(&folders)),
+                )))
+                .push(Box::new(Card::titled(
+                    "Space estimate",
+                    Box::new(Text::new(&estimate)),
+                )))
+                .push(Box::new(Card::titled(
+                    "Current blockers",
+                    Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
+                ))),
+        )
+    }
+
+    fn build_composition(&self) -> Box<dyn Widget> {
+        let page = self.controller().page();
+        let body = match page {
+            SetupPage::Experience => self.experience_body(),
+            SetupPage::Folders => self.folders_body(),
+            SetupPage::Review => self.review_body(),
+        };
+        let scroll = Scrollable::new_vertical()
+            .fill_parent_height()
+            .always_visible()
+            .with_content_gutter(14.0)
+            .with_bottom_content_inset(4.0)
+            .with_child(body);
+        let status = Text::new(&self.status).with_live(if self.status_is_error {
+            Politeness::Assertive
+        } else {
+            Politeness::Polite
+        });
+        let status = Card::new(Box::new(
+            Scrollable::new_vertical()
+                .with_max_height(56.0)
+                .with_content_gutter(10.0)
+                .with_child(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(Box::new(status)),
+                )),
+        ));
+        let mut nav = Row::new().no_wrap();
+        if page != SetupPage::Experience {
+            nav = nav.push(Box::new(self.button(
+                "setup.back",
+                "Back",
+                SetupCommand::Back,
+            )));
+        }
+        nav = nav.push(Box::new(Spacer::new()));
+        if page == SetupPage::Review {
+            nav = nav.push(Box::new(
+                Button::new("setup.install", "Install qOS", None)
+                    .fit_content(40.0)
+                    .with_enabled(false)
+                    .with_accessible_name(INSTALL_UNAVAILABLE),
+            ));
+        } else {
+            let next_enabled = page != SetupPage::Experience
+                || self
+                    .chosen_experience
+                    .is_some_and(|choice| self.capabilities.platform.supports(choice));
+            nav = nav.push(Box::new(
+                self.button("setup.next", "Continue", SetupCommand::Next)
+                    .primary()
+                    .with_enabled(next_enabled),
+            ));
+        }
+
+        Box::new(
+            Container::new().filling().with_child(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_horizontal_padding(24.0, 24.0)
+                    .with_vertical_padding(18.0)
+                    .with_gap(12.0)
+                    .push(Box::new(
+                        Text::new(&format!(
+                            "Set up qOS  ·  Step {} of 3",
+                            match page {
+                                SetupPage::Experience => 1,
+                                SetupPage::Folders => 2,
+                                SetupPage::Review => 3,
+                            }
+                        ))
+                        .with_role(TextRole::Label),
+                    ))
+                    .push(Box::new(scroll))
+                    .push(Box::new(status))
+                    .push(Box::new(nav)),
+            )),
+        )
+    }
+}
+
+fn unavailable_suggestions(reason: &str) -> Vec<KnownFolder> {
+    KnownFolderKind::ALL
+        .into_iter()
+        .map(|kind| KnownFolder {
+            kind,
+            path: None,
+            unavailable_reason: Some(reason.to_string()),
+        })
+        .collect()
+}
+
+fn system_folder_reason(path: &Path) -> Option<&'static str> {
+    if path.parent().is_none() {
+        return Some("filesystem root");
+    }
+
+    #[cfg(unix)]
+    {
+        const SYSTEM_ROOTS: [&str; 13] = [
+            "/bin", "/boot", "/dev", "/etc", "/lib", "/private", "/proc", "/root", "/run", "/sbin",
+            "/System", "/sys", "/usr",
+        ];
+        let is_protected_var_path = (path == Path::new("/var") || path.starts_with("/var"))
+            && !path.starts_with("/var/home");
+        if SYSTEM_ROOTS
+            .into_iter()
+            .any(|root| path == Path::new(root) || path.starts_with(root))
+            || is_protected_var_path
+            || path == Path::new("/Library")
+            || path.starts_with("/Library")
+        {
+            return Some("operating-system directory");
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        let first = path.components().find_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().to_lowercase()),
+            _ => None,
+        });
+        if first.as_deref().is_some_and(|name| {
+            matches!(
+                name,
+                "windows" | "program files" | "program files (x86)" | "programdata"
+            )
+        }) {
+            return Some("operating-system directory");
+        }
+    }
+
+    None
+}
+
+fn experience_label(experience: Experience) -> &'static str {
+    match experience {
+        Experience::Desktop => "qOS Desktop",
+        Experience::FullOs => "Full qOS",
+    }
+}
+
+fn experience_unavailable_reason(capabilities: Capabilities, experience: Experience) -> String {
+    match experience {
+        Experience::Desktop if capabilities.host == HostOs::Windows => {
+            "qOS Desktop is available only on supported Linux installations.".into()
+        }
+        Experience::Desktop if capabilities.host == HostOs::Linux => {
+            "qOS Desktop is not available for this Linux installation in this build yet.".into()
+        }
+        Experience::Desktop => "qOS Desktop is unavailable on this operating system.".into(),
+        Experience::FullOs => {
+            "Full qOS installation is not available for this computer in this build yet.".into()
+        }
+    }
+}
+
+fn mode_label(mode: FolderMode) -> &'static str {
+    match mode {
+        FolderMode::Copy => "Copy",
+        FolderMode::Connected => "Connected",
+        FolderMode::Later => "Decide later",
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const GIB: f64 = 1_073_741_824.0;
+    const MIB: f64 = 1_048_576.0;
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GiB", bytes as f64 / GIB)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MiB", bytes as f64 / MIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+fn shot_scan(name: &str, file_count: u64, bytes: u64) -> FolderScan {
+    FolderScan {
+        source: PathBuf::from("/home/ada").join(name),
+        file_count,
+        bytes,
+        empty_directories: Vec::new(),
+        skipped: Vec::new(),
+    }
+}
+
+impl Widget for SetupApp {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.poll_background();
+        self.drain_commands();
+        if let Some(composed) = &mut self.composed {
+            composed.sync(state, path);
+        }
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let mut changed = self.poll_background() || self.drain_commands();
+        if let Some(composed) = &mut self.composed {
+            changed |= composed.update(state, path);
+        }
+        changed
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let mut composed = self.build_composition();
+        let child = composed.build_layout(taffy, theme, node_map);
+        self.composed = Some(composed);
+        let node = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap_or(child);
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::new(
+            origin.x + f64::from(layout.location.x),
+            origin.y + f64::from(layout.location.y),
+            origin.x + f64::from(layout.location.x + layout.size.width),
+            origin.y + f64::from(layout.location.y + layout.size.height),
+        );
+        if let Some(composed) = &mut self.composed
+            && let Ok(children) = taffy.children(node)
+            && let Some(&child) = children.first()
+        {
+            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &self.rect,
+        );
+        if let Some(composed) = &mut self.composed {
+            composed.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let Some(composed) = &mut self.composed
+            && let Ok(children) = taffy.children(node_id)
+            && let Some(&child) = children.first()
+        {
+            composed.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                child,
+                taffy,
+            );
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.composed
+            .as_ref()
+            .map(|child| child.as_ref() as &dyn Widget)
+            .into_iter()
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.composed
+            .as_mut()
+            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
+            .into_iter()
+            .collect()
+    }
+
+    fn name(&self) -> &'static str {
+        "SetupApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.known_folder_lookup_pending || self.pending_scans > 0 || self.picker_rx.is_some()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.structure_dirty)
+            || self
+                .composed
+                .as_mut()
+                .is_some_and(|child| child.take_structure_dirty())
+    }
+}
+
+/// Build the live guided-setup root.
+#[must_use]
+pub fn app_root() -> Box<dyn Widget> {
+    Box::new(SetupApp::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use ui::a11y::Action;
+    use ui::headless::FrameHarness;
+
+    use super::*;
+    use crate::setup::folders::FolderScan;
+    use crate::setup::model::{Capabilities, Experience, FolderMode, HostOs};
+
+    #[cfg(windows)]
+    const TEST_SOURCE_ROOT: &str = r"C:\setup-source";
+    #[cfg(not(windows))]
+    const TEST_SOURCE_ROOT: &str = "/setup-source";
+    #[cfg(windows)]
+    const TEST_DEST_ROOT: &str = r"C:\qos-home";
+    #[cfg(not(windows))]
+    const TEST_DEST_ROOT: &str = "/home/qos";
+    #[cfg(windows)]
+    const TEST_SYSTEM_ROOT: &str = r"C:\Windows";
+    #[cfg(not(windows))]
+    const TEST_SYSTEM_ROOT: &str = "/etc";
+
+    fn supported_fixture() -> SetupApp {
+        SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Linux,
+                desktop_session: true,
+                internal_dual_boot: true,
+            },
+            connected_folders: true,
+        })
+    }
+
+    fn scan(name: &str, bytes: u64) -> FolderScan {
+        FolderScan {
+            source: PathBuf::from(TEST_SOURCE_ROOT).join(name),
+            file_count: 2,
+            bytes,
+            empty_directories: Vec::new(),
+            skipped: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unavailable_experience_command_cannot_proceed() {
+        let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Windows,
+                desktop_session: false,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        });
+
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+
+        assert_eq!(app.controller().page(), SetupPage::Experience);
+        assert!(app.status.contains("available"));
+    }
+
+    #[test]
+    fn copy_connected_and_later_commands_change_review() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Ok(scan("Documents", 4096)),
+        });
+
+        for mode in [FolderMode::Copy, FolderMode::Connected, FolderMode::Later] {
+            app.apply_command(SetupCommand::SetMode(mode));
+            app.apply_command(SetupCommand::Next);
+            assert_eq!(app.controller().page(), SetupPage::Review);
+            assert_eq!(app.review_snapshot().default_mode, mode);
+            assert_eq!(
+                app.review_snapshot().folder_count,
+                usize::from(mode != FolderMode::Later)
+            );
+            app.apply_command(SetupCommand::Back);
+        }
+    }
+
+    #[test]
+    fn back_retains_experience_and_folder_settings() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Pictures"),
+            result: Ok(scan("Pictures", 12)),
+        });
+        app.apply_command(SetupCommand::SetMode(FolderMode::Copy));
+        app.apply_command(SetupCommand::Next);
+        app.apply_command(SetupCommand::Back);
+
+        assert_eq!(app.controller().page(), SetupPage::Folders);
+        assert_eq!(app.controller().plan().experience, Experience::FullOs);
+        assert_eq!(app.controller().default_mode(), FolderMode::Copy);
+        assert_eq!(app.controller().folders().len(), 1);
+    }
+
+    #[test]
+    fn failed_scan_worker_never_becomes_a_completed_folder() {
+        let mut app = supported_fixture();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Err("permission denied while reading a long redirected folder path".into()),
+        });
+
+        assert!(app.controller().folders().is_empty());
+        assert!(app.status.contains("permission denied"));
+        assert!(!app.status.contains("ready to copy"));
+    }
+
+    #[test]
+    fn overlapping_scan_is_deduplicated_with_an_explanation() {
+        let mut app = supported_fixture();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Ok(scan("Documents", 12)),
+        });
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Projects"),
+            result: Ok(scan("Documents/Projects", 8)),
+        });
+
+        assert_eq!(app.controller().folders().len(), 1);
+        assert!(app.status.contains("already covered"));
+    }
+
+    #[test]
+    fn system_folder_scan_is_refused() {
+        let mut app = supported_fixture();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("system"),
+            result: Ok(FolderScan {
+                source: PathBuf::from(TEST_SYSTEM_ROOT),
+                file_count: 4,
+                bytes: 80,
+                empty_directories: Vec::new(),
+                skipped: Vec::new(),
+            }),
+        });
+
+        assert!(app.controller().folders().is_empty());
+        assert!(app.status.contains("system folder"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn var_home_user_folder_is_accepted() {
+        let mut app = supported_fixture();
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Ok(FolderScan {
+                source: PathBuf::from("/var/home/qos/Documents"),
+                file_count: 4,
+                bytes: 80,
+                empty_directories: Vec::new(),
+                skipped: Vec::new(),
+            }),
+        });
+
+        assert_eq!(app.controller().folders().len(), 1);
+        assert!(app.status.contains("ready to copy"));
+    }
+
+    #[test]
+    fn enter_and_space_semantic_activation_reach_the_same_controller_commands() {
+        let app = supported_fixture();
+        let observed = app.controller_handle();
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (1180, 820));
+
+        harness
+            .perform_named("setup.experience.desktop", &Action::Activate)
+            .unwrap();
+
+        assert_eq!(observed.borrow().plan().experience, Experience::Desktop);
+
+        harness
+            .perform_named("setup.next", &Action::Activate)
+            .unwrap();
+        assert_eq!(observed.borrow().page(), SetupPage::Folders);
+    }
+}
