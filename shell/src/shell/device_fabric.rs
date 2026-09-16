@@ -29,6 +29,10 @@ pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
 /// Inline fast path only; larger nearby drops belong on the object stream.
 pub const MAX_NEARBY_DROP_BYTES: usize = 48 * 1024;
+pub const DISPLAY_STREAM_PROTOCOL_VERSION: u16 = 1;
+pub const MAX_DISPLAY_FRAME_BYTES: usize = 3 * 1024 * 1024;
+pub const MAX_DISPLAY_SESSIONS: usize = 4;
+pub const MAX_DISPLAY_STREAM_AGE_MS: u64 = 15_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FabricStamp {
@@ -258,6 +262,198 @@ pub enum PersonalFabricAction {
         file_name: String,
         accepted: bool,
     },
+}
+
+/// Versioned, ephemeral control and data plane for a certified-device display.
+/// Unlike app surface sharing, this is shell-owned and never enters a room or
+/// the durable fabric checkpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonalDisplayMessage {
+    Offer {
+        protocol_version: u16,
+        session_id: [u8; 16],
+        source: DeviceId,
+        target: DeviceId,
+        profile: DisplayStreamProfile,
+        issued_unix_ms: u64,
+    },
+    Accept {
+        protocol_version: u16,
+        session_id: [u8; 16],
+        source: DeviceId,
+        target: DeviceId,
+        profile: DisplayStreamProfile,
+    },
+    Frame {
+        session_id: [u8; 16],
+        source: DeviceId,
+        target: DeviceId,
+        sequence: u64,
+        presentation_time_us: u64,
+        keyframe: bool,
+        width: u32,
+        height: u32,
+        annex_b: Vec<u8>,
+    },
+    Feedback {
+        session_id: [u8; 16],
+        source: DeviceId,
+        target: DeviceId,
+        consumed_sequence: u64,
+        queue_pressure: u8,
+        request_keyframe: bool,
+    },
+    End {
+        session_id: [u8; 16],
+        source: DeviceId,
+        target: DeviceId,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DisplayStreamCodec {
+    H264AnnexB,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayStreamProfile {
+    pub codec: DisplayStreamCodec,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub max_fps: u16,
+    pub max_bitrate_kbps: u32,
+}
+
+impl DisplayStreamProfile {
+    #[must_use]
+    pub fn negotiate(self, receiver: Self) -> Option<Self> {
+        (self.codec == receiver.codec)
+            .then_some(Self {
+                codec: self.codec,
+                max_width: self.max_width.min(receiver.max_width),
+                max_height: self.max_height.min(receiver.max_height),
+                max_fps: self.max_fps.min(receiver.max_fps),
+                max_bitrate_kbps: self.max_bitrate_kbps.min(receiver.max_bitrate_kbps),
+            })
+            .filter(Self::valid)
+    }
+
+    fn valid(&self) -> bool {
+        (320..=7680).contains(&self.max_width)
+            && (180..=4320).contains(&self.max_height)
+            && (1..=120).contains(&self.max_fps)
+            && (250..=100_000).contains(&self.max_bitrate_kbps)
+    }
+}
+
+impl PersonalDisplayMessage {
+    /// Validate only immutable wire shape and transport-bound identities.
+    /// Saved-placement authorization and session transitions are checked by
+    /// the receiver against its current fabric state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FabricError::InvalidDisplayStream`] for unsupported,
+    /// misaddressed, stale, oversized, or otherwise malformed traffic.
+    pub fn validate_at(
+        &self,
+        transport_source: &DeviceId,
+        local_target: &DeviceId,
+        now_unix_ms: u64,
+    ) -> Result<(), FabricError> {
+        let (session_id, source, target) = match self {
+            Self::Offer {
+                session_id,
+                source,
+                target,
+                ..
+            }
+            | Self::Accept {
+                session_id,
+                source,
+                target,
+                ..
+            }
+            | Self::Frame {
+                session_id,
+                source,
+                target,
+                ..
+            }
+            | Self::Feedback {
+                session_id,
+                source,
+                target,
+                ..
+            }
+            | Self::End {
+                session_id,
+                source,
+                target,
+            } => (session_id, source, target),
+        };
+        let (expected_sender, expected_receiver) = match self {
+            Self::Offer { .. } | Self::Frame { .. } | Self::End { .. } => (source, target),
+            Self::Accept { .. } | Self::Feedback { .. } => (target, source),
+        };
+        if session_id == &[0; 16]
+            || expected_sender != transport_source
+            || expected_receiver != local_target
+            || source == target
+        {
+            return Err(FabricError::InvalidDisplayStream);
+        }
+        match self {
+            Self::Offer {
+                protocol_version,
+                profile,
+                issued_unix_ms,
+                ..
+            } => {
+                if *protocol_version != DISPLAY_STREAM_PROTOCOL_VERSION
+                    || !profile.valid()
+                    || *issued_unix_ms > now_unix_ms.saturating_add(30_000)
+                    || now_unix_ms.saturating_sub(*issued_unix_ms) > MAX_DISPLAY_STREAM_AGE_MS
+                {
+                    return Err(FabricError::InvalidDisplayStream);
+                }
+            }
+            Self::Accept {
+                protocol_version,
+                profile,
+                ..
+            } => {
+                if *protocol_version != DISPLAY_STREAM_PROTOCOL_VERSION || !profile.valid() {
+                    return Err(FabricError::InvalidDisplayStream);
+                }
+            }
+            Self::Frame {
+                sequence,
+                width,
+                height,
+                annex_b,
+                ..
+            } => {
+                if *sequence == 0
+                    || *width == 0
+                    || *height == 0
+                    || *width > 7680
+                    || *height > 4320
+                    || annex_b.is_empty()
+                    || annex_b.len() > MAX_DISPLAY_FRAME_BYTES
+                {
+                    return Err(FabricError::InvalidDisplayStream);
+                }
+            }
+            Self::Feedback { queue_pressure, .. } if *queue_pressure > 100 => {
+                return Err(FabricError::InvalidDisplayStream);
+            }
+            Self::Feedback { .. } | Self::End { .. } => {}
+        }
+        Ok(())
+    }
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -688,6 +884,10 @@ pub struct DisplayPlacement {
     pub device: DeviceId,
     pub rect: DisplayRect,
     pub scale_milli: u16,
+    /// Device explicitly authorized to supply this display's shell-owned
+    /// visual stream. `None` keeps legacy placements non-streaming.
+    #[serde(default)]
+    pub stream_source: Option<DeviceId>,
     pub stamp: FabricStamp,
 }
 
@@ -698,6 +898,7 @@ impl DisplayPlacement {
             || self.rect.width == 0
             || self.rect.height == 0
             || !(500..=4000).contains(&self.scale_milli)
+            || self.stream_source.as_ref() == Some(owner)
         {
             return Err(FabricError::InvalidDisplayPlacement);
         }
@@ -1290,6 +1491,8 @@ pub enum FabricError {
     InvalidWifiCredential,
     #[error("invalid display placement")]
     InvalidDisplayPlacement,
+    #[error("invalid personal display stream")]
+    InvalidDisplayStream,
     #[error("invalid input lease")]
     InvalidInputLease,
     #[error("input lease has expired")]
@@ -1357,6 +1560,7 @@ mod tests {
                     height: 800,
                 },
                 scale_milli: 1000,
+                stream_source: None,
                 stamp: stamp(device, counter),
             }),
         }
@@ -1390,6 +1594,88 @@ mod tests {
         let transfer = fabric.handoff_media("movie-1", &id("tablet")).unwrap();
         assert_eq!(transfer.position_ms, 42_000);
         assert!(transfer.resume_playing && transfer.pause_source);
+    }
+
+    #[test]
+    fn personal_display_negotiation_is_versioned_and_transport_bound() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let offered = DisplayStreamProfile {
+            codec: DisplayStreamCodec::H264AnnexB,
+            max_width: 3840,
+            max_height: 2160,
+            max_fps: 60,
+            max_bitrate_kbps: 20_000,
+        };
+        let receiver = DisplayStreamProfile {
+            codec: DisplayStreamCodec::H264AnnexB,
+            max_width: 1920,
+            max_height: 1080,
+            max_fps: 30,
+            max_bitrate_kbps: 8_000,
+        };
+        assert_eq!(
+            offered.negotiate(receiver),
+            Some(DisplayStreamProfile {
+                codec: DisplayStreamCodec::H264AnnexB,
+                max_width: 1920,
+                max_height: 1080,
+                max_fps: 30,
+                max_bitrate_kbps: 8_000,
+            })
+        );
+        let offer = PersonalDisplayMessage::Offer {
+            protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
+            session_id: [7; 16],
+            source: source.clone(),
+            target: target.clone(),
+            profile: offered,
+            issued_unix_ms: 10_000,
+        };
+        assert_eq!(offer.validate_at(&source, &target, 10_000), Ok(()));
+        assert_eq!(
+            offer.validate_at(&DeviceId::new("impostor").unwrap(), &target, 10_000),
+            Err(FabricError::InvalidDisplayStream)
+        );
+
+        let accept = PersonalDisplayMessage::Accept {
+            protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
+            session_id: [7; 16],
+            source: source.clone(),
+            target: target.clone(),
+            profile: receiver,
+        };
+        assert_eq!(accept.validate_at(&target, &source, 10_000), Ok(()));
+        assert_eq!(
+            accept.validate_at(&source, &target, 10_000),
+            Err(FabricError::InvalidDisplayStream),
+            "responses must travel target-to-source, not trust logical field order"
+        );
+    }
+
+    #[test]
+    fn personal_display_frames_are_strictly_bounded() {
+        let source = DeviceId::new("source").unwrap();
+        let target = DeviceId::new("target").unwrap();
+        let frame = |annex_b: Vec<u8>| PersonalDisplayMessage::Frame {
+            session_id: [4; 16],
+            source: source.clone(),
+            target: target.clone(),
+            sequence: 1,
+            presentation_time_us: 0,
+            keyframe: true,
+            width: 1920,
+            height: 1080,
+            annex_b,
+        };
+        assert_eq!(
+            frame(vec![0, 0, 0, 1]).validate_at(&source, &target, 1),
+            Ok(())
+        );
+        assert_eq!(
+            frame(vec![0; MAX_DISPLAY_FRAME_BYTES + 1]).validate_at(&source, &target, 1),
+            Err(FabricError::InvalidDisplayStream)
+        );
     }
 
     #[test]

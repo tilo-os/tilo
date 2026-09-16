@@ -18,10 +18,11 @@ use crate::compositor::selection::{
     SharedSelection, merge_shared_clipboard_history, shareable_clipboard_history,
 };
 use crate::shell::device_fabric::{
-    ClipboardEntry, ClipboardPayload, DeviceFabricSnapshot, DeviceKind, DevicePresence,
-    DisplayEdge, DisplayPlacement, DisplayRect, FABRIC_SCHEMA_VERSION, FabricCapabilities,
-    FabricInputEvent, FabricStamp, InputLease, MAX_INPUT_LEASE_MS, MediaSession,
-    MediaSourceLocator, PersonalFabricAction, RoamingSetting,
+    ClipboardEntry, ClipboardPayload, DISPLAY_STREAM_PROTOCOL_VERSION, DeviceFabricSnapshot,
+    DeviceKind, DevicePresence, DisplayEdge, DisplayPlacement, DisplayRect, DisplayStreamCodec,
+    DisplayStreamProfile, FABRIC_SCHEMA_VERSION, FabricCapabilities, FabricInputEvent, FabricStamp,
+    InputLease, MAX_DISPLAY_SESSIONS, MAX_INPUT_LEASE_MS, MediaSession, MediaSourceLocator,
+    PersonalDisplayMessage, PersonalFabricAction, RoamingSetting,
 };
 use crate::shell::network::ShellNetwork;
 
@@ -34,6 +35,135 @@ const INCOMING_MEDIA_WAIT: Duration = Duration::from_secs(60 * 60);
 const BLUETOOTH_HANDOFF_WAIT: Duration = Duration::from_secs(75);
 const BLUETOOTH_HANDOFF_DISCOVERY: Duration = Duration::from_secs(6);
 const MAX_BLUETOOTH_HANDOFFS: usize = 32;
+const DISPLAY_OFFER_RETRY: Duration = Duration::from_secs(2);
+const DISPLAY_KEEPALIVE: Duration = Duration::from_secs(5);
+const DISPLAY_SESSION_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Clone, Debug)]
+struct OutboundDisplaySession {
+    session_id: [u8; 16],
+    profile: DisplayStreamProfile,
+    accepted: bool,
+    last_offer: Option<Instant>,
+    sequence: u64,
+    request_keyframe: bool,
+}
+
+#[derive(Clone, Debug)]
+struct InboundDisplaySession {
+    session_id: [u8; 16],
+    source: crate::shell::personal_continuity::DeviceId,
+    profile: DisplayStreamProfile,
+    last_activity: Instant,
+    last_sequence: u64,
+}
+
+#[derive(Default)]
+struct PersonalDisplayState {
+    outbound: BTreeMap<crate::shell::personal_continuity::DeviceId, OutboundDisplaySession>,
+    inbound: Option<InboundDisplaySession>,
+    events: VecDeque<PersonalDisplayEvent>,
+}
+
+impl PersonalDisplayState {
+    fn queue_event(&mut self, event: PersonalDisplayEvent) {
+        const CAPACITY: usize = MAX_DISPLAY_SESSIONS * 4;
+        if self.events.len() >= CAPACITY {
+            if let Some(frame) = self
+                .events
+                .iter()
+                .position(|queued| matches!(queued, PersonalDisplayEvent::Frame { .. }))
+            {
+                self.events.remove(frame);
+            } else {
+                self.events.pop_front();
+            }
+        }
+        self.events.push_back(event);
+    }
+
+    fn install_inbound(&mut self, session: InboundDisplaySession) {
+        if let Some(current) = self.inbound.as_mut()
+            && current.session_id == session.session_id
+            && current.source == session.source
+        {
+            current.profile = session.profile;
+            current.last_activity = session.last_activity;
+            return;
+        }
+        if let Some(previous) = self.inbound.replace(session.clone())
+            && previous.session_id != session.session_id
+        {
+            self.queue_event(PersonalDisplayEvent::Ended {
+                session_id: previous.session_id,
+            });
+        }
+        self.queue_event(PersonalDisplayEvent::Started {
+            session_id: session.session_id,
+            source: session.source,
+            profile: session.profile,
+        });
+    }
+
+    fn accept_frame(
+        &mut self,
+        session_id: [u8; 16],
+        source: &crate::shell::personal_continuity::DeviceId,
+        sequence: u64,
+        width: u32,
+        height: u32,
+        now: Instant,
+    ) -> bool {
+        let Some(session) = self.inbound.as_mut().filter(|session| {
+            session.session_id == session_id
+                && &session.source == source
+                && sequence > session.last_sequence
+                && width <= session.profile.max_width
+                && height <= session.profile.max_height
+        }) else {
+            return false;
+        };
+        session.last_sequence = sequence;
+        session.last_activity = now;
+        true
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersonalDisplayEvent {
+    Started {
+        session_id: [u8; 16],
+        source: crate::shell::personal_continuity::DeviceId,
+        profile: DisplayStreamProfile,
+    },
+    Frame {
+        session_id: [u8; 16],
+        sequence: u64,
+        presentation_time_us: u64,
+        keyframe: bool,
+        width: u32,
+        height: u32,
+        annex_b: Vec<u8>,
+    },
+    Ended {
+        session_id: [u8; 16],
+    },
+}
+
+fn personal_display_state() -> &'static Mutex<PersonalDisplayState> {
+    static STATE: OnceLock<Mutex<PersonalDisplayState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(PersonalDisplayState::default()))
+}
+
+fn default_display_profile() -> DisplayStreamProfile {
+    DisplayStreamProfile {
+        codec: DisplayStreamCodec::H264AnnexB,
+        max_width: 1920,
+        max_height: 1080,
+        max_fps: 60,
+        max_bitrate_kbps: 12_000,
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NearbyDropEvent {
@@ -107,6 +237,7 @@ struct SpatialInputState {
     release_controllers: VecDeque<crate::shell::personal_continuity::DeviceId>,
     outbound: VecDeque<OutboundSpatialInput>,
     placement_override: Option<DisplayRect>,
+    placement_stream_source: Option<crate::shell::personal_continuity::DeviceId>,
 }
 
 impl SpatialInputState {
@@ -314,6 +445,7 @@ impl DeviceFabricRuntime {
     ) {
         pump_bluetooth_handoffs(network);
         self.handle_fabric_actions(network);
+        pump_personal_displays(network);
         self.retry_waiting_media(network);
         flush_spatial_input(network);
         self.acknowledge_opened_media(network);
@@ -745,6 +877,7 @@ fn handle_spatial_action(
     match action {
         PersonalFabricAction::SetDisplayPlacement { rect } => {
             spatial.placement_override = Some(rect);
+            spatial.placement_stream_source = Some(source);
         }
         PersonalFabricAction::InputLeaseGranted { lease } => {
             if lease.validate_at(unix_ms()).is_ok() {
@@ -2117,6 +2250,337 @@ pub fn take_spatial_input_releases() -> Vec<crate::shell::personal_continuity::D
     )
 }
 
+/// Drain compositor-facing display lifecycle. Network ingress is already
+/// identity-, placement-, session-, and capability-checked before this point.
+pub fn take_personal_display_events() -> Vec<PersonalDisplayEvent> {
+    personal_display_state()
+        .lock()
+        .map_or_else(|_| Vec::new(), |mut state| state.events.drain(..).collect())
+}
+
+/// The strictest profile accepted by all active receivers. A single encoded
+/// whole-desktop packet can therefore be fanned out without exceeding any
+/// negotiated target ceiling.
+pub fn personal_display_capture_profile() -> Option<qos_projector::CaptureProfile> {
+    let profile = {
+        let state = personal_display_state().lock().ok()?;
+        let mut sessions = state.outbound.values().filter(|session| session.accepted);
+        let first = sessions.next()?.profile;
+        let profile = sessions.fold(first, |profile, session| DisplayStreamProfile {
+            codec: profile.codec,
+            max_width: profile.max_width.min(session.profile.max_width),
+            max_height: profile.max_height.min(session.profile.max_height),
+            max_fps: profile.max_fps.min(session.profile.max_fps),
+            max_bitrate_kbps: profile
+                .max_bitrate_kbps
+                .min(session.profile.max_bitrate_kbps),
+        });
+        drop(state);
+        profile
+    };
+    Some(qos_projector::CaptureProfile::new(
+        profile.max_width,
+        profile.max_height,
+        u32::from(profile.max_fps),
+        profile.max_bitrate_kbps,
+    ))
+}
+
+/// Fan one encoded frame to every accepted exact-target session. Failed sends
+/// are backpressure, not an invitation to buffer; the next frame supersedes it.
+pub fn publish_personal_display_packet(
+    network: &ShellNetwork,
+    packet: &qos_projector::VideoPacket,
+) -> bool {
+    let Some((source, _)) = network.local_device_fabric_identity() else {
+        return false;
+    };
+    let Ok(mut state) = personal_display_state().lock() else {
+        return false;
+    };
+    let mut delivered = false;
+    for (target, session) in &mut state.outbound {
+        if !session.accepted {
+            continue;
+        }
+        session.sequence = session.sequence.saturating_add(1).max(1);
+        let message = PersonalDisplayMessage::Frame {
+            session_id: session.session_id,
+            source: source.clone(),
+            target: target.clone(),
+            sequence: session.sequence,
+            presentation_time_us: packet.presentation_time_us,
+            keyframe: packet.keyframe,
+            width: packet.width,
+            height: packet.height,
+            annex_b: packet.annex_b.clone(),
+        };
+        delivered |= network.send_personal_display(target, message).is_ok();
+    }
+    delivered
+}
+
+pub fn report_personal_display_decode(
+    network: &ShellNetwork,
+    session_id: [u8; 16],
+    sequence: u64,
+    outcome: crate::shell::peer_view::PushOutcome,
+) {
+    let Some((target, _)) = network.local_device_fabric_identity() else {
+        return;
+    };
+    let Ok(state) = personal_display_state().lock() else {
+        return;
+    };
+    let Some(session) = state
+        .inbound
+        .as_ref()
+        .filter(|session| session.session_id == session_id)
+    else {
+        return;
+    };
+    let (queue_pressure, request_keyframe) = match outcome {
+        crate::shell::peer_view::PushOutcome::Decoded => (0, false),
+        crate::shell::peer_view::PushOutcome::DroppedOldest => (100, false),
+        crate::shell::peer_view::PushOutcome::DecodeFailed => (100, true),
+    };
+    let source = session.source.clone();
+    drop(state);
+    let _ = network.send_personal_display(
+        &source,
+        PersonalDisplayMessage::Feedback {
+            session_id,
+            source: source.clone(),
+            target,
+            consumed_sequence: sequence,
+            queue_pressure,
+            request_keyframe,
+        },
+    );
+}
+
+pub fn take_personal_display_keyframe_request() -> bool {
+    personal_display_state().lock().is_ok_and(|mut state| {
+        let requested = state
+            .outbound
+            .values()
+            .any(|session| session.request_keyframe);
+        for session in state.outbound.values_mut() {
+            session.request_keyframe = false;
+        }
+        requested
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "session reconciliation and its exhaustive wire transition match stay together as one fail-closed boundary"
+)]
+fn pump_personal_displays(network: &ShellNetwork) {
+    let Some((local, _)) = network.local_device_fabric_identity() else {
+        return;
+    };
+    let fabric = network.device_fabric();
+    let desired = fabric
+        .snapshots()
+        .values()
+        .filter(|snapshot| snapshot.owner != local)
+        .filter(|snapshot| snapshot.presence.online && snapshot.presence.capabilities.video_output)
+        .filter(|snapshot| {
+            snapshot
+                .display
+                .as_ref()
+                .is_some_and(|display| display.stream_source.as_ref() == Some(&local))
+        })
+        .take(MAX_DISPLAY_SESSIONS)
+        .map(|snapshot| snapshot.owner.clone())
+        .collect::<Vec<_>>();
+    let authorized_inbound = fabric
+        .snapshots()
+        .get(&local)
+        .and_then(|snapshot| snapshot.display.as_ref())
+        .and_then(|display| display.stream_source.clone())
+        .filter(|source| {
+            fabric
+                .snapshots()
+                .get(source)
+                .is_some_and(|snapshot| snapshot.presence.online)
+        });
+    drop(fabric);
+
+    let now = Instant::now();
+    let mut sends = Vec::new();
+    let Ok(mut state) = personal_display_state().lock() else {
+        return;
+    };
+    if state.inbound.as_ref().is_some_and(|session| {
+        authorized_inbound.as_ref() != Some(&session.source)
+            || now.saturating_duration_since(session.last_activity) >= DISPLAY_SESSION_TIMEOUT
+    }) && let Some(session) = state.inbound.take()
+    {
+        state.queue_event(PersonalDisplayEvent::Ended {
+            session_id: session.session_id,
+        });
+    }
+    let stale_targets = state
+        .outbound
+        .keys()
+        .filter(|target| !desired.contains(target))
+        .cloned()
+        .collect::<Vec<_>>();
+    for target in stale_targets {
+        if let Some(session) = state.outbound.remove(&target) {
+            sends.push((
+                target.clone(),
+                PersonalDisplayMessage::End {
+                    session_id: session.session_id,
+                    source: local.clone(),
+                    target,
+                },
+            ));
+        }
+    }
+    for target in desired {
+        let session = state.outbound.entry(target.clone()).or_insert_with(|| {
+            let mut session_id = [0_u8; 16];
+            while session_id == [0; 16] {
+                OsRng.fill_bytes(&mut session_id);
+            }
+            OutboundDisplaySession {
+                session_id,
+                profile: default_display_profile(),
+                accepted: false,
+                last_offer: None,
+                sequence: 0,
+                request_keyframe: false,
+            }
+        });
+        let offer_interval = if session.accepted {
+            DISPLAY_KEEPALIVE
+        } else {
+            DISPLAY_OFFER_RETRY
+        };
+        if session
+            .last_offer
+            .is_none_or(|last| now.saturating_duration_since(last) >= offer_interval)
+        {
+            session.last_offer = Some(now);
+            sends.push((
+                target.clone(),
+                PersonalDisplayMessage::Offer {
+                    protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
+                    session_id: session.session_id,
+                    source: local.clone(),
+                    target,
+                    profile: session.profile,
+                    issued_unix_ms: unix_ms(),
+                },
+            ));
+        }
+    }
+
+    for message in network.take_personal_display_messages() {
+        match message {
+            PersonalDisplayMessage::Offer {
+                session_id,
+                source,
+                target,
+                profile,
+                ..
+            } if target == local => {
+                let negotiated = profile.negotiate(default_display_profile());
+                let Some(profile) = negotiated else { continue };
+                state.install_inbound(InboundDisplaySession {
+                    session_id,
+                    source: source.clone(),
+                    profile,
+                    last_activity: now,
+                    last_sequence: 0,
+                });
+                sends.push((
+                    source.clone(),
+                    PersonalDisplayMessage::Accept {
+                        protocol_version: DISPLAY_STREAM_PROTOCOL_VERSION,
+                        session_id,
+                        source,
+                        target: local.clone(),
+                        profile,
+                    },
+                ));
+            }
+            PersonalDisplayMessage::Accept {
+                session_id,
+                source,
+                target,
+                profile,
+                ..
+            } if source == local => {
+                if let Some(session) = state.outbound.get_mut(&target)
+                    && session.session_id == session_id
+                    && session.profile.negotiate(profile) == Some(profile)
+                {
+                    session.profile = profile;
+                    session.accepted = true;
+                }
+            }
+            PersonalDisplayMessage::Frame {
+                session_id,
+                source,
+                target,
+                sequence,
+                presentation_time_us,
+                keyframe,
+                width,
+                height,
+                annex_b,
+            } if target == local => {
+                if state.accept_frame(session_id, &source, sequence, width, height, now) {
+                    state.events.retain(|event| !matches!(event, PersonalDisplayEvent::Frame { session_id: queued, .. } if queued == &session_id));
+                    state.queue_event(PersonalDisplayEvent::Frame {
+                        session_id,
+                        sequence,
+                        presentation_time_us,
+                        keyframe,
+                        width,
+                        height,
+                        annex_b,
+                    });
+                }
+            }
+            PersonalDisplayMessage::Feedback {
+                session_id,
+                source,
+                target,
+                queue_pressure,
+                request_keyframe,
+                ..
+            } if source == local => {
+                if let Some(session) = state.outbound.get_mut(&target)
+                    && session.session_id == session_id
+                {
+                    session.request_keyframe |= request_keyframe || queue_pressure >= 80;
+                }
+            }
+            PersonalDisplayMessage::End {
+                session_id, target, ..
+            } if target == local
+                && state
+                    .inbound
+                    .as_ref()
+                    .is_some_and(|session| session.session_id == session_id) =>
+            {
+                state.inbound = None;
+                state.queue_event(PersonalDisplayEvent::Ended { session_id });
+            }
+            _ => {}
+        }
+    }
+    drop(state);
+    for (target, message) in sends {
+        let _ = network.send_personal_display(&target, message);
+    }
+}
+
 fn build_local_snapshot(
     device: &crate::shell::personal_continuity::DeviceId,
     label: String,
@@ -2175,6 +2639,13 @@ fn build_local_snapshot(
             device: device.clone(),
             rect,
             scale_milli: 1000,
+            stream_source: spatial_input_state()
+                .lock()
+                .ok()
+                .and_then(|state| state.placement_stream_source.clone())
+                .or_else(|| {
+                    previous.and_then(|state| state.display.as_ref()?.stream_source.clone())
+                }),
             stamp: stamp.clone(),
         }),
     };
@@ -2618,5 +3089,51 @@ mod tests {
             state.outbound.get(1).map(|input| input.event),
             Some(FabricInputEvent::PointerButton { pressed: true, .. })
         ));
+    }
+
+    #[test]
+    fn replacing_a_personal_display_session_ends_the_old_surface_first() {
+        let profile = default_display_profile();
+        let mut state = PersonalDisplayState::default();
+        state.install_inbound(InboundDisplaySession {
+            session_id: [1; 16],
+            source: DeviceId::new("desktop").unwrap(),
+            profile,
+            last_activity: Instant::now(),
+            last_sequence: 0,
+        });
+        state.events.clear();
+        state.install_inbound(InboundDisplaySession {
+            session_id: [2; 16],
+            source: DeviceId::new("desktop").unwrap(),
+            profile,
+            last_activity: Instant::now(),
+            last_sequence: 0,
+        });
+        assert!(matches!(
+            state.events.pop_front(),
+            Some(PersonalDisplayEvent::Ended { session_id }) if session_id == [1; 16]
+        ));
+        assert!(matches!(
+            state.events.pop_front(),
+            Some(PersonalDisplayEvent::Started { session_id, .. }) if session_id == [2; 16]
+        ));
+    }
+
+    #[test]
+    fn personal_display_rejects_late_and_replayed_frames() {
+        let source = DeviceId::new("desktop").unwrap();
+        let mut state = PersonalDisplayState::default();
+        state.install_inbound(InboundDisplaySession {
+            session_id: [9; 16],
+            source: source.clone(),
+            profile: default_display_profile(),
+            last_activity: Instant::now(),
+            last_sequence: 0,
+        });
+        assert!(state.accept_frame([9; 16], &source, 2, 1280, 720, Instant::now()));
+        assert!(!state.accept_frame([9; 16], &source, 1, 1280, 720, Instant::now()));
+        assert!(!state.accept_frame([9; 16], &source, 2, 1280, 720, Instant::now()));
+        assert_eq!(state.inbound.as_ref().unwrap().last_sequence, 2);
     }
 }
