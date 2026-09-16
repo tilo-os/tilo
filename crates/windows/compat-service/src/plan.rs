@@ -63,11 +63,7 @@ impl RuntimeImage {
         self.sandbox_entrypoint = PathBuf::from(TRANSLATED_HELPER);
         if layer == Layer::Wine {
             self.binds.clear();
-            for resource in [
-                "usr/lib64/wine-wow64",
-                "usr/lib/wine-wow64",
-                "usr/share/wine",
-            ] {
+            for resource in ["usr/lib64/wine", "usr/lib/wine", "usr/share/wine"] {
                 self.binds.push(RuntimeBind {
                     host: Path::new(X86_ROOTFS_HOST).join(resource),
                     sandbox: Path::new("/").join(resource),
@@ -1065,6 +1061,21 @@ mod tests {
                         }));
                         if layer == Layer::Wine {
                             assert!(!command.bwrap_argv.iter().any(|arg| arg == "/usr/bin/wine"));
+                            for resource in ["usr/lib/wine", "usr/lib64/wine"] {
+                                let source = format!("{X86_ROOTFS_HOST}/{resource}");
+                                let destination = format!("/{resource}");
+                                assert!(
+                                    command.bwrap_argv.windows(3).any(|args| {
+                                        args == ["--ro-bind", &source, &destination]
+                                    })
+                                );
+                            }
+                            assert!(
+                                !command
+                                    .bwrap_argv
+                                    .iter()
+                                    .any(|arg| arg.contains("wine-wow64"))
+                            );
                         }
                     } else {
                         assert!(

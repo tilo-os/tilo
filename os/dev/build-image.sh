@@ -69,6 +69,14 @@ fi
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$QOS_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
 export SOURCE_DATE_EPOCH
+# Resolve Windows providers before downloading assets or starting compilation.
+# No ARM payload pins are fabricated: supply published, validated digest refs.
+QOS_WINDOWS_ARCH="$(uname -m)"
+if [ "${QOS_SKIP_BUILD:-0}" != 1 ]; then
+  python3 "$QOS_OS_DIR/dev/windows_provider.py" inputs --arch "$QOS_WINDOWS_ARCH" \
+    --fex-ref "${FEX_PAYLOAD_REF:-}" --guest-ref "${WINDOWS_GUEST_REF:-}" >/dev/null \
+    || die "Windows provider inputs are incomplete; see os/docs/windows-provider-packaging.md"
+fi
 "$QOS_OS_DIR/dev/cache-github-assets.sh"
 # The digest-pinned base the build starts FROM — our own mirror of the Fedora
 # bootc image, because upstream deletes the manifest a digest points at within
@@ -226,6 +234,9 @@ build_image() {
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
     --build-arg "WPE_BUILDROOT_REF=$WPE_BUILDROOT_REF" \
+    --build-arg "QOS_WINDOWS_ARCH=$QOS_WINDOWS_ARCH" \
+    --build-arg "FEX_PAYLOAD_REF=${FEX_PAYLOAD_REF:-scratch}" \
+    --build-arg "WINDOWS_GUEST_REF=${WINDOWS_GUEST_REF:-scratch}" \
     --build-arg "WPE_BUILD_JOBS=${QOS_WPE_BUILD_JOBS:-8}" \
     --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
     --build-arg "QOS_HARDWARE_PROFILE=$QOS_HARDWARE_PROFILE" \
