@@ -9245,11 +9245,7 @@ impl BooksApp {
     /// `panel_x0` is the rail's left edge — `r.x1 - NOTES_W` when docked, or a
     /// slid position when it floats as an overlay flap from the right.
     fn draw_notes(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &ReaderRailView) {
-        let scene = &mut *ctx.scene;
-        let t = ctx.transform;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
+        let c = &ctx.theme.tokens.colors;
         let panel_x0 = view.panel_x0;
         let y0 = view.y0;
         let y1 = view.y1;
@@ -9257,10 +9253,10 @@ impl BooksApp {
         let x0 = panel_x0;
         let panel_x1 = panel_x0 + self.notes_width();
         let panel = Rect::new(x0, y0, panel_x1, y1);
-        paint::fill_rect(scene, t, panel, c.surfaces.base);
+        paint::fill_rect(ctx.scene, ctx.transform, panel, c.surfaces.base);
         paint::line(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(x0, y0),
             Point::new(x0, y1),
             c.border_standard,
@@ -9271,24 +9267,8 @@ impl BooksApp {
             rect: panel,
             count: annos.len(),
         };
-        Self::draw_notes_header(
-            &mut EbookPaintCtx {
-                scene: &mut *scene,
-                transform: t,
-                text: &mut *tr,
-                theme,
-            },
-            &panel_view,
-        );
-        let add_y = self.draw_notes_add_row(
-            &mut EbookPaintCtx {
-                scene: &mut *scene,
-                transform: t,
-                text: &mut *tr,
-                theme,
-            },
-            &panel_view,
-        );
+        Self::draw_notes_header(ctx, &panel_view);
+        let add_y = self.draw_notes_add_row(ctx, &panel_view);
 
         // The annotation history is a genuine scroll surface, not a clipped
         // preview.  Measure rows once to establish a stable list coordinate
@@ -9301,7 +9281,7 @@ impl BooksApp {
             .iter()
             .map(|annotation| {
                 Self::note_card_height(
-                    tr,
+                    ctx.text,
                     card_x0,
                     card_x1,
                     annotation,
@@ -9330,24 +9310,21 @@ impl BooksApp {
         self.notes_scroll = self.notes_scroll.clamp(0.0, self.notes_max_scroll);
 
         let clip = Rect::new(x0, list_y0, panel_x1, list_y1);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip,
+        );
         let mut y = list_y0 - self.notes_scroll;
         for (a, height) in annos.iter().zip(&row_heights) {
             if y + *height >= list_y0 && y <= list_y1 {
-                self.draw_note_card(
-                    &mut EbookPaintCtx {
-                        scene: &mut *scene,
-                        transform: t,
-                        text: &mut *tr,
-                        theme,
-                    },
-                    Rect::new(card_x0, y, card_x1, y + *height),
-                    a,
-                );
+                self.draw_note_card(ctx, Rect::new(card_x0, y, card_x1, y + *height), a);
             }
             y += *height + 12.0;
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
         Self::draw_rail_scrollbar(
             ctx,
             &RailScrollbarView {
