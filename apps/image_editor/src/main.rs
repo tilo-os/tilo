@@ -1,3 +1,8 @@
+#![allow(
+    clippy::cast_precision_loss,
+    reason = "the renderer API accepts f32 logical dimensions; launch already bounds viewport inputs"
+)]
+
 use std::collections::HashMap;
 use ui::launch::{LaunchArgs, LaunchSpec};
 use ui::{
@@ -38,17 +43,21 @@ fn render_shot(args: &LaunchArgs) -> Result<(), ui::launch::LaunchError> {
         .and_then(|s| s.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .or(args.viewport)
-        .unwrap_or(if scenario.contains("narrow") {
-            (620, 760)
-        } else {
-            (1280, 800)
+        .unwrap_or_else(|| {
+            if scenario.contains("narrow") {
+                (620, 760)
+            } else {
+                (1280, 800)
+            }
         });
-    render(scenario, viewport, out).map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))
+    render(scenario, viewport, out, &shot_theme(args))
+        .map_err(|e| ui::launch::LaunchError::Operation(e.to_string()))
 }
 fn render(
     scenario: &str,
     (w, h): (u32, u32),
     out: &std::path::Path,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let staging = out
         .parent()
@@ -69,14 +78,18 @@ fn render(
     if scenario == "narrow-more" {
         widget.open_more_for_shot();
     }
-    let theme = Theme::dark();
+    // This custom offscreen renderer is the same immediate-mode UI as the
+    // live app, so accessibility captures must carry the selected palette,
+    // text scale and motion preference rather than silently reviewing a
+    // normal dark frame.
     let mut tr = TextRenderer::new();
+    tr.set_text_scale(theme.text_scale);
     let mut scene = Scene::new();
     for _ in 0..2 {
         widget.sync(&mut state.doc, &state.root);
         let mut t: TaffyTree<()> = TaffyTree::new();
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = widget.build_layout(&mut t, &theme, &mut map);
+        let child = widget.build_layout(&mut t, theme, &mut map);
         let root = t.new_with_children(
             Style {
                 size: Size {
@@ -108,7 +121,7 @@ fn render(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
-            &theme,
+            theme,
             &PresenceCtx::empty(),
             &PermissionContext::permissive(),
         );
@@ -118,6 +131,24 @@ fn render(
     }
     ui::offscreen::OffscreenRenderer::new(w, h).render_png(&scene, Color::TRANSPARENT, out);
     Ok(())
+}
+
+fn shot_theme(args: &LaunchArgs) -> Theme {
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    let reduce_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+        });
+    theme
+        .with_text_scale(args.text_scale.unwrap_or(1.0))
+        .with_reduce_motion(reduce_motion)
 }
 fn open_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::Autosave) {
     let (mut state, save) = ui::persist::open(id);
