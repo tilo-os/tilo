@@ -657,6 +657,18 @@ pub struct TerminalWidget {
     /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
     /// attributed to this pane rather than colliding with another terminal.
     pane_id: String,
+    /// Identifies the local PTY whose presentation is mirrored into this
+    /// record. A terminal tab is durable, but its process is not: after a
+    /// logout the next login spawns a new shell. Without an incarnation
+    /// marker that new shell inherited the previous process' persisted grid
+    /// and appended a second prompt to it, making a fresh session look as if
+    /// several terminals had been restored. Headless/replica widgets leave
+    /// this `None` because they intentionally render an existing transcript.
+    local_session_id: Option<String>,
+    /// The record scope arrives before the first sync. We reset stale
+    /// process-owned presentation exactly once at that boundary, never on a
+    /// collaborator's ordinary document update.
+    local_session_bound: bool,
 
     /// Wakes the `ui::App` event loop when the PTY reader has new output, so a
     /// standalone terminal can idle (`ControlFlow::Wait`) instead of polling at
@@ -760,11 +772,84 @@ impl TerminalWidget {
             image_cache: HashMap::new(),
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
+            local_session_id: None,
+            local_session_bound: false,
             waker: Arc::new(Mutex::new(None)),
             wake_pending: Arc::new(AtomicBool::new(false)),
             mouse_buttons: 0,
             focused: false,
         }
+    }
+
+    /// Mark this widget as the presentation of a newly spawned local PTY.
+    /// The transcript is collaborative state only while the process that
+    /// produced it is alive; a new process must start from a clean screen.
+    fn with_local_session(mut self) -> Self {
+        self.local_session_id = Some(uuid::Uuid::new_v4().to_string());
+        self
+    }
+
+    fn reset_stale_local_session(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let Some(session_id) = self.local_session_id.as_deref() else {
+            return;
+        };
+        if self.local_session_bound {
+            return;
+        }
+        self.local_session_bound = true;
+
+        let stored_session = state
+            .get(root, "terminal_local_session")
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| match value {
+                Value::Scalar(value) => value.to_str().map(ToOwned::to_owned),
+                Value::Object(_) => None,
+            });
+        if stored_session.as_deref() == Some(session_id) {
+            return;
+        }
+
+        // These objects describe one live PTY, not the durable identity of
+        // the tab. Delete the old objects atomically before `init_crdt`
+        // creates blank replacements for the new process. Notes/editor data
+        // and the tab itself are separate records and remain untouched.
+        for key in [
+            "terminal_grid",
+            "terminal_grid_alt",
+            "cursor",
+            "terminal_links",
+            "terminal_images",
+            "terminal_title",
+            "terminal_pane_id",
+        ] {
+            let _ = state.delete(root, key);
+        }
+        let _ = state.put(root, "terminal_local_session", session_id);
+
+        self.grid_id = None;
+        self.alt_grid_id = None;
+        self.cursor_id = None;
+        self.links_id = None;
+        self.images_id = None;
+        self.line_ids.clear();
+        self.alt_line_ids.clear();
+        self.grid.clear();
+        self.grid_attrs.clear();
+        self.links.clear();
+        self.image_placements.clear();
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.alt_active = false;
+        self.saved_cursor = None;
+        self.mirror_valid = false;
+        self.force_resync = true;
+        self.pending_local_edit = true;
+        self.synced_len = 0;
+        self.trimmed_front = 0;
+        self.ever_nonblank = false;
+        self.title = "Terminal".to_string();
+        self.pane_id = uuid::Uuid::new_v4().to_string();
     }
 
     /// Handle used to arm the event-loop waker. A binary running the terminal
@@ -2031,6 +2116,7 @@ impl Widget for TerminalWidget {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        self.reset_stale_local_session(state, root);
         // Drain any bytes the PTY reader thread has queued and replay them
         // through the vte parser *here*, before reading the grid back out.
         // The plain `ui::App` event loop only ever calls `sync` (never
@@ -6140,7 +6226,7 @@ impl TerminalWidget {
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
         let (output_tx, output_rx) = bounded(PTY_QUEUE_CHUNKS);
 
-        let widget = TerminalWidget::new(writer, master, output_rx);
+        let widget = TerminalWidget::new(writer, master, output_rx).with_local_session();
         // Share the waker + coalescing flag with the reader thread so fresh PTY
         // output can wake an idle `ui::App` loop (instead of a ~60 Hz poll).
         let waker = widget.waker.clone();
