@@ -545,6 +545,10 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
                 destination.to_string(),
             ]);
         }
+        // The private prefix always has C:, but deliberately has no Z: mapping.
+        // An inherited host working directory cannot be represented by Wine.
+        // Use the existing drive root even before Wine creates system32.
+        argv.extend(["--chdir".to_string(), format!("{PREFIX_MOUNT}/drive_c")]);
 
         let mut landlock_read =
             launcher::profile::landlock_ro_paths(network == NetworkShape::Unrestricted);
@@ -1220,6 +1224,12 @@ mod tests {
             )
             .unwrap();
         assert!(command.bwrap_argv.iter().any(|arg| arg == "--clearenv"));
+        assert!(
+            command
+                .bwrap_argv
+                .windows(2)
+                .any(|args| { args == ["--chdir", &format!("{PREFIX_MOUNT}/drive_c")] })
+        );
         assert_eq!(command.identity_uid, host.uid);
         for (fd, path) in [
             (crate::execute::PASSWD_CHILD_FD, "/etc/passwd"),
