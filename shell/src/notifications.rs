@@ -25,7 +25,7 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -108,9 +108,14 @@ impl ContinuityNotificationProjection {
             && self.expires_unix_ms > now_unix_ms
             && self.expires_unix_ms.saturating_sub(now_unix_ms)
                 <= MAX_CONTINUITY_NOTIFICATION_TTL_MS
-            && [&self.app_name, &self.title, &self.body]
+            && [&self.app_name, &self.title]
                 .into_iter()
                 .all(|value| !value.chars().any(char::is_control))
+            && self
+                .body
+                .chars()
+                .all(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+            && (!self.body_redacted || self.body.is_empty())
             && self.actions.iter().all(|(key, label)| {
                 !key.is_empty()
                     && key.len() <= 128
@@ -202,6 +207,7 @@ struct ContinuityState {
     remote_order: VecDeque<(String, ContinuityNotificationId)>,
     remote_events: VecDeque<RemoteContinuityEvent>,
     command_egress: VecDeque<ContinuityCommandEgress>,
+    local_closes: VecDeque<u32>,
 }
 
 impl CloseReason {
@@ -283,6 +289,10 @@ impl std::fmt::Debug for BridgeInner {
             .field(
                 "continuity_remote_events",
                 &self.continuity.remote_events.len(),
+            )
+            .field(
+                "continuity_local_closes",
+                &self.continuity.local_closes.len(),
             )
             .finish()
     }
@@ -529,6 +539,7 @@ impl NotificationBridge {
             }
         }
         inner.closed_events.push((dbus_id, CloseReason::Dismissed));
+        push_bounded(&mut inner.continuity.local_closes, dbus_id);
         retire_continuity_route(&mut inner, dbus_id);
         true
     }
@@ -626,6 +637,13 @@ impl NotificationBridge {
                 command,
             },
         );
+        push_bounded(
+            &mut inner.continuity.remote_events,
+            RemoteContinuityEvent::Retire {
+                source_device: authenticated_source.to_string(),
+                id,
+            },
+        );
         true
     }
 
@@ -634,6 +652,29 @@ impl NotificationBridge {
         if let Ok(mut inner) = self.inner.lock() {
             expire_remote_continuity(&mut inner, now_unix_ms);
         }
+    }
+
+    /// Drop ephemeral projections whose authenticated origin is no longer an
+    /// online certified peer. This state is deliberately not persisted: a
+    /// reconnect requires the origin to send a fresh, live projection.
+    pub fn retain_remote_continuity_sources(&self, online_sources: &HashSet<String>) -> usize {
+        let Ok(mut inner) = self.inner.lock() else {
+            return 0;
+        };
+        let stale = inner
+            .continuity
+            .remote_by_key
+            .keys()
+            .filter(|(source, _)| !online_sources.contains(source))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut removed: usize = 0;
+        for (source, id) in stale {
+            removed = removed.saturating_add(usize::from(remove_remote_continuity(
+                &mut inner, &source, id, true,
+            )));
+        }
+        removed
     }
 
     pub fn drain_remote_continuity_events(&self) -> Vec<RemoteContinuityEvent> {
@@ -647,6 +688,15 @@ impl NotificationBridge {
         self.inner.lock().map_or_else(
             |_| Vec::new(),
             |mut inner| inner.continuity.command_egress.drain(..).collect(),
+        )
+    }
+
+    /// Local D-Bus toasts dismissed from another certified device. Chrome
+    /// removes these without emitting a second `NotificationClosed` signal.
+    pub fn drain_continuity_local_closes(&self) -> Vec<u32> {
+        self.inner.lock().map_or_else(
+            |_| Vec::new(),
+            |mut inner| inner.continuity.local_closes.drain(..).collect(),
         )
     }
 
@@ -1411,6 +1461,39 @@ mod tests {
             panic!("expected replacement upsert");
         };
         assert_eq!(notification.projection.title, "Replacement");
+    }
+
+    #[test]
+    fn offline_source_is_pruned_without_retiring_online_sibling() {
+        let bridge = NotificationBridge::new();
+        let id = remote_projection(12, "Shared id").id;
+        assert!(bridge.receive_continuity_projection(
+            "phone",
+            "Phone",
+            remote_projection(12, "Phone"),
+            1,
+        ));
+        assert!(bridge.receive_continuity_projection(
+            "tablet",
+            "Tablet",
+            remote_projection(12, "Tablet"),
+            1,
+        ));
+        let _ = bridge.drain_remote_continuity_events();
+
+        assert_eq!(
+            bridge.retain_remote_continuity_sources(&HashSet::from(["tablet".to_string()])),
+            1
+        );
+        assert_eq!(bridge.remote_continuity_len(), 1);
+        assert_eq!(
+            bridge.drain_remote_continuity_events(),
+            vec![RemoteContinuityEvent::Retire {
+                source_device: "phone".into(),
+                id,
+            }]
+        );
+        assert!(bridge.retire_remote_continuity("tablet", id));
     }
 
     #[test]

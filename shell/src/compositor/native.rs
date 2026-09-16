@@ -4648,9 +4648,9 @@ pub fn run() -> ! {
     let mut peer_sync = enable_peer_sync
         .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
         .flatten();
-    let mut device_fabric_runtime = peer_sync
-        .as_ref()
-        .map(|network| crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network));
+    let mut device_fabric_runtime = peer_sync.as_ref().map(|network| {
+        crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network, notif_bridge.clone())
+    });
     let mut spatial_control: Option<SpatialControlSession> = None;
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
@@ -5967,7 +5967,10 @@ pub fn run() -> ! {
         if let Some(net) = peer_sync.as_ref() {
             net.tick();
             let runtime = device_fabric_runtime.get_or_insert_with(|| {
-                crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(net)
+                crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(
+                    net,
+                    notif_bridge.clone(),
+                )
             });
             let (width, height) = combined_geometry(backend.outputs());
             let display =

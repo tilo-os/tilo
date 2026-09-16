@@ -1192,7 +1192,11 @@ mod tests {
                 app_id: "dev.qos.mail".into(),
                 app_name: "Mail".into(),
                 title: title.into(),
-                body: "Secret preview".into(),
+                body: if redacted {
+                    String::new()
+                } else {
+                    "Secret preview".into()
+                },
                 body_redacted: redacted,
                 actions: vec![("reply".into(), "Reply".into())],
                 urgency: 1,
@@ -1313,6 +1317,146 @@ mod tests {
         assert_eq!(toast.dbus_id, Some(11));
         assert_eq!(toast.source_workspace, Some(9));
         assert_eq!(toast.app_name.as_deref(), Some("org.mail"));
+    }
+
+    #[test]
+    fn only_verified_apps_project_and_preview_policy_redacts() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+
+        let mut unverified = incoming(90, 1, 5_000);
+        unverified.caller = None;
+        bridge.push_incoming(unverified);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(bridge.drain_continuity_outbound().is_empty());
+
+        let mut policy = settings_store::notification_policy::NotificationPolicy::default();
+        policy.show_previews = false;
+        chrome
+            .borrow_mut()
+            .set_notification_policy_for_tests(policy);
+        bridge.push_incoming(incoming(91, 1, 5_000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let events = bridge.drain_continuity_outbound();
+        let crate::notifications::ContinuityOutboundEvent::Project(projection) = &events[0] else {
+            panic!("verified app should project");
+        };
+        assert!(projection.body_redacted);
+        assert!(projection.body.is_empty());
+    }
+
+    fn live_remote_projection(
+        token: u8,
+        title: &str,
+    ) -> crate::notifications::ContinuityNotificationProjection {
+        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+        let mut remote = remote_notification("phone", token, title, false).projection;
+        remote.expires_unix_ms = now.saturating_add(60_000);
+        remote
+    }
+
+    #[test]
+    fn remote_inbox_replaces_in_place_and_never_reprojects() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        let first = live_remote_projection(6, "First");
+        let mut replacement = first.clone();
+        replacement.title = "Updated".into();
+        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+        assert!(bridge.receive_continuity_projection("phone", "Phone", first, now));
+        assert!(bridge.receive_continuity_projection("phone", "Phone", replacement, now));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let state = chrome.borrow();
+        assert_eq!(state.notifications().len(), 1);
+        assert_eq!(state.notifications()[0].title, "Updated");
+        drop(state);
+        assert!(bridge.drain_continuity_outbound().is_empty());
+    }
+
+    #[test]
+    fn remote_activation_routes_command_and_origin_retire_removes_history() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        let projection = live_remote_projection(7, "Action");
+        let remote_id = projection.id;
+        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let ui_id = chrome.borrow().notifications()[0].id;
+        assert!(chrome.borrow_mut().activate_notification(ui_id));
+        let commands = bridge.drain_continuity_command_egress();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].target_device, "phone");
+        assert_eq!(
+            commands[0].command,
+            crate::notifications::ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            }
+        );
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(chrome.borrow().notification_history().is_empty());
+        assert!(!bridge.retire_remote_continuity("phone", remote_id));
+        assert!(bridge.drain_action_events().is_empty());
+        assert!(bridge.drain_closed_events().is_empty());
+    }
+
+    #[test]
+    fn origin_remote_command_invokes_live_app_closes_toast_and_retires_siblings() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        bridge.push_incoming(incoming(92, 1, 5_000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let events = bridge.drain_continuity_outbound();
+        let crate::notifications::ContinuityOutboundEvent::Project(projection) = &events[0] else {
+            panic!("expected local projection");
+        };
+        let projection_id = projection.id;
+        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+        assert!(bridge.apply_continuity_command(
+            projection_id,
+            &crate::notifications::ContinuityNotificationCommand::Invoke {
+                action_key: "default".into(),
+            },
+            now,
+        ));
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(chrome.borrow().notifications().is_empty());
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        assert_eq!(bridge.drain_action_events(), vec![(92, "default".into())]);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(92, CloseReason::Dismissed)]
+        );
+        assert_eq!(
+            bridge.drain_continuity_outbound(),
+            vec![crate::notifications::ContinuityOutboundEvent::Retire(
+                projection_id
+            )]
+        );
+    }
+
+    #[test]
+    fn expired_remote_projection_leaves_no_toast_or_persisted_state() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        let now = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+        let mut projection = live_remote_projection(8, "Brief");
+        projection.expires_unix_ms = now.saturating_add(10);
+        let id = projection.id;
+        assert!(bridge.receive_continuity_projection("phone", "Phone", projection, now));
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert_eq!(chrome.borrow().notifications().len(), 1);
+        bridge.expire_remote_continuity(now.saturating_add(11));
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(chrome.borrow().notifications().is_empty());
+        assert!(chrome.borrow().notification_history().is_empty());
+        assert!(!bridge.retire_remote_continuity("phone", id));
     }
 
     #[test]
