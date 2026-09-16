@@ -7337,6 +7337,12 @@ struct ReaderColumnsView<'a> {
     mode: ReadMode,
 }
 
+struct ReaderPaneView<'a> {
+    frame: &'a ReaderColumnsView<'a>,
+    pane: &'a Pane,
+    transform: Affine,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -7941,18 +7947,7 @@ impl BooksApp {
         ctx: &mut EbookPaintCtx<'_>,
         view: &ReaderColumnsView<'_>,
     ) -> (SelAnchor, CommentBoxBounds) {
-        let scene = &mut *ctx.scene;
         let t = ctx.transform;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
-        let layout = view.layout;
-        let annos = view.annotations;
-        let palette = view.palette;
-        let base_family = view.base_family;
-        let base_mono = view.base_mono;
-        let chapter = view.chapter;
-        let sel_ord = view.selection;
-        let comment_group = view.comment_group;
         let panes = view.panes;
         let geom = view.geometry;
         let mode = view.mode;
@@ -7960,7 +7955,7 @@ impl BooksApp {
         let mut comment_box: CommentBoxBounds = None;
 
         let (turning, content_t, turn_alpha) =
-            self.page_turn_transform(t, mode, geom.paper_w, theme.reduce_motion);
+            self.page_turn_transform(t, mode, geom.paper_w, ctx.theme.reduce_motion);
         if turning {
             let clip = Rect::new(
                 geom.paper_x + 1.0,
@@ -7968,7 +7963,7 @@ impl BooksApp {
                 geom.paper_x + geom.paper_w - 1.0,
                 geom.content_y + f64::from(geom.content_h) + 3.0,
             );
-            scene.push_layer(
+            ctx.scene.push_layer(
                 Fill::NonZero,
                 BlendMode::default(),
                 turn_alpha,
@@ -7986,7 +7981,7 @@ impl BooksApp {
                     pane.x + f64::from(pane.w) + 8.0,
                     geom.content_y + f64::from(geom.content_h) + 2.0,
                 );
-                scene.push_layer(
+                ctx.scene.push_layer(
                     Fill::NonZero,
                     BlendMode::default(),
                     1.0,
@@ -7995,22 +7990,15 @@ impl BooksApp {
                 );
             }
             let (a, cb) = self.draw_pane(
-                scene,
-                content_t,
-                tr,
-                layout,
-                annos,
-                palette,
-                base_family,
-                base_mono,
-                chapter,
-                sel_ord,
-                comment_group,
-                pane,
-                theme,
+                ctx,
+                &ReaderPaneView {
+                    frame: view,
+                    pane,
+                    transform: content_t,
+                },
             );
             if pane.partial {
-                scene.pop_layer();
+                ctx.scene.pop_layer();
             }
             if sel_anchor.is_none() {
                 sel_anchor = a;
@@ -8025,7 +8013,7 @@ impl BooksApp {
             }
         }
         if turning {
-            scene.pop_layer();
+            ctx.scene.pop_layer();
         }
         (sel_anchor, comment_box)
     }
@@ -8033,24 +8021,24 @@ impl BooksApp {
     /// Draw one reading column: margins, selection/highlight bands (rebuilds
     /// `sel_runs`), and glyphs. Returns the first selected band's screen
     /// `(x, y)` and the open comment overlay's highlight bounds, if any.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
     fn draw_pane(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        layout: &ChapterLayout,
-        annos: &[Annotation],
-        palette: &ReaderPalette,
-        base_family: &FontChoice,
-        base_mono: bool,
-        chapter: usize,
-        sel_ord: Option<(DocPos, DocPos)>,
-        comment_group: Option<Uuid>,
-        pane: &Pane,
-        theme: &Theme,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &ReaderPaneView<'_>,
     ) -> (SelAnchor, CommentBoxBounds) {
+        let scene = &mut *ctx.scene;
+        let t = view.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let layout = view.frame.layout;
+        let annos = view.frame.annotations;
+        let palette = view.frame.palette;
+        let base_family = view.frame.base_family;
+        let base_mono = view.frame.base_mono;
+        let chapter = view.frame.chapter;
+        let sel_ord = view.frame.selection;
+        let comment_group = view.frame.comment_group;
+        let pane = view.pane;
         let content_x = pane.x;
         let content_w = pane.w;
 
