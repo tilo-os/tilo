@@ -24,6 +24,7 @@ use winit::event::{Modifiers, WindowEvent};
 
 use super::controller::{SetupController, SetupPage};
 use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
+use super::import_view::ImportApp;
 use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
 
@@ -48,6 +49,7 @@ enum SetupCommand {
     RemoveFolder(usize),
     AddSuggested(usize),
     AddFolder,
+    OpenImports,
     ToggleHelp,
     Next,
     Back,
@@ -92,6 +94,8 @@ pub struct SetupApp {
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     structure_dirty: bool,
+    import_requested: bool,
+    import_app: Option<ImportApp>,
 }
 
 impl Default for SetupApp {
@@ -156,6 +160,8 @@ impl SetupApp {
             composed: None,
             rect: Rect::ZERO,
             structure_dirty: true,
+            import_requested: false,
+            import_app: None,
         }
     }
 
@@ -285,6 +291,10 @@ impl SetupApp {
                     self.picker_rx = Some(folders::pick_folder());
                     self.status = "Choose a folder in the system dialog.".into();
                 }
+            }
+            SetupCommand::OpenImports => {
+                self.import_requested = true;
+                self.status = "Opening the standalone folder import surface…".into();
             }
             SetupCommand::ToggleHelp => {
                 self.show_help = !self.show_help;
@@ -792,6 +802,28 @@ impl SetupApp {
         Box::new(body)
     }
 
+    fn review_copy_status(&self, experience: Experience) -> Card {
+        let pending = if experience == Experience::FullOs {
+            "Full qOS folder copying remains pending until target-side migration can resolve retained volume identities after installation. The host path shown above is an estimate, not a mounted qOS destination or write grant."
+        } else {
+            "Setup folder copying remains pending until a real destination is selected and granted. The path shown above is an estimate, not permission to write."
+        };
+        Card::titled(
+            "Folder copy status",
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(Box::new(Text::new(pending).with_id("setup.review.pending")))
+                    .push(Box::new(self.button(
+                        "setup.open-imports",
+                        "Add folders now…",
+                        SetupCommand::OpenImports,
+                    ))),
+            ),
+        )
+    }
+
     fn review_body(&self) -> Box<dyn Widget> {
         let controller = self.controller();
         let plan = controller.plan();
@@ -857,6 +889,7 @@ impl SetupApp {
             blockers.push('\n');
             blockers.push_str(blocker);
         }
+        let copy_status = self.review_copy_status(plan.experience);
         Box::new(
             Column::new()
                 .with_no_padding()
@@ -884,8 +917,16 @@ impl SetupApp {
                 .push(Box::new(Card::titled(
                     "Current blockers",
                     Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
-                ))),
+                )))
+                .push(Box::new(copy_status)),
         )
+    }
+
+    fn ensure_import_app(&mut self) {
+        if self.import_requested && self.import_app.is_none() {
+            self.import_app = Some(ImportApp::new());
+            self.structure_dirty = true;
+        }
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -990,7 +1031,7 @@ fn unavailable_suggestions(reason: &str) -> Vec<KnownFolder> {
         .collect()
 }
 
-fn system_folder_reason(path: &Path) -> Option<&'static str> {
+pub(super) fn system_folder_reason(path: &Path) -> Option<&'static str> {
     if path.parent().is_none() {
         return Some("filesystem root");
     }
@@ -1115,15 +1156,34 @@ fn shot_scan(name: &str, file_count: u64, bytes: u64) -> FolderScan {
 
 impl Widget for SetupApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.ensure_import_app();
+        if let Some(import_app) = &mut self.import_app {
+            import_app.sync(state, path);
+            return;
+        }
         self.poll_background();
         self.drain_commands();
+        self.ensure_import_app();
+        if let Some(import_app) = &mut self.import_app {
+            import_app.sync(state, path);
+            return;
+        }
         if let Some(composed) = &mut self.composed {
             composed.sync(state, path);
         }
     }
 
     fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.ensure_import_app();
+        if let Some(import_app) = &mut self.import_app {
+            return import_app.update(state, path);
+        }
         let mut changed = self.poll_background() || self.drain_commands();
+        self.ensure_import_app();
+        if let Some(import_app) = &mut self.import_app {
+            let _ = import_app.update(state, path);
+            return true;
+        }
         if let Some(composed) = &mut self.composed {
             changed |= composed.update(state, path);
         }
@@ -1136,6 +1196,9 @@ impl Widget for SetupApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        if let Some(import_app) = &mut self.import_app {
+            return import_app.build_layout(taffy, theme, node_map);
+        }
         let mut composed = self.build_composition();
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
@@ -1158,6 +1221,10 @@ impl Widget for SetupApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if let Some(import_app) = &mut self.import_app {
+            import_app.apply_layout(taffy, node, origin);
+            return;
+        }
         let layout = taffy.layout(node).copied().unwrap_or_default();
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
@@ -1181,6 +1248,10 @@ impl Widget for SetupApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if let Some(import_app) = &mut self.import_app {
+            import_app.draw(scene, transform, text_renderer, theme, presence);
+            return;
+        }
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1205,6 +1276,20 @@ impl Widget for SetupApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        if let Some(import_app) = &mut self.import_app {
+            import_app.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            return;
+        }
         if let Some(composed) = &mut self.composed
             && let Ok(children) = taffy.children(node_id)
             && let Some(&child) = children.first()
@@ -1224,6 +1309,9 @@ impl Widget for SetupApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some(import_app) = &self.import_app {
+            return vec![import_app as &dyn Widget];
+        }
         self.composed
             .as_ref()
             .map(|child| child.as_ref() as &dyn Widget)
@@ -1232,6 +1320,9 @@ impl Widget for SetupApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some(import_app) = &mut self.import_app {
+            return vec![import_app as &mut dyn Widget];
+        }
         self.composed
             .as_mut()
             .map(|child| child.as_mut() as &mut (dyn Widget + '_))
@@ -1248,11 +1339,22 @@ impl Widget for SetupApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.known_folder_lookup_pending || self.pending_scans > 0 || self.picker_rx.is_some()
+        self.import_requested
+            || self
+                .import_app
+                .as_ref()
+                .is_some_and(Widget::needs_idle_sync)
+            || self.known_folder_lookup_pending
+            || self.pending_scans > 0
+            || self.picker_rx.is_some()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty)
+            || self
+                .import_app
+                .as_mut()
+                .is_some_and(Widget::take_structure_dirty)
             || self
                 .composed
                 .as_mut()
@@ -1389,6 +1491,37 @@ mod tests {
         assert_eq!(app.controller().plan().experience, Experience::FullOs);
         assert_eq!(app.controller().default_mode(), FolderMode::Copy);
         assert_eq!(app.controller().folders().len(), 1);
+    }
+
+    // Catches treating the setup plan's suggested qOS path as a mounted target
+    // before Full qOS installation and target-side volume resolution exist.
+    #[test]
+    fn full_os_review_keeps_folder_copy_pending() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::FullOs));
+        app.apply_command(SetupCommand::Next);
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Ok(scan("Documents", 12)),
+        });
+        app.apply_command(SetupCommand::Next);
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (1180, 820));
+
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.review.pending")
+                    .name_contains("remains pending"),
+            )
+            .unwrap();
+    }
+
+    // Catches exposing later import as prose without a callable route.
+    #[test]
+    fn setup_add_folders_action_opens_the_real_import_surface() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::OpenImports);
+
+        assert!(app.import_requested);
     }
 
     #[test]
