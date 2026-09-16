@@ -79,6 +79,93 @@ runtime comparisons are separate controls; reproducing on two QEMU versions
 does not establish that physical hardware would fail.
 No upstream FEX source or expected-result lists were changed for these tests.
 
+### Allocator assertion origin
+
+A separate ignored native `ptrace` supervisor followed the direct-Wine control
+and captured registers, mapped files and the saved guest frame chain at the
+first fault. It did not change FEX, the guest filesystem, or capsule policy.
+The complete SquashFS guest, QEMU 10.2.2 and copied pre-DXVK helper inputs were
+retained. This remains a diagnostic, with `accepted: false`.
+
+In `kernel-arm-capsule-wine-first-fault-03`, the native fault PC was in FEX's
+anonymous executable JIT region. The saved guest frames, resolved against the
+unchanged x86 ELF symbols, were:
+
+```text
+__libc_assert_fail+0x5e
+sysmalloc+0x9c1
+_int_malloc+0xb08
+__libc_malloc2+0xef
+_dl_new_object+0x341
+_dl_map_object_from_fd+0xe0
+_dl_map_new_object+0x119
+dl_open_worker_begin+0x781
+```
+
+This identifies the assertion as the guest x86 glibc allocator checking its
+heap while the guest dynamic loader loads an object. It does not identify what
+violated the heap invariant. The saved guest instruction pointer was
+`mmap64+0x2c`; FEX documents that this saved value can lag during JIT execution,
+so it is not treated as the precise faulting guest instruction.
+
+`serial.log` retains the raw snapshots, and `decoded-guest-frames.json` retains
+the object-relative addresses and symbol resolution. The tracer compiled with
+`-Wall -Wextra -Werror`; its three bounded runs completed and their owned image
+views were released. FEX's `DEBUG_STRACE` is a compile-time option in this
+pinned source, not an available runtime environment toggle.
+
+### Page-size comparison
+
+The exact staged qOS kernel configuration has `CONFIG_ARM64_4K_PAGES=y` and
+`CONFIG_ARM64_VA_BITS=48`; 16 KiB, 64 KiB and 52-bit configurations are disabled.
+The native WSL kernel configuration also selects 4 KiB pages and 48-bit virtual
+addresses, and its native `getconf PAGE_SIZE` reports 4096. There is therefore
+no configured page-size or virtual-address-width difference between these
+controls. The bounded `kernel-arm-capsule-cpu-page-01` VM probe also measured
+native and guest `getconf PAGE_SIZE` as 4096, and both online/configured CPU
+counts as 2. Native `/sys/devices/system/cpu/online` bytes were
+`30 2d 31 0a` (`0-1` followed by newline).
+
+The guest `/usr/bin/od -An -tx1 /sys/devices/system/cpu/online` unexpectedly
+reproduced the same `sysmalloc` assertion and exit 139 before printing bytes.
+Its guest CPU-list contents were therefore not measured in this run, and the
+script stopped before the `present` comparison. This supplies a smaller
+reproducer independent of Wine. It does not establish the cause or whether
+that program reached its CPU-list read. Individual guest mapping correctness
+remains unproven.
+
+### Smaller guest-program control
+
+`kernel-arm-capsule-od-control-01` ran existing native and guest `od` binaries
+with `LC_ALL=C` and at most 64 input bytes. Native controls all passed.
+
+| Guest input | Result |
+| --- | --- |
+| `/dev/null` | Exit 0. |
+| `/etc/os-release` | Printed the expected 64 bytes, then `corrupted size vs. prev_size`, exit 134. |
+| CPU `online` | Same `sysmalloc` assertion before byte output, exit 139. |
+| CPU `present` | Same `sysmalloc` assertion before byte output, exit 139. |
+
+Guest `true` and CPU-count `getconf` continued to pass. Native CPU `online` and
+`present` both contained `30 2d 31 0a`. The smaller failure is therefore not
+limited to Wine, CPU-list input, or a non-C locale. Empty-input startup succeeds;
+ordinary nonempty input also exposes a heap invariant failure. These controls
+do not establish where the corruption originates.
+
+The diagnostic-only `kernel-arm-capsule-maxinst-one-01` repeated the regular-file
+`od` and direct Wine controls with the verified `FEX_MAXINST=1` option. Both
+failures persisted with the same allocator messages and exit statuses. This
+block-size control is not a production setting or an accepted mitigation, and
+does not reverse the earlier consecutive-`brk` regression result.
+
+Read-only inspection separately confirms that pinned FEX emits CPU-list ranges
+without a trailing newline. Earlier native-WSL seeded-stack probes recorded a
+guest count of 119 for 12 CPUs. In this guest libc, the allocator's direct
+`get_nprocs` call computes the arena-count limit; the VM's unseeded count of 2
+does not prove that malformed-list parsing is harmless. Neither this known
+formatting defect nor the already-fixed consecutive-`brk` regression is treated
+as the explanation for the current failure.
+
 ## Read-only block-filesystem control
 
 `--guest-squashfs PATH` substitutes a regular SquashFS artifact file for the
