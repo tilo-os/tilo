@@ -22,8 +22,8 @@
 //     at `<PATH>` and exit. No window, no network: the embedded test
 //     engine pre-renders a deterministic page so the snapshot includes
 //     a populated web view, not just empty chrome.
-//   * `--shots-live <PATH> [--url <URL>]` (needs the `wpe` feature) —
-//     boot the real WPE WebKit engine headless, load `URL` over the
+//   * `--shots-live <PATH> [--url <URL>]` —
+//     boot the real Chromium engine headless, load `URL` over the
 //     network, wait for the painted page, and render chrome + live page
 //     into a PNG. End-to-end verification of the engine → frame →
 //     widget → offscreen-render pipeline without a window.
@@ -39,6 +39,8 @@
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
+
+mod live_probe;
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
@@ -452,11 +454,10 @@ fn launch_target(args: &[String]) -> Option<String> {
         .cloned()
 }
 
-/// `--shots-live`: real engine, real network. Boot WPE, navigate, wait
+/// `--shots-live`: real engine, real network. Boot Chromium, navigate, wait
 /// for the painted page at the web view's laid-out size, then render
 /// one frame to PNG — the same five-pass cycle as `render_shot_to_png`,
 /// with an engine-pumping wait between layout and draw.
-#[cfg(feature = "wpe")]
 fn render_live_shot_to_png(
     url: &str,
     viewport: (u32, u32),
@@ -467,15 +468,17 @@ fn render_live_shot_to_png(
     use std::time::{Duration, Instant};
     use ui::webview::{SharedEngine, WebViewCommand};
 
-    // Dev environments (containers) can't nest WebKit's bubblewrap
-    // sandbox; on qOS the cluster sandbox is the outer boundary anyway.
-    unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
-
-    let engine: SharedEngine = ui::webview::wpe::WpeEngine::new()
-        .map_err(|e| format!("WPE engine failed to boot: {e}"))?;
-    // headless=true: no filter-loader thread, no auto-navigate — the
-    // shot drives navigation itself.
+    let real_engine: SharedEngine = ui::webview::chromium::ChromiumEngine::new()
+        .map_err(|e| format!("Chromium engine failed to boot: {e}"))?;
+    let probe = live_probe::LiveProbe::new(real_engine);
+    let engine: SharedEngine = probe.clone();
+    // Keep capture chrome/session data isolated while using real maintained
+    // protection and the same WebViewEngine event/render pipeline as the app.
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    browser::blocker::spawn_filter_loader(engine.clone());
+    engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
+        browser::blocker::user_scripts(),
+    )));
     engine.send(WebViewCommand::Navigate(url.to_string()));
 
     let (w, h) = viewport;
@@ -535,6 +538,10 @@ fn render_live_shot_to_png(
             pip_request = Widget::take_floating_surface_request(&mut widget);
         }
 
+        let page = probe.state();
+        if let Some(error) = &page.error {
+            return Err(format!("{}: {error}", page.uri).into());
+        }
         let frame = engine.frames().lock().unwrap().clone();
         if let Some(f) = frame {
             let painted = f.rgba.chunks_exact(4).any(|px| px[3] != 0);
@@ -544,7 +551,7 @@ fn render_live_shot_to_png(
             // engine's 1024×768 default. Works for any width, wide or
             // narrow.
             let sized = (f.width as i32 - w as i32).abs() <= 2;
-            if painted && sized {
+            if painted && sized && page.loaded && page.uri.starts_with("http") {
                 let seen = *sized_frame_seen_at.get_or_insert_with(Instant::now);
                 // Settle long enough that a UA-driven reload (the mobile/
                 // desktop switch fires one on the first resize) completes
@@ -599,7 +606,15 @@ fn render_live_shot_to_png(
                             sidecar.display()
                         );
                     }
-                    println!("browser: wrote live shot of {url} to {}", out.display());
+                    std::fs::write(
+                        format!("{}.page.json", out.display()),
+                        serde_json::to_vec_pretty(&page)?,
+                    )?;
+                    println!(
+                        "browser: wrote live Chromium shot of {} to {}",
+                        page.uri,
+                        out.display()
+                    );
                     return Ok(());
                 }
             }
@@ -609,17 +624,6 @@ fn render_live_shot_to_png(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-}
-
-#[cfg(not(feature = "wpe"))]
-fn render_live_shot_to_png(
-    _url: &str,
-    _viewport: (u32, u32),
-    _out: &std::path::Path,
-    _probe_pip: bool,
-    _text_scale: Option<f32>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    Err("--shots-live needs the real engine: rebuild with --features wpe".into())
 }
 
 /// Render one offscreen frame against `widget` at `viewport` and write
