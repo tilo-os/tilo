@@ -47,6 +47,9 @@ impl Shared {
                     value,
                     WebViewEvent::UriChanged(_)
                         | WebViewEvent::TitleChanged(_)
+                        | WebViewEvent::FaviconChanged { .. }
+                        | WebViewEvent::AudioMutedChanged(_)
+                        | WebViewEvent::MediaPlayingChanged { .. }
                         | WebViewEvent::LoadProgress(_)
                         | WebViewEvent::HistoryChanged { .. }
                 )
@@ -829,6 +832,25 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "zoom" => WebViewEvent::ZoomChanged(value["level"].as_f64()?),
         "uri" => WebViewEvent::UriChanged(value["url"].as_str()?.into()),
         "title" => WebViewEvent::TitleChanged(value["title"].as_str()?.into()),
+        "favicon" => {
+            let width = value["width"].as_u64()? as u32;
+            let height = value["height"].as_u64()? as u32;
+            let png = decode_base64_bounded(value["png"].as_str()?, 256 * 1024)?;
+            if width == 0 || height == 0 || width > 64 || height > 64 || png.len() > 256 * 1024 {
+                return None;
+            }
+            WebViewEvent::FaviconChanged {
+                page_url: value["page_url"].as_str()?.into(),
+                width,
+                height,
+                png: Arc::new(png),
+            }
+        }
+        "audio_muted" => WebViewEvent::AudioMutedChanged(value["muted"].as_bool()?),
+        "media_state" => WebViewEvent::MediaPlayingChanged {
+            page_url: value["page_url"].as_str()?.into(),
+            playing: value["playing"].as_bool()?,
+        },
         "progress" => WebViewEvent::LoadProgress(value["progress"].as_f64()?.clamp(0.0, 1.0)),
         "permission_prompt" => WebViewEvent::PermissionRequested {
             id: value["id"].as_u64()? as u32,
@@ -880,6 +902,38 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
     })
 }
 
+fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
+    if input.len() > (limit + 2) / 3 * 4 + 4 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let (mut acc, mut bits) = (0u32, 0u8);
+    for byte in input.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            if out.len() > limit {
+                return None;
+            }
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
 fn encode_command(command: WebViewCommand) -> Option<Value> {
     Some(match command {
         WebViewCommand::Navigate(url) => json!({"op":"navigate","url":url}),
@@ -896,6 +950,7 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::GoForward => json!({"op":"forward"}),
         WebViewCommand::Reload => json!({"op":"reload"}),
         WebViewCommand::StopLoading => json!({"op":"stop"}),
+        WebViewCommand::SetAudioMuted(muted) => json!({"op":"audio_muted","muted":muted}),
         WebViewCommand::Resize {
             width,
             height,

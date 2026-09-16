@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn bounded_identity_events_decode_and_reject_oversize_favicons() {
+    let event = decode_event(&serde_json::json!({"event":"favicon","page_url":"https://fixture.test/","width":1,"height":1,"png":"iVBORw=="})).unwrap();
+    assert!(matches!(
+        event,
+        WebViewEvent::FaviconChanged {
+            width: 1,
+            height: 1,
+            ..
+        }
+    ));
+    assert!(decode_event(&serde_json::json!({"event":"favicon","page_url":"https://fixture.test/","width":65,"height":1,"png":"AA=="})).is_none());
+    assert_eq!(
+        decode_event(
+            &serde_json::json!({"event":"media_state","page_url":"https://fixture.test/","playing":true})
+        ),
+        Some(WebViewEvent::MediaPlayingChanged {
+            page_url: "https://fixture.test/".into(),
+            playing: true
+        })
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::SetAudioMuted(true)).unwrap()["op"],
+        "audio_muted"
+    );
+}
+
+#[test]
 fn maps_navigation_and_load_errors_without_simulating_pages() {
     assert_eq!(
         decode_event(&json!({"event":"uri","url":"https://podesta.ai"})),

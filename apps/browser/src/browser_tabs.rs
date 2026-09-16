@@ -1,13 +1,16 @@
 //! Retained browser workspace: each tab owns one live engine endpoint and its chrome.
 
 use crate::BrowserWidget;
+use crate::browser_tab_strip::BrowserTabStrip;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AppKind, AppWidget, IconDescriptor, TabBar, TabDescriptor, TaffyTreeExt, Widget};
+use ui::widget::{
+    AppKind, AppWidget, ContextMenu, IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
@@ -17,6 +20,16 @@ struct Tab {
     id: u64,
     widget: Box<BrowserWidget>,
 }
+#[derive(Clone, Copy)]
+enum TabMenuAction {
+    Duplicate,
+    TogglePin,
+    ToggleMute,
+    Close,
+    CloseOthers,
+    CloseRight,
+    Reopen,
+}
 
 /// A bounded collection of retained documents in one shared browser runtime.
 pub struct BrowserTabs {
@@ -25,7 +38,7 @@ pub struct BrowserTabs {
     retired: Vec<Box<BrowserWidget>>,
     active_id: u64,
     next_id: u64,
-    bar: TabBar,
+    bar: BrowserTabStrip,
     closed: Vec<String>,
     rect: Rect,
     dirty: bool,
@@ -34,13 +47,15 @@ pub struct BrowserTabs {
     layout_active_id: Option<u64>,
     address_focus_node: Option<NodeId>,
     cursor: Point,
+    tab_menu: ContextMenu,
+    tab_menu_target: Option<u64>,
+    tab_menu_actions: Vec<Option<TabMenuAction>>,
 }
 
 impl BrowserTabs {
     pub fn new(mut widget: BrowserWidget) -> Self {
         widget.set_tab_identity(1);
-        let mut bar = TabBar::new("browser", vec![TabDescriptor::new(1, "New tab")], 1);
-        bar.set_show_maximize(false);
+        let bar = BrowserTabStrip::new(vec![TabDescriptor::new(1, "New tab")], 1);
         Self {
             tabs: vec![Tab {
                 id: 1,
@@ -58,6 +73,9 @@ impl BrowserTabs {
             layout_active_id: None,
             address_focus_node: None,
             cursor: Point::ORIGIN,
+            tab_menu: ContextMenu::new(),
+            tab_menu_target: None,
+            tab_menu_actions: Vec::new(),
         }
     }
     fn active(&self) -> &BrowserWidget {
@@ -179,8 +197,143 @@ impl BrowserTabs {
         }
         Ok(())
     }
+    fn set_pinned(&mut self, id: u64, pinned: bool) {
+        let Some(from) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        self.bar.set_pinned(id, pinned);
+        let pinned_count = self
+            .tabs
+            .iter()
+            .filter(|tab| self.bar.is_pinned(tab.id))
+            .count();
+        let to = if pinned {
+            pinned_count.saturating_sub(1)
+        } else {
+            pinned_count
+        };
+        if from != to && to < self.tabs.len() {
+            self.reorder(from, to);
+        }
+    }
+    fn duplicate(&mut self, id: u64) -> Result<(), String> {
+        let url = self
+            .tabs
+            .iter()
+            .find(|tab| tab.id == id)
+            .map(|tab| tab.widget.tab_url().to_owned())
+            .ok_or_else(|| "Tab no longer exists".to_string())?;
+        self.open(Some(url), false)
+    }
+    fn set_muted(&mut self, id: u64, muted: bool) {
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
+            tab.widget.set_tab_muted(muted);
+        }
+    }
+    fn close_others(&mut self, id: u64) {
+        let candidates: Vec<_> = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.id != id && !self.bar.is_pinned(tab.id))
+            .map(|tab| tab.id)
+            .collect();
+        for candidate in candidates {
+            self.close(candidate);
+        }
+    }
+    fn close_to_right(&mut self, id: u64) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        let candidates: Vec<_> = self
+            .tabs
+            .iter()
+            .skip(index + 1)
+            .filter(|tab| !self.bar.is_pinned(tab.id))
+            .map(|tab| tab.id)
+            .collect();
+        for candidate in candidates {
+            self.close(candidate);
+        }
+    }
+    fn open_tab_menu(&mut self, id: u64, point: Point) {
+        self.tab_menu = ContextMenu::new();
+        self.tab_menu_actions.clear();
+        self.tab_menu_target = Some(id);
+        let pinned = self.bar.is_pinned(id);
+        let muted = self
+            .tabs
+            .iter()
+            .find(|t| t.id == id)
+            .is_some_and(|t| t.widget.tab_muted());
+        let items = [
+            ("Duplicate", TabMenuAction::Duplicate),
+            (
+                if pinned { "Unpin" } else { "Pin" },
+                TabMenuAction::TogglePin,
+            ),
+            (
+                if muted { "Unmute" } else { "Mute" },
+                TabMenuAction::ToggleMute,
+            ),
+            ("Close", TabMenuAction::Close),
+            ("Close Others", TabMenuAction::CloseOthers),
+            ("Close to Right", TabMenuAction::CloseRight),
+            ("Reopen Closed Tab", TabMenuAction::Reopen),
+        ];
+        for (label, action) in items {
+            self.tab_menu.push(MenuItem::action(label, || {}));
+            self.tab_menu_actions.push(Some(action));
+        }
+        self.tab_menu.open_anchored(
+            Rect::new(point.x, point.y, point.x + 1.0, point.y + 1.0),
+            self.rect,
+        );
+    }
+    fn apply_tab_menu(&mut self, index: usize) {
+        let Some(action) = self.tab_menu_actions.get(index).and_then(|a| *a) else {
+            return;
+        };
+        let Some(id) = self.tab_menu_target else {
+            return;
+        };
+        match action {
+            TabMenuAction::Duplicate => {
+                let _ = self.duplicate(id);
+            }
+            TabMenuAction::TogglePin => self.set_pinned(id, !self.bar.is_pinned(id)),
+            TabMenuAction::ToggleMute => {
+                let muted = self
+                    .tabs
+                    .iter()
+                    .find(|t| t.id == id)
+                    .is_some_and(|t| t.widget.tab_muted());
+                self.set_muted(id, !muted)
+            }
+            TabMenuAction::Close => self.close(id),
+            TabMenuAction::CloseOthers => self.close_others(id),
+            TabMenuAction::CloseRight => self.close_to_right(id),
+            TabMenuAction::Reopen => {
+                let _ = self.reopen();
+            }
+        }
+    }
     fn reorder(&mut self, from: usize, to: usize) {
         if from < self.tabs.len() && to < self.tabs.len() && from != to {
+            let pinned = self.bar.is_pinned(self.tabs[from].id);
+            let pinned_count = self
+                .tabs
+                .iter()
+                .filter(|tab| self.bar.is_pinned(tab.id))
+                .count();
+            let to = if pinned {
+                to.min(pinned_count.saturating_sub(1))
+            } else {
+                to.max(pinned_count)
+            };
+            if from == to {
+                return;
+            }
             let tab = self.tabs.remove(from);
             self.tabs.insert(to, tab);
             self.bar.reorder(from, to);
@@ -380,6 +533,18 @@ impl Widget for BrowserTabs {
         if *handled {
             return;
         }
+        if self.tab_menu.is_open() {
+            self.tab_menu.handle_event(
+                event, scale, modifiers, state, path, handled, focus, node, taffy,
+            );
+            if let Some(index) = self.tab_menu.take_selection() {
+                self.apply_tab_menu(index);
+                self.dirty = true;
+            }
+            if *handled {
+                return;
+            }
+        }
         // A switch can be followed by another input before the host rebuilds.
         // Retained compositions still contain NodeIds from their previous tree.
         if self.layout_active_id != Some(self.active_id) {
@@ -456,6 +621,11 @@ impl Widget for BrowserTabs {
         if let Some((from, to)) = self.bar.take_reorder() {
             self.reorder(from, to);
         }
+        if let Some((id, point)) = self.bar.take_context_menu() {
+            self.open_tab_menu(id, point);
+            *handled = true;
+            return;
+        }
         let selected = self.bar.active_id();
         if selected != self.active_id {
             self.activate(selected);
@@ -474,8 +644,8 @@ impl Widget for BrowserTabs {
                 .iter()
                 .position(|rect| rect.contains(self.cursor))
             {
-                if let Some(tab) = self.tabs.get(index) {
-                    self.close(tab.id);
+                if let Some(id) = self.bar.visible_tab_id(index) {
+                    self.close(id);
                     *handled = true;
                     return;
                 }
@@ -505,6 +675,18 @@ impl Widget for BrowserTabs {
         }
         self.active_mut()
             .perform_semantic_action(target, action, state, path)
+    }
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.active_mut()
+            .draw_overlay(scene, transform, tr, theme, presence);
+        self.tab_menu.draw(scene, transform, tr, theme, presence);
     }
     fn poll_resource_operation(
         &mut self,
@@ -783,6 +965,94 @@ mod tests {
         assert_eq!(tabs.active_id, first);
         assert!(tabs.open(None, true).is_err());
         assert_eq!(tabs.tabs.len(), 32);
+    }
+    #[test]
+    fn pin_partition_duplicate_close_others_mute_and_overflow() {
+        let mut tabs = workspace();
+        tabs.open(Some("https://one.test".into()), false).unwrap();
+        let one = tabs.active_id;
+        tabs.open(Some("https://two.test".into()), false).unwrap();
+        let two = tabs.active_id;
+        tabs.set_pinned(two, true);
+        assert_eq!(
+            tabs.tabs[0].id, two,
+            "pinned tabs form the leading partition"
+        );
+        tabs.duplicate(one).unwrap();
+        assert_eq!(tabs.active().tab_url(), "https://one.test");
+        tabs.set_muted(two, true);
+        assert!(
+            tabs.tabs
+                .iter()
+                .find(|tab| tab.id == two)
+                .unwrap()
+                .widget
+                .tab_muted()
+        );
+        tabs.close_others(one);
+        assert!(tabs.tabs.iter().any(|tab| tab.id == one));
+        assert!(
+            tabs.tabs.iter().any(|tab| tab.id == two),
+            "pinned tabs are protected"
+        );
+        for _ in tabs.tabs.len()..32 {
+            tabs.open(None, true).unwrap();
+        }
+        tabs.activate(*tabs.tabs.last().map(|tab| &tab.id).unwrap());
+        tabs.bar.debug_layout(800.0);
+        let mut tree = TaffyTree::new();
+        let node = tabs
+            .bar
+            .build_layout(&mut tree, &Theme::dark(), &mut HashMap::new());
+        tree.set_style(
+            node,
+            Style {
+                size: Size {
+                    width: Dimension::length(800.0),
+                    height: Dimension::length(40.0),
+                },
+                ..Style::default()
+            },
+        )
+        .unwrap();
+        tree.compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(800.0),
+                height: taffy::AvailableSpace::Definite(40.0),
+            },
+        )
+        .unwrap();
+        tabs.bar.apply_layout(&tree, node, Point::ORIGIN);
+        assert!(tabs.bar.active_is_visible());
+        assert!(
+            tabs.bar
+                .active_rect()
+                .is_some_and(|rect| rect.width() >= 118.0 && rect.contains(rect.center())),
+            "active overflow tab is actually drawn and hittable"
+        );
+        assert!(
+            tabs.bar.new_tab_rect().width() >= 28.0,
+            "new-tab control remains fixed and hittable"
+        );
+        let all_ids: Vec<_> = tabs.tabs.iter().map(|tab| tab.id).collect();
+        for id in &all_ids {
+            tabs.bar.set_pinned(*id, true);
+        }
+        let last = *all_ids.last().unwrap();
+        tabs.bar.set_active(last);
+        tabs.bar.debug_layout(800.0);
+        assert!(
+            tabs.bar.visible_ids().len() <= 17 && tabs.bar.visible_ids().contains(&last),
+            "all-pinned overflow stays bounded and retains active"
+        );
+        let before = tabs.bar.active_id();
+        tabs.bar.overflow_step(false);
+        assert_ne!(tabs.bar.active_id(), before);
+        assert!(
+            tabs.bar.active_is_visible(),
+            "pointer scroll path reaches and reveals hidden pinned tabs"
+        );
     }
     #[test]
     fn resources_are_owned_only_by_the_page() {

@@ -19,6 +19,14 @@ bool IsWebDocument(CefRefPtr<CefFrame> frame) {
   const auto scheme=CefString(&parts.scheme).ToString();
   return scheme=="http" || scheme=="https";
 }
+class MediaStateHandler final : public CefV8Handler {
+ public: explicit MediaStateHandler(CefRefPtr<CefFrame> frame):frame_(frame) {}
+  bool Execute(const CefString&,CefRefPtr<CefV8Value>,const CefV8ValueList& args,CefRefPtr<CefV8Value>&,CefString&) override {
+    if(!frame_ || !frame_->IsValid() || args.size()!=1 || !args[0]->IsBool()) return false;
+    auto message=CefProcessMessage::Create("qos.media_state");message->GetArgumentList()->SetBool(0,args[0]->GetBoolValue());frame_->SendProcessMessage(PID_BROWSER,message);return true;
+  }
+ private: CefRefPtr<CefFrame> frame_; IMPLEMENT_REFCOUNTING(MediaStateHandler);
+};
 }
 
 class Renderer final : public CefApp, public CefRenderProcessHandler {
@@ -30,6 +38,11 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     auto& config=configs_[browser->GetIdentifier()];
     if(config.filters) ApplyFilters(frame,config.filters);
     frame->SendProcessMessage(PID_BROWSER,CefProcessMessage::Create("qos.config"));
+    if(frame->IsMain()) {
+      auto context=frame->GetV8Context();context->Enter();context->GetGlobal()->SetValue("__qosMediaState",CefV8Value::CreateFunction("__qosMediaState",new MediaStateHandler(frame)),V8_PROPERTY_ATTRIBUTE_DONTDELETE);
+      CefRefPtr<CefV8Value> result;CefRefPtr<CefV8Exception> exception;
+      context->Eval("(()=>{let playing=false;const update=()=>{const next=[...document.querySelectorAll('audio,video')].some(e=>!e.paused&&!e.ended&&e.readyState>1);if(next!==playing){playing=next;__qosMediaState(next)}};addEventListener('play',update,true);addEventListener('pause',update,true);addEventListener('ended',update,true);addEventListener('emptied',update,true);update()})()",frame->GetURL(),0,result,exception);context->Exit();
+    }
   }
   void OnContextReleased(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame,
                          CefRefPtr<CefV8Context> context) override {

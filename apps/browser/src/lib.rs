@@ -39,6 +39,7 @@ pub mod actions;
 pub mod address_overlay;
 mod back_hold;
 pub mod blocker;
+pub mod browser_tab_strip;
 pub mod browser_tabs;
 pub mod browser_widget;
 /// Zero-copy WebView compositor — needs the WPE engine's dmabuf import.
@@ -53,6 +54,7 @@ mod page_menu;
 pub mod search_provider;
 pub mod settings;
 
+pub use browser_tab_strip::BrowserTabStrip;
 pub use browser_tabs::BrowserTabs;
 pub use browser_widget::BrowserWidget;
 
