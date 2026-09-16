@@ -4007,23 +4007,13 @@ impl TerminalWidget {
                 || {},
             ));
         }
+        // Keep the shared popup aware of the terminal's real viewport. The
+        // popup refreshes its geometry when the current theme applies an
+        // accessibility text scale during draw; without this viewport it can
+        // grow past a narrow pane's edge after that refresh.
+        menu.set_viewport(Some(self.rect));
         let p = self.last_cursor_pos;
         menu.open_at([p.x as f32, p.y as f32]);
-        // `ContextMenu` owns its chrome, while the terminal owns the available
-        // viewport. Re-anchor after the menu computes its intrinsic bounds so
-        // a right-click at the narrow/desktop edge still exposes every action.
-        if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
-            let bounds = Widget::get_rect(&menu);
-            let x = p.x.clamp(
-                self.rect.x0,
-                (self.rect.x1 - bounds.width()).max(self.rect.x0),
-            );
-            let y = p.y.clamp(
-                self.rect.y0,
-                (self.rect.y1 - bounds.height()).max(self.rect.y0),
-            );
-            menu.open_at([x as f32, y as f32]);
-        }
         self.context_menu = menu;
     }
 
