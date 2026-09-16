@@ -169,6 +169,27 @@ impl ApiDoc {
         Self::put_bool_if_changed(doc, &map, "enabled", true);
     }
 
+    /// Update only the public variable key at its stable address. The value
+    /// remains an independent CRDT scalar, so renaming never reads or replaces
+    /// a concurrent secret-value update.
+    pub fn rename_variable(
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        env_id: &str,
+        variable_id: &str,
+        key: &str,
+    ) {
+        let address = format!("{env_id}:{variable_id}");
+        if Self::is_tombstoned(doc, root, ENVIRONMENT_TOMBSTONES_KEY, env_id)
+            || Self::is_tombstoned(doc, root, VARIABLE_TOMBSTONES_KEY, &address)
+        {
+            return;
+        }
+        if let Some(map) = Self::native_record_map(doc, root, VARIABLES_KEY, &address) {
+            Self::put_string_if_changed(doc, &map, "key", key);
+        }
+    }
+
     /// Tombstone one stable variable row.  The environment id is part of the
     /// address, allowing two environments to use the same visible key.
     pub fn delete_variable(doc: &mut AutoCommit, root: &ObjId, env_id: &str, variable_id: &str) {
