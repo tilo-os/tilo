@@ -405,7 +405,7 @@ impl Widget for CollaborationLaunchpad {
         if let Some(last) = cards.last() {
             let hint_width = (button.x0 - content_left - 12.0).max(0.0) as f32;
             let hint = text.elide_to_width(
-                "Arrow keys move  ·  Enter opens  ·  Super+N shows every app",
+                "Arrow keys move  ·  Enter opens  ·  Super+N opens a new window",
                 caption,
                 hint_width,
             );
