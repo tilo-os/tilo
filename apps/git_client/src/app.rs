@@ -47,6 +47,17 @@ enum Field {
     Open,
 }
 
+/// Host event resources retained while one event is routed through embedded
+/// text inputs and the app's own geometry handlers.
+struct InputEventCtx<'a> {
+    event: &'a WindowEvent,
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    taffy: &'a TaffyTree<()>,
+}
+
 /// Which top-level screen is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -1211,9 +1222,7 @@ impl GitClientApp {
         if list_visible {
             let msg = self.commit_input.value().to_string();
             let out = ChangesColumn::draw(
-                scene,
-                tr,
-                t,
+                &mut draw::PaintCtx::new(scene, tr, t),
                 theme,
                 col,
                 &self.model,
@@ -1427,17 +1436,17 @@ impl GitClientApp {
         };
         if let Some(diff) = key.and_then(|k| self.diffs.get(k)) {
             self.diff_hunk_buttons = DiffView::draw(
-                scene,
-                tr,
-                t,
+                &mut draw::PaintCtx::new(scene, tr, t),
                 theme,
                 viewport,
                 diff,
                 self.diff_scroll,
                 &self.settings,
-                self.hover_hunk,
-                staged,
-                armed_hunk,
+                crate::diffview::HunkInteraction {
+                    hovered: self.hover_hunk,
+                    staged_side: staged,
+                    armed_discard: armed_hunk,
+                },
             );
         } else {
             draw::fill_rect(scene, t, viewport, c.surfaces.base);
@@ -1472,9 +1481,7 @@ impl GitClientApp {
                 let detail = Rect::new(split, body.y0, body.x1, body.y1);
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
                     HistoryView::draw_detail(
-                        scene,
-                        tr,
-                        t,
+                        &mut draw::PaintCtx::new(scene, tr, t),
                         theme,
                         detail,
                         commit,
@@ -1484,9 +1491,7 @@ impl GitClientApp {
                 if self.flap.reveal() > 0.001 {
                     let list = Rect::new(body.x0, body.y0, split, body.y1);
                     self.history_rows = HistoryView::draw_list(
-                        scene,
-                        tr,
-                        t,
+                        &mut draw::PaintCtx::new(scene, tr, t),
                         theme,
                         list,
                         &self.model,
@@ -1504,9 +1509,7 @@ impl GitClientApp {
                 let detail = body;
                 if let Some(commit) = self.model.commits.get(self.selected_commit) {
                     HistoryView::draw_detail(
-                        scene,
-                        tr,
-                        t,
+                        &mut draw::PaintCtx::new(scene, tr, t),
                         theme,
                         detail,
                         commit,
@@ -1519,9 +1522,7 @@ impl GitClientApp {
                     let x0 = body.x0 - FLAP_W * (1.0 - slide);
                     let list = Rect::new(x0, body.y0, x0 + FLAP_W, body.y1);
                     self.history_rows = HistoryView::draw_list(
-                        scene,
-                        tr,
-                        t,
+                        &mut draw::PaintCtx::new(scene, tr, t),
                         theme,
                         list,
                         &self.model,
@@ -2516,21 +2517,42 @@ impl Widget for GitClientApp {
                     }
                 }
                 // Keep an in-flight text-selection drag updating.
-                self.forward_to_inputs(event, scale_factor, *modifiers, state, path, taffy);
+                self.forward_to_inputs(&mut InputEventCtx {
+                    event,
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    taffy,
+                });
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_press(event, scale_factor, *modifiers, state, path, taffy);
+                self.handle_press(&mut InputEventCtx {
+                    event,
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    taffy,
+                });
                 *handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
             } => {
-                self.forward_to_inputs(event, scale_factor, *modifiers, state, path, taffy);
+                self.forward_to_inputs(&mut InputEventCtx {
+                    event,
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    taffy,
+                });
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -2912,56 +2934,39 @@ impl GitClientApp {
 
     /// Forward a pointer event to every text field (so an in-flight drag-select
     /// keeps updating regardless of which field started it).
-    fn forward_to_inputs(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_to_inputs(&mut self, ctx: &mut InputEventCtx<'_>) {
         Self::fwd(
             &mut self.commit_input,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
+            ctx.event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            &mut *ctx.state,
+            ctx.path,
+            ctx.taffy,
         );
         Self::fwd(
             &mut self.branch_input,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
+            ctx.event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            &mut *ctx.state,
+            ctx.path,
+            ctx.taffy,
         );
         Self::fwd(
             &mut self.open_input,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
+            ctx.event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            &mut *ctx.state,
+            ctx.path,
+            ctx.taffy,
         );
     }
 
     /// Route a left-press: text fields first (focus + caret placement), then
     /// the geometry click router. Blurs any focused field on a click outside.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_press(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_press(&mut self, ctx: &mut InputEventCtx<'_>) {
         let pos = self.last_mouse;
         // Empty "open a repository" state routes entirely to its own controls.
         if self.awaiting_repo {
@@ -2973,12 +2978,12 @@ impl GitClientApp {
                 self.set_focus(Some(Field::Open));
                 Self::fwd(
                     &mut self.open_input,
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.event,
+                    ctx.scale_factor,
+                    ctx.modifiers,
+                    &mut *ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
                 return;
             }
@@ -2990,12 +2995,12 @@ impl GitClientApp {
             self.set_focus(Some(Field::Commit));
             Self::fwd(
                 &mut self.commit_input,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                &mut *ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
             return;
         }
@@ -3003,18 +3008,18 @@ impl GitClientApp {
             self.set_focus(Some(Field::Branch));
             Self::fwd(
                 &mut self.branch_input,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                &mut *ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
             return;
         }
         // Anywhere else: blur the fields and run the normal click router.
         self.set_focus(None);
-        self.handle_click(pos, state);
+        self.handle_click(pos, ctx.state);
     }
 
     /// Submit the focused field's action (Enter).

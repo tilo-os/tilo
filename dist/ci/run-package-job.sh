@@ -431,7 +431,11 @@ arch)
     cp dist/arch/build/*.pkg.tar.zst /artifacts/
     ;;
 nix)
-    nix_config=$'experimental-features = nix-command flakes\nsandbox = false\ncores = 2'
+    # Nix otherwise defaults each derivation to only two build cores, leaving
+    # most of an explicitly large package runner idle during its longest lane.
+    # Reuse the workflow's bounded per-run compiler parallelism; direct/local
+    # invocations retain the conservative two-core default chosen above.
+    nix_config=$'experimental-features = nix-command flakes\nsandbox = false\ncores = '"${CARGO_BUILD_JOBS:-2}"
     if [[ $arch == arm64 && $emulated == 1 ]]; then
         # Nix's seccomp filter observes qemu-user's host syscalls rather than
         # the emulated guest calls and can SIGKILL store realization. Disable
@@ -447,8 +451,10 @@ nix)
     nix flake check --no-build --all-systems
     stage=export-nix-closure
     mapfile -t requisites < <(nix-store --query --requisites result)
+    # Level 1 keeps the portable .nar.gz contract while avoiding a long,
+    # single-core level-9 compression tail on large ARM closures.
     nix-store --export "${requisites[@]}" \
-        | gzip -9 > "/artifacts/qos-session-$arch.nar.gz"
+        | gzip -1 > "/artifacts/qos-session-$arch.nar.gz"
     ;;
 *)
     echo "unknown package distribution: $distro" >&2

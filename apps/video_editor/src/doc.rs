@@ -1348,6 +1348,153 @@ impl VideoDoc {
     }
 }
 
+/// Named parameters for a deterministic demo clip placement. Source and
+/// timeline times sit beside normalized values, so positional arguments would
+/// make accidental transposition far too easy.
+struct DemoPlacement {
+    track: Uuid,
+    media: Uuid,
+    start: f64,
+    source: std::ops::Range<f64>,
+    palette: u8,
+    opacity: f64,
+    volume: f64,
+    transition: Transition,
+    filters: Filters,
+    fade_in: f64,
+    fade_out: f64,
+}
+
+impl DemoPlacement {
+    fn new(
+        track: Uuid,
+        media: Uuid,
+        start: f64,
+        source: std::ops::Range<f64>,
+        palette: u8,
+    ) -> Self {
+        Self {
+            track,
+            media,
+            start,
+            source,
+            palette,
+            opacity: 1.0,
+            volume: 1.0,
+            transition: Transition::None,
+            filters: Filters::default(),
+            fade_in: 0.0,
+            fade_out: 0.0,
+        }
+    }
+
+    fn transition(mut self, transition: Transition) -> Self {
+        self.transition = transition;
+        self
+    }
+
+    fn opacity(mut self, opacity: f64) -> Self {
+        self.opacity = opacity;
+        self
+    }
+
+    fn volume(mut self, volume: f64) -> Self {
+        self.volume = volume;
+        self
+    }
+
+    fn filters(mut self, filters: Filters) -> Self {
+        self.filters = filters;
+        self
+    }
+
+    fn fades(mut self, fade_in: f64, fade_out: f64) -> Self {
+        self.fade_in = fade_in;
+        self.fade_out = fade_out;
+        self
+    }
+
+    fn into_clip(self) -> Clip {
+        Clip {
+            id: Uuid::new_v4(),
+            track: self.track,
+            media: self.media,
+            start: self.start,
+            in_point: self.source.start,
+            out_point: self.source.end,
+            opacity: self.opacity,
+            volume: self.volume,
+            transition: self.transition,
+            palette: self.palette,
+            filters: self.filters,
+            fade_in: self.fade_in,
+            fade_out: self.fade_out,
+            transition_duration: 0.0,
+            effects: Vec::new(),
+            ..Default::default()
+        }
+    }
+}
+
+struct DemoMedia {
+    drone: Uuid,
+    interview: Uuid,
+    market: Uuid,
+    sunset: Uuid,
+    logo: Uuid,
+    voiceover: Uuid,
+    pad: Uuid,
+}
+
+struct DemoTracks {
+    video_main: Uuid,
+    video_overlay: Uuid,
+    audio_voiceover: Uuid,
+    audio_bed: Uuid,
+}
+
+fn demo_clips(media: &DemoMedia, tracks: &DemoTracks) -> Vec<Clip> {
+    let graded = Filters {
+        brightness: 0.62,
+        contrast: 0.64,
+        saturation: 0.58,
+    };
+    let placements = [
+        DemoPlacement::new(tracks.video_main, media.drone, 0.0, 2.0..10.0, 0)
+            .transition(Transition::FadeIn)
+            .filters(graded)
+            .fades(1.5, 0.0),
+        DemoPlacement::new(tracks.video_main, media.interview, 8.0, 5.0..17.0, 1)
+            .transition(Transition::CrossDissolve),
+        DemoPlacement::new(tracks.video_main, media.market, 20.0, 0.0..6.0, 2).fades(0.0, 1.0),
+        DemoPlacement::new(tracks.video_overlay, media.logo, 1.0, 0.0..4.0, 4)
+            .transition(Transition::FadeIn)
+            .opacity(0.9),
+        DemoPlacement::new(tracks.video_overlay, media.sunset, 21.0, 0.0..6.0, 3)
+            .transition(Transition::CrossDissolve)
+            .opacity(0.85)
+            .fades(0.0, 1.2),
+        DemoPlacement::new(tracks.audio_voiceover, media.voiceover, 8.0, 1.5..13.5, 5)
+            .fades(0.3, 0.5),
+        DemoPlacement::new(tracks.audio_bed, media.pad, 0.0, 0.0..28.0, 6)
+            .transition(Transition::FadeIn)
+            .volume(0.4)
+            .fades(2.0, 3.0),
+    ];
+    let mut clips: Vec<_> = placements
+        .into_iter()
+        .map(DemoPlacement::into_clip)
+        .collect();
+
+    // Stacked effects make the demo exercise the effects panel as well as
+    // timeline placement and transitions.
+    if let Some(drone) = clips.first_mut() {
+        drone.add_effect(EffectKind::Warm);
+        drone.add_effect(EffectKind::Vignette);
+    }
+    clips
+}
+
 /// A short documentary-style cut: drone B-roll under an interview, an
 /// overlaid logo and a sunset insert with a dissolve, narration on A1 and
 /// an ambient bed on A2. Built deterministically so screenshots are
@@ -1419,15 +1566,15 @@ pub fn sample_project() -> Project {
     let vo = mk("VO_Take3.wav", MediaKind::Audio, 32.0, 0, 0, 0.0, 5);
     let pad = mk("Ambient_Pad.wav", MediaKind::Audio, 60.0, 0, 0, 0.0, 6);
 
-    let (drone_id, interview_id, market_id, sunset_id, logo_id, vo_id, pad_id) = (
-        drone.id,
-        interview.id,
-        market.id,
-        sunset.id,
-        logo.id,
-        vo.id,
-        pad.id,
-    );
+    let media = DemoMedia {
+        drone: drone.id,
+        interview: interview.id,
+        market: market.id,
+        sunset: sunset.id,
+        logo: logo.id,
+        voiceover: vo.id,
+        pad: pad.id,
+    };
     p.media = vec![drone, interview, market, sunset, logo, vo, pad];
 
     let mk_track = |name: &str, kind: TrackKind, index: u32| Track {
@@ -1445,157 +1592,14 @@ pub fn sample_project() -> Project {
     let v2 = mk_track("V2", TrackKind::Video, 2);
     let a1 = mk_track("A1", TrackKind::Audio, 1);
     let a2 = mk_track("A2", TrackKind::Audio, 2);
-    let (v1id, v2id, a1id, a2id) = (v1.id, v2.id, a1.id, a2.id);
+    let tracks = DemoTracks {
+        video_main: v1.id,
+        video_overlay: v2.id,
+        audio_voiceover: a1.id,
+        audio_bed: a2.id,
+    };
     p.tracks = vec![v1, v2, a1, a2];
-
-    // A demo placement is intentionally named: source and timeline times sit
-    // beside several normalized values, and the former positional helper let
-    // any of them be transposed without a type error.
-    struct DemoPlacement {
-        track: Uuid,
-        media: Uuid,
-        start: f64,
-        source: std::ops::Range<f64>,
-        palette: u8,
-        opacity: f64,
-        volume: f64,
-        transition: Transition,
-        filters: Filters,
-        fade_in: f64,
-        fade_out: f64,
-    }
-
-    let mut place = |placement: DemoPlacement| {
-        p.clips.push(Clip {
-            id: Uuid::new_v4(),
-            track: placement.track,
-            media: placement.media,
-            start: placement.start,
-            in_point: placement.source.start,
-            out_point: placement.source.end,
-            opacity: placement.opacity,
-            volume: placement.volume,
-            transition: placement.transition,
-            palette: placement.palette,
-            filters: placement.filters,
-            fade_in: placement.fade_in,
-            fade_out: placement.fade_out,
-            transition_duration: 0.0,
-            effects: Vec::new(),
-            ..Default::default()
-        });
-    };
-
-    let neutral = Filters::default();
-    // A graded look on the drone open: brighter, punchier contrast.
-    let graded = Filters {
-        brightness: 0.62,
-        contrast: 0.64,
-        saturation: 0.58,
-    };
-
-    // V1 — the spine: drone open (graded + fade-in), interview body, market cutaway.
-    place(DemoPlacement {
-        track: v1id,
-        media: drone_id,
-        start: 0.0,
-        source: 2.0..10.0,
-        palette: 0,
-        opacity: 1.0,
-        volume: 1.0,
-        transition: Transition::FadeIn,
-        filters: graded,
-        fade_in: 1.5,
-        fade_out: 0.0,
-    });
-    place(DemoPlacement {
-        track: v1id,
-        media: interview_id,
-        start: 8.0,
-        source: 5.0..17.0,
-        palette: 1,
-        opacity: 1.0,
-        volume: 1.0,
-        transition: Transition::CrossDissolve,
-        filters: neutral,
-        fade_in: 0.0,
-        fade_out: 0.0,
-    });
-    place(DemoPlacement {
-        track: v1id,
-        media: market_id,
-        start: 20.0,
-        source: 0.0..6.0,
-        palette: 2,
-        opacity: 1.0,
-        volume: 1.0,
-        transition: Transition::None,
-        filters: neutral,
-        fade_in: 0.0,
-        fade_out: 1.0,
-    });
-    // V2 — overlays: logo bug, then a sunset insert that dissolves in.
-    place(DemoPlacement {
-        track: v2id,
-        media: logo_id,
-        start: 1.0,
-        source: 0.0..4.0,
-        palette: 4,
-        opacity: 0.9,
-        volume: 1.0,
-        transition: Transition::FadeIn,
-        filters: neutral,
-        fade_in: 0.0,
-        fade_out: 0.0,
-    });
-    place(DemoPlacement {
-        track: v2id,
-        media: sunset_id,
-        start: 21.0,
-        source: 0.0..6.0,
-        palette: 3,
-        opacity: 0.85,
-        volume: 1.0,
-        transition: Transition::CrossDissolve,
-        filters: neutral,
-        fade_in: 0.0,
-        fade_out: 1.2,
-    });
-    // A1 — narration aligned under the interview.
-    place(DemoPlacement {
-        track: a1id,
-        media: vo_id,
-        start: 8.0,
-        source: 1.5..13.5,
-        palette: 5,
-        opacity: 1.0,
-        volume: 1.0,
-        transition: Transition::None,
-        filters: neutral,
-        fade_in: 0.3,
-        fade_out: 0.5,
-    });
-    // A2 — ambient bed under the whole piece, ducked low, gentle fades.
-    place(DemoPlacement {
-        track: a2id,
-        media: pad_id,
-        start: 0.0,
-        source: 0.0..28.0,
-        palette: 6,
-        opacity: 1.0,
-        volume: 0.4,
-        transition: Transition::FadeIn,
-        filters: neutral,
-        fade_in: 2.0,
-        fade_out: 3.0,
-    });
-
-    // A couple of stacked effects on the drone open so the demo shows the
-    // effects stack (warm grade, then a gentle vignette).
-    if let Some(drone) = p.clips.first_mut() {
-        drone.add_effect(EffectKind::Warm);
-        drone.add_effect(EffectKind::Vignette);
-    }
+    p.clips = demo_clips(&media, &tracks);
 
     p
 }

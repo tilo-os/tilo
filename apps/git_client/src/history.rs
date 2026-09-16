@@ -23,6 +23,38 @@ const LANE_W: f64 = 18.0;
 const DOT_R: f64 = 5.0;
 const GRAPH_PAD: f64 = 16.0;
 
+/// Resources and stable geometry shared by the commit-list paint pass.
+struct HistoryListPaintCtx<'a> {
+    scene: &'a mut Scene,
+    text: &'a mut TextRenderer,
+    transform: Affine,
+    theme: &'a Theme,
+    area: Rect,
+    layout: &'a GraphLayout,
+}
+
+#[derive(Clone, Copy)]
+struct CommitRowLayout {
+    index: usize,
+    y: f64,
+    rect: Rect,
+    selected: bool,
+    text_x: f64,
+}
+
+/// Resources and measured bounds shared by the commit-detail paint pass.
+struct HistoryDetailPaintCtx<'a> {
+    scene: &'a mut Scene,
+    text: &'a mut TextRenderer,
+    transform: Affine,
+    theme: &'a Theme,
+    area: Rect,
+    commit: &'a Commit,
+    x: f64,
+    width: f32,
+    pad: f64,
+}
+
 pub struct HistoryView;
 
 impl HistoryView {
@@ -33,11 +65,8 @@ impl HistoryView {
     /// Draw the commit list with graph. Returns the row rects so the app
     /// can hit-test selection. `selected` is the index of the highlighted
     /// commit.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw_list(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
+        paint: &mut draw::PaintCtx<'_>,
         theme: &Theme,
         area: Rect,
         model: &RepoModel,
@@ -45,6 +74,7 @@ impl HistoryView {
         selected: usize,
         scroll: f64,
     ) -> Vec<Rect> {
+        let (scene, tr, t) = paint.parts();
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
 
@@ -56,7 +86,15 @@ impl HistoryView {
             &area,
         );
 
-        Self::draw_graph_edges(scene, t, theme, area, layout, scroll);
+        let mut ctx = HistoryListPaintCtx {
+            scene,
+            text: tr,
+            transform: t,
+            theme,
+            area,
+            layout,
+        };
+        Self::draw_graph_edges(&mut ctx, scroll);
 
         let graph_total_w = GRAPH_PAD + (layout.lanes.max(1) as f64) * LANE_W + 8.0;
         let text_x = area.x0 + graph_total_w + 6.0;
@@ -70,24 +108,30 @@ impl HistoryView {
                 continue;
             }
             Self::draw_commit_row(
-                scene, tr, t, theme, area, layout, commit, row, y, rrect, selected, text_x,
+                &mut ctx,
+                commit,
+                CommitRowLayout {
+                    index: row,
+                    y,
+                    rect: rrect,
+                    selected: row == selected,
+                    text_x,
+                },
             );
         }
 
-        scene.pop_layer();
+        ctx.scene.pop_layer();
         row_rects
     }
 
     /// The branch/merge lane edges, drawn before the dots so dots paint on
     /// top (part of [`Self::draw_list`]).
-    fn draw_graph_edges(
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        layout: &GraphLayout,
-        scroll: f64,
-    ) {
+    fn draw_graph_edges(ctx: &mut HistoryListPaintCtx<'_>, scroll: f64) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let area = ctx.area;
+        let layout = ctx.layout;
         let graph_x = area.x0 + GRAPH_PAD;
         let lane_x = |lane: usize| graph_x + lane as f64 * LANE_W + LANE_W / 2.0;
         let row_center_y = |row: usize| area.y0 - scroll + row as f64 * ROW_H + ROW_H / 2.0;
@@ -116,25 +160,17 @@ impl HistoryView {
 
     /// The graph dot for a commit row — filled lane-coloured circle, hollow
     /// centre for a merge (part of [`Self::draw_commit_row`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "see the comment above draw_commit_row"
-    )]
-    fn draw_commit_dot(
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        layout: &GraphLayout,
-        commit: &Commit,
-        row: usize,
-        y: f64,
-    ) {
+    fn draw_commit_dot(ctx: &mut HistoryListPaintCtx<'_>, commit: &Commit, row: CommitRowLayout) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let area = ctx.area;
+        let layout = ctx.layout;
         let c = &theme.tokens.colors;
         let graph_x = area.x0 + GRAPH_PAD;
-        let lane = layout.lane_of.get(row).copied().unwrap_or(0);
+        let lane = layout.lane_of.get(row.index).copied().unwrap_or(0);
         let cx = graph_x + lane as f64 * LANE_W + LANE_W / 2.0;
-        let cy = y + ROW_H / 2.0;
+        let cy = row.y + ROW_H / 2.0;
         let dot_color = draw::lane_color(theme, lane);
         let is_merge = commit.parents.len() > 1;
         let dr = if is_merge { DOT_R + 1.5 } else { DOT_R };
@@ -159,24 +195,20 @@ impl HistoryView {
 
     /// Ref pills, summary, author/time/hash meta line, and the row
     /// separator (part of [`Self::draw_commit_row`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "see the comment above draw_commit_row"
-    )]
     fn draw_commit_row_text(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
+        ctx: &mut HistoryListPaintCtx<'_>,
         commit: &Commit,
-        y: f64,
-        text_x: f64,
+        row: CommitRowLayout,
     ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let area = ctx.area;
         let c = &theme.tokens.colors;
         // Ref pills.
-        let mut px = text_x;
-        let pill_y = y + 9.0;
+        let mut px = row.text_x;
+        let pill_y = row.y + 9.0;
         for r in &commit.refs {
             let (fg, bg) = ref_colors(theme, r.kind);
             px += draw::pill(scene, tr, t, px, pill_y, 18.0, &r.name, fg, bg, None);
@@ -187,11 +219,11 @@ impl HistoryView {
 
         // Summary. If there are refs, draw it on the second line; else
         // the first.
-        let sx = text_x;
+        let sx = row.text_x;
         let sy = if commit.refs.is_empty() {
-            y + 10.0
+            row.y + 10.0
         } else {
-            y + 30.0
+            row.y + 30.0
         };
         let avail = area.x1 - sx - 90.0;
         let summary = tr.elide_to_width_weighted(
@@ -254,13 +286,13 @@ impl HistoryView {
             12.0,
             c.text_dim,
             area.x1 - hw - 14.0,
-            y + 10.0,
+            row.y + 10.0,
         );
 
         draw::hline(
             scene,
             t,
-            y + ROW_H,
+            row.y + ROW_H,
             area.x0 + 8.0,
             area.x1 - 8.0,
             c.lift(0.35),
@@ -272,39 +304,25 @@ impl HistoryView {
     /// [`Self::draw_list`]). Split into [`Self::draw_commit_dot`] and
     /// [`Self::draw_commit_row_text`] to keep each half under the
     /// line-count lint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    fn draw_commit_row(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        layout: &GraphLayout,
-        commit: &Commit,
-        row: usize,
-        y: f64,
-        rrect: Rect,
-        selected: usize,
-        text_x: f64,
-    ) {
+    fn draw_commit_row(ctx: &mut HistoryListPaintCtx<'_>, commit: &Commit, row: CommitRowLayout) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        if row == selected {
+        if row.selected {
             // Keep the selected commit legible and calm. The accent rail is
             // enough to identify selection while preserving graph lane
             // colours for topology rather than state.
-            draw::fill_rect(scene, t, rrect, c.lift(0.72));
+            draw::fill_rect(scene, t, row.rect, c.lift(0.72));
             draw::fill_rect(
                 scene,
                 t,
-                Rect::new(rrect.x0, rrect.y0, rrect.x0 + 3.0, rrect.y1),
+                Rect::new(row.rect.x0, row.rect.y0, row.rect.x0 + 3.0, row.rect.y1),
                 theme.accent_primary,
             );
         }
-        Self::draw_commit_dot(scene, t, theme, area, layout, commit, row, y);
-        Self::draw_commit_row_text(scene, tr, t, theme, area, commit, y, text_x);
+        Self::draw_commit_dot(ctx, commit, row);
+        Self::draw_commit_row_text(ctx, commit, row);
     }
 
     /// Draw the detail panel for `commit` on the right.
@@ -313,14 +331,13 @@ impl HistoryView {
         reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
     )]
     pub fn draw_detail(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
+        paint: &mut draw::PaintCtx<'_>,
         theme: &Theme,
         area: Rect,
         commit: &Commit,
         scroll: f64,
     ) {
+        let (scene, tr, t) = paint.parts();
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.raised);
         draw::vline(scene, t, area.x0, area.y0, area.y1, c.border_standard);
@@ -338,40 +355,53 @@ impl HistoryView {
         let x = area.x0 + pad;
         let w = (area.width() - pad * 2.0) as f32;
 
-        y = Self::draw_detail_summary(scene, tr, t, theme, commit, x, y, w);
-        y = Self::draw_detail_author(scene, tr, t, theme, commit, x, y);
-        y = Self::draw_detail_meta_grid(scene, tr, t, theme, commit, x, y, w);
+        let mut ctx = HistoryDetailPaintCtx {
+            scene,
+            text: tr,
+            transform: t,
+            theme,
+            area,
+            commit,
+            x,
+            width: w,
+            pad,
+        };
+
+        y = Self::draw_detail_summary(&mut ctx, y);
+        y = Self::draw_detail_author(&mut ctx, y);
+        y = Self::draw_detail_meta_grid(&mut ctx, y);
 
         y += 8.0;
-        draw::hline(scene, t, y, x, area.x1 - pad, c.border_standard);
+        draw::hline(
+            ctx.scene,
+            ctx.transform,
+            y,
+            ctx.x,
+            ctx.area.x1 - ctx.pad,
+            c.border_standard,
+        );
         y += 14.0;
 
-        y = Self::draw_detail_body(scene, tr, t, theme, commit, x, y, w);
-        Self::draw_detail_files(scene, tr, t, theme, area, commit, x, y, w, pad);
+        y = Self::draw_detail_body(&mut ctx, y);
+        Self::draw_detail_files(&mut ctx, y);
 
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
     /// The commit summary line (part of [`Self::draw_detail`]). Returns the
     /// `y` for the next section.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
     )]
-    fn draw_detail_summary(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
+    fn draw_detail_summary(ctx: &mut HistoryDetailPaintCtx<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let commit = ctx.commit;
+        let x = ctx.x;
+        let w = ctx.width;
         let c = &theme.tokens.colors;
         draw::text_weighted(
             scene,
@@ -394,15 +424,13 @@ impl HistoryView {
 
     /// The author block with avatar (part of [`Self::draw_detail`]).
     /// Returns the `y` for the next section.
-    fn draw_detail_author(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_detail_author(ctx: &mut HistoryDetailPaintCtx<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let commit = ctx.commit;
+        let x = ctx.x;
         let c = &theme.tokens.colors;
         let acolor = draw::author_color(theme, &commit.author_email);
         draw::avatar(scene, tr, t, theme, x, y, 32.0, &commit.author_name, acolor);
@@ -434,56 +462,22 @@ impl HistoryView {
 
     /// The commit / date / parents / refs metadata grid (part of
     /// [`Self::draw_detail`]). Returns the `y` for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    fn draw_detail_meta_grid(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
+    fn draw_detail_meta_grid(ctx: &mut HistoryDetailPaintCtx<'_>, y: f64) -> f64 {
+        let commit = ctx.commit;
         let short: String = commit.id.chars().take(12).collect();
-        let mut y = meta_row(scene, tr, t, theme, x, y, w, "commit", &short, true);
-        y = meta_row(scene, tr, t, theme, x, y, w, "date", &commit.when, false);
+        let mut y = meta_row(ctx, y, "commit", &short, true);
+        y = meta_row(ctx, y, "date", &commit.when, false);
         if !commit.parents.is_empty() {
             let parents: Vec<String> = commit
                 .parents
                 .iter()
                 .map(|p| p.chars().take(7).collect())
                 .collect();
-            y = meta_row(
-                scene,
-                tr,
-                t,
-                theme,
-                x,
-                y,
-                w,
-                "parents",
-                &parents.join(", "),
-                true,
-            );
+            y = meta_row(ctx, y, "parents", &parents.join(", "), true);
         }
         if !commit.refs.is_empty() {
             let refs: Vec<String> = commit.refs.iter().map(|r| r.name.clone()).collect();
-            y = meta_row(
-                scene,
-                tr,
-                t,
-                theme,
-                x,
-                y,
-                w,
-                "refs",
-                &refs.join(", "),
-                false,
-            );
+            y = meta_row(ctx, y, "refs", &refs.join(", "), false);
         }
         y
     }
@@ -492,23 +486,17 @@ impl HistoryView {
     /// Returns the `y` for the next section (unchanged when there is no
     /// body).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
     )]
-    fn draw_detail_body(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
+    fn draw_detail_body(ctx: &mut HistoryDetailPaintCtx<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let commit = ctx.commit;
+        let x = ctx.x;
+        let w = ctx.width;
         let c = &theme.tokens.colors;
         if commit.body.is_empty() {
             return y;
@@ -530,25 +518,19 @@ impl HistoryView {
 
     /// The changed-files list, if any (part of [`Self::draw_detail`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
     )]
-    fn draw_detail_files(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        commit: &Commit,
-        x: f64,
-        mut y: f64,
-        w: f32,
-        pad: f64,
-    ) {
+    fn draw_detail_files(ctx: &mut HistoryDetailPaintCtx<'_>, mut y: f64) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let area = ctx.area;
+        let commit = ctx.commit;
+        let x = ctx.x;
+        let w = ctx.width;
+        let pad = ctx.pad;
         let c = &theme.tokens.colors;
         if commit.files.is_empty() {
             return;
@@ -606,22 +588,18 @@ impl HistoryView {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "internal draw-step split of an over-length function"
-)]
 fn meta_row(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    theme: &Theme,
-    x: f64,
+    ctx: &mut HistoryDetailPaintCtx<'_>,
     y: f64,
-    _w: f32,
     label: &str,
     value: &str,
     mono: bool,
 ) -> f64 {
+    let scene = &mut *ctx.scene;
+    let tr = &mut *ctx.text;
+    let t = ctx.transform;
+    let theme = ctx.theme;
+    let x = ctx.x;
     let c = &theme.tokens.colors;
     draw::text(scene, tr, t, label, 12.0, c.text_dim, x, y, None);
     if mono {
