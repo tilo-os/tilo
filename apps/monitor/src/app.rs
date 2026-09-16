@@ -425,7 +425,7 @@ impl MonitorProcessSearchProvider {
 }
 
 impl SearchProvider for MonitorProcessSearchProvider {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "Processes"
     }
 
