@@ -47,6 +47,17 @@ enum Field {
     Open,
 }
 
+/// Host event resources retained while one event is routed through embedded
+/// text inputs and the app's own geometry handlers.
+struct InputEventCtx<'a> {
+    event: &'a WindowEvent,
+    scale_factor: f64,
+    modifiers: winit::event::Modifiers,
+    state: &'a mut AutoCommit,
+    path: &'a ObjId,
+    taffy: &'a TaffyTree<()>,
+}
+
 /// Which top-level screen is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -2506,21 +2517,42 @@ impl Widget for GitClientApp {
                     }
                 }
                 // Keep an in-flight text-selection drag updating.
-                self.forward_to_inputs(event, scale_factor, *modifiers, state, path, taffy);
+                self.forward_to_inputs(&mut InputEventCtx {
+                    event,
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    taffy,
+                });
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_press(event, scale_factor, *modifiers, state, path, taffy);
+                self.handle_press(&mut InputEventCtx {
+                    event,
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    taffy,
+                });
                 *handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
             } => {
-                self.forward_to_inputs(event, scale_factor, *modifiers, state, path, taffy);
+                self.forward_to_inputs(&mut InputEventCtx {
+                    event,
+                    scale_factor,
+                    modifiers: *modifiers,
+                    state,
+                    path,
+                    taffy,
+                });
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -2902,56 +2934,39 @@ impl GitClientApp {
 
     /// Forward a pointer event to every text field (so an in-flight drag-select
     /// keeps updating regardless of which field started it).
-    fn forward_to_inputs(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn forward_to_inputs(&mut self, ctx: &mut InputEventCtx<'_>) {
         Self::fwd(
             &mut self.commit_input,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
+            ctx.event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            &mut *ctx.state,
+            ctx.path,
+            ctx.taffy,
         );
         Self::fwd(
             &mut self.branch_input,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
+            ctx.event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            &mut *ctx.state,
+            ctx.path,
+            ctx.taffy,
         );
         Self::fwd(
             &mut self.open_input,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
+            ctx.event,
+            ctx.scale_factor,
+            ctx.modifiers,
+            &mut *ctx.state,
+            ctx.path,
+            ctx.taffy,
         );
     }
 
     /// Route a left-press: text fields first (focus + caret placement), then
     /// the geometry click router. Blurs any focused field on a click outside.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_press(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_press(&mut self, ctx: &mut InputEventCtx<'_>) {
         let pos = self.last_mouse;
         // Empty "open a repository" state routes entirely to its own controls.
         if self.awaiting_repo {
@@ -2963,12 +2978,12 @@ impl GitClientApp {
                 self.set_focus(Some(Field::Open));
                 Self::fwd(
                     &mut self.open_input,
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.event,
+                    ctx.scale_factor,
+                    ctx.modifiers,
+                    &mut *ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
                 return;
             }
@@ -2980,12 +2995,12 @@ impl GitClientApp {
             self.set_focus(Some(Field::Commit));
             Self::fwd(
                 &mut self.commit_input,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                &mut *ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
             return;
         }
@@ -2993,18 +3008,18 @@ impl GitClientApp {
             self.set_focus(Some(Field::Branch));
             Self::fwd(
                 &mut self.branch_input,
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                &mut *ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
             return;
         }
         // Anywhere else: blur the fields and run the normal click router.
         self.set_focus(None);
-        self.handle_click(pos, state);
+        self.handle_click(pos, ctx.state);
     }
 
     /// Submit the focused field's action (Enter).
