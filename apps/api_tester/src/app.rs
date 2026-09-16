@@ -77,7 +77,6 @@ const URLBAR_H: f64 = 56.0;
 /// second row. Keeping all four controls in one row leaves only a clipped
 /// sliver of the endpoint — especially unhelpful when it starts with a
 /// `{{variable}}` reference.
-const COMPACT_URLBAR_H: f64 = 100.0;
 const COMPACT_URLBAR_BREAKPOINT: f64 = 480.0;
 const TAB_STRIP_H: f64 = 40.0;
 const PAD: f64 = 16.0;
@@ -142,8 +141,6 @@ enum Cmd {
     OpenForm(FormMode),
     SubmitForm,
     CancelForm,
-    DeleteRequest,
-    DeleteEnvironment,
 }
 
 /// The rail never leaves a generic text field lying around.  A field appears
@@ -221,6 +218,7 @@ struct Layout {
     url: Rect,
     send: Rect,
     tabs: Rect,
+    save: Rect,
     env: Rect,
     form_name: Rect,
     form_key: Rect,
@@ -238,7 +236,6 @@ struct Layout {
     resp_status: Rect,
     resp_body: Rect,
     collection_manage_label: Point,
-    environment_manage_label: Point,
     form_heading: Point,
     collections_label: Point,
     history_label: Point,
@@ -282,6 +279,7 @@ pub struct ApiTesterApp {
     url_input: TextInput,
     body_input: TextInput,
     send_button: Button,
+    save_button: Button,
     request_tabs: ToggleGroup,
     response_view_toggle: ToggleGroup,
     /// Shared accessible recovery surfaces for an empty response and a failed
@@ -364,6 +362,7 @@ struct BuiltWidgets {
     url_input: TextInput,
     body_input: TextInput,
     send_button: Button,
+    save_button: Button,
     request_tabs: ToggleGroup,
     response_view_toggle: ToggleGroup,
     sink: Sink,
@@ -467,6 +466,7 @@ impl ApiTesterApp {
             url_input: widgets.url_input,
             body_input: widgets.body_input,
             send_button: widgets.send_button,
+            save_button: widgets.save_button,
             request_tabs: widgets.request_tabs,
             response_view_toggle: widgets.response_view_toggle,
             response_empty: EmptyState::new("No response yet")
@@ -610,6 +610,16 @@ impl ApiTesterApp {
             .primary()
             .with_size(SEND_W as f32, 36.0)
             .on_action(Self::active_send_binding());
+        let save_sink = sink.clone();
+        let save_button = Button::new("api.save-request", "Save", None)
+            .with_icon(Icon::Check)
+            .with_accessible_name("Save request")
+            .tooltip("Save current request")
+            .on_effect(move || {
+                save_sink
+                    .borrow_mut()
+                    .push(Cmd::OpenForm(FormMode::SaveRequest))
+            });
 
         // Request-builder tabs.
         let tab_sink = sink.clone();
@@ -690,6 +700,7 @@ impl ApiTesterApp {
             url_input,
             body_input,
             send_button,
+            save_button,
             request_tabs,
             response_view_toggle,
             sink,
@@ -1023,6 +1034,9 @@ impl ApiTesterApp {
             &self.send_button,
             &self.request_tabs,
         ];
+        if self.rect.width() > 600.0 {
+            v.insert(3, &self.save_button);
+        }
         if self.rail.layout_for(self.rect.width()) == SplitLayout::Overlay {
             v.insert(0, &self.rail_button);
             if self.sidebar_visible() {
@@ -1080,6 +1094,9 @@ impl ApiTesterApp {
         v.push(&mut self.method_dropdown);
         v.push(&mut self.url_input);
         v.push(&mut self.send_button);
+        if self.rect.width() > 600.0 {
+            v.push(&mut self.save_button);
+        }
         v.push(&mut self.request_tabs);
         if body {
             v.push(&mut self.body_input);
@@ -1130,6 +1147,9 @@ impl ApiTesterApp {
         self.method_dropdown.apply_layout_external(l.method);
         self.url_input.apply_layout_external(l.url);
         self.send_button.apply_layout_external(l.send);
+        if self.rect.width() > 600.0 {
+            self.save_button.apply_layout_external(l.save);
+        }
         self.request_tabs.apply_layout_external(l.tabs);
         if self.body_field_visible() {
             self.body_input.apply_layout_external(l.body);
@@ -1233,6 +1253,7 @@ impl ApiTesterApp {
             area.x0 + PAD + tabs_w,
             l.tab_strip.y1 - 4.0,
         );
+        l.save = Rect::new(l.tabs.x1 + 8.0, l.tabs.y0, l.tabs.x1 + 84.0, l.tabs.y1);
 
         // --- Editor / response split ---
         let editor_h = ((area.height() - urlbar_h - tab_strip_h) * 0.42).max(150.0);
@@ -1373,6 +1394,27 @@ impl ApiTesterApp {
         self.rail
             .set_overlay_width((SIDEBAR_W * scale).min(self.rect.width()));
         self.rail.set_breakpoint(RAIL_BREAKPOINT * scale);
+    }
+
+    /// Keep keyboard / screen-reader focus visible as it traverses a rail
+    /// longer than the viewport. The offset is view-local and bounded, so it
+    /// never becomes collaborative document churn.
+    fn follow_rail_focus(&mut self) -> bool {
+        let sidebar = self.layout.sidebar;
+        let Some(row) = self.nav_rows.iter().find(|row| row.is_focused()) else {
+            return false;
+        };
+        let top = sidebar.y0 + 8.0;
+        let bottom = sidebar.y1 - 8.0;
+        let next = if row.get_rect().y0 < top {
+            self.sidebar_scroll - (top - row.get_rect().y0)
+        } else if row.get_rect().y1 > bottom {
+            self.sidebar_scroll + (row.get_rect().y1 - bottom)
+        } else {
+            return false;
+        };
+        self.sidebar_scroll = next.clamp(0.0, 1200.0);
+        true
     }
 }
 
@@ -1561,6 +1603,9 @@ impl ApiTesterApp {
 
         // Send button draws itself.
         self.send_button.draw(scene, t, tr, theme, presence);
+        if self.rect.width() > 600.0 {
+            self.save_button.draw(scene, t, tr, theme, presence);
+        }
 
         // Tab strip background + the ToggleGroup + the var hint.
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &l.tab_strip);
@@ -2830,6 +2875,10 @@ impl Widget for ApiTesterApp {
         self.rail.tick(theme.reduce_motion);
         self.layout = self.compute_layout();
         self.position_children();
+        if self.follow_rail_focus() {
+            self.layout = self.compute_layout();
+            self.position_children();
+        }
         self.paint(scene, transform, text_renderer, theme, presence);
     }
 
