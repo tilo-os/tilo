@@ -1309,6 +1309,14 @@ impl SearchProvider for LiveAppActionsProvider {
         &[ResourceKind::Action]
     }
 
+    fn available_in_active_app_scope(&self) -> bool {
+        // The provider builds a separate active-app projection filtered by
+        // room and app id. It complements the primary content provider that
+        // owns the tab; excluding it would hide the app's canonical actions
+        // precisely in the scope intended to expose them.
+        true
+    }
+
     fn owns_tab(&self, tab_id: u64, chrome: &crate::shell::chrome_state::ChromeState) -> bool {
         chrome.active_tab_id() == Some(tab_id)
             && chrome.active_app_id().is_some_and(|active| {

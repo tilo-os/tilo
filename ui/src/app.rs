@@ -577,6 +577,12 @@ struct LocalResourceCache {
     allowed: std::collections::HashSet<qos_actions::ActionAddress>,
 }
 
+struct OpenResourceSearchCache {
+    key: ResourceCacheKey,
+    permission_generation: u64,
+    provider: crate::search::OpenResourceSearch,
+}
+
 fn find_action_resource<'a>(
     resources: &'a [qos_actions::Resource],
     id: &str,
@@ -610,6 +616,20 @@ pub enum ControlBindingStatus {
 pub struct ControlBindingCoverage {
     pub binding: crate::widget::ControlBindingMetadata,
     pub status: ControlBindingStatus,
+}
+
+/// One visible expression of a domain action in the retained UI. The action
+/// address remains the execution identity; this route is presentation
+/// metadata for focus, presence, animation, and “show me where” behavior.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActionUiRoute {
+    pub address: qos_actions::ActionAddress,
+    pub control_id: String,
+    /// Root-to-control semantic path. Fewer nodes is the cheaper UI route.
+    pub path: Vec<crate::a11y_tree::SemanticId>,
+    pub bounds: Option<vello::kurbo::Rect>,
+    pub focused: bool,
+    pub disabled: bool,
 }
 
 #[allow(
@@ -754,6 +774,7 @@ pub struct App {
     /// exact snapshot until the host crosses a state-mutation boundary.
     resource_cache: RefCell<Option<ResourceCache>>,
     local_resource_cache: RefCell<Option<LocalResourceCache>>,
+    open_resource_search_cache: RefCell<Option<OpenResourceSearchCache>>,
     resource_generation: Cell<u64>,
     permission_generation: Cell<u64>,
     last_control_availability: Option<(ResourceCacheKey, u64)>,
@@ -932,6 +953,7 @@ impl App {
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             resource_cache: RefCell::new(None),
             local_resource_cache: RefCell::new(None),
+            open_resource_search_cache: RefCell::new(None),
             resource_generation: Cell::new(0),
             permission_generation: Cell::new(0),
             last_control_availability: None,
@@ -1365,6 +1387,7 @@ impl App {
         }
         self.resource_cache.get_mut().take();
         self.local_resource_cache.get_mut().take();
+        self.open_resource_search_cache.get_mut().take();
         self.last_control_availability = None;
     }
 
@@ -1531,6 +1554,63 @@ impl App {
     pub fn control_action_coverage(&self) -> Vec<ControlBindingCoverage> {
         let resources = self.collect_resources();
         self.control_action_coverage_for(&resources)
+    }
+
+    /// Locate every on-screen affordance for one canonical action and rank
+    /// usable, visible, short paths first. Agents still invoke `address`
+    /// directly; the chosen route makes the resulting interaction project
+    /// into the same UI a person sees without fragile coordinate clicking.
+    pub fn action_ui_routes(&mut self, address: &qos_actions::ActionAddress) -> Vec<ActionUiRoute> {
+        self.refresh_semantic_tree();
+        let mut routes = Vec::new();
+        for binding in self.root_widget.control_action_bindings() {
+            for path in self.semantic_tree.control_paths(&binding.control_id) {
+                let Some(semantic_id) = path.last() else {
+                    continue;
+                };
+                let semantic_address = address.resource == format!("ui:{}", semantic_id.as_str())
+                    && self
+                        .semantic_tree
+                        .action(semantic_id, &address.action)
+                        .is_some();
+                let matches_address = semantic_address
+                    || matches!(
+                        &binding.kind,
+                        crate::widget::ControlBindingKind::Action(candidate) if candidate == address
+                    );
+                if !matches_address {
+                    continue;
+                }
+                let Some(node) = self.semantic_tree.node(semantic_id) else {
+                    continue;
+                };
+                routes.push(ActionUiRoute {
+                    address: address.clone(),
+                    control_id: binding.control_id.clone(),
+                    path,
+                    bounds: node.bounds,
+                    focused: node.state.focused,
+                    disabled: node.state.disabled,
+                });
+            }
+        }
+        routes.sort_by(|left, right| {
+            left.disabled
+                .cmp(&right.disabled)
+                .then_with(|| left.bounds.is_none().cmp(&right.bounds.is_none()))
+                .then_with(|| left.path.len().cmp(&right.path.len()))
+                .then_with(|| right.focused.cmp(&left.focused))
+                .then_with(|| left.control_id.cmp(&right.control_id))
+        });
+        routes.dedup_by(|left, right| left.path.last() == right.path.last());
+        routes
+    }
+
+    pub fn preferred_action_ui_route(
+        &mut self,
+        address: &qos_actions::ActionAddress,
+    ) -> Option<ActionUiRoute> {
+        self.action_ui_routes(address).into_iter().next()
     }
 
     fn control_action_coverage_for(
@@ -3063,8 +3143,35 @@ impl App {
     }
 
     pub fn open_action_palette(&mut self) {
-        let resources = self.collect_local_resources();
-        let providers = self.root_widget.search_providers();
+        let (key, permission_generation) = self.ensure_local_resource_cache();
+        let resources = self
+            .local_resource_cache
+            .borrow()
+            .as_ref()
+            .filter(|cache| {
+                cache.key == key && cache.permission_generation == permission_generation
+            })
+            .map_or_else(Vec::new, |cache| cache.resources.clone());
+        let cached_open_resources = {
+            self.open_resource_search_cache
+                .borrow()
+                .as_ref()
+                .filter(|cache| {
+                    cache.key == key && cache.permission_generation == permission_generation
+                })
+                .map(|cache| cache.provider.clone())
+        };
+        let open_resources = cached_open_resources.unwrap_or_else(|| {
+            let provider = crate::search::OpenResourceSearch::new(&resources);
+            *self.open_resource_search_cache.borrow_mut() = Some(OpenResourceSearchCache {
+                key: key.clone(),
+                permission_generation,
+                provider: provider.clone(),
+            });
+            provider
+        });
+        let mut providers = self.root_widget.search_providers();
+        providers.push(Box::new(open_resources));
         let mut palette = crate::action_palette::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.set_providers(providers);
@@ -3099,8 +3206,9 @@ impl App {
                 qos_actions::PermissionRequirement::Admin => Verb::Admin,
             };
             self.permission_ctx
-                .check(&crate::permissions::PermissionScope::app(
+                .check(&crate::permissions::PermissionScope::action(
                     crate::collaboration::local_app_id(),
+                    &action.id,
                     verb,
                 ))
         });
@@ -3847,6 +3955,7 @@ impl App {
             self.permission_generation.set(next);
         }
         self.local_resource_cache.get_mut().take();
+        self.open_resource_search_cache.get_mut().take();
         self.last_control_availability = None;
         self.refresh_control_action_availability();
         self.layout_dirty = true;
@@ -4610,9 +4719,29 @@ impl App {
         &mut self,
         user_id: String,
         key: crate::presence::PresenceKey,
-        payload: crate::collaboration::PresencePayload,
+        mut payload: crate::collaboration::PresencePayload,
     ) {
         use crate::presence::RemotePresenceEffect;
+        // Domain actions arrive without UI coordinates by design. If this
+        // frame exposes the same address through one or more controls, bind
+        // the interaction to the preferred live semantic route before the
+        // monotonic presence store sees it. Every later phase resolves by the
+        // same address, so identity remains stable while menus/toolbars move.
+        if let crate::collaboration::PresencePayload::Interaction(update) = &mut payload
+            && matches!(&update.anchor, qos_actions::InteractionAnchor::Resource)
+        {
+            let address = qos_actions::ActionAddress::new(
+                update.resource.id.clone(),
+                update.action.id.clone(),
+            );
+            if let Some(route) = self.preferred_action_ui_route(&address)
+                && let Some(target) = route.path.last()
+            {
+                update.anchor = qos_actions::InteractionAnchor::SemanticControl {
+                    id: target.as_str().to_string(),
+                };
+            }
+        }
         let interaction = match &payload {
             crate::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
             _ => None,
@@ -10616,6 +10745,63 @@ mod action_palette_tests {
             app.action_palette().is_none(),
             "palette closed after selection"
         );
+    }
+
+    #[test]
+    fn reopening_palette_reuses_live_resource_index_until_state_mutates() {
+        let mut app = App::new(State::new(), Box::new(Publisher));
+        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+
+        app.open_action_palette();
+        let first = app
+            .open_resource_search_cache
+            .borrow()
+            .as_ref()
+            .expect("first open builds the live-resource index")
+            .provider
+            .clone();
+        app.close_action_palette();
+        app.open_action_palette();
+        let second = app
+            .open_resource_search_cache
+            .borrow()
+            .as_ref()
+            .expect("second open retains the index")
+            .provider
+            .clone();
+        assert!(first.shares_storage_with(&second));
+
+        app.invalidate_widget_resource_cache();
+        assert!(app.open_resource_search_cache.borrow().is_none());
+    }
+
+    #[test]
+    fn synthesized_semantic_action_routes_back_to_its_visible_control() {
+        let mut app = App::new(
+            State::new(),
+            Box::new(Button::new("complete", "Complete", Some("completed"))),
+        );
+        app.init_layout();
+        let resource = app
+            .collect_resources()
+            .into_iter()
+            .find(|resource| {
+                resource.kind == "qos.ui.control"
+                    && resource.label == "Complete"
+                    && resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "activate")
+            })
+            .expect("collaborative button publishes a semantic action");
+        let address = qos_actions::ActionAddress::new(resource.id.as_str(), "activate");
+        let route = app
+            .preferred_action_ui_route(&address)
+            .expect("semantic action resolves to visible UI");
+
+        assert_eq!(route.control_id, "complete");
+        assert!(route.bounds.is_some());
+        assert!(!route.disabled);
     }
 
     #[test]
