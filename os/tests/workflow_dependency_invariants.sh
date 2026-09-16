@@ -196,7 +196,7 @@ for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
     fail=1
   fi
 done
-if ! grep -Fq 'key: desktop-external-inputs-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
+if ! grep -Fq 'key: desktop-external-inputs-${{ matrix.arch }}-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
     "$package_workflow" \
   || ! grep -Fq 'github-assets-all-v1-${{ hashFiles('\''os/external-assets/github-assets.tsv'\'') }}' \
     "$package_workflow" \
