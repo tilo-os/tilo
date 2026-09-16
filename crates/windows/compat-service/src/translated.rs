@@ -10,8 +10,11 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::dxvk::WineMode;
+
 pub(crate) const ROOTFS: &str = "/opt/qos/x86";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
+const PREPARATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Run a guest command while retaining a ready, monitored FEX server.
 pub fn run_translated_command(arguments: &[OsString]) -> io::Result<i32> {
@@ -27,14 +30,22 @@ pub fn run_translated_command(arguments: &[OsString]) -> io::Result<i32> {
             "missing Windows executable",
         ));
     }
-    let (mut guest, wine_server) = match mode.to_str() {
+    let (mut guest, wine) = match mode.to_str() {
         Some("wine32") => (
             vec![OsString::from("/usr/bin/wine32")],
-            Some("/usr/bin/wineserver32"),
+            Some(WineRuntime {
+                mode: WineMode::Win32,
+                loader: "/usr/bin/wine32",
+                server: "/usr/bin/wineserver32",
+            }),
         ),
         Some("wine64") => (
             vec![OsString::from("/usr/bin/wine64")],
-            Some("/usr/bin/wineserver64"),
+            Some(WineRuntime {
+                mode: WineMode::Win64,
+                loader: "/usr/bin/wine64",
+                server: "/usr/bin/wineserver64",
+            }),
         ),
         Some("proton") => (
             vec![
@@ -69,31 +80,133 @@ pub fn run_translated_command(arguments: &[OsString]) -> io::Result<i32> {
             Ok(())
         });
     }
+    // Declaration order matters: on every return path the server is reaped
+    // before the initialized prefix lease releases its shared directory lock.
+    #[allow(
+        clippy::collection_is_never_read,
+        reason = "the optional RAII lock intentionally lives until after server destruction"
+    )]
+    let _prefix_lease;
     let mut server = ManagedChild::new(server_command.spawn()?, false);
     drop(write_pipe);
     wait_for_ready(&read_pipe, &mut server.child, STARTUP_TIMEOUT)?;
     drop(read_pipe);
 
-    let status = run_guest(&guest, &mut server)?;
-    if let Some(wine_server) = wine_server {
-        let cleanup = run_guest(
-            &[OsString::from(wine_server), OsString::from("-w")],
-            &mut server,
-        )?;
-        if cleanup != 0 {
-            return Err(io::Error::other(format!(
-                "Wine server wait failed: {cleanup}"
-            )));
-        }
+    // Retain the shared lease through the final Wine server wait. Other
+    // initialized launches remain concurrent; upgrades cannot replace their DLLs.
+    _prefix_lease = wine
+        .as_ref()
+        .map(|wine| wine.prepare(&mut server))
+        .transpose()?;
+    let environment = wine.as_ref().map_or(GuestEnvironment::Unchanged, |wine| {
+        GuestEnvironment::WineApplication(wine.mode)
+    });
+    let status = run_guest(&guest, &mut server, environment, None)?;
+    if let Some(wine) = wine {
+        wine.wait(&mut server, None)?;
     }
     Ok(status)
 }
 
-fn run_guest(arguments: &[OsString], server: &mut ManagedChild) -> io::Result<i32> {
+struct WineRuntime {
+    mode: WineMode,
+    loader: &'static str,
+    server: &'static str,
+}
+
+impl WineRuntime {
+    fn prepare(&self, server: &mut ManagedChild) -> io::Result<crate::dxvk::PrefixLease> {
+        crate::dxvk::prepare(self.mode, |action| {
+            let status = run_guest(
+                &[
+                    OsString::from(self.loader),
+                    // An absolute Unix PE path requires a DOS drive mapping.
+                    // The capsule deliberately has no Z: drive. Select Wine's
+                    // immutable builtin by name and force builtin-only loading.
+                    OsString::from("wineboot.exe"),
+                    OsString::from(action.wineboot_argument()),
+                ],
+                server,
+                GuestEnvironment::WineBoot(self.mode),
+                Some(PREPARATION_TIMEOUT),
+            )?;
+            if status != 0 {
+                return Err(io::Error::other(format!(
+                    "Wine prefix update failed: {status}"
+                )));
+            }
+            self.wait(server, Some(PREPARATION_TIMEOUT))
+        })
+    }
+
+    fn wait(&self, server: &mut ManagedChild, timeout: Option<Duration>) -> io::Result<()> {
+        let status = run_guest(
+            &[OsString::from(self.server), OsString::from("-w")],
+            server,
+            GuestEnvironment::WinePreparation(self.mode),
+            timeout,
+        )?;
+        if status != 0 {
+            return Err(io::Error::other(format!(
+                "Wine server wait failed: {status}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GuestEnvironment {
+    Unchanged,
+    WineBoot(WineMode),
+    WinePreparation(WineMode),
+    WineApplication(WineMode),
+}
+
+impl GuestEnvironment {
+    fn apply(self, command: &mut Command) {
+        let (Self::WineBoot(mode) | Self::WinePreparation(mode) | Self::WineApplication(mode)) =
+            self
+        else {
+            return;
+        };
+        command.env(
+            "WINEARCH",
+            match mode {
+                WineMode::Win32 => "win32",
+                WineMode::Win64 => "win64",
+            },
+        );
+        match self {
+            Self::WineBoot(_) => {
+                command
+                    .env("WINEDLLOVERRIDES", "wineboot.exe=b")
+                    .env_remove("WINEDLLPATH")
+                    .env_remove("WINEBUILDDIR");
+            }
+            Self::WineApplication(_) => {
+                command.env("WINEDLLOVERRIDES", crate::dxvk::NATIVE_OVERRIDES);
+            }
+            Self::WinePreparation(_) => {
+                command.env_remove("WINEDLLOVERRIDES");
+            }
+            Self::Unchanged => {}
+        }
+    }
+}
+
+fn run_guest(
+    arguments: &[OsString],
+    server: &mut ManagedChild,
+    environment: GuestEnvironment,
+    timeout: Option<Duration>,
+) -> io::Result<i32> {
     let mut command = Command::new("/usr/bin/FEX");
     command.args(arguments).process_group(0);
     configure_environment(&mut command);
+    environment.apply(&mut command);
     let mut application = ManagedChild::new(command.spawn()?, true);
+    let started = Instant::now();
     loop {
         // Check the server first: even a simultaneous command exit must not
         // turn an unexpectedly terminated server into successful acceptance.
@@ -104,6 +217,12 @@ fn run_guest(arguments: &[OsString], server: &mut ManagedChild) -> io::Result<i3
         }
         if let Some(status) = application.child.try_wait()? {
             return Ok(exit_code(status));
+        }
+        if timeout.is_some_and(|timeout| started.elapsed() >= timeout) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Wine prefix preparation timed out",
+            ));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -240,6 +359,49 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Write;
+
+    #[test]
+    fn native_dxvk_overrides_apply_only_to_managed_wine_applications() {
+        for mode in [WineMode::Win32, WineMode::Win64] {
+            let mut boot = Command::new("/bin/true");
+            boot.env("WINEDLLOVERRIDES", "attacker");
+            GuestEnvironment::WineBoot(mode).apply(&mut boot);
+            assert!(boot.get_envs().any(|(key, value)| key == "WINEDLLOVERRIDES"
+                && value == Some(std::ffi::OsStr::new("wineboot.exe=b"))));
+            for key in ["WINEDLLPATH", "WINEBUILDDIR"] {
+                assert!(
+                    boot.get_envs()
+                        .any(|(actual, value)| actual == key && value.is_none())
+                );
+            }
+            let mut cleanup = Command::new("/bin/true");
+            GuestEnvironment::WinePreparation(mode).apply(&mut cleanup);
+            assert!(
+                cleanup
+                    .get_envs()
+                    .any(|(key, value)| key == "WINEDLLOVERRIDES" && value.is_none())
+            );
+            let mut application = Command::new("/bin/true");
+            GuestEnvironment::WineApplication(mode).apply(&mut application);
+            assert!(
+                application
+                    .get_envs()
+                    .any(|(key, value)| key == "WINEDLLOVERRIDES"
+                        && value == Some(std::ffi::OsStr::new(crate::dxvk::NATIVE_OVERRIDES)))
+            );
+            let expected = match mode {
+                WineMode::Win32 => "win32",
+                WineMode::Win64 => "win64",
+            };
+            assert!(
+                application.get_envs().any(|(key, value)| key == "WINEARCH"
+                    && value == Some(std::ffi::OsStr::new(expected)))
+            );
+        }
+        let mut proton = Command::new("/bin/true");
+        GuestEnvironment::Unchanged.apply(&mut proton);
+        assert_eq!(proton.get_envs().count(), 0);
+    }
 
     #[test]
     fn inherited_socket_and_rootfs_overrides_are_replaced() {
