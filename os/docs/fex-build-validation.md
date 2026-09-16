@@ -58,10 +58,30 @@ the existing native buildroot and complete guest SDK with portable CPU settings.
 Mutable input references were rejected before compilation. The complete new
 validator suite passed nine tests, and 36 real staged files passed validation
 in a separate fixture with the upstream license added. The original stage was
-unchanged and correctly failed its missing-license check. The complete new
-payload recipe has not yet been built or promoted. A production buildroot/SDK
+unchanged and correctly failed its missing-license check. A production buildroot/SDK
 digest, separately frozen shipping guest filesystem, dependency-closure checks,
 and passing runtime acceptance remain required before final image integration.
+
+The portable configuration subsequently completed all 8,165 build steps. Main,
+Guest and Guest_32 installation into a separate staging directory, with the
+recipe's full license-copy step, passed the payload validator: 74 inventoried
+files in a 29 MB stage. The unchanged full upstream suite then produced 11,726
+passes, 460 skips and the same two failures across 12,188 tests in 497.52 seconds.
+The Vulkan thunk `vulkaninfo` SIGILL and `syscalls_efault.64.jit.flt` failure
+remain; portable CPU tuning introduced no additional failures in this suite.
+
+Evidence is retained in `fex-portable-validation-summary.json`,
+`fex-portable-payload-inventory.json`, `fex-portable-stage.log`, and
+`fex-portable-complete-graphics-validation.log` in the preparation tree.
+The diagnostic image is `localhost/qos-fex-portable-runtime:arm64-guests`, ID
+`0e5d405552f06a46515cdd3ce49862718d73f03a056023acd0f38209b9089299`.
+Its installed FEX SHA-256 is
+`fd1ff65e292759a60d56bffaf0df522e5068ff780272ee23bea99e7da1ca505b`;
+FEXServer is
+`86451ad92754d0f229c06848ead93f3427ab9ba8b87650b43831f725bc204d1b`.
+These checks used existing local diagnostic input images. They do not constitute
+a build of the complete new Containerfile against promoted immutable inputs,
+or release acceptance.
 
 The buildroot compiles NASM natively into `/usr/local/bin`. NASM emits x86 test
 programs; it is not an x86 executable and does not require emulation to run.
