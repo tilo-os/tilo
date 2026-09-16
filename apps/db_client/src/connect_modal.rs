@@ -18,6 +18,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::model::{ConnectionProfile, Engine};
 use crate::theme_ext::ThemeExt;
 use ui::PresenceCtx;
+use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Role};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, TextInput, Widget};
@@ -32,6 +33,45 @@ enum Field {
     User,
     Password,
     FilePath,
+}
+
+impl Field {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Host => "host",
+            Self::Port => "port",
+            Self::Database => "database",
+            Self::User => "user",
+            Self::Password => "password",
+            Self::FilePath => "file-path",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        Some(match key {
+            "name" => Self::Name,
+            "host" => Self::Host,
+            "port" => Self::Port,
+            "database" => Self::Database,
+            "user" => Self::User,
+            "password" => Self::Password,
+            "file-path" => Self::FilePath,
+            _ => return None,
+        })
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Connection name",
+            Self::Host => "Host",
+            Self::Port => "Port",
+            Self::Database => "Database",
+            Self::User => "User",
+            Self::Password => "Password",
+            Self::FilePath => "SQLite file path",
+        }
+    }
 }
 
 /// Existing host context borrowed by the modal's local embedded inputs.
@@ -118,6 +158,109 @@ impl ConnectModal {
         self.focus_field(Some(Field::Name));
     }
 
+    /// The hand-laid connection form has no retained container widget, so it
+    /// publishes its controls as a synthetic dialog tree. Password text is
+    /// deliberately absent from the exported value.
+    pub fn accessibility(&self) -> Option<AccessNode> {
+        if !self.open {
+            return None;
+        }
+        let mut children = vec![
+            AccessNode::new(Role::Group)
+                .with_name("Database engine")
+                .with_children(
+                    [Engine::Postgres, Engine::MySql, Engine::Sqlite]
+                        .into_iter()
+                        .map(|engine| {
+                            AccessNode::new(Role::RadioButton)
+                                .with_name(engine.label())
+                                .with_action_target(format!("db.modal.engine:{}", engine.as_key()))
+                                .with_state(
+                                    AccessState::new()
+                                        .focusable(true)
+                                        .checked(self.engine == engine),
+                                )
+                        })
+                        .collect(),
+                ),
+        ];
+        children.extend(self.visible_fields().iter().copied().map(|field| {
+            let input = self.input(field);
+            let mut node = AccessNode::new(Role::TextInput)
+                .with_name(field.label())
+                .with_action_target(format!("db.modal.field:{}", field.key()))
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .protected(field == Field::Password),
+                );
+            if field != Field::Password {
+                node = node.with_value(input.value());
+            }
+            node
+        }));
+        children.extend([
+            AccessNode::new(Role::Button)
+                .with_name("Cancel")
+                .with_action_target("db.modal.cancel")
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::Button)
+                .with_name("Save connection")
+                .with_action_target("db.modal.save")
+                .with_state(AccessState::new().focusable(true)),
+        ]);
+        Some(
+            AccessNode::new(Role::Dialog)
+                .with_name("New database connection")
+                .with_description("Enter connection details. Passwords stay on this device.")
+                .with_state(AccessState::new().modal(true))
+                .with_children(children),
+        )
+    }
+
+    /// Route assistive-technology edits and activation through the same local
+    /// fields and save/cancel flow as pointer and keyboard input.
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &A11yAction,
+    ) -> Option<ConnectionProfile> {
+        if !self.open {
+            return None;
+        }
+        if target == "db.modal.cancel" && matches!(action, A11yAction::Activate) {
+            self.open = false;
+            self.focus_field(None);
+            return None;
+        }
+        if target == "db.modal.save" && matches!(action, A11yAction::Activate) {
+            let profile = self.build_profile();
+            self.open = false;
+            self.focus_field(None);
+            return Some(profile);
+        }
+        if let Some(key) = target.strip_prefix("db.modal.engine:")
+            && matches!(action, A11yAction::Activate | A11yAction::ToggleCheck)
+            && matches!(key, "postgres" | "mysql" | "sqlite")
+        {
+            self.set_engine(Engine::from_key(key));
+            return None;
+        }
+        if let Some(key) = target.strip_prefix("db.modal.field:")
+            && let Some(field) = Field::from_key(key)
+        {
+            match action {
+                A11yAction::Focus | A11yAction::Activate => self.focus_field(Some(field)),
+                A11yAction::SetValue(value) => {
+                    self.input_mut(field).set_text(value);
+                    self.focus_field(Some(field));
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     fn set_engine(&mut self, e: Engine) {
         self.engine = e;
         if e != Engine::Sqlite && self.port.value().is_empty() {
@@ -140,6 +283,18 @@ impl ConnectModal {
             Field::User => &mut self.user,
             Field::Password => &mut self.password,
             Field::FilePath => &mut self.file_path,
+        }
+    }
+
+    fn input(&self, f: Field) -> &TextInput {
+        match f {
+            Field::Name => &self.name,
+            Field::Host => &self.host,
+            Field::Port => &self.port,
+            Field::Database => &self.database,
+            Field::User => &self.user,
+            Field::Password => &self.password,
+            Field::FilePath => &self.file_path,
         }
     }
 
