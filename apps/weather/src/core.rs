@@ -106,6 +106,20 @@ struct DrawCtx<'a> {
     theme: &'a Theme,
 }
 
+/// The `Widget::handle_event` inputs the overview and its embedded search
+/// field share. The pane constructs this once at the trait boundary; internal
+/// routing then adds only the state specific to each gesture.
+pub(crate) struct OverviewEventCtx<'a> {
+    pub(crate) event: &'a WindowEvent,
+    pub(crate) scale_factor: f64,
+    pub(crate) modifiers: winit::event::Modifiers,
+    pub(crate) state: &'a mut AutoCommit,
+    pub(crate) path: &'a ObjId,
+    pub(crate) focus_target: &'a mut Option<NodeId>,
+    pub(crate) node_id: NodeId,
+    pub(crate) taffy: &'a TaffyTree<()>,
+}
+
 #[derive(Clone, Copy)]
 enum OverAction {
     SelectLocation(usize),
@@ -1603,38 +1617,15 @@ impl Core {
     }
 
     /// Handle an event routed to the overview pane. Returns true if consumed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
-    )]
-    pub fn handle_overview_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    pub(crate) fn handle_overview_event(&mut self, mut ctx: OverviewEventCtx<'_>) -> bool {
         // Keep the shared field placed so its overlay hit-tests correctly.
         self.search.apply_layout_external(self.search_field_rect);
 
-        if let Some(consumed) = self.route_overview_search_field(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
+        if let Some(consumed) = self.route_overview_search_field(&mut ctx) {
             return consumed;
         }
 
-        let (handled, _changed) = self.dispatch_overview_event(event, scale_factor);
+        let (handled, _changed) = self.dispatch_overview_event(ctx.event, ctx.scale_factor);
         handled
     }
 
@@ -1644,21 +1635,7 @@ impl Core {
     /// `Some(consumed)` when the field fully handled the event (the caller
     /// should return immediately), or `None` to fall through to the list's
     /// own gesture handling.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the WindowEvent-routing signature threaded through ui::widget::Widget::handle_event across this crate's app.rs/panes.rs — bundling it into a context struct would ripple across every event-routing method here, out of scope for this split"
-    )]
-    fn route_overview_search_field(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> Option<bool> {
+    fn route_overview_search_field(&mut self, ctx: &mut OverviewEventCtx<'_>) -> Option<bool> {
         use winit::event::{ElementState, MouseButton};
 
         // A press over the field while not editing begins an edit.
@@ -1666,7 +1643,7 @@ impl Core {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
-        } = event
+        } = ctx.event
             && !self.search.is_editing()
             && self.search_field_rect.contains(self.last_mouse)
         {
@@ -1681,15 +1658,15 @@ impl Core {
         let before = self.search.text().to_string();
         let mut ac_handled = false;
         self.search.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
+            ctx.event,
+            ctx.scale_factor,
+            &ctx.modifiers,
+            ctx.state,
+            ctx.path,
             &mut ac_handled,
-            focus_target,
-            node_id,
-            taffy,
+            ctx.focus_target,
+            ctx.node_id,
+            ctx.taffy,
         );
         match self.search.take_outcome() {
             AutocompleteOutcome::Accepted(value) => {
