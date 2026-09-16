@@ -24,6 +24,42 @@ PAYLOADFORMAT PAYLOADCOMPRESSOR PAYLOADFLAGS HEADERIMMUTABLE HEADERREGIONS
 BUILDTIME BUILDHOST COOKIE RPMVERSION
 '''.split())
 
+FILE_ARRAYS = frozenset('''
+DIRINDEXES BASENAMES FILEDIGESTS FILESIZES LONGFILESIZES FILEMODES FILERDEVS
+FILEMTIMES FILELINKTOS FILEFLAGS FILEUSERNAME FILEGROUPNAME FILEVERIFYFLAGS
+FILEDEVICES FILEINODES FILELANGS FILECOLORS FILECLASS FILECAPS FILESTATES
+FILESIGNATURES VERITYSIGNATURES
+'''.split())
+
+
+def validate_file_table(tags):
+    # FILENAMES is a computed rpm --queryformat tag, not an XML header tag.
+    # Payload-free metapackages (including wine-winefonts) have no file table.
+    present = FILE_ARRAYS.intersection(tags) | ({'DIRNAMES'} & tags.keys())
+    if not present:
+        return
+    for name in ('BASENAMES', 'DIRNAMES', 'DIRINDEXES', 'FILEDIGESTS'):
+        if name not in tags:
+            raise ValueError(f'noarch file table is missing {name}')
+    count = len(tags['BASENAMES'])
+    for name in FILE_ARRAYS.intersection(tags):
+        if len(tags[name]) != count:
+            raise ValueError(f'noarch file table length mismatch: {name}')
+    directories = tags['DIRNAMES']
+    for kind, directory in directories:
+        if kind != 'string' or not directory.startswith('/') or not directory.endswith('/') or '..' in directory.split('/'):
+            raise ValueError('invalid RPM directory name')
+    paths = set()
+    for (kind, basename), (index_kind, index) in zip(tags['BASENAMES'], tags['DIRINDEXES'], strict=True):
+        if kind != 'string' or not basename or '/' in basename or basename in ('.', '..'):
+            raise ValueError('invalid RPM basename')
+        if index_kind != 'integer' or not index.isdecimal() or int(index) >= len(directories):
+            raise ValueError('invalid RPM directory index')
+        name = directories[int(index)][1] + basename
+        if name in paths:
+            raise ValueError('duplicate RPM installed path')
+        paths.add(name)
+
 
 def semantic_header(xml):
     root = ET.fromstring(xml)
@@ -37,11 +73,12 @@ def semantic_header(xml):
         if name in result:
             raise ValueError('duplicate semantic RPM tag')
         result[name] = [(child.tag, child.text or '') for child in tag]
-    for required in ('NAME', 'VERSION', 'RELEASE', 'ARCH', 'FILENAMES', 'FILEDIGESTS'):
+    for required in ('NAME', 'VERSION', 'RELEASE', 'ARCH'):
         if required not in result:
             raise ValueError(f'noarch header is missing {required}')
     if result['ARCH'] != [('string', 'noarch')]:
         raise ValueError('shared package must be noarch')
+    validate_file_table(result)
     return result
 
 

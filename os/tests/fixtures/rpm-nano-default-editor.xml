@@ -1,0 +1,363 @@
+<rpmHeader>
+  <rpmTag name="Headeri18ntable">
+	<string>C</string>
+  </rpmTag>
+  <rpmTag name="Sigsize">
+	<integer>4588</integer>
+  </rpmTag>
+  <rpmTag name="Sigmd5">
+	<base64>TXdxFu5w9o4Ory3rmwiTsw==
+</base64>
+  </rpmTag>
+  <rpmTag name="Rsaheader">
+	<base64>iQIzBAABCAAdFiEEsPSVBFj2nhFQxsXtyKxJFhBe+UQFAmfb3CUACgkQyKxJFhBe
++UQ1AhAAhnlYfOt+G26wz4HYyoBL9Iht7Mra/jNNN1KrbsxUa0SofMwg5ISuRqCL
+1Uv2Ijf/gFz6WqKXRhPyStfpLSZf2TRGVAXCouEhzu2ui3ZjhcaweQm8pj22OJN3
+CZy7d8TcOa5kWIpxANNefNr3Wf7zKwWfIrQLb0jh7tt9LxNNojjISToU+6y0Ulvj
+a1jaPR9ij9DUuB3eRFbhmy/A0dqtJH7ZNCm9x1BtS6K0fZAzydhlttK1kwKmi4xl
+eH32J26ZAy5f9R5RsrwyK6QNVCw1lLigZC0l+DRhLpeDgVt7738XL0drY7Suibu3
+WP4so4R4Bm2CkgcTwAavtBPv7FDSFxCt2OzVKaLJPOF0crxScMW1AtAPmSphiyp/
+tT9Xi/hHxhSpLCj8CLBRi8UvCe538BAoLhviOzIIc4w6qA0HT0xfKKKK6b1Uhkkz
+12MVEtzASb4dLXP3qHFmcdgNGDm60vX9TC5XBYg2SXFq1i0l7x7kQ3oJg7HHRqRI
+Dgkat/QtXxwUljcOAL25Ef9plP4GUdcJIFrnnBQLIc8HckZ6mQFSadGkab+qSGNU
+X2g6Dn3zWSKPuNowWiXXQK7cMs4nr3egOJqBNUMaSwHzzdqYOUIsq9G+9v1rOWG7
+ZIrzS81X0pcozqXOlqHSXitqEZtfcdbFPJPNFFr6U1zexyzYq9o=
+</base64>
+  </rpmTag>
+  <rpmTag name="Sha1header">
+	<string>b899b809d2e310f02420289db6def356716495d1</string>
+  </rpmTag>
+  <rpmTag name="Sha256header">
+	<string>569b489961b3f519f49209edac45b862956922ccef4f2b79486d37bded055dc7</string>
+  </rpmTag>
+  <rpmTag name="Name">
+	<string>nano-default-editor</string>
+  </rpmTag>
+  <rpmTag name="Version">
+	<string>8.3</string>
+  </rpmTag>
+  <rpmTag name="Release">
+	<string>3.fc42</string>
+  </rpmTag>
+  <rpmTag name="Summary">
+	<string>Sets GNU nano as the default editor</string>
+  </rpmTag>
+  <rpmTag name="Description">
+	<string>This package ensures the EDITOR shell variable
+is set in common shells to GNU nano.</string>
+  </rpmTag>
+  <rpmTag name="Buildtime">
+	<integer>1742460189</integer>
+  </rpmTag>
+  <rpmTag name="Buildhost">
+	<string>buildvm-x86-20.iad2.fedoraproject.org</string>
+  </rpmTag>
+  <rpmTag name="Installtime">
+	<integer>1744200044</integer>
+  </rpmTag>
+  <rpmTag name="Size">
+	<integer>514</integer>
+  </rpmTag>
+  <rpmTag name="Distribution">
+	<string>Fedora Project</string>
+  </rpmTag>
+  <rpmTag name="Vendor">
+	<string>Fedora Project</string>
+  </rpmTag>
+  <rpmTag name="License">
+	<string>GPL-3.0-or-later</string>
+  </rpmTag>
+  <rpmTag name="Packager">
+	<string>Fedora Project</string>
+  </rpmTag>
+  <rpmTag name="Group">
+	<string>Unspecified</string>
+  </rpmTag>
+  <rpmTag name="Url">
+	<string>https://www.nano-editor.org</string>
+  </rpmTag>
+  <rpmTag name="Os">
+	<string>linux</string>
+  </rpmTag>
+  <rpmTag name="Arch">
+	<string>noarch</string>
+  </rpmTag>
+  <rpmTag name="Filesizes">
+	<integer>0</integer>
+	<integer>122</integer>
+	<integer>120</integer>
+	<integer>0</integer>
+	<integer>272</integer>
+  </rpmTag>
+  <rpmTag name="Filestates">
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+  </rpmTag>
+  <rpmTag name="Filemodes">
+	<integer>16877</integer>
+	<integer>33188</integer>
+	<integer>33188</integer>
+	<integer>16877</integer>
+	<integer>33188</integer>
+  </rpmTag>
+  <rpmTag name="Filerdevs">
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+  </rpmTag>
+  <rpmTag name="Filemtimes">
+	<integer>1742428800</integer>
+	<integer>1742428800</integer>
+	<integer>1742428800</integer>
+	<integer>1742428800</integer>
+	<integer>1742428800</integer>
+  </rpmTag>
+  <rpmTag name="Filedigests">
+	<string/>
+	<string>a16bca41fabcf0d67687674054a5b5b9d242b5383bfe1f65a0298544fcd62823</string>
+	<string>093fa4a80330c1fa04033fae467e675ec9eea304ffe53e70ee87bc55d685c316</string>
+	<string/>
+	<string>460e018ff2ce91f3aea5cd661b5fa1d111f6611d5ada6adc904b318e1d7d3ece</string>
+  </rpmTag>
+  <rpmTag name="Filelinktos">
+	<string/>
+	<string/>
+	<string/>
+	<string/>
+	<string/>
+  </rpmTag>
+  <rpmTag name="Fileflags">
+	<integer>0</integer>
+	<integer>17</integer>
+	<integer>17</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+  </rpmTag>
+  <rpmTag name="Fileusername">
+	<string>root</string>
+	<string>root</string>
+	<string>root</string>
+	<string>root</string>
+	<string>root</string>
+  </rpmTag>
+  <rpmTag name="Filegroupname">
+	<string>root</string>
+	<string>root</string>
+	<string>root</string>
+	<string>root</string>
+	<string>root</string>
+  </rpmTag>
+  <rpmTag name="Sourcerpm">
+	<string>nano-8.3-3.fc42.src.rpm</string>
+  </rpmTag>
+  <rpmTag name="Fileverifyflags">
+	<integer>4294967295</integer>
+	<integer>4294967295</integer>
+	<integer>4294967295</integer>
+	<integer>4294967295</integer>
+	<integer>4294967295</integer>
+  </rpmTag>
+  <rpmTag name="Archivesize">
+	<integer>1384</integer>
+  </rpmTag>
+  <rpmTag name="Providename">
+	<string>config(nano-default-editor)</string>
+	<string>nano-default-editor</string>
+	<string>system-default-editor</string>
+  </rpmTag>
+  <rpmTag name="Requireflags">
+	<integer>268435464</integer>
+	<integer>8</integer>
+	<integer>16777226</integer>
+	<integer>16777226</integer>
+	<integer>16777226</integer>
+	<integer>16777226</integer>
+  </rpmTag>
+  <rpmTag name="Requirename">
+	<string>config(nano-default-editor)</string>
+	<string>nano</string>
+	<string>rpmlib(CompressedFileNames)</string>
+	<string>rpmlib(FileDigests)</string>
+	<string>rpmlib(PayloadFilesHavePrefix)</string>
+	<string>rpmlib(PayloadIsZstd)</string>
+  </rpmTag>
+  <rpmTag name="Requireversion">
+	<string>8.3-3.fc42</string>
+	<string>8.3-3.fc42</string>
+	<string>3.0.4-1</string>
+	<string>4.6.0-1</string>
+	<string>4.0-1</string>
+	<string>5.4.18-1</string>
+  </rpmTag>
+  <rpmTag name="Conflictflags">
+	<integer>0</integer>
+  </rpmTag>
+  <rpmTag name="Conflictname">
+	<string>system-default-editor</string>
+  </rpmTag>
+  <rpmTag name="Conflictversion">
+	<string/>
+  </rpmTag>
+  <rpmTag name="Rpmversion">
+	<string>4.20.1</string>
+  </rpmTag>
+  <rpmTag name="Changelogtime">
+	<integer>1742472000</integer>
+	<integer>1737115200</integer>
+	<integer>1735819200</integer>
+	<integer>1725537600</integer>
+	<integer>1721304000</integer>
+	<integer>1714651200</integer>
+	<integer>1706184000</integer>
+	<integer>1705838400</integer>
+	<integer>1689854400</integer>
+	<integer>1679400000</integer>
+  </rpmTag>
+  <rpmTag name="Changelogname">
+	<string>Lukáš Zaoral &lt;lzaoral@redhat.com&gt; - 8.3-3</string>
+	<string>Fedora Release Engineering &lt;releng@fedoraproject.org&gt; - 8.3-2</string>
+	<string>Lukáš Zaoral &lt;lzaoral@redhat.com&gt; - 8.3-1</string>
+	<string>Lukáš Zaoral &lt;lzaoral@redhat.com&gt; - 8.2-1</string>
+	<string>Lukáš Zaoral &lt;lzaoral@redhat.com&gt; - 8.1-1</string>
+	<string>Lukáš Zaoral &lt;lzaoral@redhat.com&gt; - 8.0-1</string>
+	<string>Fedora Release Engineering &lt;releng@fedoraproject.org&gt; - 7.2-6</string>
+	<string>Fedora Release Engineering &lt;releng@fedoraproject.org&gt; - 7.2-5</string>
+	<string>Fedora Release Engineering &lt;releng@fedoraproject.org&gt; - 7.2-4</string>
+	<string>Lukáš Zaoral &lt;lzaoral@redhat.com&gt; - 7.2-3</string>
+  </rpmTag>
+  <rpmTag name="Changelogtext">
+	<string>- fix nano syntax highlighting in default nanorc (rhbz#2353508)</string>
+	<string>- Rebuilt for https://fedoraproject.org/wiki/Fedora_42_Mass_Rebuild</string>
+	<string>- rebase to latest upstream version (rhbz#2333643)</string>
+	<string>- rebase to latest upstream release (rhbz#2310179)</string>
+	<string>- rebase to latest upstream release (rhbz#2297610)</string>
+	<string>- rebase to latest upstream version (rhbz#2278126)</string>
+	<string>- Rebuilt for https://fedoraproject.org/wiki/Fedora_40_Mass_Rebuild</string>
+	<string>- Rebuilt for https://fedoraproject.org/wiki/Fedora_40_Mass_Rebuild</string>
+	<string>- Rebuilt for https://fedoraproject.org/wiki/Fedora_39_Mass_Rebuild</string>
+	<string>- migrated to SPDX license</string>
+  </rpmTag>
+  <rpmTag name="Filedevices">
+	<integer>1</integer>
+	<integer>1</integer>
+	<integer>1</integer>
+	<integer>1</integer>
+	<integer>1</integer>
+  </rpmTag>
+  <rpmTag name="Fileinodes">
+	<integer>1</integer>
+	<integer>2</integer>
+	<integer>3</integer>
+	<integer>4</integer>
+	<integer>5</integer>
+  </rpmTag>
+  <rpmTag name="Filelangs">
+	<string/>
+	<string/>
+	<string/>
+	<string/>
+	<string/>
+  </rpmTag>
+  <rpmTag name="Provideflags">
+	<integer>268435464</integer>
+	<integer>8</integer>
+	<integer>0</integer>
+  </rpmTag>
+  <rpmTag name="Provideversion">
+	<string>8.3-3.fc42</string>
+	<string>8.3-3.fc42</string>
+	<string/>
+  </rpmTag>
+  <rpmTag name="Dirindexes">
+	<integer>0</integer>
+	<integer>1</integer>
+	<integer>1</integer>
+	<integer>2</integer>
+	<integer>3</integer>
+  </rpmTag>
+  <rpmTag name="Basenames">
+	<string>profile.d</string>
+	<string>nano-default-editor.csh</string>
+	<string>nano-default-editor.sh</string>
+	<string>vendor_conf.d</string>
+	<string>nano-default-editor.fish</string>
+  </rpmTag>
+  <rpmTag name="Dirnames">
+	<string>/etc/</string>
+	<string>/etc/profile.d/</string>
+	<string>/usr/share/fish/</string>
+	<string>/usr/share/fish/vendor_conf.d/</string>
+  </rpmTag>
+  <rpmTag name="Optflags">
+	<string>-O2 -flto=auto -ffat-lto-objects -fexceptions -g -grecord-gcc-switches -pipe -Wall -Wno-complain-wrong-lang -Werror=format-security -Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3 -Wp,-D_GLIBCXX_ASSERTIONS -specs=/usr/lib/rpm/redhat/redhat-hardened-cc1 -fstack-protector-strong -specs=/usr/lib/rpm/redhat/redhat-annobin-cc1  -m32 -march=i686 -mtune=generic -msse2 -mfpmath=sse -mstackrealign -fasynchronous-unwind-tables -fstack-clash-protection</string>
+  </rpmTag>
+  <rpmTag name="Payloadformat">
+	<string>cpio</string>
+  </rpmTag>
+  <rpmTag name="Payloadcompressor">
+	<string>zstd</string>
+  </rpmTag>
+  <rpmTag name="Payloadflags">
+	<string>19</string>
+  </rpmTag>
+  <rpmTag name="Installcolor">
+	<integer>3</integer>
+  </rpmTag>
+  <rpmTag name="Installtid">
+	<integer>1744200043</integer>
+  </rpmTag>
+  <rpmTag name="Platform">
+	<string>i686-redhat-linux-gnu</string>
+  </rpmTag>
+  <rpmTag name="Filecolors">
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+	<integer>0</integer>
+  </rpmTag>
+  <rpmTag name="Fileclass">
+	<integer>0</integer>
+	<integer>1</integer>
+	<integer>1</integer>
+	<integer>0</integer>
+	<integer>1</integer>
+  </rpmTag>
+  <rpmTag name="Classdict">
+	<string>directory</string>
+	<string>ASCII text</string>
+  </rpmTag>
+  <rpmTag name="Filedigestalgo">
+	<integer>8</integer>
+  </rpmTag>
+  <rpmTag name="Bugurl">
+	<string>https://bugz.fedoraproject.org/nano</string>
+  </rpmTag>
+  <rpmTag name="Encoding">
+	<string>utf-8</string>
+  </rpmTag>
+  <rpmTag name="Filesignatures">
+	<string/>
+	<string>03020462f02aa40047304502210082fe5f124130543dc74a6fc0a0d2e8eccc9a84febd7ca7f234997813785dcec602204131513332d646fa4f1bc502d25f32e31b2ca72e3060de9625d40701f5dd306a</string>
+	<string>03020462f02aa400463044022025faff3a100e31ca762781a1728512aec17b8f85a128fd24ac5a3dbac2a1fbe702204430a206e0e720a6342b0e0602ece8af336062b7bcc253e6361a85af609394cd</string>
+	<string/>
+	<string>03020462f02aa400473045022065fa1883db4ff83fbff1efd1a650faf4279675ea960c643b1b159df321c52677022100f96935c98f6326b76551db63f238bf97704e5cd5b7f9e8bc5baa120664cb9c89</string>
+  </rpmTag>
+  <rpmTag name="Filesignaturelength">
+	<integer>80</integer>
+  </rpmTag>
+  <rpmTag name="Payloaddigest">
+	<string>d9816146e3c23a9aca6df3b3f3e92e3444171a925f29e336d536be619ae844b2</string>
+  </rpmTag>
+  <rpmTag name="Payloaddigestalgo">
+	<integer>8</integer>
+  </rpmTag>
+  <rpmTag name="Payloaddigestalt">
+	<string>d684a5c618b1ef5fc90654c5cd102414dba25e73e54c98bdcf0bb41244bc8c0d</string>
+  </rpmTag>
+</rpmHeader>
