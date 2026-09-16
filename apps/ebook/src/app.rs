@@ -7403,6 +7403,13 @@ struct SettingsTabsView {
     y: f64,
 }
 
+#[derive(Clone, Copy)]
+struct SettingsColumnView {
+    x: f64,
+    width: f64,
+    y: f64,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -9674,9 +9681,19 @@ impl BooksApp {
         let col_x = r.x0 + (r.width() - col_w) / 2.0;
         let start_y = content_top - self.settings_scroll;
         let end_y = match self.settings_tab {
-            SettingsTab::Library => {
-                self.draw_library_settings(scene, t, tr, theme, &c, col_x, col_w, start_y)
-            }
+            SettingsTab::Library => self.draw_library_settings(
+                &mut EbookPaintCtx {
+                    scene: &mut *scene,
+                    transform: t,
+                    text: &mut *tr,
+                    theme,
+                },
+                SettingsColumnView {
+                    x: col_x,
+                    width: col_w,
+                    y: start_y,
+                },
+            ),
             SettingsTab::Fonts => {
                 self.draw_fonts_manager(scene, t, tr, theme, &c, col_x, col_w, start_y)
             }
@@ -9982,20 +9999,12 @@ impl BooksApp {
 
     /// The Library settings pane: manage the folders watched for new books,
     /// the secondary way in ("Open a book" stays primary).
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
     fn draw_library_settings(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        mut y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        mut view: SettingsColumnView,
     ) -> f64 {
-        y = Self::draw_library_settings_header(scene, t, tr, c, x, w, y);
+        view.y = Self::draw_library_settings_header(ctx, view);
 
         // Candidate folders: watched ones, plus folders books were opened
         // from — always something concrete to toggle, no folder picker needed.
@@ -10012,88 +10021,77 @@ impl BooksApp {
         folders.dedup();
 
         if folders.is_empty() {
-            return self.draw_library_settings_empty(scene, t, tr, theme, c, x, w, y);
+            return self.draw_library_settings_empty(ctx, view);
         }
 
-        self.draw_watched_folder_rows(scene, t, tr, theme, c, x, w, y, &folders)
+        self.draw_watched_folder_rows(ctx, view, &folders)
     }
 
     /// "WATCHED FOLDERS" title + the explanatory blurb. Returns the y just
     /// below it.
-    fn draw_library_settings_header(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        mut y: f64,
-    ) -> f64 {
+    fn draw_library_settings_header(ctx: &mut EbookPaintCtx<'_>, view: SettingsColumnView) -> f64 {
+        let c = &ctx.theme.tokens.colors;
+        let mut y = view.y;
         // A short read on where books come from — no leaked internal paths, no
         // "magic folder": the primary way in is opening a book.
-        tr.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "WATCHED FOLDERS",
             11.0,
             c.text_dim,
-            t * Affine::translate((x, y)),
+            ctx.transform * Affine::translate((view.x, y)),
             None,
             TextWeight::Semibold,
         );
         y += 20.0;
-        tr.draw_text(
-            scene,
+        ctx.text.draw_text(
+            ctx.scene,
             "Turn a folder on to add its books to your library automatically, and to keep noticing new ones. Everything you open is added to your library either way.",
             12.5,
             c.text_dim,
-            t * Affine::translate((x, y)),
-            Some(w as f32),
+            ctx.transform * Affine::translate((view.x, y)),
+            Some(view.width as f32),
         );
         y + 40.0
     }
 
     /// The empty state: an explanation card + the primary "Open a book"
     /// action (no folder picker — the watch list grows from books you open).
-    #[allow(clippy::too_many_arguments)]
     fn draw_library_settings_empty(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        mut y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: SettingsColumnView,
     ) -> f64 {
-        let radii_md = f64::from(theme.tokens.radii.md);
-        let card = Rect::new(x, y, x + w, y + 84.0);
-        paint::fill_round(scene, t, card, radii_md, c.surfaces.raised);
-        tr.draw_text_weighted(
-            scene,
+        let c = &ctx.theme.tokens.colors;
+        let mut y = view.y;
+        let radii_md = f64::from(ctx.theme.tokens.radii.md);
+        let card = Rect::new(view.x, y, view.x + view.width, y + 84.0);
+        paint::fill_round(ctx.scene, ctx.transform, card, radii_md, c.surfaces.raised);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "No folders yet",
             14.0,
             c.text_primary,
-            t * Affine::translate((x + 18.0, y + 18.0)),
+            ctx.transform * Affine::translate((view.x + 18.0, y + 18.0)),
             None,
             TextWeight::Semibold,
         );
-        tr.draw_text(
-            scene,
+        ctx.text.draw_text(
+            ctx.scene,
             "Open a book from a folder and it will appear here, ready to watch.",
             12.5,
             c.text_dim,
-            t * Affine::translate((x + 18.0, y + 42.0)),
-            Some((w - 36.0) as f32),
+            ctx.transform * Affine::translate((view.x + 18.0, y + 42.0)),
+            Some((view.width - 36.0) as f32),
         );
         y += 84.0 + 16.0;
         let bw = 150.0;
         self.accent_button(
-            scene,
-            t,
-            tr,
-            theme,
-            Rect::new(x, y, x + bw, y + 40.0),
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
+            Rect::new(view.x, y, view.x + bw, y + 40.0),
             "Open a book…",
             true,
             Action::OpenViaPortal,
@@ -10103,20 +10101,15 @@ impl BooksApp {
 
     /// One row per candidate folder: name, resolved path, and its watch
     /// toggle. Returns the y just below the last row.
-    #[allow(clippy::too_many_arguments)]
     fn draw_watched_folder_rows(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        mut y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: SettingsColumnView,
         folders: &[PathBuf],
     ) -> f64 {
-        let radii_md = f64::from(theme.tokens.radii.md);
+        let c = &ctx.theme.tokens.colors;
+        let mut y = view.y;
+        let radii_md = f64::from(ctx.theme.tokens.radii.md);
         let home = std::env::var("HOME").ok();
         let ws = content::workspace_root();
         // Present folders in human terms — never a raw internal mount (HIG §4):
@@ -10142,42 +10135,42 @@ impl BooksApp {
 
         for folder in folders {
             let row_h = 60.0;
-            let card = Rect::new(x, y, x + w, y + row_h);
-            paint::fill_round(scene, t, card, radii_md, c.surfaces.raised);
+            let card = Rect::new(view.x, y, view.x + view.width, y + row_h);
+            paint::fill_round(ctx.scene, ctx.transform, card, radii_md, c.surfaces.raised);
 
             let watched = self.watched_folders.iter().any(|f| f == folder);
             let name = folder
                 .file_name()
                 .map_or_else(|| pretty(folder), |n| n.to_string_lossy().to_string());
-            tr.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &name,
                 15.0,
                 c.text_primary,
-                t * Affine::translate((x + 18.0, y + 12.0)),
-                Some((w - 100.0) as f32),
+                ctx.transform * Affine::translate((view.x + 18.0, y + 12.0)),
+                Some((view.width - 100.0) as f32),
                 TextWeight::Semibold,
             );
-            tr.draw_text(
-                scene,
+            ctx.text.draw_text(
+                ctx.scene,
                 &pretty(folder),
                 12.0,
                 c.text_dim,
-                t * Affine::translate((x + 18.0, y + 34.0)),
-                Some((w - 100.0) as f32),
+                ctx.transform * Affine::translate((view.x + 18.0, y + 34.0)),
+                Some((view.width - 100.0) as f32),
             );
 
             // Watch toggle at the row's right edge.
             let tog_w = 44.0;
             let tog_h = 24.0;
             self.switch(
-                scene,
-                t,
-                theme,
+                ctx.scene,
+                ctx.transform,
+                ctx.theme,
                 Rect::new(
-                    x + w - 18.0 - tog_w,
+                    view.x + view.width - 18.0 - tog_w,
                     y + (row_h - tog_h) / 2.0,
-                    x + w - 18.0,
+                    view.x + view.width - 18.0,
                     y + f64::midpoint(row_h, tog_h),
                 ),
                 watched,
@@ -14439,6 +14432,35 @@ mod interaction_tests {
         assert!(
             tabs.iter().any(|hit| (hit.rect.y0 - first_y).abs() > 1.0),
             "large text reflows settings navigation into two bounded rows"
+        );
+    }
+
+    #[test]
+    fn library_settings_exposes_empty_and_discovered_folder_actions() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Library;
+        app.library_paths.clear();
+        app.watched_folders.clear();
+        app.local_library.watched_folders.clear();
+
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+        assert!(
+            find_hit(&app, |action| matches!(action, Action::OpenViaPortal)).is_some(),
+            "an empty folder list keeps the primary Open-book action reachable"
+        );
+
+        let folder = PathBuf::from("/books/discovered");
+        app.library_paths
+            .insert(app.library[0].id.clone(), folder.join("reader.epub"));
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+        assert!(
+            find_hit(&app, |action| {
+                matches!(action, Action::ToggleWatchFolder(path) if path == &folder)
+            })
+            .is_some(),
+            "a book's source folder is offered as the exact watch target"
         );
     }
 
