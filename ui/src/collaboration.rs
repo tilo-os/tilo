@@ -100,15 +100,12 @@ pub enum CollabRequest {
         /// Informational only — never used for routing or grants.
         handle: Option<String>,
     },
-    /// Complete document state. The SDK wraps this mutation in a signed
-    /// envelope from the certified launcher identity before transmission.
-    DocumentSnapshot {
-        data: Vec<u8>,
-    },
-    /// Incremental document changes. The SDK wraps this mutation in a signed
-    /// envelope from the certified launcher identity before transmission.
-    DocumentIncremental {
-        data: Vec<u8>,
+    /// A typed complete snapshot or incremental change set. The SDK wraps the
+    /// mutation in a signed envelope from the certified launcher identity.
+    /// Keeping the kind in `DocumentMutation` avoids parallel request and wire
+    /// enums drifting apart.
+    Document {
+        mutation: DocumentMutation,
     },
     /// Outbound presence update — pointer moved, caret changed, selection
     /// shifted, or arrived/left a keyed object. Fanned out to every
@@ -237,6 +234,20 @@ pub enum CollabRequest {
         run_id: u64,
         lease: String,
     },
+}
+
+impl CollabRequest {
+    pub fn document_snapshot(data: Vec<u8>) -> Self {
+        Self::Document {
+            mutation: DocumentMutation::Snapshot(data),
+        }
+    }
+
+    pub fn document_incremental(data: Vec<u8>) -> Self {
+        Self::Document {
+            mutation: DocumentMutation::Incremental(data),
+        }
+    }
 }
 
 /// A broker directory request awaiting main-thread authority.  This crosses
@@ -544,7 +555,7 @@ pub struct Collaborator {
 
 /// Failure modes for [`CollaborationManager::send_signed_op`].
 /// `NoIdentity` is the common case — call before the shell provisions an
-/// identity — and callers can fall back to plain `DocumentIncremental`.
+/// identity — and callers can fall back to `document_incremental`.
 #[derive(Debug)]
 pub enum SignedSendError {
     /// No [`SigningIdentity`] bound (see [`CollaborationManager::with_identity`]).
@@ -840,9 +851,11 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
                 meter.string_capacity(handle);
             }
         }
-        CollabRequest::DocumentSnapshot { data } | CollabRequest::DocumentIncremental { data } => {
-            meter.bytes(data);
-        }
+        CollabRequest::Document { mutation } => match mutation {
+            DocumentMutation::Snapshot(data) | DocumentMutation::Incremental(data) => {
+                meter.bytes(data);
+            }
+        },
         CollabRequest::SignedOperation { envelope } => meter.bytes(&envelope.payload),
         CollabRequest::Presence { key, payload } => {
             serialized_bytes(key, &mut meter);
@@ -3325,21 +3338,8 @@ async fn dispatch_sdk_request(
                 let _ = route.channel.send(&bytes).await;
             }
         }
-        CollabRequest::DocumentSnapshot { data } => {
-            send_document_mutation(
-                route,
-                signer,
-                collab_types::DocumentMutation::Snapshot(data),
-            )
-            .await;
-        }
-        CollabRequest::DocumentIncremental { data } => {
-            send_document_mutation(
-                route,
-                signer,
-                collab_types::DocumentMutation::Incremental(data),
-            )
-            .await;
+        CollabRequest::Document { mutation } => {
+            send_document_mutation(route, signer, mutation).await;
         }
         CollabRequest::Presence { key, payload } => {
             let Some(presence) = route.presence.as_ref() else {
@@ -4421,11 +4421,8 @@ mod tests {
     fn saturated_outbound_bridge_sheds_only_presence_then_fails_closed() {
         let (tx, mut rx) = tokio_mpsc::channel(1);
         let state = BridgeState::new();
-        let document = || {
-            SdkCommand::Primary(CollabRequest::DocumentIncremental {
-                data: b"durable".to_vec(),
-            })
-        };
+        let document =
+            || SdkCommand::Primary(CollabRequest::document_incremental(b"durable".to_vec()));
         let presence = || {
             SdkCommand::Primary(CollabRequest::Presence {
                 key: PresenceKey::Tab {
@@ -4446,7 +4443,9 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(QueuedSdkCommand {
-                command: SdkCommand::Primary(CollabRequest::DocumentIncremental { data }),
+                command: SdkCommand::Primary(CollabRequest::Document {
+                    mutation: DocumentMutation::Incremental(data),
+                }),
                 ..
             })
                 if data == b"durable"
@@ -4516,10 +4515,10 @@ mod tests {
         let state = BridgeState::new();
         let mut data = Vec::with_capacity(5 * 1024 * 1024);
         data.push(0);
-        let oversized = SdkCommand::Primary(CollabRequest::DocumentSnapshot {
+        let oversized = SdkCommand::Primary(CollabRequest::Document {
             // Capacity, not just logical length, is charged: a caller must
             // not park a mostly-empty giant allocation on the UI bridge.
-            data,
+            mutation: collab_types::DocumentMutation::Snapshot(data),
         });
 
         assert!(!enqueue_sdk_command(&tx, oversized, &state));
@@ -4533,9 +4532,8 @@ mod tests {
         let state = BridgeState::new();
         let mut admitted = 0;
         loop {
-            let command = SdkCommand::Primary(CollabRequest::DocumentIncremental {
-                data: vec![0; 64 * 1024],
-            });
+            let command =
+                SdkCommand::Primary(CollabRequest::document_incremental(vec![0; 64 * 1024]));
             if !enqueue_sdk_command(&tx, command, &state) {
                 break;
             }
@@ -4552,9 +4550,10 @@ mod tests {
         let (tx, mut rx) = tokio_mpsc::channel(2);
         let state = BridgeState::new();
         let document = || {
-            SdkCommand::Primary(CollabRequest::DocumentIncremental {
-                data: vec![0; 3 * 1024 * 1024],
-            })
+            SdkCommand::Primary(CollabRequest::document_incremental(vec![
+                0;
+                3 * 1024 * 1024
+            ]))
         };
 
         // Consuming its queued wrapper drops its reservation before the next
@@ -4613,9 +4612,9 @@ mod tests {
         );
         // Whichever backend it settled on, the app goes on calling these
         // every frame. Neither may panic.
-        mgr.send(CollabRequest::DocumentSnapshot {
-            data: b"after the broker died".to_vec(),
-        });
+        mgr.send(CollabRequest::document_snapshot(
+            b"after the broker died".to_vec(),
+        ));
         let _ = mgr.poll();
     }
 
@@ -4629,9 +4628,7 @@ mod tests {
         }
         let mut mgr = CollaborationManager::new();
         assert!(!mgr.is_connected(), "no service = not connected");
-        mgr.send(CollabRequest::DocumentSnapshot {
-            data: b"nope".to_vec(),
-        });
+        mgr.send(CollabRequest::document_snapshot(b"nope".to_vec()));
         assert!(mgr.poll().is_empty(), "no events on Disabled backend");
     }
 
