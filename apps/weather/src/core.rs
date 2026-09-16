@@ -1966,23 +1966,29 @@ impl Core {
         theme: &Theme,
     ) {
         self.detail_rect = rect;
-        self.draw_sky_background(scene, t, theme, rect);
+        let mut ctx = DrawCtx {
+            scene,
+            transform: t,
+            text_renderer: tr,
+            theme,
+        };
+        self.draw_sky_background(&mut ctx, rect);
 
         let Some(loc) = self.model.selected_location().cloned() else {
-            self.draw_detail_zero_state(rect, scene, t, tr, theme);
+            self.draw_detail_zero_state(&mut ctx, rect);
             return;
         };
         let snap_opt = self.model.selected_snapshot().cloned();
-        let hy = self.draw_detail_header(rect, scene, t, tr, theme, &loc, snap_opt.as_ref());
+        let hy = self.draw_detail_header(&mut ctx, rect, &loc, snap_opt.as_ref());
 
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let right = rect.x1 - PAD;
         let large_text = theme.text_scale >= 1.5;
         let body_top = hy + if large_text { 142.0 } else { 74.0 };
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
-            t,
+            ctx.transform,
             c.border_standard.with_alpha_factor(0.6),
             None,
             &Rect::new(mx, body_top - 10.0, right, body_top - 9.0),
@@ -1991,8 +1997,8 @@ impl Core {
         let Some(snap) = snap_opt else {
             self.max_scroll = 0.0;
             text_left(
-                scene,
-                tr,
+                ctx.scene,
+                ctx.text_renderer,
                 "Fetching current conditions…",
                 mx,
                 body_top + 24.0,
@@ -2010,26 +2016,22 @@ impl Core {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
 
         let clip = Rect::new(rect.x0, body_top - 8.0, rect.x1, rect.y1);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
-        let mut y = body_top - self.scroll;
-        y = self.draw_detail_hero(rect, scene, t, tr, theme, y, &snap);
-        y = self.draw_detail_tiles(rect, scene, t, tr, theme, y, &snap, &layout);
-        y = self.draw_detail_hourly(rect, scene, t, tr, theme, y, &snap);
-        y = self.draw_detail_days(rect, scene, t, tr, theme, y, &snap, &layout);
-        self.draw_detail_air_quality_section(rect, scene, t, tr, theme, y, &layout);
-        scene.pop_layer();
-
-        self.draw_detail_footer(
-            rect,
-            scene,
-            t,
-            tr,
-            theme,
-            mx,
-            body_top,
-            view_h,
-            layout.body_h,
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip,
         );
+        let mut y = body_top - self.scroll;
+        y = self.draw_detail_hero(&mut ctx, rect, y, &snap);
+        y = self.draw_detail_tiles(&mut ctx, rect, y, &snap, &layout);
+        y = self.draw_detail_hourly(&mut ctx, rect, y, &snap);
+        y = self.draw_detail_days(&mut ctx, rect, y, &snap, &layout);
+        self.draw_detail_air_quality_section(&mut ctx, rect, y, &layout);
+        ctx.scene.pop_layer();
+
+        self.draw_detail_footer(&mut ctx, rect, mx, body_top, view_h, layout.body_h);
     }
 
     /// Composed zero-state: a friendly weather glyph over an inviting
@@ -2037,14 +2039,11 @@ impl Core {
     /// empty gradient (HIG §7). The copy differs by whether the user has
     /// any saved places: a fresh vault points at the search; an existing
     /// roster asks them to pick a city.
-    fn draw_detail_zero_state(
-        &mut self,
-        rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_detail_zero_state(&mut self, ctx: &mut DrawCtx<'_>, rect: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = rect.center().x;
         let anchor = rect.y0 + rect.height() * 0.34;
@@ -2095,37 +2094,37 @@ impl Core {
     /// Place name/subtitle, the refresh button, and (once a snapshot has
     /// landed) its fetch date/local time. Returns the y the divider under
     /// the header sits at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/loc/snap identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_header(
         &mut self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         loc: &SavedLocation,
         snap: Option<&WeatherSnapshot>,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let top_pad = if self.detail_reserve_back {
             PAD + BACK_RESERVE
         } else {
             PAD
         };
-        let mx = rect.x0 + PAD;
-        let right = rect.x1 - PAD;
-        let hy = rect.y0 + top_pad;
-
         let large_text = theme.text_scale >= 1.5;
+        let header = DetailHeaderLayout {
+            left: rect.x0 + PAD,
+            right: rect.x1 - PAD,
+            top: rect.y0 + top_pad,
+            refresh_width: if large_text { 44.0 } else { 34.0 },
+            large_text,
+        };
         text_left(
             scene,
             tr,
             &loc.name,
-            mx,
-            hy,
+            header.left,
+            header.top,
             if large_text { 20.0 } else { 26.0 },
             TextWeight::Bold,
             c.text_primary,
@@ -2134,16 +2133,20 @@ impl Core {
             scene,
             tr,
             &loc.subtitle(),
-            mx,
-            hy + if large_text { 48.0 } else { 32.0 },
+            header.left,
+            header.top + if large_text { 48.0 } else { 32.0 },
             if large_text { 12.0 } else { 13.0 },
             TextWeight::Regular,
             c.text_dim,
         );
 
         // Refresh button (top-right) — re-fetches this city's forecast.
-        let rb = if large_text { 44.0 } else { 34.0 };
-        let refresh = Rect::new(right - rb, hy - 2.0, right, hy - 2.0 + rb);
+        let refresh = Rect::new(
+            header.right - header.refresh_width,
+            header.top - 2.0,
+            header.right,
+            header.top - 2.0 + header.refresh_width,
+        );
         let rshape = RoundedRect::from_rect(refresh, f64::from(theme.tokens.radii.md));
         let rhover = refresh.contains(self.last_mouse);
         scene.fill(
@@ -2161,17 +2164,30 @@ impl Core {
         Icon::Refresh.draw(scene, t, refresh.inset(-8.0), c.text_primary);
         self.refresh_btn = refresh;
 
+        self.draw_detail_header_status(ctx, snap, &header);
+        header.top
+    }
+
+    fn draw_detail_header_status(
+        &self,
+        ctx: &mut DrawCtx<'_>,
+        snap: Option<&WeatherSnapshot>,
+        header: &DetailHeaderLayout,
+    ) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text_renderer;
+        let c = &ctx.theme.tokens.colors;
         if let Some(snap) = snap {
             let cur = &snap.current;
             let date_str = fmt_date(&cur.time);
             let time_str = hhmm(&cur.time);
-            if large_text {
+            if header.large_text {
                 text_left(
                     scene,
                     tr,
                     &format!("{date_str} · Local time {time_str}"),
-                    mx,
-                    hy + 82.0,
+                    header.left,
+                    header.top + 82.0,
                     11.0,
                     TextWeight::Medium,
                     c.text_dim,
@@ -2181,8 +2197,8 @@ impl Core {
                     scene,
                     tr,
                     &date_str,
-                    right - rb - 12.0,
-                    hy + 2.0,
+                    header.right - header.refresh_width - 12.0,
+                    header.top + 2.0,
                     14.0,
                     TextWeight::Medium,
                     c.text_primary,
@@ -2191,8 +2207,8 @@ impl Core {
                     scene,
                     tr,
                     &format!("Local time {time_str}"),
-                    right - rb - 12.0,
-                    hy + 24.0,
+                    header.right - header.refresh_width - 12.0,
+                    header.top + 24.0,
                     12.0,
                     TextWeight::Regular,
                     c.text_dim,
@@ -2204,30 +2220,29 @@ impl Core {
                 scene,
                 tr,
                 &self.status,
-                mx,
-                hy + if large_text { 112.0 } else { 51.0 },
-                if large_text { 10.0 } else { 11.0 },
+                header.left,
+                header.top + if header.large_text { 112.0 } else { 51.0 },
+                if header.large_text { 10.0 } else { 11.0 },
                 TextWeight::Medium,
                 c.semantic.warning,
             );
         }
-        hy
     }
 
     /// The hero card: condition glyph, big temperature, condition label,
     /// "feels like", and the sunrise/sunset arc (or a compact fallback on a
     /// narrow pane). Returns the y cursor for the next section.
-    #[allow(clippy::too_many_arguments)]
     fn draw_detail_hero(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2300,7 +2315,7 @@ impl Core {
         );
 
         if let Some(today) = snap.daily.first() {
-            Self::draw_hero_sun(scene, t, tr, theme, hero, mw, cur, today);
+            Self::draw_hero_sun(ctx, hero, mw, cur, today);
         }
 
         y + hero_h + if large_text { 18.0 } else { SECTION_GAP }
@@ -2308,30 +2323,21 @@ impl Core {
 
     /// The sunrise/sunset arc on a wide pane, or the compact Sunrise/Sunset
     /// label fallback on a narrow one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus hero/mw/cur/today identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_hero_sun(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         hero: Rect,
         mw: f64,
         cur: &CurrentConditions,
         today: &DayForecast,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let sr = hhmm(&today.sunrise);
         let ss = hhmm(&today.sunset);
         let large_text = theme.text_scale >= 1.5;
         if mw >= 560.0 && !large_text {
             Self::draw_sun_arc(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx,
                 Rect::new(
                     hero.x1 - 226.0,
                     hero.y0 + 22.0,
@@ -2344,6 +2350,8 @@ impl Core {
                 cur.is_day,
             );
         } else {
+            let scene = &mut *ctx.scene;
+            let tr = &mut *ctx.text_renderer;
             let sx = if large_text {
                 hero.x0 + 18.0
             } else {
@@ -2400,21 +2408,18 @@ impl Core {
 
     /// The metric-tile grid (wind/humidity/precip/pressure/UV). Returns the
     /// y cursor for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/snap/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_tiles(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
         layout: &DetailBodyLayout,
     ) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2506,17 +2511,14 @@ impl Core {
 
     /// The 24-hour scrollable strip card. Returns the y cursor for the
     /// next section.
-    #[allow(clippy::too_many_arguments)]
     fn draw_detail_hourly(
         &mut self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2526,10 +2528,10 @@ impl Core {
         let large_text = theme.text_scale >= 1.5;
         let hourly_h = if large_text { 286.0 } else { HOURLY_CARD_H };
         let hcard = Rect::new(mx, y, mx + mw, y + hourly_h);
-        card(scene, t, hcard, theme);
+        card(ctx.scene, ctx.transform, hcard, theme);
         text_left(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text_renderer,
             "Next 24 hours",
             hcard.x0 + 16.0,
             hcard.y0 + 12.0,
@@ -2539,8 +2541,8 @@ impl Core {
         );
         if self.hourly_max_scroll > 1.0 {
             text_right(
-                scene,
-                tr,
+                ctx.scene,
+                ctx.text_renderer,
                 "scroll →",
                 hcard.x1 - 16.0,
                 hcard.y0 + 16.0,
@@ -2581,19 +2583,19 @@ impl Core {
         self.hourly_scroll_x = self.hourly_scroll_x.clamp(0.0, self.hourly_max_scroll);
 
         chart::draw_hourly_strip(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             band,
             &cols,
             col_w,
             self.hourly_scroll_x,
             accent,
             theme,
-            tr,
+            ctx.text_renderer,
             "°",
         );
 
-        self.draw_hourly_scrollbar(scene, t, theme, hcard, band, content_w);
+        self.draw_hourly_scrollbar(ctx, hcard, band, content_w);
 
         y + hourly_h + if large_text { 18.0 } else { SECTION_GAP }
     }
@@ -2602,13 +2604,14 @@ impl Core {
     /// when the 24 columns overflow the band.
     fn draw_hourly_scrollbar(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         hcard: Rect,
         band: Rect,
         content_w: f64,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let hmetrics = ScrollMetrics::new(content_w, band.width(), self.hourly_scroll_x);
         let track = Rect::new(band.x0, hcard.y1 - 12.0, band.x1, hcard.y1 - 6.0);
@@ -2640,31 +2643,25 @@ impl Core {
 
     /// The 7-day forecast card: header + one row per day. Returns the y
     /// cursor for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/snap/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_days(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         snap: &WeatherSnapshot,
         layout: &DetailBodyLayout,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
         let units = self.units;
 
         let dcard = Rect::new(mx, y, mx + mw, y + layout.days_block_h);
-        card(scene, t, dcard, theme);
+        card(ctx.scene, ctx.transform, dcard, theme);
         text_left(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text_renderer,
             "7-day forecast",
             dcard.x0 + 16.0,
             dcard.y0 + 12.0,
@@ -2687,21 +2684,18 @@ impl Core {
         let rows_top = dcard.y0 + layout.days_header_h;
         for (i, d) in snap.daily.iter().enumerate() {
             let ry = rows_top + i as f64 * layout.day_row_h;
-            Self::draw_day_row(
-                scene,
-                t,
-                tr,
-                theme,
-                &geo,
-                i,
-                d,
-                ry,
-                layout.day_row_h,
-                snap,
+            let row = DayRowPaint {
+                geometry: &geo,
+                index: i,
+                forecast: d,
+                y: ry,
+                height: layout.day_row_h,
+                snapshot: snap,
                 units,
-                wmin,
-                wmax,
-            );
+                week_min: wmin,
+                week_max: wmax,
+            };
+            Self::draw_day_row(ctx, &row);
         }
 
         y + layout.days_block_h + SECTION_GAP
@@ -2710,50 +2704,25 @@ impl Core {
     /// One row of the 7-day forecast: day label, condition icon (+ label
     /// when there's room), UV/wind extras (when there's room), precip
     /// probability (when there's room), and the lo/hi temperature bar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row, needing scene/t/theme/tr (the universal draw-context) plus geo/i/d/ry/snap/units/wmin/wmax — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        i: usize,
-        d: &DayForecast,
-        ry: f64,
-        row_h: f64,
-        snap: &WeatherSnapshot,
-        units: Units,
-        wmin: f64,
-        wmax: f64,
-    ) {
-        let cy = ry + row_h / 2.0;
-        Self::draw_day_row_label(scene, t, tr, theme, geo, i, d, ry, cy);
-        if geo.show_extras {
-            Self::draw_day_row_extras(scene, t, tr, theme, geo, d, snap, units, cy);
+    fn draw_day_row(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>) {
+        let cy = row.y + row.height / 2.0;
+        Self::draw_day_row_label(ctx, row, cy);
+        if row.geometry.show_extras {
+            Self::draw_day_row_extras(ctx, row, cy);
         }
-        Self::draw_day_row_temps(scene, t, tr, theme, geo, d, snap, units, cy, wmin, wmax);
+        Self::draw_day_row_temps(ctx, row, cy);
     }
 
     /// The row divider, the "Today"/"Tomorrow"/weekday label, the condition
     /// icon, and (when there's room) the condition text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's leading label cluster, needing scene/t/theme/tr (the universal draw-context) plus geo/i/d/ry/cy — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_label(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        i: usize,
-        d: &DayForecast,
-        ry: f64,
-        cy: f64,
-    ) {
+    fn draw_day_row_label(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
+        let geo = row.geometry;
+        let i = row.index;
+        let d = row.forecast;
         let c = &theme.tokens.colors;
         if i > 0 {
             scene.fill(
@@ -2761,7 +2730,7 @@ impl Core {
                 t,
                 c.border_standard.with_alpha_factor(0.5),
                 None,
-                &Rect::new(geo.inner_l, ry, geo.inner_r, ry + 1.0),
+                &Rect::new(geo.inner_l, row.y, geo.inner_r, row.y + 1.0),
             );
         }
         let day_label = match i {
@@ -2804,23 +2773,15 @@ impl Core {
 
     /// The UV-index and wind-max extras column, shown only when the row is
     /// wide enough to fit them without crowding the condition text.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's extras column, needing scene/t/theme/tr (the universal draw-context) plus geo/d/snap/units/cy — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_extras(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        d: &DayForecast,
-        snap: &WeatherSnapshot,
-        units: Units,
-        cy: f64,
-    ) {
+    fn draw_day_row_extras(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
+        let geo = row.geometry;
+        let d = row.forecast;
         let c = &theme.tokens.colors;
-        let (uv_label, wind_label) = day_extra_labels(d, snap, units);
+        let (uv_label, wind_label) = day_extra_labels(d, row.snapshot, row.units);
         // UV dot tinted by severity so the number reads at a glance.
         let uv_dot = if d.uv_index_max < 3.0 {
             c.semantic.info
@@ -2860,23 +2821,13 @@ impl Core {
 
     /// The precip-probability read-out (when there's room) and the lo/hi
     /// temperature bar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one drawing pass over a single day row's precip + temperature bar, needing scene/t/theme/tr (the universal draw-context) plus geo/d/snap/units/cy/wmin/wmax — splitting further would just thread the same values through more calls"
-    )]
-    fn draw_day_row_temps(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        geo: &DayRowGeometry,
-        d: &DayForecast,
-        snap: &WeatherSnapshot,
-        units: Units,
-        cy: f64,
-        wmin: f64,
-        wmax: f64,
-    ) {
+    fn draw_day_row_temps(ctx: &mut DrawCtx<'_>, row: &DayRowPaint<'_>, cy: f64) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
+        let geo = row.geometry;
+        let d = row.forecast;
         let c = &theme.tokens.colors;
         if geo.show_precip {
             scene.fill(
@@ -2897,8 +2848,8 @@ impl Core {
                 c.semantic.info,
             );
         }
-        let lo = snap.temp_in(d.temp_min, units).round() as i64;
-        let hi = snap.temp_in(d.temp_max, units).round() as i64;
+        let lo = row.snapshot.temp_in(d.temp_min, row.units).round() as i64;
+        let hi = row.snapshot.temp_in(d.temp_max, row.units).round() as i64;
         text_right(
             scene,
             tr,
@@ -2911,8 +2862,10 @@ impl Core {
         );
         let track = RoundedRect::new(geo.bar_x0, cy - 3.0, geo.bar_x1, cy + 3.0, 3.0);
         scene.fill(Fill::NonZero, t, c.neutral[2], None, &track);
-        let f0 = ((d.temp_min - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
-        let f1 = ((d.temp_max - wmin) / (wmax - wmin)).clamp(0.0, 1.0);
+        let week_min = row.week_min;
+        let week_span = row.week_max - week_min;
+        let f0 = ((d.temp_min - week_min) / week_span).clamp(0.0, 1.0);
+        let f1 = ((d.temp_max - week_min) / week_span).clamp(0.0, 1.0);
         let seg_x0 = geo.bar_x0 + f0 * (geo.bar_x1 - geo.bar_x0);
         let seg_x1 = geo.bar_x0 + f1 * (geo.bar_x1 - geo.bar_x0);
         let seg = RoundedRect::new(seg_x0, cy - 3.0, seg_x1.max(seg_x0 + 4.0), cy + 3.0, 3.0);
@@ -2932,20 +2885,14 @@ impl Core {
     }
 
     /// The air-quality card: header + the AQI hero and pollutant tiles.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/y/layout identify what's being painted — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_air_quality_section(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         y: f64,
         layout: &DetailBodyLayout,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let mx = rect.x0 + PAD;
         let mw = (rect.width() - 2.0 * PAD).max(140.0);
@@ -2955,10 +2902,10 @@ impl Core {
         let aq = self.model.selected_air_quality().cloned();
 
         let acard = Rect::new(mx, y, mx + mw, y + layout.aq_block_h);
-        card(scene, t, acard, theme);
+        card(ctx.scene, ctx.transform, acard, theme);
         text_left(
-            scene,
-            tr,
+            ctx.scene,
+            ctx.text_renderer,
             "Air quality",
             acard.x0 + 16.0,
             acard.y0 + 12.0,
@@ -2967,10 +2914,7 @@ impl Core {
             c.text_primary,
         );
         self.draw_air_quality(
-            scene,
-            t,
-            tr,
-            theme,
+            ctx,
             acard,
             aq.as_ref(),
             layout.aq_cols,
@@ -2980,22 +2924,19 @@ impl Core {
     }
 
     /// The status line + the body's vertical scroll indicator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus rect/mx/body_top/view_h/body_h identify the scroll geometry — a context struct would ripple across every draw_detail_* method here, out of scope for this split"
-    )]
     fn draw_detail_footer(
         &self,
+        ctx: &mut DrawCtx<'_>,
         rect: Rect,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
         mx: f64,
         body_top: f64,
         view_h: f64,
         body_h: f64,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         // Connection/update problems are called out beside the city name,
         // where they remain visible even when the forecast body scrolls.
@@ -3039,7 +2980,10 @@ impl Core {
         }
     }
 
-    fn draw_sky_background(&self, scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect) {
+    fn draw_sky_background(&self, ctx: &mut DrawCtx<'_>, rect: Rect) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let base = c.surfaces.base;
         let top = if self.is_day() {
@@ -3055,12 +2999,8 @@ impl Core {
         scene.fill(Fill::NonZero, t, &Brush::Gradient(grad), None, &rect);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn draw_sun_arc(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         area: Rect,
         // Current observation time ("YYYY-MM-DDTHH:MM"); positions the sun dot.
         now_iso: &str,
@@ -3068,6 +3008,10 @@ impl Core {
         sunset: &str,
         is_day: bool,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let cx = f64::midpoint(area.x0, area.x1);
         let baseline = area.y1 - 24.0;
@@ -3167,19 +3111,16 @@ impl Core {
     /// pollutant tiles, or an honest loading / unavailable message when there
     /// is no reading yet. Real data only — a missing value shows an em-dash,
     /// never a fabricated zero.
-    #[allow(clippy::too_many_arguments)]
     fn draw_air_quality(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut DrawCtx<'_>,
         area: Rect,
         aq: Option<&AirQuality>,
         cols: usize,
         gap: f64,
         tile_h: f64,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let ix = area.x0 + 16.0;
         let iw = area.width() - 32.0;
@@ -3193,8 +3134,8 @@ impl Core {
                 "Air quality unavailable"
             };
             text_center(
-                scene,
-                tr,
+                ctx.scene,
+                ctx.text_renderer,
                 msg,
                 area.center().x,
                 hero_top + 22.0,
@@ -3213,21 +3154,26 @@ impl Core {
             area.x1 - 16.0,
             hero_top + if large_text { 104.0 } else { 64.0 },
         );
-        Self::draw_aqi_hero(scene, t, tr, theme, hero, aq);
-        Self::draw_aq_tiles(scene, t, tr, theme, ix, iw, hero, aq, cols, gap, tile_h);
+        Self::draw_aqi_hero(ctx, hero, aq);
+        let tile_layout = AqTileLayout {
+            x: ix,
+            width: iw,
+            hero,
+            columns: cols,
+            gap,
+            tile_height: tile_h,
+        };
+        Self::draw_aq_tiles(ctx, &tile_layout, aq);
     }
 
     /// The AQI hero: a severity-tinted chip with the big index number, the
     /// band word and a caption naming the scale (European AQI when
     /// available, else a rough US-AQI fallback).
-    fn draw_aqi_hero(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hero: Rect,
-        aq: &AirQuality,
-    ) {
+    fn draw_aqi_hero(ctx: &mut DrawCtx<'_>, hero: Rect, aq: &AirQuality) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         if let Some(aqi) = aq.european_aqi {
             let sev = aqi_band_color(aqi, theme);
@@ -3303,23 +3249,11 @@ impl Core {
     }
 
     /// The key pollutant tiles (µg/m³) below the AQI hero.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the draw-context quad every paint method in this file takes, plus ix/iw/hero/aq/cols/gap identify what's being painted — a context struct would ripple across every draw_* method here, out of scope for this split"
-    )]
-    fn draw_aq_tiles(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        ix: f64,
-        iw: f64,
-        hero: Rect,
-        aq: &AirQuality,
-        cols: usize,
-        gap: f64,
-        tile_h: f64,
-    ) {
+    fn draw_aq_tiles(ctx: &mut DrawCtx<'_>, layout: &AqTileLayout, aq: &AirQuality) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text_renderer;
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let tiles: [(&str, Option<f64>); 4] = [
             ("PM2.5", aq.pm2_5),
@@ -3327,15 +3261,15 @@ impl Core {
             ("NO₂", aq.nitrogen_dioxide),
             ("O₃", aq.ozone),
         ];
-        let tiles_top = hero.y1 + 12.0;
-        let cols = cols.max(1);
-        let tw = (iw - (cols as f64 - 1.0) * gap) / cols as f64;
+        let tiles_top = layout.hero.y1 + 12.0;
+        let cols = layout.columns.max(1);
+        let tw = (layout.width - (cols as f64 - 1.0) * layout.gap) / cols as f64;
         for (i, (label, val)) in tiles.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
-            let tx = ix + col as f64 * (tw + gap);
-            let ty = tiles_top + row as f64 * (tile_h + gap);
-            let tile = Rect::new(tx, ty, tx + tw, ty + tile_h);
+            let tx = layout.x + col as f64 * (tw + layout.gap);
+            let ty = tiles_top + row as f64 * (layout.tile_height + layout.gap);
+            let tile = Rect::new(tx, ty, tx + tw, ty + layout.tile_height);
             let large_text = theme.text_scale >= 1.5;
             card(scene, t, tile, theme);
             text_left(
@@ -3753,6 +3687,41 @@ struct DayRowGeometry {
     show_precip: bool,
     show_extras: bool,
     show_cond: bool,
+}
+
+/// Data and geometry shared by the three paint passes for one forecast row.
+/// Keeping the row contract intact avoids long, order-sensitive parameter
+/// trains and makes every pass consume the same snapshot and temperature span.
+struct DayRowPaint<'a> {
+    geometry: &'a DayRowGeometry,
+    index: usize,
+    forecast: &'a DayForecast,
+    y: f64,
+    height: f64,
+    snapshot: &'a WeatherSnapshot,
+    units: Units,
+    week_min: f64,
+    week_max: f64,
+}
+
+/// Geometry for the pollutant grid beneath the AQI hero.
+struct AqTileLayout {
+    x: f64,
+    width: f64,
+    hero: Rect,
+    columns: usize,
+    gap: f64,
+    tile_height: f64,
+}
+
+/// Shared positions for the detail title, refresh control, timestamp and
+/// connection status. Both header passes consume the same measured geometry.
+struct DetailHeaderLayout {
+    left: f64,
+    right: f64,
+    top: f64,
+    refresh_width: f64,
+    large_text: bool,
 }
 
 impl DayRowGeometry {
