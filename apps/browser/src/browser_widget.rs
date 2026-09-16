@@ -289,6 +289,10 @@ pub struct BrowserWidget {
 
     // User-facing browser state.
     settings: Settings,
+    capabilities: crate::capabilities::Capabilities,
+    startup_extensions: Vec<std::path::PathBuf>,
+    extension_notice: Option<String>,
+    extension_feedback: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     settings_presentation: SettingsPresentation,
     /// History pausing is an in-memory, device-local session boundary. It is
     /// never serialized to the collaborative document or the profile.
@@ -430,6 +434,14 @@ impl BrowserWidget {
             forced_load_error: false,
             forced_loading: false,
             settings,
+            capabilities: crate::capabilities::Capabilities::default(),
+            startup_extensions: if headless {
+                Vec::new()
+            } else {
+                crate::extensions::approved_paths()
+            },
+            extension_notice: None,
+            extension_feedback: Default::default(),
             settings_presentation,
             history_paused: false,
             history_clear_error: None,
@@ -1322,6 +1334,14 @@ impl BrowserWidget {
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(pip_btn));
         }
+        if !self.compact_chrome {
+            let developer_engine = self.engine.clone();
+            toolbar = toolbar.push(Box::new(
+                Button::new("browser.devtools", "DevTools", None)
+                    .with_size(82.0, 36.0)
+                    .on_effect(move || developer_engine.send(WebViewCommand::ShowDeveloperTools)),
+            ));
+        }
         toolbar = toolbar.push(Box::new(settings_btn));
 
         // The web view must reach the window edges — no border, no gap.
@@ -1333,6 +1353,9 @@ impl BrowserWidget {
             .with_no_padding()
             .with_gap(0.0)
             .push(Box::new(Container::new().with_child(Box::new(toolbar))));
+        if let Some(prompt) = self.capabilities.prompt(&self.engine) {
+            column = column.push(prompt);
+        }
         if self.history_paused {
             column = column.push(Box::new(
                 Container::new().with_background().with_child(Box::new(
@@ -1694,11 +1717,7 @@ impl BrowserWidget {
                     )
                 }
             }
-            LibrarySection::Downloads => Box::new(
-                EmptyState::new("Web downloads aren’t available yet")
-                    .with_icon(Icon::Download)
-                    .with_message("Download progress and saved files are unavailable."),
-            ),
+            LibrarySection::Downloads => self.capabilities.downloads(&self.engine),
             LibrarySection::Extensions => {
                 let installed = if self.headless {
                     Vec::new()
@@ -1710,45 +1729,85 @@ impl BrowserWidget {
                         EmptyState::new("No active extensions")
                             .with_icon(Icon::Layers)
                             .with_message(
-                                "Extension packages can be inspected, but this WebKit build cannot activate them yet.",
+                                "Install an unpacked Manifest V3 package in the browser extension folder, then review and approve its permissions here.",
                             ),
                     )
                 } else {
                     let mut rows = Column::new().with_no_padding().with_intrinsic_height();
+                    if let Some(message) = &self.extension_notice {
+                        rows = rows.push(Box::new(Text::new(&message)));
+                    }
                     for extension in installed.into_iter().take(100) {
-                        let status = format!("Version {} · installed, inactive", extension.version);
-                        rows = rows
-                            .push(Box::new(
-                                Container::new()
-                                    .with_no_padding()
-                                    .with_background()
-                                    .with_child(Box::new(
-                                        Row::new().no_wrap().with_padding(14.0, 9.0).push(
-                                            Box::new(
-                                                Container::new()
-                                                    .with_no_padding()
-                                                    .with_flex_grow()
-                                                    .with_child(Box::new(
-                                                        Column::new()
-                                                            .with_no_padding()
-                                                            .with_intrinsic_height()
-                                                            .push(Box::new(
-                                                                Text::new(&extension.name)
-                                                                    .with_size(15.0),
-                                                            ))
-                                                            .push(Box::new(
-                                                                Text::new(&status)
-                                                                    .with_size(12.0)
-                                                                    .dimmed(),
-                                                            )),
-                                                    )),
-                                            ),
-                                        ),
-                                    )),
-                            ))
-                            .push(Box::new(
-                                Container::new().with_no_padding().with_height(8.0),
-                            ));
+                        let approved = crate::extensions::is_approved(&extension);
+                        let loaded = extension
+                            .path
+                            .canonicalize()
+                            .ok()
+                            .is_some_and(|path| self.startup_extensions.contains(&path));
+                        let permissions = crate::extensions::permission_summary(&extension)
+                            .unwrap_or_else(|error| error.to_string());
+                        let status = format!(
+                            "{} · Version {} · {}\n{}",
+                            extension.name,
+                            extension.version,
+                            if loaded {
+                                "Load requested at startup"
+                            } else if approved {
+                                "Approved; restart Browser to load"
+                            } else {
+                                "Inactive; permission review required"
+                            },
+                            permissions
+                        );
+                        let mut row = Column::new()
+                            .with_intrinsic_height()
+                            .push(Box::new(Text::new(&status).with_size(13.0)));
+                        let info = extension.clone();
+                        let feedback = self.extension_feedback.clone();
+                        row = row.push(Box::new(
+                            Button::new(
+                                &format!("browser.extension.grant.{}", extension.id),
+                                if approved {
+                                    "Revoke on restart"
+                                } else {
+                                    "Approve permissions; load on restart"
+                                },
+                                None,
+                            )
+                            .with_size(280.0, 36.0)
+                            .on_effect(move || {
+                                let message =
+                                    match crate::extensions::set_approved(&info, !approved) {
+                                        Ok(()) => {
+                                            "Extension preference saved. Restart Browser to apply."
+                                                .to_owned()
+                                        }
+                                        Err(error) => error.to_string(),
+                                    };
+                                if let Ok(mut slot) = feedback.lock() {
+                                    *slot = Some(message);
+                                }
+                            }),
+                        ));
+                        if loaded && approved {
+                            if let Some(url) = crate::extensions::action_url(&extension) {
+                                let engine = self.engine.clone();
+                                row = row.push(Box::new(
+                                    Button::new(
+                                        &format!("browser.extension.action.{}", extension.id),
+                                        "Open action page",
+                                        None,
+                                    )
+                                    .with_size(180.0, 36.0)
+                                    .on_effect(move || {
+                                        engine.send(WebViewCommand::Navigate(url.clone()))
+                                    }),
+                                ));
+                            }
+                        }
+                        rows = rows.push(Box::new(
+                            Container::new().with_background().with_child(Box::new(row)),
+                        ));
                     }
                     if self.compact_chrome {
                         Box::new(rows)
@@ -1856,6 +1915,10 @@ impl BrowserWidget {
             if next.adblock_enabled != self.settings.adblock_enabled {
                 self.set_adblock(next.adblock_enabled);
             }
+            if next.clear_on_exit != self.settings.clear_on_exit {
+                self.engine
+                    .send(WebViewCommand::SetClearOnExit(next.clear_on_exit));
+            }
             self.settings = next;
             if !self.headless {
                 self.settings.save();
@@ -1906,6 +1969,13 @@ impl BrowserWidget {
         let editing = self.url_input_focused();
         for event in self.engine.drain_events() {
             match event {
+                event @ (WebViewEvent::PermissionRequested { .. }
+                | WebViewEvent::PermissionClosed { .. }
+                | WebViewEvent::DownloadRequested { .. }
+                | WebViewEvent::DownloadUpdated { .. }) => {
+                    self.capabilities.apply(event);
+                    self.structure_dirty = true;
+                }
                 WebViewEvent::UriChanged(uri) => {
                     // Deterministic visual-audit states own their displayed
                     // address.  The headless engine is pre-navigated to the
@@ -1919,6 +1989,11 @@ impl BrowserWidget {
                     }
                     if !editing {
                         self.address.set(uri.clone());
+                    }
+                    if uri.starts_with("chrome-extension://") {
+                        self.show_library = false;
+                        self.show_settings = false;
+                        self.structure_dirty = true;
                     }
                     self.current_uri = uri;
                 }
@@ -2016,7 +2091,10 @@ impl BrowserWidget {
                 )));
         } else {
             if self.engine.supports_native_filtering() {
-                self.engine.send(WebViewCommand::SetNativeFilterRules {rules:std::sync::Arc::new(String::new()),enabled:Some(false)});
+                self.engine.send(WebViewCommand::SetNativeFilterRules {
+                    rules: std::sync::Arc::new(String::new()),
+                    enabled: Some(false),
+                });
             } else {
                 self.engine.send(WebViewCommand::SetContentFilter(None));
             }
@@ -2238,9 +2316,16 @@ impl Default for BrowserWidget {
 fn default_engine() -> SharedEngine {
     #[cfg(feature = "wpe")]
     if std::env::var("QOS_BROWSER_ENGINE").as_deref() == Ok("wpe") {
-        return engine_or_error(ui::webview::wpe::WpeEngine::new().map(|engine| engine as SharedEngine));
+        return engine_or_error(
+            ui::webview::wpe::WpeEngine::new().map(|engine| engine as SharedEngine),
+        );
     }
-    engine_or_error(ui::webview::chromium::ChromiumEngine::new().map(|engine| engine as SharedEngine))
+    engine_or_error(
+        ui::webview::chromium::ChromiumEngine::new_with_extensions(
+            &crate::extensions::approved_paths(),
+        )
+        .map(|engine| engine as SharedEngine),
+    )
 }
 
 fn engine_or_error(result: Result<SharedEngine, String>) -> SharedEngine {
@@ -2877,14 +2962,8 @@ impl Widget for BrowserWidget {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.bootstrap_done {
             if !self.headless {
-                // Privacy: "clear on exit" is honoured by clearing the
-                // previous session's data at startup — reliable, unlike a
-                // teardown hook the windowing layer doesn't expose.
-                if self.settings.clear_on_exit {
-                    self.engine.send(WebViewCommand::ClearWebsiteData);
-                    self.history.clear();
-                    let _ = self.history.save();
-                }
+                self.engine
+                    .send(WebViewCommand::SetClearOnExit(self.settings.clear_on_exit));
                 if self.settings.adblock_enabled {
                     crate::blocker::spawn_filter_loader(self.engine.clone());
                     // Scriptlet-style blocking (YouTube ad-skip etc.) the
@@ -2900,6 +2979,15 @@ impl Widget for BrowserWidget {
             self.bootstrap_done = true;
         }
 
+        if let Some(message) = self
+            .extension_feedback
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+        {
+            self.extension_notice = Some(message);
+            self.structure_dirty = true;
+        }
         self.apply_engine_events();
         self.sync_settings_from_document(state, path);
         self.sync_bookmarks(state, path);
@@ -4723,5 +4811,16 @@ mod tests {
             engine.current_uri().as_deref(),
             Some("https://example.test/reading")
         );
+    }
+}
+
+impl Drop for BrowserWidget {
+    fn drop(&mut self) {
+        if !self.headless && self.settings.clear_on_exit {
+            self.history.clear();
+            if let Err(error) = self.history.save() {
+                tracing::error!(%error,"Could not clear browser history on exit");
+            }
+        }
     }
 }

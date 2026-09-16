@@ -1500,6 +1500,7 @@ name = "browser"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "base64 0.22.1",
  "blake3",
  "dirs 6.0.0",
  "png 0.18.1",
@@ -1510,6 +1511,7 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "taffy",
  "tempfile",
  "tracing",

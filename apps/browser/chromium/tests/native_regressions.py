@@ -31,10 +31,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 class Host:
-    def __init__(self):
+    def __init__(self, args=()):
         self.profile = tempfile.TemporaryDirectory(prefix='qos-regressions-')
         self.log = tempfile.TemporaryFile()
-        self.p = subprocess.Popen([str(HOST), '--profile='+self.profile.name], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log)
+        self.p = subprocess.Popen([str(HOST), '--profile='+self.profile.name, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log)
         self.events = queue.Queue()
         self.frames = queue.Queue()
         self.seen = []

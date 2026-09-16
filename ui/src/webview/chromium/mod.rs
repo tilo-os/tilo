@@ -171,19 +171,55 @@ fn host_path() -> Result<PathBuf, String> {
 impl ChromiumEngine {
     /// Start the packaged runtime and persistent local profile.
     pub fn new() -> Result<Arc<Self>, String> {
+        Self::new_with_extensions(&[])
+    }
+
+    pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
         let profile = std::env::var_os("QOS_CHROMIUM_PROFILE")
             .map(PathBuf::from)
             .or_else(|| dirs::data_dir().map(|path| path.join("qos-browser/chromium")))
             .ok_or("Cannot locate Chromium profile directory")?;
-        Self::with_host(&host_path()?, &profile)
+        Self::with_host_extensions(&host_path()?, &profile, extensions)
     }
 
     /// Explicit runtime/profile paths for packaging and isolated live tests.
     pub fn with_host(host: &Path, profile: &Path) -> Result<Arc<Self>, String> {
+        Self::with_host_extensions(host, profile, &[])
+    }
+
+    fn with_host_extensions(
+        host: &Path,
+        profile: &Path,
+        extensions: &[PathBuf],
+    ) -> Result<Arc<Self>, String> {
+        if extensions.len() > 100 {
+            return Err("Too many approved extensions".into());
+        }
+        let extensions = extensions
+            .iter()
+            .map(|path| {
+                let path = path.canonicalize().map_err(|error| error.to_string())?;
+                let value = path.to_str().ok_or("Invalid extension path")?;
+                if value.contains(',') || value.len() > 4096 {
+                    return Err("Unsupported extension path".into());
+                }
+                Ok(value.to_owned())
+            })
+            .collect::<Result<Vec<String>, String>>()?;
         std::fs::create_dir_all(profile).map_err(|error| format!("Chromium profile: {error}"))?;
         let profile = profile.canonicalize().map_err(|error| error.to_string())?;
-        let mut child = Command::new(host)
+        let mut command = Command::new(host);
+        if !extensions.is_empty() {
+            command.arg(format!("--load-extension={}", extensions.join(",")));
+        }
+        let mut child = command
             .arg(format!("--profile={}", profile.display()))
+            .arg(format!(
+                "--downloads={}",
+                dirs::download_dir()
+                    .unwrap_or_else(|| profile.join("downloads"))
+                    .display()
+            ))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -384,6 +420,12 @@ impl Drop for ChromiumEngine {
     }
 }
 
+fn valid_id(value: &Value) -> bool {
+    value["id"]
+        .as_u64()
+        .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+}
+
 fn validate_event(value: &Value) -> Result<(), &'static str> {
     let event = value
         .get("event")
@@ -391,6 +433,25 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         .ok_or("missing event name")?;
     let text = |key: &str| value.get(key).is_some_and(Value::is_string);
     let valid = match event {
+        "permission_prompt" => valid_id(value) && text("origin") && text("permissions"),
+        "permission_closed" => valid_id(value),
+        "download_prompt" => valid_id(value) && text("url") && text("name"),
+        "download" => {
+            valid_id(value)
+                && text("path")
+                && text("name")
+                && text("error")
+                && matches!(
+                    value["state"].as_str(),
+                    Some("progress" | "complete" | "cancelled" | "failed")
+                )
+                && value["received"]
+                    .as_f64()
+                    .is_some_and(|n| n.is_finite() && n >= 0.0)
+                && value["total"]
+                    .as_f64()
+                    .is_some_and(|n| n.is_finite() && n >= 0.0)
+        }
         "ready" => text("cef_version") && text("chromium_version"),
         "uri" => text("url"),
         "title" => text("title"),
@@ -411,6 +472,10 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
 
 fn command_within_limits(command: &WebViewCommand) -> bool {
     match command {
+        WebViewCommand::RequestMediaElementById { element_id, .. } => element_id.len() <= 256,
+        WebViewCommand::PermissionDecision { id, .. }
+        | WebViewCommand::DownloadDecision { id, .. }
+        | WebViewCommand::CancelDownload { id } => *id > 0 && *id <= i32::MAX as u32,
         WebViewCommand::Navigate(url) => url.len() <= 65536,
         WebViewCommand::Key {
             key: KeyInput::Character(text),
@@ -507,6 +572,28 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "uri" => WebViewEvent::UriChanged(value["url"].as_str()?.into()),
         "title" => WebViewEvent::TitleChanged(value["title"].as_str()?.into()),
         "progress" => WebViewEvent::LoadProgress(value["progress"].as_f64()?.clamp(0.0, 1.0)),
+        "permission_prompt" => WebViewEvent::PermissionRequested {
+            id: value["id"].as_u64()? as u32,
+            origin: value["origin"].as_str()?.into(),
+            permissions: value["permissions"].as_str()?.into(),
+        },
+        "permission_closed" => WebViewEvent::PermissionClosed {
+            id: value["id"].as_u64()? as u32,
+        },
+        "download_prompt" => WebViewEvent::DownloadRequested {
+            id: value["id"].as_u64()? as u32,
+            url: value["url"].as_str()?.into(),
+            name: value["name"].as_str()?.into(),
+        },
+        "download" => WebViewEvent::DownloadUpdated {
+            id: value["id"].as_u64()? as u32,
+            state: value["state"].as_str()?.into(),
+            path: value["path"].as_str()?.into(),
+            name: value["name"].as_str()?.into(),
+            received: value["received"].as_f64()? as u64,
+            total: value["total"].as_f64()? as u64,
+            error: value["error"].as_str()?.into(),
+        },
         "loaded" => WebViewEvent::LoadFinished,
         "history" => WebViewEvent::HistoryChanged {
             can_go_back: value["back"].as_bool()?,
@@ -553,6 +640,15 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         }
         WebViewCommand::SetUserScripts(scripts) => json!({"op":"scripts","scripts": &*scripts}),
         WebViewCommand::ClearWebsiteData => json!({"op":"clear_data"}),
+        WebViewCommand::SetClearOnExit(enabled) => json!({"op":"clear_on_exit","enabled":enabled}),
+        WebViewCommand::ShowDeveloperTools => json!({"op":"devtools"}),
+        WebViewCommand::PermissionDecision { id, allow } => {
+            json!({"op":"permission_decision","id":id,"allow":allow})
+        }
+        WebViewCommand::DownloadDecision { id, allow } => {
+            json!({"op":"download_decision","id":id,"allow":allow})
+        }
+        WebViewCommand::CancelDownload { id } => json!({"op":"download_cancel","id":id}),
         WebViewCommand::SetNativeFilterRules { rules, enabled } => {
             json!({"op":"filter_rules","rules":&*rules,"enabled":enabled})
         }
