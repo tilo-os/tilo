@@ -90,6 +90,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// Build the same widget as [`app_root`], with only peer-local shot state
 /// staged outside the collaborative document.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    if scenario.starts_with("setup-") {
+        return Box::new(setup::view::SetupApp::for_shot(scenario));
+    }
     let mut app = ImagerApp::new();
     app.seed_local_shot_state(scenario);
     if scenario == "confirm" {
@@ -117,6 +120,11 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "progress",
     "done",
     "done-failed",
+    "setup-experience",
+    "setup-folders-copy",
+    "setup-folders-connected",
+    "setup-folders-later",
+    "setup-review",
 ];
 
 /// Pose the document for one named `--shots` scenario. Sample content is seeded
