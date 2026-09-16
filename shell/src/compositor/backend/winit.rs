@@ -22,7 +22,7 @@ use ui::gpu::RenderContext;
 use vello::util::RenderSurface;
 use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::window::{Window, WindowAttributes, WindowId};
@@ -102,6 +102,14 @@ fn apply_scale_factor_changed(output: &mut Output, scale_factor: f64) -> Option<
     })
 }
 
+fn relative_motion_from_device_event(focused: bool, event: &DeviceEvent) -> Option<(f64, f64)> {
+    let DeviceEvent::MouseMotion { delta: (dx, dy) } = event else {
+        return None;
+    };
+    (focused && dx.is_finite() && dy.is_finite() && (*dx != 0.0 || *dy != 0.0))
+        .then_some((*dx, *dy))
+}
+
 /// Base color for the first few frames before a theme arrives. Matches
 /// `ui::theme::Theme::dark().bg_app` so the window doesn't flash white on
 /// boot; overridden each frame via [`WinitBackend::set_base_color`].
@@ -131,6 +139,10 @@ struct Inner {
     /// Set when `pump_app_events` returns `Exit`, so we emit one
     /// `CloseRequested` and stop pumping.
     closed: bool,
+    /// Raw device motion must never control qOS while its hosted window is
+    /// unfocused. Window events already obey that boundary; `DeviceEvent`
+    /// deliberately does not, so we gate it explicitly.
+    focused: bool,
 }
 
 struct RenderState {
@@ -159,6 +171,7 @@ impl WinitBackend {
                 event_buffer: Vec::new(),
                 base_color: FALLBACK_BG,
                 closed: false,
+                focused: false,
             },
         };
         me.pump_until_resumed();
@@ -563,6 +576,7 @@ impl ApplicationHandler for Inner {
                 }
             }
             WindowEvent::Focused(focused) => {
+                self.focused = focused;
                 self.event_buffer.push(BackendEvent::Focus(focused));
             }
             WindowEvent::RedrawRequested => {
@@ -583,6 +597,21 @@ impl ApplicationHandler for Inner {
                     .push(BackendEvent::ModifiersChanged(modifiers));
             }
             _ => {}
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        event: DeviceEvent,
+    ) {
+        if let Some((dx, dy)) = relative_motion_from_device_event(self.focused, &event) {
+            // Unlike `CursorMoved`, raw motion keeps arriving after the host
+            // cursor reaches a window edge. This gives the nested/dev backend
+            // the same four-edge cross-device control contract as DRM.
+            self.event_buffer
+                .push(BackendEvent::RelativePointerMotion { dx, dy });
         }
     }
 
@@ -625,5 +654,31 @@ mod tests {
         assert!(apply_scale_factor_changed(&mut output, 0.0).is_none());
         assert!(apply_scale_factor_changed(&mut output, f64::NAN).is_none());
         assert_eq!(output.scale, 1.25);
+    }
+
+    #[test]
+    fn raw_motion_is_forwarded_only_while_the_host_window_is_focused() {
+        let motion = DeviceEvent::MouseMotion { delta: (-4.5, 2.0) };
+        assert_eq!(
+            relative_motion_from_device_event(true, &motion),
+            Some((-4.5, 2.0))
+        );
+        assert_eq!(relative_motion_from_device_event(false, &motion), None);
+        assert_eq!(
+            relative_motion_from_device_event(
+                true,
+                &DeviceEvent::MouseMotion {
+                    delta: (f64::NAN, 1.0),
+                },
+            ),
+            None
+        );
+        assert_eq!(
+            relative_motion_from_device_event(
+                true,
+                &DeviceEvent::MouseMotion { delta: (0.0, 0.0) },
+            ),
+            None
+        );
     }
 }
