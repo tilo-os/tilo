@@ -13,7 +13,7 @@ apps/calendar/src/sidebar.rs literal_color 1
 apps/calendar/src/sidebar.rs white_or_black 1
 apps/calendar/src/timeline_interaction.rs white_or_black 1
 apps/calendar/src/topbar.rs white_or_black 0
-apps/camera/src/app.rs literal_color 11
+apps/camera/src/app.rs literal_color 6
 apps/chat/src/paint.rs white_or_black 4
 apps/chat/src/render_call.rs literal_color 6
 apps/chat/src/render_call.rs white_or_black 6
@@ -125,7 +125,7 @@ shell/src/compositor/frame.rs white_or_black 2
 shell/src/compositor/projection_capture.rs literal_color 1
 shell/src/shell/desktop_backdrop.rs literal_color 1
 shell/src/shell/editor_app.rs literal_color 1
-shell/src/shell/sidebar_wheel_chrome.rs literal_color 3
+shell/src/shell/sidebar_wheel_chrome.rs literal_color 0
 shell/src/shell/sidebar_wheel_disc.rs literal_color 2
 shell/src/shell/sidebar_wheel_disc.rs white_or_black 2
 shell/src/shell/topbar_chrome.rs literal_color 2
