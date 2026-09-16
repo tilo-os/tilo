@@ -236,6 +236,7 @@ Choose a shared composition by what the region contains:
 | Account or settings form | `FormPage`, `Form`, `Section`, `Field` | One page gutter, readable width, related-field spacing, measured label placement, wrapping and scrolling |
 | Card with a title, content and actions | `Card::composed` with a header and footer | Content height, consistent card gutter, footer containment and alignment |
 | Small primary/secondary action group | `Actions` | Measured unspecified button sizes, wrapping and trailing alignment |
+| Long command strip | `Toolbar` | Measured command sizes, bounded overflow menu, keyboard navigation and accessible command bounds |
 | Main writing surface | `Scrollable::with_content_min_viewport_height()` | Short auto-height content fills the viewport; long content retains its intrinsic scroll extent |
 | Empty list or first-use pane | `EmptyState` | Wrapped title/message, measured action height, centering and decorative shedding |
 | Authored canvas or custom arrangement | `Manual` or existing layout primitives | Shared child measurement and ordinary control behavior; the author chooses geometry |
@@ -280,6 +281,14 @@ auto-height content fill that viewport while long content scrolls. Ordinary
 multiline form fields remain content-sized by default, and a child's explicit
 fixed height stays authoritative. Scratchpad uses this composition with its
 existing editor and Save action.
+
+For a long command strip, let `Toolbar` choose the visible commands from
+renderer measurements and put the remainder in its owned overflow menu. The
+same original callbacks remain available through pointer, keyboard and semantic
+activation. Use the ordinary Widget measurement and overlay lifecycle;
+`recompute_visible` is a compatibility estimate for callers without a renderer,
+not the final measured layout. A small form footer should still use `Actions`
+when wrapping its few buttons gives a clearer result.
 
 Explicit dimensions remain authored choices. Use guided overrides or fully
 [manual composition](MANUAL_LAYOUT.md) wherever the default does not express the

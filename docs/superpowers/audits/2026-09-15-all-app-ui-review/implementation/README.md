@@ -19,3 +19,6 @@ These archived reports preserve implementation and independent review evidence f
 - [shared-task-5-review](shared-task-5-review.md)
 - [shared-task-3-report](shared-task-3-report.md)
 - [shared-task-3-review](shared-task-3-review.md)
+- [shared-task-4-report](shared-task-4-report.md)
+- [shared-task-4-review](shared-task-4-review.md)
+- [shared-task-4-fix-1-review](shared-task-4-fix-1-review.md)
