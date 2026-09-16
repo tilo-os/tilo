@@ -1,6 +1,8 @@
 # Collaborative Presence — Spec (2026-06-24)
 
-> **Status:** authoritative spec for the app-level collaboration milestone.
+> **Status:** implemented design record for the app-level collaboration
+> milestone. Current behavior is in `ui/src/presence`, `apps/notes`, and the
+> shell collaboration path; this document preserves the design rationale.
 > Goal: **two live instances of the notes app, running locally on one
 > machine, with full live collaboration** — shared document *and* rich
 > per-peer presence (pointer, caret, text selection, authorship,
@@ -11,7 +13,8 @@
 > shell itself) can adopt them. The notes app is the demo vehicle, not
 > the only beneficiary.
 >
-> Companion implementation plan: `docs/superpowers/plans/2026-06-24-collaborative-presence.md` (written next).
+> The implementation plan has been retired; current behavior is covered by the
+> live presence code and its tests. This document remains the design rationale.
 
 ---
 

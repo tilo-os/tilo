@@ -66,7 +66,6 @@ impl format_router::Server for FormatRouterService {
         }
     }
 
-    // See the comment on `detect` above — same capnp-rpc Rc-based shape.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
@@ -98,7 +97,6 @@ impl format_router::Server for FormatRouterService {
         }
     }
 
-    // See the comment on `detect` above — same capnp-rpc Rc-based shape.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
@@ -131,7 +129,6 @@ impl format_router::Server for FormatRouterService {
         }
     }
 
-    // See the comment on `detect` above — same capnp-rpc Rc-based shape.
     #[allow(
         clippy::future_not_send,
         reason = "capnp-rpc's Rc-based Results/Params are never Send; this runs on its local executor"
@@ -144,8 +141,6 @@ impl format_router::Server for FormatRouterService {
         let router = self.router.clone();
         async move {
             let ids = router.list();
-            // Bounded by how many format providers are registered — nowhere
-            // near `u32::MAX`; `try_from` spells that out instead of `as`.
             let count = u32::try_from(ids.len()).unwrap_or(u32::MAX);
             let mut out = results.get().init_providers(count);
             for (i, id) in ids.iter().enumerate() {
@@ -156,8 +151,6 @@ impl format_router::Server for FormatRouterService {
     }
 }
 
-// Make `Rc<Self>` usable. capnp uses its own `Rc`-style smart pointer shape.
-// We don't need extra glue beyond the `Server` impl above.
 #[allow(dead_code)]
 fn _ensure_rc_compat() {
     fn _accept<T: format_router::Server + 'static>(_: Rc<T>) {}

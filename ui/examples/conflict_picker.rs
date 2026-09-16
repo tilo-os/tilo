@@ -1,5 +1,4 @@
-//! `conflict_picker` example — eyeball the Phase 4 conflict toolkit:
-//! a `ConflictBanner` stacked above a `ConflictPicker` with mocked
+//! Interactive `ConflictBanner` and `ConflictPicker` demo with mocked
 //! `PickOne` alternatives.
 //!
 //! Run with:

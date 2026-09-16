@@ -4,14 +4,11 @@
 //!
 //! ```text
 //! workspace.automerge       # automerge save bytes; the inner Text holds JSON(WorkspaceData)
-//! pages/{uuid}.md           # one markdown body per page (Phase 1: empty)
+//! pages/{uuid}.md           # one markdown body per page
 //! ```
 //!
-//! Phase 1 doesn't render markdown — Phase 2 will. We keep the `.md`
-//! extension already because the on-disk format is supposed to outlive
-//! the body-rendering implementation: storing notes in plain markdown
-//! means a user can crack open a file with any editor and recover
-//! their work, even if the notes binary is gone.
+//! Page bodies remain plain Markdown so they can be recovered with another
+//! editor independently of the Notes application.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -99,9 +96,7 @@ pub fn workspace_file_path(root: &Path) -> PathBuf {
     root.join(WORKSPACE_FILE)
 }
 
-/// Read the body of one page off disk. Returns `Ok(String::new())` if
-/// the file doesn't exist — a page with no body is normal (Phase 1
-/// only ever produces empty bodies).
+/// Read the body of one page off disk. A missing file is an empty page.
 ///
 /// # Errors
 ///
@@ -148,10 +143,7 @@ pub fn delete_page_file(root: &Path, id: PageId) -> io::Result<()> {
 }
 
 /// Serialise a [`Workspace`] into the automerge save bytes used on
-/// disk. Stores the JSON-encoded [`WorkspaceData`] inside a top-level
-/// Text key. Choosing JSON-in-Text keeps Phase 1 simple while keeping
-/// the on-disk format compatible with a future automerge-native
-/// migration (we keep the same file extension).
+/// disk. Stores the JSON-encoded [`WorkspaceData`] inside a top-level Text key.
 ///
 /// # Errors
 ///

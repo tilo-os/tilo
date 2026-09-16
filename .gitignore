@@ -50,6 +50,7 @@ keys/**/*.private.pem
 .claude/worktrees/
 .claude/app-status.md
 .claude/*.log
+.claude/table-shots/
 
 # build.sh copies the real hardening kargs, the rollback machinery and the
 # freshly built qos-rollback binary into the composefs build context

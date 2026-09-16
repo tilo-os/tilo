@@ -4,7 +4,6 @@
 //! previous set live.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
@@ -27,8 +26,6 @@ pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<(
         .parent()
         .ok_or_else(|| anyhow::anyhow!("registry path has no parent dir"))?
         .to_path_buf();
-    // Pre-create the directory so the watcher attaches successfully on a
-    // fresh install.
     std::fs::create_dir_all(&watch_dir)?;
     let registry_name = registry_path
         .file_name()
@@ -55,7 +52,6 @@ pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<(
         // Keep the watcher alive in this task.
         let _watcher = watcher;
         while rx.recv().await.is_some() {
-            // Drain coalesced events.
             tokio::time::sleep(Duration::from_millis(100)).await;
             while rx.try_recv().is_ok() {}
             if let Err(e) = crate::router::load_into(&router2, &registry_path2) {
@@ -65,8 +61,5 @@ pub fn spawn_watcher(router: Router, registry_path: PathBuf) -> anyhow::Result<(
             }
         }
     });
-
-    // Keep this dummy so the Arc isn't dropped early in pathological cases.
-    let _keep_alive: Arc<()> = Arc::new(());
     Ok(())
 }

@@ -323,7 +323,6 @@ written by the normal exit path, so a `SIGKILL`ed compositor loses them.
 | Widget registry walk | `shell/src/compositor/frame.rs::walk_widget` |
 | Backend trait | `shell/src/compositor/backend/mod.rs` |
 | Headless backend impl | `shell/src/compositor/backend/headless.rs` |
-| Spec | `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md` |
 
 ## Per-app screenshots
 

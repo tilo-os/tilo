@@ -1,6 +1,4 @@
-//! Provider registry: parses `format-providers.toml`, exposes the parsed
-//! provider entries, and is shared (`Arc<Registry>`) across the router and the
-//! inotify hot-reload task.
+//! Provider registry for `format-providers.toml`.
 
 use std::path::{Path, PathBuf};
 
@@ -15,11 +13,8 @@ pub struct ProviderEntry {
     /// Package identifier (e.g. `dev.qos.qdoc-md`). Also the provider id used
     /// by clients in `importAs`/`exportAs`.
     pub package: String,
-    /// Path to the WASM Component Model binary. Direct file path for now; a
-    /// content-addressed flavour (referring to qpkg `PackageIds`) is a sketched
-    /// follow-up — see the host crate's open-questions.
+    /// Path to the WASM Component Model binary.
     pub wasm: PathBuf,
-    /// Semver-ish version string. Not parsed, just exposed for diagnostics.
     pub version: String,
     /// Trust tier. Determines priority when multiple providers claim the same
     /// MIME — `Builtin` > `Installed` > `Ephemeral`.
@@ -49,7 +44,6 @@ struct WireProvider {
     trust: Vec<String>,
 }
 
-/// The parsed registry.
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
     pub providers: Vec<ProviderEntry>,

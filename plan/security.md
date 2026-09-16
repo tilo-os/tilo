@@ -8,8 +8,6 @@
 
 The security boundary is the **workspace**. Every workspace runs apps inside its own Bubblewrap sandbox with its own user namespace, mount namespace, seccomp-bpf filter, and a per-workspace Wayland bridge socket. Capabilities (filesystem, hardware, network) require explicit grants surfaced as inline prompts; grants persist in the workspace's CRDT and replicate to peers.
 
-Implementation tracked in `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` (sandbox phases 1-6 + portal 4.3 landed). Where this design diverges from earlier "global host" framings, the current code wins.
-
 ## Threat model
 
 The scenarios we defend against:
@@ -140,8 +138,8 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 ### Filesystem
 
 - An app names no path. `crates/packaging/launcher` binds a fixed system read profile (`launcher::profile`: loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data) plus one read-write directory per room per package at `/run/qos/app` (`launcher::appdir`), and nothing else. The `[sandbox.fs]` manifest block is retired; a package that still declares one is refused at install and at launch.
-- `FileChooser` returns a `file://` URI. It does **not** return a file descriptor: `org.freedesktop.impl.portal.FileChooser` has no fd in its signature — `OpenFile`/`SaveFile`/`SaveFiles` answer `(u32, a{sv})` with a `uris` key, and an app calling through `ashpd` gets URIs. This line previously claimed an fd wrapped by `cap-std`; nothing ever implemented that, and the interface gives it nowhere to live.
-- **The dialog is the prompt.** `FileChooser` does not raise a separate permission prompt before showing the picker. It used to, on a `Capability::Filesystem` carrying a `"/"` sentinel — and because `Scope::FsPath` covers its subtree, answering *Always* once granted that app the whole filesystem, permanently, after which every later request took the fast path and never showed a dialog again. Choosing a file in a compositor-owned dialog is the act of authorisation, and the grant names exactly the path chosen: read-only for `OpenFile`, read-write for `SaveFile`, session-scoped.
+- `FileChooser` returns `file://` URIs because `org.freedesktop.impl.portal.FileChooser` answers `OpenFile`/`SaveFile`/`SaveFiles` with a `uris` key rather than file descriptors.
+- **The dialog is the prompt.** Choosing a file in the compositor-owned dialog is the act of authorisation, and the grant names exactly the path chosen: read-only for `OpenFile`, read-write for `SaveFile`, session-scoped. A separate prompt must not grant a broad path before the user chooses one.
 - A path outside the profile is reachable only through a capability the user grants, which becomes a bind at the next launch of that app (`launcher::capabilities`). `SandboxProfile::apply_grants` mirrors the same rules compositor-side; the launcher is the enforcement point and a disagreement between the two is a bug in the mirror.
 
   **Next launch is the operative phrase.** A confined app's mount namespace is fixed when `bwrap` creates it, so a grant made mid-session cannot add anything to the namespace the app is already living in. `shell/tests/portal_grant_reaches_sandbox.rs` asserts the grant→bind chain end to end; what it asserts is the *next* launch. For a running app the portal additionally publishes the pick through `shell::portal::doc_store`, which is where the three candidate mechanisms — a launch-time grant, a live re-bind, and a document store — are compared and one is chosen. The shipped store is `HostPathStore`, which is correct for callers sharing the compositor's namespace and reports `reaches_confined_apps() == false` rather than pretending otherwise; the compositor logs that at startup.
@@ -168,7 +166,7 @@ Three properties make that a boundary rather than a convention:
 
 DNS is treated as egress. An app with no grant reaches no resolver; an app with an allowlist needs none, because the gate resolves on its behalf after the name has passed the policy. So an app cannot make the gate resolve a name it was not allowed to reach, and cannot signal through query contents because it emits no query.
 
-This needs no privilege and no kernel feature `bwrap` does not already require. Earlier drafts of this document described per-workspace `nftables` rules; that was never implemented, and it would not have worked as described — a rule set is written against addresses and cannot express a hostname, and installing one needs `CAP_NET_ADMIN` the launcher does not have.
+This needs no privilege and no kernel feature `bwrap` does not already require. Address-based `nftables` rules would not preserve hostname-scoped policy and would require `CAP_NET_ADMIN`, which the launcher does not have.
 
 Not constrained: **ports** (a `NetHost` scope names a host and carries no port) and **content** (the gate relays TCP and deliberately does not terminate TLS).
 
@@ -242,4 +240,3 @@ Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **
 - `shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
 - `shell/src/network/invite.rs` — invite tokens.
 - `shell/src/network/input_firewall.rs` — the remote-input checks, with each denial proven through `State::review_remote_input` in its `production_path` tests.
-- `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` — phase log.
