@@ -46,40 +46,9 @@ Source preflight split the original cross-app task into five independent impleme
 
 All original findings remain assigned. Current source has no manual Code Editor dock resize or DB row selection; preserve actual existing state without inventing those features. API Params/Auth surfaces are read-only painted chrome; preserve Body/form editing and Send rather than adding a new editor. Source-only preflight: `.superpowers/app-ui-2026-09-15/editing-workspace-preflight.md`.
 
-### Task 2: Route workspaces when panes do not fit
+### Task 2: Route workspaces when panes do not fit (umbrella; execute Tasks18,16,17)
 
-#### Containers
-
-**Files:** `apps/containers/src/app.rs`, `panels.rs`; `tests/interaction.rs`.
-
-**Current:** `COMPACT_VIEWPORT_WIDTH` is 600; `compact_layout_for`/`uses_compact_layout` (~2657) permit three columns at 800. `draw_containers`, `draw_container_row_layout`, `draw_row_stats`, `draw_row_actions`, `draw_container_detail_pane` all depend on route/layout mode. `compact_layout_active`, selected resource, sidebar flap and existing compact detail behavior already exist.
-
-- [ ] Decide feasibility from content width after rail plus measured list/status/action and detail minimums. At 800 normal size use the existing full-page list→detail route when those panes cannot fit. Keep wide three-column view when feasible; do not merely change a window-width constant without accounting for rail state.
-- [ ] Use the same decision in `uses_compact_layout`, draw/event routing, `accessibility`, `perform_semantic_action`, `control_action_bindings`; reuse existing Back and selection transitions. Reserve running badge before row action positions and SearchField shortcut badge before placeholder.
-- [ ] Replace the test `compact_breakpoint_preserves_tablet_desktop_but_protects_large_text` expectation that 800 always preserves desktop with a measured-feasibility assertion. Retain `compact_selection_is_a_full_page_drill_in` and verify resize does not lose selected container/detail tab.
-
-**Acceptance:** At 800 no Running/Stop/Restart overlap and search hint is distinct. List→detail→Back by pointer/keyboard/accessibility preserves selection; lifecycle commands dispatch once. Capture list/detail at 800, selected detail at 1200, disconnected engine and 480.
-
-#### Diff/Merge
-
-**Files:** `apps/diffmerge/src/app.rs`, `merge_view.rs`, `diff_view.rs` only where shared compact decision is needed.
-
-**Current:** MergeView::is_compact, source_selector_rects, draw_hunk_action_chips (~569), draw_hunks and merged band have a working narrow source switcher. Conflict chip widths currently estimate `label.len()` (~649). App toolbar has explicit semantic/focus mappings.
-
-- [ ] Measure the full conflict choice group and require it to fit the actual pane width. If three panes cannot fit, select existing compact source view earlier, including 800 where required. Share that compact decision among draw, hit rectangles, focus/accessibility and source selector; preserve selected source when widening/narrowing.
-- [ ] Replace character-count chip widths with measured labels. Keep Take ours/theirs/both actions bound to `HunkChoice` and existing pending `DiffmergeAction` route; don't substitute a purely visual chip.
-
-**Acceptance:** All conflict choices fully inside their pane at 800; pointer, Tab/Enter and semantic activation resolve identical hunks and remain undoable. Extend `compact_source_switcher_has_pointer_keyboard_and_a11y_parity`, toolbar focus order and root resolution tests. Capture a multi-conflict merge at 800 and 480; also a two-file diff at 1200.
-
-
-#### Confirmed scale findings in the same app pass
-
-After shared measured components land, close these existing findings alongside the normal-size work. Additional app-local source files named here are in scope. Preserve the base-versus-resolved font contract and use one geometry model for paint and interaction.
-
-| App | Additional work | Verification |
-|---|---|---|
-| 2 Containers | `panels.rs:1101` title/image/tabs/log rows; `draw.rs:79` token-relative double scale. Measure normalized header/log text and Back action. | At800×2 push mode, Back reachable, last log selectable/scrollable, selection and engine state intact. |
-| 2 Diff/Merge | `merge_view.rs:31` ROW_H19 and heights366/711/844/1261; app toolbar527/551. Shared row metric and conflict-choice group bounds, scale-sensitive pane choice. | Every Take choice, hunk hit and scroll maps after reflow; no lost manual selection. |
+Execute the SearchField prerequisite and each app as separate reviewed tasks. Source preflight: `.superpowers/app-ui-2026-09-15/route-workspace-preflight.md`. Tasks16/17 preserve all original normal and scale acceptance; Task2 closes only after all three pass review.
 
 ### Task 3: Browse and form composition
 
@@ -412,6 +381,61 @@ Retain the existing shared active draft. Copying saved content into its URL/Body
 - [ ] Add meaningful RED and GREEN mounted-host coverage from the preflight: initially bound edited draft A → actual saved-row B → repeated sync; exact method/URL/nonempty Body/body-mode/metadata; host undo/redo; stable Text IDs; pointer/Enter/AT parity; empty and migrated values; source/environment/manual-split isolation. Verify registered action replay and shared-document refresh without changing local route state.
 - [ ] Use the actual resource front door for history and saved Send tests, including stale/missing IDs. Local HTTP fixture only. For in-flight history, delay fixture completion, edit the current draft, and prove recorded metadata describes what was sent. Confirm Save current request sees current method/URL/Body.
 - [ ] Preserve Task11 composition and navigation lifetime repair. Capture already-mounted saved adoption in Body at compact/narrow/true2×, plus an undo state; unlike earlier staged fixtures, these must follow a real saved-row action after first binding. Root default capture verification and independent review gate apply. No new Params/Auth editing capability, network feature or navigation redesign.
+
+### Task 16: Containers measured feasibility and local detail route
+
+**Depends on Task18.**
+
+#### Containers
+
+**Files:** `apps/containers/src/app.rs`, `panels.rs`; `tests/interaction.rs`.
+
+**Current:** `COMPACT_VIEWPORT_WIDTH` is 600; `compact_layout_for`/`uses_compact_layout` (~2657) permit three columns at 800. `draw_containers`, `draw_container_row_layout`, `draw_row_stats`, `draw_row_actions`, `draw_container_detail_pane` all depend on route/layout mode. `compact_layout_active`, selected resource, sidebar flap and existing compact detail behavior already exist.
+
+- [ ] Decide feasibility from content width after rail plus measured list/status/action and detail minimums. At 800 normal size use the existing full-page list→detail route when those panes cannot fit. Keep wide three-column view when feasible; do not merely change a window-width constant without accounting for rail state.
+- [ ] Use the same decision in `uses_compact_layout`, draw/event routing, `accessibility`, `perform_semantic_action`, `control_action_bindings`; reuse existing Back and selection transitions. Reserve running badge before row action positions and SearchField shortcut badge before placeholder.
+- [ ] Replace the test `compact_breakpoint_preserves_tablet_desktop_but_protects_large_text` expectation that 800 always preserves desktop with a measured-feasibility assertion. Retain `compact_selection_is_a_full_page_drill_in` and verify resize does not lose selected container/detail tab.
+
+**Acceptance:** At 800 no Running/Stop/Restart overlap and search hint is distinct. List→detail→Back by pointer/keyboard/accessibility preserves selection; lifecycle commands dispatch once. Capture list/detail at 800, selected detail at 1200, disconnected engine and 480.
+
+
+#### Controller source rulings
+
+- Compact list/detail routing is local state separate from existing replicated selected resource/detail tab. Back/Escape from compact detail returns to list while keeping the selected resource/tab. Re-activating that selected row reopens detail. Initial selected content may start in detail; preserve the user's local list/detail choice through width/rail changes. A removed selected resource cannot leave stale detail open. Preserve canonical resource-driven opening of Logs and other detail routes. Do not change replicated schema or lifecycle authority.
+- Feasibility consumes remaining content width after actual rail state, measured status/actions and detail minima; one mode feeds paint/events/semantics. Current draw.rs scale handling may already be correct; verify before editing, never compensate with reciprocal scale.
+- Measure title/image/tabs/back/toolbar and log row geometry at true2×. Existing log strings have scrolling, no selection model: “last log selectable” is corrected to “last log visible/reachable through scrolling.” Do not introduce log text selection or synthetic per-line accessibility in this task.
+- Update the existing Escape-clears-selection test to the explicit compact route policy; retain wide close behavior where distinct. Verify pointer/keyboard/semantic Back, selected id and tab through rail/resize, and each lifecycle action dispatches exactly once (second drain empty). SearchField consumes the separately accepted measured trailing-slot prerequisite.
+- Named captures: compact list/detail800 and480, selected detail1200, disconnected state, short and true2× detail/log tail. No real Podman/destructive lifecycle calls; recording provider fixtures.
+
+### Task 17: Diff/Merge measured pane feasibility and focus
+
+#### Diff/Merge
+
+**Files:** `apps/diffmerge/src/app.rs`, `merge_view.rs`, `diff_view.rs` only where shared compact decision is needed.
+
+**Current:** MergeView::is_compact, source_selector_rects, draw_hunk_action_chips (~569), draw_hunks and merged band have a working narrow source switcher. Conflict chip widths currently estimate `label.len()` (~649). App toolbar has explicit semantic/focus mappings.
+
+- [ ] Measure the full conflict choice group and require it to fit the actual pane width. If three panes cannot fit, select existing compact source view earlier, including 800 where required. Share that compact decision among draw, hit rectangles, focus/accessibility and source selector; preserve selected source when widening/narrowing.
+- [ ] Replace character-count chip widths with measured labels. Keep Take ours/theirs/both actions bound to `HunkChoice` and existing pending `DiffmergeAction` route; don't substitute a purely visual chip.
+
+**Acceptance:** All conflict choices fully inside their pane at 800; pointer, Tab/Enter and semantic activation resolve identical hunks and remain undoable. Extend `compact_source_switcher_has_pointer_keyboard_and_a11y_parity`, toolbar focus order and root resolution tests. Capture a multi-conflict merge at 800 and 480; also a two-file diff at 1200.
+
+
+
+#### Controller source rulings
+
+- Include existing fixed diff/merge row/header/action bands and app toolbar in measured geometry. One snapshot drives row/hunk spans, scroll/culling, source mode, selectors, conflict chips, paint/hits/semantics. Keep selected_source and compact_show_right local and stable across resize; never change MergeDoc ownership.
+- Current root Tab consumes a toolbar-only list, and resolution chips have no keyboard focus. Implement explicit focus handoff/order into visible source selectors and resolution chips, with Enter/Space invoking the same HunkChoice/canonical action and one undo boundary. Retain logical focused hunk/choice through reflow when still present; remove hidden/stale focus and preserve existing shortcuts.
+- Replace the 800px-selector-disappears test with measured feasibility. Test all chips inside their owning pane, scale-driven row geometry, source retention390→1200→800, same logical hunk after scroll/reflow, and pointer/keyboard/semantic undo parity. Do not add a new merge algorithm, editor, or action path.
+
+### Task 18: SearchField measured launcher shortcut reservation
+
+**Files:** `ui/src/widget/search_field.rs` and focused tests. Separate shared prerequisite for Task16; current launcher input reserves the fixed clear-button gutter while drawing a wider separately measured shortcut chip.
+
+- [ ] In launcher mode reserve the actual shortcut label/chip width, padding and input gap using the same style/scale as paint. Use one effective geometry for input, chip, leading icon and interaction. Before-first-draw and subsequent width/text-scale/platform changes must converge without an extra user event; inspect first offscreen frame too.
+- [ ] Preserve typed filter mode/clear affordance, launcher palette dispatch, keyboard behavior, accessibility and caller-authored outer widths. This is an internal launcher slot measurement correction, not a global token/padding change or app-specific placeholder shortening. Keep full text available semantically.
+- [ ] Automatic minimum height must contain the actual label/chip at supported scales; bounded explicitly small widths may elide the input label, with no chip/input collision or negative rectangle. Do not shrink fonts or change all inputs.
+- [ ] Meaningful RED/GREEN geometry tests at1×/2× and platform shortcut labels, narrow/wide/resize, empty/typed filter clear and launcher activation. Verify actual painted/child rectangles and action callback, not only a replicated formula. Run affected SearchField tests; capture representative launcher at first frame normal/2×. Independent shared prerequisite review before Containers uses it.
 
 ## Controller validation contract for every task
 
