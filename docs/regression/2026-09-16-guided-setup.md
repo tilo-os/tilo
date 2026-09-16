@@ -82,6 +82,30 @@ activation tests (2) passed. Native Fedora setup tests excluding the separately
 in-progress migration module passed all 43 tests with no warnings. Scoped
 re-review found no remaining issues. Native Windows runtime testing is pending.
 
+## Fresh folder copy engine
+
+Commit `4d548fb74` adds real, unprivileged copying into an exclusive fresh
+folder. Fifteen real-filesystem tests pass on macOS ARM64 and Fedora ARM64:
+verified bytes, empty directories, unchanged originals, cancellation,
+conflicts, changed sources, corrupted staging files and timestamp handling.
+The setup suites passed 59 tests on macOS and 58 on Fedora after the shared
+no-follow helper extraction. Native Fedora session `48855` exited zero without
+warnings. This is not yet the resumable engine or the UI import flow.
+
+Independent task review found two unresolved destination-namespace issues:
+a writable parent can allow substitution before the newly created directory's
+identity is recorded, and name-based publication/cleanup can race destination
+writers. Fixes are required before accepting this component. Passing existing
+tests does not establish those untested guarantees.
+
+The exact migration and no-follow modules, including Windows-gated tests,
+compile for `x86_64-pc-windows-msvc` in an isolated temporary crate. Its 41
+dependency identities/checksums were compared against repository lock entries.
+This proves only the isolated Windows Rust compilation. A full locked Imager
+cross-check failed in the `ring` C build because the macOS host lacks Windows
+SDK headers (`assert.h`); native Windows execution and full-app verification
+remain outstanding.
+
 ## Existing installer baseline
 
 Native Fedora ARM64 ran `bash os/tests/installer_target_invariants.sh` and
