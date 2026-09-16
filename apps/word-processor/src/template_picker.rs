@@ -46,6 +46,16 @@ impl TemplatePicker {
         ]);
     }
 
+    /// Synchronise overlay geometry before an immediate open-and-click path.
+    pub(crate) fn set_text_scale(&mut self, text_scale: f32) {
+        self.menu.set_text_scale(text_scale);
+    }
+
+    /// Keep the picker and its internally-scrollable rows inside the editor.
+    pub(crate) fn set_viewport(&mut self, viewport: vello::kurbo::Rect) {
+        self.menu.set_viewport(Some(viewport));
+    }
+
     pub(crate) fn close(&mut self) {
         self.menu.close();
     }
