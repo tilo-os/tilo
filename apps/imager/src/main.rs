@@ -96,7 +96,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let text_scale = parse_value_arg(&args, "--text-scale")
             .as_deref()
             .and_then(parse_text_scale);
-        let theme = standalone_shot_theme(text_scale);
+        let environment_text_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
+        let theme = standalone_shot_theme(text_scale, environment_text_scale.as_deref());
         std::fs::create_dir_all(&dir).ok();
         for (i, scenario) in imager::SHOT_SCENARIOS.iter().enumerate() {
             let out = dir.join(format!("{:02}-{}.png", i + 1, scenario));
@@ -243,12 +244,15 @@ fn render_scenario(
     Ok(())
 }
 
-fn standalone_shot_theme(text_scale: Option<f32>) -> Theme {
+fn standalone_shot_theme(text_scale: Option<f32>, environment_text_scale: Option<&str>) -> Theme {
     let theme = std::env::var("QOS_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)
-        .with_text_scale(text_scale.unwrap_or(1.0));
+        .with_text_scale(ui::launch::shot_text_scale(
+            text_scale,
+            environment_text_scale,
+        ));
     let reduced = [
         "QOS_SHOTS_REDUCE_MOTION",
         "QOS_A11Y_REDUCE_MOTION",
@@ -278,5 +282,14 @@ mod tests {
         for value in ["NaN", "0.5", "2.1", "not-a-number"] {
             assert_eq!(parse_text_scale(value), None, "accepted {value}");
         }
+    }
+
+    #[test]
+    fn standalone_shot_scale_uses_environment_unless_cli_overrides_it() {
+        assert_eq!(standalone_shot_theme(None, Some("1.25")).text_scale, 1.25);
+        assert_eq!(
+            standalone_shot_theme(Some(2.0), Some("1.25")).text_scale,
+            2.0
+        );
     }
 }
