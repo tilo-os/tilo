@@ -1682,6 +1682,21 @@ impl TextInput {
         }
     }
 
+    /// The shaped code paragraph applies `Theme::text_scale` directly because
+    /// it bypasses [`TextRenderer`]. Gutter labels go through `TextRenderer`,
+    /// which applies that scale itself. Convert the paragraph style back to
+    /// its unscaled form so a 200% line number is measured and painted once,
+    /// not twice (which would push two-digit labels beyond the left edge).
+    fn gutter_number_style(style: &TextStyle, theme: &Theme) -> TextStyle {
+        let mut gutter = style.clone();
+        let scale = theme.text_scale;
+        if (scale - 1.0).abs() > f32::EPSILON {
+            gutter.size /= scale;
+            gutter.letter_spacing /= scale;
+        }
+        gutter
+    }
+
     #[allow(clippy::too_many_arguments, reason = "internal draw-pass helper")]
     fn draw_gutter_line_numbers(
         &self,
@@ -1844,7 +1859,7 @@ impl TextInput {
             transform,
             tr,
             theme,
-            &style,
+            &Self::gutter_number_style(&style, theme),
             caret_byte,
             gutter_width,
         );
@@ -6871,6 +6886,15 @@ mod tests {
             large.caret_rect(&large_theme, 0).x0 > large.rect.x0 + large.gutter_width(),
             "the first code glyph stays to the right of the scaled gutter"
         );
+    }
+
+    #[test]
+    fn code_gutter_numbers_do_not_apply_accessibility_scale_twice() {
+        let paragraph_style = TextStyle::new(26.0).with_letter_spacing(0.4);
+        let number_style =
+            TextInput::gutter_number_style(&paragraph_style, &Theme::dark().with_text_scale(2.0));
+        assert_eq!(number_style.size, 13.0);
+        assert_eq!(number_style.letter_spacing, 0.2);
     }
 
     /// Mirrors the handler's own `padding_x = 10.0`; assumes `scroll_x == 0`.
