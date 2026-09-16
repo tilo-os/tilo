@@ -36,6 +36,15 @@ struct MusicResume {
     paused: bool,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatResume {
+    workspace_id: String,
+    channel_id: String,
+    media: ui::realtime_continuity::RealtimeMediaFacets,
+    controls: ui::realtime_continuity::RealtimeControlIntent,
+}
+
 fn portable_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 256
@@ -86,6 +95,14 @@ fn validate_app_semantic_metadata(app_id: &str, schema: u16, bytes: &[u8]) -> bo
         "dev.qos.music" => serde_json::from_slice::<MusicResume>(bytes).is_ok_and(|resume| {
             let _ = resume.position_ms;
             resume.paused && portable_id(&resume.track_id)
+        }),
+        "dev.qos.chat" => serde_json::from_slice::<ChatResume>(bytes).is_ok_and(|resume| {
+            let _ = resume.controls;
+            resume.media.valid()
+                && resume.media.microphone
+                && !resume.media.share_audio
+                && portable_id(&resume.workspace_id)
+                && portable_id(&resume.channel_id)
         }),
         _ => false,
     }
@@ -488,6 +505,35 @@ mod tests {
             Err(ContinuityError::InvalidResumePayload)
         );
         assert_eq!(reports.len(), 0);
+    }
+
+    #[test]
+    fn chat_continuation_accepts_only_bounded_semantic_call_intent() {
+        let safe = br#"{
+            "workspace_id":"ws_acme",
+            "channel_id":"c_huddle",
+            "media":{"microphone":true,"camera":true,"screen_share":false,"share_audio":false},
+            "controls":{"microphone_muted":true,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":true}
+        }"#;
+        assert!(validate_app_metadata("dev.qos.chat", 1, safe));
+        assert!(!validate_app_metadata(
+            "dev.qos.chat",
+            1,
+            br#"{
+                "workspace_id":"ws_acme","channel_id":"https://join.invalid/secret",
+                "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
+                "controls":{"microphone_muted":false,"camera_muted":true,"screen_share_paused":false,"share_audio_muted":true}
+            }"#,
+        ));
+        assert!(!validate_app_metadata(
+            "dev.qos.chat",
+            1,
+            br#"{
+                "workspace_id":"ws_acme","channel_id":"c_huddle","members":["alice"],
+                "media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},
+                "controls":{"microphone_muted":false,"camera_muted":true,"screen_share_paused":false,"share_audio_muted":true}
+            }"#,
+        ));
     }
 
     #[test]

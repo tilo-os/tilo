@@ -548,6 +548,7 @@ pub struct ChatApp {
 
     // Call state.
     pub(crate) call: CallState,
+    pub(crate) realtime: crate::continuity::ChatRealtimeContinuity,
     pub(crate) call_chrome_motion: CallChromeMotion,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
@@ -796,6 +797,7 @@ impl ChatApp {
             rename_input: Self::new_rename_input(),
             swipe: None,
             call: CallState::default(),
+            realtime: crate::continuity::ChatRealtimeContinuity::default(),
             call_chrome_motion: CallChromeMotion::default(),
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
@@ -2713,7 +2715,86 @@ fn chat_navigation_kind(kind: qos_actions::OperationKind) -> Result<bool, String
 }
 
 impl Widget for ChatApp {
+    fn continuation_metadata(
+        &self,
+        _state: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<ui::collaboration::ContinuationMetadata> {
+        let continuation = self.call_continuation()?;
+        let bytes = serde_json::to_vec(&continuation).ok()?;
+        Some(ui::collaboration::ContinuationMetadata {
+            schema_version: crate::continuity::CHAT_CONTINUATION_SCHEMA,
+            bytes,
+        })
+    }
+
+    fn restore_continuation_metadata(
+        &mut self,
+        metadata: &ui::collaboration::ContinuationMetadata,
+        state: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> bool {
+        self.restore_call_continuation(metadata, state)
+    }
+
+    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        self.queue_realtime_registration();
+        std::mem::take(&mut self.realtime.requests)
+    }
+
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        match event {
+            ui::collaboration::CollabEvent::RealtimeCommandResult { result, .. } => match result {
+                Ok(ui::realtime_continuity::RealtimeReply::Registered { session }) => {
+                    self.realtime.registration_pending = false;
+                    self.realtime.session = Some(session.clone());
+                }
+                Ok(ui::realtime_continuity::RealtimeReply::Rejected { .. }) | Err(_) => {
+                    self.realtime.registration_pending = false;
+                }
+                _ => {}
+            },
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::Offer {
+                    session, intent, ..
+                },
+            ) if intent.provider == "qos.chat" => {
+                let Some(workspace_id) = intent.semantic_position.clone() else {
+                    return;
+                };
+                let offered = crate::continuity::ChatCallContinuation {
+                    workspace_id,
+                    channel_id: intent.room_id.clone(),
+                    media: intent.media,
+                    controls: intent.controls,
+                };
+                if offered.valid() {
+                    self.realtime.offer = Some((session.clone(), offered));
+                }
+            }
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::StopSource { session },
+            ) if self.realtime.session.as_ref() == Some(session) => {
+                self.realtime.stop_source = Some(session.clone());
+            }
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::RolledBack { session },
+            ) if self.realtime.session.as_ref() == Some(session) => {
+                // Source deliberately remains live. Only discard the pending
+                // target edge; no call/media mutation occurs here.
+                self.realtime.offer = None;
+            }
+            ui::collaboration::CollabEvent::Realtime(
+                ui::realtime_continuity::RealtimeEvent::Ended { session },
+            ) if self.realtime.session.as_ref() == Some(session) => {
+                self.realtime.session = None;
+            }
+            _ => {}
+        }
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        self.apply_realtime_stop(doc);
         if self.is_live {
             // Live instance. `app-state` has already restored the previous
             // session's document by now, so an unseeded document really is a
