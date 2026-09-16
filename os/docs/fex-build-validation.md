@@ -481,3 +481,21 @@ the checked-in guest toolchains and the unmodified pinned FEX source. Its
 installed validation image is `localhost/qos-fex-clang21-runtime:arm64-dev`,
 image ID `7f006db926f9213e38c7ba09ce4665aa5aa4951be7ff87f6a5ac959c77c7a157`.
 Keep this build evidence separate from test-suite and application acceptance.
+
+### Fresh-build test home and server supervision
+
+The first complete Clang 21 suite attempt had an invalid fixture: `/build/home`
+did not exist, FEX fell back to `/`, and its server could not create its state
+directory. The readiness pipe closed during failure before the process exit
+was observed, allowing CTest to start and report client-connection failures.
+Those results are not emulator acceptance evidence. The stopped run is retained
+as `fex-clang21-invalid-home-validation.log` and
+`fex-clang21-invalid-home-server.log`.
+
+`run-fex-tests.py` now creates its own home below the build directory and sets
+HOME and XDG state paths explicitly. It also supervises the server throughout
+CTest execution and terminates the test process group if the server exits.
+The two formerly failing clock tests passed with the real rebuilt server in
+1.66 seconds. A separate process-lifecycle check verified that simulated server
+exit is detected and its sleeping test child is terminated within five seconds.
+The complete suite must still finish with this corrected fixture.
