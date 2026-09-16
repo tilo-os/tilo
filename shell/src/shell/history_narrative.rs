@@ -17,17 +17,32 @@ pub struct LocalHistoryNarrator {
     pending: Arc<std::sync::Mutex<Option<(String, GroundedNarrative)>>>,
     running: Arc<AtomicBool>,
     last_key: Option<String>,
+    completed_key: Option<String>,
+    last_attempt: Option<Instant>,
 }
+
+const FAILED_RETRY_DELAY: Duration = Duration::from_secs(60);
+/// Automatic history prose stays a background convenience rather than
+/// evicting the foreground app's working set. `QOS_HISTORY_LLM_MODEL` remains
+/// an explicit opt-in escape hatch for a larger installed model.
+const MAX_AUTOMATIC_MODEL_BYTES: u64 = 5_000_000_000;
 
 impl LocalHistoryNarrator {
     /// Start one bounded background generation when the evidence changes.
     pub fn request(&mut self, request: &NarrativeRequest) {
         let prompt = prompt_for(request);
         let key = blake3::hash(prompt.as_bytes()).to_hex().to_string();
-        if self.last_key.as_deref() == Some(&key) || self.running.swap(true, Ordering::AcqRel) {
+        if self.completed_key.as_deref() == Some(&key)
+            || (self.last_key.as_deref() == Some(&key)
+                && self
+                    .last_attempt
+                    .is_some_and(|attempt| attempt.elapsed() < FAILED_RETRY_DELAY))
+            || self.running.swap(true, Ordering::AcqRel)
+        {
             return;
         }
         self.last_key = Some(key.clone());
+        self.last_attempt = Some(Instant::now());
         let pending = Arc::clone(&self.pending);
         let running = Arc::clone(&self.running);
         std::thread::spawn(move || {
@@ -46,11 +61,16 @@ impl LocalHistoryNarrator {
         let expected = blake3::hash(prompt_for(request).as_bytes())
             .to_hex()
             .to_string();
-        self.pending
+        let narrative = self
+            .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
-            .and_then(|(key, narrative)| (key == expected).then_some(narrative))
+            .and_then(|(key, narrative)| (key == expected).then_some(narrative));
+        if narrative.is_some() {
+            self.completed_key = Some(expected);
+        }
+        narrative
     }
 }
 
@@ -62,18 +82,54 @@ fn installed_model() -> Option<String> {
         .output()
         .ok()?;
     output.status.success().then_some(())?;
-    let models = String::from_utf8(output.stdout)
-        .ok()?
+    select_installed_model(
+        &String::from_utf8(output.stdout).ok()?,
+        std::env::var("QOS_HISTORY_LLM_MODEL").ok().as_deref(),
+    )
+}
+
+fn select_installed_model(list: &str, requested: Option<&str>) -> Option<String> {
+    let requested = requested.map(str::trim).filter(|name| !name.is_empty());
+    let mut models = list
         .lines()
         .skip(1)
-        .filter_map(|line| line.split_whitespace().next().map(str::to_string))
+        .filter_map(|line| {
+            let columns = line.split_whitespace().collect::<Vec<_>>();
+            let name = (*columns.first()?).to_string();
+            let size = columns.windows(2).find_map(|pair| {
+                let value = pair[0].replace(',', "").parse::<f64>().ok()?;
+                let multiplier = match pair[1].to_ascii_uppercase().as_str() {
+                    "KB" => 1_000_f64,
+                    "MB" => 1_000_000_f64,
+                    "GB" => 1_000_000_000_f64,
+                    "TB" => 1_000_000_000_000_f64,
+                    _ => return None,
+                };
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                Some((value * multiplier) as u64)
+            });
+            Some((name, size))
+        })
         .collect::<Vec<_>>();
-    if let Ok(requested) = std::env::var("QOS_HISTORY_LLM_MODEL")
-        && !requested.trim().is_empty()
-    {
-        return models.into_iter().find(|model| model == requested.trim());
+    if let Some(requested) = requested {
+        return models
+            .into_iter()
+            .find_map(|(name, _)| (name == requested).then_some(name));
     }
-    models.into_iter().next()
+    models.retain(|(name, _)| {
+        let name = name.to_ascii_lowercase();
+        !["embed", "nomic", "minilm", "bge", "e5-"]
+            .iter()
+            .any(|marker| name.contains(marker))
+    });
+    models.retain(|(_, size)| size.is_some_and(|bytes| bytes <= MAX_AUTOMATIC_MODEL_BYTES));
+    models.sort_by(|left, right| {
+        left.1
+            .unwrap_or(u64::MAX)
+            .cmp(&right.1.unwrap_or(u64::MAX))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    models.into_iter().next().map(|(name, _)| name)
 }
 
 fn generate(prompt: &str) -> Option<GroundedNarrative> {
@@ -213,5 +269,36 @@ mod tests {
         ));
 
         assert!(narrator.take_for(&current).is_none());
+    }
+
+    #[test]
+    fn chooses_the_smallest_generative_model_not_the_first_or_an_embedder() {
+        let list = "NAME ID SIZE MODIFIED\n\
+                    llama3.1:8b abc 4.7 GB yesterday\n\
+                    nomic-embed-text:latest def 274 MB yesterday\n\
+                    qwen2.5:0.5b ghi 398 MB yesterday\n\
+                    phi3:mini jkl 2.2 GB yesterday\n";
+        assert_eq!(
+            select_installed_model(list, None).as_deref(),
+            Some("qwen2.5:0.5b")
+        );
+        assert_eq!(
+            select_installed_model(list, Some("phi3:mini")).as_deref(),
+            Some("phi3:mini")
+        );
+        assert_eq!(select_installed_model(list, Some("missing")), None);
+    }
+
+    #[test]
+    fn automatic_narration_refuses_unknown_or_oversized_models() {
+        let list = "NAME ID SIZE MODIFIED\n\
+                    giant:70b abc 42 GB yesterday\n\
+                    unknown-size def - yesterday\n";
+        assert_eq!(select_installed_model(list, None), None);
+        assert_eq!(
+            select_installed_model(list, Some("giant:70b")).as_deref(),
+            Some("giant:70b"),
+            "an explicit override is informed opt-in"
+        );
     }
 }
