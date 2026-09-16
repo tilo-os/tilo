@@ -27,6 +27,8 @@ pub const MAX_INPUT_LEASE_MS: u64 = 15 * 60 * 1000;
 pub const MAX_FABRIC_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_FABRIC_ACTION_BYTES: usize = 64 * 1024;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
+/// Inline fast path only; larger nearby drops belong on the object stream.
+pub const MAX_NEARBY_DROP_BYTES: usize = 48 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct FabricStamp {
@@ -246,6 +248,16 @@ pub enum PersonalFabricAction {
         address: String,
         authorization: [u8; 16],
     },
+    NearbyDrop {
+        file_name: String,
+        content_hash: [u8; 32],
+        bytes: Vec<u8>,
+    },
+    NearbyDropResult {
+        request_id: [u8; 16],
+        file_name: String,
+        accepted: bool,
+    },
 }
 
 /// Ephemeral action envelope authenticated by the exact QUIC device route.
@@ -353,6 +365,28 @@ impl PersonalFabricActionEnvelope {
                 authorization,
             } => {
                 if !valid_bluetooth_pairing_action(request_id, address, authorization) {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::NearbyDrop {
+                file_name,
+                content_hash,
+                bytes,
+            } => {
+                if !valid_nearby_file_name(file_name)
+                    || bytes.is_empty()
+                    || bytes.len() > MAX_NEARBY_DROP_BYTES
+                    || blake3::hash(bytes).as_bytes() != content_hash
+                {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::NearbyDropResult {
+                request_id,
+                file_name,
+                ..
+            } => {
+                if request_id == &[0; 16] || !valid_nearby_file_name(file_name) {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1105,6 +1139,16 @@ fn valid_mime(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
 }
 
+pub(crate) fn valid_nearby_file_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value != "."
+        && value != ".."
+        && !value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+}
+
 fn valid_display_rect(rect: &DisplayRect) -> bool {
     rect.width > 0
         && rect.height > 0
@@ -1840,6 +1884,40 @@ mod tests {
             })
             .unwrap();
         assert_eq!(pairing.first(), Some(&11));
+        let nearby = postcard::to_allocvec(&PersonalFabricAction::NearbyDrop {
+            file_name: "note.txt".into(),
+            content_hash: *blake3::hash(b"hello").as_bytes(),
+            bytes: b"hello".to_vec(),
+        })
+        .unwrap();
+        assert_eq!(nearby.first(), Some(&13));
+    }
+
+    #[test]
+    fn nearby_drop_rejects_paths_tampering_and_oversize_payloads() {
+        let source = id("source");
+        let target = id("target");
+        for (name, bytes, hash) in [
+            ("../secret", b"ok".to_vec(), *blake3::hash(b"ok").as_bytes()),
+            ("note.txt", b"changed".to_vec(), [0; 32]),
+            ("note.txt", vec![1; MAX_NEARBY_DROP_BYTES + 1], [0; 32]),
+        ] {
+            let envelope = PersonalFabricActionEnvelope {
+                request_id: [1; 16],
+                source: source.clone(),
+                target: target.clone(),
+                issued_unix_ms: 10,
+                action: PersonalFabricAction::NearbyDrop {
+                    file_name: name.into(),
+                    content_hash: hash,
+                    bytes,
+                },
+            };
+            assert_eq!(
+                envelope.validate_at(&source, &target, 10),
+                Err(FabricError::InvalidAction)
+            );
+        }
     }
 
     #[test]
