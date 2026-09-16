@@ -266,6 +266,13 @@ struct Hit {
     action: Action,
 }
 
+#[derive(Clone, Debug)]
+struct PendingMediaHandoff {
+    uri: String,
+    position_ms: u64,
+    resume_playing: bool,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool tracks an independent, unrelated concern (backend readiness, one-time \
@@ -370,6 +377,10 @@ pub struct MusicApp {
     /// Last player state published to MPRIS, so `publish_mpris` only pushes real
     /// changes (the handle itself also dedups).
     mpris_last: Option<PlayerSnapshot>,
+    /// App-native playback identity advertised privately to the shell. Music
+    /// hands over a stable track resource, never its signed decoder URL.
+    handoff: media::handoff::AppPlaybackHandle,
+    pending_media_handoff: Option<PendingMediaHandoff>,
 
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
@@ -717,6 +728,8 @@ impl MusicApp {
             playback_error: None,
             mpris: MprisHandle::disabled(),
             mpris_last: None,
+            handoff: media::handoff::AppPlaybackHandle::new(),
+            pending_media_handoff: None,
             cover_pick: None,
             cover_pick_for: None,
             cover_embed: None,
@@ -1452,6 +1465,24 @@ impl MusicApp {
         self.mpris_last = Some(snap);
     }
 
+    /// Stage an authenticated shell handoff. It is applied after the shared
+    /// library has loaded, so the stable track id must resolve on this device
+    /// before Music advertises acceptance back to the source.
+    #[must_use]
+    pub fn with_media_handoff(
+        mut self,
+        uri: String,
+        position_ms: u64,
+        resume_playing: bool,
+    ) -> Self {
+        self.pending_media_handoff = Some(PendingMediaHandoff {
+            uri,
+            position_ms,
+            resume_playing,
+        });
+        self
+    }
+
     /// Build the MPRIS snapshot from the current playback + library state.
     fn mpris_snapshot(&self) -> PlayerSnapshot {
         let status = match &self.pb.current {
@@ -1495,6 +1526,68 @@ impl MusicApp {
         }
         let snap = self.mpris_snapshot();
         self.mpris.publish(&snap);
+    }
+
+    fn publish_handoff(&self) {
+        let Some(track_id) = self.pb.current.as_deref() else {
+            self.handoff.clear();
+            return;
+        };
+        let Some(track) = self.lib.track(track_id) else {
+            self.handoff.clear();
+            return;
+        };
+        let uri = crate::search_type::SearchHit::track_link(track_id);
+        self.handoff.publish(media::handoff::AppPlayback {
+            resource_uri: &uri,
+            title: &track.title,
+            position_ms: self.playhead_ms.max(0.0) as u64,
+            duration_ms: Some(track.duration_ms()),
+            playing: self.pb.playing,
+            has_video: false,
+            // A handoff is acknowledged only after this device actually has
+            // a decoder source. Merely resolving the synced id is not enough.
+            audible: self.pb.volume > 0 && self.audio.has_stream(),
+            controller_bus_name: Some(crate::mpris::BUS_NAME),
+        });
+    }
+
+    fn apply_pending_media_handoff(&mut self, state: &mut AutoCommit) {
+        let Some(pending) = self.pending_media_handoff.take() else {
+            return;
+        };
+        let Some(crate::search_type::DeepLink::Track(track_id)) =
+            crate::search_type::DeepLink::parse(&pending.uri)
+        else {
+            return;
+        };
+        if !self.lib.tracks.contains_key(&track_id) {
+            // The room document may still be hydrating. Keep the exact request
+            // pending; without a published session the source cannot receive a
+            // false acknowledgement.
+            self.pending_media_handoff = Some(pending);
+            return;
+        }
+        self.dispatch(
+            Action::Play {
+                queue: vec![track_id].into(),
+                index: 0,
+            },
+            state,
+        );
+        let duration = self.current_duration_ms();
+        let position_ms = if duration == 0 {
+            pending.position_ms
+        } else {
+            pending.position_ms.min(duration)
+        };
+        self.playhead_ms = position_ms as f64;
+        self.pb.position_ms = position_ms;
+        self.pb.playing = pending.resume_playing;
+        if !pending.resume_playing {
+            self.audio.pause();
+        }
+        self.persist_playback(state);
     }
 
     /// Drain external MPRIS control commands (media keys, the desktop media
@@ -3128,6 +3221,9 @@ impl MusicApp {
             // direct googlevideo URL if the proxy yields no bytes.
             self.audio
                 .load_with_fallback(&stream.url, stream.fallback_url.as_deref());
+            if self.playhead_ms > 0.0 {
+                self.audio.seek_ms(self.playhead_ms as u64);
+            }
             if self.pb.playing {
                 self.audio.play();
             }
@@ -4971,6 +5067,35 @@ mod tests {
             !receiver.pb.playing,
             "continuation restore must never autoplay"
         );
+    }
+
+    #[test]
+    fn media_handoff_resolves_synced_track_and_restores_transport() {
+        let (mut app, mut doc) = app_with_doc();
+        app.pending_media_handoff = Some(PendingMediaHandoff {
+            uri: crate::search_type::SearchHit::track_link("tk_g1"),
+            position_ms: 12_345,
+            resume_playing: true,
+        });
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
+        assert_eq!(app.pb.position_ms, 12_345);
+        assert_eq!(app.playhead_ms, 12_345.0);
+        assert!(app.pb.playing);
+        assert!(app.pending_media_handoff.is_none());
+    }
+
+    #[test]
+    fn media_handoff_waits_for_its_synced_resource() {
+        let mut app = MusicApp::new_for_shot().with_media_handoff(
+            crate::search_type::SearchHit::track_link("not-hydrated-yet"),
+            42,
+            true,
+        );
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.pb.current.is_none());
+        assert!(app.pending_media_handoff.is_some());
     }
 
     #[test]
