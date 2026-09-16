@@ -1124,6 +1124,47 @@ operations are declared once as resource actions and controls use
 `ActionBinding`, so a button, command palette entry, script, agent, and undo
 history all reach the same implementation.
 
+#### State, files, records, and open apps
+
+An open app is a projection over state, never the authority boundary itself.
+Opening a second window must not mint a second copy of a file or silently turn
+selection/scroll position into shared content. Choose storage and permission
+scope from the identity of the thing being changed:
+
+| State | Canonical home | Identity / permission scope | Replication |
+|---|---|---|---|
+| Package preference or account configuration | package `state.automerge` through `ui::persist` / `app-state` | application package id / `Scope::App` | local unless the app explicitly exports a safe semantic projection |
+| Collaborative document, note, annotation set, or other artifact | one Automerge document per room record | room-scoped `ui::RecordId`; `Scope::ResourceInstance` for artifact authority | record route in its home room |
+| Collaborative filesystem entry | filesystem catalogue/content store | rename-stable `FileRecordId`; `Scope::FsRecord` | follows rename and move |
+| Host filesystem access | the host filesystem | component-aligned path; `Scope::FsPath` | never implies record authority and never matches CRDT operations |
+| Open tab/window presentation | retained widget fields and the structural continuation envelope | app instance/tab id | local; a privacy-filtered continuation may restore presentation only |
+| Cursor, selection, hover, open menu, scroll, playhead | retained widget state or transient presence | semantic control/resource id where another peer needs to see it | not a document action; presence is ephemeral |
+
+`ui::RecordId::for_file(path)` is deliberately path-bearing local document
+identity. It is suitable while a local editor parks one document per path, but
+it must not leave the device, key a collaborator permission, or promise to
+survive rename. The collaborative filesystem's `FileRecordId` is the stable
+identity for those jobs; the shell passes it in a typed launch intent and uses
+`FsRecord` for authority. `FsPath` is only a host-filesystem enforcement scope.
+These names are not interchangeable merely because all three may refer to the
+same visible file at one moment.
+
+Keep secrets, absolute paths, clipboard/IME contents, and widget `ephemeral`
+strings out of continuation payloads. The framework-owned structural
+continuation restores bounded presentation fields and deliberately clears the
+open resource; the shell reopens a collaborative file from its typed stable
+record intent. App-specific continuation data may augment this envelope but
+must follow the same privacy and identity rules.
+
+Put a mutation in a resource action when it changes a durable resource or is
+an observable effect. Do not make focus, viewport movement, or selection an
+action merely to let an agent drive the app: expose semantic controls for
+those interactions, and use transient interaction presence when collaborators
+should see where the agent is operating. After a direct agent invocation the
+host resolves the action back to the shortest enabled visible semantic path,
+so the ordinary retained UI updates from the same state transition a human
+would have caused.
+
 ### One driveability surface
 
 Every operation must be reachable through the resource/action catalogue. Use
@@ -1174,6 +1215,7 @@ numbers, integers, booleans, objects, arrays, resource addresses, RFC 3339 date
 times, nullable values, and redacted secrets. A deterministic JSON Schema
 subset adds `type`, `enum`, `const`, numeric and length bounds, `pattern`, the
 `date-time`/`uuid`/`uri` formats, array `items`, object `properties`/`required`,
+exclusive `oneOf` alternatives,
 and boolean `additionalProperties`. Common annotation keywords are accepted;
 every other keyword is rejected when the surface is published so an assertion
 is never silently ignored. Binding is strict: missing, extra, wrong-typed,
