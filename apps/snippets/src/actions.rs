@@ -55,6 +55,15 @@ pub fn tag_resource_id(tag: &str) -> String {
     format!("snippets.tag:{encoded}")
 }
 
+/// Stable, punctuation-safe component for custom-painted semantic controls.
+pub fn stable_key(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 /// Canonical view action that reveals all snippets carrying `tag`.
 pub fn reveal_tag_address(tag: &str) -> ActionAddress {
     ActionAddress::new(tag_resource_id(tag), "reveal")

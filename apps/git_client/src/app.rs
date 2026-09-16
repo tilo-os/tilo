@@ -1922,8 +1922,8 @@ impl GitClientApp {
                 self.diff_scroll = 0.0;
             }
             ChangesHit::ToggleStage(area, idx) => self.toggle_stage(area, idx),
-            ChangesHit::StageAll => self.stage_all(),
-            ChangesHit::UnstageAll => self.unstage_all(),
+            ChangesHit::StageAll(_) => self.stage_all(),
+            ChangesHit::UnstageAll(_) => self.unstage_all(),
             ChangesHit::Commit => self.do_commit(),
             ChangesHit::FocusMessage => self.set_focus(Some(Field::Commit)),
         }
@@ -2214,14 +2214,14 @@ impl GitClientApp {
                                 false,
                             )
                         }
-                        ChangesHit::StageAll => (
-                            "git.changes.stage-all".into(),
+                        ChangesHit::StageAll(area) => (
+                            format!("git.changes.stage-all:{area:?}"),
                             "Stage all changes".into(),
                             Role::Button,
                             false,
                         ),
-                        ChangesHit::UnstageAll => (
-                            "git.changes.unstage-all".into(),
+                        ChangesHit::UnstageAll(area) => (
+                            format!("git.changes.unstage-all:{area:?}"),
                             "Unstage all changes".into(),
                             Role::Button,
                             false,

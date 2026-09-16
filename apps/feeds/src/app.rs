@@ -4538,6 +4538,7 @@ impl Widget for FeedsApp {
             .map(|row| match row.role {
                 RowRole::Section => AccessNode::new(Role::Heading { level: 2 })
                     .with_name(row.label.clone())
+                    .with_hashed_key(format!("feeds.section:{}", row.label))
                     .with_bounds(row.rect),
                 RowRole::Smart(kind) => {
                     let target = match kind {
