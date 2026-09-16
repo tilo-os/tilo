@@ -99,7 +99,13 @@ impl Action for DbAction {
             } => {
                 let list = ensure_connections(doc)?;
                 // Idempotent under replay: a profile id is added at most once.
-                if row_index_for_id(doc, &list, id).is_some() {
+                // A removed row remains as a tombstone so concurrent peers keep
+                // one stable identity; re-adding that exact id revives the row
+                // instead of creating a duplicate list entry.
+                if let Some(index) = row_index_for_id(doc, &list, id) {
+                    if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index) {
+                        put_if_changed(doc, &row, "removed", false);
+                    }
                     return Ok(());
                 }
                 let index = doc.length(&list);
@@ -112,12 +118,17 @@ impl Action for DbAction {
                 doc.put(&row, "database", database.as_str())?;
                 doc.put(&row, "user", user.as_str())?;
                 doc.put(&row, "file_path", file_path.as_str())?;
+                doc.put(&row, "removed", false)?;
             }
             DbAction::RemoveConnection { id } => {
                 if let Some(list) = list_object(doc)
                     && let Some(index) = row_index_for_id(doc, &list, id)
+                    && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
                 {
-                    doc.delete(&list, index)?;
+                    // Keep the row as a tombstone. Deleting a list element
+                    // destroys the identity a concurrent rename/re-add needs
+                    // to converge on and lets a later add duplicate it.
+                    put_if_changed(doc, &row, "removed", true);
                 }
             }
             DbAction::RenameConnection { id, name } => {
@@ -307,9 +318,10 @@ mod tests {
         assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
     }
 
-    /// `RemoveConnection` deletes exactly the addressed profile.
+    /// `RemoveConnection` hides exactly the addressed profile while retaining
+    /// its stable CRDT row as a tombstone for concurrent peers.
     #[test]
-    fn remove_connection_deletes_the_row() {
+    fn remove_connection_keeps_a_stable_tombstone() {
         let mut doc = AutoCommit::new();
         let a = profile();
         let mut b = ConnectionProfile::new("Shop", Engine::MySql);
@@ -321,7 +333,17 @@ mod tests {
         remove_connection_action(a.id).apply(&mut doc).unwrap();
         let left = ConnectionsDoc::read(&doc);
         assert_eq!(left.len(), 1);
-        assert_eq!(left[0].id, b.id, "the other profile survives the delete");
+        assert_eq!(left[0].id, b.id, "the other profile survives removal");
+        let list = ConnectionsDoc::list(&doc).expect("connection list exists");
+        assert_eq!(doc.length(&list), 2, "removed row remains a tombstone");
+        let (_, removed_row) = ConnectionsDoc::find(&doc, a.id).expect("tombstone keeps id");
+        assert!(
+            matches!(
+                doc.get(&removed_row, "removed"),
+                Ok(Some((Value::Scalar(value), _))) if value.as_ref() == &ScalarValue::Boolean(true)
+            ),
+            "tombstone records removal without deleting the row"
+        );
     }
 
     /// `RenameConnection` updates the addressed profile's name in place.
