@@ -117,6 +117,12 @@ jobs:
           fedora-44|registry.fedoraproject.org/fedora@sha256:f98ed268d20699492eb8b9688b36dac864227accf4570b22cd03888dffd3c91b|
           EOF
           )
+          # Packaging compiles the complete desktop stack with fat LTO and is
+          # both CPU-bound and close to the normal runner's memory ceiling.
+          # Keep that exceptional envelope explicit rather than making every
+          # CI job larger.
+          amd64_runner=runner-large
+          arm64_runner=runner-large-arm64
           # menci's cross-build image deliberately declares an amd64 OCI
           # config around an ARM rootfs. Keep it for the x86/QEMU fallback,
           # but give native runners a genuinely arm64-declared image.
@@ -126,13 +132,13 @@ jobs:
           if [[ ${QOS_DESKTOP_ARM64_RELEASES:-0} == 1 ]] &&
              [[ "$GITHUB_REF" == refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true ]]; then
             release_arches=amd64,arm64
-            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg arm64_targets "$arm64_targets" '{include:[
-              {arch:"amd64",runner:"runner",targets:$amd64_targets},
-              {arch:"arm64",runner:"runner-arm64",targets:$arm64_targets}
+            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg arm64_targets "$arm64_targets" --arg amd64_runner "$amd64_runner" --arg arm64_runner "$arm64_runner" '{include:[
+              {arch:"amd64",runner:$amd64_runner,targets:$amd64_targets},
+              {arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}
             ]}')
           else
-            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" '{include:[
-              {arch:"amd64",runner:"runner",targets:$amd64_targets}
+            matrix=$(jq -cn --arg amd64_targets "$amd64_targets" --arg amd64_runner "$amd64_runner" '{include:[
+              {arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}
             ]}')
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -141,8 +147,8 @@ jobs:
   package:
     needs: validate
     name: package lane / ${{ matrix.arch }}
-    # AMD64 uses the registered generic runner; native ARM64 tags and explicit
-    # full-native runs retain their architecture-specific runner.
+    # Desktop packaging uses the generic large class on each architecture;
+    # ordinary CI retains the smaller, higher-concurrency runner class.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 600
     # One architecture job runs all five native userspaces serially. Forgejo
