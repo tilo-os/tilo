@@ -33,6 +33,8 @@ def main():
                  "umu", "test-binary", "launcher", "helper", "manifests", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--native-image", required=True)
+    parser.add_argument("--guest-squashfs", type=Path,
+                        help="read-only guest-root SquashFS file over virtio-block instead of 9p")
     parser.add_argument("--qemu", type=Path, help="explicit QEMU binary or recorded loader wrapper")
     parser.add_argument("--mode", choices=("probe", "console", "namespace-diagnostic", "fex-diagnostic", "wine-diagnostic"), default="probe")
     parser.add_argument("--inside-unshare", action="store_true", help=argparse.SUPPRESS)
@@ -67,6 +69,15 @@ def main():
         shutil.copy(name, destination)
     # Read only the matching signed modules; do not extract arbitrary archive paths.
     modules = {"netfs", "9pnet", "9pnet_virtio", "9p", "overlay"}
+    if args.guest_squashfs:
+        args.guest_squashfs = args.guest_squashfs.resolve(strict=True)
+        if not args.guest_squashfs.is_file():
+            raise ValueError("guest block input must be a regular artifact file, never a device")
+        with args.guest_squashfs.open("rb") as stream:
+            if stream.read(4) != b"hsqs":
+                raise ValueError("guest block input must be a SquashFS image file")
+        modules.add("squashfs")
+        (root / "guest-squashfs").touch()
     with tarfile.open(args.modules) as archive:
         for entry in archive:
             name = Path(entry.name).name
@@ -88,6 +99,9 @@ def main():
                "module_archive_sha256": digest(args.modules),
                "signed_modules": {path.name: digest(path) for path in sorted((root / "modules").iterdir())},
                "inputs": {}}
+    if args.guest_squashfs:
+        records["guest_squashfs"] = {"path": str(args.guest_squashfs),
+                                     "sha256": digest(args.guest_squashfs)}
     qemu_binary = Path(args.qemu or shutil.which("qemu-system-aarch64") or "/missing-qemu").resolve(strict=True)
     records["qemu"] = {"path": str(qemu_binary), "sha256": digest(qemu_binary),
                        "version": run([str(qemu_binary), "--version"], stdout=subprocess.PIPE).stdout.strip()}
@@ -117,6 +131,12 @@ def main():
                 "-append", "console=ttyAMA0 rdinit=/init panic=1"]
         shares = {"native": Path(native), "inputs": inputs, "x86": args.x86_rootfs,
                   "proton": args.proton, "steam": args.steam_runtime}
+        if args.guest_squashfs:
+            del shares["x86"]
+            if "," in str(args.guest_squashfs):
+                raise ValueError("QEMU image paths must not contain commas")
+            qemu += ["-drive", f"if=none,id=guestroot,file={args.guest_squashfs},format=raw,readonly=on",
+                     "-device", "virtio-blk-pci,drive=guestroot"]
         for tag, path in shares.items():
             path = path.resolve(strict=True)
             if "," in str(path):
