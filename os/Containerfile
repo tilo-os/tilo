@@ -131,6 +131,7 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/qos-assets,ro \
          *) echo "unsupported Steam runtime host architecture: $(uname -m)" >&2; exit 1 ;; \
        esac \
     && /out/steam-runtime/SteamLinuxRuntime_sniper/${pv}/bin/pv-verify /out/steam-runtime/SteamLinuxRuntime_sniper \
+    && touch /out/steam-runtime/SteamLinuxRuntime_sniper/sniper_platform_3.0.20260805.254768/files/.ref \
     && mkdir -p /out/catalogues/bottles-programs \
     && tar -xzf /qos-assets/bottles-programs-d1160b8.tar.gz --strip-components=1 -C /out/catalogues/bottles-programs \
     && chmod -R a-w /out/catalogues/bottles-programs

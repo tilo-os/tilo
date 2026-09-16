@@ -149,16 +149,45 @@ that identity.
   `/usr/lib/qos/windows-runners/steam-runtime/SteamLinuxRuntime_sniper` and
   runs the host-native `pv-verify` during artifact preparation. The ARM
   extraction and verification commands passed in the local build container;
-  this is not a completed final OS image build. Production capsule
-  provisioning must still bind this content and create its private state.
+  this is not a completed final OS image build.
 - UMU's `UMU_RUNTIME_UPDATE=0` prevents updates to an installed runtime; it
   does not suppress initial installation. Provisioning must satisfy UMU's
   integrity checks and installation marker contract without granting an
-  offline capsule network access. The smoke fixture now demonstrates this;
-  production capsule provisioning still needs to implement it.
+  offline capsule network access. The smoke fixture demonstrates this.
 - Runtime content should remain immutable, with any required installation
   markers and pressure-vessel variable state confined to capsule-owned
   writable storage.
 - Validate the complete nested runtime under qOS Landlock, syscall policy,
   network grants, and graphics selection before changing production launch
   plans. The offline console test does not establish those integration gates.
+
+## Production runtime mount preparation
+
+The Proton registry now names the pinned runtime's individual top-level
+files and directories as read-only binds under
+`/tmp/qos-runtime/umu/steamrt3`. That parent lives in the capsule's private
+tmpfs, allowing UMU to create its atomic install marker without modifying
+image content. The namespace plan creates the upstream `umu` entry-point
+symlink and fixes `UMU_FOLDERS_PATH`, disables UMU runtime updates, and places
+pressure-vessel's runtime copies under `/tmp/qos-runtime/var`.
+
+The image includes an empty platform `files/.ref` mount point. Each executor
+invocation supplies a new empty memfd through Bubblewrap's `--bind-data`
+interface, overlaying only that lock file. There is no application-controlled
+host lock pathname and no shared writable runtime tree. The executor
+duplicates all source descriptors above its reserved child slots before
+mapping the directory, seccomp, and runtime-lock descriptors.
+
+On 2026-09-16, all 49 compatibility-service tests passed. The separately run
+real Bubblewrap regression checked that the private lock is initially empty,
+accepts a write, and leaves its read-only source unchanged, both with and
+without the production seccomp filter. Plan tests also verify read-only
+platform mounts, lock overlay ordering, fixed offline provisioning variables,
+and retained network isolation.
+
+This supplies the production mount/state contract. The production ARM
+registry still needs the FEX entry point, managed server, guest dependencies,
+and native pressure-vessel handoff demonstrated by the standalone smoke test.
+Complete native helper bindings and full capsule execution remain acceptance
+requirements; these mount tests do not claim that the final launch chain is
+already integrated.
