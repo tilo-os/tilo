@@ -27,6 +27,19 @@ use winit::event::WindowEvent;
 use crate::draw;
 use crate::model::{self, ThemeSpec};
 
+const PANE_MARGIN: f64 = 22.0;
+const TITLE_BAR_H: f64 = 42.0;
+const SECTION_LABEL_H: f64 = 18.0;
+const TYPOGRAPHY_BODY_H: f64 = 54.0;
+const BUTTONS_BODY_H: f64 = 34.0;
+const CONTROLS_BODY_H: f64 = 26.0;
+const LIST_ROW_H: f64 = 38.0;
+const LIST_ROWS: f64 = 3.0;
+const BADGES_BODY_H: f64 = 22.0;
+const CHART_MIN_H: f64 = 60.0;
+const CHART_MAX_H: f64 = 130.0;
+const CHART_COLUMN_GAP: f64 = 14.0;
+
 /// Panic-free leaf construction for [`Widget::build_layout`]. `new_leaf`
 /// always inserts and returns `Ok`; `Widget::build_layout` returns a bare
 /// `NodeId` (not a `Result`) across every implementor, so surfacing a
@@ -49,11 +62,95 @@ struct SpecimenLayout<'t> {
     cx: f64,
     /// Width of the content region (card width minus padding on both sides).
     cw: f64,
-    /// Vertical gap between sections.
-    gap: f64,
     /// Padding between the card edge and the content region.
     pad: f64,
     radius: f64,
+    typography_y: f64,
+    buttons_y: f64,
+    controls_y: f64,
+    list_y: f64,
+    badges_y: f64,
+    charts_y: f64,
+    bar_rect: Rect,
+    spark_rect: Rect,
+}
+
+impl<'t> SpecimenLayout<'t> {
+    fn padding(th: &Theme) -> f64 {
+        f64::from(th.padding_standard).clamp(14.0, 22.0)
+    }
+
+    fn gap(th: &Theme) -> f64 {
+        f64::from(th.gap_standard).clamp(10.0, 18.0)
+    }
+
+    fn minimum_pane_height(th: &Theme) -> f64 {
+        let section_bodies = TYPOGRAPHY_BODY_H
+            + BUTTONS_BODY_H
+            + CONTROLS_BODY_H
+            + LIST_ROW_H * LIST_ROWS
+            + BADGES_BODY_H;
+        PANE_MARGIN * 2.0
+            + TITLE_BAR_H
+            + Self::padding(th) * 2.0
+            + SECTION_LABEL_H * 6.0
+            + section_bodies
+            + Self::gap(th) * 5.0
+            + CHART_MIN_H
+    }
+
+    fn new(th: &'t Theme, pane: Rect) -> Self {
+        let radius = th.radius_standard.clamp(0.0, 18.0);
+        let card = Rect::new(
+            pane.x0 + PANE_MARGIN,
+            pane.y0 + PANE_MARGIN,
+            pane.x1 - PANE_MARGIN,
+            pane.y1 - PANE_MARGIN,
+        );
+        let pad = Self::padding(th);
+        let gap = Self::gap(th);
+        let cx = card.x0 + pad;
+        let cw = card.width() - pad * 2.0;
+
+        let typography_y = card.y0 + TITLE_BAR_H + pad;
+        let buttons_y = typography_y + SECTION_LABEL_H + TYPOGRAPHY_BODY_H + gap;
+        let controls_y = buttons_y + SECTION_LABEL_H + BUTTONS_BODY_H + gap;
+        let list_y = controls_y + SECTION_LABEL_H + CONTROLS_BODY_H + gap;
+        let badges_y = list_y + SECTION_LABEL_H + LIST_ROW_H * LIST_ROWS + gap;
+        let charts_y = badges_y + SECTION_LABEL_H + BADGES_BODY_H + gap;
+        let chart_content_y = charts_y + SECTION_LABEL_H;
+        let chart_h = (card.y1 - pad - chart_content_y).clamp(CHART_MIN_H, CHART_MAX_H);
+        let chart_w = (cw - CHART_COLUMN_GAP) / 2.0;
+        let bar_rect = Rect::new(cx, chart_content_y, cx + chart_w, chart_content_y + chart_h);
+        let spark_rect = Rect::new(
+            cx + chart_w + CHART_COLUMN_GAP,
+            chart_content_y,
+            cx + cw,
+            chart_content_y + chart_h,
+        );
+
+        Self {
+            th,
+            card,
+            cx,
+            cw,
+            pad,
+            radius,
+            typography_y,
+            buttons_y,
+            controls_y,
+            list_y,
+            badges_y,
+            charts_y,
+            bar_rect,
+            spark_rect,
+        }
+    }
+
+    #[cfg(test)]
+    fn tail_rect(&self) -> Rect {
+        self.bar_rect.union(self.spark_rect)
+    }
 }
 
 /// Section label ("TYPOGRAPHY", "BUTTONS", ...) drawn at the top of each
@@ -111,6 +208,27 @@ impl PreviewPane {
         self.theme = spec.to_theme();
         self.font_choice = model::font_choice(&spec.font);
         self.spec = Some(spec.clone());
+    }
+
+    /// Minimum narrow allocation that contains the complete specimen,
+    /// including the chart floor and the card's bottom padding/margin.
+    pub(crate) fn narrow_intrinsic_height(&self) -> f32 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the specimen height is a small logical-pixel value representable by f32"
+        )]
+        let height = SpecimenLayout::minimum_pane_height(&self.theme) as f32;
+        height
+    }
+
+    #[cfg(test)]
+    pub(crate) fn specimen_card_rect(&self) -> Rect {
+        SpecimenLayout::new(&self.theme, self.rect).card
+    }
+
+    #[cfg(test)]
+    pub(crate) fn specimen_tail_rect(&self) -> Rect {
+        SpecimenLayout::new(&self.theme, self.rect).tail_rect()
     }
 
     fn font(&self) -> String {
@@ -181,51 +299,38 @@ impl Widget for PreviewPane {
             return;
         }
         let th = &self.theme;
-        let radius = th.radius_standard.clamp(0.0, 18.0);
+        let layout = SpecimenLayout::new(th, self.rect);
 
         // 1. Desktop background (surface base).
         draw::fill_rect(scene, t, self.rect, th.bg_app);
 
         // The "app window" card occupies the pane minus a margin.
-        let margin = 22.0;
-        let card = Rect::new(
-            self.rect.x0 + margin,
-            self.rect.y0 + margin,
-            self.rect.x1 - margin,
-            self.rect.y1 - margin,
+        draw::fill_rrect(scene, t, layout.card, layout.radius + 4.0, th.bg_primary);
+        draw::stroke_rrect(
+            scene,
+            t,
+            layout.card,
+            layout.radius + 4.0,
+            th.border_standard,
+            1.0,
         );
-        draw::fill_rrect(scene, t, card, radius + 4.0, th.bg_primary);
-        draw::stroke_rrect(scene, t, card, radius + 4.0, th.border_standard, 1.0);
 
         // 2. Title bar.
-        let tb_h = self.draw_title_bar(scene, t, tr, card, radius);
-
-        // Content region, shared by every section below.
-        let pad = f64::from(th.padding_standard).clamp(14.0, 22.0);
-        let layout = SpecimenLayout {
-            th: &self.theme,
-            card,
-            cx: card.x0 + pad,
-            cw: card.width() - pad * 2.0,
-            gap: f64::from(th.gap_standard).clamp(10.0, 18.0),
-            pad,
-            radius,
-        };
-        let y = card.y0 + tb_h + pad;
+        self.draw_title_bar(scene, t, tr, layout.card, layout.radius);
 
         // 3. Typography — the specimen is shaped in the theme's chosen font
         //    family (via `font_choice`) so a font change re-renders here live.
-        let y = self.draw_typography_section(scene, t, tr, &layout, y);
+        self.draw_typography_section(scene, t, tr, &layout, layout.typography_y);
         // 4. Buttons.
-        let y = self.draw_buttons_section(scene, t, tr, &layout, y);
+        self.draw_buttons_section(scene, t, tr, &layout, layout.buttons_y);
         // 5. Controls (toggle, checkbox, slider).
-        let y = self.draw_controls_section(scene, t, tr, &layout, y);
+        self.draw_controls_section(scene, t, tr, &layout, layout.controls_y);
         // 6. List with a selected row.
-        let y = Self::draw_list_section(scene, t, tr, &layout, y);
+        Self::draw_list_section(scene, t, tr, &layout, layout.list_y);
         // 7. Badges.
-        let y = self.draw_badges_section(scene, t, tr, &layout, y);
+        self.draw_badges_section(scene, t, tr, &layout, layout.badges_y);
         // 8. Charts (bar chart + sparkline) sharing a row.
-        Self::draw_charts_section(scene, t, tr, &layout, y);
+        Self::draw_charts_section(scene, t, tr, &layout, layout.charts_y);
     }
 
     fn name(&self) -> &'static str {
@@ -349,8 +454,7 @@ impl PreviewPane {
     }
 
     /// The title bar: background, window dots, and the centred theme/app
-    /// name (part of [`Widget::draw`]). Returns its height so the caller
-    /// can lay out the content region beneath it.
+    /// name (part of [`Widget::draw`]).
     fn draw_title_bar(
         &self,
         scene: &mut Scene,
@@ -358,10 +462,10 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         card: Rect,
         radius: f64,
-    ) -> f64 {
+    ) {
         let th = &self.theme;
         let sem = &th.tokens.colors.semantic;
-        let tb_h = 42.0;
+        let tb_h = TITLE_BAR_H;
         let title_bar = Rect::new(card.x0, card.y0, card.x1, card.y0 + tb_h);
         draw::fill_rrect(
             scene,
@@ -412,12 +516,10 @@ impl PreviewPane {
             card.y0 + tb_h,
             TextWeight::Medium,
         );
-        tb_h
     }
 
     /// The "TYPOGRAPHY" section: two lines of specimen text shaped in the
-    /// theme's chosen font (part of [`Widget::draw`]). Returns the cursor
-    /// `y` for the next section.
+    /// theme's chosen font (part of [`Widget::draw`]).
     fn draw_typography_section(
         &self,
         scene: &mut Scene,
@@ -425,10 +527,10 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         layout: &SpecimenLayout,
         mut y: f64,
-    ) -> f64 {
+    ) {
         let th = layout.th;
         draw_section_label(tr, scene, t, layout.cx, y, "TYPOGRAPHY", th);
-        y += 18.0;
+        y += SECTION_LABEL_H;
         draw::text_font(
             tr,
             scene,
@@ -454,12 +556,10 @@ impl PreviewPane {
             TextWeight::Regular,
             &self.font_choice,
         );
-        y + 22.0 + layout.gap
     }
 
     /// The "BUTTONS" section: primary / secondary / ghost / disabled
-    /// specimen buttons (part of [`Widget::draw`]). Returns the cursor `y`
-    /// for the next section.
+    /// specimen buttons (part of [`Widget::draw`]).
     fn draw_buttons_section(
         &self,
         scene: &mut Scene,
@@ -467,11 +567,11 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         layout: &SpecimenLayout,
         mut y: f64,
-    ) -> f64 {
+    ) {
         let th = layout.th;
         draw_section_label(tr, scene, t, layout.cx, y, "BUTTONS", th);
-        y += 18.0;
-        let bh = 34.0;
+        y += SECTION_LABEL_H;
+        let bh = BUTTONS_BODY_H;
         let bw = ((layout.cw - 30.0) / 4.0).min(150.0);
         let labels = ["Primary", "Secondary", "Ghost", "Disabled"];
         for (i, lab) in labels.iter().enumerate() {
@@ -544,12 +644,11 @@ impl PreviewPane {
                 }
             }
         }
-        y + bh + layout.gap
     }
 
     /// The "CONTROLS" section: a toggle, a checkbox, and a slider, each in
     /// their "on" / checked / partial specimen state (part of
-    /// [`Widget::draw`]). Returns the cursor `y` for the next section.
+    /// [`Widget::draw`]).
     fn draw_controls_section(
         &self,
         scene: &mut Scene,
@@ -557,7 +656,7 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         layout: &SpecimenLayout,
         mut y: f64,
-    ) -> f64 {
+    ) {
         let th = layout.th;
         let cx = layout.cx;
         let cw = layout.cw;
@@ -565,8 +664,8 @@ impl PreviewPane {
         let pad = layout.pad;
         let radius = layout.radius;
         draw_section_label(tr, scene, t, cx, y, "CONTROLS", th);
-        y += 18.0;
-        let row_h = 26.0;
+        y += SECTION_LABEL_H;
+        let row_h = CONTROLS_BODY_H;
         // Toggle (on)
         let tg = Rect::new(cx, y, cx + 44.0, y + 24.0);
         draw::fill_rrect(scene, t, tg, 12.0, th.accent_primary);
@@ -638,7 +737,6 @@ impl PreviewPane {
             th.accent_primary,
             2.0,
         );
-        y + row_h + layout.gap
     }
 
     /// One "LIST" row: selection highlight, avatar initial, name/subtitle,
@@ -757,22 +855,22 @@ impl PreviewPane {
 
     /// The "LIST" section: three specimen rows (one selected) with avatar,
     /// name, subtitle, and an unread-count badge on one row (part of
-    /// [`Widget::draw`]). Returns the cursor `y` for the next section.
+    /// [`Widget::draw`]).
     fn draw_list_section(
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         layout: &SpecimenLayout,
         mut y: f64,
-    ) -> f64 {
+    ) {
         let th = layout.th;
         let sem = &th.tokens.colors.semantic;
         let cx = layout.cx;
         let cw = layout.cw;
         let radius = layout.radius;
         draw_section_label(tr, scene, t, cx, y, "LIST", th);
-        y += 18.0;
-        let rowh = 38.0;
+        y += SECTION_LABEL_H;
+        let rowh = LIST_ROW_H;
         let people = [
             ("Ada Lovelace", "Online", sem.success, 3u32),
             ("Alan Turing", "Editing themes", th.accent_primary, 0),
@@ -798,11 +896,10 @@ impl PreviewPane {
                 people.len(),
             );
         }
-        y + rowh * people.len() as f64 + layout.gap
     }
 
     /// The "BADGES" section: four semantic badges plus a count pill (part
-    /// of [`Widget::draw`]). Returns the cursor `y` for the next section.
+    /// of [`Widget::draw`]).
     fn draw_badges_section(
         &self,
         scene: &mut Scene,
@@ -810,11 +907,11 @@ impl PreviewPane {
         tr: &mut TextRenderer,
         layout: &SpecimenLayout,
         mut y: f64,
-    ) -> f64 {
+    ) {
         let th = layout.th;
         let sem = &th.tokens.colors.semantic;
         draw_section_label(tr, scene, t, layout.cx, y, "BADGES", th);
-        y += 18.0;
+        y += SECTION_LABEL_H;
         let badges = [
             ("Success", sem.success),
             ("Warning", sem.warning),
@@ -833,7 +930,7 @@ impl PreviewPane {
             bx += pw + 8.0;
         }
         // count pill + NEW
-        let cr = Rect::new(bx, y, bx + 30.0, y + 22.0);
+        let cr = Rect::new(bx, y, bx + 30.0, y + BADGES_BODY_H);
         draw::fill_rrect(scene, t, cr, 11.0, th.accent_primary);
         draw::text_center(
             tr,
@@ -848,7 +945,6 @@ impl PreviewPane {
             cr.y1,
             TextWeight::Bold,
         );
-        y + 22.0 + layout.gap
     }
 
     /// The "DATA" section: a bar chart and a sparkline sharing a row (part
@@ -858,23 +954,12 @@ impl PreviewPane {
         t: Affine,
         tr: &mut TextRenderer,
         layout: &SpecimenLayout,
-        mut y: f64,
+        y: f64,
     ) {
         let th = layout.th;
         draw_section_label(tr, scene, t, layout.cx, y, "DATA", th);
-        y += 18.0;
-        let chart_h = (layout.card.y1 - layout.pad - y).clamp(60.0, 130.0);
-        let gapx = 14.0;
-        let chart_w = (layout.cw - gapx) / 2.0;
-        let bar_rect = Rect::new(layout.cx, y, layout.cx + chart_w, y + chart_h);
-        let spark_rect = Rect::new(
-            layout.cx + chart_w + gapx,
-            y,
-            layout.cx + layout.cw,
-            y + chart_h,
-        );
-        Self::draw_bar_chart(scene, t, bar_rect, th);
-        Self::draw_sparkline(scene, t, spark_rect, th);
+        Self::draw_bar_chart(scene, t, layout.bar_rect, th);
+        Self::draw_sparkline(scene, t, layout.spark_rect, th);
     }
 }
 
