@@ -275,6 +275,9 @@ pub struct BrowserWidget {
     daily: crate::daily_controls::DailyControls,
     page_menu: crate::page_menu::PageMenu,
     pending_chrome_focus: Option<(NodeId, &'static str)>,
+    window_scale: f32,
+    native_closed: bool,
+    close_blocked: bool,
 
     // Chrome state mirrored from engine events.
     can_go_back: bool,
@@ -482,6 +485,16 @@ impl BrowserWidget {
             _ => false,
         }
     }
+    pub(crate) fn set_window_scale(&mut self, scale: f64) {
+        self.window_scale = scale as f32;
+    }
+    pub(crate) fn take_native_closed(&mut self) -> bool {
+        std::mem::take(&mut self.native_closed)
+    }
+    pub(crate) fn inherit_workspace_state(&mut self, other: &Self) {
+        self.window_scale = other.window_scale;
+        self.capabilities.share_downloads(&other.capabilities);
+    }
     pub(crate) fn refresh_shared_history(&mut self) {
         if !self.headless {
             self.history = History::load();
@@ -524,6 +537,9 @@ impl BrowserWidget {
             daily: Default::default(),
             page_menu: Default::default(),
             pending_chrome_focus: None,
+            window_scale: 1.0,
+            native_closed: false,
+            close_blocked: false,
             initial_url,
             can_go_back: false,
             loading_stopped: false,
@@ -1523,6 +1539,11 @@ impl BrowserWidget {
             .with_no_padding()
             .with_gap(0.0)
             .push(Box::new(Container::new().with_child(Box::new(toolbar))));
+        if self.close_blocked {
+            column = column.push(Box::new(Container::new().with_child(Box::new(
+                Text::new("This tab has an active download. Finish or cancel it in Library → Downloads, then close the tab.").with_size(13.0)
+            ))));
+        }
         if self.daily.open && !self.show_settings && !self.show_library {
             column = column.push(self.daily.bar());
         }
@@ -1562,7 +1583,11 @@ impl BrowserWidget {
                 None => recovery,
             })
         } else {
-            Box::new(WebView::new(self.engine.clone()).with_test_id("browser.surface"))
+            Box::new(
+                WebView::new(self.engine.clone())
+                    .with_scale_factor(self.window_scale)
+                    .with_test_id("browser.surface"),
+            )
         };
         // A percentage-height WebView cannot be a third direct flex child:
         // with toolbar + progress it can claim the outer column's full
@@ -2148,8 +2173,20 @@ impl BrowserWidget {
     )]
     fn apply_engine_events(&mut self) {
         let editing = self.url_input_focused();
-        for event in self.engine.drain_events() {
+        for event in self
+            .engine
+            .drain_events()
+            .into_iter()
+            .chain(self.engine.drain_download_events())
+        {
             match event {
+                WebViewEvent::TabClosed => {
+                    self.native_closed = true;
+                }
+                WebViewEvent::TabCloseBlocked => {
+                    self.close_blocked = true;
+                    self.structure_dirty = true;
+                }
                 WebViewEvent::ContextMenu {
                     id,
                     x,
@@ -3386,6 +3423,7 @@ impl Widget for BrowserWidget {
         self.structure_dirty |= self.daily.sync(&self.engine);
         self.tick_back_hold(std::time::Instant::now());
         self.apply_engine_events();
+        self.structure_dirty |= self.capabilities.downloads_changed();
         let heads = state.get_heads();
         if self.projected_heads.as_ref() != Some(&heads) {
             self.sync_settings_from_document(state, path);
@@ -3721,6 +3759,7 @@ impl Widget for BrowserWidget {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.window_scale = scale_factor as f32;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
@@ -4268,11 +4307,65 @@ mod architecture_tests {
     }
 
     #[test]
+    fn rebuilt_web_content_keeps_window_dpi_through_find_reflow() {
+        let engine = TestEngine::new();
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        let mut tree = TaffyTree::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        widget.handle_event(
+            &WindowEvent::Focused(true),
+            2.0,
+            &Default::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut false,
+            &mut None,
+            node,
+            &tree,
+        );
+        super::tests::layout_at(&mut widget, 800.0, 600.0);
+        widget
+            .daily
+            .act(crate::daily_controls::Action::Open, &widget.engine);
+        super::tests::layout_at(&mut widget, 800.0, 600.0);
+        widget
+            .daily
+            .act(crate::daily_controls::Action::Close, &widget.engine);
+        super::tests::layout_at(&mut widget, 800.0, 600.0);
+        let sizes: Vec<_> = engine
+            .commands()
+            .into_iter()
+            .filter_map(|command| match command {
+                WebViewCommand::Resize {
+                    width,
+                    height,
+                    scale_factor,
+                } => Some((width, height, scale_factor)),
+                _ => None,
+            })
+            .collect();
+        assert!(sizes.len() >= 3, "{sizes:?}");
+        assert!(
+            sizes
+                .iter()
+                .all(|&(width, _, scale)| width > 1000 && scale == 2.0),
+            "{sizes:?}"
+        );
+        assert!(
+            sizes[1].1 < sizes[0].1,
+            "Find must shrink the page viewport"
+        );
+        assert_eq!(sizes.first(), sizes.last());
+    }
+
+    #[test]
     fn find_handoff_restores_focus_before_first_character_dispatch() {
         let capture = TestEngine::new();
         let mut widget = BrowserWidget::with_engine(capture.clone(), true);
         compose(&mut widget);
-        widget.daily.act(crate::daily_controls::Action::Open, &widget.engine);
+        widget
+            .daily
+            .act(crate::daily_controls::Action::Open, &widget.engine);
         let mut tree = TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
         let node = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
@@ -4287,14 +4380,27 @@ mod architecture_tests {
                 event.logical_key = WKey::Character(letter.into());
                 event.text = Some(letter.into());
             }
-            widget.handle_event(&event, 1.0, &Default::default(), &mut doc,
-                &automerge::ROOT, &mut false, &mut target, node, &tree);
+            widget.handle_event(
+                &event,
+                1.0,
+                &Default::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut false,
+                &mut target,
+                node,
+                &tree,
+            );
             widget.daily.sync(&widget.engine);
         }
         widget.daily.sync(&widget.engine);
         assert!(widget.control_focused(crate::daily_controls::FIND_INPUT));
-        assert!(capture.commands().iter().any(|command| matches!(command,
-            WebViewCommand::Find { text, .. } if text == "Needle")), "{:?}", capture.commands());
+        assert!(
+            capture.commands().iter().any(|command| matches!(command,
+            WebViewCommand::Find { text, .. } if text == "Needle")),
+            "{:?}",
+            capture.commands()
+        );
     }
 
     #[test]
@@ -4304,15 +4410,20 @@ mod architecture_tests {
             capture: std::sync::Arc<TestEngine>,
         }
         impl WebViewEngine for QueuedEngine {
-            fn send(&self, command: WebViewCommand) { self.capture.send(command); }
-            fn frames(&self) -> ui::webview::FrameSlot { self.capture.frames() }
+            fn send(&self, command: WebViewCommand) {
+                self.capture.send(command);
+            }
+            fn frames(&self) -> ui::webview::FrameSlot {
+                self.capture.frames()
+            }
             fn drain_events(&self) -> Vec<WebViewEvent> {
                 std::mem::take(&mut *self.events.lock().unwrap())
             }
         }
         let capture = TestEngine::new();
         let engine = std::sync::Arc::new(QueuedEngine {
-            events: std::sync::Mutex::new(Vec::new()), capture: capture.clone(),
+            events: std::sync::Mutex::new(Vec::new()),
+            capture: capture.clone(),
         });
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         let invocation = ui::qos_actions::InvocationId::new();
@@ -4320,23 +4431,50 @@ mod architecture_tests {
         widget.set_loading_progress(0.2);
         let doc = AutoCommit::new();
         let resources = widget.resources(&doc);
-        let stop = resources[0].children.iter().find(|r| r.id.0 == "browser.page")
-            .unwrap().actions.iter().find(|a| a.id == "stop").unwrap();
+        let stop = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.0 == "browser.page")
+            .unwrap()
+            .actions
+            .iter()
+            .find(|a| a.id == "stop")
+            .unwrap();
         let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
-        let result = widget.start_resource_operation(ui::qos_actions::InvocationId::new(),
-            stop.kind, &encoded.type_id, &encoded.payload, &doc, &automerge::ROOT).unwrap();
+        let result = widget
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                stop.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
         let Some(ui::widget::ResourceOperationStart::Completed(output)) = result else {
             panic!("Stop must complete immediately");
         };
         assert!(stop.contract.result.validate(&output).is_ok());
-        assert!(matches!(widget.resource_navigation_result,
-            Some(ui::qos_actions::InvocationUpdate::Failed { .. })));
-        engine.events.lock().unwrap().push(WebViewEvent::LoadProgress(0.4));
+        assert!(matches!(
+            widget.resource_navigation_result,
+            Some(ui::qos_actions::InvocationUpdate::Failed { .. })
+        ));
+        engine
+            .events
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::LoadProgress(0.4));
         widget.apply_engine_events();
         assert_eq!(widget.progress, 1.0);
         assert!(capture.commands().contains(&WebViewCommand::StopLoading));
-        widget.perform_browser_operation(BrowserOperation::Reload).unwrap();
-        engine.events.lock().unwrap().push(WebViewEvent::LoadProgress(0.6));
+        widget
+            .perform_browser_operation(BrowserOperation::Reload)
+            .unwrap();
+        engine
+            .events
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::LoadProgress(0.6));
         widget.apply_engine_events();
         assert_eq!(widget.progress, 0.6);
     }
