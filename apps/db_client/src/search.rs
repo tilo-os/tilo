@@ -27,6 +27,9 @@ struct IndexState {
     revision: Option<String>,
     catalog: Option<SearchCatalog>,
     resources: HashMap<String, Resource>,
+    /// The most recent rejected rebuild. Keep the last known-good snapshot
+    /// available, but never make a failed index refresh invisible to the app.
+    last_error: Option<String>,
 }
 
 /// A cheap-to-clone handle to the current immutable search catalogue.
@@ -36,17 +39,30 @@ pub struct DbSearchIndex {
 }
 
 impl DbSearchIndex {
-    pub fn sync(&self, session: &Session, doc: &mut AutoCommit) {
-        self.sync_with_connection_mutations(session, doc, true);
+    /// Refresh the retained catalogue for an app-independent caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generated rows violate the canonical search
+    /// catalogue contract. The previous valid snapshot remains available.
+    pub fn sync(&self, session: &Session, doc: &mut AutoCommit) -> Result<(), String> {
+        self.sync_with_connection_mutations(session, doc, true)
     }
 
+    /// Refresh the live-app catalogue and report a rejected snapshot so the
+    /// visible status can remain truthful.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the generated rows violate the canonical search
+    /// catalogue contract. The previous valid snapshot remains available.
     pub fn sync_for_app(
         &self,
         session: &Session,
         doc: &mut AutoCommit,
         include_connection_mutations: bool,
-    ) {
-        self.sync_with_connection_mutations(session, doc, include_connection_mutations);
+    ) -> Result<(), String> {
+        self.sync_with_connection_mutations(session, doc, include_connection_mutations)
     }
 
     fn sync_with_connection_mutations(
@@ -54,7 +70,7 @@ impl DbSearchIndex {
         session: &Session,
         doc: &mut AutoCommit,
         include_connection_mutations: bool,
-    ) {
+    ) -> Result<(), String> {
         let mut revision = revision(session, doc);
         push_revision_part(
             &mut revision,
@@ -65,7 +81,7 @@ impl DbSearchIndex {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.revision.as_deref() == Some(&revision) && state.catalog.is_some() {
-            return;
+            return Ok(());
         }
         let catalog = state
             .catalog
@@ -83,7 +99,7 @@ impl DbSearchIndex {
         );
         index_active_catalog(session, &mut rows, &mut resources);
         index_saved_queries(session, doc, &mut rows, &mut resources);
-        apply_catalog_snapshot(&self.state, revision, catalog, rows, resources);
+        apply_catalog_snapshot(&self.state, revision, catalog, rows, resources)
     }
 }
 
@@ -435,20 +451,28 @@ fn apply_catalog_snapshot(
     catalog: SearchCatalog,
     rows: Vec<(String, String, SearchResult)>,
     resources: HashMap<String, Resource>,
-) {
+) -> Result<(), String> {
     // `replace_all` reuses the retained catalogue and advances its
     // generation exactly once, so every continuation from the previous
     // snapshot is rejected instead of accidentally becoming current when
     // a rebuilt catalog happens to have the same row count.
-    let Ok(()) = catalog.replace_all(rows) else {
-        return;
-    };
+    if let Err(error) = catalog.replace_all(rows) {
+        let error = format!("Database search index refresh failed: {error}");
+        state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last_error = Some(error.clone());
+        return Err(error);
+    }
     let mut state = state
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     state.revision = Some(revision);
     state.catalog = Some(catalog);
     state.resources = resources;
+    state.last_error = None;
+    drop(state);
+    Ok(())
 }
 
 impl DbSearchIndex {
@@ -465,6 +489,14 @@ impl DbSearchIndex {
             .resources
             .get(id)
             .cloned()
+    }
+
+    pub fn last_error(&self) -> Option<String> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .last_error
+            .clone()
     }
 }
 
@@ -578,6 +610,7 @@ impl SearchProvider for DbSearchProvider {
         self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
     }
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
+        let limit = limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
         self.search_page(query, None, limit, limit).results
     }
     fn search_page(
@@ -587,6 +620,7 @@ impl SearchProvider for DbSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
+        let result_limit = result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT);
         self.index
             .state
             .read()
@@ -597,6 +631,15 @@ impl SearchProvider for DbSearchProvider {
                 || SearchCatalog::new(KIND).query_page(query, cursor, work_budget, result_limit),
                 |catalog| catalog.query_page(query, cursor, work_budget, result_limit),
             )
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        self.index.resource(&address.resource).filter(|resource| {
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == address.action)
+        })
     }
 }
 
@@ -684,8 +727,9 @@ mod tests {
     fn assert_address_resolves(index: &DbSearchIndex, result: &SearchResult) {
         let address = result.action_address().expect("canonical action address");
         let resource = index
-            .resource(&address.resource)
-            .expect("search address resolves its exact resource");
+            .provider()
+            .resolve_action_resource(&address)
+            .expect("the provider resolves its exact canonical search address");
         assert!(
             resource
                 .actions
@@ -700,7 +744,7 @@ mod tests {
         let session = Session::with_sample();
         let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         let provider = index.provider();
         let page = provider.search_page("albums", None, 20, 20);
         assert!(page.inspected <= 20);
@@ -722,15 +766,40 @@ mod tests {
         let mut session = Session::with_sample();
         let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         let provider = index.provider();
         let first = provider.search_page("", None, 1, 1);
         let cursor = first.next.expect("large catalog has a continuation");
         let mut relation = session.schema.schemas[0].tables[0].clone();
         relation.name = "cursor-change".into();
         session.schema.schemas[0].tables.push(relation);
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         assert!(!provider.action_directory_cursor_is_current(&cursor));
+    }
+
+    #[test]
+    fn provider_clamps_untrusted_result_limits() {
+        let mut session = Session::with_sample();
+        session.connections.extend((0..300).map(|number| {
+            let name = format!("Indexed connection {number}");
+            crate::model::ConnectionProfile::new(&name, crate::model::Engine::Sqlite)
+        }));
+        let mut doc = AutoCommit::new();
+        let index = DbSearchIndex::default();
+        index.sync(&session, &mut doc).unwrap();
+        let provider = index.provider();
+
+        assert_eq!(
+            provider.search_limited("", usize::MAX).len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
+        );
+        assert_eq!(
+            provider
+                .search_page("", None, usize::MAX, usize::MAX)
+                .results
+                .len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
+        );
     }
 
     #[test]
@@ -752,7 +821,7 @@ mod tests {
         session.schema.schemas[0].tables.last_mut().unwrap().name = "late unique relation".into();
         let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         let page = index.provider().search_page("unique relation", None, 2, 2);
         assert!(page.inspected <= 2, "query work stays bounded");
         assert_eq!(page.results.len(), 1);
@@ -779,7 +848,7 @@ mod tests {
             .name = "late unique column".into();
         let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         let page = index.provider().search_page("unique column", None, 2, 2);
         assert!(page.inspected <= 2, "query work stays bounded");
         assert_eq!(page.results.len(), 1);
@@ -792,7 +861,7 @@ mod tests {
         let mut session = Session::with_sample();
         let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         let provider = index.provider();
         let cursor = provider
             .search_page("", None, 1, 1)
@@ -800,14 +869,14 @@ mod tests {
             .expect("sample catalog is pageable");
 
         session.schema.schemas[0].tables[0].columns[0].name = "renamed_column".into();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         assert!(!provider.action_directory_cursor_is_current(&cursor));
         let column = provider.search_limited("renamed_column", 4);
         assert_eq!(column.len(), 1);
         assert_address_resolves(&index, &column[0]);
 
         session.connections[0].name = "Renamed sample".into();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         let connection = provider.search_limited("Renamed sample", 4);
         assert_eq!(connection.len(), 1);
         assert_eq!(connection[0].title, "Renamed sample");
@@ -819,7 +888,7 @@ mod tests {
         let mut session = Session::with_sample();
         let mut doc = AutoCommit::new();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         let provider = index.provider();
         let old_relation = provider.search_limited("albums", 4).remove(0);
         let cursor = provider
@@ -829,7 +898,7 @@ mod tests {
 
         session.active = 1;
         session.connected = false;
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
 
         assert!(!provider.action_directory_cursor_is_current(&cursor));
         assert!(
@@ -852,7 +921,7 @@ mod tests {
         .apply(&mut doc)
         .unwrap();
         let index = DbSearchIndex::default();
-        index.sync(&session, &mut doc);
+        index.sync(&session, &mut doc).unwrap();
         let provider = index.provider();
         assert!(
             provider
@@ -875,5 +944,86 @@ mod tests {
             run.contract.confirmation,
             qos_actions::ConfirmationPolicy::Confirm
         );
+    }
+
+    #[test]
+    fn canonical_provider_resolution_retains_every_resource_action() {
+        let session = Session::with_sample();
+        let mut doc = AutoCommit::new();
+        crate::actions::save_query_action(uuid::Uuid::new_v4(), "Team report", "SELECT 1")
+            .apply(&mut doc)
+            .unwrap();
+        let index = DbSearchIndex::default();
+        index.sync(&session, &mut doc).unwrap();
+        let provider = index.provider();
+
+        let cases = [
+            (
+                "Sample · chinook",
+                "Sample · chinook",
+                &["connect", "rename", "remove"] as &[_],
+            ),
+            (
+                "query result",
+                "Current query result",
+                &["show", "export_csv"] as &[_],
+            ),
+            (
+                "transaction",
+                "Transaction",
+                &["begin", "commit", "rollback"] as &[_],
+            ),
+            ("Team report", "Team report", &["run", "remove"] as &[_]),
+        ];
+        for (query, title, expected_actions) in cases {
+            let hit = provider
+                .search_limited(query, 8)
+                .into_iter()
+                .find(|result| result.title == title)
+                .unwrap_or_else(|| panic!("canonical search hit for {title}"));
+            let address = hit.action_address().expect("canonical address");
+            let resource = provider
+                .resolve_action_resource(&address)
+                .expect("provider materializes the canonical resource");
+            for action in expected_actions {
+                assert!(
+                    resource
+                        .actions
+                        .iter()
+                        .any(|published| published.id == *action),
+                    "{title} keeps its {action} action after canonical resolution"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rejected_snapshot_keeps_the_last_good_catalog_and_reports_the_failure() {
+        let session = Session::with_sample();
+        let mut doc = AutoCommit::new();
+        let index = DbSearchIndex::default();
+        index.sync(&session, &mut doc).unwrap();
+        let before = index.provider().search_limited("albums", 8);
+        assert!(!before.is_empty());
+
+        let id = "duplicate-resource".to_string();
+        let row = || {
+            (
+                id.clone(),
+                "duplicate".to_string(),
+                SearchResult::for_action(KIND, "Duplicate", ActionAddress::new(&id, "browse")),
+            )
+        };
+        let error = apply_catalog_snapshot(
+            &index.state,
+            "broken snapshot".to_string(),
+            SearchCatalog::new(KIND),
+            vec![row(), row()],
+            HashMap::new(),
+        )
+        .expect_err("duplicate rows reject the snapshot");
+        assert!(error.contains("Database search index refresh failed"));
+        assert_eq!(index.last_error().as_deref(), Some(error.as_str()));
+        assert_eq!(index.provider().search_limited("albums", 8), before);
     }
 }

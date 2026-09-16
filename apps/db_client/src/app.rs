@@ -1423,8 +1423,16 @@ impl Widget for DbClientApp {
         let sql_text = EditorDoc::sql_text(state);
         self.editor.bind_text(sql_text);
         self.editor.pull(state);
-        self.search_index
-            .sync_for_app(&self.session, state, !self.demo);
+        if let Err(error) = self
+            .search_index
+            .sync_for_app(&self.session, state, !self.demo)
+        {
+            // Preserve the last known-good catalogue for existing palette
+            // entries, but make a rejected rebuild visible rather than
+            // silently advertising stale discovery as current.
+            self.session.status = RunStatus::Error(error);
+            self.dirty = true;
+        }
     }
 
     fn build_layout(
@@ -3706,7 +3714,7 @@ mod behavior_tests {
             name: "other:schema".into(),
             tables: vec![original.clone()],
         });
-        app.search_index.sync(&app.session, &mut doc);
+        app.search_index.sync(&app.session, &mut doc).unwrap();
         let connection = app.session.active_connection().unwrap().id.to_string();
         let first_id = catalog_resource_id(
             "relation",
