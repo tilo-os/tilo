@@ -18,8 +18,8 @@ false.
   super/subscript, TOC generation and named paragraph styles.
 - Daily editing: system Open/Save/Save As and image pickers, drag/drop, autosave
   and recovery, undo/redo, find/replace modes, spell checking and correction,
-  rich clipboard, context menus, outline navigation, templates, status/readout,
-  keyboard shortcuts and IME placement.
+  rich clipboard, context menus, selected-text hyperlink authoring, outline
+  navigation, templates, status/readout, keyboard shortcuts and IME placement.
 - Formats: ODT, DOCX, Markdown, HTML and RTF import/export; PDF and EPUB export.
   PDF and EPUB import is intentionally refused with a clear error rather than
   pretending that a fixed-layout/reader format is safely editable.
@@ -33,10 +33,6 @@ false.
 
 ## Remaining release gaps
 
-- Hyperlink targets can be added or changed from the selected-text resource
-  action (including `https:`, `mailto:`, and `#bookmark` targets); imported
-  links render and round-trip, and bookmarks/cross-references exist. A visual
-  toolbar affordance remains a later discoverability enhancement.
 - There is no legacy binary `.doc` importer, equation editor, character-style
   authoring, style inheritance/theme designer, format painter, multi-cursor edit,
   split view, minimap, grammar engine, or print-dialog integration.
