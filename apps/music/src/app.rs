@@ -472,6 +472,10 @@ pub struct MusicApp {
     /// Self-routing right-click context menu (the `ui` primitive, driven
     /// imperatively: opened at the cursor, drawn last, polled via a sink).
     context: ContextMenu,
+    /// The scale from the most recently rendered system theme. Context menus
+    /// are rebuilt on demand, so retaining this lets their first pointer or
+    /// keyboard event use the same enlarged geometry the next frame paints.
+    context_text_scale: f32,
     /// The action each open menu row maps to. Parallel to `context.items()`;
     /// drained when a selection lands so the host performs the CRDT mutation
     /// the `Arc<Fn>` callback model can't express.
@@ -769,6 +773,7 @@ impl MusicApp {
             dirty: true,
             toast: None,
             context: ContextMenu::new(),
+            context_text_scale: 1.0,
             menu_actions: Vec::new(),
             pending: Arc::new(AtomicI64::new(-1)),
             ctx_track: None,
@@ -4344,8 +4349,15 @@ impl MusicApp {
             Action::ToggleLike(track),
         );
 
-        let p = self.clamp_menu_origin(self.mouse);
-        self.context.open_at([p.x as f32, p.y as f32]);
+        // ContextMenu owns placement: it flips above the anchor when
+        // appropriate, clamps to the app viewport, and scrolls internally if
+        // the complete action list cannot fit. Keeping geometry in the shared
+        // primitive gives an immediately correct hit target at the current
+        // text scale, before the next draw pass.
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.set_viewport(Some(self.rect));
+        self.context
+            .open_at([self.mouse.x as f32, self.mouse.y as f32]);
         self.layout_context_menu();
         self.dirty = true;
     }
@@ -4380,21 +4392,12 @@ impl MusicApp {
             );
         }
 
-        let p = self.clamp_menu_origin(self.mouse);
-        self.context.open_at([p.x as f32, p.y as f32]);
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.set_viewport(Some(self.rect));
+        self.context
+            .open_at([self.mouse.x as f32, self.mouse.y as f32]);
         self.layout_context_menu();
         self.dirty = true;
-    }
-
-    /// Nudge a menu anchor so the menu stays within the app rect. The menu is
-    /// `MENU_WIDTH` (220) wide; height grows with the item count.
-    fn clamp_menu_origin(&self, p: Point) -> Point {
-        let menu_w = 220.0;
-        let rows = self.menu_actions.len() as f64;
-        let menu_h = rows * 28.0 + 24.0;
-        let x = p.x.min(self.rect.x1 - menu_w - 8.0).max(self.rect.x0 + 8.0);
-        let y = p.y.min(self.rect.y1 - menu_h - 8.0).max(self.rect.y0 + 8.0);
-        Point::new(x, y)
     }
 
     /// Run the context menu's own layout pass against a throwaway taffy tree
@@ -4402,7 +4405,7 @@ impl MusicApp {
     fn layout_context_menu(&mut self) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let theme = Theme::dark();
+        let theme = Theme::dark().with_text_scale(self.context_text_scale);
         let node = self.context.build_layout(&mut taffy, &theme, &mut node_map);
         let _ = taffy.compute_layout(
             node,
@@ -4412,6 +4415,14 @@ impl MusicApp {
             },
         );
         self.context.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    /// Keep the imperatively owned shared menu aligned with the current
+    /// system accessibility geometry even while it is closed.
+    fn sync_context_menu_geometry(&mut self, theme: &Theme) {
+        self.context_text_scale = theme.text_scale;
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.set_viewport(Some(self.rect));
     }
 
     /// Drain a context-menu selection (set by a row callback) and dispatch the
@@ -6030,6 +6041,26 @@ mod tests {
             menu_index(&app, "Add to library").is_none(),
             "no duplicate library row"
         );
+    }
+
+    #[test]
+    fn context_menu_uses_shared_viewport_and_current_large_text_geometry() {
+        use ui::widget::Widget as _;
+
+        let (mut app, _doc) = app_with_doc();
+        // A short, narrow 200%-scale viewport is the hostile case: the
+        // contextual action list cannot fit above or below its anchor. The
+        // shared menu must own one in-viewport, internally scrollable surface
+        // instead of Music's former guessed clamp.
+        app.rect = Rect::new(0.0, 0.0, 390.0, 320.0);
+        app.context_text_scale = 2.0;
+        app.mouse = Point::new(382.0, 304.0);
+        app.open_track_menu("tk_g2".into(), None, None);
+
+        let rect = app.context.get_rect();
+        assert!(rect.x0 >= app.rect.x0 && rect.x1 <= app.rect.x1);
+        assert!(rect.y0 >= app.rect.y0 && rect.y1 <= app.rect.y1);
+        assert_eq!(rect, app.rect, "oversized menu scrolls within the viewport");
     }
 
     #[test]
