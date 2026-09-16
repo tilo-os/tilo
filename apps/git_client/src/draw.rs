@@ -100,7 +100,10 @@ pub fn text(
 }
 
 /// Weighted text variant.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a thin pass-through over TextRenderer::draw_text_weighted's geometry and text-style parameters"
+)]
 pub fn text_weighted(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -125,7 +128,10 @@ pub fn text_weighted(
 }
 
 /// Monospace styled text (for code, hashes, diff bodies).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a low-level text primitive whose arguments directly select content, geometry, and colour"
+)]
 pub fn mono(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -157,7 +163,10 @@ pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f32 {
 
 /// A small rounded "pill" with a label — used for ref decorations, badges,
 /// ahead/behind counts. Returns the advance width consumed (pill + gap).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a low-level drawing primitive whose arguments directly describe its geometry, label, and palette"
+)]
 pub fn pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,
