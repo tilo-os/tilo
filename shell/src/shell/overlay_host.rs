@@ -1479,6 +1479,9 @@ pub struct ShellOverlayHost {
     /// whose runtime content was replaced by a `PeerView`. These never enter
     /// `ChromeState` or its replicated workspace document.
     peer_stream_tabs: std::collections::HashMap<(u64, u64), u64>,
+    /// One shell-owned certified-device display surface. Unlike peer streams,
+    /// this never impersonates an app tab or enters replicated workspace state.
+    personal_display: Option<([u8; 16], crate::shell::peer_view::PeerView)>,
     /// Quick-settings root-page presentation, geometry and input state.
     qs_root: QuickSettingsRoot,
     /// Side-effect dispatcher for quick-settings actions. Production
@@ -2416,6 +2419,7 @@ impl ShellOverlayHost {
             last_chrome_revision: u64::MAX,
             tab_tiles: std::collections::HashMap::new(),
             peer_stream_tabs: std::collections::HashMap::new(),
+            personal_display: None,
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
@@ -3809,6 +3813,62 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    /// Present a certified device stream as an OS-owned screen surface rather
+    /// than replacing an application. Input is emitted only through the
+    /// supplied lease-checking bridge.
+    pub fn mount_personal_display(
+        &mut self,
+        session_id: [u8; 16],
+        input_sink: std::sync::Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
+    ) {
+        if self
+            .personal_display
+            .as_ref()
+            .is_some_and(|(id, _)| id == &session_id)
+        {
+            return;
+        }
+        let surface_id = u64::from_le_bytes(session_id[..8].try_into().unwrap_or([0; 8]));
+        let mut view = crate::shell::peer_view::PeerView::new_for_stream(
+            surface_id,
+            0,
+            "h264",
+            crate::diagnostics::PeerSurfaceMetrics::default(),
+            &crate::shell::hdr_display::DisplayCapabilities::sdr_default(),
+            None,
+        );
+        view.set_input_sink(input_sink);
+        view.set_shell_viewport(self.rect);
+        self.personal_display = Some((session_id, view));
+    }
+
+    pub fn push_personal_display_frame(
+        &mut self,
+        session_id: [u8; 16],
+        encoded: &[u8],
+    ) -> crate::shell::peer_view::PushOutcome {
+        let Some((active, view)) = self.personal_display.as_mut() else {
+            return crate::shell::peer_view::PushOutcome::DecodeFailed;
+        };
+        if active != &session_id {
+            return crate::shell::peer_view::PushOutcome::DecodeFailed;
+        }
+        view.push_encoded_with_latency(encoded, None)
+    }
+
+    pub fn unmount_personal_display(&mut self, session_id: [u8; 16]) -> bool {
+        if self
+            .personal_display
+            .as_ref()
+            .is_some_and(|(active, _)| active == &session_id)
+        {
+            self.personal_display = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// Decode the newest frame into the mounted peer view. The network inbox
@@ -12359,6 +12419,9 @@ impl Widget for ShellOverlayHost {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        if let Some((_, display)) = self.personal_display.as_mut() {
+            display.set_shell_viewport(self.rect);
+        }
         self.workspace_settings_overlay.layout(self.rect);
         let contextual_tour = self
             .onboarding
@@ -12560,6 +12623,9 @@ impl Widget for ShellOverlayHost {
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(scene, transform, text_renderer, theme, presence);
         }
+        if let Some((_, display)) = self.personal_display.as_mut() {
+            display.draw(scene, transform, text_renderer, theme, presence);
+        }
         self.capture_studio
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -12610,6 +12676,22 @@ impl Widget for ShellOverlayHost {
                 chrome.borrow_mut().overlays.capture = false;
             }
             if *handled || self.capture_studio.modal_capture().is_some() {
+                return;
+            }
+        }
+        if let Some((_, display)) = self.personal_display.as_mut() {
+            display.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            );
+            if *handled {
                 return;
             }
         }

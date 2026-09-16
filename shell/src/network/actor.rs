@@ -54,6 +54,9 @@ pub enum PersonalFabricPayload {
     /// The surrounding personal-fabric route authenticates the source device;
     /// the receiver additionally verifies the final content hash before use.
     MediaTransfer(PersonalMediaTransferFrame),
+    /// Shell-owned display session traffic. Frames are exact-target and
+    /// ephemeral; authorization is rechecked against saved placement state.
+    Display(crate::shell::device_fabric::PersonalDisplayMessage),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
