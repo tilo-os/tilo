@@ -72,6 +72,9 @@ impl WifiPasswordPrompt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BtDevice {
     pub name: String,
+    /// Stable `BlueZ` address used only for local actions and ephemeral
+    /// exact-device handoff. It is never replicated in personal-fabric state.
+    pub address: String,
     pub battery: u8,
     pub connected: bool,
 }
