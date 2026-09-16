@@ -83,7 +83,7 @@ mod clipboard_manager_tests {
     use super::*;
     use crate::compositor::selection::{
         SelectionStore, SharedSelection, Target, activate_history_item, clear_clipboard_history,
-        clipboard_history, pin_history_item, remove_history_item, set_mirror_text,
+        clear_mirror, clipboard_history, pin_history_item, remove_history_item, set_mirror_text,
     };
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
@@ -162,8 +162,8 @@ mod clipboard_manager_tests {
         host.set_clipboard_manager_bridge(bridge(store.clone()));
         host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
 
-        assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::ArrowDown)));
-        assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter)));
+        assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::ArrowDown), false));
+        assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
         assert_eq!(
             crate::compositor::selection::mirror_text(&store, Target::Clipboard).as_deref(),
             Some("older")
@@ -184,6 +184,35 @@ mod clipboard_manager_tests {
         };
         assert_eq!(clipboard_history_source_label(&local, None), "This device");
         assert_eq!(clipboard_history_relative_time(1_000, 181_000), "3 min ago");
+    }
+
+    #[test]
+    fn clipboard_search_filters_metadata_before_explicit_activation() {
+        let store = Arc::new(Mutex::new(SelectionStore::default()));
+        assert!(set_mirror_text(&store, Target::Clipboard, "project alpha"));
+        assert!(set_mirror_text(&store, Target::Clipboard, "meeting notes"));
+        clear_mirror(&store, Target::Clipboard);
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.set_clipboard_manager_bridge(bridge(store.clone()));
+        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+
+        assert!(host.handle_qs_clipboard_keyboard(&Key::Character("alpha".into()), false));
+        let matches = host.filtered_clipboard_history();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].text_preview.as_deref(), Some("project alpha"));
+        assert_eq!(
+            crate::compositor::selection::mirror_text(&store, Target::Clipboard),
+            None
+        );
+
+        assert!(host.handle_qs_clipboard_keyboard(&Key::Named(NamedKey::Enter), false));
+        assert_eq!(
+            crate::compositor::selection::mirror_text(&store, Target::Clipboard).as_deref(),
+            Some("project alpha")
+        );
     }
 }
 
@@ -403,6 +432,30 @@ fn clipboard_history_source_label(
             || source.as_str().to_string(),
             |device| device.label.clone(),
         )
+}
+
+fn clipboard_history_matches_query(
+    item: &crate::compositor::selection::ClipboardHistorySnapshot,
+    query: &str,
+    fabric: Option<&DeviceFabricView>,
+) -> bool {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    let source = clipboard_history_source_label(item, fabric);
+    let mut searchable = source.to_lowercase();
+    for mime in &item.mime_types {
+        searchable.push(' ');
+        searchable.push_str(&mime.to_lowercase());
+    }
+    if let Some(preview) = item.text_preview.as_deref() {
+        searchable.push(' ');
+        searchable.push_str(&preview.to_lowercase());
+    }
+    query
+        .split_whitespace()
+        .all(|term| searchable.contains(term))
 }
 
 fn unix_time_ms() -> u64 {
@@ -1252,6 +1305,9 @@ pub struct ShellOverlayHost {
     /// retained instead of an index so concurrent fabric merges cannot make
     /// Enter activate a different item than the highlighted one.
     qs_selected_clipboard: Option<[u8; 32]>,
+    /// Ephemeral, metadata-only clipboard manager filter. It is never synced
+    /// and never causes a retained payload to become the live clipboard.
+    qs_clipboard_query: String,
     /// Offset into the complete media/output/device list. Unlike the initial
     /// compact implementation, no enrolled device disappears after row seven.
     qs_device_fabric_start: usize,
@@ -2275,6 +2331,7 @@ impl ShellOverlayHost {
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
+            qs_clipboard_query: String::new(),
             qs_device_fabric_start: 0,
             qs_device_fabric_wheel_remainder: 0.0,
             qs_selected_media: None,
@@ -3217,6 +3274,20 @@ impl ShellOverlayHost {
         self.clipboard_manager_bridge
             .as_ref()
             .map_or_else(Vec::new, |bridge| bridge(action))
+    }
+
+    fn filtered_clipboard_history(
+        &self,
+    ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
+        let mut history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        if self.qs_clipboard_query.trim().is_empty() {
+            return history;
+        }
+        let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
+        history.retain(|item| {
+            clipboard_history_matches_query(item, &self.qs_clipboard_query, fabric.as_ref())
+        });
+        history
     }
 
     /// Supply identities the host has already verified (for example, through
@@ -7024,10 +7095,7 @@ impl ShellOverlayHost {
                     .clamp(160.0, 552.0)
             }
             QsLevel::Clipboard => {
-                let rows = self
-                    .clipboard_manager_call(ClipboardManagerAction::Snapshot)
-                    .len()
-                    .min(7);
+                let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
                     .clamp(160.0, 552.0)
             }
@@ -7236,9 +7304,7 @@ impl ShellOverlayHost {
     }
 
     fn scroll_qs_clipboard_history(&mut self, movement: isize) -> bool {
-        let history_len = self
-            .clipboard_manager_call(ClipboardManagerAction::Snapshot)
-            .len();
+        let history_len = self.filtered_clipboard_history().len();
         let max_start = history_len.saturating_sub(self.qs_clipboard_visible_rows());
         let current = self.qs_clipboard_history_start.min(max_start);
         let next = if movement.is_negative() {
@@ -7294,8 +7360,38 @@ impl ShellOverlayHost {
         true
     }
 
-    fn handle_qs_clipboard_keyboard(&mut self, logical_key: &Key) -> bool {
-        let history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+    fn handle_qs_clipboard_keyboard(&mut self, logical_key: &Key, control_down: bool) -> bool {
+        let query_input = match logical_key {
+            Key::Character(value) if !control_down => {
+                let before = self.qs_clipboard_query.len();
+                let remaining = 80usize.saturating_sub(self.qs_clipboard_query.chars().count());
+                self.qs_clipboard_query.extend(
+                    value
+                        .chars()
+                        .filter(|character| !character.is_control())
+                        .take(remaining),
+                );
+                Some(self.qs_clipboard_query.len() != before)
+            }
+            Key::Named(NamedKey::Backspace) => Some(self.qs_clipboard_query.pop().is_some()),
+            Key::Named(NamedKey::Escape) if !self.qs_clipboard_query.is_empty() => {
+                self.qs_clipboard_query.clear();
+                Some(true)
+            }
+            _ => None,
+        };
+        if let Some(changed) = query_input {
+            if changed {
+                self.qs_clipboard_history_start = 0;
+                let history = self.filtered_clipboard_history();
+                self.qs_selected_clipboard = history.first().map(|item| item.id);
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+            }
+            return true;
+        }
+        let history = self.filtered_clipboard_history();
         if history.is_empty() {
             self.qs_selected_clipboard = None;
             return matches!(
@@ -10630,7 +10726,8 @@ impl ShellOverlayHost {
 
     fn handle_qs_clipboard_click(&mut self, point: Point) {
         if self.qs_clipboard_clear_rect().contains(point) {
-            let history = self.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
+            let _ = self.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
+            let history = self.filtered_clipboard_history();
             let _ = self.clamp_qs_clipboard_history_start(history.len());
             if !history
                 .iter()
@@ -10643,7 +10740,7 @@ impl ShellOverlayHost {
             }
             return;
         }
-        let history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        let history = self.filtered_clipboard_history();
         let visible_rows = self.qs_clipboard_visible_rows();
         let start = self.qs_clipboard_history_start;
         for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
@@ -10659,8 +10756,8 @@ impl ShellOverlayHost {
                     pinned: !item.pinned,
                 });
             } else if remove.contains(point) {
-                let remaining =
-                    self.clipboard_manager_call(ClipboardManagerAction::Remove(item.id));
+                let _ = self.clipboard_manager_call(ClipboardManagerAction::Remove(item.id));
+                let remaining = self.filtered_clipboard_history();
                 let _ = self.clamp_qs_clipboard_history_start(remaining.len());
                 self.qs_selected_clipboard = remaining
                     .get(
@@ -10738,7 +10835,7 @@ impl ShellOverlayHost {
             history_level,
             Some(crate::shell::quick_settings::QsLevel::Clipboard)
         ) {
-            let consumed = self.handle_qs_clipboard_keyboard(logical_key);
+            let consumed = self.handle_qs_clipboard_keyboard(logical_key, control_down);
             *handled = consumed;
             return consumed;
         }
@@ -10887,8 +10984,9 @@ impl ShellOverlayHost {
                 drop(st);
                 self.qs_clipboard_history_start = 0;
                 self.qs_clipboard_wheel_remainder = 0.0;
+                self.qs_clipboard_query.clear();
                 self.qs_selected_clipboard = self
-                    .clipboard_manager_call(ClipboardManagerAction::Snapshot)
+                    .filtered_clipboard_history()
                     .first()
                     .map(|item| item.id);
             }
@@ -12905,8 +13003,7 @@ impl Widget for ShellOverlayHost {
                             state.quick_settings.current_level(),
                             crate::shell::quick_settings::QsLevel::Clipboard
                         ) {
-                            let history = self
-                                .clipboard_manager_call(ClipboardManagerAction::Snapshot);
+                            let history = self.filtered_clipboard_history();
                             let fabric = self
                                 .device_fabric_call(DeviceFabricUiAction::Snapshot)
                                 .ok();
@@ -12956,14 +13053,21 @@ impl Widget for ShellOverlayHost {
                                         ])
                                 })
                                 .collect();
+                            let search = AccessNode::new(Role::TextInput)
+                                .with_name("Search clipboard history")
+                                .with_value(self.qs_clipboard_query.clone())
+                                .with_description(
+                                    "Type to filter by preview, content type, or source device. Backspace edits; Escape clears the search.",
+                                );
                             root.children.push(
                                 AccessNode::new(Role::Dialog)
                                     .with_name("Clipboard")
                                     .with_description(
-                                        "Private clipboard history shared only with your authenticated devices. Use Up and Down, Page Up and Page Down, Home, or End to select an item, then Enter or Space to use it.",
+                                        "Private clipboard history shared only with your authenticated devices. Type to search. Use Up and Down, Page Up and Page Down, Home, or End to select an item, then Enter or Space to use it.",
                                     )
                                     .with_state(AccessState::new().modal(true))
                                     .with_children(vec![
+                                        search,
                                         AccessNode::new(Role::List)
                                             .with_name("Retained clipboard items")
                                             .with_children(items),
@@ -17370,6 +17474,11 @@ impl ShellOverlayHost {
         Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
     }
 
+    fn qs_clipboard_search_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x0 + 12.0, r.y0 + 48.0, r.x1 - 12.0, r.y0 + 72.0)
+    }
+
     fn qs_device_row_rect(&self, index: usize) -> Rect {
         let panel = self.quick_settings_rect();
         let y0 = panel.y0 + 78.0 + usize_to_f64_lossy(index) * 58.0;
@@ -17841,6 +17950,36 @@ impl ShellOverlayHost {
         )
     }
 
+    fn draw_qs_clipboard_search(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        label: &str,
+    ) {
+        let search = self.qs_clipboard_search_rect();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.neutral[1],
+            None,
+            &RoundedRect::from_rect(search, 7.0),
+        );
+        text_renderer.draw_text(
+            scene,
+            label,
+            theme.tokens.typography.scale.xs,
+            if self.qs_clipboard_query.is_empty() {
+                theme.tokens.colors.text_dim
+            } else {
+                theme.tokens.colors.text_primary
+            },
+            transform.pre_translate((search.x0 + 9.0, search.y0 + 5.0).into()),
+            Some(f64_to_f32_lossy(search.width() - 18.0)),
+        );
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "clipboard rows intentionally share one geometry calculation for paint, privacy metadata, and their pin/remove controls"
@@ -17853,18 +17992,22 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) {
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Clipboard");
-        let panel = self.quick_settings_rect();
         let colors = &theme.tokens.colors;
-        let history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        let history = self.filtered_clipboard_history();
         if history.is_empty() {
             self.qs_clipboard_history_start = 0;
-            self.draw_qs_drill_in_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                "Copied items appear here",
-            );
+            let search_label = if self.qs_clipboard_query.is_empty() {
+                "Search clipboard… · type to filter".to_string()
+            } else {
+                format!("Search: {} · 0 matches", self.qs_clipboard_query)
+            };
+            self.draw_qs_clipboard_search(scene, transform, text_renderer, theme, &search_label);
+            let empty = if self.qs_clipboard_query.is_empty() {
+                "Copied items appear here".to_string()
+            } else {
+                format!("No matches for ‘{}’", self.qs_clipboard_query)
+            };
+            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, &empty);
             return;
         }
         let visible_rows = self.qs_clipboard_visible_rows();
@@ -17873,6 +18016,29 @@ impl ShellOverlayHost {
         let shown = visible_rows.min(history.len().saturating_sub(start));
         let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
         let now_unix_ms = unix_time_ms();
+
+        let search_label = if !self.qs_clipboard_query.is_empty() {
+            format!(
+                "Search: {} · {} match{}",
+                self.qs_clipboard_query,
+                history.len(),
+                if history.len() == 1 { "" } else { "es" }
+            )
+        } else if history.len() > visible_rows {
+            format!(
+                "Search clipboard… · {}–{} of {}",
+                start.saturating_add(1),
+                start.saturating_add(shown),
+                history.len()
+            )
+        } else {
+            format!(
+                "Search clipboard… · {} item{}",
+                history.len(),
+                if history.len() == 1 { "" } else { "s" }
+            )
+        };
+        self.draw_qs_clipboard_search(scene, transform, text_renderer, theme, &search_label);
 
         let clear = self.qs_clipboard_clear_rect();
         Button::paint(
@@ -17885,29 +18051,6 @@ impl ShellOverlayHost {
                 .accessible_name("Clear unpinned clipboard history")
                 .text_size(theme.tokens.typography.scale.xs),
         );
-        let position = if history.len() > visible_rows {
-            format!(
-                "Newest {}–{} of {} · private to your devices",
-                start.saturating_add(1),
-                start.saturating_add(shown),
-                history.len()
-            )
-        } else {
-            format!(
-                "{} item{} · private to your devices",
-                history.len(),
-                if history.len() == 1 { "" } else { "s" }
-            )
-        };
-        text_renderer.draw_text(
-            scene,
-            &position,
-            theme.tokens.typography.scale.xs,
-            colors.text_dim,
-            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 52.0).into()),
-            Some(f64_to_f32_lossy(panel.width() - 24.0)),
-        );
-
         for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
             let row = self.qs_clipboard_row_rect(visible_index);
             let (pin, remove) = Self::qs_clipboard_row_actions(row);
