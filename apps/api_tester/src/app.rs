@@ -635,7 +635,7 @@ impl ApiTesterApp {
         .on_change(move |choice| {
             environment_sink
                 .borrow_mut()
-                .push(Cmd::EnvironmentAction(choice.to_string()))
+                .push(Cmd::EnvironmentAction(choice.to_string()));
         });
 
         // Send — the accent primary action.
@@ -651,7 +651,7 @@ impl ApiTesterApp {
             .on_effect(move || {
                 save_sink
                     .borrow_mut()
-                    .push(Cmd::OpenForm(FormMode::SaveRequest))
+                    .push(Cmd::OpenForm(FormMode::SaveRequest));
             });
         let request_action_state = ui::LocalState::new("Request actions".to_string());
         let request_sink = sink.clone();
@@ -669,7 +669,7 @@ impl ApiTesterApp {
         .on_change(move |choice| {
             request_sink
                 .borrow_mut()
-                .push(Cmd::RequestAction(choice.to_string()))
+                .push(Cmd::RequestAction(choice.to_string()));
         });
 
         // Request-builder tabs.
