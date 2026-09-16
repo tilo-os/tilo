@@ -79,6 +79,7 @@ pub mod image_store;
 pub mod input;
 pub mod interaction;
 pub mod launch;
+pub mod live_collaboration;
 pub mod local_state;
 pub mod math;
 pub mod mpris;
@@ -231,6 +232,7 @@ pub use widget::{RouteError, RouteHandle, Router};
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
 pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
+pub use widget::collaboration_overview::{CollaborationOverview, CollaborationOverviewAction};
 pub use widget::history::{
     HistoryAuthor, HistoryClassification, HistoryEntry, HistoryEntryId, HistoryFilter,
     RedactionDisplay, format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
@@ -250,6 +252,10 @@ pub use history_source::{
     HistorySeenFrontier, HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource,
     compare_entries, deterministic_narrative, heads_for_entry, participant_display_label,
     validate_narrative, version_index_for_entry,
+};
+pub use live_collaboration::{
+    CollaborationExperience, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS, PersonPresence,
+    SemanticActivity, StatusOrigin, StatusSharing,
 };
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.

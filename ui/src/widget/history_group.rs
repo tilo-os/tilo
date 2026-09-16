@@ -232,17 +232,13 @@ impl HistoryGroup {
         parts.join(" \u{00b7} ")
     }
 
-    /// "Alice", "Alice and Bob", "Alice and 4 others".
+    /// "Alice", "Alice and Bob", "Alice, Bob + 4".
     pub fn authors_label(&self) -> String {
         match self.authors.as_slice() {
             [] => String::new(),
             [a] => a.name.clone(),
             [a, b] => format!("{} and {}", a.name, b.name),
-            [a, ..] => format!(
-                "{} and {} others",
-                a.name,
-                self.authors.len().saturating_sub(1)
-            ),
+            [a, b, rest @ ..] => format!("{}, {} + {}", a.name, b.name, rest.len()),
         }
     }
 
@@ -297,6 +293,9 @@ impl HistoryGroup {
 struct Placed {
     id: String,
     label: String,
+    /// True only for a shared `qos:group:*` record. Action-context groups
+    /// have a stable projection id but nothing in the CRDT to update yet.
+    persisted: bool,
     named_by: Option<HistoryAuthor>,
     start: usize,
     end: usize,
@@ -358,6 +357,7 @@ pub fn group_entries(
         resolved.push(Placed {
             id: r.id.clone(),
             label: r.label.clone(),
+            persisted: true,
             named_by: r.named_by.clone(),
             start,
             end,
@@ -395,6 +395,7 @@ pub fn group_entries(
             resolved.push(Placed {
                 id: format!("action-group:{}", group.id),
                 label: group.label.clone(),
+                persisted: false,
                 named_by: None,
                 start: run_start,
                 end: run_end,
@@ -607,7 +608,9 @@ fn finish_group(
     Some(HistoryGroup {
         key,
         name: named.map(|n| n.label.clone()),
-        record_id: named.map(|n| n.id.clone()),
+        record_id: named
+            .filter(|named| named.persisted)
+            .map(|named| named.id.clone()),
         named_by: named.and_then(|n| n.named_by.clone()),
         open: named.is_some_and(|n| n.open),
         start,
@@ -1032,8 +1035,31 @@ mod tests {
         let groups = group_entries(&entries, &[], &GroupingConfig::default());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].name.as_deref(), Some("Prepare launch brief"));
+        assert_eq!(
+            groups[0].record_id, None,
+            "an automatic action group is not a persisted named range"
+        );
         assert_eq!(groups[0].authors.len(), 2);
         assert_eq!(groups[0].families.len(), 2);
+    }
+
+    #[test]
+    fn many_authors_name_two_people_and_make_the_remainder_scannable() {
+        let mut entries = vec![
+            entry(1, "Alice", 1000, OpClass::Splice),
+            entry(2, "Bob", 1001, OpClass::Splice),
+            entry(3, "Chen", 1002, OpClass::Splice),
+            entry(4, "Dara", 1003, OpClass::Splice),
+        ];
+        for entry in &mut entries {
+            entry.context = Some(qos_actions::ActionContext::default().with_group(
+                "launch",
+                "Launch report",
+                "work-session",
+            ));
+        }
+        let groups = group_entries(&entries, &[], &GroupingConfig::default());
+        assert_eq!(groups[0].authors_label(), "Alice, Bob + 2");
     }
 
     #[test]

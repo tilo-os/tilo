@@ -3777,6 +3777,41 @@ fn attach_peer_presence(
                 follow_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
             }
         }));
+    let status_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_status_presence_bridge(std::rc::Rc::new(move |room, status| {
+            let key = ui::presence::PresenceKey::Workspace {
+                id: room.to_string(),
+            };
+            let payload = ui::collaboration::PresencePayload::Status {
+                text: status
+                    .as_ref()
+                    .map_or_else(String::new, |status| status.text.clone()),
+                automatic: status.as_ref().is_some_and(|status| {
+                    matches!(status.origin, ui::StatusOrigin::Inferred { .. })
+                }),
+            };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                status_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+            }
+        }));
+    let tab_network = Arc::clone(net);
+    frame_builder
+        .host_mut()
+        .set_active_tab_presence_bridge(std::rc::Rc::new(move |room, tab, present| {
+            let key = ui::presence::PresenceKey::Tab {
+                id: format!("{tab:x}"),
+            };
+            let payload = if present {
+                ui::collaboration::PresencePayload::Arrived
+            } else {
+                ui::collaboration::PresencePayload::Left
+            };
+            if let Some(frame) = crate::shell::collab_presence::to_peer(&key, &payload) {
+                tab_network.publish_app_presence("qos-shell".into(), room.to_string(), frame);
+            }
+        }));
     let rooms = {
         let chrome = frame_builder.chrome_handle();
         let chrome = chrome.borrow();

@@ -169,6 +169,11 @@ pub enum Action {
     SeedRoomActivity {
         explore: bool,
     },
+    /// Seed two context-grouped sessions without writing named ranges. Used
+    /// to prove the first human seam correction materializes shared bounds.
+    SeedAutomaticWorkSessions,
+    ExpandAutomaticWorkSession,
+    CorrectAutomaticWorkSession,
     /// Switch the seeded causal history into workspace replay.
     ShowRoomActivityReplay,
     /// Narrow the open activity surface to Ada's real authored changes so a
@@ -177,6 +182,17 @@ pub enum Action {
     /// Add two present collaborators and representative shares to the active
     /// workspace through the production capability path.
     SeedSharedWorkspace,
+    SeedInferredStatus(&'static str),
+    /// Fill the active room with enough live participants to exercise the
+    /// production People pager without weakening each row's action/intent UI.
+    SeedCrowdedWorkspace,
+    /// Publish authenticated semantic work owned by one external app so the
+    /// compositor-level collaboration fallback can be inspected in pixels.
+    SeedForeignAppWork {
+        app_id: &'static str,
+        action: &'static str,
+        resource: &'static str,
+    },
     /// Seed the durable half of an invitation: the invited person has room
     /// access, but has not joined the workspace yet. This is intentionally
     /// distinct from presence so the product proof never calls an invite a
@@ -594,12 +610,28 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
+        Action::SeedAutomaticWorkSessions => driver.seed_automatic_work_sessions_for_shots(),
+        Action::ExpandAutomaticWorkSession => assert!(
+            driver.expand_automatic_work_session_for_shots(),
+            "scenario: automatic work session must be available to expand"
+        ),
+        Action::CorrectAutomaticWorkSession => assert!(
+            driver.correct_automatic_work_session_for_shots(),
+            "scenario: automatic work-session seam correction must succeed"
+        ),
         Action::ShowRoomActivityReplay => driver.show_room_activity_replay_for_shots(),
         Action::FilterRoomActivityToAda => assert!(
             driver.filter_room_activity_to_ada_for_shots(),
             "scenario: attributed history requires a real change authored by Ada"
         ),
         Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
+        Action::SeedInferredStatus(text) => driver.seed_inferred_status_for_shots(text),
+        Action::SeedCrowdedWorkspace => driver.seed_crowded_workspace_for_shots(),
+        Action::SeedForeignAppWork {
+            app_id,
+            action,
+            resource,
+        } => driver.seed_foreign_app_work_for_shots(app_id, action, resource),
         Action::SeedInvitePending => driver.seed_invite_pending_for_shots(),
         Action::AdmitInvitedCollaborator => assert!(
             driver.admit_invited_collaborator_for_shots(),
@@ -1509,6 +1541,9 @@ pub fn catalogue() -> Vec<Scenario> {
         shortcut_guide(),
         solo_and_shared_shell_states(),
         collaboration_product_proof(),
+        crowded_people_roster(),
+        foreign_app_collaboration_fallback(),
+        collaboration_status_privacy(),
         strip_horizontal_scroll(),
         notes_click_and_type(),
         two_notes_tabs_keep_their_own_text(),
@@ -1516,6 +1551,7 @@ pub fn catalogue() -> Vec<Scenario> {
         word_processor_tile(),
         room_activity_from_palette(),
         room_activity_catch_up_keyboard(),
+        automatic_work_session_correction(),
         room_activity_explore_keyboard(),
         room_activity_explore_detail_compare(),
         room_activity_replay(),
@@ -1658,6 +1694,11 @@ fn solo_and_shared_shell_states() -> Scenario {
             Action::Wait(4),
             Action::Relayout,
             Action::Snapshot("01-solo-resting"),
+            // A returning session opens Catch up when durable unseen work is
+            // present. Dismiss it before exercising the ordinary live-roster
+            // state in the remaining frames.
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(4),
             Action::SeedSharedWorkspace,
             Action::Wait(4),
             Action::Relayout,
@@ -1665,6 +1706,100 @@ fn solo_and_shared_shell_states() -> Scenario {
             Action::ClickNamed("topbar_avatar_stack"),
             Action::Wait(4),
             Action::Snapshot("03-shared-roster"),
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Snapshot("04-roster-keyboard-status-focus"),
+        ],
+    }
+}
+
+fn crowded_people_roster() -> Scenario {
+    Scenario {
+        name: "crowded_people_roster",
+        description: "Prove that a crowded live roster keeps full activity and intent rows, pages cleanly, and remains keyboard navigable.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(18),
+            Action::SeedCrowdedWorkspace,
+            Action::Wait(3),
+            Action::Snapshot("01-first-three-people"),
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Snapshot("02-next-page-keyboard-focus"),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Wait(2),
+            Action::Snapshot("03-next-three-people"),
+        ],
+    }
+}
+
+fn foreign_app_collaboration_fallback() -> Scenario {
+    Scenario {
+        name: "foreign_app_collaboration_fallback",
+        description: "Prove authenticated live work appears over its owning external app and never over the neighboring external app.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(18),
+            Action::OpenWindow {
+                app_id: "org.example.Sheets",
+                surface_id: 9_101,
+            },
+            Action::OpenWindow {
+                app_id: "org.example.Calendar",
+                surface_id: 9_102,
+            },
+            Action::Wait(5),
+            Action::Relayout,
+            Action::SeedForeignAppWork {
+                app_id: "org.example.Sheets",
+                action: "Reconciling",
+                resource: "Q3 forecast",
+            },
+            Action::Wait(2),
+            Action::ClickNamed("tab:Sheets"),
+            Action::Wait(2),
+            Action::Snapshot("01-owning-app-shows-live-work"),
+            Action::ClickNamed("tab:Calendar"),
+            Action::Wait(2),
+            Action::Snapshot("02-neighbor-app-does-not"),
+        ],
+    }
+}
+
+fn collaboration_status_privacy() -> Scenario {
+    Scenario {
+        name: "collaboration_status_privacy",
+        description: "Prove inline intent editing, manual publication, and the explicit hidden state with keyboard-only interaction.",
+        actions: vec![
+            Action::Wait(4),
+            Action::Relayout,
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(18),
+            Action::SeedSharedWorkspace,
+            Action::SeedInferredStatus("Managing workspace access"),
+            Action::ClickNamed("topbar_avatar_stack"),
+            Action::Wait(3),
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Type("Closing the Q3 forecast".into()),
+            Action::Snapshot("01-inline-editor"),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("02-manual-status"),
+            Action::Key(Key::Named(NamedKey::Home)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::ArrowRight)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("03-hidden-status"),
         ],
     }
 }
@@ -2260,12 +2395,13 @@ fn room_activity_from_palette() -> Scenario {
     }
 }
 
-/// Outcome cards at rest, then the exact state reached without a pointer:
-/// Tab through the modal controls and expand the first summary with Enter.
+/// Work-session cards at rest, then the exact state reached without a
+/// pointer: traverse the modal and expand a named session, revealing the
+/// shared boundary that can move one underlying action in either direction.
 fn room_activity_catch_up_keyboard() -> Scenario {
     Scenario {
         name: "room_activity_catch_up_keyboard",
-        description: "Open Catch up, traverse its controls by keyboard, and expand an outcome.",
+        description: "Open Catch up, traverse its controls by keyboard, and reveal the editable boundary between adjacent work sessions.",
         actions: vec![
             Action::SeedRoomActivity { explore: false },
             Action::Relayout,
@@ -2273,10 +2409,32 @@ fn room_activity_catch_up_keyboard() -> Scenario {
             Action::Key(Key::Named(NamedKey::Home)),
             Action::Key(Key::Named(NamedKey::ArrowRight)),
             Action::Key(Key::Named(NamedKey::ArrowRight)),
-            Action::Key(Key::Named(NamedKey::ArrowRight)),
-            Action::Key(Key::Named(NamedKey::ArrowRight)),
             Action::Key(Key::Named(NamedKey::Enter)),
-            Action::Snapshot("02-first-outcome-expanded-focus-visible"),
+            Action::Key(Key::Named(NamedKey::End)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("02-work-session-boundary-revealed"),
+            Action::Key(Key::Named(NamedKey::End)),
+            Action::Snapshot("03-work-session-boundary-focus-visible"),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Snapshot("04-boundary-moved-one-action"),
+        ],
+    }
+}
+
+fn automatic_work_session_correction() -> Scenario {
+    Scenario {
+        name: "automatic_work_session_correction",
+        description: "Expand two automatically grouped work sessions, then move their seam and persist the human correction.",
+        actions: vec![
+            Action::SeedAutomaticWorkSessions,
+            Action::Relayout,
+            Action::Snapshot("01-automatic-sessions"),
+            Action::ExpandAutomaticWorkSession,
+            Action::Relayout,
+            Action::Snapshot("02-automatic-seam"),
+            Action::CorrectAutomaticWorkSession,
+            Action::Relayout,
+            Action::Snapshot("03-human-correction-shared"),
         ],
     }
 }

@@ -14,7 +14,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use ui::app::App;
 use ui::collaboration::{CollabEvent, PresencePayload};
@@ -26,6 +26,43 @@ use vello::kurbo::{Point, Rect};
 
 fn app() -> App {
     App::new(State::new(), Box::new(Container::new()))
+}
+
+#[test]
+fn room_status_arrives_with_honest_provenance_and_can_be_cleared() {
+    let mut a = app();
+    let room = PresenceKey::Workspace {
+        id: "finance-room".into(),
+    };
+    let bob = UserId("bob".into());
+    a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+        user_id: bob.0.clone(),
+        key: room.clone(),
+        payload: PresencePayload::Status {
+            text: "Reconciling forecast against actuals".into(),
+            automatic: true,
+        },
+    });
+    let status = a
+        .presence_ctx()
+        .status_for(&bob, SystemTime::now())
+        .expect("status should be visible in the universal room model");
+    assert_eq!(status.text, "Reconciling forecast against actuals");
+    assert!(matches!(status.origin, ui::StatusOrigin::Inferred { .. }));
+
+    a.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+        user_id: bob.0.clone(),
+        key: room,
+        payload: PresencePayload::Status {
+            text: String::new(),
+            automatic: false,
+        },
+    });
+    assert!(
+        a.presence_ctx()
+            .status_for(&bob, SystemTime::now())
+            .is_none()
+    );
 }
 
 /// Lands as a fading highlighter span in `PresenceCtx`, scoped to the
