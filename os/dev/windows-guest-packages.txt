@@ -1,0 +1,30 @@
+# Fedora 44 x86 guest transaction roots, resolved into an EMPTY installroot.
+# The resulting snapshot freezes versions and the complete dependency closure.
+# DXVK is a separately checksum-pinned upstream pair of x32/x64 PE payloads.
+# It is not substituted for Fedora Wine's specially marked builtin libraries.
+wine.x86_64
+wine.i686
+wine-alsa.x86_64
+wine-alsa.i686
+mesa-dri-drivers.x86_64
+mesa-dri-drivers.i686
+mesa-vulkan-drivers.x86_64
+mesa-vulkan-drivers.i686
+mesa-libGL.x86_64
+mesa-libGL.i686
+mesa-libEGL.x86_64
+mesa-libEGL.i686
+vulkan-loader.x86_64
+vulkan-loader.i686
+python3.x86_64
+bash.x86_64
+coreutils.x86_64
+util-linux.x86_64
+findutils.x86_64
+grep.x86_64
+sed.x86_64
+gawk.x86_64
+ca-certificates.noarch
+glibc-common.x86_64
+glibc-langpack-en.x86_64
+glibc-locale-source.x86_64
