@@ -234,4 +234,25 @@ mod tests {
         index.sync(&session, &mut doc);
         assert!(!provider.action_directory_cursor_is_current(&cursor));
     }
+
+    #[test]
+    fn late_relation_is_discoverable_without_scanning_a_large_schema() {
+        let mut session = Session::with_sample();
+        let template = session.schema.schemas[0].tables[0].clone();
+        session.schema.schemas[0].tables = (0..100_001)
+            .map(|index| {
+                let mut table = template.clone();
+                table.name = format!("table-{index}");
+                table
+            })
+            .collect();
+        session.schema.schemas[0].tables.last_mut().unwrap().name = "late unique relation".into();
+        let mut doc = AutoCommit::new();
+        let index = DbSearchIndex::default();
+        index.sync(&session, &mut doc);
+        let page = index.provider().search_page("unique relation", None, 2, 2);
+        assert!(page.inspected <= 2, "query work stays bounded");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].title, "late unique relation");
+    }
 }
