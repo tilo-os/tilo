@@ -55,8 +55,11 @@ enum ToolbarCommand {
 }
 pub struct ImageEditorApp {
     project: Project,
+    search: crate::search::ProjectSearch,
+    indexed_project: Project,
     editor: GraphEditor,
     rect: Rect,
+    text_scale: f64,
     graph_rect: Rect,
     cursor: Point,
     serial: u64,
@@ -161,10 +164,15 @@ impl ImageEditorApp {
             .with_size(140.0, 44.0)
             .primary()
             .on_view(move || empty_sink.set(Some(ToolbarCommand::Open)));
+        let project = Project::blank();
+        let search = crate::search::ProjectSearch::new(&project);
         Self {
-            project: Project::blank(),
+            project: project.clone(),
+            search,
+            indexed_project: project,
             editor: GraphEditor::default(),
             rect: Rect::ZERO,
+            text_scale: 1.0,
             graph_rect: Rect::ZERO,
             cursor: Point::ZERO,
             serial: 0,
@@ -479,8 +487,15 @@ impl ImageEditorApp {
 
     fn add(&mut self, state: &mut AutoCommit, op: Operation, title: &str) {
         self.checkpoint();
-        self.serial += 1;
-        let id = format!("{}-{}", title.to_lowercase(), self.serial);
+        let stem = title.to_lowercase();
+        loop {
+            self.serial = self.serial.saturating_add(1);
+            let candidate = format!("{stem}-{}", self.serial);
+            if !self.project.graph.nodes.contains_key(&candidate) {
+                break;
+            }
+        }
+        let id = format!("{stem}-{}", self.serial);
         if self.project.insert_before_output(&id, title, op) {
             self.editor.select_only(id);
             ProjectDoc::write(state, &self.project);
@@ -584,12 +599,11 @@ impl ImageEditorApp {
             }
         }
     }
-    fn export_beside_source(&mut self) {
+    fn export_beside_source(&self) -> Result<String, String> {
         let source = match self.project.operations.get("source") {
             Some(Operation::Source { path }) if !path.is_empty() => std::path::Path::new(path),
             _ => {
-                self.notice = "Open an image before exporting".into();
-                return;
+                return Err("Open an image before exporting".into());
             }
         };
         let out = source.with_file_name(format!(
@@ -599,10 +613,16 @@ impl ImageEditorApp {
                 .and_then(|s| s.to_str())
                 .unwrap_or("image")
         ));
-        self.notice = match crate::engine::export(&self.project, &out) {
-            Ok(()) => format!("Exported {}", out.display()),
-            Err(error) => format!("Export failed: {error:?}"),
-        };
+        crate::engine::export(&self.project, &out)
+            .map(|()| format!("Exported {}", out.display()))
+            .map_err(|error| format!("Export failed: {error:?}"))
+    }
+
+    fn export_and_notice(&mut self) {
+        match self.export_beside_source() {
+            Ok(notice) => self.notice = notice,
+            Err(error) => self.notice = error,
+        }
     }
     fn rebuild_preview(&mut self) {
         if self.rendered_project.as_ref() == Some(&self.project) {
@@ -762,17 +782,18 @@ impl ImageEditorApp {
     }
 
     fn stack_row_geometry(&self) -> (f64, f64) {
+        let scale = self.text_scale.max(1.0);
         if self.rect.width() < 820.0 {
-            (52.0, 46.0)
+            (52.0 * scale, 46.0 * scale)
         } else {
-            (50.0, 42.0)
+            (50.0 * scale, 42.0 * scale)
         }
     }
 
     fn stack_viewport(&self) -> Rect {
         Rect::new(
             self.stack_rect.x0,
-            self.stack_rect.y0 + 58.0,
+            self.stack_rect.y0 + 58.0 * self.text_scale.max(1.0),
             self.stack_rect.x1,
             self.inspector_rect.y0 - 6.0,
         )
@@ -1038,7 +1059,7 @@ impl ImageEditorApp {
             ToolbarCommand::Compare => self.compare_original = !self.compare_original,
             ToolbarCommand::Graph => self.advanced_graph = !self.advanced_graph,
             ToolbarCommand::More => self.more_open = !self.more_open,
-            ToolbarCommand::Export => self.export_beside_source(),
+            ToolbarCommand::Export => self.export_and_notice(),
         }
     }
 }
@@ -1046,15 +1067,20 @@ impl Widget for ImageEditorApp {
     fn sync(&mut self, state: &mut AutoCommit, _: &ObjId) {
         ProjectDoc::seed(state);
         self.project = ProjectDoc::read(state);
+        if self.indexed_project != self.project {
+            self.search.refresh(&self.project);
+            self.indexed_project = self.project.clone();
+        }
         self.poll_picker(state);
         self.rebuild_preview();
     }
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
-        _: &Theme,
+        theme: &Theme,
         m: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = f64::from(theme.text_scale);
         let n = t.leaf_node(Style {
             position: Position::Absolute,
             size: Size {
@@ -1075,6 +1101,15 @@ impl Widget for ImageEditorApp {
             o.y + f64::from(l.location.y + l.size.height),
         );
         let compact = compact_toolbar_for(self.rect.width());
+        // At large type sizes toolbar labels cannot remain legible in the
+        // five compact cells. Keep the familiar glyphs, but preserve the full
+        // name for AT and the shared tooltip host.
+        let icon_first_toolbar = self.text_scale > 1.25;
+        // Normal type keeps the familiar 44px toolbar origin. Enlarged type
+        // reserves a full title line before the controls instead of drawing
+        // the first row through the project name.
+        let toolbar_top = self.rect.y0 + 44.0 + (self.text_scale - 1.0).max(0.0) * 64.0;
+        let header_extra = (toolbar_top + 48.0 - (self.rect.y0 + 92.0)).max(0.0);
         let gap = 6.0;
         let top_count = if compact { 5 } else { self.toolbar.len() - 1 };
         let advanced_graph = self.advanced_graph;
@@ -1082,6 +1117,7 @@ impl Widget for ImageEditorApp {
             .min(if compact { 104.0 } else { 96.0 });
         let mut x = self.rect.x0 + 12.0;
         for (command, button) in &mut self.toolbar {
+            button.set_compact_toolbar_presentation(icon_first_toolbar);
             let top_level = if compact {
                 matches!(
                     command,
@@ -1097,9 +1133,9 @@ impl Widget for ImageEditorApp {
             if top_level {
                 button.apply_layout_external(Rect::new(
                     x,
-                    self.rect.y0 + 44.0,
+                    toolbar_top,
                     x + width,
-                    self.rect.y0 + 88.0,
+                    toolbar_top + 44.0,
                 ));
                 x += width + gap;
             } else {
@@ -1111,9 +1147,9 @@ impl Widget for ImageEditorApp {
             let more_width = (self.rect.width() - 24.0).min(420.0);
             self.more_rect = Rect::new(
                 self.rect.x0 + 12.0,
-                self.rect.y0 + 96.0,
+                toolbar_top + 52.0,
                 self.rect.x0 + 12.0 + more_width,
-                (self.rect.y0 + 328.0).min(self.rect.y1 - 12.0),
+                (toolbar_top + 284.0).min(self.rect.y1 - 12.0),
             );
             let cell_gap = 6.0;
             let cell_width = (self.more_rect.width() - 24.0 - cell_gap) / 2.0;
@@ -1140,29 +1176,41 @@ impl Widget for ImageEditorApp {
                 }
             }
         }
-        let adaptive =
-            ui::graph_editor::AdaptiveEditorLayout::resolve(self.rect.width(), self.rect.height());
+        let status_extra = 48.0 * (self.text_scale - 1.0).max(0.0);
+        let adaptive = ui::graph_editor::AdaptiveEditorLayout::resolve(
+            self.rect.width(),
+            (self.rect.height() - header_extra - status_extra).max(0.0),
+        );
         let cv = adaptive.canvas;
         let st = adaptive.stack;
         let ins = adaptive.inspector;
-        let canvas = Rect::new(
+        let mut canvas = Rect::new(
             self.rect.x0 + cv.x0,
-            self.rect.y0 + cv.y0,
+            self.rect.y0 + cv.y0 + header_extra,
             self.rect.x0 + cv.x1,
-            self.rect.y0 + cv.y1,
+            self.rect.y0 + cv.y1 + header_extra,
         );
-        let stack = Rect::new(
+        let mut stack = Rect::new(
             self.rect.x0 + st.x0,
-            self.rect.y0 + st.y0,
+            self.rect.y0 + st.y0 + header_extra,
             self.rect.x0 + st.x1,
-            self.rect.y0 + st.y1,
+            self.rect.y0 + st.y1 + header_extra,
         );
+        if self.rect.width() < 820.0 && self.text_scale > 1.0 {
+            // Favour a scrollable adjustment list over a nearly unusable
+            // preview when large type is requested. The canvas remains
+            // available for direct crop/zoom work above it.
+            let wanted_stack_height =
+                (300.0 + 48.0 * (self.text_scale - 1.0)).min((stack.y1 - canvas.y0 - 1.0).max(0.0));
+            stack.y0 = stack.y1 - wanted_stack_height;
+            canvas.y1 = stack.y0 - 1.0;
+        }
         if self.advanced_graph {
             self.graph_rect = Rect::new(
                 self.rect.x0,
-                self.rect.y0 + 92.0,
+                self.rect.y0 + 92.0 + header_extra,
                 self.rect.x1,
-                self.rect.y1 - 48.0,
+                self.rect.y1 - 48.0 - status_extra,
             );
             self.canvas_rect = Rect::ZERO;
             self.stack_rect = Rect::ZERO;
@@ -1172,10 +1220,20 @@ impl Widget for ImageEditorApp {
         }
         self.inspector_rect = Rect::new(
             self.rect.x0 + ins.x0,
-            self.rect.y0 + ins.y0,
+            self.rect.y0 + ins.y0 + header_extra,
             self.rect.x0 + ins.x1,
-            self.rect.y0 + ins.y1,
+            self.rect.y0 + ins.y1 + header_extra,
         );
+        if !self.advanced_graph && self.text_scale > 1.0 {
+            let inspector_height =
+                (68.0 * self.text_scale).min((stack.height() - 58.0 * self.text_scale).max(44.0));
+            self.inspector_rect = Rect::new(
+                stack.x0 + 12.0,
+                stack.y1 - 8.0 - inspector_height,
+                stack.x1 - 12.0,
+                stack.y1 - 8.0,
+            );
+        }
         let empty_open_rect = self.empty_open_rect();
         self.empty_open.apply_layout_external(empty_open_rect);
     }
@@ -1194,7 +1252,7 @@ impl Widget for ImageEditorApp {
             &self.project.name,
             20.0,
             c.text_primary,
-            a.pre_translate((18.0 + self.rect.x0, 26.0 + self.rect.y0).into()),
+            a.pre_translate((18.0 + self.rect.x0, 26.0 * self.text_scale + self.rect.y0).into()),
             None,
             TextWeight::Semibold,
         );
@@ -1272,16 +1330,32 @@ impl Widget for ImageEditorApp {
                 "Adjustments",
                 17.0,
                 c.text_primary,
-                a.pre_translate((self.stack_rect.x0 + 16.0, self.stack_rect.y0 + 28.0).into()),
+                a.pre_translate(
+                    (
+                        self.stack_rect.x0 + 16.0,
+                        self.stack_rect.y0 + 28.0 * self.text_scale.max(1.0),
+                    )
+                        .into(),
+                ),
                 None,
                 TextWeight::Semibold,
             );
             tr.draw_text_weighted(
                 s,
-                "Latest result at top. Select any step to revise.",
+                if self.text_scale > 1.25 {
+                    "Select any step to revise."
+                } else {
+                    "Latest result at top. Select any step to revise."
+                },
                 11.0,
                 c.text_dim,
-                a.pre_translate((self.stack_rect.x0 + 16.0, self.stack_rect.y0 + 48.0).into()),
+                a.pre_translate(
+                    (
+                        self.stack_rect.x0 + 16.0,
+                        self.stack_rect.y0 + 48.0 * self.text_scale.max(1.0),
+                    )
+                        .into(),
+                ),
                 Some((self.stack_rect.width() - 32.0) as f32),
                 TextWeight::Regular,
             );
@@ -1292,7 +1366,9 @@ impl Widget for ImageEditorApp {
             s.push_clip_layer(Fill::NonZero, a, &viewport);
             for (index, id) in steps.iter().rev().enumerate() {
                 let (row_step, row_height) = self.stack_row_geometry();
-                let y = self.stack_rect.y0 + 62.0 + index as f64 * row_step - self.stack_scroll;
+                let y =
+                    self.stack_rect.y0 + 62.0 * self.text_scale.max(1.0) + index as f64 * row_step
+                        - self.stack_scroll;
                 if y + row_height < viewport.y0 || y > viewport.y1 {
                     continue;
                 }
@@ -1335,7 +1411,7 @@ impl Widget for ImageEditorApp {
                     label,
                     14.0,
                     c.text_primary,
-                    a.pre_translate((r.x0 + 12.0, r.y0 + 7.0).into()),
+                    a.pre_translate((r.x0 + 12.0, r.y0 + 7.0 * self.text_scale.max(1.0)).into()),
                     Some((r.width() - 92.0) as f32),
                     TextWeight::Semibold,
                 );
@@ -1344,7 +1420,7 @@ impl Widget for ImageEditorApp {
                     &format!("Step {}, editable", steps.len() - index),
                     10.0,
                     c.text_dim,
-                    a.pre_translate((r.x0 + 12.0, r.y0 + 25.0).into()),
+                    a.pre_translate((r.x0 + 12.0, r.y0 + 25.0 * self.text_scale.max(1.0)).into()),
                     None,
                     TextWeight::Regular,
                 );
@@ -1661,10 +1737,21 @@ impl Widget for ImageEditorApp {
         }
         tr.draw_text_weighted(
             s,
-            &self.notice,
+            if self.text_scale > 1.25 {
+                "Every step stays editable."
+            } else {
+                &self.notice
+            },
             12.0,
             c.text_dim,
-            a.pre_translate((self.rect.x0 + 14.0, self.rect.y1 - 42.0).into()),
+            a.pre_translate(
+                (
+                    self.rect.x0 + 14.0,
+                    self.rect.y1 - 48.0 * self.text_scale.max(1.0)
+                        + 20.0 * self.text_scale.max(1.0),
+                )
+                    .into(),
+            ),
             Some((self.rect.width() - 28.0).max(1.0) as f32),
             TextWeight::Regular,
         );
@@ -2449,7 +2536,7 @@ impl Widget for ImageEditorApp {
         vec![crate::actions::resource(&self.project)]
     }
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search::ProjectSearch(self.project.clone()))]
+        vec![Box::new(self.search.clone())]
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
@@ -2473,6 +2560,25 @@ impl Widget for ImageEditorApp {
         }
         match operation {
             crate::actions::EditorOperation::Open => self.request_open(),
+            crate::actions::EditorOperation::Export => {
+                return Err(
+                    "export operations must be started through the invocation broker".into(),
+                );
+            }
+            crate::actions::EditorOperation::Select { id } => {
+                if !self.project.graph.nodes.contains_key(&id) {
+                    return Err("that image-editor resource no longer exists".into());
+                }
+                self.editor.select_only(id.clone());
+                self.rebuild_crop_editor();
+                self.notice = if id == "source" {
+                    "Original source selected".into()
+                } else if id == self.project.output {
+                    "Final export selected".into()
+                } else {
+                    "Adjustment selected".into()
+                };
+            }
         }
         Ok(true)
     }
@@ -2485,6 +2591,33 @@ impl Widget for ImageEditorApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != qos_actions::OperationKind::Document
+            && let Some(crate::actions::EditorOperation::Export) =
+                crate::actions::decode_operation(type_id, payload)?
+        {
+            self.resource_result = Some(match self.export_beside_source() {
+                Ok(notice) => {
+                    self.notice = notice;
+                    qos_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: qos_actions::ActionOutput::default(),
+                    }
+                }
+                Err(message) => {
+                    self.notice = message.clone();
+                    qos_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: qos_actions::ActionFailure {
+                            code: "image-editor.export-failed".into(),
+                            message,
+                            details: None,
+                            retryable: true,
+                        },
+                    }
+                }
+            });
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
         if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
