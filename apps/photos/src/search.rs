@@ -9,14 +9,19 @@
 //! query happened to match one of those words.
 
 use automerge::AutoCommit;
-use qos_actions::ActionAddress;
+use qos_actions::{ActionAddress, Resource, ResourceProvider};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, RwLock};
 use ui::icons::Icon;
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError,
+    SearchCursor, SearchPage, SearchProvider, SearchResult,
 };
 
-use crate::actions::{folder_resource_id, person_resource_id, tag_resource_id};
+use crate::actions::{
+    PhotosResources, album_resource, folder_resource, folder_resource_id, metadata_label_counts,
+    person_resource, person_resource_id, photo_resource, tag_resource, tag_resource_id,
+};
 use crate::doc::PhotosDoc;
 
 /// Search group label for Photos results.
@@ -31,6 +36,10 @@ pub const PHOTO_SEARCH_KIND: &str = "Photos";
 #[derive(Clone)]
 pub struct PhotosSearchProvider {
     catalog: SearchCatalog,
+    /// Exact canonical materialisation for the same immutable document
+    /// snapshot as `catalog`. Search activation never re-enumerates the CRDT
+    /// or fabricates a parallel resource shape.
+    resources: Arc<RwLock<HashMap<String, Resource>>>,
 }
 
 impl PhotosSearchProvider {
@@ -39,15 +48,82 @@ impl PhotosSearchProvider {
     pub fn empty() -> Self {
         Self {
             catalog: SearchCatalog::new(PHOTO_SEARCH_KIND),
+            resources: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     /// Index durable records directly. Resource snapshots are deliberately
     /// contextual, so searching through one would hide late library entries.
-    pub fn new(doc: &AutoCommit) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalogue contract error if a generated canonical row cannot
+    /// be admitted. Ambiguous resource-id collisions are excluded safely.
+    pub fn new(doc: &AutoCommit) -> Result<Self, SearchCatalogError> {
         let provider = Self::empty();
         let library = PhotosDoc::library(doc);
-        let mut rows = Vec::with_capacity(1 + library.photos.len() + library.albums.len());
+        provider.replace_from_library(doc, &library)?;
+        Ok(provider)
+    }
+
+    /// Refresh this retained provider to one document generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalogue contract error if the replacement snapshot cannot
+    /// be admitted; the previous complete generation remains available.
+    pub fn sync(&self, doc: &AutoCommit) -> Result<(), SearchCatalogError> {
+        let library = PhotosDoc::library(doc);
+        self.replace_from_library(doc, &library)
+    }
+
+    /// Resolve one resource from the retained document generation without a
+    /// CRDT walk. The widget uses this for agent/history lookups, including
+    /// hashed metadata views whose labels cannot safely be reversed from ids.
+    pub fn resource(&self, id: &str) -> Option<Resource> {
+        self.resources
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
+    }
+
+    #[cfg(test)]
+    fn from_library(
+        doc: &AutoCommit,
+        library: &crate::model::PhotoLibrary,
+    ) -> Result<Self, SearchCatalogError> {
+        let provider = Self::empty();
+        provider.replace_from_library(doc, library)?;
+        Ok(provider)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one snapshot builder keeps every searchable resource kind in a single collision and admission boundary"
+    )]
+    fn replace_from_library(
+        &self,
+        doc: &AutoCommit,
+        library: &crate::model::PhotoLibrary,
+    ) -> Result<(), SearchCatalogError> {
+        let mut entries = BTreeMap::<String, (String, SearchResult, Resource)>::new();
+        let mut collisions = HashSet::<String>::new();
+        let mut insert =
+            |id: String, searchable: String, result: SearchResult, resource: Resource| {
+                if collisions.contains(&id) {
+                    return;
+                }
+                if entries
+                    .insert(id.clone(), (searchable, result, resource))
+                    .is_some()
+                {
+                    // A hostile/corrupt document can claim the same stable id for
+                    // two kinds. Neither ambiguous action is safe to advertise.
+                    entries.remove(&id);
+                    collisions.insert(id);
+                }
+            };
         let root = SearchResult::for_action(
             PHOTO_SEARCH_KIND,
             "Photo library",
@@ -55,11 +131,14 @@ impl PhotosSearchProvider {
         )
         .with_subtitle("Import and browse photographs")
         .with_icon(Icon::Image);
-        rows.push((
-            "photos.library".to_owned(),
-            "Photo library\0photos.library\0open\0Import photograph".to_owned(),
-            root,
-        ));
+        if let Some(resource) = PhotosResources.resource(doc, "photos.library") {
+            insert(
+                "photos.library".to_owned(),
+                "Photo library\0photos.library\0open\0Import photograph".to_owned(),
+                root,
+                resource,
+            );
+        }
         for photo in &library.photos {
             let result = SearchResult::for_action(
                 PHOTO_SEARCH_KIND,
@@ -88,7 +167,12 @@ impl PhotosSearchProvider {
                 photo.tags.join(" "),
                 photo.captured_at.as_deref().unwrap_or_default(),
             );
-            rows.push((photo.id.clone(), searchable, result));
+            insert(
+                photo.id.clone(),
+                searchable,
+                result,
+                photo_resource(doc, photo),
+            );
         }
         for album in &library.albums {
             let result = SearchResult::for_action(
@@ -103,31 +187,9 @@ impl PhotosSearchProvider {
                 album.name,
                 album.photo_ids.len()
             );
-            rows.push((album.id.clone(), searchable, result));
+            insert(album.id.clone(), searchable, result, album_resource(album));
         }
-        let _ = provider.catalog.replace_all(rows);
-        provider.index_metadata_views(&library);
-        provider
-    }
-
-    /// Folder, person, and tag resources are virtual, but their ids and open
-    /// actions are still canonical. Index them separately to keep the main
-    /// photo/album catalogue construction readable and bounded.
-    fn index_metadata_views(&self, library: &crate::model::PhotoLibrary) {
-        let mut folders = std::collections::BTreeMap::<String, usize>::new();
-        let mut people = std::collections::BTreeMap::<String, usize>::new();
-        let mut tags = std::collections::BTreeMap::<String, usize>::new();
-        for photo in &library.photos {
-            if let Some(folder) = &photo.folder {
-                *folders.entry(folder.clone()).or_default() += 1;
-            }
-            for person in &photo.people {
-                *people.entry(person.clone()).or_default() += 1;
-            }
-            for tag in &photo.tags {
-                *tags.entry(tag.clone()).or_default() += 1;
-            }
-        }
+        let (folders, people, tags) = metadata_label_counts(library);
         for (folder, count) in folders {
             let id = folder_resource_id(&folder);
             let result = SearchResult::for_action(
@@ -137,10 +199,11 @@ impl PhotosSearchProvider {
             )
             .with_subtitle(format!("Folder · {count} photographs"))
             .with_icon(Icon::Folder);
-            let _ = self.catalog.upsert(
-                id,
+            insert(
+                id.clone(),
                 format!("{folder}\0photos.folder\0folder\0{count} photographs\0open"),
                 result,
+                folder_resource(&folder, count),
             );
         }
         for (person, count) in people {
@@ -152,10 +215,11 @@ impl PhotosSearchProvider {
             )
             .with_subtitle(format!("Person · {count} photographs"))
             .with_icon(Icon::Image);
-            let _ = self.catalog.upsert(
-                id,
+            insert(
+                id.clone(),
                 format!("{person}\0photos.person\0person\0{count} photographs\0open"),
                 result,
+                person_resource(&person, count),
             );
         }
         for (tag, count) in tags {
@@ -164,12 +228,27 @@ impl PhotosSearchProvider {
                 SearchResult::for_action(PHOTO_SEARCH_KIND, &tag, ActionAddress::new(&id, "open"))
                     .with_subtitle(format!("Tag · {count} photographs"))
                     .with_icon(Icon::Image);
-            let _ = self.catalog.upsert(
-                id,
+            insert(
+                id.clone(),
                 format!("{tag}\0photos.tag\0tag\0{count} photographs\0open"),
                 result,
+                tag_resource(&tag, count),
             );
         }
+        self.catalog.replace_all(
+            entries
+                .iter()
+                .map(|(id, (text, result, _))| (id.clone(), text.clone(), result.clone())),
+        )?;
+        let resources = entries
+            .into_iter()
+            .map(|(id, (_, _, resource))| (id, resource))
+            .collect();
+        *self
+            .resources
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = resources;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -195,7 +274,8 @@ impl SearchProvider for PhotosSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog.search_limited(query, limit)
+        self.catalog
+            .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
     }
 
     fn search_page(
@@ -205,8 +285,21 @@ impl SearchProvider for PhotosSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
+        self.catalog.query_page(
+            query,
+            cursor,
+            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+        )
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        let resource = self.resource(&address.resource)?;
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == address.action)
+            .then_some(resource)
     }
 }
 
@@ -236,7 +329,7 @@ mod tests {
     #[test]
     fn search_is_unicode_safe_and_includes_metadata_and_actions() {
         let doc = open_doc("München-夏.png");
-        let provider = PhotosSearchProvider::new(&doc);
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
         for query in ["MÜNCHEN", "夏", "800 x 400", "clockwise"] {
             let hits = provider.search(query);
             assert!(!hits.is_empty(), "query {query:?} did not find the photo");
@@ -255,7 +348,7 @@ mod tests {
     #[test]
     fn pages_are_bounded_and_the_result_targets_an_exported_action() {
         let doc = open_doc("harbour.png");
-        let provider = PhotosSearchProvider::new(&doc);
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
         assert!(provider.search_page("", None, 0, 1).results.is_empty());
         assert!(provider.search_page("", None, 1, 0).results.is_empty());
 
@@ -278,6 +371,7 @@ mod tests {
     fn a_target_for_the_previous_photo_is_not_exported_after_open_changes() {
         let before = open_doc("before.png");
         let address = PhotosSearchProvider::new(&before)
+            .unwrap()
             .search("before")
             .pop()
             .and_then(|result| result.action_address())
@@ -307,7 +401,9 @@ mod tests {
             ));
         }
         PhotosDoc::set_library(&mut doc, &library);
-        let page = PhotosSearchProvider::new(&doc).search_page("NEEDLE-夏", None, 2, 1);
+        let page = PhotosSearchProvider::new(&doc)
+            .unwrap()
+            .search_page("NEEDLE-夏", None, 2, 1);
         assert_eq!(page.results.len(), 1);
         assert!(page.inspected <= 2, "query work exceeded its hard budget");
         assert_eq!(page.results[0].title, "旅行-needle-夏.png");
@@ -332,6 +428,7 @@ mod tests {
         }
         PhotosDoc::set_library(&mut doc, &library);
         let hit = PhotosSearchProvider::new(&doc)
+            .unwrap()
             .search_page("NEEDLE-夏", None, 2, 1)
             .results
             .pop()
@@ -359,7 +456,7 @@ mod tests {
         photo.captured_at = Some("2026-09-07".into());
         PhotosDoc::set_library(&mut doc, &library);
 
-        let provider = PhotosSearchProvider::new(&doc);
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
         for (query, expected_resource) in [
             ("旅行-夏", crate::actions::folder_resource_id("旅行-夏")),
             ("ÉLODIE", crate::actions::person_resource_id("Élodie")),
@@ -388,5 +485,98 @@ mod tests {
                     .any(|action| action.id == address.action)
             );
         }
+    }
+
+    #[test]
+    fn caller_limits_are_clamped_and_hits_materialize_the_exact_action_resource() {
+        let doc = open_doc("harbour.png");
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        assert!(provider.search_limited("", usize::MAX).len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+        let page = provider.search_page("harbour", None, usize::MAX, usize::MAX);
+        assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
+        assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
+        let address = page.results[0].action_address().unwrap();
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("the search snapshot materializes its canonical resource");
+        assert_eq!(resource.id.0, address.resource);
+        assert!(
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == address.action)
+        );
+        assert!(
+            provider
+                .resolve_action_resource(&ActionAddress::new(address.resource, "remove"))
+                .is_some(),
+            "all actions on the materialized photograph remain agent-addressable"
+        );
+    }
+
+    #[test]
+    fn deletion_invalidates_cursors_and_removes_old_exact_materialization() {
+        let mut doc = open_doc("before.png");
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        let first = provider.search_page("", None, 1, 1);
+        let cursor = first.next.expect("the library has another browse row");
+        let address = provider.search("before")[0].action_address().unwrap();
+
+        PhotosDoc::set_library(&mut doc, &crate::model::PhotoLibrary::default());
+        PhotosDoc::set_image(&mut doc, None);
+        provider.sync(&doc).unwrap();
+        assert!(!provider.action_directory_cursor_is_current(&cursor));
+        assert!(provider.resolve_action_resource(&address).is_none());
+    }
+
+    #[test]
+    fn colliding_resource_ids_are_refused_instead_of_routing_to_the_wrong_kind() {
+        let doc = AutoCommit::new();
+        let mut photo = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            "/pictures/collision.png",
+            1,
+            1,
+        ));
+        photo.id = "photos.album:collision".into();
+        let library = crate::model::PhotoLibrary {
+            photos: vec![photo],
+            albums: vec![crate::model::Album {
+                id: "photos.album:collision".into(),
+                name: "Collision".into(),
+                photo_ids: Vec::new(),
+            }],
+        };
+        let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
+        assert!(provider.search("collision").is_empty());
+        assert!(
+            provider
+                .resolve_action_resource(&ActionAddress::new("photos.album:collision", "open"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn exact_unique_match_beyond_one_hundred_thousand_is_bounded_and_reachable() {
+        let doc = AutoCommit::new();
+        let mut library = crate::model::PhotoLibrary::default();
+        library.photos.reserve(100_001);
+        for index in 0..100_001 {
+            let name = if index == 100_000 {
+                "needle-beyond-100k-夏.png".to_owned()
+            } else {
+                format!("photo-{index}.png")
+            };
+            library.photos.push(crate::model::LibraryPhoto::from_image(
+                OpenImage::from_path(&format!("/pictures/{name}"), 1, 1),
+            ));
+        }
+        let provider = PhotosSearchProvider::from_library(&doc, &library).unwrap();
+        assert_eq!(provider.stats().records, 100_002);
+        let page = provider.search_page("needle-beyond-100k-夏", None, 2, 1);
+        assert_eq!(page.results.len(), 1);
+        assert!(page.inspected <= 2);
+        let address = page.results[0].action_address().unwrap();
+        assert_eq!(address.action, "open");
+        assert!(provider.resolve_action_resource(&address).is_some());
     }
 }
