@@ -82,6 +82,16 @@ activation tests (2) passed. Native Fedora setup tests excluding the separately
 in-progress migration module passed all 43 tests with no warnings. Scoped
 re-review found no remaining issues. Native Windows runtime testing is pending.
 
+The final integrated wizard review found hidden partial-scan outcomes and
+colliding destinations for disjoint same-basename sources. Commit `b0768af20`
+fixes both: skipped paths/reasons and incomplete totals persist in folder cards
+and Review, while completion-time suffixes allocate distinct suggestions and
+the controller rejects overlapping destinations. macOS controller/view tests
+passed 7/14 respectively; native Fedora setup passed all 61 tests. Compact and
+wide warning screenshots were inspected, and the final scoped re-review approved
+the component. Actual target-home mapping and filesystem grants remain pending
+executor work; these suggestions do not authorize writes.
+
 ## Fresh folder copy engine
 
 Commit `4d548fb74` adds real, unprivileged copying into an exclusive fresh
