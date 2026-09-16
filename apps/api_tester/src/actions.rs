@@ -1173,6 +1173,28 @@ mod tests {
     }
 
     #[test]
+    fn bounded_directory_resolves_a_canonical_deep_request_address() {
+        let app = crate::app::ApiTesterApp::new_demo();
+        let mut doc = AutoCommit::new();
+        let collections = crate::seed::collections();
+        ApiDoc::set_collections(&mut doc, &ROOT, &collections);
+        let request = ApiDoc::collections(&doc, &ROOT)[0].requests[0].id;
+        let id = format!("api_tester.request:{request}");
+        let root = <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &doc);
+        assert_eq!(root.len(), 1, "directory is bounded to the workspace root");
+        assert!(
+            root[0]
+                .children
+                .iter()
+                .all(|child| child.kind != "api_tester.collection")
+        );
+        let exact = <crate::app::ApiTesterApp as ResourceProvider>::resource(&app, &doc, &id)
+            .expect("stable request id resolves on demand");
+        assert_eq!(exact.id.0, id);
+        assert!(exact.actions.iter().any(|action| action.id == "send"));
+    }
+
+    #[test]
     fn history_records_are_addressable_with_an_honest_view_operation() {
         let root: ObjId = ROOT;
         let mut doc = AutoCommit::new();
