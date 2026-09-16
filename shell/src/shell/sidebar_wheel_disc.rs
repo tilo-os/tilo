@@ -346,7 +346,7 @@ impl SidebarWheelDisc {
     }
 
     /// After a snap commits a new `active_idx`, the disc writes it back
-    /// to `chrome.tree` via `set_active` (mirrors `SidebarWheelChrome`).
+    /// to `chrome.tree` via `set_active`.
     #[must_use]
     pub fn with_chrome(mut self, chrome: Rc<RefCell<ChromeState>>) -> Self {
         self.chrome = Some(chrome);
@@ -2225,8 +2225,8 @@ impl SidebarWheelDisc {
 
     /// If a chrome handle is attached and the active spoke carries a
     /// `workspace_id`, push the new active workspace to `chrome.tree`.
-    /// Matches the `SidebarWheelChrome` write pattern: `tree.set_active`
-    /// + `bump()` so the rest of the shell re-syncs on the next frame.
+    /// Uses `tree.set_active` + `bump()` so the rest of the shell re-syncs on
+    /// the next frame.
     fn publish_active_to_chrome(&self, idx: usize) {
         let Some(chrome) = self.chrome.as_ref() else {
             return;

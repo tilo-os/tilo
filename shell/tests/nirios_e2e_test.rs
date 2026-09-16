@@ -19,7 +19,6 @@
 use shell::shell::chrome_state::{Chrome, ChromeState, QuickSettingsState, SearchScope};
 use shell::shell::notes_app::{BODY_KEY, NotesApp};
 use shell::shell::sidebar_wheel::SidebarWheel;
-use shell::shell::sidebar_wheel_chrome::SidebarWheelChrome;
 use shell::shell::state::{Collaborator, WorkspaceTree};
 use shell::shell::topbar_chrome::{CenterWidget, TopBarChrome};
 use shell::shell::{build_nirios_root, build_nirios_root_with_chrome, state::TileContent};
@@ -219,68 +218,6 @@ fn topbar_does_not_leak_tree_collaborators_into_an_empty_workspace() {
     let top = TopBarChrome::from_tree(&tree);
     assert!(top.collaborator_initials().is_empty());
     assert_eq!(top.collaborator_overflow(), 0);
-}
-
-#[test]
-fn sidebar_active_card_uses_only_its_workspace_roster() {
-    // A global roster must never be copied onto the active room card.
-    let mut tree = WorkspaceTree::bootstrap_default();
-    for ws in &mut tree.workspaces {
-        ws.collaborators.clear();
-    }
-    let wheel = SidebarWheelChrome::from_tree(&tree);
-    assert_eq!(wheel.active_collaborator_count(), 0);
-
-    tree.collaborators = vec![
-        Collaborator::new("a", "Ada"),
-        Collaborator::new("b", "Ben"),
-        Collaborator::new("c", "Cae"),
-        Collaborator::new("d", "Dia"),
-        Collaborator::new("e", "Eli"),
-    ];
-    let wheel = SidebarWheelChrome::from_tree(&tree);
-    assert_eq!(wheel.active_collaborator_count(), 0);
-}
-
-#[test]
-fn sidebar_cards_read_per_workspace_collaborator_rosters() {
-    // Each workspace's own `collaborators` populates its card.
-    let mut tree = WorkspaceTree::bootstrap_default();
-    let w1_id = tree.workspaces[0].id;
-    tree.append_empty_workspace("Second");
-    let w2_id = tree.workspaces[1].id;
-    // Workspace 0: two peers. Workspace 1: one peer. Tree: none.
-    tree.workspaces[0].collaborators =
-        vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
-    tree.workspaces[1].collaborators = vec![Collaborator::new("c", "Cae")];
-    tree.active = w1_id;
-
-    let wheel = SidebarWheelChrome::from_tree(&tree);
-    assert_eq!(wheel.card_collab_count(0), 2, "workspace 0 has 2 peers");
-    assert_eq!(wheel.card_collab_count(1), 1, "workspace 1 has 1 peer");
-    assert_eq!(
-        wheel.active_collaborator_count(),
-        2,
-        "active-count helper still returns the active card's count"
-    );
-    let _ = w2_id;
-}
-
-#[test]
-fn sidebar_cards_without_workspace_rosters_show_zero_dots() {
-    // Neither active nor inactive cards borrow the global roster.
-    let mut tree = WorkspaceTree::bootstrap_default();
-    let w0 = tree.workspaces[0].id;
-    tree.append_empty_workspace("Second");
-    for ws in &mut tree.workspaces {
-        ws.collaborators.clear();
-    }
-    tree.collaborators = vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
-    tree.active = w0;
-
-    let wheel = SidebarWheelChrome::from_tree(&tree);
-    assert_eq!(wheel.card_collab_count(0), 0);
-    assert_eq!(wheel.card_collab_count(1), 0);
 }
 
 #[test]
