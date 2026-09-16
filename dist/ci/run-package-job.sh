@@ -353,7 +353,8 @@ fedora-44)
     stage=lint-rpm
     rpmlint_log=$(mktemp)
     set +e
-    rpmlint dist/rpm/build/RPMS/*/tilo-session-*.rpm 2>&1 | tee "$rpmlint_log"
+    rpmlint -r dist/rpm/tilo-session.rpmlintrc \
+        dist/rpm/build/RPMS/*/tilo-session-*.rpm 2>&1 | tee "$rpmlint_log"
     rpmlint_status=${PIPESTATUS[0]}
     set -e
     # Fedora permits no-signature for local and branch-validation artifacts.

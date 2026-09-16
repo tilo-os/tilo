@@ -69,11 +69,19 @@ mkdir -p "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 # apps in one deployment while user-installed packages retain precedence.
 say "building the default Tilo app collection"
 app_release=$out/app-release
-app_names=$(python3 "$repo_root/tools/app_release.py" --collection desktop \
-    | jq -r '.catalog[].name' | paste -sd' ' -)
-[[ -n $app_names ]] || { echo "desktop app collection is empty" >&2; exit 1; }
-TILO_RELEASE_APPS="$app_names" TILO_APP_RELEASE_OUT="$app_release" \
-    "$repo_root/dist/apps/package-apps.sh"
+if (( run_cargo )); then
+    app_names=$(python3 "$repo_root/tools/app_release.py" --collection desktop \
+        | jq -r '.catalog[].name' | paste -sd' ' -)
+    [[ -n $app_names ]] || { echo "desktop app collection is empty" >&2; exit 1; }
+    TILO_RELEASE_APPS="$app_names" TILO_APP_RELEASE_OUT="$app_release" \
+        "$repo_root/dist/apps/package-apps.sh"
+else
+    collection=$app_release/tilo-apps-$(uname -m).tar.gz
+    [[ -f $collection ]] || {
+        echo "missing $collection — run without --no-cargo" >&2
+        exit 1
+    }
+fi
 
 say "staging immutable Tilo app store"
 app_stage=$stage/apps
@@ -99,6 +107,9 @@ install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-ush.service" \
     "$app_stage/systemd-user/tilo-ush.service"
 install -pm 0644 "$repo_root/os/usr/lib/user-tmpfiles.d/tilo-model-manager.conf" \
     "$app_stage/user-tmpfiles/tilo-model-manager.conf"
+mkdir -p "$app_stage/profile.d"
+install -pm 0644 "$repo_root/os/etc/profile.d/tilo-apps.sh" \
+    "$app_stage/profile.d/tilo-apps.sh"
 install -pm 0644 "$repo_root/LICENSE" "$app_stage/license/LICENSE"
 
 tar -C "$out/stage" -czf "$out/SOURCES/$name-$version.tar.gz" "$name-$version"

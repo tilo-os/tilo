@@ -2,8 +2,9 @@
 # Materialise the immutable Tilo application store for a host-session package.
 #
 # The OS image has always shipped apps through the normal qpkg -> tilo-install
-# path.  Reuse that exact format here: the launcher merges /usr/share/tilo-apps
-# with the user's writable store, where a user package with the same id wins.
+# path. Reuse that format here: registry metadata remains in
+# /usr/share/tilo-apps while architecture-dependent payloads live below
+# /usr/lib/tilo-apps. User packages with the same id still win.
 # That makes an RPM update replace only system-owned payloads; it never
 # rewrites ~/.local/share/tilo-apps, Tilo rooms, Flatpaks, or any host app.
 set -euo pipefail
@@ -60,9 +61,10 @@ PY
 }
 "$bin_dir/tilo-runtime-bundle" verify "$work/tilo-runtime/$runtime_version" >/dev/null
 
-mkdir -p "$stage/usr/share" "$stage/usr/lib" "$stage/etc/tilo"
+mkdir -p "$stage/usr/share/tilo-apps" "$stage/usr/lib" "$stage/etc/tilo"
 cp -a "$work/tilo-runtime" "$stage/usr/lib/tilo-runtime"
-store="$stage/usr/share/tilo-apps"
+store="$stage/usr/lib/tilo-apps"
+registry="$stage/usr/share/tilo-apps/registry.toml"
 mkdir -p "$store"
 
 # Use a staging root for physical writes but the packaged system runtime for
@@ -77,11 +79,11 @@ for package in "$work"/qpkg/*.qpkg; do
     "$bin_dir/tilo-install" install "$package" --allow-self-signed >/dev/null
 done
 
-python3 - "$store/registry.toml" "$store" /usr/share/tilo-apps <<'PY'
+python3 - "$store/registry.toml" "$registry" "$store" /usr/lib/tilo-apps <<'PY'
 import pathlib, sys, tomllib
 
-registry, staged, final = map(pathlib.Path, sys.argv[1:])
-data = tomllib.loads(registry.read_text(encoding="utf-8"))
+source_registry, registry, staged, final = map(pathlib.Path, sys.argv[1:])
+data = tomllib.loads(source_registry.read_text(encoding="utf-8"))
 entries = data.get("entry", [])
 if not entries:
     raise SystemExit("system app registry is empty")
@@ -96,7 +98,7 @@ for entry in entries:
 # tilo-install owns the registry format.  It writes only the two absolute paths
 # above under the staging root, so replace exact quoted prefixes after the
 # structural parse.  A later field must not gain a staging path unnoticed.
-raw = registry.read_text(encoding="utf-8")
+raw = source_registry.read_text(encoding="utf-8")
 old = f'"{staged}'
 new = f'"{final}'
 normalised = raw.replace(old, new)
@@ -113,6 +115,7 @@ for entry in checked.get("entry", []):
         except ValueError as error:
             raise SystemExit(f"normalised {field} is not under {final}: {value}") from error
 PY
+rm -- "$store/registry.toml"
 
 # The launcher refuses unsigned bundles and pins the system bundle to this
 # collection's publisher.  This is package data, not mutable user state: an
@@ -128,7 +131,17 @@ if not isinstance(publisher, str) or len(publisher) != 64:
 pathlib.Path(sys.argv[2]).write_text(publisher.lower() + "\n", encoding="utf-8")
 PY
 
-[[ -s $store/registry.toml ]]
+[[ -s $registry ]]
 find "$stage" -type d -exec chmod 0755 {} +
-find "$stage" -type f -exec chmod 0644 {} +
-find "$stage/usr/share/tilo-apps/payloads" -type f -path '*/bin/*' -exec chmod 0755 {} +
+find "$stage/usr/share/tilo-apps" "$stage/etc/tilo" -type f -exec chmod 0644 {} +
+find "$stage/usr/lib/tilo-apps" -type f -exec chmod 0644 {} +
+find "$stage/usr/lib/tilo-apps/payloads" -type f -path '*/bin/*' -exec chmod 0755 {} +
+find "$stage/usr/lib/tilo-apps/bin" -type f ! -name '*.tilo-shim' -exec chmod 0755 {} + 2>/dev/null || true
+# Signed runtime metadata remains data, while loaders and shared objects need
+# execute permission. Signatures cover bytes, not modes.
+find "$stage/usr/lib/tilo-runtime" -type f -exec chmod 0644 {} +
+find "$stage/usr/lib/tilo-runtime" -type f -exec sh -c '
+    for path do
+        [ "$(dd if="$path" bs=4 count=1 2>/dev/null)" != "$(printf "\177ELF")" ] || chmod 0755 "$path"
+    done
+' sh {} +
