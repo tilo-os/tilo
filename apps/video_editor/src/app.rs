@@ -2070,6 +2070,21 @@ impl VideoEditorApp {
         INSPECTOR_W * self.inspector_ui_scale().min(1.5)
     }
 
+    /// The bin is a compact catalogue at 100%, but its two text lines and
+    /// status chip need real vertical room once the platform doubles text.
+    /// Scale its *geometry* (not just its glyphs) together with the inspector,
+    /// capped where an overlay would otherwise hide the entire small window.
+    fn bin_ui_scale(&self) -> f64 {
+        self.text_scale.clamp(1.0, 1.6)
+    }
+
+    fn bin_width(&self) -> f64 {
+        // An overlay may take the whole narrow window, but never extend past
+        // it: an off-screen sliver is unreachable by pointer, keyboard and
+        // screen reader alike.
+        (BIN_W * self.bin_ui_scale()).min(self.rect.width())
+    }
+
     /// The clip identity and four factual properties are persistent context,
     /// not scroll content.  Keeping them in a fixed header makes it obvious
     /// what a deep control edits and prevents a partially scrolled row from
@@ -2301,8 +2316,9 @@ impl VideoEditorApp {
         // reveal — exactly the flap kernel's overlay geometry.
         let (bin, preview_x0, scrim) = if overlay {
             let slide = self.bin_flap.slide();
-            let bin_x0 = r.x0 - BIN_W * (1.0 - slide);
-            let bin = Rect::new(bin_x0, mid_top, bin_x0 + BIN_W, r.y1);
+            let bin_w = self.bin_width();
+            let bin_x0 = r.x0 - bin_w * (1.0 - slide);
+            let bin = Rect::new(bin_x0, mid_top, bin_x0 + bin_w, r.y1);
             let scrim = if self.bin_flap.reveal() > 0.001 {
                 Rect::new(r.x0, mid_top, r.x1, r.y1)
             } else {
@@ -2310,7 +2326,7 @@ impl VideoEditorApp {
             };
             (bin, r.x0, scrim)
         } else {
-            let bin = Rect::new(r.x0, mid_top, r.x0 + BIN_W, mid_bot);
+            let bin = Rect::new(r.x0, mid_top, r.x0 + self.bin_width(), mid_bot);
             (bin, bin.x1, Rect::ZERO)
         };
         let preview = Rect::new(preview_x0, mid_top, preview_x1, mid_bot);
@@ -2814,20 +2830,36 @@ impl VideoEditorApp {
     const BIN_ROW_H: f64 = 56.0;
     const BIN_LIST_TOP: f64 = 40.0;
 
+    fn bin_row_height(&self) -> f64 {
+        Self::BIN_ROW_H * self.bin_ui_scale()
+    }
+
+    fn bin_list_top(&self) -> f64 {
+        Self::BIN_LIST_TOP * self.bin_ui_scale()
+    }
+
     /// The bin header's "+ Title" button, which makes a title source, places
     /// it at the playhead and opens its words for typing.
     fn add_title_rect(&self, r: &Regions) -> Rect {
-        let x1 = r.bin.x0 + 152.0;
-        Rect::new(x1 - 62.0, r.bin.y0 + 6.0, x1, r.bin.y0 + 26.0)
+        let scale = self.bin_ui_scale();
+        let x1 = r.bin.x0 + 152.0 * scale;
+        Rect::new(
+            x1 - 62.0 * scale,
+            r.bin.y0 + 6.0 * scale,
+            x1,
+            r.bin.y0 + 26.0 * scale,
+        )
     }
 
     fn bin_item_rects(&self, r: &Regions) -> Vec<(MediaId, Rect)> {
         let mut out = Vec::new();
-        let mut y = r.bin.y0 + Self::BIN_LIST_TOP - self.bin_scroll;
+        let row_h = self.bin_row_height();
+        let mut y = r.bin.y0 + self.bin_list_top() - self.bin_scroll;
         for mid in self.bin_order() {
-            let rect = Rect::new(r.bin.x0 + 8.0, y, r.bin.x1 - 8.0, y + Self::BIN_ROW_H - 6.0);
+            let inset = 8.0 * self.bin_ui_scale();
+            let rect = Rect::new(r.bin.x0 + inset, y, r.bin.x1 - inset, y + row_h - 6.0);
             out.push((mid, rect));
-            y += Self::BIN_ROW_H;
+            y += row_h;
         }
         out
     }
@@ -2844,7 +2876,7 @@ impl VideoEditorApp {
 
     /// Total height the bin list wants, in px.
     fn bin_content_height(&self) -> f64 {
-        self.project.media.len() as f64 * Self::BIN_ROW_H + (Self::BIN_LIST_TOP - 30.0) + 8.0
+        self.project.media.len() as f64 * self.bin_row_height() + (self.bin_list_top() - 30.0) + 8.0
     }
 
     fn bin_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
@@ -14947,6 +14979,7 @@ impl VideoEditorApp {
         r: &Regions,
     ) {
         let c = &theme.tokens.colors;
+        let bin_scale = self.bin_ui_scale();
         fill_rect(scene, tf, c.surfaces.raised, r.bin);
         stroke_line(
             scene,
@@ -14970,8 +15003,8 @@ impl VideoEditorApp {
             "MEDIA BIN",
             11.0,
             c.text_dim,
-            r.bin.x0 + 14.0,
-            r.bin.y0 + 14.0,
+            r.bin.x0 + 14.0 * bin_scale,
+            r.bin.y0 + 14.0 * bin_scale,
             TextWeight::Semibold,
         );
         // A title is the one source you make rather than import, so the bin
@@ -15005,8 +15038,8 @@ impl VideoEditorApp {
         );
         let count = format!("{} clips", self.project.media.len());
         let (cw, _) = tr.measure(&count, 11.0, None);
-        let count_x = r.bin.x1 - 14.0 - cw as f64;
-        if count_x > add.x1 + 8.0 {
+        let count_x = r.bin.x1 - 14.0 * bin_scale - cw as f64;
+        if count_x > add.x1 + 8.0 * bin_scale {
             text(
                 scene,
                 tr,
@@ -15070,11 +15103,17 @@ impl VideoEditorApp {
                 fill_rrect(scene, tf, c.lift(0.35), rect, 8.0);
             }
             // Thumbnail swatch.
+            let row_inset = 8.0 * bin_scale;
+            // Keep the thumbnail close to its familiar 64px visual size:
+            // only the text rhythm needs to expand. Letting it grow with the
+            // row would turn a 200% bin into a wall of poster-sized swatches.
+            let thumb_h = (rect.height() - 2.0 * row_inset).max(0.0).min(64.0);
+            let thumb_y0 = rect.center().y - thumb_h / 2.0;
             let thumb = Rect::new(
-                rect.x0 + 8.0,
-                rect.y0 + 8.0,
-                rect.x0 + 8.0 + 64.0,
-                rect.y1 - 8.0,
+                rect.x0 + row_inset,
+                thumb_y0,
+                rect.x0 + row_inset + 64.0,
+                thumb_y0 + thumb_h,
             );
             let base = clip_color(theme, m.palette);
             fill_rrect(scene, tf, darken(base, 0.25), thumb, 5.0);
@@ -15145,7 +15184,7 @@ impl VideoEditorApp {
                 &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0),
             );
             // text (the name is drawn by the inline rename field while editing).
-            let tx = thumb.x1 + 12.0;
+            let tx = thumb.x1 + 12.0 * bin_scale;
             let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(mid);
             if !renaming {
                 // Pixel-accurate elision: a character budget cuts "IMG_0001.MOV"
@@ -15161,7 +15200,7 @@ impl VideoEditorApp {
                     13.0,
                     c.text_primary,
                     tx,
-                    rect.y0 + 10.0,
+                    rect.y0 + 10.0 * bin_scale,
                     TextWeight::Medium,
                 );
             }
@@ -15182,7 +15221,7 @@ impl VideoEditorApp {
                 (None, None)
             };
             let (sw, _) = tr.measure(&sub, 11.0, None);
-            let right = rect.x1 - 8.0;
+            let right = rect.x1 - 8.0 * bin_scale;
             // Longest wording that fits, rather than one that fits nowhere and
             // elides to "Not on this devi…". Beside the metadata when there is
             // room; in its place when there is not.
@@ -15198,11 +15237,21 @@ impl VideoEditorApp {
             });
             // The metadata line survives unless the chip had to take its place.
             if chip.map(|(x0, _)| x0 > tx).unwrap_or(true) {
-                text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
+                text(
+                    scene,
+                    tr,
+                    tf,
+                    &sub,
+                    11.0,
+                    c.text_dim,
+                    tx,
+                    rect.y0 + 34.0 * bin_scale,
+                );
             }
             if let Some((cx0, label)) = chip {
-                let w = tr.measure(label, 10.5, None).0 as f64 + 14.0;
-                let chip = Rect::new(cx0, rect.y0 + 28.0, cx0 + w, rect.y0 + 45.0);
+                let w = tr.measure(label, 10.5, None).0 as f64 + 14.0 * bin_scale;
+                let chip_top = rect.y0 + 31.0 * bin_scale;
+                let chip = Rect::new(cx0, chip_top, cx0 + w, chip_top + 17.0 * bin_scale);
                 fill_rrect(scene, tf, with_alpha(c.semantic.warning, 0.20), chip, 4.0);
                 stroke_rrect(
                     scene,
@@ -15220,7 +15269,7 @@ impl VideoEditorApp {
                     label,
                     10.5,
                     c.semantic.warning,
-                    chip.x0 + 7.0,
+                    chip.x0 + 7.0 * bin_scale,
                     baseline,
                 );
             }
@@ -28718,6 +28767,51 @@ mod tests {
                     "a scaled clip title has a bounded header band: {head:?} in {body:?}"
                 );
             }
+        }
+
+        // The media bin is an overlay at this effective width. Its old fixed
+        // 268×56 geometry let the doubled title and metadata lines occupy the
+        // same pixels, making the otherwise accessible source list unreadable.
+        // Open the real flap and prove both the text column and row rhythm
+        // make room for the actual scaled strings.
+        let (mut narrow, _doc) = app_sized(720.0, 820.0);
+        narrow.text_scale = 2.0;
+        narrow.bin_flap.snap(true);
+        narrow.navigation.flap_settled = true;
+        let bin = narrow.regions();
+        assert!(
+            bin.bin_overlay,
+            "2× text uses the overlay bin on a narrow window"
+        );
+        assert!(
+            bin.bin.width() >= BIN_W * 1.5 - 0.01,
+            "the bin grows with its two scaled text lines: {:?}",
+            bin.bin
+        );
+        let rows = narrow.bin_item_rects(&bin);
+        assert!(
+            rows.windows(2).all(|pair| pair[0].1.y1 < pair[1].1.y0),
+            "scaled bin rows remain distinct: {rows:?}"
+        );
+        let mut bin_text = TextRenderer::new();
+        bin_text.set_text_scale(2.0);
+        for (media, row) in rows {
+            let item = narrow.project.media(media).expect("row media exists");
+            let tx = row.x0 + 8.0 * narrow.bin_ui_scale() + 64.0 + 12.0 * narrow.bin_ui_scale();
+            let available = (row.x1 - 8.0 * narrow.bin_ui_scale() - tx) as f32;
+            let (name_w, name_h) = bin_text.measure(&item.name, 13.0, None);
+            let (_, subtitle_h) = bin_text.measure(&narrow.bin_subtitle(item), 11.0, None);
+            assert!(
+                name_w <= available,
+                "{} has a full readable name column at 2× ({name_w} > {available})",
+                item.name
+            );
+            assert!(
+                row.height() >= f64::from(name_h + subtitle_h) + 12.0,
+                "{} has separate title and metadata lines at 2×: {:?}",
+                item.name,
+                row
+            );
         }
     }
 
