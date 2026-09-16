@@ -135,6 +135,7 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     // dead protocol ids; startup rebinds the replacement surface into the
     // same tab.
     symbolise_foreign_surfaces(&mut durable);
+    clear_transient_launch_notes(&mut durable);
     for ws in &mut durable.workspaces {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
@@ -189,6 +190,14 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // otherwise the dead window is immediately promoted back into the
     // authoritative topology.
     repair_legacy_foreign_surfaces(&mut tree);
+    // `Opening here…` describes work owned by the compositor process that
+    // wrote this file.  After a restart there is no corresponding launcher
+    // worker or pending placement left to complete it, so treating it as an
+    // answered symbolic window makes the card permanent and the application
+    // is never retried.  Older builds did persist this marker; normalise it
+    // before seeding the document so both local restore and peer projection
+    // see the retryable state.
+    clear_transient_launch_notes(&mut tree);
     // `doc` is `#[serde(skip)]`; without re-seeding, peer-sync exports
     // nothing and existing workspaces never propagate after restart.
     tree.seed_doc_from_cache();
@@ -369,6 +378,35 @@ fn symbolise_foreign_surfaces(tree: &mut WorkspaceTree) {
                             label: tab.title.clone(),
                             note: String::new(),
                         };
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Remove process-local launch progress from a durable workspace snapshot.
+///
+/// Refusal notes (not installed, permission denied, and so on) are outcomes
+/// and remain useful after restart.  `OPENING` is different: it is backed by
+/// an in-memory launcher worker and pending-placement entry, neither of which
+/// survives this process.  Persisting it would turn an interrupted launch
+/// into a permanently answered window that [`peer_windows::pending`] skips.
+fn clear_transient_launch_notes(tree: &mut WorkspaceTree) {
+    use crate::shell::state::TileContent;
+
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
+                    match &mut tab.tile {
+                        TileContent::LocalApp { note, .. }
+                        | TileContent::PeerWindow { note, .. }
+                            if note == crate::shell::peer_windows::OPENING =>
+                        {
+                            note.clear();
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -654,6 +692,114 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn symbolic_note(tree: &WorkspaceTree, tab_id: u64) -> Option<&str> {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find_map(|tab| {
+                (tab.id == tab_id).then(|| match &tab.tile {
+                    crate::shell::state::TileContent::LocalApp { note, .. }
+                    | crate::shell::state::TileContent::PeerWindow { note, .. } => note.as_str(),
+                    other => panic!("expected symbolic app, got {other:?}"),
+                })
+            })
+    }
+
+    #[test]
+    fn save_never_durably_records_process_local_opening_progress() {
+        use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.workspaces[0].strips = vec![Strip {
+            id: StripId::from(91_100),
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 91_099,
+                tabs: Vec::new(),
+                active_tab: 0,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }];
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs = vec![
+            Tab {
+                id: 91_101,
+                title: "XTerm".into(),
+                tile: TileContent::LocalApp {
+                    app_id: "XTerm".into(),
+                    label: "XTerm".into(),
+                    note: crate::shell::peer_windows::OPENING.into(),
+                },
+            },
+            Tab {
+                id: 91_102,
+                title: "Missing".into(),
+                tile: TileContent::PeerWindow {
+                    app_id: "org.example.Missing".into(),
+                    label: "Missing".into(),
+                    note: "Not installed on this machine".into(),
+                },
+            },
+        ];
+        group.active_tab = 91_101;
+
+        save_tree_to(&tree, &path).expect("save");
+        let on_disk: WorkspaceTree =
+            serde_json::from_slice(&std::fs::read(&path).expect("read durable state"))
+                .expect("decode durable state");
+        assert_eq!(symbolic_note(&on_disk, 91_101), Some(""));
+        assert_eq!(
+            symbolic_note(&on_disk, 91_102),
+            Some("Not installed on this machine"),
+            "a settled refusal remains an answered window after restart"
+        );
+    }
+
+    #[test]
+    fn load_migrates_stale_opening_progress_back_to_a_retryable_window() {
+        use crate::shell::state::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut legacy = WorkspaceTree::bootstrap_default();
+        legacy.workspaces[0].strips = vec![Strip {
+            id: StripId::from(91_104),
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 91_105,
+                tabs: Vec::new(),
+                active_tab: 0,
+                width: WindowWidth::Normal,
+                maximized: false,
+            }],
+        }];
+        let group = &mut legacy.workspaces[0].strips[0].window_groups[0];
+        group.tabs = vec![Tab {
+            id: 91_103,
+            title: "XTerm".into(),
+            tile: TileContent::LocalApp {
+                app_id: "XTerm".into(),
+                label: "XTerm".into(),
+                note: crate::shell::peer_windows::OPENING.into(),
+            },
+        }];
+        group.active_tab = 91_103;
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).expect("encode"))
+            .expect("write legacy state");
+
+        let loaded = load_tree_from(&path).expect("load old in-flight state");
+        assert_eq!(symbolic_note(&loaded, 91_103), Some(""));
+        assert!(
+            crate::shell::peer_windows::any_pending(&loaded),
+            "an interrupted launch must be attempted by the new session"
+        );
     }
 
     #[test]
