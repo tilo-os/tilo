@@ -58,6 +58,7 @@ use ui::format::bytes as format_bytes;
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::richtext::{RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
@@ -70,8 +71,8 @@ use crate::actions::{self, API_TESTER_ACTION_TYPE, ApiTesterAction};
 use crate::doc::ApiDoc;
 use crate::http::{self, Outgoing};
 use crate::model::{
-    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, KeyValue, Request,
-    RequestTab, ResponseData, ResponseView, human_duration,
+    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, Request, RequestTab,
+    ResponseData, ResponseView, human_duration,
 };
 use crate::navrow::{NavKind, NavRow, ROW_H};
 use crate::palette::{short_path, status_color, token_color};
@@ -264,6 +265,30 @@ struct Layout {
     fold_carets: Vec<(Rect, usize)>,
 }
 
+/// Shaped cells and relative row geometry are retained together: automatic
+/// height and paint consume exactly the same wrapped content and column widths.
+struct KvRowLayout {
+    rect: Rect,
+    key_rect: Rect,
+    value_rect: Rect,
+    key: RichTextLayout,
+    value: RichTextLayout,
+    enabled: bool,
+    placeholder: bool,
+    indicator: bool,
+}
+
+impl KvRowLayout {
+    fn checkbox(&self) -> Rect {
+        Rect::new(
+            PAD,
+            self.rect.center().y - 8.0,
+            PAD + 16.0,
+            self.rect.center().y + 8.0,
+        )
+    }
+}
+
 /// Root widget: the whole API tester.
 #[allow(
     clippy::struct_excessive_bools,
@@ -293,6 +318,9 @@ pub struct ApiTesterApp {
     request_height_override: Option<f64>,
     request_drag: Option<(f64, f64)>,
     row_height: f64,
+    kv_rows: Vec<KvRowLayout>,
+    kv_height: Option<f64>,
+    variable_color: [u8; 3],
     control_height: f64,
     text_sm: f32,
     text_scale: f64,
@@ -320,6 +348,10 @@ pub struct ApiTesterApp {
     form: Option<FormMode>,
     manage_buttons: Vec<Button>,
     nav_rows: Vec<NavRow>,
+    // Host maps may still inspect old focus between an event and build_layout.
+    // Moving a Vec retains its backing allocation until that safe rebuild.
+    retired_nav_rows: Vec<Vec<NavRow>>,
+    nav_rows_replaced: bool,
     /// Parallel to `nav_rows`: what each row draws + does (rebuilt together).
     nav_meta: Vec<NavMeta>,
 
@@ -493,6 +525,9 @@ impl ApiTesterApp {
             request_height_override: None,
             request_drag: None,
             row_height: ROW_H,
+            kv_rows: Vec::new(),
+            kv_height: None,
+            variable_color: [0, 0, 0],
             control_height: 34.0,
             text_sm: 13.0,
             text_scale: 1.0,
@@ -556,6 +591,8 @@ impl ApiTesterApp {
             form: None,
             manage_buttons: widgets.manage_buttons,
             nav_rows: Vec::new(),
+            retired_nav_rows: Vec::new(),
+            nav_rows_replaced: false,
             nav_meta: Vec::new(),
             sink: widgets.sink,
             actions: ui::ActionHost::new(),
@@ -1065,7 +1102,7 @@ impl ApiTesterApp {
             .sidebar_items
             .retain(|(item, _)| !matches!(item, SidebarItem::Nav(_)));
         self.nav_meta = self.compute_nav_meta();
-        self.nav_rows = self
+        let rows = self
             .nav_meta
             .iter()
             .enumerate()
@@ -1081,6 +1118,12 @@ impl ApiTesterApp {
                 .on_activate(move || sink.borrow_mut().push(cmd.clone()))
             })
             .collect();
+        let previous = std::mem::replace(&mut self.nav_rows, rows);
+        if !previous.is_empty() {
+            self.retired_nav_rows.push(previous);
+        }
+        // A same-count replacement still invalidates the host's raw pointers.
+        self.nav_rows_replaced = true;
     }
 
     /// The ordered sidebar rows derived from the model. Kept separate from
@@ -1318,16 +1361,14 @@ impl ApiTesterApp {
     }
 
     fn automatic_request_height(&self) -> f64 {
-        let table = |rows: &[KeyValue]| {
-            let count = rows.iter().filter(|row| !row.is_blank()).count();
-            let visible_rows = if count == 0 { 1 } else { count + 1 };
-            (12.0 + 22.0 * self.text_scale) + visible_rows as f64 * self.row_height + 8.0
-        };
+        // The provisional pre-measure pass only needs a nonzero editor.
+        // Settled layout and paint both consume the retained shaped rows.
+        let table_height = self.kv_height.unwrap_or(self.row_height + 42.0);
         match self.active_tab {
-            RequestTab::Params => table(&self.request.params),
-            RequestTab::Headers => table(&self.request.headers),
+            RequestTab::Params => table_height,
+            RequestTab::Headers => table_height,
             RequestTab::Body => match self.request.body_mode {
-                BodyMode::Form => self.row_height + 10.0 + table(&self.request.form),
+                BodyMode::Form => self.row_height + 16.0 + table_height,
                 BodyMode::None => 24.0 + self.row_height * 2.0,
                 BodyMode::Json | BodyMode::Raw => 36.0 + self.row_height * 6.0,
             },
@@ -1863,12 +1904,10 @@ impl ApiTesterApp {
         );
         match self.active_tab {
             RequestTab::Params => {
-                let rows = self.request.params.clone();
-                Self::draw_kv_table(scene, t, tr, theme, area, &rows, "No query parameters");
+                self.draw_kv_table(scene, t, tr, theme, area);
             }
             RequestTab::Headers => {
-                let rows = self.request.headers.clone();
-                Self::draw_kv_table(scene, t, tr, theme, area, &rows, "No headers");
+                self.draw_kv_table(scene, t, tr, theme, area);
             }
             RequestTab::Auth => self.draw_auth(scene, t, tr, theme, area),
             RequestTab::Body => self.draw_body(scene, t, tr, theme, presence, l),
@@ -1876,256 +1915,223 @@ impl ApiTesterApp {
         scene.pop_layer();
     }
 
-    #[allow(clippy::too_many_arguments)]
+    fn measure_kv_table(&mut self, tr: &mut TextRenderer, width: f64) {
+        let (rows, empty_msg) = match self.active_tab {
+            RequestTab::Params => (&self.request.params, "No query parameters"),
+            RequestTab::Headers => (&self.request.headers, "No headers"),
+            RequestTab::Body if self.request.body_mode == BodyMode::Form => {
+                (&self.request.form, "No form fields")
+            }
+            _ => {
+                self.kv_rows.clear();
+                self.kv_height = None;
+                return;
+            }
+        };
+        let mut cells: Vec<_> = rows
+            .iter()
+            .filter(|row| !row.is_blank())
+            .map(|row| {
+                (
+                    row.key.as_str(),
+                    row.value.as_str(),
+                    row.enabled,
+                    false,
+                    true,
+                )
+            })
+            .collect();
+        if cells.is_empty() {
+            cells.push((empty_msg, "", true, false, false));
+        } else {
+            cells.push(("New key", "New value", false, true, true));
+        }
+        // RichTextLayout accepts resolved metrics directly; draw_rich paints
+        // the same shaped glyphs without another scale or wrapping pass.
+        let style = TextStyle::new(self.text_sm);
+        let key_x = PAD + 30.0;
+        let value_x = width * 0.5;
+        let key_width = (value_x - key_x - 12.0).max(1.0) as f32;
+        let value_width = (width - PAD - value_x).max(1.0) as f32;
+        let header_height =
+            f64::from(tr.measure_weighted("KEY", 10.0, None, TextWeight::Bold).1).ceil();
+        let mut y = 12.0 + header_height + 9.0;
+        self.kv_rows.clear();
+        for (key, value, enabled, placeholder, indicator) in cells {
+            let key = RichTextLayout::shape_styled(
+                &mut tr.font_system,
+                &[RichSpan::new(key)],
+                &style,
+                Some(if indicator {
+                    key_width
+                } else {
+                    (width - PAD * 2.0).max(1.0) as f32
+                }),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let spans = Self::value_spans(value, self.variable_color);
+            let value = RichTextLayout::shape_styled(
+                &mut tr.font_system,
+                &spans,
+                &style,
+                Some(value_width),
+                TextAlign::Left,
+                vec![],
+                vec![],
+            );
+            let key_h = f64::from(key.height());
+            let value_h = f64::from(value.height());
+            let height = (key_h.max(value_h).ceil() + 12.0).max(ROW_H);
+            let rect = Rect::new(PAD, y, width - PAD, y + height);
+            let kx = if indicator { key_x } else { PAD };
+            self.kv_rows.push(KvRowLayout {
+                rect,
+                key_rect: Rect::new(
+                    kx,
+                    rect.center().y - key_h / 2.0,
+                    if indicator {
+                        key_x + f64::from(key_width)
+                    } else {
+                        width - PAD
+                    },
+                    rect.center().y + key_h / 2.0,
+                ),
+                value_rect: Rect::new(
+                    value_x,
+                    rect.center().y - value_h / 2.0,
+                    value_x + f64::from(value_width),
+                    rect.center().y + value_h / 2.0,
+                ),
+                key,
+                value,
+                enabled,
+                placeholder,
+                indicator,
+            });
+            y += height;
+        }
+        self.kv_height = Some(y + 8.0);
+    }
+
+    fn value_spans(value: &str, accent: [u8; 3]) -> Vec<RichSpan> {
+        let mut spans = Vec::new();
+        let mut rest = value;
+        while let Some(open) = rest.find("{{") {
+            let Some(close) = rest[open + 2..].find("}}") else {
+                break;
+            };
+            spans.push(RichSpan::new(&rest[..open]));
+            let end = open + 2 + close + 2;
+            spans.push(
+                RichSpan::new(&rest[open..end])
+                    .bold(true)
+                    .color(Some(accent)),
+            );
+            rest = &rest[end..];
+        }
+        spans.push(RichSpan::new(rest));
+        spans
+    }
+
     fn draw_kv_table(
+        &self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         area: Rect,
-        rows: &[KeyValue],
-        empty_msg: &str,
     ) {
         let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let y = Self::draw_kv_table_header(scene, t, tr, theme, area);
-
-        if rows.iter().all(super::model::KeyValue::is_blank) {
-            tr.draw_text(
+        let t = t * Affine::translate((area.x0, area.y0));
+        for (label, x) in [("KEY", PAD + 30.0), ("VALUE", area.width() * 0.5)] {
+            tr.draw_text_weighted(
                 scene,
-                empty_msg,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
+                label,
+                10.0,
                 c.text_dim,
-                t * Affine::translate((x0, y + 8.0)),
+                t * Affine::translate((x, 12.0)),
                 None,
+                TextWeight::Bold,
             );
-            return;
         }
-
-        let y = Self::draw_kv_rows(scene, t, tr, theme, area, rows, y);
-        Self::draw_kv_new_row_placeholder(scene, t, tr, theme, area, y);
-    }
-
-    /// The KEY / VALUE column headers. Returns the y of the first data row.
-    fn draw_kv_table_header(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) -> f64 {
-        let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let y = area.y0 + 12.0;
-        let key_x = x0 + 30.0;
-        let val_x = area.x0 + area.width() * 0.5;
-        tr.draw_text_weighted(
-            scene,
-            "KEY",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((key_x, y)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            "VALUE",
-            10.0,
-            c.text_dim,
-            t * Affine::translate((val_x, y)),
-            None,
-            TextWeight::Bold,
-        );
-        y + (22.0 * f64::from(tr.text_scale())).max(22.0)
-    }
-
-    /// One row per key/value pair, stopping once `area` runs out of room.
-    /// Returns the y below the last drawn row.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_kv_rows(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        rows: &[KeyValue],
-        mut y: f64,
-    ) -> f64 {
-        let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
-        let row_h = (f64::from(tr.measure_style("Ag", None, &style).1).ceil() + 12.0).max(ROW_H);
-        let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let key_x = x0 + 30.0;
-        let val_x = area.x0 + area.width() * 0.5;
-        for row in rows.iter().filter(|row| !row.is_blank()) {
-            if y + row_h > area.y1 {
+        for row in &self.kv_rows {
+            if row.rect.y1 > area.height() {
                 break;
             }
-            let cb = Rect::new(x0, y + 4.0, x0 + 16.0, y + 20.0);
-            Checkbox::paint(
-                scene,
-                t,
-                theme,
-                &CheckboxFace::new(cb, row.enabled).transparent_unchecked(),
-            );
-            let row_col = if row.enabled {
-                c.text_primary
+            self.draw_kv_row(scene, t, tr, theme, row);
+        }
+    }
+
+    fn draw_kv_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        row: &KvRowLayout,
+    ) {
+        let c = &theme.tokens.colors;
+        // Clip ink overhang too; text geometry already fits these bounds.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            t,
+            &row.rect,
+        );
+        if row.indicator {
+            if row.placeholder {
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    t,
+                    c.border_standard.with_alpha_factor(0.5),
+                    None,
+                    &RoundedRect::from_rect(row.checkbox(), 4.0),
+                );
             } else {
-                c.text_dim
-            };
-            tr.draw_text(
-                scene,
-                &row.key,
-                tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                    .size,
-                row_col,
-                t * Affine::translate((key_x, y + 7.0)),
-                Some((val_x - key_x - 12.0) as f32),
-            );
-            Self::draw_value_with_vars(
-                scene,
+                Checkbox::paint(
+                    scene,
+                    t,
+                    theme,
+                    &CheckboxFace::new(row.checkbox(), row.enabled).transparent_unchecked(),
+                );
+            }
+        }
+        let color = if row.placeholder {
+            c.text_dim.with_alpha_factor(0.6)
+        } else if row.enabled {
+            c.text_primary
+        } else {
+            c.text_dim
+        };
+        for (layout, rect) in [(&row.key, row.key_rect), (&row.value, row.value_rect)] {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
                 t,
-                tr,
-                theme,
-                &row.value,
-                val_x,
-                y + 7.0,
-                area.x1 - PAD - val_x,
-                row.enabled,
+                &rect,
             );
-            let sep = Rect::new(x0, y + row_h - 1.0, area.x1 - PAD, y + row_h);
+            tr.draw_rich(
+                scene,
+                layout,
+                t * Affine::translate((rect.x0, rect.y0)),
+                color,
+            );
+            scene.pop_layer();
+        }
+        if !row.placeholder && row.indicator {
             scene.fill(
                 Fill::NonZero,
                 t,
                 c.border_standard.with_alpha_factor(0.4),
                 None,
-                &sep,
+                &Rect::new(row.rect.x0, row.rect.y1 - 1.0, row.rect.x1, row.rect.y1),
             );
-            y += row_h;
         }
-        y
-    }
-
-    /// The trailing "New key" / "New value" placeholder row, when there is
-    /// still room for one below `y`.
-    fn draw_kv_new_row_placeholder(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        y: f64,
-    ) {
-        let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
-        let row_h = (f64::from(tr.measure_style("Ag", None, &style).1).ceil() + 12.0).max(ROW_H);
-        let c = &theme.tokens.colors;
-        let x0 = area.x0 + PAD;
-        let key_x = x0 + 30.0;
-        let val_x = area.x0 + area.width() * 0.5;
-        if y + row_h > area.y1 {
-            return;
-        }
-        let cb = Rect::new(x0, y + 4.0, x0 + 16.0, y + 20.0);
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            c.border_standard.with_alpha_factor(0.5),
-            None,
-            &RoundedRect::from_rect(cb, 4.0),
-        );
-        tr.draw_text(
-            scene,
-            "New key",
-            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                .size,
-            c.text_dim.with_alpha_factor(0.6),
-            t * Affine::translate((key_x, y + 7.0)),
-            None,
-        );
-        tr.draw_text(
-            scene,
-            "New value",
-            tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-                .size,
-            c.text_dim.with_alpha_factor(0.6),
-            t * Affine::translate((val_x, y + 7.0)),
-            None,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_value_with_vars(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        value: &str,
-        start_x: f64,
-        y: f64,
-        max_w: f64,
-        enabled: bool,
-    ) {
-        let c = &theme.tokens.colors;
-        let base_col = if enabled { c.text_primary } else { c.text_dim };
-        let size = tr
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
-        let mut cx = start_x;
-        let mut rest = value;
-        let limit = start_x + max_w;
-        while !rest.is_empty() && cx < limit {
-            if let Some(open) = rest.find("{{") {
-                // `open` and `close` are byte offsets of an ASCII pattern
-                // match, always on a UTF-8 boundary — `.get()` still avoids
-                // asserting that rather than indexing blindly.
-                if open > 0 {
-                    let Some(plain) = rest.get(..open) else {
-                        break;
-                    };
-                    tr.draw_text(
-                        scene,
-                        plain,
-                        size,
-                        base_col,
-                        t * Affine::translate((cx, y)),
-                        None,
-                    );
-                    let (w, _) = tr.measure(plain, size, None);
-                    cx += f64::from(w);
-                }
-                if let Some(after_open) = rest.get(open..)
-                    && let Some(close) = after_open.find("}}")
-                {
-                    let Some(var) = rest.get(open..open + close + 2) else {
-                        break;
-                    };
-                    tr.draw_text_weighted(
-                        scene,
-                        var,
-                        size,
-                        theme.accent_primary,
-                        t * Affine::translate((cx, y)),
-                        None,
-                        TextWeight::Semibold,
-                    );
-                    let (w, _) = tr.measure(var, size, None);
-                    cx += f64::from(w);
-                    rest = rest.get(open + close + 2..).unwrap_or_default();
-                    continue;
-                }
-            }
-            tr.draw_text(
-                scene,
-                rest,
-                size,
-                base_col,
-                t * Affine::translate((cx, y)),
-                Some((limit - cx) as f32),
-            );
-            break;
-        }
+        scene.pop_layer();
     }
 
     fn draw_auth(
@@ -2331,9 +2337,8 @@ impl ApiTesterApp {
                 );
             }
             BodyMode::Form => {
-                let rows = self.request.form.clone();
                 let sub = Rect::new(area.x0, y - 8.0, area.x1, area.y1);
-                Self::draw_kv_table(scene, t, tr, theme, sub, &rows, "No form fields");
+                self.draw_kv_table(scene, t, tr, theme, sub);
             }
             BodyMode::Json | BodyMode::Raw => {
                 let field = l.body;
@@ -3111,6 +3116,12 @@ impl Widget for ApiTesterApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Both App::rebuild_structure/init_layout and FrameHarness::try_relayout
+        // clear bindings and node_map before calling root.build_layout. Only
+        // here can replaced rows be dropped: focus capture and event undo
+        // inspection have finished reading the preceding admitted tree.
+        self.retired_nav_rows.clear();
+        self.nav_rows_replaced = false;
         // Build a child taffy node per live control, in the SAME order
         // `children`/`children_mut`/`position_children` use, so the host's
         // focus walk (which zips `children()` against `taffy.children()`)
@@ -3118,6 +3129,8 @@ impl Widget for ApiTesterApp {
         // their taffy geometry is unused — the nodes exist only so each
         // control is registered in `node_map` (a11y + focus + hit-testing).
         self.text_sm = theme.tokens.typography.scale.sm;
+        let accent = theme.accent_primary.to_rgba8();
+        self.variable_color = [accent.r, accent.g, accent.b];
         let mut child_nodes: Vec<NodeId> = Vec::new();
         {
             let mut kids = self.children_mut_ref();
@@ -3150,8 +3163,8 @@ impl Widget for ApiTesterApp {
 
     fn adjust_layout_with_measure(
         &mut self,
-        _taffy: &mut TaffyTree<()>,
-        _node: NodeId,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
         tr: &mut TextRenderer,
     ) -> bool {
         let style = tr.renderer_input_style(&TextStyle::new(self.text_sm));
@@ -3169,7 +3182,18 @@ impl Widget for ApiTesterApp {
         self.rail.set_overlay_width(rail_width);
         self.rail
             .set_breakpoint(RAIL_BREAKPOINT.max(rail_width + 520.0));
-        changed
+        let before = self.kv_height;
+        let rect = taffy.layout(node).map_or(self.rect, |layout| {
+            Rect::new(
+                0.0,
+                0.0,
+                f64::from(layout.size.width),
+                f64::from(layout.size.height),
+            )
+        });
+        let width = self.rail.resolve(rect).width();
+        self.measure_kv_table(tr, width);
+        changed || before != self.kv_height
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3643,7 +3667,8 @@ impl Widget for ApiTesterApp {
         let sig = self.child_sig();
         let self_changed = sig != self.last_sig;
         self.last_sig = sig;
-        child_changed || self_changed
+        let rows_replaced = std::mem::take(&mut self.nav_rows_replaced);
+        child_changed || self_changed || rows_replaced
     }
 
     fn needs_redraw(&self) -> bool {
@@ -3700,6 +3725,7 @@ impl ApiTesterApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::KeyValue;
 
     fn app() -> ApiTesterApp {
         ApiTesterApp::new_demo()
@@ -3972,13 +3998,17 @@ mod tests {
     fn composition_auto_height_tracks_rows_and_auth_fields_without_changing_manual_preference() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+        let mut tr = TextRenderer::new();
+        a.measure_kv_table(&mut tr, 936.0);
         let params = a.compute_layout();
         a.request.params.push(KeyValue::new("extra", "value"));
+        a.measure_kv_table(&mut tr, 936.0);
         assert_eq!(
             a.compute_layout().editor.height(),
             params.editor.height() + a.row_height
         );
         a.request.params.push(KeyValue::new("", ""));
+        a.measure_kv_table(&mut tr, 936.0);
         assert_eq!(
             a.compute_layout().editor.height(),
             params.editor.height() + a.row_height
@@ -4033,6 +4063,295 @@ mod tests {
         );
         assert_eq!(doc.get_heads(), heads);
     }
+    #[test]
+    fn composition_long_kv_glyphs_fit_allocated_rows() {
+        for (width, scale) in [(480.0, 1.0), (800.0, 2.0)] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let rows = vec![KeyValue::new(
+                "a long query header or form field key that must wrap inside its own column",
+                "a long value with {{environment_variable}} and more text after the variable",
+            )];
+            let mut app = app();
+            app.text_sm = theme.tokens.typography.scale.sm;
+            app.request.params = rows;
+            app.measure_kv_table(&mut tr, width);
+            let row = &app.kv_rows[0];
+            let mut scene = Scene::new();
+            app.draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
+            let end = row.rect.y1;
+            assert_eq!(row.checkbox().center().y, row.rect.center().y);
+            assert_eq!(row.key_rect.center().y, row.rect.center().y);
+            assert_eq!(row.value_rect.center().y, row.rect.center().y);
+            assert!(row.rect.height() > ROW_H);
+            assert_eq!(app.automatic_request_height(), app.kv_height.unwrap());
+            for run in &scene.encoding().resources.glyph_runs {
+                for glyph in &scene.encoding().resources.glyphs[run.glyphs.clone()] {
+                    let baseline = f64::from(run.transform.translation[1] + glyph.y);
+                    assert!(
+                        baseline < end,
+                        "{scale}x row ends at {end}, glyph baseline {baseline} escapes"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn composition_same_count_nav_replacement_keeps_old_focus_alive_until_rebuild() {
+        let mut app = app();
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        app.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        assert!(app.retired_nav_rows.is_empty());
+        app.nav_rows[1].set_focus(true);
+        let original = std::ptr::from_ref(&app.nav_rows[1]);
+        let original_name = app.nav_rows[1].accessibility().unwrap().name;
+        let count = app.nav_rows.len();
+        app.load_request(0, 1);
+        assert_eq!(app.nav_rows.len(), count);
+        assert!(
+            app.take_structure_dirty(),
+            "same-count replacement invalidates topology"
+        );
+        assert_eq!(std::ptr::from_ref(&app.retired_nav_rows[0][1]), original);
+        assert_eq!(
+            app.retired_nav_rows[0][1].accessibility().unwrap().name,
+            original_name
+        );
+        assert!(app.retired_nav_rows[0][1].is_focused());
+        app.collections[0].requests[0].name = "renamed without changing row count".into();
+        app.rebuild_nav();
+        assert!(app.take_structure_dirty());
+        assert_eq!(app.retired_nav_rows.len(), 2);
+        // Match both real hosts: discard old maps before admitting a new tree.
+        nodes.clear();
+        tree = TaffyTree::new();
+        app.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        assert!(app.retired_nav_rows.is_empty());
+        assert!(!app.nav_rows_replaced);
+        assert!(
+            app.nav_rows[1]
+                .accessibility()
+                .unwrap()
+                .name
+                .unwrap()
+                .contains("renamed")
+        );
+    }
+
+    fn long_content_app(tab: RequestTab) -> ApiTesterApp {
+        let mut app = ApiTesterApp::new_demo();
+        let rows = vec![
+            KeyValue::new(
+                "X-Client-Requested-Response-Format-For-International-Customer-Service",
+                "prefix {{environment_variable}} with a longer suffix",
+            ),
+            KeyValue {
+                key: "disabled optional request metadata field".into(),
+                value: "more descriptive content".into(),
+                enabled: false,
+                ..KeyValue::new("", "")
+            },
+        ];
+        app.request.params = rows.clone();
+        app.request.headers = rows.clone();
+        app.request.form = rows;
+        app.request.body_mode = BodyMode::Form;
+        app.active_tab = tab;
+        app.collections.truncate(1);
+        app.collections[0].name =
+            "Long named collection for the international customer service".into();
+        app.collections[0].requests.truncate(2);
+        app.collections[0].requests[0].name =
+            "List international customers with Unicode café and detailed response metadata".into();
+        app.collections[0].requests[1].name =
+            "Create international customer record with a long descriptive request name".into();
+        app.history.truncate(1);
+        app.history[0].url =
+            "https://example.com/very/long/customer/history/path/with/many/segments/and/details"
+                .into();
+        app.rebuild_nav();
+        app
+    }
+
+    #[test]
+    fn composition_long_tables_share_wrapped_height_and_centered_indicators() {
+        for (width, scale) in [(480.0, 1.0), (800.0, 2.0)] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            for tab in [RequestTab::Params, RequestTab::Headers, RequestTab::Body] {
+                let mut app = long_content_app(tab);
+                app.text_sm = theme.tokens.typography.scale.sm;
+                app.text_scale = f64::from(scale);
+                app.row_height = (f64::from(
+                    tr.measure_style(
+                        "Ag",
+                        None,
+                        &tr.renderer_input_style(&TextStyle::new(app.text_sm)),
+                    )
+                    .1,
+                )
+                .ceil()
+                    + 12.0)
+                    .max(ROW_H);
+                app.rect = Rect::new(0.0, 0.0, width, 1200.0);
+                app.measure_kv_table(&mut tr, width);
+                assert_eq!(app.kv_rows.len(), 3);
+                for row in &app.kv_rows {
+                    assert_eq!(row.checkbox().center().y, row.key_rect.center().y);
+                    assert_eq!(row.checkbox().center().y, row.value_rect.center().y);
+                    assert!(row.rect.contains_rect(row.key_rect));
+                    assert!(row.rect.contains_rect(row.value_rect));
+                    assert!(row.key_rect.x1 < row.value_rect.x0);
+                    assert!((row.key_rect.height() - f64::from(row.key.height())).abs() < 0.01);
+                    let mut scene = Scene::new();
+                    app.draw_kv_row(&mut scene, Affine::IDENTITY, &mut tr, &theme, row);
+                    for run in &scene.encoding().resources.glyph_runs {
+                        for glyph in &scene.encoding().resources.glyphs[run.glyphs.clone()] {
+                            let x = f64::from(run.transform.translation[0] + glyph.x);
+                            let y = f64::from(run.transform.translation[1] + glyph.y);
+                            assert!(
+                                x >= row.rect.x0
+                                    && x < row.rect.x1
+                                    && y >= row.rect.y0
+                                    && y < row.rect.y1
+                            );
+                        }
+                    }
+                }
+                for pair in app.kv_rows.windows(2) {
+                    assert!(pair[0].rect.y1 <= pair[1].rect.y0);
+                }
+                let offset = if tab == RequestTab::Body {
+                    app.row_height + 16.0
+                } else {
+                    0.0
+                };
+                assert_eq!(
+                    app.automatic_request_height(),
+                    app.kv_height.unwrap() + offset
+                );
+                assert_eq!(
+                    app.compute_layout().editor.height(),
+                    app.automatic_request_height()
+                );
+                let narrow = app.kv_height.unwrap();
+                app.measure_kv_table(&mut tr, width * 2.0);
+                assert!(narrow > app.kv_height.unwrap());
+                app.request_height_override = Some(140.0);
+                app.measure_kv_table(&mut tr, width);
+                assert_eq!(app.compute_layout().editor.height(), 140.0);
+                assert_eq!(app.request_height_override, Some(140.0));
+            }
+        }
+    }
+
+    #[test]
+    fn composition_long_displayed_navigation_activates_the_named_item() {
+        use ui::headless::Driver;
+        for (width, height, scale) in [(480, 900, 1.0), (800, 900, 2.0)] {
+            let mut app = long_content_app(RequestTab::Params);
+            app.snap_rail(true);
+            let selected_name = format!(
+                "{} {}",
+                app.collections[0].requests[1].method.as_str(),
+                app.collections[0].requests[1].name
+            );
+            let history_name = app.nav_meta.last().unwrap().a11y_name.clone();
+            let mut d = Driver::new_with_theme(
+                ui::State::new(),
+                Box::new(app),
+                (width, height),
+                Theme::dark().with_text_scale(scale),
+            );
+            d.click_named("api.nav.2").unwrap();
+            assert!(d.focus_access_nodes().iter().any(|node| node.name.as_deref() == Some(&selected_name) && node.state.selected));
+            let targets = d.targets();
+            assert!(targets["api.nav.2"].y1 <= targets["api.nav.3"].y0);
+            assert!(
+                d.focus_access_nodes()
+                    .iter()
+                    .any(|node| node.name.as_deref() == Some(&history_name))
+            );
+            // Mount the actual generated history row on its own so its
+            // callback can be observed without the unrelated draft-sync gap.
+            let mut history_app = long_content_app(RequestTab::Params);
+            let sink = history_app.sink.clone();
+            let row = history_app.nav_rows.pop().unwrap();
+            let mut history_driver = Driver::new_with_theme(
+                ui::State::new(),
+                Box::new(row),
+                (width, height),
+                Theme::dark().with_text_scale(scale),
+            );
+            history_driver.click_named("api.nav.3").unwrap();
+            assert!(matches!(
+                sink.borrow_mut().pop(),
+                Some(Cmd::ReplayHistory(0))
+            ));
+            history_driver.key("Enter");
+            assert!(matches!(
+                sink.borrow_mut().pop(),
+                Some(Cmd::ReplayHistory(0))
+            ));
+        }
+    }
+
+    #[test]
+    #[ignore = "task 11 fix 1 long-content captures; set API_TESTER_CAPTURE_DIR"]
+    fn composition_fix1_capture_routes() {
+        use ui::headless::Driver;
+        let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
+        std::fs::create_dir_all(&directory).unwrap();
+        for (width, height, scale) in [(480, 900, 1.0), (800, 900, 2.0)] {
+            for (route, tab, long, rail) in [
+                ("params-response", RequestTab::Params, false, false),
+                ("headers", RequestTab::Headers, false, false),
+                ("long-params", RequestTab::Params, true, false),
+                ("long-headers", RequestTab::Headers, true, false),
+                ("long-form", RequestTab::Body, true, false),
+                ("long-navigation", RequestTab::Params, true, true),
+            ] {
+                let mut app = if long {
+                    long_content_app(tab)
+                } else {
+                    ApiTesterApp::new_demo()
+                };
+                app.active_tab = tab;
+                app.request_tabs.set_selected(
+                    RequestTab::ALL
+                        .iter()
+                        .position(|value| *value == tab)
+                        .unwrap(),
+                );
+                if rail {
+                    app.snap_rail(true);
+                }
+                let d = Driver::new_with_theme(
+                    ui::State::new(),
+                    Box::new(app),
+                    (width, height),
+                    Theme::dark().with_text_scale(scale),
+                );
+                let stem = format!("{route}-{width}x{height}-{scale}x");
+                d.render_window_png(&directory.join(format!("{stem}.png")));
+                let targets: std::collections::BTreeMap<_, _> = d
+                    .targets()
+                    .into_iter()
+                    .map(|(id, r)| (id, vec![r.x0, r.y0, r.x1, r.y1]))
+                    .collect();
+                std::fs::write(
+                    directory.join(format!("{stem}.json")),
+                    serde_json::to_string_pretty(&targets).unwrap(),
+                )
+                .unwrap();
+            }
+        }
+    }
+
     #[test]
     #[ignore = "task 11 named route captures; set API_TESTER_CAPTURE_DIR"]
     fn composition_capture_routes() {
