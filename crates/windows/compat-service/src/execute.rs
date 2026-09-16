@@ -12,6 +12,7 @@ use crate::CapsuleCommandPlan;
 pub const SECCOMP_CHILD_FD: i32 = 32;
 pub(crate) const PREFIX_CHILD_FD: i32 = 33;
 pub(crate) const HOME_CHILD_FD: i32 = 34;
+pub(crate) const RUNTIME_LOCK_CHILD_FD: i32 = 35;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionOutcome {
@@ -32,7 +33,7 @@ impl SandboxExecutor for BwrapExecutor {
         let mut filter_file = if let Some(profile) = plan.seccomp_profile {
             let filter = launcher::seccomp::compile_baseline(profile)
                 .map_err(|error| ExecutionError::Seccomp(error.to_string()))?;
-            let mut file = create_memfd()?;
+            let mut file = create_memfd("qos-compat-seccomp")?;
             file.write_all(&filter)?;
             file.sync_all()?;
             // Bubblewrap reads from the inherited descriptor's current offset.
@@ -54,6 +55,13 @@ impl SandboxExecutor for BwrapExecutor {
             inherited.push((
                 duplicate_above_child_slots(filter.as_raw_fd())?,
                 SECCOMP_CHILD_FD,
+            ));
+        }
+        if plan.runtime_lock_required {
+            let lock = create_memfd("qos-runtime-lock")?;
+            inherited.push((
+                duplicate_above_child_slots(lock.as_raw_fd())?,
+                RUNTIME_LOCK_CHILD_FD,
             ));
         }
         let mappings: Vec<_> = inherited
@@ -95,7 +103,7 @@ impl SandboxExecutor for BwrapExecutor {
 fn duplicate_above_child_slots(fd: std::os::fd::RawFd) -> Result<File, std::io::Error> {
     // SAFETY: fcntl duplicates the borrowed live descriptor without changing
     // it. The result is newly owned and kept close-on-exec in the parent.
-    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, HOME_CHILD_FD + 1) };
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, RUNTIME_LOCK_CHILD_FD + 1) };
     if duplicate < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -103,9 +111,9 @@ fn duplicate_above_child_slots(fd: std::os::fd::RawFd) -> Result<File, std::io::
     Ok(unsafe { File::from_raw_fd(duplicate) })
 }
 
-fn create_memfd() -> Result<File, ExecutionError> {
-    let name = CString::new("qos-compat-seccomp")
-        .map_err(|_| ExecutionError::Seccomp("invalid memfd name".to_string()))?;
+fn create_memfd(name: &str) -> Result<File, ExecutionError> {
+    let name = CString::new(name)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid memfd name"))?;
     // SAFETY: `name` is a valid NUL-terminated C string. On success this call
     // returns a new owned file descriptor, transferred immediately to `File`.
     let raw = unsafe {
@@ -128,7 +136,7 @@ fn create_memfd() -> Result<File, ExecutionError> {
 pub enum ExecutionError {
     #[error("could not compile the qOS seccomp profile: {0}")]
     Seccomp(String),
-    #[error("could not create the private seccomp memfd: {0}")]
+    #[error("could not create a private sandbox memfd: {0}")]
     Memfd(std::io::Error),
     #[error("could not spawn Bubblewrap: {0}")]
     Spawn(std::io::Error),
