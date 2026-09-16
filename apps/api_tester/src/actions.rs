@@ -169,6 +169,12 @@ pub enum ApiTesterAction {
         collection_id: String,
         request: Request,
     },
+    /// Save the live shared request into a collection without copying its
+    /// URL, body, auth, or headers into a resource directory entry.
+    SaveCurrentRequest {
+        collection_id: String,
+        request_id: String,
+    },
     /// Rename a saved request by id within its collection.
     RenameRequest {
         collection_id: String,
@@ -394,6 +400,20 @@ impl Action for ApiTesterAction {
                 ApiDoc::save_request(doc, &root, collection_id, before.as_ref(), request);
                 Ok(())
             }
+            ApiTesterAction::SaveCurrentRequest {
+                collection_id,
+                request_id,
+            } => {
+                let Ok(request_id) = request_id.parse::<Uuid>() else {
+                    return Ok(());
+                };
+                let Some(mut request) = ApiDoc::request(doc, &root) else {
+                    return Ok(());
+                };
+                request.id = request_id;
+                ApiDoc::save_request(doc, &root, collection_id, None, &request);
+                Ok(())
+            }
             ApiTesterAction::RenameRequest {
                 collection_id,
                 request_id,
@@ -513,6 +533,13 @@ pub fn save_request_action(collection_id: Uuid, request: Request) -> ApiTesterAc
     ApiTesterAction::SaveRequest {
         collection_id: collection_id.to_string(),
         request,
+    }
+}
+
+pub fn save_current_request_action(collection_id: Uuid, request_id: Uuid) -> ApiTesterAction {
+    ApiTesterAction::SaveCurrentRequest {
+        collection_id: collection_id.to_string(),
+        request_id: request_id.to_string(),
     }
 }
 
@@ -651,7 +678,15 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
 /// exact stable-id resolver, preventing palette opens from allocating every
 /// request and variable action closure.
 pub fn provide_root_resources(_doc: &AutoCommit) -> Vec<Resource> {
-    vec![workspace_root()]
+    vec![workspace_root().with_child(history_root())]
+}
+
+fn history_root() -> Resource {
+    Resource::new(
+        "api_tester.history",
+        "api_tester.history",
+        "Request history",
+    )
 }
 
 fn workspace_root() -> Resource {
@@ -692,11 +727,7 @@ fn add_history_children(mut root: Resource, history: &[crate::model::HistoryEntr
     if history.is_empty() {
         return root;
     }
-    let mut history_root = Resource::new(
-        "api_tester.history",
-        "api_tester.history",
-        "Request history",
-    );
+    let mut history_root = history_root();
     for entry in history {
         let label = format!("{} {} · {}", entry.method.as_str(), entry.url, entry.status);
         let mut node = Resource::new(
@@ -917,7 +948,17 @@ pub(crate) fn variable_resource(eid: Uuid, variable_id: &str, key: &str) -> Reso
 
 impl ResourceProvider for crate::app::ApiTesterApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_root_resources(doc)
+        let mut roots = provide_root_resources(doc);
+        if let Some(error) = self.search_error_message()
+            && let Some(root) = roots.first_mut()
+        {
+            root.children.push(Resource::new(
+                "api_tester.search_status",
+                "api_tester.search_status",
+                format!("Search index unavailable: {error}"),
+            ));
+        }
+        roots
     }
 
     fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
@@ -1150,20 +1191,54 @@ mod tests {
                 .iter()
                 .all(|child| child.kind != "api_tester.collection")
         );
-        for (id, action) in [
-            (format!("api_tester.collection:{collection}"), "rename"),
-            (format!("api_tester.request:{request}"), "send"),
-            (format!("api_tester.environment:{environment}"), "rename"),
+        for (id, actions) in [
+            (
+                format!("api_tester.collection:{collection}"),
+                &["rename", "delete", "add-request", "save-active"][..],
+            ),
+            (
+                format!("api_tester.request:{request}"),
+                &["rename", "delete", "send"][..],
+            ),
+            (
+                format!("api_tester.environment:{environment}"),
+                &["activate", "rename", "delete", "set-variable"][..],
+            ),
             (
                 format!("api_tester.variable:{environment}:{variable}"),
-                "set-value",
+                &["rename", "set-value", "delete"][..],
             ),
         ] {
             let exact = <crate::app::ApiTesterApp as ResourceProvider>::resource(&app, &doc, &id)
                 .expect("stable id resolves precisely on demand");
             assert_eq!(exact.id.0, id);
-            assert!(exact.actions.iter().any(|candidate| candidate.id == action));
+            for action in actions {
+                assert!(
+                    exact
+                        .actions
+                        .iter()
+                        .any(|candidate| candidate.id == *action)
+                );
+            }
         }
+    }
+
+    #[test]
+    fn failed_catalog_refresh_is_exposed_as_a_palette_diagnostic_resource() {
+        let mut app = crate::app::ApiTesterApp::new_demo();
+        let collection = Collection::new("Duplicate");
+        let mut duplicate = collection.clone();
+        duplicate.name = "Conflicting duplicate".to_string();
+        app.refresh_search_records(&[collection, duplicate], &[]);
+
+        let roots =
+            <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &AutoCommit::new());
+        assert!(
+            roots[0]
+                .children
+                .iter()
+                .any(|child| child.kind == "api_tester.search_status")
+        );
     }
 
     #[test]

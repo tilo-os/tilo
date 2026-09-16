@@ -6,17 +6,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use qos_actions::{ActionAddress, ActionSpec, ExecutionLocus, Resource};
 use ui::search::{
-    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCursor, SearchPage, SearchProvider,
-    SearchResult,
+    DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError, SearchCursor, SearchPage,
+    SearchProvider, SearchResult,
 };
 
 use crate::{
     actions::{
         delete_collection_action, delete_environment_action, delete_request_action, encode,
         immediate, rename_collection_action, rename_environment_action, rename_request_action,
-        save_request_action, send_request_operation, set_variable_action, variable_resource,
+        save_current_request_action, save_request_action, send_request_operation,
+        set_variable_action, variable_resource,
     },
-    model::{Collection, Environment, Request},
+    model::{Collection, Environment, HistoryEntry, Request},
 };
 
 pub const KIND: &str = "API workspace";
@@ -26,7 +27,6 @@ pub const KIND: &str = "API workspace";
 #[derive(Clone)]
 pub struct ApiSearchProvider {
     catalog: SearchCatalog,
-    indexed: BTreeSet<String>,
     entries: BTreeMap<String, CompactEntry>,
     #[cfg(test)]
     last_exact_inspected: Cell<usize>,
@@ -56,107 +56,37 @@ enum CompactEntry {
         id: String,
         key: String,
     },
+    History {
+        id: uuid::Uuid,
+        label: String,
+    },
 }
 
 impl ApiSearchProvider {
     pub fn new() -> Self {
         Self {
             catalog: SearchCatalog::new(KIND),
-            indexed: BTreeSet::new(),
             entries: BTreeMap::new(),
             #[cfg(test)]
             last_exact_inspected: Cell::new(0),
         }
     }
-    pub fn refresh(&mut self, collections: &[Collection], environments: &[Environment]) {
-        let mut next = BTreeSet::new();
-        let mut entries = BTreeMap::new();
-        for collection in collections {
-            let cid = format!("api_tester.collection:{}", collection.id);
-            self.upsert(
-                &mut next,
-                cid.clone(),
-                "api_tester.collection",
-                &collection.name,
-                "rename",
-            );
-            entries.insert(
-                cid,
-                CompactEntry::Collection {
-                    id: collection.id,
-                    label: collection.name.clone(),
-                },
-            );
-            for request in &collection.requests {
-                let id = format!("api_tester.request:{}", request.id);
-                let label = format!("{} {}", request.method.as_str(), request.name);
-                self.upsert(&mut next, id.clone(), "api_tester.request", &label, "send");
-                entries.insert(
-                    id,
-                    CompactEntry::Request {
-                        collection_id: collection.id,
-                        id: request.id,
-                        label,
-                    },
-                );
-            }
-        }
-        for environment in environments {
-            let eid = format!("api_tester.environment:{}", environment.id);
-            self.upsert(
-                &mut next,
-                eid.clone(),
-                "api_tester.environment",
-                &environment.name,
-                "rename",
-            );
-            entries.insert(
-                eid,
-                CompactEntry::Environment {
-                    id: environment.id,
-                    label: environment.name.clone(),
-                },
-            );
-            for variable in &environment.variables {
-                let id = format!("api_tester.variable:{}:{}", environment.id, variable.id);
-                let label = format!("Variable {}", variable.key);
-                self.upsert(
-                    &mut next,
-                    id.clone(),
-                    "api_tester.variable",
-                    &label,
-                    "set-value",
-                );
-                entries.insert(
-                    id,
-                    CompactEntry::Variable {
-                        environment_id: environment.id,
-                        id: variable.id.clone(),
-                        key: variable.key.clone(),
-                    },
-                );
-            }
-        }
-        for old in self.indexed.difference(&next) {
-            self.catalog.remove(old);
-        }
-        self.indexed = next;
-        self.entries = entries;
-    }
-    fn upsert(
-        &self,
-        ids: &mut BTreeSet<String>,
-        id: String,
-        kind: &str,
-        label: &str,
-        action: &str,
-    ) {
-        let _ = self.catalog.upsert(
-            id.clone(),
-            label,
-            SearchResult::for_action(kind, label, ActionAddress::new(id.clone(), action)),
-        );
-        ids.insert(id);
+    /// Atomically replace the compact public index at a workspace revision.
+    /// On malformed/colliding records the last coherent catalogue and resolver
+    /// entries stay live and the error is returned to the caller.
+    pub fn refresh(
+        &mut self,
+        collections: &[Collection],
+        environments: &[Environment],
+        history: &[HistoryEntry],
+    ) -> Result<(), SearchCatalogError> {
+        let mut build = CatalogBuild::default();
+        build.collections(collections)?;
+        build.environments(environments)?;
+        build.history(history)?;
+        self.catalog.replace_all(build.rows)?;
+        self.entries = build.entries;
+        Ok(())
     }
 
     /// Materialize exactly one durable resource from the retained public
@@ -179,12 +109,120 @@ impl ApiSearchProvider {
                 key,
                 ..
             } => Some(variable_resource(*environment_id, id, key)),
+            CompactEntry::History { id, label } => Some(history_resource(*id, label)),
         }
     }
 
     #[cfg(test)]
     pub fn last_exact_inspected(&self) -> usize {
         self.last_exact_inspected.get()
+    }
+}
+
+#[derive(Default)]
+struct CatalogBuild {
+    ids: BTreeSet<String>,
+    entries: BTreeMap<String, CompactEntry>,
+    rows: Vec<(String, String, SearchResult)>,
+}
+
+impl CatalogBuild {
+    fn collections(&mut self, rows: &[Collection]) -> Result<(), SearchCatalogError> {
+        for collection in rows {
+            let id = format!("api_tester.collection:{}", collection.id);
+            self.insert(
+                id.clone(),
+                "api_tester.collection",
+                &collection.name,
+                "rename",
+                CompactEntry::Collection {
+                    id: collection.id,
+                    label: collection.name.clone(),
+                },
+            )?;
+            for request in &collection.requests {
+                let id = format!("api_tester.request:{}", request.id);
+                let label = format!("{} {}", request.method.as_str(), request.name);
+                self.insert(
+                    id,
+                    "api_tester.request",
+                    &label,
+                    "send",
+                    CompactEntry::Request {
+                        collection_id: collection.id,
+                        id: request.id,
+                        label: label.clone(),
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+    fn environments(&mut self, rows: &[Environment]) -> Result<(), SearchCatalogError> {
+        for environment in rows {
+            let id = format!("api_tester.environment:{}", environment.id);
+            self.insert(
+                id,
+                "api_tester.environment",
+                &environment.name,
+                "rename",
+                CompactEntry::Environment {
+                    id: environment.id,
+                    label: environment.name.clone(),
+                },
+            )?;
+            for variable in &environment.variables {
+                let id = format!("api_tester.variable:{}:{}", environment.id, variable.id);
+                let label = format!("Variable {}", variable.key);
+                self.insert(
+                    id,
+                    "api_tester.variable",
+                    &label,
+                    "set-value",
+                    CompactEntry::Variable {
+                        environment_id: environment.id,
+                        id: variable.id.clone(),
+                        key: variable.key.clone(),
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+    fn history(&mut self, rows: &[HistoryEntry]) -> Result<(), SearchCatalogError> {
+        for entry in rows {
+            let id = format!("api_tester.history:{}", entry.id);
+            let label = history_label(entry);
+            self.insert(
+                id,
+                "api_tester.history_entry",
+                &label,
+                "replay",
+                CompactEntry::History {
+                    id: entry.id,
+                    label: label.clone(),
+                },
+            )?;
+        }
+        Ok(())
+    }
+    fn insert(
+        &mut self,
+        id: String,
+        kind: &str,
+        label: &str,
+        action: &str,
+        entry: CompactEntry,
+    ) -> Result<(), SearchCatalogError> {
+        if !self.ids.insert(id.clone()) || self.entries.insert(id.clone(), entry).is_some() {
+            return Err(SearchCatalogError::DuplicateResourceId);
+        }
+        self.rows.push((
+            id.clone(),
+            label.to_string(),
+            SearchResult::for_action(kind, label, ActionAddress::new(id, action)),
+        ));
+        Ok(())
     }
 }
 
@@ -218,6 +256,11 @@ fn collection_resource(id: uuid::Uuid, label: &str) -> Resource {
                 request.id = uuid::Uuid::new_v4();
                 encode(&save_request_action(id, request))
             },
+        ))
+        .with_action(immediate(
+            "save-active",
+            "Save current request here",
+            &save_current_request_action(id, uuid::Uuid::new_v4()),
         ))
 }
 
@@ -283,6 +326,46 @@ fn environment_resource(id: uuid::Uuid, label: &str) -> Resource {
         },
     ))
 }
+
+fn history_resource(id: uuid::Uuid, label: &str) -> Resource {
+    let mut resource = Resource::new(
+        format!("api_tester.history:{id}"),
+        "api_tester.history_entry",
+        label,
+    );
+    if let Ok(action) = crate::actions::replay_history_operation(id) {
+        resource = resource.with_action(action);
+    }
+    resource
+}
+
+/// Preserve enough route context to find a history entry without indexing URL
+/// userinfo, query values, or fragments. A malformed URL gets a truthful but
+/// non-sensitive fallback instead of leaking its raw text into the catalogue.
+fn history_label(entry: &HistoryEntry) -> String {
+    let Some((scheme, remainder)) = entry.url.split_once("://") else {
+        return format!(
+            "{} request history · {}",
+            entry.method.as_str(),
+            entry.status
+        );
+    };
+    let safe = remainder.split(['?', '#']).next().unwrap_or_default();
+    let Some((authority, path)) = safe.split_once('/') else {
+        let authority = safe.rsplit('@').next().unwrap_or_default();
+        return format!(
+            "{} {scheme}://{authority} · {}",
+            entry.method.as_str(),
+            entry.status
+        );
+    };
+    let authority = authority.rsplit('@').next().unwrap_or_default();
+    format!(
+        "{} {scheme}://{authority}/{path} · {}",
+        entry.method.as_str(),
+        entry.status
+    )
+}
 impl SearchProvider for ApiSearchProvider {
     fn name(&self) -> &str {
         KIND
@@ -336,7 +419,9 @@ mod tests {
             .variables
             .push(crate::model::KeyValue::new("token", "do-not-index"));
         let mut provider = ApiSearchProvider::new();
-        provider.refresh(&[collection], &[environment]);
+        provider
+            .refresh(&[collection], &[environment], &[])
+            .expect("valid workspace catalog");
         let hit = provider.search_page("Request 100000", None, 8, 1);
         assert!(hit.inspected <= 8 && hit.results.len() <= 1);
         assert_eq!(hit.results[0].title, "GET Request 100000");
@@ -349,7 +434,7 @@ mod tests {
         assert!(provider.search("do-not-index").is_empty());
         let first = provider.search_page("Request", None, 4, 1);
         let cursor = first.next.expect("broad result is paged");
-        provider.refresh(&[], &[]);
+        provider.refresh(&[], &[], &[]).expect("empty catalog");
         assert!(!provider.action_directory_cursor_is_current(&cursor));
     }
 
@@ -361,7 +446,9 @@ mod tests {
             crate::model::KeyValue::new("token", "second-secret"),
         ];
         let mut provider = ApiSearchProvider::new();
-        provider.refresh(&[], &[environment]);
+        provider
+            .refresh(&[], &[environment], &[])
+            .expect("valid variable catalog");
         let hits = provider.search("Variable token");
         assert_eq!(hits.len(), 2);
         let addresses: BTreeSet<_> = hits
@@ -388,5 +475,76 @@ mod tests {
         }
         assert!(provider.search("first-secret").is_empty());
         assert!(provider.search("second-secret").is_empty());
+    }
+
+    #[test]
+    fn failed_refresh_keeps_the_previous_catalog_and_exact_resolver_coherent() {
+        let collection = Collection::new("Stable collection");
+        let id = format!("api_tester.collection:{}", collection.id);
+        let mut provider = ApiSearchProvider::new();
+        provider
+            .refresh(std::slice::from_ref(&collection), &[], &[])
+            .expect("initial catalog");
+        let before = provider.catalog.stats().generation;
+
+        let mut duplicate = collection.clone();
+        duplicate.name = "Conflicting duplicate".to_string();
+        assert_eq!(
+            provider.refresh(&[collection, duplicate], &[], &[]),
+            Err(SearchCatalogError::DuplicateResourceId)
+        );
+        assert_eq!(provider.catalog.stats().generation, before);
+        assert_eq!(provider.search("Stable collection").len(), 1);
+        assert!(provider.resource(&id).is_some());
+        assert!(provider.search("Conflicting duplicate").is_empty());
+    }
+
+    #[test]
+    fn history_is_searchable_and_materializes_its_replay_operation() {
+        let entry = HistoryEntry {
+            id: uuid::Uuid::new_v4(),
+            method: crate::model::HttpMethod::Get,
+            url: "https://api.example.test/history".to_string(),
+            status: 200,
+            duration_ms: 12,
+            when: "now".to_string(),
+        };
+        let mut provider = ApiSearchProvider::new();
+        provider
+            .refresh(&[], &[], std::slice::from_ref(&entry))
+            .expect("history catalog");
+        let hit = provider
+            .search("example.test/history")
+            .pop()
+            .expect("history hit");
+        let address = hit.action_address().expect("canonical replay address");
+        let resource = provider
+            .resolve_action_resource(&address)
+            .expect("replay resource");
+        assert!(resource.actions.iter().any(|action| action.id == "replay"));
+    }
+
+    #[test]
+    fn history_catalog_redacts_userinfo_query_and_fragment_secrets() {
+        let entry = HistoryEntry {
+            id: uuid::Uuid::new_v4(),
+            method: crate::model::HttpMethod::Get,
+            url: "https://alice:password@example.test/audit?token=query-secret#fragment-secret"
+                .to_string(),
+            status: 200,
+            duration_ms: 12,
+            when: "now".to_string(),
+        };
+        let mut provider = ApiSearchProvider::new();
+        provider
+            .refresh(&[], &[], std::slice::from_ref(&entry))
+            .expect("history catalog");
+        assert_eq!(provider.search("example.test/audit").len(), 1);
+        for secret in ["alice", "password", "query-secret", "fragment-secret"] {
+            assert!(
+                provider.search(secret).is_empty(),
+                "{secret} leaked into history search"
+            );
+        }
     }
 }
