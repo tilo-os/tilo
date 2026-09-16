@@ -972,6 +972,7 @@ impl BackupsApp {
         // collide with their neighbours — the abbreviation is content the app
         // owns; the pill fill + selection palette come from the shared control.
         let narrow_tabs = tab_w < 96.0 * f64::from(theme.text_scale);
+        let large_type_tabs = theme.text_scale >= 1.5 && tab_w < 96.0 * f64::from(theme.text_scale);
         let ultra_narrow_tabs = tab_w < 58.0;
         let fs = if narrow_tabs { 12.0_f32 } else { 13.5 };
         let mut pill_rects: Vec<Rect> = Vec::with_capacity(views.len());
@@ -989,7 +990,14 @@ impl BackupsApp {
                 tab.x1 - 4.0,
                 tab.y1 - 4.0,
             ));
-            labels.push(if ultra_narrow_tabs {
+            labels.push(if large_type_tabs {
+                match v {
+                    View::Timeline => "T",
+                    View::Sources => "S",
+                    View::Destinations => "D",
+                    View::Schedules => "P",
+                }
+            } else if ultra_narrow_tabs {
                 match v {
                     View::Timeline => "Time",
                     View::Sources => "Src",
@@ -1053,6 +1061,12 @@ impl BackupsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // At 200% text a long status pill would be wider than a phone window.
+        // The dashboard's controls remain available, and the selected snapshot
+        // carries the same health detail, so avoid painting clipped text.
+        if theme.text_scale >= 1.5 {
+            return;
+        }
         let now = Instant::now();
         let label = self.status_label();
         // Poke only on a genuine change — draw runs every frame, so an
@@ -1196,6 +1210,10 @@ impl BackupsApp {
         theme: &Theme,
         content: Rect,
     ) {
+        if theme.text_scale >= 1.5 {
+            self.draw_large_type_timeline(scene, t, tr, theme, content);
+            return;
+        }
         // Main column: the drawer's resolved content rect (inset by the docked
         // rail, or full width in overlay). A small gap keeps it off a docked rail.
         let docked_gap = if self.drawer.is_docked() { 18.0 } else { 0.0 };
@@ -1261,6 +1279,150 @@ impl BackupsApp {
 
         let list = Rect::new(main.x0, hy + 26.0, main.x1, main.y1);
         self.draw_timeline_list(scene, t, tr, theme, list);
+    }
+
+    /// A dense, multi-column timeline cannot remain legible at 200% text on a
+    /// narrow window. Keep the recovery workflow complete by showing the
+    /// current selection as a single spacious card; arrow keys still select a
+    /// different version and the full timeline returns at ordinary text sizes.
+    fn draw_large_type_timeline(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Recovery point",
+            17.0,
+            c.text_primary,
+            content.x0,
+            content.y0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "Use ↑ ↓ to choose.",
+            12.0,
+            c.text_dim,
+            content.x0,
+            content.y0 + 30.0,
+        );
+        let selected = self
+            .ui
+            .sel_snapshot
+            .as_deref()
+            .and_then(|id| {
+                self.catalog
+                    .snapshots
+                    .iter()
+                    .find(|snapshot| snapshot.id == id)
+            })
+            .cloned();
+        let Some(snapshot) = selected else {
+            Self::draw_timeline_empty_state(scene, t, tr, theme, content);
+            return;
+        };
+        self.draw_large_type_snapshot_card(scene, t, tr, theme, content, &snapshot);
+    }
+
+    fn draw_large_type_snapshot_card(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        snapshot: &Snapshot,
+    ) {
+        let c = &theme.tokens.colors;
+        let card = Rect::new(
+            content.x0,
+            content.y0 + 58.0,
+            content.x1,
+            content.y0 + 302.0,
+        );
+        paint::card(
+            scene,
+            t,
+            card,
+            14.0,
+            c.surfaces.raised,
+            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            &format!("{} · {}", snapshot.time, snapshot.kind.label()),
+            20.0,
+            c.text_primary,
+            card.x0 + 18.0,
+            card.y0 + 20.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!(
+                "{} · {} files",
+                ui::format::bytes(snapshot.size_bytes),
+                snapshot.files_changed
+            ),
+            13.0,
+            c.text_dim,
+            card.x0 + 18.0,
+            card.y0 + 64.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            "New or empty folder only.",
+            12.0,
+            c.text_dim,
+            card.x0 + 18.0,
+            card.y0 + 98.0,
+        );
+        let verify = Rect::new(
+            card.x0 + 18.0,
+            card.y0 + 142.0,
+            card.x1 - 18.0,
+            card.y0 + 188.0,
+        );
+        let restore = Rect::new(
+            card.x0 + 18.0,
+            card.y0 + 198.0,
+            card.x1 - 18.0,
+            card.y0 + 244.0,
+        );
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(verify, "Verify snapshot")
+                .radius(8.0)
+                .hovered(self.hover == Some(Hit::Verify)),
+        );
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(restore, "Restore…")
+                .primary()
+                .radius(8.0)
+                .hovered(self.hover == Some(Hit::RestoreOpen)),
+        );
+        self.hits.push((verify, Hit::Verify));
+        self.hits.push((restore, Hit::RestoreOpen));
     }
 
     fn draw_rail(
@@ -4943,6 +5105,24 @@ mod tests {
                 "tab {tab:?} overlaps the compact backup action {backup:?}"
             );
         }
+    }
+
+    #[test]
+    fn phone_200_percent_text_uses_the_spacious_recovery_workflow() {
+        let mut f = Frame::demo();
+        f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        f.theme = Theme::dark().with_text_scale(2.0);
+        f.draw();
+
+        assert!(f.has_hit(|hit| matches!(hit, Hit::Verify)));
+        assert!(f.has_hit(|hit| matches!(hit, Hit::RestoreOpen)));
+        assert!(
+            !f.has_hit(|hit| matches!(hit, Hit::Snap(_))),
+            "large text avoids squeezing a dense, inaccessible timeline"
+        );
+        let verify = f.rect_of(|hit| matches!(hit, Hit::Verify));
+        let restore = f.rect_of(|hit| matches!(hit, Hit::RestoreOpen));
+        assert!(verify.y1 <= restore.y0, "large-type controls never overlap");
     }
 
     #[test]
