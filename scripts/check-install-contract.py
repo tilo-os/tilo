@@ -126,6 +126,7 @@ assert "QOS_BLAKE3_PURE=1" in rpm_job
 assert 'CARGO_FEATURE_PURE="$QOS_BLAKE3_PURE"' in rpm_job
 assert "cargo_jobs=${QOS_CARGO_JOBS:-2}" in rpm_job
 assert 'QOS_CARGO_JOBS: "6"' in session_workflow
+assert "cores = '\"${CARGO_BUILD_JOBS:-2}\"" in rpm_job
 assert "CARGO_PROFILE_RELEASE_LTO=thin" in rpm_job
 assert "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16" in rpm_job
 nix_package = (ROOT / "dist/nix/package.nix").read_text()

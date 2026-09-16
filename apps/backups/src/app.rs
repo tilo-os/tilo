@@ -28,6 +28,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -178,6 +179,9 @@ pub struct BackupsApp {
     /// One-shot visual-regression state. Never persisted or sent to the
     /// backup worker; it only lets CI exercise recovery/progress framing.
     shot_scenario: Option<ShotScenario>,
+    /// Retained complete recovery-point index. The visible resource snapshot
+    /// stays bounded, while Ctrl+K searches every already-loaded version.
+    search_index: crate::search_provider::BackupsSearchIndex,
     source_path: Option<PathBuf>,
     destination_path: Option<PathBuf>,
     picker: Option<(PickPurpose, ui::portal::PortalChannel)>,
@@ -209,6 +213,7 @@ impl BackupsApp {
             && let Ok(manifests) = crate::engine::list_snapshots(&destination)
         {
             app.catalog = Catalog::from_local(&source, &destination, &manifests);
+            app.sync_search_index();
             app.source_path = Some(source);
             app.destination_path = Some(destination);
         }
@@ -223,6 +228,7 @@ impl BackupsApp {
     }
 
     fn with_catalog(catalog: Catalog) -> Self {
+        let search_index = crate::search_provider::BackupsSearchIndex::new(&catalog);
         Self {
             catalog,
             ui: UiCache::default(),
@@ -248,12 +254,17 @@ impl BackupsApp {
             status_shown: String::new(),
             shots_status: false,
             shot_scenario: None,
+            search_index,
             source_path: None,
             destination_path: None,
             picker: None,
             job: None,
             job_status: None,
         }
+    }
+
+    fn sync_search_index(&self) {
+        self.search_index.sync(&self.catalog);
     }
 
     /// Adjust one retention field by `delta`, clamped to `[0, 999]`, through the
@@ -532,6 +543,7 @@ impl BackupsApp {
                         && let Ok(manifests) = crate::engine::list_snapshots(destination)
                     {
                         self.catalog = Catalog::from_local(source, destination, &manifests);
+                        self.sync_search_index();
                     }
                     self.toast_now(format!(
                         "Backup complete · {} files · {}",
@@ -677,6 +689,7 @@ impl BackupsApp {
         // full purpose discoverable for pointer users as well as in the
         // semantic tree below.
         self.draw_compact_backup_tooltip(scene, t, tr, theme);
+        self.draw_compact_tab_tooltip(scene, t, tr, theme);
 
         // The transient status pill floats over the bottom-right, beneath the
         // restore modal + toast so those still overlay it.
@@ -720,6 +733,39 @@ impl BackupsApp {
             theme,
             *anchor,
             "Back up now",
+            self.rect,
+        );
+    }
+
+    /// Icon tabs preserve all four views at 200% text without turning their
+    /// labels into ambiguous initials. Their semantic names are always full;
+    /// this tooltip gives pointer users the same discoverability.
+    fn draw_compact_tab_tooltip(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if theme.text_scale < 1.5 {
+            return;
+        }
+        let Some((anchor, Hit::Tab(view))) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, hit)| matches!(hit, Hit::Tab(_)))
+            .filter(|(_, hit)| Some(hit) == self.hover.as_ref())
+        else {
+            return;
+        };
+        ui::widget::tooltip::draw_hover_tooltip(
+            scene,
+            t,
+            tr,
+            theme,
+            *anchor,
+            view.title(),
             self.rect,
         );
     }
@@ -972,6 +1018,7 @@ impl BackupsApp {
         // collide with their neighbours — the abbreviation is content the app
         // owns; the pill fill + selection palette come from the shared control.
         let narrow_tabs = tab_w < 96.0 * f64::from(theme.text_scale);
+        let icon_tabs = theme.text_scale >= 1.5 && tab_w < 96.0 * f64::from(theme.text_scale);
         let ultra_narrow_tabs = tab_w < 58.0;
         let fs = if narrow_tabs { 12.0_f32 } else { 13.5 };
         let mut pill_rects: Vec<Rect> = Vec::with_capacity(views.len());
@@ -989,7 +1036,9 @@ impl BackupsApp {
                 tab.x1 - 4.0,
                 tab.y1 - 4.0,
             ));
-            labels.push(if ultra_narrow_tabs {
+            labels.push(if icon_tabs {
+                ""
+            } else if ultra_narrow_tabs {
                 match v {
                     View::Timeline => "Time",
                     View::Sources => "Src",
@@ -1010,17 +1059,46 @@ impl BackupsApp {
         }
         let selected = views.iter().position(|v| self.ui.view == *v).unwrap_or(0);
         let hovered = views.iter().position(|v| self.hover == Some(Hit::Tab(*v)));
-        ToggleGroup::paint(
-            scene,
-            t,
-            tr,
-            theme,
-            &SegmentedFace::new(&pill_rects, &labels, selected)
-                .pill()
-                .hovered(hovered)
-                .radius(7.0)
-                .text_size(fs),
-        );
+        if icon_tabs {
+            for ((view, pill), is_hovered) in views
+                .iter()
+                .zip(&pill_rects)
+                .zip((0..views.len()).map(|index| hovered == Some(index)))
+            {
+                Button::paint(
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    &ButtonFace::new(*pill, "")
+                        .icon(Self::view_icon(*view))
+                        .accessible_name(view.title())
+                        .radius(7.0)
+                        .hovered(is_hovered),
+                );
+            }
+        } else {
+            ToggleGroup::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                &SegmentedFace::new(&pill_rects, &labels, selected)
+                    .pill()
+                    .hovered(hovered)
+                    .radius(7.0)
+                    .text_size(fs),
+            );
+        }
+    }
+
+    const fn view_icon(view: View) -> Icon {
+        match view {
+            View::Timeline => Icon::History,
+            View::Sources => Icon::Folder,
+            View::Destinations => Icon::HardDrive,
+            View::Schedules => Icon::Calendar,
+        }
     }
 
     /// Health signal (kept as text so the pill needs no bespoke tint) followed
@@ -1053,6 +1131,12 @@ impl BackupsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // At 200% text a long status pill would be wider than a phone window.
+        // The dashboard's controls remain available, and the selected snapshot
+        // carries the same health detail, so avoid painting clipped text.
+        if theme.text_scale >= 1.5 {
+            return;
+        }
         let now = Instant::now();
         let label = self.status_label();
         // Poke only on a genuine change — draw runs every frame, so an
@@ -1196,6 +1280,10 @@ impl BackupsApp {
         theme: &Theme,
         content: Rect,
     ) {
+        if theme.text_scale >= 1.5 {
+            self.draw_large_type_timeline(scene, t, tr, theme, content);
+            return;
+        }
         // Main column: the drawer's resolved content rect (inset by the docked
         // rail, or full width in overlay). A small gap keeps it off a docked rail.
         let docked_gap = if self.drawer.is_docked() { 18.0 } else { 0.0 };
@@ -1261,6 +1349,235 @@ impl BackupsApp {
 
         let list = Rect::new(main.x0, hy + 26.0, main.x1, main.y1);
         self.draw_timeline_list(scene, t, tr, theme, list);
+    }
+
+    /// A dense, multi-column timeline cannot remain legible at 200% text on a
+    /// narrow window. Reflow it into a scrollable, single-column recovery
+    /// list: every version remains an independently selectable target for
+    /// pointer, touch, keyboard, and assistive-technology users.
+    fn draw_large_type_timeline(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Recovery points",
+            17.0,
+            c.text_primary,
+            content.x0,
+            content.y0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &self.large_type_health_label(),
+            12.0,
+            c.text_dim,
+            content.x0,
+            content.y0 + 30.0,
+        );
+        self.draw_large_type_snapshot_actions(scene, t, tr, theme, content);
+        let list = Rect::new(content.x0, content.y0 + 182.0, content.x1, content.y1);
+        self.draw_large_type_snapshot_list(scene, t, tr, theme, list);
+    }
+
+    fn large_type_health_label(&self) -> String {
+        let failed = self
+            .catalog
+            .snapshots
+            .iter()
+            .filter(|snapshot| snapshot.status == SnapStatus::Failed)
+            .count();
+        if failed == 0 {
+            "All backups healthy".into()
+        } else {
+            format!("{failed} backup needs attention")
+        }
+    }
+
+    fn draw_large_type_snapshot_actions(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
+        let c = &theme.tokens.colors;
+        if self.ui.sel_snapshot.is_none() {
+            paint::text(
+                scene,
+                tr,
+                t,
+                "Select a recovery point to verify or restore.",
+                12.0,
+                c.text_dim,
+                content.x0,
+                content.y0 + 96.0,
+            );
+            return;
+        }
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            "Selected recovery point",
+            12.0,
+            c.text_primary,
+            content.x0,
+            content.y0 + 64.0,
+        );
+        let verify = Rect::new(
+            content.x0,
+            content.y0 + 116.0,
+            content.x0 + (content.width() - 10.0) / 2.0,
+            content.y0 + 168.0,
+        );
+        let restore = Rect::new(verify.x1 + 10.0, verify.y0, content.x1, verify.y1);
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(verify, "Verify")
+                .radius(8.0)
+                .hovered(self.hover == Some(Hit::Verify)),
+        );
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(restore, "Restore…")
+                .primary()
+                .radius(8.0)
+                .hovered(self.hover == Some(Hit::RestoreOpen)),
+        );
+        self.hits.push((verify, Hit::Verify));
+        self.hits.push((restore, Hit::RestoreOpen));
+    }
+
+    fn draw_large_type_snapshot_list(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        list: Rect,
+    ) {
+        const CARD_H: f64 = 82.0;
+        const GAP: f64 = 8.0;
+        let c = &theme.tokens.colors;
+        let snaps: Vec<Snapshot> = self
+            .catalog
+            .timeline(self.ui.sel_source.as_deref())
+            .into_iter()
+            .cloned()
+            .collect();
+        if snaps.is_empty() {
+            self.timeline_content_h = 0.0;
+            self.timeline_scroll = 0.0;
+            Self::draw_timeline_empty_state(scene, t, tr, theme, list);
+            return;
+        }
+        self.timeline_view = list;
+        self.timeline_content_h = snaps.len() as f64 * (CARD_H + GAP) - GAP;
+        let max_scroll = (self.timeline_content_h - list.height()).max(0.0);
+        self.timeline_scroll = self.timeline_scroll.clamp(0.0, max_scroll);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &list);
+        let mut y = list.y0 - self.timeline_scroll;
+        for snapshot in &snaps {
+            let card = Rect::new(list.x0, y, list.x1, y + CARD_H);
+            if card.y1 > list.y0 && card.y0 < list.y1 {
+                self.draw_large_type_snapshot_row(scene, t, tr, theme, card, snapshot);
+                self.hits.push((card, Hit::Snap(snapshot.id.clone())));
+            }
+            y += CARD_H + GAP;
+        }
+        scene.pop_layer();
+        if max_scroll > 0.0 {
+            // At high text scale the list's continuation is part of the
+            // workflow, not a hidden implementation detail. Keep a thicker,
+            // persistent thumb visible rather than relying on a hover-only
+            // affordance or clipped final card to imply scrollability.
+            let track_h = list.height();
+            let thumb_h = (track_h * (track_h / self.timeline_content_h)).max(36.0);
+            let thumb_y = list.y0 + (track_h - thumb_h) * (self.timeline_scroll / max_scroll);
+            let thumb = Rect::new(list.x1 - 7.0, thumb_y, list.x1 - 2.0, thumb_y + thumb_h);
+            paint::fill_rrect(scene, t, thumb, 2.5, c.text_dim.with_alpha_factor(0.72));
+        }
+    }
+
+    fn draw_large_type_snapshot_row(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        card: Rect,
+        snapshot: &Snapshot,
+    ) {
+        let c = &theme.tokens.colors;
+        let selected = self.ui.sel_snapshot.as_deref() == Some(snapshot.id.as_str());
+        let background = if selected {
+            theme.accent_primary.with_alpha_factor(0.16)
+        } else if self.hover == Some(Hit::Snap(snapshot.id.clone())) {
+            c.lift(0.35)
+        } else {
+            c.surfaces.raised
+        };
+        paint::card(
+            scene,
+            t,
+            card,
+            12.0,
+            background,
+            if selected {
+                theme.accent_primary.with_alpha_factor(0.7)
+            } else {
+                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26)
+            },
+        );
+        paint::dot(
+            scene,
+            t,
+            Point::new(card.x0 + 16.0, card.y0 + 28.0),
+            4.0,
+            Self::status_color(theme, snapshot.status),
+        );
+        paint::text_bold(
+            scene,
+            tr,
+            t,
+            &format!("{} · {}", snapshot.time, snapshot.kind.label()),
+            14.0,
+            c.text_primary,
+            card.x0 + 30.0,
+            card.y0 + 16.0,
+        );
+        paint::text(
+            scene,
+            tr,
+            t,
+            &format!(
+                "{} · {} files · {}",
+                ui::format::bytes(snapshot.size_bytes),
+                snapshot.files_changed,
+                snapshot.retention.label()
+            ),
+            11.5,
+            c.text_dim,
+            card.x0 + 16.0,
+            card.y0 + 50.0,
+        );
     }
 
     fn draw_rail(
@@ -4374,6 +4691,14 @@ impl Widget for BackupsApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resource(self, doc, id)
+    }
+
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records exactly one undo boundary bracketing it — the
     /// same path a Ctrl+K palette dispatch takes.
@@ -4941,6 +5266,101 @@ mod tests {
             assert!(
                 tab.x1 <= backup.x0 || tab.x0 >= backup.x1,
                 "tab {tab:?} overlaps the compact backup action {backup:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn phone_200_percent_text_reflows_every_recovery_point() {
+        let mut f = Frame::demo();
+        f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        f.theme = Theme::dark().with_text_scale(2.0);
+        f.draw();
+
+        assert!(f.has_hit(|hit| matches!(hit, Hit::Verify)));
+        assert!(f.has_hit(|hit| matches!(hit, Hit::RestoreOpen)));
+        let snapshot_cards: Vec<(Rect, String)> = f
+            .app
+            .hits
+            .iter()
+            .filter_map(|(rect, hit)| match hit {
+                Hit::Snap(id) => Some((*rect, id.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            snapshot_cards.len() >= 3,
+            "large text keeps multiple recovery points pointer-selectable"
+        );
+        assert!(snapshot_cards.iter().all(|(card, _)| card.height() >= 44.0));
+        assert!(
+            snapshot_cards
+                .windows(2)
+                .all(|cards| cards[0].0.y1 <= cards[1].0.y0)
+        );
+        let verify = f.rect_of(|hit| matches!(hit, Hit::Verify));
+        let restore = f.rect_of(|hit| matches!(hit, Hit::RestoreOpen));
+        assert!(
+            verify.x1 <= restore.x0 || restore.x1 <= verify.x0 || verify.y1 <= restore.y0,
+            "large-type controls never overlap"
+        );
+        assert!(
+            restore.y1 <= snapshot_cards[0].0.y0,
+            "recovery list clears the large-text action row"
+        );
+        f.click(snapshot_cards[1].0.center());
+        assert_eq!(
+            f.app.ui.sel_snapshot.as_deref(),
+            Some(snapshot_cards[1].1.as_str()),
+            "the touched recovery card becomes the exact selected version"
+        );
+        f.key(&Key::Named(NamedKey::ArrowDown));
+        assert_eq!(
+            f.app.ui.sel_snapshot.as_deref(),
+            Some(snapshot_cards[2].1.as_str()),
+            "keyboard traversal advances to the next visible recovery point"
+        );
+
+        let tree = f
+            .app
+            .accessibility()
+            .expect("large-text accessibility tree");
+        let selectable = tree
+            .children
+            .iter()
+            .filter(|node| node.role == Role::ListItem)
+            .count();
+        assert!(
+            selectable >= 2,
+            "multiple recovery points reach assistive tech"
+        );
+    }
+
+    #[test]
+    fn phone_200_percent_icon_tabs_keep_full_semantic_names() {
+        let mut f = Frame::demo();
+        f.app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        f.theme = Theme::dark().with_text_scale(2.0);
+        f.draw();
+
+        let tree = f
+            .app
+            .accessibility()
+            .expect("large-text accessibility tree");
+        let names: Vec<&str> = tree
+            .children
+            .iter()
+            .filter_map(|node| node.name.as_deref())
+            .collect();
+        for name in [
+            "Timeline view",
+            "Sources view",
+            "Destinations view",
+            "Schedules view",
+        ] {
+            assert!(
+                names.contains(&name),
+                "icon tab retains its full name: {names:?}"
             );
         }
     }
