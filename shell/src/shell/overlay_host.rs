@@ -191,6 +191,7 @@ mod device_fabric_ui_tests {
                     is_default: false,
                     bluetooth_codec: Some("AAC".into()),
                 }],
+                transfers: Vec::new(),
             },
             remote,
         )
@@ -524,11 +525,27 @@ pub struct LocalMediaOutputView {
     pub bluetooth_codec: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FabricTransferStatus {
+    Sending,
+    Sent,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FabricTransferView {
+    pub target: crate::shell::personal_continuity::DeviceId,
+    pub sent_bytes: u64,
+    pub total_bytes: u64,
+    pub status: FabricTransferStatus,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceFabricView {
     pub devices: Vec<FabricDeviceView>,
     pub local_media: Vec<FabricMediaView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
+    pub transfers: Vec<FabricTransferView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10253,7 +10270,10 @@ impl ShellOverlayHost {
                             session_id,
                             target: device.id,
                         },
-                        format!("Opening media on {}", device.label),
+                        format!(
+                            "Preparing media for {}; this device stays active until it opens",
+                            device.label
+                        ),
                     )
                 })
             }
@@ -12759,7 +12779,14 @@ impl Widget for ShellOverlayHost {
                                         ),
                                         DeviceFabricPaneRow::Device(device) => (
                                             device.label.clone(),
-                                            Self::fabric_device_detail(&device, selected),
+                                            Self::fabric_device_detail(
+                                                &device,
+                                                selected,
+                                                view.transfers
+                                                    .iter()
+                                                    .rev()
+                                                    .find(|transfer| transfer.target == device.id),
+                                            ),
                                             if device.is_local {
                                                 Vec::new()
                                             } else {
@@ -16924,12 +16951,31 @@ impl ShellOverlayHost {
     fn fabric_device_detail(
         device: &FabricDeviceView,
         selected: Option<&FabricMediaView>,
+        transfer: Option<&FabricTransferView>,
     ) -> String {
         if device.is_local {
             return "This device · identity-certified".into();
         }
         if !device.online {
             return "Offline · identity-certified".into();
+        }
+        if let Some(transfer) = transfer {
+            return match transfer.status {
+                FabricTransferStatus::Sending => {
+                    let percent = transfer
+                        .sent_bytes
+                        .saturating_mul(100)
+                        .checked_div(transfer.total_bytes)
+                        .unwrap_or(0);
+                    format!("Sending media · {percent}% · source stays active")
+                }
+                FabricTransferStatus::Sent => {
+                    "Media sent · waiting for destination app · source stays active".into()
+                }
+                FabricTransferStatus::Failed => {
+                    "Media transfer failed · source kept playing".into()
+                }
+            };
         }
         if device.controls_local && device.local_can_control {
             return "Mutual control active · local input always wins".into();
@@ -17178,7 +17224,14 @@ impl ShellOverlayHost {
                         && selected.is_some_and(|media| media.targets.contains(&device.id));
                     (
                         device.label.clone(),
-                        Self::fabric_device_detail(device, selected),
+                        Self::fabric_device_detail(
+                            device,
+                            selected,
+                            view.transfers
+                                .iter()
+                                .rev()
+                                .find(|transfer| transfer.target == device.id),
+                        ),
                         ui::icons::Icon::Monitor,
                         false,
                         enabled,

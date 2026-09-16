@@ -16,7 +16,7 @@ use rand_core::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent};
+use crate::network::actor::{Actor, HostIdentity, NetCmd, NetEvent, PersonalMediaTransferStatus};
 use crate::network::actor::{
     PERSONAL_MEDIA_CHUNK_BYTES, PersonalFabricPayload, PersonalMediaTransferFrame,
     WorkspaceControlRoute,
@@ -49,6 +49,9 @@ const MIN_PERSONAL_MEDIA_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const PERSONAL_MEDIA_LEASE: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
 const MAX_INCOMING_PERSONAL_MEDIA_TRANSFERS: usize = 8;
 const MAX_COMPLETED_PERSONAL_MEDIA_TRANSFERS: usize = 64;
+const MAX_OUTGOING_PERSONAL_MEDIA_TRANSFERS: usize = 64;
+const OUTGOING_PERSONAL_MEDIA_RETENTION: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60);
 
 fn portable_media_file_name(name: &str) -> Option<String> {
     let sanitized = name
@@ -172,6 +175,20 @@ struct IncomingPersonalMediaTransfer {
     total_bytes: u64,
     received_bytes: u64,
     hasher: blake3::Hasher,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OutgoingPersonalMediaTransfer {
+    pub target: crate::shell::personal_continuity::DeviceId,
+    pub transfer_id: [u8; 16],
+    pub sent_bytes: u64,
+    pub total_bytes: u64,
+    pub status: PersonalMediaTransferStatus,
+}
+
+struct OutgoingPersonalMediaTransferEntry {
+    transfer: OutgoingPersonalMediaTransfer,
+    updated: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -838,6 +855,11 @@ pub struct ShellNetwork {
     /// handoffs. Paths stay local and never enter fabric snapshots/actions.
     personal_media_cache_root: Option<PathBuf>,
     personal_media_transfers: Mutex<PersonalMediaTransferState>,
+    /// Bounded, session-local transport truth for the Devices pane. Media
+    /// acceptance remains a separate action, so a completed upload never
+    /// implies that the destination app opened it.
+    outgoing_personal_media_transfers:
+        Mutex<std::collections::BTreeMap<[u8; 16], OutgoingPersonalMediaTransferEntry>>,
     /// Verified transport-device chains received on workspace topics.
     peer_identities: PeerIdentityStore,
     /// Production is fail-closed until a peer presents `IdentityHello`.
@@ -1188,6 +1210,7 @@ impl ShellNetwork {
             personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
             personal_media_cache_root: personal_media_cache_root(),
             personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
+            outgoing_personal_media_transfers: Mutex::new(std::collections::BTreeMap::new()),
             peer_identities: PeerIdentityStore::new(),
             require_peer_identity: true,
             pending_identity_admissions: Mutex::new(pending_identity_admissions),
@@ -2698,7 +2721,20 @@ impl ShellNetwork {
         &self,
         transfer: PreparedPersonalMediaTransfer,
     ) -> Result<(), String> {
-        self.cmd_tx
+        let target = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+            transfer.target.as_bytes(),
+        ))
+        .map_err(|_| "target is not a certified transport device id")?;
+        self.record_outgoing_personal_media_transfer(OutgoingPersonalMediaTransfer {
+            target,
+            transfer_id: transfer.transfer_id,
+            sent_bytes: 0,
+            total_bytes: transfer.total_bytes,
+            status: PersonalMediaTransferStatus::Started,
+        });
+        let transfer_id = transfer.transfer_id;
+        let result = self
+            .cmd_tx
             .try_send(NetCmd::PublishPersonalMedia {
                 ws: transfer.ws,
                 user_public_key: transfer.user_public_key,
@@ -2708,7 +2744,64 @@ impl ShellNetwork {
                 total_bytes: transfer.total_bytes,
                 file: transfer.file,
             })
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string());
+        if result.is_err()
+            && let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock()
+            && let Some(entry) = transfers.get_mut(&transfer_id)
+        {
+            entry.transfer.status = PersonalMediaTransferStatus::Failed;
+            entry.updated = std::time::Instant::now();
+        }
+        result
+    }
+
+    fn record_outgoing_personal_media_transfer(&self, transfer: OutgoingPersonalMediaTransfer) {
+        let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        transfers.retain(|_, entry| {
+            !matches!(
+                entry.transfer.status,
+                PersonalMediaTransferStatus::Completed | PersonalMediaTransferStatus::Failed
+            ) || now.saturating_duration_since(entry.updated) <= OUTGOING_PERSONAL_MEDIA_RETENTION
+        });
+        transfers.insert(
+            transfer.transfer_id,
+            OutgoingPersonalMediaTransferEntry {
+                transfer,
+                updated: now,
+            },
+        );
+        while transfers.len() > MAX_OUTGOING_PERSONAL_MEDIA_TRANSFERS {
+            let oldest = transfers
+                .iter()
+                .min_by_key(|(_, entry)| entry.updated)
+                .map(|(id, _)| *id);
+            let Some(oldest) = oldest else {
+                break;
+            };
+            transfers.remove(&oldest);
+        }
+    }
+
+    pub(crate) fn outgoing_personal_media_transfers(&self) -> Vec<OutgoingPersonalMediaTransfer> {
+        let Ok(mut transfers) = self.outgoing_personal_media_transfers.lock() else {
+            return Vec::new();
+        };
+        let now = std::time::Instant::now();
+        transfers.retain(|_, entry| {
+            !matches!(
+                entry.transfer.status,
+                PersonalMediaTransferStatus::Completed | PersonalMediaTransferStatus::Failed
+            ) || now.saturating_duration_since(entry.updated) <= OUTGOING_PERSONAL_MEDIA_RETENTION
+        });
+        let mut snapshot = transfers
+            .values()
+            .map(|entry| (entry.updated, entry.transfer.clone()))
+            .collect::<Vec<_>>();
+        snapshot.sort_by_key(|(updated, _)| *updated);
+        snapshot.into_iter().map(|(_, transfer)| transfer).collect()
     }
 
     /// Send one non-durable command to exactly one certified personal device.
@@ -3110,6 +3203,26 @@ impl ShellNetwork {
                 user_public_key,
                 payload,
             } => self.dispatch_personal_fabric(ws, peer, user_public_key, payload),
+            NetEvent::PersonalMediaTransfer {
+                target,
+                transfer_id,
+                sent_bytes,
+                total_bytes,
+                status,
+            } => {
+                let Ok(target) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
+                    target.as_bytes(),
+                )) else {
+                    return;
+                };
+                self.record_outgoing_personal_media_transfer(OutgoingPersonalMediaTransfer {
+                    target,
+                    transfer_id,
+                    sent_bytes: sent_bytes.min(total_bytes),
+                    total_bytes,
+                    status,
+                });
+            }
         }
     }
 
@@ -4502,6 +4615,7 @@ pub(crate) fn shell_network_for_test(
         personal_fabric_action_replays: Mutex::new(PersonalFabricReplayWindow::default()),
         personal_media_cache_root: None,
         personal_media_transfers: Mutex::new(PersonalMediaTransferState::default()),
+        outgoing_personal_media_transfers: Mutex::new(std::collections::BTreeMap::new()),
         peer_identities: PeerIdentityStore::new(),
         require_peer_identity: false,
         pending_identity_admissions: Mutex::new(std::collections::HashMap::new()),

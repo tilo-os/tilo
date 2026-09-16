@@ -271,6 +271,21 @@ pub enum NetEvent {
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     },
+    PersonalMediaTransfer {
+        target: EndpointId,
+        transfer_id: [u8; 16],
+        sent_bytes: u64,
+        total_bytes: u64,
+        status: PersonalMediaTransferStatus,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersonalMediaTransferStatus {
+    Started,
+    Progress,
+    Completed,
+    Failed,
 }
 
 /// Why the transport stopped treating a peer as live on a workspace topic.
@@ -862,21 +877,38 @@ impl ActorState {
         total_bytes: u64,
         file: std::fs::File,
     ) {
+        let progress = self.subscribers.get(&ws).cloned();
+        let report = |status, sent_bytes| {
+            if let Some(progress) = progress.as_ref() {
+                let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
+                    target,
+                    transfer_id,
+                    sent_bytes,
+                    total_bytes,
+                    status,
+                });
+            }
+        };
         if transfer_id == [0; 16] {
             tracing::warn!(peer = %target, "refusing media transfer with an empty id");
+            report(PersonalMediaTransferStatus::Failed, 0);
             return;
         }
         if !self.peers_seen.contains_key(&(ws, target)) {
             tracing::warn!(ws, peer = %target, "personal media target is no longer live");
+            report(PersonalMediaTransferStatus::Failed, 0);
             return;
         }
         let Some(addr) = self.peers.get(&target).cloned() else {
             tracing::warn!(peer = %target, "personal media target has no dial address");
+            report(PersonalMediaTransferStatus::Failed, 0);
             return;
         };
         let endpoint = self.endpoint.clone();
+        report(PersonalMediaTransferStatus::Started, 0);
         tokio::spawn(async move {
-            if stream_personal_media(
+            let sent_bytes = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let result = stream_personal_media(
                 endpoint,
                 addr,
                 ws,
@@ -885,11 +917,27 @@ impl ActorState {
                 file_name,
                 total_bytes,
                 file,
+                progress.clone(),
+                target,
+                std::sync::Arc::clone(&sent_bytes),
             )
-            .await
-            .is_err()
-            {
+            .await;
+            let status = if result.is_ok() {
+                PersonalMediaTransferStatus::Completed
+            } else {
                 tracing::warn!(peer = %target, "personal media transfer did not complete");
+                PersonalMediaTransferStatus::Failed
+            };
+            if let Some(progress) = progress {
+                let _ = progress
+                    .send(NetEvent::PersonalMediaTransfer {
+                        target,
+                        transfer_id,
+                        sent_bytes: sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                        total_bytes,
+                        status,
+                    })
+                    .await;
             }
         });
     }
@@ -1356,6 +1404,9 @@ async fn stream_personal_media(
     file_name: String,
     total_bytes: u64,
     file: std::fs::File,
+    progress: Option<mpsc::Sender<NetEvent>>,
+    target: EndpointId,
+    sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> Result<(), ()> {
     use tokio::io::AsyncReadExt as _;
 
@@ -1380,6 +1431,7 @@ async fn stream_personal_media(
 
     let mut file = tokio::fs::File::from_std(file);
     let mut offset = 0_u64;
+    let mut last_reported = 0_u64;
     let mut hasher = blake3::Hasher::new();
     let mut buffer = vec![0_u8; PERSONAL_MEDIA_CHUNK_BYTES];
     let transfer = async {
@@ -1406,6 +1458,19 @@ async fn stream_personal_media(
             )
             .await?;
             offset = offset.saturating_add(u64::try_from(read).map_err(|_| ())?);
+            sent_bytes.store(offset, std::sync::atomic::Ordering::Relaxed);
+            if offset == total_bytes || offset.saturating_sub(last_reported) >= 8 * 1024 * 1024 {
+                if let Some(progress) = progress.as_ref() {
+                    let _ = progress.try_send(NetEvent::PersonalMediaTransfer {
+                        target,
+                        transfer_id,
+                        sent_bytes: offset,
+                        total_bytes,
+                        status: PersonalMediaTransferStatus::Progress,
+                    });
+                }
+                last_reported = offset;
+            }
         }
         let mut trailing = [0_u8; 1];
         if file.read(&mut trailing).await.map_err(|_| ())? != 0 {
@@ -2308,6 +2373,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the integration test verifies both receiver framing and the sender's ordered progress lifecycle"
+    )]
     async fn personal_media_streams_in_order_with_a_verified_finish_hash() {
         let (a, lookup_a) = endpoint().await;
         let (b, lookup_b) = endpoint().await;
@@ -2406,6 +2475,46 @@ mod tests {
             }
         }
         assert_eq!(received, bytes);
+
+        let mut statuses = Vec::new();
+        loop {
+            let event = timeout(Duration::from_secs(10), rx_a.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let NetEvent::PersonalMediaTransfer {
+                target,
+                transfer_id: id,
+                sent_bytes,
+                total_bytes,
+                status,
+            } = event
+            else {
+                continue;
+            };
+            assert_eq!(target, b_id);
+            assert_eq!(id, transfer_id);
+            assert!(sent_bytes <= total_bytes);
+            statuses.push((status, sent_bytes));
+            if status == PersonalMediaTransferStatus::Completed {
+                break;
+            }
+        }
+        assert_eq!(
+            statuses.first(),
+            Some(&(PersonalMediaTransferStatus::Started, 0))
+        );
+        assert!(statuses.iter().any(|(status, sent)| {
+            *status == PersonalMediaTransferStatus::Progress
+                && *sent == u64::try_from(bytes.len()).unwrap()
+        }));
+        assert_eq!(
+            statuses.last(),
+            Some(&(
+                PersonalMediaTransferStatus::Completed,
+                u64::try_from(bytes.len()).unwrap()
+            ))
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
