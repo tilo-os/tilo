@@ -98,6 +98,7 @@ const REPORT_NOTE_KEY: &str = "store.report_note";
 const PAGE_PREVIOUS_KEY: &str = "store.page_previous";
 const PAGE_NEXT_KEY: &str = "store.page_next";
 const PAGE_SIZE: usize = 48;
+const CATALOGUE_CONTENT_MAX_WIDTH: f32 = 1_120.0;
 /// Bound CRDT-supplied configuration before it is rendered, serialized, or
 /// forwarded to the Flatpak worker. These are deliberately generous relative
 /// to real remote names and HTTPS URLs, but prevent a hostile collaboration
@@ -1237,8 +1238,9 @@ impl StoreApp {
                 // compact, scan-friendly row.
                 catalogue_controls = catalogue_controls.push(Box::new(
                     Column::new()
+                        .with_no_padding()
                         .with_intrinsic_height()
-                        .with_horizontal_padding(16.0, 16.0)
+                        .with_horizontal_padding(0.0, 0.0)
                         .push(Box::new(
                             Row::new()
                                 .no_wrap()
@@ -1294,7 +1296,7 @@ impl StoreApp {
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
                         Container::new()
-                            .with_width(1120.0)
+                            .with_width(CATALOGUE_CONTENT_MAX_WIDTH)
                             .with_no_padding()
                             .with_child(child),
                     ))
@@ -2207,17 +2209,11 @@ impl StoreApp {
         reason = "the responsive catalogue header is one cohesive search, navigation, status, and toolbar surface"
     )]
     fn build_header(&self, theme: &Theme) -> Box<dyn Widget> {
-        let header_width = if self.rect.width() > 0.0 {
-            self.rect.width()
-        } else {
-            self.layout_width_hint
-        };
-        // Keep the masthead as an intentional vertical composition before
-        // its editorial subtitle gets squeezed beside the utility toolbar.
-        // The catalogue itself can still retain its desktop grid at this
-        // intermediate width.
-        let compact_header =
-            self.stacked_catalogue_layout() || (0.0 < header_width && header_width < 980.0);
+        // Use the same actual-width decision as the catalogue. A medium-width
+        // short window has room for the title and utility actions on one row;
+        // forcing it through a separate arbitrary header breakpoint both
+        // displaced results and repeated the source summary beside filters.
+        let compact_header = self.stacked_catalogue_layout();
         // Search state belongs to this window. Agents still discover every
         // stable app through the Store search provider; typing never changes
         // a collaborator's view or document history.
@@ -2271,17 +2267,14 @@ impl StoreApp {
             let mut header = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_horizontal_padding(16.0, 16.0)
-                .with_vertical_padding(22.0)
+                .with_horizontal_padding(0.0, 0.0)
+                .with_vertical_padding(12.0)
                 .with_gap(10.0)
                 .push(Box::new(
                     Text::new("Apps")
                         .with_scaled_size(28.0)
                         .with_weight(TextWeight::Semibold)
                         .with_heading_level(1),
-                ))
-                .push(Box::new(
-                    Container::new().with_no_padding().with_height(8.0),
                 ))
                 .push(Box::new(
                     Text::new("Useful software from sources you choose.")
@@ -2370,7 +2363,7 @@ impl StoreApp {
         let mut header = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_horizontal_padding(16.0, 16.0)
+            .with_horizontal_padding(0.0, 0.0)
             .with_gap(12.0);
         header = header.with_vertical_padding(24.0).with_gap(14.0);
         header = header.push(title_row);
@@ -2405,7 +2398,7 @@ impl StoreApp {
         let values = SourceFilter::ALL
             .iter()
             .map(|filter| {
-                let display = format!("Source · {}", filter.label());
+                let display = filter.label().to_owned();
                 (filter.label().to_owned(), display)
             })
             .collect();
@@ -2421,7 +2414,17 @@ impl StoreApp {
             Container::new()
                 .with_no_padding()
                 .with_width(176.0)
-                .with_child(Box::new(dropdown)),
+                .with_flex_grow()
+                .with_child(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(4.0)
+                        .push(Box::new(
+                            Text::new("Source").with_scaled_size(12.0).dimmed(),
+                        ))
+                        .push(Box::new(dropdown)),
+                )),
         )
     }
 
@@ -2430,7 +2433,7 @@ impl StoreApp {
         let values = labels
             .iter()
             .map(|label| {
-                let display = format!("Category · {label}");
+                let display = label.clone();
                 (label.clone(), display)
             })
             .collect();
@@ -2447,7 +2450,17 @@ impl StoreApp {
                 // fit inside the compact viewport instead of clipping the
                 // category affordance at the trailing edge.
                 .with_width(176.0)
-                .with_child(Box::new(dropdown)),
+                .with_flex_grow()
+                .with_child(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(4.0)
+                        .push(Box::new(
+                            Text::new("Category").with_scaled_size(12.0).dimmed(),
+                        ))
+                        .push(Box::new(dropdown)),
+                )),
         )
     }
 
@@ -2528,7 +2541,7 @@ impl StoreApp {
             .with_intrinsic_height()
             .with_gap(8.0)
             .push(Box::new(
-                Container::new().with_no_padding().with_height(28.0),
+                Container::new().with_no_padding().with_height(12.0),
             ));
         if page_count > 1 {
             column = column.push(Box::new(
@@ -2585,31 +2598,15 @@ impl StoreApp {
             }
         }
         if self.stacked_catalogue_layout() {
-            column = column.push(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(3.0)
-                    .push(Box::new(
-                        Text::new(if group_by_availability {
-                            "Your apps"
-                        } else {
-                            "Search results"
-                        })
-                        .with_scaled_size(20.0)
+            if !group_by_availability {
+                column = column.push(Box::new(
+                    Text::new(&format!("Matches · {visible_count}"))
+                        .with_scaled_size(16.0)
                         .with_weight(TextWeight::Semibold)
                         .with_heading_level(2),
-                    ))
-                    .push(Box::new(
-                        Text::new(&format!("{visible_count} available apps"))
-                            .with_scaled_size(12.0)
-                            .with_color(theme.text_dim),
-                    )),
-            ));
-            if group_by_availability && !ready_cards.is_empty() {
-                column = column.push(Box::new(
-                    Container::new().with_no_padding().with_height(12.0),
                 ));
+            }
+            if group_by_availability && !ready_cards.is_empty() {
                 column = column.push(Box::new(
                     Text::new(&format!("Ready to use · {}", ready_cards.len()))
                         .with_scaled_size(16.0)
@@ -2617,8 +2614,12 @@ impl StoreApp {
                         .with_heading_level(2),
                 ));
             }
-            for card in ready_cards {
-                column = column.push(card);
+            if !ready_cards.is_empty() {
+                column = column.push(Box::new(
+                    CardGrid::content_sized(ready_cards)
+                        .with_min_card_width(f64::from(CATALOGUE_CONTENT_MAX_WIDTH))
+                        .with_gap(8.0),
+                ));
             }
             if group_by_availability && !discover_cards.is_empty() {
                 column = column.push(Box::new(
@@ -2636,8 +2637,12 @@ impl StoreApp {
             } else {
                 search_cards
             };
-            for card in remaining_cards {
-                column = column.push(card);
+            if !remaining_cards.is_empty() {
+                column = column.push(Box::new(
+                    CardGrid::content_sized(remaining_cards)
+                        .with_min_card_width(f64::from(CATALOGUE_CONTENT_MAX_WIDTH))
+                        .with_gap(8.0),
+                ));
             }
         } else {
             // This is nested in the deliberately inset scroll column above;
@@ -2671,13 +2676,8 @@ impl StoreApp {
                             Container::new().with_no_padding().with_height(14.0),
                         ))
                         .push(Box::new(
-                            CardGrid::new(cards)
+                            CardGrid::content_sized(cards)
                                 .with_min_card_width(292.0)
-                                // A 180px card keeps its action row in the
-                                // first desktop viewport while retaining a
-                                // calm, two-line description measure.  The
-                                // compact list keeps its natural height.
-                                .with_card_height(180.0)
                                 .with_gap(14.0),
                         )),
                 ) as Box<dyn Widget>
@@ -2730,7 +2730,7 @@ impl StoreApp {
                         .push(Box::new(Spacer::new()))
                         .push(Box::new(
                             Container::new()
-                                .with_width(1120.0)
+                                .with_width(CATALOGUE_CONTENT_MAX_WIDTH)
                                 .with_no_padding()
                                 .with_child(Box::new(recommended)),
                         ))
@@ -2769,7 +2769,7 @@ impl StoreApp {
         Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
-                .with_content_gutter(8.0)
+                .with_content_gutter(0.0)
                 .with_persisted_offset(self.scroll_offset.clone())
                 .with_child(Box::new(column)),
         )
@@ -4337,6 +4337,321 @@ mod tests {
             !app.group_catalogue_by_availability(),
             "search results remain a single relevance-ranked sequence"
         );
+    }
+
+    fn layout_composition(widget: &mut dyn Widget, width: f32) -> (TaffyTree<()>, NodeId) {
+        let mut tree = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = widget.build_layout(&mut tree, &Theme::dark(), &mut map);
+        let root = tree
+            .new_with_children(
+                taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::length(width),
+                        height: taffy::Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        let mut text = TextRenderer::new();
+        tree.compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::Definite(900.0),
+            },
+            |known, available, id, _, _| {
+                map.get(&id).map_or(taffy::Size::ZERO, |ptr| unsafe {
+                    (**ptr).measure(known, available, &mut text)
+                })
+            },
+        )
+        .unwrap();
+        widget.apply_layout(&tree, node, Point::ZERO);
+        (tree, node)
+    }
+
+    fn named_rects(widget: &dyn Widget, name: &str, out: &mut Vec<Rect>) {
+        if widget.name() == name {
+            out.push(widget.get_rect());
+        }
+        for child in widget.children() {
+            named_rects(child, name, out);
+        }
+    }
+
+    fn accessible_rect(widget: &dyn Widget, name: &str) -> Option<Rect> {
+        if widget
+            .accessibility()
+            .as_ref()
+            .and_then(|node| node.name.as_deref())
+            == Some(name)
+        {
+            return Some(widget.get_rect());
+        }
+        widget
+            .children()
+            .into_iter()
+            .find_map(|child| accessible_rect(child, name))
+    }
+
+    fn accessible_name_count(widget: &dyn Widget, name: &str) -> usize {
+        let own = usize::from(
+            widget
+                .accessibility()
+                .as_ref()
+                .and_then(|node| node.name.as_deref())
+                == Some(name),
+        );
+        own + widget
+            .children()
+            .into_iter()
+            .map(|child| accessible_name_count(child, name))
+            .sum::<usize>()
+    }
+
+    fn descendant_bottom(widget: &dyn Widget) -> f64 {
+        widget
+            .children()
+            .into_iter()
+            .map(descendant_bottom)
+            .fold(widget.get_rect().y1, f64::max)
+    }
+
+    fn card_grid_extents(widget: &dyn Widget, out: &mut Vec<(Rect, f64)>) {
+        if widget.name() == "CardGrid" {
+            out.push((widget.get_rect(), descendant_bottom(widget)));
+            return;
+        }
+        for child in widget.children() {
+            card_grid_extents(child, out);
+        }
+    }
+
+    fn assert_finite_rects(widget: &dyn Widget) {
+        let rect = widget.get_rect();
+        assert!(
+            [rect.x0, rect.y0, rect.x1, rect.y1]
+                .into_iter()
+                .all(f64::is_finite),
+            "{} has non-finite geometry: {rect:?}",
+            widget.name()
+        );
+        for child in widget.children() {
+            assert_finite_rects(child);
+        }
+    }
+
+    fn control_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
+        if widget.test_id() == Some(id) {
+            return Some(widget);
+        }
+        for child in widget.children_mut() {
+            if let Some(found) = control_mut(child, id) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn card_pointer_details_and_primary_activation_keep_typed_bindings() {
+        use winit::event::WindowEvent;
+        for width in [480.0, 1200.0] {
+            let app = seeded_app();
+            let item = &app.items[1];
+            let action = item.action_kind(true);
+            for busy in [false, true] {
+                let card = crate::widgets::store_card(
+                    item,
+                    action,
+                    "select",
+                    "primary",
+                    &Theme::dark(),
+                    None,
+                    item_action_binding(item, action),
+                    detail_binding(item),
+                    width < 600.0,
+                    busy,
+                );
+                let mut grid = CardGrid::content_sized(vec![card]);
+                let (tree, node) = layout_composition(&mut grid, width);
+                let center = control_mut(&mut grid, "select.button")
+                    .unwrap()
+                    .get_rect()
+                    .center();
+                let mut doc = AutoCommit::new();
+                let mut focus = None;
+                let cursor = WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+                };
+                let events = [
+                    cursor,
+                    WindowEvent::MouseInput {
+                        device_id: unsafe { std::mem::zeroed() },
+                        state: winit::event::ElementState::Pressed,
+                        button: winit::event::MouseButton::Left,
+                    },
+                    WindowEvent::MouseInput {
+                        device_id: unsafe { std::mem::zeroed() },
+                        state: winit::event::ElementState::Released,
+                        button: winit::event::MouseButton::Left,
+                    },
+                ];
+                for event in events {
+                    grid.handle_event(
+                        &event,
+                        1.0,
+                        &winit::event::Modifiers::default(),
+                        &mut doc,
+                        &automerge::ROOT,
+                        &mut false,
+                        &mut focus,
+                        node,
+                        &tree,
+                    );
+                }
+                let details = grid.take_control_invocation().expect("pointer Details");
+                assert_eq!(details.address.resource, format!("app:{}", item.id));
+                assert_eq!(details.address.action, "show-details");
+                let primary = control_mut(&mut grid, "primary").unwrap();
+                assert_eq!(primary.is_enabled(), !busy);
+                assert_eq!(
+                    primary.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT),
+                    !busy
+                );
+                let invoked = grid.take_control_invocation();
+                if busy {
+                    assert!(invoked.is_none());
+                } else {
+                    assert_eq!(invoked.unwrap().address.action, action_code(action));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_cards_do_not_cover_each_others_actions() {
+        let mut app = seeded_app();
+        app.items.extend(app.items.clone());
+        for (i, item) in app.items.iter_mut().enumerate() {
+            item.id = format!("test-{i}");
+            item.description =
+                "Useful software with a description that wraps onto another line.".into();
+        }
+        app.set_layout_width_hint(480.0);
+        let mut list = app.compose(&Theme::dark());
+        layout_composition(list.as_mut(), 480.0);
+        fn check(widget: &dyn Widget) {
+            if widget.name() == "ContentCard" {
+                let mut buttons = Vec::new();
+                named_rects(widget, "Button", &mut buttons);
+                for button in buttons {
+                    assert!(
+                        button.y1 <= widget.get_rect().y1 - 8.0,
+                        "action {button:?} outside {:?}",
+                        widget.get_rect()
+                    );
+                }
+            }
+            for child in widget.children() {
+                check(child);
+            }
+        }
+        check(list.as_ref());
+    }
+
+    #[test]
+    fn medium_short_viewport_uses_one_width_appropriate_source_summary() {
+        let mut app = seeded_app();
+        app.set_layout_width_hint(800.0);
+        let tree = app.compose(&Theme::dark());
+        let summary = app.catalogue_source_summary();
+        assert_eq!(accessible_name_count(tree.as_ref(), &summary), 1);
+        assert_eq!(accessible_name_count(tree.as_ref(), "App Store"), 1);
+        assert_eq!(accessible_name_count(tree.as_ref(), "Apps"), 0);
+    }
+
+    #[test]
+    fn full_narrow_catalogue_keeps_discover_section_below_ready_cards() {
+        let mut app = seeded_app();
+        app.set_items(crate::shots::fixture_catalog());
+        app.set_layout_width_hint(480.0);
+        let mut tree = app.compose(&Theme::dark());
+        layout_composition(tree.as_mut(), 480.0);
+
+        let discover = accessible_rect(tree.as_ref(), "Discover more · 3")
+            .expect("discover heading in full catalogue");
+        let mut grids = Vec::new();
+        card_grid_extents(tree.as_ref(), &mut grids);
+        assert_eq!(grids.len(), 2, "ready and discover grids");
+        assert!(
+            grids[0].1 <= discover.y0,
+            "ready descendants end at {}, over discover heading {:?}; allocated grid {:?}",
+            grids[0].1,
+            discover,
+            grids[0].0
+        );
+        assert!(
+            discover.y1 <= grids[1].0.y0,
+            "discover heading {:?} must precede discover grid {:?}",
+            discover,
+            grids[1].0
+        );
+    }
+
+    #[test]
+    fn full_catalogue_geometry_stays_finite_in_stacked_layouts() {
+        for (width, scale) in [(480.0, 1.0), (1_280.0, 2.0)] {
+            let mut app = seeded_app();
+            app.set_items(crate::shots::fixture_catalog());
+            app.set_layout_width_hint(width);
+            app.text_scale = scale;
+            let mut tree = app.compose(&Theme::dark().with_text_scale(scale));
+            layout_composition(tree.as_mut(), width as f32);
+            assert_finite_rects(tree.as_ref());
+        }
+    }
+
+    #[test]
+    fn catalogue_cards_contain_actions_and_align_long_descriptions() {
+        let mut app = seeded_app();
+        app.set_layout_width_hint(1200.0);
+        app.items[0].description = "A useful app with a longer description. ".repeat(7);
+        let mut list = app.build_list(&Theme::dark());
+        layout_composition(list.as_mut(), 1200.0);
+        fn check(widget: &dyn Widget, found: &mut usize) {
+            if widget.name() == "CardGrid" {
+                let cards = widget.children();
+                let mut bottoms = Vec::new();
+                for card in cards {
+                    let mut buttons = Vec::new();
+                    named_rects(card, "Button", &mut buttons);
+                    for button in &buttons {
+                        assert!(
+                            button.y1 <= card.get_rect().y1 - 8.0,
+                            "button {button:?} must fit padded card {:?}",
+                            card.get_rect()
+                        );
+                        assert!(button.x0 >= card.get_rect().x0 && button.x1 <= card.get_rect().x1);
+                    }
+                    bottoms.push(buttons.last().unwrap().y1);
+                    *found += 1;
+                }
+                for bottom in &bottoms {
+                    assert!((bottom - bottoms[0]).abs() < 1.0);
+                }
+            }
+            for child in widget.children() {
+                check(child, found);
+            }
+        }
+        let mut found = 0;
+        check(list.as_ref(), &mut found);
+        assert_eq!(found, 3);
     }
 
     #[test]

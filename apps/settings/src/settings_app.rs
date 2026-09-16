@@ -297,13 +297,15 @@ impl SettingsApp {
     fn build_content(&self) -> Box<dyn Widget> {
         let body = self.build_pane_body();
         let inner = Column::new()
+            .with_no_padding()
+            .with_horizontal_padding(24.0, 24.0)
+            .with_vertical_padding(20.0)
             .with_intrinsic_height()
-            .push(crate::widgets::vgap(14.0))
+            .with_gap(16.0)
             .push(crate::widgets::page_heading(
                 self.selected.label(),
                 self.selected.subtitle(),
             ))
-            .push(crate::widgets::vgap(28.0))
             .push(body);
         // Account forms and cards are more legible as a column on large
         // desktop displays. Operational panes deliberately keep their full
