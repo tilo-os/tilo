@@ -735,7 +735,9 @@ mod tests {
     #[test]
     fn click_on_a_row_selects_it_click_outside_dismisses() {
         let mut p = opened();
-        let row2 = p.row_rect(2);
+        let row2 = p.item_rect(2).expect("published item geometry");
+        assert_eq!(p.item_at(row2.center()), Some(2));
+        assert!(p.item_rect(p.items().len()).is_none());
         dispatch(&mut p, &cursor_at(row2.center()));
         assert!(dispatch(&mut p, &left_press()), "row click consumed");
         assert_eq!(p.take_selection(), Some(2), "clicking a row selects it");
