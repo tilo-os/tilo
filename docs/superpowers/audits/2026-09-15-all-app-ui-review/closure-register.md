@@ -7,7 +7,7 @@ Assigned work: [Shared](../../plans/2026-09-15-measured-ui-components.md), [Comp
 | App | Review | Open findings | Assigned work | Closure |
 |---|---|---|---|---|
 | agent | [windowless](review-1.md) | 0 | Windowless review complete | no visual surface |
-| api_tester | [visual-reviewed](review-1.md) | 3 | Composition 11 (Task1 umbrella) | fixes and final verification pending |
+| api_tester | [visual-reviewed](review-1.md) | 0 | Composition 11 accepted; final verification and separate draft follow-up | Recorded visual findings verified; final all-app pass pending. Separate saved-draft adoption issue remains open (additional-findings.md). |
 | backups | [visual-reviewed](review-1.md) | 2 | Composition 5 | fixes and final verification pending |
 | browser | [visual-reviewed](review-1.md) | 0 | Final chrome verification | no confirmed defect; final verification pending |
 | calculator | [visual-reviewed](review-1.md) | 1 | Text/geometry 17 | fixes and final verification pending |
