@@ -203,6 +203,30 @@ effects from the remaining native-userland 9p share or establish a root cause.
 
 ## Reproduction and evidence
 
+### Native executable transport control
+
+`kernel-arm-capsule-native-ram-03` copied the native FEX, FEXServer and helper
+executables, their resolved ELF interpreter, and all `ldd` dependencies into
+VM tmpfs (40,368 KiB). Each copy was byte-compared with its source, hashed, and
+bound read-only over the original path before running the unchanged `od`
+matrix. The guest filesystem remained the verified read-only SquashFS image.
+No source image or host disk was modified.
+
+The same failures persisted: guest `/dev/null` succeeded, the regular-file
+read printed its bytes then failed with exit 134, and both CPU-list reads
+failed with the allocator assertion and exit 139. Native controls, guest
+`true`, and guest CPU-count `getconf` still passed. Thus directly mapping these
+native executables and their startup libraries from 9p is not necessary for
+the observed failure. Other native data paths remain on 9p; this does not
+prove every transport effect absent or establish a root cause.
+
+The first two RAM-control attempts stopped during dependency-list setup
+because `ldd` headings were mistaken for paths. Neither reached the guest
+matrix and neither is runtime evidence. The completed third run retains its
+shell trace, copy hashes, input identities, and diagnostic result.
+
+### Running the harness
+
 Use `python3 os/tests/kernel-arm-capsule-smoke.py --help` for the explicit kernel,
 module archive, native image, guest rootfs, pinned runtimes and binary inputs.
 Start with `--mode probe`, then use a new output directory for `--mode console`.
