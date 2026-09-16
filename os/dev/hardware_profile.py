@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import re
+import stat
 import sys
 
 
@@ -10,6 +11,71 @@ PROFILES_DIR = Path(__file__).resolve().parents[1] / "hardware/profiles"
 DEFINITION_PATH = Path("usr/lib/qos/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
+PROFILE_PATH = Path("usr/lib/qos/hardware-profile.json")
+PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
+DEFAULT_TARGET_IMGREF = "code.podesta.ai/qos/qos:latest"
+
+
+def validate_target_imgref(value):
+    """Only this exact repository is signature-required by the image policy."""
+    if not isinstance(value, str) or not re.fullmatch(
+        r"code\.podesta\.ai/qos/qos(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})", value
+    ):
+        raise ValueError("QOS_TARGET_IMGREF must explicitly name a valid tag or sha256 digest in the signature-required code.podesta.ai/qos/qos repository")
+    return value
+
+
+def trusted_path(root, relative, *, regular):
+    """Reject writable, non-root-owned or redirected immutable image inputs."""
+    current = root
+    for index, part in enumerate(("", *relative.parts)):
+        if part:
+            current = current / part
+        info = current.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"hardware profile input contains a symlink: {current}")
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError(f"hardware profile input must be root-owned and not group/world writable: {current}")
+        if regular and index == len(relative.parts):
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError(f"hardware profile input is not a regular file: {current}")
+        elif not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"hardware profile input is not a directory: {current}")
+    return current
+
+
+def read_profile(root):
+    candidate = root / PROFILE_PATH
+    if not candidate.exists() and not candidate.is_symlink():
+        definition = root / DEFINITION_PATH
+        if definition.exists() or definition.is_symlink():
+            raise ValueError("hardware definition has no generated hardware profile")
+        return None
+    profile = trusted_path(root, PROFILE_PATH, regular=True)
+    if profile.stat().st_size > 16384:
+        raise ValueError("hardware profile is too large")
+    data = json.loads(profile.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or set(data) != PROFILE_FIELDS:
+        raise ValueError("hardware profile has missing or unknown fields")
+    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
+        raise ValueError("unsupported hardware profile schema")
+    definition = read_definition(trusted_path(root, DEFINITION_PATH, regular=True))
+    if data["id"] != definition["id"]:
+        raise ValueError("hardware profile id does not match its image-owned definition")
+    if data["architecture"] != definition["architecture"]:
+        raise ValueError("hardware profile requires a matching native image architecture")
+    validate_target_imgref(data["target_update_ref"])
+    return data
+
+
+def install_update_origin(root, override=""):
+    data = read_profile(root)
+    if data is None:
+        return validate_target_imgref(override or DEFAULT_TARGET_IMGREF)
+    bound = data["target_update_ref"]
+    if override and override != bound:
+        raise ValueError("QOS_TARGET_IMGREF conflicts with the image-owned hardware profile update reference")
+    return bound
 
 
 def profile_id(value):
@@ -76,10 +142,14 @@ def load_definition(name, directory=PROFILES_DIR):
 
 
 def main():
-    if len(sys.argv) != 5:
-        raise SystemExit("usage: hardware_profile.py PROFILE DEFINITIONS ARCHITECTURE FIRMWARE_ROOT")
-    name, directory, architecture, firmware_root = sys.argv[1:]
     try:
+        if len(sys.argv) == 3 and sys.argv[1] == "--install-update-origin":
+            # Runtime callers cannot redirect metadata to a writable path.
+            print(install_update_origin(Path("/"), sys.argv[2]))
+            return
+        if len(sys.argv) != 6:
+            raise ValueError("usage: hardware_profile.py PROFILE DEFINITIONS ARCHITECTURE FIRMWARE_ROOT TARGET_UPDATE_REF")
+        name, directory, architecture, firmware_root, target_update_ref = sys.argv[1:]
         definition = load_definition(name, Path(directory))
         if architecture != definition["architecture"]:
             raise ValueError(f"{name} requires a native {definition['architecture']} builder")
@@ -87,6 +157,7 @@ def main():
             manifest = Path(firmware_root) / name / "manifest.json"
             if not manifest.is_file() or manifest.stat().st_size == 0:
                 raise ValueError(f"stage the {name} firmware manifest first")
+        validate_target_imgref(target_update_ref)
     except (OSError, ValueError, TypeError) as error:
         raise SystemExit(f"hardware profile rejected: {error}") from error
 

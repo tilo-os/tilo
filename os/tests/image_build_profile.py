@@ -13,6 +13,7 @@ REPO = Path(__file__).resolve().parents[2]
 BUILD_INTERCEPTED = 73
 KERNEL_PIN = "registry.invalid/qos/kernel@sha256:" + "1" * 64
 RPMS_PIN = "registry.invalid/qos/rpms@sha256:" + "2" * 64
+TARGET_REF = "code.podesta.ai/qos/qos:board-fixture"
 
 
 class ImageBuildProfileTests(unittest.TestCase):
@@ -136,8 +137,17 @@ exit {BUILD_INTERCEPTED}
 
     def test_lenovo_profile_is_forwarded_with_a_native_builder_and_manifest(self):
         self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
-        arguments = self.build_arguments(self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed"))
+        arguments = self.build_arguments(self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed", QOS_TARGET_IMGREF=TARGET_REF))
         self.assertEqual(arguments["QOS_HARDWARE_PROFILE"], "lenovo-83ed")
+        self.assertEqual(arguments["QOS_TARGET_IMGREF"], TARGET_REF)
+
+    def test_hardware_profile_requires_explicit_trusted_update_reference(self):
+        self.write("os/hardware/firmware/lenovo-83ed/manifest.json", "{}\n")
+        for value in ("", "registry.invalid/qos:fixture", "code.podesta.ai/qos/qos:",
+                      "code.podesta.ai/qos/qos@sha256:bad", TARGET_REF + "\n"):
+            with self.subTest(value=value):
+                result = self.run_builder(QOS_HARDWARE_PROFILE="lenovo-83ed", QOS_TARGET_IMGREF=value)
+                self.assert_rejected_before_build(result, "QOS_TARGET_IMGREF")
 
     def test_unknown_profile_fails_before_build(self):
         result = self.run_builder(QOS_HARDWARE_PROFILE="unknown-board")
@@ -150,7 +160,8 @@ exit {BUILD_INTERCEPTED}
                     "schema_version": 1, "id": "other-board", "architecture": architecture,
                     "devicetree": None, "firmware": {},
                 }))
-                result = self.run_builder(QOS_HARDWARE_PROFILE="other-board", QOS_TEST_ARCH=architecture)
+                result = self.run_builder(QOS_HARDWARE_PROFILE="other-board", QOS_TEST_ARCH=architecture,
+                                          QOS_TARGET_IMGREF=TARGET_REF)
                 self.assertEqual(self.build_arguments(result)["QOS_HARDWARE_PROFILE"], "other-board")
                 result = self.run_builder(QOS_HARDWARE_PROFILE="other-board", QOS_TEST_ARCH=architecture, QOS_SKIP_BUILD="1")
                 self.assert_rejected_before_build(result, "QOS_SKIP_BUILD cannot apply a hardware profile")
