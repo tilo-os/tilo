@@ -359,7 +359,7 @@ Task1 is now an umbrella for Tasks10–14 and must not be dispatched as one cros
 
 **Current:** `relayout` (~552/602) uses `(avail * 0.42).clamp(120,360)` then a 30px result strip. `editor` and `grid` own text/selection; `draw_query_tab`, `click_query_toolbar`, `on_key_pressed`, `handle_event`, `accessibility`, `perform_action` are integration paths.
 
-- [ ] Introduce local automatic/manual query height using the A1 policy, with default based on query line metrics plus a small editing allowance (not the whole content fraction). Reserve toolbar and result-message height first. Keep Data/Structure tab geometry unchanged.
+- [ ] Introduce local automatic/manual query height, with the default based on query line metrics plus a small editing allowance (not the whole content fraction). Store a requested manual height separately from the currently clamped height; Reset returns to automatic sizing. Reserve toolbar and result-message height first. Keep Data/Structure tab geometry unchanged.
 - [ ] Add a separator below editor; one computed rectangle controls paint and drag. Named keyboard height controls/Reset route through the same setter. Keep Run/snippets/transaction commands and editor shortcut handling ahead of unrelated global keys.
 - [ ] Store the manual preference on the app, not query CRDT; preserve it across result updates and Query/Data/Structure switching. Preserve editor caret and result selection on relayout.
 
@@ -377,6 +377,8 @@ Task1 is now an umbrella for Tasks10–14 and must not be dispatched as one cros
 - [ ] Bottom panel automatic tab/row heights must contain resolved text; preserve the existing fixed panel choices and Task10 visibility/trigger behavior. There is no manual panel-resize preference in current source. Preserve terminal rendering contracts.
 - [ ] Test multiline code at1→2→1, same logical caret after click/scroll, drag selection, diagnostic/completion/search geometry, tabs and terminal paths. Focused app/editor tests; capture normal/narrow/2× and short with populated code and open panel. Confirm code height remains available with the default dock collapsed.
 
+**Task 13 source ruling (2026-09-16):** Preserve host scale when selecting an app palette and invalidate parent structure on panel height-class changes. Repair the existing metric model and preserve Task 10 focus/disclosure behavior. Do not introduce IME capability or synthetic per-line accessibility children; retain existing Document/control semantics and report current character-cell shaping limitations.
+
 ### Task 14: DB Client grid and query chrome metrics
 
 **Depends on Task12. Files:** `apps/db_client/src/grid.rs`, `app.rs` metric integration only.
@@ -384,6 +386,15 @@ Task1 is now an umbrella for Tasks10–14 and must not be dispatched as one cros
 - [ ] Replace automatic row/header/font/column width caches with measured GridMetrics; share metrics in draw, hit testing, visible rows and scrolling. Refresh on font/scale generation without `bind`, which resets scroll/order. Preserve actual sort, order, hover and both scroll axes. Do not invent selected-row state absent from current GridView.
 - [ ] Query tabs, toolbar and result strip must use corresponding measured band heights. Feed them into Task12's single query layout and preserve the requested manual split height separately from effective clamps.
 - [ ] Test Query and Data populated tables, sorting then nonzero scroll across1→2→1, correct header hit and row mapping, result count/gutter, Run and Query/Data/Structure navigation. Normal/narrow/2×/short captures and existing focused tests. Existing user column widths, if supported, remain authoritative.
+
+#### Controller source rulings — 2026-09-16
+
+- Keep stored logical row/x preferences across temporary metric/viewport clamps; use bounded effective offsets consistently in paint, hits and scrollbar. A new explicit user scroll starts from the effective position and updates the preference. New-result bind keeps its existing reset semantics. This satisfies scale restoration without painting an out-of-range thumb.
+- Grid pixel-wheel conversion belongs to metric integration: verify actual event units through the host path, normalize physical pixels once, and convert using measured row geometry with retained fractional motion if necessary. Keep existing line-wheel behavior and do not change sidebar scrolling.
+- Include measured widths/bands and collision handling for existing tab, Run, Snippets, result/count controls; snippet paint and hit rectangles must agree. No new snippet keyboard/a11y feature or wholesale Toolbar migration. Structure consumes the shared tab origin only; do not refactor its rows or the sidebar.
+- No selected-row model, column resizing, interactive scrollbar or grid row-number gutter exists; do not introduce them. Repair bounded half-open header/body hits and width/paint agreement within GridMetrics. Task 14 consumes accepted Task 12 geometry and requested-height state.
+
+Ruling: these narrow dependencies make the specified scale/scroll/target contract coherent; if wrong, revise the local metric/state seam without changing documents or adding controls. Source preflight: .superpowers/app-ui-2026-09-15/db-metrics-preflight.md.
 
 ## Controller validation contract for every task
 
