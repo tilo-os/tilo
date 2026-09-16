@@ -5268,6 +5268,25 @@ impl ShellOverlayHost {
                 event.kind,
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. }
             ) {
+                // A host app launched during a terminal Xwayland outage has
+                // no synchronous window result. If its launcher chain does
+                // report failure, return a symbolic restore to the retryable
+                // state so a later bridge recovery can try it again.
+                if crate::shell::host_apps::x11_availability()
+                    == crate::shell::host_apps::X11Availability::Unavailable
+                    && crate::shell::host_apps::find(&event.package_id).is_some()
+                    && {
+                        let chrome = chrome_handle.borrow();
+                        let mut tree = chrome.tree_mut();
+                        crate::shell::peer_windows::mark_failed_host_restore(
+                            &mut tree,
+                            &event.package_id,
+                        )
+                    }
+                {
+                    chrome_handle.borrow_mut().bump();
+                    posted = true;
+                }
                 // A failed process can never claim its promised toplevel, so
                 // clear it at the same boundary as the opening notice.
                 crate::shell::launcher::clear_pending_placement(&event.package_id);
