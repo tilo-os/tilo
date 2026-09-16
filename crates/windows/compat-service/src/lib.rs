@@ -37,6 +37,7 @@ mod resources;
 mod service;
 mod session;
 mod store;
+mod translated;
 mod vm_adapter;
 
 pub use audio_proxy::{AudioProxyError, AudioProxyLease};
@@ -46,6 +47,7 @@ pub use catalogue::{
 pub use execute::{
     BwrapExecutor, ExecutionError, ExecutionOutcome, SECCOMP_CHILD_FD, SandboxExecutor,
 };
+pub use translated::run_translated_command;
 pub use installer::{
     InstallerError, InstallerInspection, MAX_INSTALLER_BYTES, PeMachine, inspect_installer,
 };
