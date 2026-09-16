@@ -58,9 +58,7 @@ use crate::event_popovers::{
 };
 use crate::ics;
 use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
-use crate::model::{
-    Event, Id, ListSel, Model, Palette, Priority, Recurrence, Task, View, seed_demo,
-};
+use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
 use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineEventCtx, TimelineInteraction, TimelineRenderEvent,
@@ -10931,7 +10929,7 @@ mod tests {
     #[test]
     fn caldav_reconciliation_keeps_a_vtodo_at_its_stable_resource_across_pulls() {
         let uid = Uuid::new_v4();
-        let remote_task = |done| Task {
+        let remote_task = |done| crate::model::Task {
             id: uid,
             title: "Server task".into(),
             done,
@@ -10952,25 +10950,26 @@ mod tests {
         };
         let mut app = CalendarApp::new_empty_for_shots();
         let mut doc = AutoCommit::new();
-        let apply = |app: &mut CalendarApp, doc: &mut AutoCommit, task: Task, etag: &str| {
-            app.apply_sync_result(
-                caldav::SyncResult {
-                    resources: vec![caldav::RemoteResource {
-                        calendar_id: "work/default".into(),
-                        href: "/dav/work/tasks.ics".into(),
-                        etag: Some(etag.into()),
-                        events: Vec::new(),
-                        tasks: vec![task],
-                    }],
-                    ..caldav::SyncResult::default()
-                },
-                SyncOutcome::Synced {
-                    calendars: 1,
-                    events: 0,
-                },
-                doc,
-            );
-        };
+        let apply =
+            |app: &mut CalendarApp, doc: &mut AutoCommit, task: crate::model::Task, etag: &str| {
+                app.apply_sync_result(
+                    caldav::SyncResult {
+                        resources: vec![caldav::RemoteResource {
+                            calendar_id: "work/default".into(),
+                            href: "/dav/work/tasks.ics".into(),
+                            etag: Some(etag.into()),
+                            events: Vec::new(),
+                            tasks: vec![task],
+                        }],
+                        ..caldav::SyncResult::default()
+                    },
+                    SyncOutcome::Synced {
+                        calendars: 1,
+                        events: 0,
+                    },
+                    doc,
+                );
+            };
 
         apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
         let id = CalDoc::remote_id_for_href(&doc, "work/default", "/dav/work/tasks.ics#qos-task-0")
