@@ -29,7 +29,8 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, FlapState, Row, SplitLayout, Widget};
+use ui::widget::toggle_group::Segment;
+use ui::widget::{Button, FlapState, SplitLayout, ToggleGroup, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -47,12 +48,6 @@ use crate::store;
 const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
 const CUSTOMIZER_W: f32 = 344.0;
-/// Fixed height the preview takes when the layout collapses to a narrow
-/// vertical stack (preview above customizer inside a scroll region). Sized
-/// to fit the preview's full specimen (window card through the two charts)
-/// so it doesn't overrun the customizer stacked beneath it.
-const NARROW_PREVIEW_H: f32 = 560.0;
-
 /// Allocated-width breakpoint (logical px). At or above this the gallery is a
 /// docked sidebar beside the preview + customizer; below it the gallery
 /// becomes an overlay flap. Chosen so the gallery, a usable preview, and the
@@ -90,7 +85,7 @@ pub struct ThemesApp {
     narrow_preview: bool,
     narrow_view_chosen: bool,
     narrow_view_request: Rc<Cell<Option<bool>>>,
-    narrow_tabs: Row,
+    narrow_tabs: ToggleGroup,
     narrow_tabs_node: Option<NodeId>,
     customize_scroll: f64,
     preview_scroll: f64,
@@ -188,20 +183,14 @@ impl ThemesApp {
     pub fn new() -> Self {
         let top_commands = Rc::new(RefCell::new(Vec::new()));
         let narrow_view_request = Rc::new(Cell::new(None));
-        let customize_request = narrow_view_request.clone();
         let preview_request = narrow_view_request.clone();
-        let narrow_tabs = Row::new()
-            .no_wrap()
-            .push(Box::new(
-                Button::new("themes.customize", "Customize", None)
-                    .fit_content(40.0)
-                    .on_view(move || customize_request.set(Some(false))),
-            ))
-            .push(Box::new(
-                Button::new("themes.full-preview", "Full preview", None)
-                    .fit_content(40.0)
-                    .on_view(move || preview_request.set(Some(true))),
-            ));
+        let narrow_tabs = ToggleGroup::new(
+            vec![Segment::new("Customize"), Segment::new("Full preview")],
+            0,
+        )
+        .on_view("themes.view", move |index| {
+            preview_request.set(Some(index == 1));
+        });
         Self {
             narrow_preview: false,
             narrow_view_chosen: false,
@@ -293,20 +282,28 @@ impl ThemesApp {
     /// are seeded here.
     ///
     /// * `""`      — default: docked (wide) or the revealed overlay flap (narrow).
-    /// * `"menu"`  — open the sidebar actions menu on the selected custom row.
-    /// * `"scroll"`— narrow, flap closed, scrolled partway to prove the stack scrolls.
-    /// * `"font"`  — select a preset with a distinctive (monospace) font so the
+    /// * `"live"`      — narrow live preset preview; short views settle at its tail.
+    /// * `"preview"`   — narrow custom preview; short views settle at its tail.
+    /// * `"customize"` — narrow, flap closed, editable controls at the top.
+    /// * `"menu"`      — open the sidebar actions menu on the selected custom row.
+    /// * `"scroll"`    — narrow, flap closed, scrolled partway to prove the stack scrolls.
+    /// * `"font"`      — select a preset with a distinctive (monospace) font so the
     ///   preview specimen visibly renders in it.
     pub fn seed_shot(&mut self, width: f64, scenario: &str) {
         self.build_width = width;
         let layout = SplitLayout::from_width(width, BREAKPOINT);
         self.last_layout = Some(layout);
         match scenario {
-            "live" => self.gallery_flap.snap(false),
+            "live" => {
+                self.gallery_flap.snap(false);
+                self.shot.scroll = true;
+            }
+            "customize" => self.gallery_flap.snap(false),
             "preview" => {
                 self.gallery_flap.snap(false);
-                self.narrow_preview = true;
                 self.narrow_view_chosen = true;
+                self.set_narrow_preview(true);
+                self.shot.scroll = true;
             }
             "scroll" => {
                 self.gallery_flap.snap(false);
@@ -839,6 +836,7 @@ impl ThemesApp {
     }
 
     fn set_narrow_preview(&mut self, preview: bool) {
+        self.narrow_tabs.set_selected(usize::from(preview));
         if self.narrow_preview == preview {
             return;
         }
@@ -897,8 +895,8 @@ impl ThemesApp {
             parent_node(taffy, Style::default(), &[])
         };
         if overlay {
-            // Collapsed: the preview takes the full width at a fixed height so
-            // it stacks above the customizer inside the vertical scroll.
+            // Collapsed: the preview takes the full width at the height its
+            // specimen owns, so every drawn section participates in scroll.
             // `flex_basis: auto` is required — the docked style pins it to 0
             // (grow-from-zero), which would collapse the fixed height here.
             let _ = taffy.set_style(
@@ -906,7 +904,7 @@ impl ThemesApp {
                 Style {
                     size: Size {
                         width: Dimension::percent(1.0),
-                        height: Dimension::length(NARROW_PREVIEW_H),
+                        height: Dimension::length(self.preview.narrow_intrinsic_height()),
                     },
                     flex_grow: 0.0,
                     flex_shrink: 0.0,
@@ -1775,13 +1773,8 @@ impl Widget for ThemesApp {
         {
             self.narrow_view_chosen = true;
             self.set_narrow_preview(false);
-            if let Some(trigger) = self.narrow_tabs.children_mut().get_mut(1) {
-                trigger.set_focus(true);
-            }
-            *focus_target = self
-                .narrow_tabs_node
-                .and_then(|n| taffy.children(n).ok())
-                .and_then(|children| children.get(1).copied());
+            self.narrow_tabs.set_focus(true);
+            *focus_target = self.narrow_tabs_node;
             *handled = true;
             return;
         }
@@ -2019,7 +2012,7 @@ mod tests {
         app.sync(&mut st.doc, &st.root);
     }
 
-    fn layout_narrow(app: &mut ThemesApp, width: f32) -> (TaffyTree<()>, NodeId) {
+    fn layout_at(app: &mut ThemesApp, width: f32, height: f32) -> (TaffyTree<()>, NodeId) {
         app.build_width = f64::from(width);
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
@@ -2029,7 +2022,7 @@ mod tests {
             node,
             Size {
                 width: taffy::AvailableSpace::Definite(width),
-                height: taffy::AvailableSpace::Definite(900.0),
+                height: taffy::AvailableSpace::Definite(height),
             },
             |known, available, id, _, _| {
                 map.get(&id).map_or(Size::ZERO, |ptr| unsafe {
@@ -2042,10 +2035,86 @@ mod tests {
         (tree, node)
     }
 
+    fn layout_narrow(app: &mut ThemesApp, width: f32) -> (TaffyTree<()>, NodeId) {
+        layout_at(app, width, 900.0)
+    }
+
+    fn narrow_view_state(app: &ThemesApp) -> (String, [bool; 2]) {
+        let node = app
+            .narrow_tabs
+            .accessibility()
+            .expect("narrow view selector has accessibility semantics");
+        assert_eq!(node.children.len(), 2);
+        (
+            node.value.expect("selected view label"),
+            [
+                node.children[0]
+                    .state
+                    .checked
+                    .expect("Customize checked state"),
+                node.children[1]
+                    .state
+                    .checked
+                    .expect("Full preview checked state"),
+            ],
+        )
+    }
+
+    fn contains_rect(outer: Rect, inner: Rect) -> bool {
+        outer.x0 <= inner.x0 && outer.y0 <= inner.y0 && outer.x1 >= inner.x1 && outer.y1 >= inner.y1
+    }
+
+    fn route_narrow_view_invocation(app: &mut ThemesApp, state: &mut ui::State) {
+        let invocation = app
+            .narrow_tabs
+            .take_control_invocation()
+            .expect("view selection emitted its canonical invocation");
+        let index = invocation.arguments["index"]
+            .as_u64()
+            .expect("view index is an integer");
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "control": "themes.view",
+            "index": index,
+        }))
+        .unwrap();
+        assert!(
+            app.narrow_tabs
+                .invoke_resource_operation_v2(
+                    qos_actions::OperationKind::View,
+                    "qos.ui.segmented.select",
+                    &payload,
+                    &state.doc,
+                    &state.root,
+                )
+                .unwrap()
+                .is_some()
+        );
+        app.sync(&mut state.doc, &state.root);
+    }
+
+    fn key_press(logical_key: Key) -> WindowEvent {
+        let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        key.logical_key = logical_key;
+        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        key.location = winit::keyboard::KeyLocation::Standard;
+        key.state = ElementState::Pressed;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: key,
+            is_synthetic: false,
+        }
+    }
+
     #[test]
     fn narrow_editor_is_visible_before_full_preview() {
         let (mut app, _) = seeded_demo();
         layout_narrow(&mut app, 480.0);
+        assert_eq!(
+            narrow_view_state(&app),
+            ("Customize".to_owned(), [true, false])
+        );
         assert!(
             app.customizer.get_rect().y0 < 160.0,
             "{:?}",
@@ -2063,47 +2132,117 @@ mod tests {
         let (mut app, _) = seeded();
         layout_narrow(&mut app, 480.0);
         assert!(app.narrow_preview);
+        assert_eq!(
+            narrow_view_state(&app),
+            ("Full preview".to_owned(), [false, true])
+        );
         assert!(app.preview_node.is_some());
         assert!(app.customizer_node.is_none());
     }
 
     #[test]
-    fn full_preview_view_action_preserves_edits_and_escape_returns_focus() {
+    fn custom_preview_capture_seed_selects_full_preview() {
+        isolate_config();
+        let mut app = ThemesApp::new_demo();
+        app.seed_shot(480.0, "preview");
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        layout_narrow(&mut app, 480.0);
+        assert!(app.narrow_preview);
+        assert_eq!(
+            narrow_view_state(&app),
+            ("Full preview".to_owned(), [false, true])
+        );
+    }
+
+    #[test]
+    fn narrow_full_preview_contains_and_can_scroll_to_the_specimen_tail() {
+        let (mut app, _) = seeded();
+        let (tree, node) = layout_at(&mut app, 480.0, 480.0);
+        let card = app.preview.specimen_card_rect();
+        let tail = app.preview.specimen_tail_rect();
+        let preview = app.preview.get_rect();
+        assert!(contains_rect(preview, card));
+        assert!(contains_rect(card, tail));
+        assert!(
+            app.scroll_content_h > app.scroll_viewport_h,
+            "short preview must expose a scroll extent"
+        );
+
+        let event = WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, -100.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            &event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
+        app.apply_layout(&tree, node, Point::ZERO);
+        let max_scroll = app.scroll_content_h - app.scroll_viewport_h;
+        assert!(handled);
+        assert!((app.scroll - max_scroll).abs() < f64::EPSILON);
+        assert!(
+            app.preview.specimen_tail_rect().y1 <= app.content_rect.y1,
+            "maximum scroll must reveal the final chart"
+        );
+    }
+
+    #[test]
+    fn narrow_view_pointer_keyboard_resize_and_escape_preserve_edits() {
         let (mut app, mut state) = seeded_demo();
         app.customizer.load_picker([1, 2, 3]);
         app.sync(&mut state.doc, &state.root);
-        layout_narrow(&mut app, 480.0);
+        let (mut tree, mut node) = layout_narrow(&mut app, 480.0);
         state.doc.commit();
         let heads = state.doc.get_heads();
-        {
-            let mut tabs = app.narrow_tabs.children_mut();
-            let preview = tabs.get_mut(1).unwrap();
-            assert!(preview.is_focusable());
-            assert_eq!(
-                preview.accessibility().unwrap().name.as_deref(),
-                Some("Full preview")
-            );
-            assert!(preview.perform_action(
-                &ui::a11y::Action::Activate,
+        assert_eq!(
+            narrow_view_state(&app),
+            ("Customize".to_owned(), [true, false])
+        );
+
+        // Pointer selection enters through the segmented control's typed view
+        // operation, then reconciliation updates both the visible and AT state.
+        let tabs = app.narrow_tabs.get_rect();
+        let cursor = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(tabs.x1 - 10.0, tabs.center().y),
+        };
+        let click = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        for event in [&cursor, &click] {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(
+                event,
+                1.0,
+                &winit::event::Modifiers::default(),
                 &mut state.doc,
-                &state.root
-            ));
-            assert!(preview.take_control_invocation().is_some());
-            assert!(
-                preview
-                    .invoke_resource_operation_v2(
-                        qos_actions::OperationKind::View,
-                        "qos.ui.control.invoke",
-                        br#""themes.full-preview""#,
-                        &state.doc,
-                        &state.root
-                    )
-                    .unwrap()
-                    .is_some()
+                &state.root,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
             );
         }
-        app.sync(&mut state.doc, &state.root);
+        route_narrow_view_invocation(&mut app, &mut state);
         assert!(app.narrow_preview);
+        assert_eq!(
+            narrow_view_state(&app),
+            ("Full preview".to_owned(), [false, true])
+        );
         assert_eq!(state.doc.get_heads(), heads);
         layout_narrow(&mut app, 480.0);
         assert!(app.customizer_node.is_none());
@@ -2111,19 +2250,8 @@ mod tests {
         // Crossing the breakpoint must not reset the local selected view or edit.
         layout_narrow(&mut app, 1200.0);
         assert!(app.narrow_preview);
-        let (tree, node) = layout_narrow(&mut app, 480.0);
-        let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Named(NamedKey::Escape);
-        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        key.location = winit::keyboard::KeyLocation::Standard;
-        key.state = ElementState::Pressed;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: key,
-            is_synthetic: false,
-        };
+        (tree, node) = layout_narrow(&mut app, 480.0);
+        let event = key_press(Key::Named(NamedKey::Escape));
         let mut handled = false;
         let mut focus = None;
         app.handle_event(
@@ -2138,8 +2266,35 @@ mod tests {
             &tree,
         );
         assert!(handled && !app.narrow_preview);
-        assert!(focus.is_some());
-        assert!(app.narrow_tabs.children()[1].is_focused());
+        assert_eq!(focus, app.narrow_tabs_node);
+        assert!(app.narrow_tabs.is_focused());
+        assert_eq!(
+            narrow_view_state(&app),
+            ("Customize".to_owned(), [true, false])
+        );
+
+        // Focus stays on the compound selector, so ArrowRight can re-open
+        // Full preview without exposing or focusing the hidden customizer.
+        let event = key_press(Key::Named(NamedKey::ArrowRight));
+        let mut handled = false;
+        app.handle_event(
+            &event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
+        assert!(handled);
+        route_narrow_view_invocation(&mut app, &mut state);
+        assert!(app.narrow_preview);
+        assert_eq!(
+            narrow_view_state(&app),
+            ("Full preview".to_owned(), [false, true])
+        );
         app.sync(&mut state.doc, &state.root);
         assert_eq!(
             catalog(&state)
