@@ -388,6 +388,11 @@ pub struct ChannelHandle {
 impl ChannelHandle {
     /// Ask the broker to direct one current route holder to publish a complete
     /// document snapshot for this late joiner.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker cannot accept or complete the
+    /// snapshot request.
     pub async fn request_document_snapshot(&self) -> Result<(), NotAvailable> {
         self.inner
             .request_document_snapshot_request()
