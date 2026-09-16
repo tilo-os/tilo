@@ -46,7 +46,7 @@ What the network is
 -------------------
 Loopback. `serve-test-registry` binds `127.0.0.1` and serves a really
 packed, really signed `.qpkg`, which is what happens on the day
-(`plan/yc-demo.md` — a local registry is served on set). A run against
+(`docs/demo-script.md` — a local registry is served on set). A run against
 a registry across the internet is a different measurement and this
 script does not pretend otherwise. Every run prints the conditions it
 measured under — payload size, filesystem, load average — alongside the

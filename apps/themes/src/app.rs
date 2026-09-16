@@ -576,14 +576,14 @@ impl ThemesApp {
         }
     }
 
-    /// Step 1 of [`Widget::sync`]: seed the document on first run. Live seeds
+    /// Seed the document on first run. Live seeds
     /// the presets-only default (the OS's shipped themes, never a
     /// fabricated "your theme"); a demo/`--shots` app seeds the demo catalog
     /// with its editable custom theme. The demo focuses its editable custom
     /// theme (so a capture shows real editing); the live install focuses the
     /// first preset.
     fn seed_document_if_needed(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Import the old Phase-1 text before local presentation seeding. The
+        // Import legacy text before local presentation seeding. The
         // importer only creates missing ids, so it is safe when an old and a
         // new client merge concurrently.
         doc::migrate_legacy_catalog(state, path);

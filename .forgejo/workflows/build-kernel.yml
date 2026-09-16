@@ -1,16 +1,8 @@
 name: Snapshot / kernel
 
-# Rebuilds Fedora's kernel with our config fragment (statically-in boot
-# drivers + PREEMPT + HZ=1000 + THP=always + trim debuginfo) and publishes
-# an OCI image at code.podesta.ai/qos/qos-kernel containing the resulting
-# RPMs.  os/Containerfile mounts that image as a second RPM repo and does
-# `dnf swap kernel-core qos-kernel-core --nogpgcheck`.
-#
-# CADENCE: same as the OS image build.  Pushes to main and PRs run
-# build-only (verify the SRPM + config fragment still yield a clean kernel
-# RPM); the image is published only on version tags (v*) or a manual
-# dispatch.  The build is ~40 minutes on the runner — deliberately
-# path-scoped so touching an unrelated file doesn't burn a runner.
+# Rebuilds Fedora's kernel with the qOS config fragment. Pushes and pull
+# requests validate the build; version tags and manual dispatches publish the
+# resulting RPM image.
 
 on:
   push:

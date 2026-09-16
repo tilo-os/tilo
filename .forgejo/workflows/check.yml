@@ -5,8 +5,7 @@ name: CI / affected packages
 # mandatory in nightly.yml; this job is the short feedback path.
 on:
   push:
-    # Temporary branch trigger while the desktop packaging matrix is being
-    # proven without making unfinished work visible on main.
+    # The desktop release branch compares its full diff with main below.
     branches: ["main", "codex/package-desktop-release"]
   pull_request:
     branches: ["main"]
@@ -90,9 +89,7 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
-      # Main can add a required check tool one commit before the weekly builder
-      # refresh has published it. Keep that transition self-healing; once the
-      # refreshed image contains jq this is an inexpensive no-op.
+      # The image may lag a newly required check tool.
       - name: Ensure invariant test tooling
         run: |
           command -v jq >/dev/null || dnf install -y jq

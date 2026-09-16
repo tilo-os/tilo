@@ -165,8 +165,7 @@ WORD_PROCESSOR = "dev.qos.word-processor"
 #
 # It cannot be `/home/<user>`, which is what would render perfectly:
 # that is the real user's home and is not ours to write into. See the
-# note in `stage_home`, and `docs/demo-todo.md` for the app-side fix
-# that would make the path stop mattering.
+# note in `stage_home`; the demo must not expose the staging path.
 HOMES_ROOT = "/var/tmp/qos/home"
 
 # The photograph beat 8 drags into the document, by the name it wears on

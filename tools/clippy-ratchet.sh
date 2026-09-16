@@ -4,16 +4,13 @@
 #   tools/clippy-ratchet.sh            # compare against tools/clippy-baseline.txt
 #   tools/clippy-ratchet.sh --update   # record the current counts as the baseline
 #
-# The workspace denies pedantic and a set of restriction lints. There are
-# thousands of existing violations, so a plain `cargo clippy` fails and would
-# stay failing for months — a gate that is always red gates nothing. This
-# compares per-lint counts against a committed baseline instead: new code is
-# held to the full standard, and the baseline only ever moves down.
+# The workspace has existing Clippy debt. Compare per-lint counts with a
+# committed baseline so violations can only decrease.
 #
 # Lints are measured at warn so every crate is checked. Denying them aborts the
 # build at the first crate that fails, and the crates behind it are never seen.
 #
-# Two things this has to get right, both found by deliberately regressing it:
+# Two invariants:
 #   * cargo replays cached diagnostics, so a run that rebuilds less reports
 #     fewer violations. Every workspace source is touched first, so the count
 #     is of the whole tree every time rather than of whatever was stale.
@@ -53,11 +50,8 @@ if [ "$clippy_rc" -ne 0 ]; then
   exit 2
 fi
 
-# Count only our own code, and only once per site. Without the path filter
-# this also counts vendored crates and dependencies — 2,415 against 14 real
-# ones, most of it `vendor/`, which is not ours to fix and would keep the
-# gate permanently red. Without the dedupe, a file compiled as both lib and
-# test counts twice. `tools/check-warnings.sh` filters the same way.
+# Count only first-party sites once. Dependencies and vendored crates are not
+# owned here, and lib/test builds can otherwise count a site twice.
 counts=$(python3 -c '
 import json, sys, collections
 c = collections.Counter()

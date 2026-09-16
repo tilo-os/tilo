@@ -4,14 +4,7 @@
 # storage, secrets, activation, routing and DNS to NetworkManager. It has no
 # network namespace and receives no general privileged process capability.
 #
-# Pack and install:
-#
-#     cargo build -p vpn -p pkg-cli -p install
-#     mkdir -p target/qpkg/vpn/bin
-#     cp target/debug/vpn target/qpkg/vpn/bin/vpn
-#     target/debug/qos-pkg pack --manifest apps/vpn/qos-app.toml \
-#         --payload target/qpkg/vpn --output target/vpn.qpkg
-#     target/debug/qos-install install target/vpn.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.vpn"
@@ -21,8 +14,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

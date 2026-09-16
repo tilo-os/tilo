@@ -24,24 +24,15 @@ runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # `QOS_SVC_COLLAB_FD` client and consumes the same request/event model as a
 # windowed app.
 ui = { package = "qos-app", path = "../../crates/app/qos-app" }
-# The word processor's exported actions: the agent edits with exactly the
-# ops the toolbar produces, never with its own idea of the document.
+# The word processor's exported actions, shared with the toolbar.
 word-processor = { path = "../word-processor" }
-# Where the agent is spoken to, and a second app of a deliberately different
-# shape: a conversation rather than a document. Default features off — the
-# live media engine (GStreamer, iroh, openh264, the screen portal) is a chat
-# window's business and nothing a headless participant reading messages
-# needs.
+# Chat conversation types and actions. Live media features remain disabled for
+# this headless participant.
 chat = { path = "../chat", default-features = false }
-# The one app in the room whose subject is not a document at all, and the
-# reason an instruction can name two apps: a photograph edited here is a
-# thing to put somewhere else. Its own decode and its own render, so "the
-# cropped photograph" means what the app means by it.
+# Image editor types and actions, including cross-app image references.
 photos = { path = "../photos" }
 qos-actions = { path = "../../crates/collab/actions" }
-# The address a chat message carries when it was authored by selecting
-# something — what `listen`'s `Subject::Carried` reads, so the agent never
-# has to work out what "this" meant on its own.
+# The selected-resource address carried by chat messages.
 qos-reference = { path = "../../crates/collab/reference" }
 # The runner reads the same provider profile Settings writes. Resolving the
 # profile's vault reference remains a desktop-secret-broker operation; no key

@@ -8,14 +8,7 @@
 # Beyond the system read profile it needs, as a consented capability:
 # read on `/var/workspace` for the attachment picker.
 #
-# Pack and install:
-#
-#     cargo build -p chat -p pkg-cli -p install
-#     mkdir -p target/qpkg/chat/bin
-#     cp target/debug/chat target/qpkg/chat/bin/chat
-#     target/debug/qos-pkg pack --manifest apps/chat/qos-app.toml \
-#         --payload target/qpkg/chat --output target/chat.qpkg
-#     target/debug/qos-install install target/chat.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.chat"
@@ -25,8 +18,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

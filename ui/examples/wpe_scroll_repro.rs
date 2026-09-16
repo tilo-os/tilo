@@ -17,7 +17,10 @@ use ui::webview::{WebViewCommand, WebViewEngine};
 
 const W: u32 = 1000;
 const H: u32 = 700;
-const OUT: &str = "/tmp/claude-1000/-var-home-quinten-Development-quickdesktop/4b954627-69cb-4365-8ed0-231ae0028e62/scratchpad";
+
+fn output_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("quickdesktop-wpe-scroll-repro")
+}
 
 fn latest(engine: &dyn WebViewEngine) -> Option<(Arc<Vec<u8>>, u32, u32)> {
     let slot = engine.frames();
@@ -49,7 +52,9 @@ fn uniformity(rgba: &[u8]) -> f64 {
 
 fn save(f: &Option<(Arc<Vec<u8>>, u32, u32)>, name: &str) {
     if let Some((rgba, w, h)) = f {
-        let path = format!("{OUT}/{name}");
+        let output_dir = output_dir();
+        let _ = std::fs::create_dir_all(&output_dir);
+        let path = output_dir.join(name);
         let _ = image::save_buffer(&path, rgba, *w, *h, image::ExtendedColorType::Rgba8);
         println!(
             "  saved {name} ({w}x{h}, uniformity {:.1}%)",

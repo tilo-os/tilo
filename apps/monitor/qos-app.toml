@@ -5,14 +5,7 @@
 # and `/sys` is in the system read profile, so it needs nothing beyond
 # them.
 #
-# Pack and install:
-#
-#     cargo build -p monitor -p pkg-cli -p install
-#     mkdir -p target/qpkg/monitor/bin
-#     cp target/debug/monitor target/qpkg/monitor/bin/monitor
-#     target/debug/qos-pkg pack --manifest apps/monitor/qos-app.toml \
-#         --payload target/qpkg/monitor --output target/monitor.qpkg
-#     target/debug/qos-install install target/monitor.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.monitor"
@@ -22,8 +15,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

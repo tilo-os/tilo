@@ -11,9 +11,8 @@ description = "Produce and verify qOS runtime bundles (content-addressed loader 
 # sandbox: the loader, libc, libgcc_s + friends, and (optionally)
 # /etc/ld.so.cache. Bundles are content-addressed via a BLAKE3 root
 # hash written into `bundle.toml` alongside the payload. The launcher
-# mounts a bundle at `/usr/lib/qos-runtime/<v>/` inside bwrap and sets
-# `LD_LIBRARY_PATH` accordingly, replacing the older `--minimal-libs`
-# stopgap.
+# mounts a bundle at `/usr/lib/qos-runtime/<v>/` and sets
+# `LD_LIBRARY_PATH` accordingly.
 
 [[bin]]
 name = "qos-runtime-bundle"

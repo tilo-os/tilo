@@ -2,8 +2,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use qos_user_identity::{
-    DeviceCert, EnrollmentToken, RevocationEntry, verify_device_cert,
-    verify_enrollment_token, verify_revocation_entry,
+    DeviceCert, EnrollmentToken, RevocationEntry, verify_device_cert, verify_enrollment_token,
+    verify_revocation_entry,
 };
 
 fuzz_target!(|data: &[u8]| {

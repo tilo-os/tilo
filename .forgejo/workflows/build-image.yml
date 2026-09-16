@@ -1,13 +1,8 @@
 name: Release / OS
 
-# Builds the bootc OS container image (multi-stage, see os/Containerfile).
-# CADENCE: relevant image-input changes and a weekly backstop BUILD ONLY
-# (verify it builds + is reproducible — no registry churn or queue flooding).
-# Cargo changes are already compiled by check.yml and nightly.yml; rebuilding
-# the complete bootc image for every source-only commit duplicates that work.
-# The signed image is pushed to code.podesta.ai/qos/qos:latest ONLY on a
-# version tag (v*), an explicitly publishing manual run from main, or an opted-in
-# continuous release, so `bootc upgrade` tracks deliberate releases.
+# Builds the bootc OS container image for image-input changes and weekly
+# validation. Publishing is limited to version tags, an explicit main-branch
+# dispatch, or an opted-in continuous release.
 
 on:
   schedule:
@@ -145,8 +140,7 @@ jobs:
           path: os/external-assets/cache
           key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
 
-      # Cheap fail-fast before the expensive podman build: no crate silently
-      # dropped from the workspace (that once orphaned 37 apps).
+      # Fail before the expensive image build if a crate is outside the workspace.
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 

@@ -65,11 +65,8 @@ SEARCH_PROVIDER_IMPL = re.compile(
 # corpus is intrinsically tiny and inheriting the unbounded fallback is safe.
 SEARCH_LIMIT_EXEMPTIONS: dict[str, str] = {}
 
-# Temporary, explicit migration inventory for providers that still discard a
-# durable tail before querying it. New entries are not permitted silently: use
-# ui::search::SearchCatalog and delete the corresponding item when migrated.
-# The value names the retained-model work still required, making this debt
-# visible in review without keeping the repository permanently red.
+# Reviewed exceptions for providers that discard a durable tail before querying
+# it. New entries require an explicit review; migrated providers are removed.
 TRUNCATING_SEARCH_REMEDIATION: dict[str, str] = {
 }
 TRUNCATING_SEARCH = re.compile(
