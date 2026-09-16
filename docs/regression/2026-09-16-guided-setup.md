@@ -240,6 +240,32 @@ excluded TLS transport and does not establish a full native Windows build.
 Independent Task 1 review approved spec compliance and code quality with no
 findings. Host readiness, installation and graphical-session proof remain open.
 
+## Linux Desktop readiness
+
+Commit `dbb79c55a` adds a read-only background host probe and exact release
+selection. It checks distribution/version, native architecture, package manager,
+existing package version, session chooser support, immutable-host markers and
+confinement evidence. Unknown evidence blocks installation; derivatives do not
+inherit support from ID_LIKE. A different installed version is reported without
+performing an implicit upgrade or downgrade.
+
+Native Fedora exposed that an ordinary user cannot rely on
+`systemd-detect-virt --chroot`: it returned a permission error. The revised probe
+compares strictly parsed self/PID1 root mount identities alongside the other
+confinement checks. Missing, unreadable or inconsistent evidence still blocks.
+A reproduced FIFO-read hang was also fixed with nonblocking evidence reads and
+regular-file checks.
+
+The final native run passed 14 regression tests and ran the actual host probe.
+It reported Fedora 44/aarch64, DNF, a mutable host reported as not sandboxed, active GDM with
+GNOME session entries and no installed qOS package. The only readiness blocker
+was the empty authenticated release catalog. Host tests passed 295 library tests
+with one explicit ignore; Windows compilation of these exact module sources
+also passed. Strict native library Clippy still reports 18 findings in earlier
+modules and none in this probe; aggregate lint is not green. Independent review
+approved spec compliance and code quality. Package installation and graphical
+login remain unverified.
+
 ## Existing installer baseline
 
 Native Fedora ARM64 ran `bash os/tests/installer_target_invariants.sh` and
