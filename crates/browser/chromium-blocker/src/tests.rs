@@ -193,3 +193,27 @@ fn required_foreign_strings_reject_null_even_with_zero_length() {
         qos_blocker_destroy(handle);
     }
 }
+
+#[test]
+fn bundled_redirects_and_scriptlets_are_available() {
+    let blocker = Blocker::new(
+        "/replace.js$script,redirect=noopjs\nexample.com##+js(set-constant, qosFixture, true)",
+    );
+    let result = blocker
+        .check(
+            "https://example.com/replace.js",
+            "https://example.com",
+            "script",
+        )
+        .unwrap();
+    assert!(
+        result["redirect"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("data:")
+    );
+    let cosmetic = blocker.cosmetics("https://example.com", &[], &[]).unwrap();
+    let script = cosmetic["injected_script"].as_str().unwrap();
+    assert!(script.contains("qosFixture"));
+    assert!(script.contains("function"));
+}
