@@ -9,7 +9,7 @@
 //! query happened to match one of those words.
 
 use automerge::AutoCommit;
-use qos_actions::{ActionAddress, Resource, ResourceProvider};
+use qos_actions::{ActionAddress, Resource};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use ui::icons::Icon;
@@ -19,8 +19,9 @@ use ui::search::{
 };
 
 use crate::actions::{
-    PhotosResources, album_resource, folder_resource, folder_resource_id, metadata_label_counts,
-    person_resource, person_resource_id, photo_resource, tag_resource, tag_resource_id,
+    PhotoResourceSeed, album_resource_from_fields, folder_resource, folder_resource_id,
+    library_root_resource, metadata_label_counts, person_resource, person_resource_id,
+    photo_resource_from_seed, tag_resource, tag_resource_id,
 };
 use crate::doc::PhotosDoc;
 
@@ -35,11 +36,55 @@ pub const PHOTO_SEARCH_KIND: &str = "Photos";
 /// open photograph makes old search targets fail normal fresh-tree resolution.
 #[derive(Clone)]
 pub struct PhotosSearchProvider {
+    state: Arc<RwLock<ProviderState>>,
+}
+
+struct ProviderState {
     catalog: SearchCatalog,
-    /// Exact canonical materialisation for the same immutable document
-    /// snapshot as `catalog`. Search activation never re-enumerates the CRDT
-    /// or fabricates a parallel resource shape.
-    resources: Arc<RwLock<HashMap<String, Resource>>>,
+    seeds: HashMap<String, MaterializationSeed>,
+}
+
+/// Compact authoritative data retained for exact materialisation. Crucially,
+/// this is not a `Resource`: no `ActionSpec`, closure, child tree, or encoded
+/// action is allocated for the 100k rows that search may index.
+#[derive(Clone)]
+enum MaterializationSeed {
+    Library,
+    Photo(PhotoResourceSeed),
+    Album {
+        id: String,
+        name: String,
+        photo_count: usize,
+    },
+    Folder {
+        label: String,
+        count: usize,
+    },
+    Person {
+        label: String,
+        count: usize,
+    },
+    Tag {
+        label: String,
+        count: usize,
+    },
+}
+
+impl MaterializationSeed {
+    fn materialize(self) -> Resource {
+        match self {
+            Self::Library => library_root_resource(),
+            Self::Photo(photo) => photo_resource_from_seed(&photo),
+            Self::Album {
+                id,
+                name,
+                photo_count,
+            } => album_resource_from_fields(&id, &name, photo_count),
+            Self::Folder { label, count } => folder_resource(&label, count),
+            Self::Person { label, count } => person_resource(&label, count),
+            Self::Tag { label, count } => tag_resource(&label, count),
+        }
+    }
 }
 
 impl PhotosSearchProvider {
@@ -47,8 +92,10 @@ impl PhotosSearchProvider {
     #[must_use]
     pub fn empty() -> Self {
         Self {
-            catalog: SearchCatalog::new(PHOTO_SEARCH_KIND),
-            resources: Arc::new(RwLock::new(HashMap::new())),
+            state: Arc::new(RwLock::new(ProviderState {
+                catalog: SearchCatalog::new(PHOTO_SEARCH_KIND),
+                seeds: HashMap::new(),
+            })),
         }
     }
 
@@ -62,7 +109,7 @@ impl PhotosSearchProvider {
     pub fn new(doc: &AutoCommit) -> Result<Self, SearchCatalogError> {
         let provider = Self::empty();
         let library = PhotosDoc::library(doc);
-        provider.replace_from_library(doc, &library)?;
+        provider.replace_from_library(&library)?;
         Ok(provider)
     }
 
@@ -74,18 +121,21 @@ impl PhotosSearchProvider {
     /// be admitted; the previous complete generation remains available.
     pub fn sync(&self, doc: &AutoCommit) -> Result<(), SearchCatalogError> {
         let library = PhotosDoc::library(doc);
-        self.replace_from_library(doc, &library)
+        self.replace_from_library(&library)
     }
 
     /// Resolve one resource from the retained document generation without a
     /// CRDT walk. The widget uses this for agent/history lookups, including
     /// hashed metadata views whose labels cannot safely be reversed from ids.
     pub fn resource(&self, id: &str) -> Option<Resource> {
-        self.resources
+        let seed = self
+            .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
+            .seeds
+            .get(id)?
+            .clone();
+        Some(seed.materialize())
     }
 
     #[cfg(test)]
@@ -94,7 +144,8 @@ impl PhotosSearchProvider {
         library: &crate::model::PhotoLibrary,
     ) -> Result<Self, SearchCatalogError> {
         let provider = Self::empty();
-        provider.replace_from_library(doc, library)?;
+        let _ = doc;
+        provider.replace_from_library(library)?;
         Ok(provider)
     }
 
@@ -104,18 +155,17 @@ impl PhotosSearchProvider {
     )]
     fn replace_from_library(
         &self,
-        doc: &AutoCommit,
         library: &crate::model::PhotoLibrary,
     ) -> Result<(), SearchCatalogError> {
-        let mut entries = BTreeMap::<String, (String, SearchResult, Resource)>::new();
+        let mut entries = BTreeMap::<String, (String, SearchResult, MaterializationSeed)>::new();
         let mut collisions = HashSet::<String>::new();
         let mut insert =
-            |id: String, searchable: String, result: SearchResult, resource: Resource| {
+            |id: String, searchable: String, result: SearchResult, seed: MaterializationSeed| {
                 if collisions.contains(&id) {
                     return;
                 }
                 if entries
-                    .insert(id.clone(), (searchable, result, resource))
+                    .insert(id.clone(), (searchable, result, seed))
                     .is_some()
                 {
                     // A hostile/corrupt document can claim the same stable id for
@@ -131,14 +181,12 @@ impl PhotosSearchProvider {
         )
         .with_subtitle("Import and browse photographs")
         .with_icon(Icon::Image);
-        if let Some(resource) = PhotosResources.resource(doc, "photos.library") {
-            insert(
-                "photos.library".to_owned(),
-                "Photo library\0photos.library\0open\0Import photograph".to_owned(),
-                root,
-                resource,
-            );
-        }
+        insert(
+            "photos.library".to_owned(),
+            "Photo library\0photos.library\0open\0Import photograph".to_owned(),
+            root,
+            MaterializationSeed::Library,
+        );
         for photo in &library.photos {
             let result = SearchResult::for_action(
                 PHOTO_SEARCH_KIND,
@@ -171,7 +219,7 @@ impl PhotosSearchProvider {
                 photo.id.clone(),
                 searchable,
                 result,
-                photo_resource(doc, photo),
+                MaterializationSeed::Photo(PhotoResourceSeed::from(photo)),
             );
         }
         for album in &library.albums {
@@ -187,7 +235,16 @@ impl PhotosSearchProvider {
                 album.name,
                 album.photo_ids.len()
             );
-            insert(album.id.clone(), searchable, result, album_resource(album));
+            insert(
+                album.id.clone(),
+                searchable,
+                result,
+                MaterializationSeed::Album {
+                    id: album.id.clone(),
+                    name: album.name.clone(),
+                    photo_count: album.photo_ids.len(),
+                },
+            );
         }
         let (folders, people, tags) = metadata_label_counts(library);
         for (folder, count) in folders {
@@ -203,7 +260,10 @@ impl PhotosSearchProvider {
                 id.clone(),
                 format!("{folder}\0photos.folder\0folder\0{count} photographs\0open"),
                 result,
-                folder_resource(&folder, count),
+                MaterializationSeed::Folder {
+                    label: folder,
+                    count,
+                },
             );
         }
         for (person, count) in people {
@@ -219,7 +279,10 @@ impl PhotosSearchProvider {
                 id.clone(),
                 format!("{person}\0photos.person\0person\0{count} photographs\0open"),
                 result,
-                person_resource(&person, count),
+                MaterializationSeed::Person {
+                    label: person,
+                    count,
+                },
             );
         }
         for (tag, count) in tags {
@@ -232,28 +295,61 @@ impl PhotosSearchProvider {
                 id.clone(),
                 format!("{tag}\0photos.tag\0tag\0{count} photographs\0open"),
                 result,
-                tag_resource(&tag, count),
+                MaterializationSeed::Tag { label: tag, count },
             );
         }
-        self.catalog.replace_all(
+        let seeds = entries
+            .iter()
+            .map(|(id, (_, _, seed))| (id.clone(), seed.clone()))
+            .collect();
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.catalog.replace_all(
             entries
                 .iter()
                 .map(|(id, (text, result, _))| (id.clone(), text.clone(), result.clone())),
         )?;
-        let resources = entries
-            .into_iter()
-            .map(|(id, (_, _, resource))| (id, resource))
-            .collect();
-        *self
-            .resources
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = resources;
+        state.seeds = seeds;
+        drop(state);
         Ok(())
     }
 
     #[cfg(test)]
     pub(crate) fn stats(&self) -> ui::search::SearchCatalogStats {
-        self.catalog.stats()
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .stats()
+    }
+
+    #[cfg(test)]
+    fn retained_seed_stats(&self) -> (usize, usize) {
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The second value is intentionally structural: seeds cannot contain
+        // a Resource or ActionSpec, so retained prebuilt action trees are zero.
+        (state.seeds.len(), 0)
+    }
+
+    #[cfg(test)]
+    fn reject_malformed_snapshot_for_test(&self) -> Result<(), SearchCatalogError> {
+        let mut state = self
+            .state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.catalog.replace_all([(
+            "photos.photo:malformed".to_owned(),
+            "malformed".to_owned(),
+            SearchResult::new(PHOTO_SEARCH_KIND, "Malformed", "legacy-action"),
+        )])?;
+        state.seeds.clear();
+        drop(state);
+        Ok(())
     }
 }
 
@@ -263,10 +359,21 @@ impl SearchProvider for PhotosSearchProvider {
     }
 
     fn action_directory_generation(&self) -> Option<u64> {
-        Some(self.catalog.stats().generation)
+        Some(
+            self.state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .catalog
+                .stats()
+                .generation,
+        )
     }
     fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.catalog.cursor_is_current(cursor)
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .cursor_is_current(cursor)
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
@@ -274,7 +381,10 @@ impl SearchProvider for PhotosSearchProvider {
     }
 
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.catalog
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
             .search_limited(query, limit.min(DEFAULT_SEARCH_RESULT_LIMIT))
     }
 
@@ -285,12 +395,16 @@ impl SearchProvider for PhotosSearchProvider {
         work_budget: usize,
         result_limit: usize,
     ) -> SearchPage {
-        self.catalog.query_page(
-            query,
-            cursor,
-            work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
-            result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
-        )
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .catalog
+            .query_page(
+                query,
+                cursor,
+                work_budget.min(DEFAULT_SEARCH_CANDIDATE_LIMIT),
+                result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT),
+            )
     }
 
     fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
@@ -578,5 +692,28 @@ mod tests {
         let address = page.results[0].action_address().unwrap();
         assert_eq!(address.action, "open");
         assert!(provider.resolve_action_resource(&address).is_some());
+        let (seeds, prebuilt_action_trees) = provider.retained_seed_stats();
+        assert_eq!(seeds, 100_002);
+        assert_eq!(prebuilt_action_trees, 0);
+    }
+
+    #[test]
+    fn rejected_snapshot_keeps_catalog_generation_and_exact_seeds_atomic() {
+        let doc = open_doc("last-good.png");
+        let provider = PhotosSearchProvider::new(&doc).unwrap();
+        let before_generation = provider.action_directory_generation();
+        let address = provider.search("last-good")[0].action_address().unwrap();
+        let before = provider.resource(&address.resource).unwrap();
+        let before_seed_stats = provider.retained_seed_stats();
+
+        assert_eq!(
+            provider.reject_malformed_snapshot_for_test(),
+            Err(SearchCatalogError::NonCanonicalResult)
+        );
+        assert_eq!(provider.action_directory_generation(), before_generation);
+        assert_eq!(provider.retained_seed_stats(), before_seed_stats);
+        let after = provider.resource(&address.resource).unwrap();
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.actions.len(), before.actions.len());
     }
 }
