@@ -159,10 +159,7 @@ members = [
     "crates/system/system-extension",
     "crates/system/projector",
     "crates/session/installer",
-    # Opt-in dynamic build of the runtime SDK. A member (shares lockfile
-    # + target dir + crate SVHs) but excluded from default-members above,
-    # so it is compiled only via `--profile thin-app`, never by a bare
-    # `cargo build`. See crates/runtime/runtime-dylib/Cargo.toml.
+    # Opt-in dynamic build of the runtime SDK; excluded from default-members.
     "crates/runtime/runtime-dylib",
     "crates/system/settings-store",
     "crates/system/atomic-file",
@@ -171,40 +168,21 @@ members = [
 ]
 resolver = "2"
 
-# qOS is distributed as one AGPL operating-system source tree, not as a set of
-# independently published crates. Members inherit this metadata so Cargo tools
-# can distinguish repository-owned path dependencies from registry packages.
+# qOS is distributed as one AGPL operating-system source tree; workspace
+# members inherit this metadata and are not published independently.
 [workspace.package]
 license = "AGPL-3.0-only"
 publish = false
 
-# Every dependency shared by two or more workspace members is pinned here, and
-# the members inherit it with `dep.workspace = true`. This is the one file to
-# edit to bump a shared version — before it existed, `vello` was spelled out in
-# 49 separate manifests and any one of them could silently drift.
+# Shared dependencies are pinned here and inherited with `dep.workspace = true`.
+# This is the one file to edit when bumping a shared version.
 #
-# Reading the entries:
-#
-#   * The version here is the floor for the whole workspace. A member may not
-#     override it; that is the point.
-#   * `features` here are the ones nearly every member wants. A member adds its
-#     own on top (`features = [...]` alongside `workspace = true`); features are
-#     additive, so the member gets the union.
-#   * `default-features = false` here is a floor too, and it only travels one
-#     way: a member can turn defaults back **on** with `default-features = true`,
-#     but a member can never turn them off if this table leaves them on. So any
-#     dependency where even one member wants defaults off is declared off here.
+# Workspace dependency versions are floors. Features are additive, and a member
+# may re-enable default features when needed.
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
-# `nursery` as a group is clippy's unstable channel: documented false positives,
-# behaviour that changes between releases, so a toolchain bump can turn CI red
-# with no code change. Measured here it was 10,873 violations, 96% of them four
-# style lints (use_self 3401, missing_const_for_fn 2511, redundant_pub_crate
-# 1443, suboptimal_flops 1224 — the last rewrites float expressions and changes
-# results, which a renderer should not accept from a lint).
-#
-# The nursery lints that find bugs rather than style are named individually
-# below: 431 violations, and each one is a defect.
+# `nursery` is unstable and includes documented false positives, so its lints
+# are enabled individually below where they catch correctness defects.
 
 # Panics. clippy.toml exempts tests.
 unwrap_used = "deny"
@@ -244,28 +222,17 @@ set_contains_or_insert = "deny"
 clear_with_drain = "deny"
 trailing_empty_array = "deny"
 
-# `as_conversions` fires on all 7,090 `as` uses, including provably-safe ones.
-# pedantic already denies the dangerous subset more precisely — cast_possible_
-# truncation (1,518), cast_precision_loss (872), cast_sign_loss (469),
-# cast_possible_wrap (301) — plus cast_lossless (3,388) which rewrites a safe
-# cast to `From`. Denying the blanket lint on top adds no safety and turns
-# bounded graphics casts into fallible conversions that cannot be discharged
-# with unwrap, since that is denied too.
+# `as_conversions` is broad; pedantic already denies the dangerous cast
+# categories more precisely. The blanket lint adds noise to bounded graphics
+# conversions.
 as_conversions = "allow"
 
-# `duration_suboptimal_units` wants `Duration::from_days(3)` where the code
-# says `from_secs(259_200)`. It would read better — but `from_days`,
-# `from_hours`, `from_mins` and `from_weeks` are all still behind the unstable
-# `duration_constructors` feature, and the toolchain is pinned to stable. The
-# lint's own suggestion does not compile here, so denying it only produces
-# violations nobody can discharge.
+# `duration_suboptimal_units` suggests constructors behind the unstable
+# `duration_constructors` feature, so it remains disabled on stable Rust.
 duration_suboptimal_units = "allow"
 
-# `must_use_candidate` wants `#[must_use]` on every public value-returning
-# function: 6,746 attributes here. The bug it aims at — calling something and
-# discarding a result that mattered — is better caught by `#[must_use]` on the
-# *type*, the way Result and Option do it. Mark guards, builders returning Self
-# and tokens; a getter whose result is ignored is harmless.
+# `must_use_candidate` is too broad for this API; annotate result types,
+# guards, builders, and tokens where ignoring a value is harmful.
 must_use_candidate = "allow"
 
 [workspace.dependencies]
@@ -428,37 +395,8 @@ tempfile = "3.27.0"
 serial_test = "3.4.0"
 proptest = "1"
 
-# Aggressive release profile. Fat LTO across the workspace + a single
-# codegen unit unlock cross-crate inlining — meaningful for the shell
-# because most of the hot path (widget draw → wgpu submit, CRDT apply,
-# encode/decode) crosses crate boundaries. panic=abort drops the
-# unwinding tables + landing pads (a compositor can't meaningfully
-# recover from a panic, and abort strips a real chunk of binary size).
-# strip=symbols removes the symbol table without touching perf.
-# debug=line-tables-only is deliberately kept — cheap on disk, needed
-# for perf/BOLT flamegraphs to attribute samples to lines.
-#
-# Debug builds carry line tables, not full DWARF.
-#
-# A `target/` here reaches 150+ GB, and it is not the object code: of one
-# measured 154 GB tree, 103 GB was `deps/` and 77 GB of that was binaries
-# and objects rather than rlibs. This workspace has 97 members and builds
-# on the order of 200 test binaries, and cargo's default `debug = true`
-# copies full DWARF — every type, every variable, every inlined frame —
-# into each of them. Multiplied across per-worktree targets (which cannot
-# be shared: cargo's artifact key omits the package path, so worktrees of
-# one repo collide) that is what fills a 2.7 TB disk.
-#
-# `line-tables-only` keeps the part anyone actually reads: a panic still
-# names the file and line, backtraces still resolve, and profilers still
-# attribute samples. What it drops is variable and type inspection in a
-# debugger. If you need that for a session, override it for the one crate
-# you are stepping through rather than paying for it across the fleet.
-#
-# Compile time is unaffected or slightly better; this is a size setting.
-#
-# Note `target/debug/incremental` is a further ~45 GB and is pure cache —
-# it can be deleted at any time and costs only one slower rebuild.
+# Keep line tables in development and test artifacts to retain useful
+# backtraces/profiling information without full DWARF size.
 [profile.dev]
 debug = "line-tables-only"
 
@@ -466,14 +404,8 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 
-# Optimise the CRDT core even in a dev build. Every widget's state lives in an
-# `AutoCommit`, so almost every test touches this code, and unoptimised it is
-# not slow-but-workable — deleting ~3 KB from a text object takes 6.1 s in a
-# dev build against 6.9 ms in release, an 890x gap, because the column store is
-# built from deep generic iterator chains that only inlining makes sane. Seven
-# maps tests hit the 240 s timeout on that alone. These are dependencies, so
-# they are compiled once and cached; nothing here is our own code being
-# optimised out from under a debugger.
+# Optimise the CRDT dependencies in development and test builds; their generic
+# data structures are otherwise disproportionately slow in workspace tests.
 [profile.dev.package.automerge]
 opt-level = 3
 [profile.dev.package.hexane]
@@ -493,87 +425,35 @@ overflow-checks = false
 debug = "line-tables-only"
 incremental = false
 
-# Thin-app profile: the release profile, minus the two settings that are
-# fundamentally incompatible with dynamic linking of the SDK.
+# Thin-app profile: release settings minus those incompatible with dynamic SDK
+# linking.
 #
 #   * `panic = "unwind"` — a Rust `dylib` (and anything linking one, via
 #     `-C prefer-dynamic`) must unwind; `panic = "abort"` is rejected.
 #   * `lto = false` — fat LTO + `-C prefer-dynamic` is rejected by rustc.
 #
-# Everything else (opt-level 3, strip, one codegen unit) is inherited so
-# thin binaries stay as small + fast as the static ones. This profile is
-# how `runtime-dylib` and the thin apps that link it are compiled:
-#
-#   cargo rustc --profile thin-app -p runtime-dylib -- -C prefer-dynamic
-#   cargo rustc --profile thin-app -p <app> --features thin \
-#     --bin <bin> -- -C prefer-dynamic
-#
-# Pass the flag after `--`, never as RUSTFLAGS. The environment variable
-# REPLACES `build.rustflags` from .cargo/config.toml rather than adding
-# to it, so `RUSTFLAGS='-C prefer-dynamic'` silently drops
-# target-cpu=x86-64-v3 and every link-time hardening flag -- full RELRO,
-# BIND_NOW, noexecstack and the GNU_PROPERTY shadow-stack mark. The `--`
-# form is additive and keeps them.
-#
-# It is opt-in: nothing builds under it unless `--profile thin-app` is
-# passed, so the default `panic = "abort"` release path is untouched.
+# Thin builds are opt-in. Pass `-C prefer-dynamic` after `--` so workspace
+# target and linker hardening flags remain active.
 [profile.thin-app]
 inherits = "release"
 panic = "unwind"
 lto = false
 
-# Optimised, but still a developer build — what a screen recording of the
-# compositor needs.
-#
-# `snapshot` re-renders the scene and PNG-encodes it on the event loop, so
-# the frame rate of any recording is the speed of that code: unoptimised it
-# is ~1.4 s per frame at 1920x1080, which is not a video anybody can watch.
-#
-# `--release` is not the answer, because it is not merely optimised. The
-# `QOS_TEST_CONTROL` socket the harnesses drive the shell through is a
-# complete lock-screen bypass, so `compositor::dev_env` gates it on
-# `cfg!(debug_assertions)` and a shipped binary does not contain the code at
-# all — there is no flag to turn back on, deliberately. A `--release` shell
-# is therefore a compositor the harness cannot reach: it binds no socket and
-# says nothing about why.
-#
-# So: release's optimisation, with the developer surface still compiled in.
-# The override is scoped to `shell` alone, which is where the gate is read —
-# every dependency stays bit-identical to its release build, so this is
-# mostly a re-link rather than a rebuild. `--release` itself is untouched,
-# and the OS image and host RPM still ship the closed gate.
+# The demo profile keeps release optimisation while enabling shell's
+# debug-only test-control surface for recordings.
 [profile.demo]
 inherits = "release"
 
 [profile.demo.package.shell]
 debug-assertions = true
 
-# Vendored winit fork. Upstream winit 0.30.13 only emits
-# `WindowEvent::PinchGesture` on macOS/iOS — its Wayland backend never binds
-# `zwp_pointer_gestures_v1`, so touchpad pinch-to-zoom is dead on Linux. The
-# vendored copy adds that binding and translates the protocol's pinch
-# begin/update/end into the same `PinchGesture` event shape the Apple
-# backends emit, giving every `ui` app touchpad pinch-to-zoom for free.
+# Vendored winit fork adds Wayland `zwp_pointer_gestures_v1` support and maps
+# pinch events to winit's existing `PinchGesture` API.
 [patch.crates-io]
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 winit = { path = "vendor/winit" }
-# vello reserves its scratch buffers for a 30,000-path stress scene, per
-# renderer and so per process -- about 165 MB a desktop never touches. Its
-# own source says as much: "hand picked to accommodate ... paris-30k ...
-# should instead get derived from the scene layout". On an integrated GPU
-# shared by a dozen clients that is the entire memory window, and it froze
-# this machine four times in one evening.
-#
-# The Vello and encoding vendored copies size those buffers from what frames
-# actually use: the GPU already writes the counts into `BumpAllocators`,
-# so the renderer reads them back and grows a `BumpBudget` to fit. That
-# is upstream's own TODO ("apply logic to determine whether we need to
-# rerun coarse") and is meant to go back to them rather than live here.
-# Buffer sizing lives in `vendor/vello/src/bump_budget.rs`. The renderer also
-# includes retained-damage handling, profiling, and opt-in CPU/GPU scheduling
-# experiments documented in `docs/ui-performance-benchmark.md`.
-# `vello_shaders` is based on upstream 0.9.0 (Apache-2.0 OR MIT), with matching
-# sparse rasterization, CPU draw-prefix, and direct path-dispatch variants.
+# Vendored vello variants size scratch buffers from the current scene and
+# include the matching shader/encoding changes.
 vello_encoding = { path = "vendor/vello_encoding" }
 vello_shaders = { path = "vendor/vello_shaders" }
 vello = { path = "vendor/vello" }

@@ -3048,9 +3048,8 @@ fn autoconfig_lookup(_email: &str) -> Option<crate::autoconfig::Autoconfig> {
 // =============================== Widget impl ===============================
 
 impl MailApp {
-    /// Step 1 of [`Widget::handle_event`]: the compose window is modal while
-    /// open — route the event to it, act on whatever [`ComposeAction`] it
-    /// raised, and report whether it consumed the event.
+    /// Route events to the open compose modal and report whether it consumed
+    /// them.
     #[allow(
         clippy::too_many_arguments,
         reason = "mirrors Widget::handle_event's own parameter list, which is fixed by the shared framework contract (see the trait doc)"
@@ -3085,8 +3084,7 @@ impl MailApp {
         consumed
     }
 
-    /// Step 3 of [`Widget::handle_event`]: while the row context menu is open,
-    /// a click either activates the item under it or dismisses the menu.
+    /// Activate the clicked context-menu item or dismiss the open menu.
     fn handle_context_menu_click(&mut self, pt: Point, state: &mut AutoCommit) {
         self.rebuild_overlay_hits();
         let item = self

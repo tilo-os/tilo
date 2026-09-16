@@ -8,14 +8,7 @@
 # `~/Books`, `~/Documents`, `~/Downloads`, `/var/workspace`
 # (override `EBOOK_LIBRARY_DIR`).
 #
-# Pack and install:
-#
-#     cargo build -p ebook -p pkg-cli -p install
-#     mkdir -p target/qpkg/ebook/bin
-#     cp target/debug/ebook target/qpkg/ebook/bin/ebook
-#     target/debug/qos-pkg pack --manifest apps/ebook/qos-app.toml \
-#         --payload target/qpkg/ebook --output target/ebook.qpkg
-#     target/debug/qos-install install target/ebook.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.ebook"
@@ -25,8 +18,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

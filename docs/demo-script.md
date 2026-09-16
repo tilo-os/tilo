@@ -1,8 +1,8 @@
 # The demo — shot list
 
-The technical grounding for every claim is in **`plan/yc-demo.md`**, which
-reads each beat against the code. This file is the shot list: what is filmed,
-in order, and whether it can be filmed today.
+This is the executable demo's shot list: what is filmed and in what order.
+Assertions in `scripts/yc-demo.py` are the source of truth for whether a beat
+passes; this document explains the intended story and the operator's cuts.
 
 One continuous story. Agent work is only ever shown from someone else's
 desktop — the point is that the other participants see it happen, not that a

@@ -1,100 +1,69 @@
-# OS Layer: Fedora bootc
+# OS layer: Fedora bootc
 
-## Base Image
+The qOS image is an immutable Fedora bootc deployment. The current base is
+Fedora 44, mirrored and pinned by digest in `os/base-snapshot.env`; update the
+source and frozen RPM snapshot together when changing Fedora releases.
 
-```
-FROM quay.io/fedora/fedora-bootc:42
-```
+## Filesystem and package layers
 
-Fedora 42 is the latest stable release with full bootc support. The image is immutable — the root filesystem is read-only except for `/etc` (config) and `/var` (mutable data).
+The image keeps the root filesystem immutable while persistent identity,
+workspace state, caches, and logs live below `/var`. The collaborative FUSE
+filesystem (`fs`) projects metadata at `/var/workspace` and hydrates
+content-addressed data into `/var/cache/quick-fs`. Its service is required by
+the session and fails when FUSE or the device identity is unavailable.
 
-## Filesystem
+The image contains the native qOS compositor and system services, the shared
+runtime, and the standard applications. Optional application bundles and
+developer environments remain separate: Flatpak and distrobox are integration
+paths, not replacements for the qOS sandbox or update mechanism.
 
-**Root**: Btrfs
-- Copy-on-Write for efficient snapshots and rollbacks
-- Transparent compression (zstd) saves disk space
-- Subvolumes for `/home`, `/var` enable independent snapshot policies
+## Login and session flow
 
-**Collaborative** (`fs/`): an Iroh-backed P2P FUSE filesystem
-- Content-addressed via `blake3`, transferred with `iroh-blobs`, cached with `moka`
-- Metadata projects immediately over P2P gossip; content hydrates on first `read()`
-- Mounted at `/var/workspace`; cache at `/var/cache/qos-fs`
-
-## Package Strategy
-
-### Tier 1: Base OS (in Containerfile)
-Minimal system packages baked into the immutable image:
-- **Display**: greetd + tuigreet (lightweight Wayland login manager)
-- **Graphics**: mesa-dri-drivers, mesa-vulkan-drivers, libglvnd-egl
-- **Audio/Video**: pipewire, pipewire-pulseaudio, wireplumber
-- **Media**: gstreamer1, gstreamer1-plugins-base, gstreamer1-plugins-good
-- **Sandbox**: bubblewrap
-- **Fonts**: google-noto-sans-fonts, google-noto-sans-mono-fonts
-- **Utils**: wl-clipboard, foot (terminal)
-- **Build deps**: wayland-devel, libxkbcommon-devel (for Smithay)
-- **Containers**: flatpak, distrobox, podman
-
-### Tier 2: User Apps (Flatpak via Flathub)
-- Covers 95%+ of GUI application needs
-- Sandboxed, independent update cycle
-- Wine/Gaming via Bottles or Lutris Flatpaks
-
-### Tier 3: Dev Environments (Distrobox)
-- Mutable containers on an immutable host
-- Access to any Linux distro's package manager
-- Seamless integration with host display/audio
-
-## Systemd Integration
-
-### Login Flow
-```
-systemd -> graphical.target -> greetd.service
-  -> tuigreet (TUI login screen)
-  -> user selects "qOS" session
-  -> /usr/bin/shell launches as compositor
+```text
+UEFI → systemd-boot → unified kernel image → systemd
+  → greetd → cage → qos-greeter
+  → authenticated greetd session → qos-session
+  → fs.service + qOS graphical-session targets → shell
 ```
 
-### Services
-- `greetd.service`: Display manager, starts on graphical.target
-- `shell-firstboot.service`: One-shot, generates identity key, configures Flatpak remotes
-- PipeWire + WirePlumber: User session services (auto-started)
+`qos-greeter` is a graphical qOS UI running inside Cage; it is not
+`tuigreet`. The session entries in `os/usr/share/wayland-sessions/` invoke
+`/usr/libexec/qos-session`, which owns the lifetime of the qOS user targets
+and starts `/usr/bin/shell` as the native Wayland compositor. The peer-sync
+entry is an explicit opt-in variant.
 
-### Session Entry
-`/usr/share/wayland-sessions/shell.desktop` registers the compositor as a selectable Wayland session in greetd/tuigreet.
+`fs.service` mounts `/var/workspace` before the compositor. Identity migration
+and first-login verification happen in the session targets and greeter flow;
+the compositor must not infer identity from an implementation-level Unix
+account.
 
-## Build Pipeline
+## Build and update pipeline
 
-```
-1. cargo build --release    (in shell/)
-2. podman build             (builds container image from os/Containerfile)
-3. systemd-repart + bootc install to-filesystem   (container -> QCOW2)
-4. qemu-system-x86_64       (test in VM)
-```
-
-### Build Requirements
-- Podman (for container build)
-- Rust toolchain (for compositor compilation)
-- systemd-repart + `bootc install to-filesystem` (OCI -> disk image conversion)
-- QEMU/KVM (for VM testing)
-
-## Update Mechanism
-
-```bash
-# On deployed systems:
-sudo bootc upgrade        # Pulls latest container image, stages for next boot
-sudo bootc rollback       # Reverts to previous image if update breaks
+```text
+1. cargo build --release (or the image's builder stage)
+2. podman build -f os/Containerfile
+3. systemd-repart + bootc install to-filesystem → qcow2
+4. qemu/KVM validation, then promotion of the pinned image
 ```
 
-Updates are atomic — the bootloader swaps the entire rootfs. No partial update states.
+Use `os/build.sh` for a production image and `os/verify-test.sh` for the test
+image, which adds `fs-test.service`. The headless VM toolkit and its display
+mode constraints are documented in `os/dev/README.md`; compositor-only lanes
+are in `docs/headless-testing.md`.
 
-## Directory Layout (Deployed)
+Deployed systems update atomically with `bootc upgrade` and can return to the
+previous bootable generation with `bootc rollback`. Signing, rollback bounds,
+and recovery behavior are specified in `docs/security/boot-chain.md`,
+`docs/security/rollback.md`, and `docs/recovery.md`.
 
-```
-/usr/bin/shell                              # Compositor binary
-/usr/share/wayland-sessions/shell.desktop   # Session entry
-/usr/lib/systemd/system/shell-firstboot.service
-/etc/shell/desktop.toml                     # Default config
-/etc/greetd/config.toml                             # Login manager config
-/var/home/<user>/.config/shell/             # User config overrides
-/var/home/<user>/.config/shell/identity.key # Ed25519 keypair
+## Important paths
+
+```text
+/usr/bin/shell
+/usr/libexec/qos-session
+/usr/share/wayland-sessions/shell.desktop
+/usr/lib/systemd/system/fs.service
+/etc/qos/desktop.toml
+/var/workspace
+/var/cache/quick-fs
 ```

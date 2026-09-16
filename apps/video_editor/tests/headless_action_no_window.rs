@@ -6,36 +6,9 @@
     reason = "headless integration fixture asserts setup failures directly"
 )]
 
-//! Driving the video editor through its actions with **no window at all** —
-//! no compositor, no surface, no GPU, no widget tree on the driving side.
-//!
-//! This is the half of "an agent can drive an app" that carried the real
-//! risk. The app-facing action system (`qos-actions`) is a leaf crate over
-//! `automerge` — it cannot name a window by construction — but that says
-//! nothing about whether *this* app's resource tree can be built without
-//! one. If publishing resources needed a laid-out widget, or if any action's
-//! effect lived in widget fields rather than in the document, headless
-//! driving would be impossible however good the plumbing was.
-//!
-//! So the test drives the document the long way round and then reads the
-//! result back through the **real** widget pipeline, which is what a person
-//! opening the editor would see.
-//!
-//! Three phases, each closing its store before the next opens it, so the
-//! document genuinely round-trips through disk rather than through a value
-//! held in memory:
-//!
-//!   1. **Seed.** Write a project the ordinary way and persist it.
-//!   2. **Drive.** With no widget, no layout and no theme: load the project
-//!      out of a bare `AutoCommit`, publish the resource tree, survey it,
-//!      invoke one action by address, persist.
-//!   3. **Observe.** Open the persisted document in a real `ui::headless`
-//!      driver — the production five-pass frame — and assert the change is
-//!      present in what that pipeline produces.
-//!
-//! Phase 3 is what stops this passing vacuously. Asserting on the document
-//! the test itself just wrote would prove only that `automerge` stores
-//! bytes; asserting on the driver's own output proves the app agrees.
+//! End-to-end action test without a driving window. It persists a project,
+//! invokes a resource action from a bare document, then opens the result in
+//! the production headless driver.
 
 use qos_actions::door::{self, ActionAddress, DoorError};
 use qos_actions::{ActionRegistry, executor::LocalTransport};
@@ -85,10 +58,7 @@ impl Drop for DataHome {
 fn an_action_invoked_with_no_window_reaches_the_app() {
     let _home = DataHome::new();
 
-    // ---- 1. Seed -------------------------------------------------------
-    //
-    // Through the same store the live editor uses, so phase 2 is reading a
-    // real persisted document rather than one this test handed it.
+    // Seed through the same store used by the live editor.
     let (clip_id, seeded_clip_count) = {
         let (mut state, mut autosave) =
             ui::persist::try_open(APP_ID).expect("the private data home is writable");
@@ -125,11 +95,7 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
     };
     assert_eq!(seeded_clip_count, 1, "the seed put exactly one clip down");
 
-    // ---- 2. Drive ------------------------------------------------------
-    //
-    // Nothing in this block constructs a widget, a theme, a viewport or a
-    // renderer. If any of that were required to publish resources or to
-    // apply an action, this phase could not compile, let alone run.
+    // Invoke an action without a widget, theme, viewport, or renderer.
     let address = {
         let (mut state, mut autosave) =
             ui::persist::try_open(APP_ID).expect("reopen the persisted document");
@@ -219,10 +185,8 @@ fn an_action_invoked_with_no_window_reaches_the_app() {
         address
     };
 
-    // ---- 3. Observe ----------------------------------------------------
-    //
-    // The real widget tree, the real five passes. This is deliberately not a
-    // re-read of the document: it is the app's own presentation of it.
+    // Validate the result through the real widget tree rather than rereading
+    // the document directly.
     let (state, _autosave) = ui::persist::try_open(APP_ID).expect("reopen after the headless edit");
     let mut driver = ui::headless::Driver::new(state, video_editor::app_root(), (1280, 800));
     driver.relayout();

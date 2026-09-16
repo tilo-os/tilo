@@ -6,8 +6,7 @@
 # shared library from the runtime bundle rather than linked into each
 # binary. That number is not what this file measures.
 #
-# Set at 15% over the measured size when the gate was added, rounded up to
-# the next MiB. Raising one is a decision, so it belongs in a diff.
+# Budgets include headroom; raising one is an intentional reviewed change.
 
 [budgets]
 "api_tester" = 26   # 22.3 MB

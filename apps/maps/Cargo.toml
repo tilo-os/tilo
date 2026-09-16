@@ -32,10 +32,8 @@ reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 # has both ring + aws-lc-rs, which rustls 0.23 won't auto-disambiguate.
 rustls.workspace = true
 png.workspace = true
-# Device location through the XDG Desktop Portal (org.freedesktop.portal.Location,
-# GeoClue2 behind it). Runs off the UI thread on its own small Tokio runtime; the
-# fix is delivered back over a channel (see `location`). Honest failure states —
-# never a fabricated position.
+# Device location through the XDG Location portal (GeoClue2). Runs off the UI
+# thread and reports unavailable/error states without fabricating a position.
 ashpd.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
 futures-util.workspace = true

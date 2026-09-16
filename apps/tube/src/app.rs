@@ -736,17 +736,14 @@ impl TubeApp {
                 }
                 false
             };
-            // Phase 1: preroll — wait for the first decoded frame (proves the
-            // pipeline is live and surfaces the real duration).
+            // Wait for the first decoded frame before capturing the player.
             pump(
                 &mut p,
                 &mut doc,
                 &|p| p.latest_frame().is_some(),
                 Duration::from_secs(25),
             );
-            // Phase 2: seek past a typical fade-from-black intro to a colourful
-            // scene, then pump until a post-seek frame at/after ~30s is decoded, so
-            // the still shows real picture rather than the opening black frame.
+            // Seek past the typical fade-from-black intro for a useful capture.
             if p.duration_ms() > 40_000 {
                 p.seek_to_ms(32_000);
                 pump(

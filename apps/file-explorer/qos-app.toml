@@ -1,7 +1,6 @@
 # Files — qOS application manifest.
 #
-# A file manager's job is the user's files, and it has none by
-# default: what it can reach is what the user granted it.
+# The file manager has no ambient access; it reaches only user-granted paths.
 #
 # Beyond the system read profile it needs, as consented capabilities:
 # read+write on the directories the user opens — `$HOME`,
@@ -9,14 +8,7 @@
 # trash dir — and read+exec on the host bin dirs, because it hands
 # files off to `terminal`, `word-processor` and the host opener.
 #
-# Pack and install:
-#
-#     cargo build -p file-explorer -p pkg-cli -p install
-#     mkdir -p target/qpkg/file-explorer/bin
-#     cp target/debug/file-explorer target/qpkg/file-explorer/bin/file-explorer
-#     target/debug/qos-pkg pack --manifest apps/file-explorer/qos-app.toml \
-#         --payload target/qpkg/file-explorer --output target/file-explorer.qpkg
-#     target/debug/qos-install install target/file-explorer.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.file-explorer"
@@ -26,8 +18,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 
@@ -43,7 +33,7 @@ signature = ""
 [sandbox]
 # Files only uses HTTPS to the user-configured WebDAV/Nextcloud origins. The
 # client disables automatic redirects and refuses to send credentials across
-# an origin boundary; this declaration is required for those real file actions.
+# an origin boundary; this declaration is required for those file actions.
 namespaces = [
     "user",
     "pid",

@@ -53,8 +53,8 @@ wildcards = "deny"
 # are allowed only for packages explicitly marked `publish = false`; registry
 # wildcard dependencies remain denied.
 allow-wildcard-paths = true
-# Old quick-xml releases remain temporarily permitted only behind the two
-# current upstream crates which have not released a fixed dependency yet.
+# Old quick-xml releases remain permitted only behind the two upstream crates
+# that still require them.
 deny = [
     { crate = "quick-xml@0.38.4", wrappers = ["citationberg"], reason = "Typst's current citationberg release has not adopted fixed quick-xml 0.41" },
     { crate = "quick-xml@0.39.4", wrappers = ["zbus_xml"], reason = "AccessKit's current zbus_xml release has not adopted fixed quick-xml 0.41" },

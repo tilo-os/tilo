@@ -8,14 +8,7 @@
 # read on the directories the user sources clips from —
 # `/var/workspace`, `~/Videos`.
 #
-# Pack and install:
-#
-#     cargo build -p video_editor -p pkg-cli -p install
-#     mkdir -p target/qpkg/video_editor/bin
-#     cp target/debug/video_editor target/qpkg/video_editor/bin/video_editor
-#     target/debug/qos-pkg pack --manifest apps/video_editor/qos-app.toml \
-#         --payload target/qpkg/video_editor --output target/video_editor.qpkg
-#     target/debug/qos-install install target/video_editor.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.video-editor"
@@ -25,8 +18,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 
@@ -67,10 +58,8 @@ type            = "gui"
 splash-segments = ["bin/video_editor[0x0:0x400000]"]
 splash-budget   = 250
 
-# The formats the importer can actually probe (see `probe.rs`): ISOBMFF,
-# Matroska/WebM, MP3, WAV and the two still formats. Nothing is claimed
-# that the probe would have to guess at — an editor offering to open a
-# file it cannot read is worse than not offering.
+# Formats the importer probes (see `probe.rs`): ISOBMFF, Matroska/WebM, MP3,
+# WAV, and the two still-image formats.
 [providers]
 mime = [
     "video/mp4",

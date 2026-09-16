@@ -89,8 +89,6 @@ fn assert_balanced(rtf: &str) {
     assert_eq!(depth, 0, "unbalanced braces (depth {depth} at end):\n{rtf}");
 }
 
-// ---- required tests ---------------------------------------------------------
-
 #[test]
 fn heading_with_bold_run_yields_rtf_header_and_bold() {
     // A heading whose first word is bold.
@@ -219,8 +217,6 @@ fn colored_run_registers_color_table_entry_and_cf() {
     );
     assert_balanced(&rtf);
 }
-
-// ---- supporting tests -------------------------------------------------------
 
 #[test]
 fn empty_document_is_well_formed() {

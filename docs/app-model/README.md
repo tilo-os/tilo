@@ -76,9 +76,7 @@ You give qOS a manifest and a payload. In return:
 - **Distributing?** Read [`installation.md`](./installation.md) and
   [`cross-target.md`](./cross-target.md).
 
-Every code block in every file was executed against tools built from
-`origin/main` at `01033500327a2bb37d36049a8bb54ee7abb95d9b`. See
-[`verified.log`](./verified.log) for the exact command history and tool
-hashes. The manifests have since lost their `[sandbox.fs]` block, so the
-example manifests and the Landlock rule counts have moved on from that
-run; the rest of the command history still holds.
+The examples are maintained against the current workspace. Run them from a
+checkout with the pinned toolchain and treat command output as dependent on
+the local platform and installed services; this directory does not claim a
+reproducible verification run for a particular historical commit.

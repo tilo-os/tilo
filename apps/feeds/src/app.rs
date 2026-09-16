@@ -5104,13 +5104,7 @@ mod tests {
         t0.elapsed()
     }
 
-    /// THE responsiveness regression test the coordinator demanded. Spawns the
-    /// REAL worker (real thread + real Tokio runtime + real reqwest client),
-    /// fires a refresh against unreachable hosts, then proves the MAIN THREAD
-    /// stays responsive: `refresh_all`, every `draw`, and `handle_event` each
-    /// return in well under a 16 ms frame budget while the refresh is in flight.
-    /// If any network I/O, runtime construction, or blocking `recv` ran on the
-    /// UI thread, one of these would blow the budget.
+    /// A real refresh worker must not block the UI thread.
     #[test]
     fn real_worker_refresh_keeps_main_thread_responsive() {
         use std::time::{Duration, Instant};
@@ -5118,13 +5112,8 @@ mod tests {
         let mut a = app();
         let mut doc = AutoCommit::new();
         let mut tr = TextRenderer::new();
-        // Warm frames so first-frame font loading / cache warm-up isn't
-        // attributed to refresh, then capture a BASELINE for one idle draw +
-        // one idle input event. The invariant we prove is build-independent:
-        // an in-flight refresh must not make draw/handle_event meaningfully
-        // slower than this baseline — i.e. no network / runtime / blocking recv
-        // runs on the UI thread. (An absolute "<16ms" bound would just measure
-        // how slow an unoptimised debug draw of the sample scene is.)
+        // Compare active-refresh work with warmed idle frames to avoid tying
+        // the assertion to a machine-specific rendering budget.
         let synth_event = || WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(200.0, 200.0),
@@ -5164,8 +5153,7 @@ mod tests {
             f.kind = FeedKind::Rss;
         }
 
-        // Cold start: the FIRST refresh must also spawn the worker + runtime
-        // off the UI thread. The call itself must be trivial.
+        // Worker and runtime startup must stay off the UI thread.
         let t_refresh = Instant::now();
         a.refresh_all();
         let refresh_cost = t_refresh.elapsed();
@@ -5176,11 +5164,7 @@ mod tests {
         assert!(a.worker.is_some(), "worker really spawned");
         assert!(a.refresh.in_progress());
 
-        // Pump frames for a window while the fetches are genuinely outstanding
-        // (the worker hammers unreachable hosts the whole time). Track the best
-        // (fastest achievable) draw + event during the refresh — if any network
-        // I/O or blocking recv leaked onto the UI thread, even the *best* frame
-        // would balloon far past the idle baseline.
+        // Pump frames while requests remain outstanding.
         let deadline = Instant::now() + Duration::from_millis(500);
         let mut frames = 0u32;
         let mut best_draw = Duration::from_secs(9999);
@@ -5195,10 +5179,8 @@ mod tests {
             frames > 5,
             "the loop kept pumping frames while refreshing (got {frames})"
         );
-        // The refresh adds no blocking to the UI thread: draw + event during a
-        // refresh are within a small factor of the idle baseline (generous 4x
-        // slack absorbs scheduler jitter from the busy worker threads). A real
-        // main-thread network block would be orders of magnitude over.
+        // Allow scheduler jitter while rejecting main-thread I/O or blocking
+        // receives.
         let draw_bound = base_draw * 4 + Duration::from_millis(2);
         let event_bound = base_event * 4 + Duration::from_millis(2);
         assert!(

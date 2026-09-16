@@ -42,15 +42,8 @@ fn recv(
     rx.recv_timeout(Duration::from_secs(5))
 }
 
-/// Step 4a of the end-to-end loop test: a compose produces a well-formed SMTP
-/// payload. Build the same draft's MIME (the exact function the engine's Send
-/// uses) and check it directly, then parse it back. Note: two independent
-/// builds are NOT byte-identical — RFC 5322 requires a unique Message-ID and
-/// a current Date, which mail-builder auto-generates per call, so the payload
-/// is verified by structure and content, not by comparing the length of a
-/// second build to the engine's. The exact bytes the engine puts on the wire
-/// are asserted by the `--features live` SMTP socket test, which captures the
-/// server-side DATA.
+/// Verify the MIME generated for a draft by structure and content. Independent
+/// builds differ because RFC 5322 headers include a Message-ID and Date.
 fn assert_send_builds_real_mime(loaded: &AccountConfig, draft: &Draft) {
     let from = Addr::new(loaded.display_name.clone(), loaded.email.clone());
     let mime = build_mime(&from, draft).expect("build MIME");

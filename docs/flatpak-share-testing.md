@@ -55,7 +55,7 @@ inside the container but runs fine on the host.
 Two paths, depending on whether your distrobox matches the host's
 ffmpeg ABI:
 
-### Happy path — `my-distrobox-44` (Fedora 44)
+### Matching-ABI container (Fedora 44)
 
 When the distrobox and the host are on the same Fedora version, their
 libavcodec/libavutil/libswscale SONAMEs match and the compiled binary
@@ -65,10 +65,10 @@ Create it once:
 
 ```
 podman pull registry.fedoraproject.org/fedora-toolbox:44
-distrobox create --name my-distrobox-44 \
+distrobox create --name qos-dev-44 \
     --image registry.fedoraproject.org/fedora-toolbox:44 \
     --nvidia --yes
-distrobox enter my-distrobox-44 -- bash -c '
+distrobox enter qos-dev-44 -- bash -c '
     sudo dnf install -y \
         https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-44.noarch.rpm \
         https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-44.noarch.rpm
@@ -83,14 +83,14 @@ distrobox enter my-distrobox-44 -- bash -c '
 '
 ```
 
-`scripts/test-flatpak-share.sh` auto-detects `my-distrobox-44` and
-prefers it. The nvenc subcommand then just builds the test binary and
-runs it bare on the host — `ldd` resolves everything against `/lib64`
-naturally.
+Set `QOS_DISTROBOX=qos-dev-44` when running
+`scripts/test-flatpak-share.sh`. The nvenc subcommand then builds the test
+binary and runs it bare on the host — `ldd` resolves everything against
+`/lib64` naturally.
 
-### Fallback — `my-distrobox` (Fedora 42) + LD_LIBRARY_PATH shim
+### Different-ABI container + `LD_LIBRARY_PATH` shim
 
-If only the older distrobox exists, the runner:
+If the container's ffmpeg ABI differs from the host's, the runner:
 
 1. Compiles the test in distrobox with `--features nvenc`
 2. Extracts the ffmpeg .so files from distrobox into a scratch dir

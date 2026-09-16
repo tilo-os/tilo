@@ -2,8 +2,7 @@
 //!
 //! Ties together the shared caret core ([`EditCore`](crate::text_edit::EditCore))
 //! and the rich-run layout primitive ([`RichTextLayout`]) into an *editable*
-//! widget, so apps that want WYSIWYG formatting stop re-implementing caret
-//! motion, selection, splicing, and run styling by hand.
+//! widget with shared caret motion, selection, splicing, and run styling.
 //!
 //! Design, following the five-pass [`Widget`] model:
 //!
