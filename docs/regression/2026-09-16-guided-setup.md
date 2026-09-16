@@ -147,10 +147,9 @@ constitute an actual reboot or physical power-loss test.
 
 Windows cfg compilation and scoped Clippy passed. Windows journaled copying
 currently refuses before mutation pending a verified native durability adapter;
-the existing nonjournal API remains available. Journals currently use complete
-JSON snapshots with a 16 MiB bound and quadratic cumulative write cost. These
-limits remain a deferred final-review item; this is not yet the worker/UI import
-flow.
+the existing nonjournal API remains available. The original complete JSON
+snapshots had a 16 MiB bound and quadratic cumulative write cost. The final
+component fix below replaces that format with an incremental journal.
 
 Task review found that checkpoint failures could allow subsequent publication
 and discard the accumulated report. Commit `e308647ff` stops traversal on typed
@@ -180,8 +179,45 @@ and current import status before the empty new-import form on compact windows.
 The amended eight renders at 640×640 and 1180×820 passed visual inspection;
 the four focused import-view tests also passed natively in Fedora. Independent
 review then found an unreachable setup entry and stale counts during retry;
-those fixes are in progress. These checks do not establish native Windows
-support or first-login/Files integration.
+commit `28888974b` fixes both and passed scoped re-review. The amended native
+setup suite passed 109 tests with two explicit fixture-only ignores. These
+checks do not establish native Windows support or first-login/Files integration.
+
+## Folder-copy final component fixes
+
+Commit `0cbf9635f` replaces whole-journal rewrites with bounded, sequenced,
+checksummed append records and indexed receipt lookup. Valid old journals are
+converted only after root and location validation. Recovery rejects complete
+corrupt records and repairs only an incomplete final record. The operation index
+keeps counts and previews; immutable detail files retain all issue reasons.
+Background checkpoint writes and coalesced progress keep the UI responsive, and
+an OS-held store lock prevents two app instances from overwriting restart state.
+The lock remains held through queued writes and live workers after UI closure.
+
+A native Fedora XFS release workload copied 25,000 real long-named files. It
+stopped after 20,000 verified files with a 32,899,577-byte journal, then resumed
+in a new process to completion with a 41,125,876-byte journal. A third process
+preserved an edited destination while verifying the other 24,999 files. Every
+source and destination was checked, and the disposable fixture was removed.
+This establishes orderly process restart beyond the former size ceiling; it
+is not physical power-loss evidence.
+
+The amended native Btrfs suite passed 52 tests with two explicit fixture-only
+ignores. The integrated Fedora setup suite passed 125 tests with two ignores;
+the final report-identity changes then passed all 14 focused store tests.
+Final host checks passed 14 store tests, eight import-view tests and strict
+library Clippy. The broader app test-target Clippy command still reports four
+unrelated concurrent main.rs diagnostics; it is not claimed green.
+Windows compilation of the exact engine, journal, worker and store test sources
+passed, with seven harness-only unused-code warnings because UI callers are
+excluded. Native Windows execution remains outstanding.
+
+The actual-worker issue-page scenario shows all 40 issue reasons through
+asynchronous pages of 32 and eight. Compact and normal renders passed visual
+inspection; the regression exercises navigation through the last issue.
+The single scoped final rereview passed: all three Important findings and nine
+minor diagnostics were addressed, with no new actionable issues. This accepts
+the copy component, subject to relevant CI; the overall app remains incomplete.
 
 ## Existing installer baseline
 
