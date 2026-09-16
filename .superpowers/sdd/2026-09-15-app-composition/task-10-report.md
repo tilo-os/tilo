@@ -62,3 +62,29 @@ Root reported its final default matrix from the same application binary as a nor
 - The implementation keeps the existing fixed 160px dock and does not add preference persistence or resize behavior.
 - The app-local wrapper delegates retained interaction and canonical action emission to the shared `Button`; its custom layer only supplies dynamic disclosure semantics and the stateful chevron.
 - The 200% font-metric finding is intentionally unresolved here and must not be counted as closed by Task 10.
+
+## Review fix round 1
+
+Review found that Ctrl+J closed a focused Terminal before Terminal event routing, but the canonical toggle only flipped `panel_visible`. That left `terminal_focused` set while the dock was hidden. Reopening could therefore return the next ordinary key to Terminal even though the retained disclosure was the visible focus target. Escape had separate cleanup, which caused the inconsistent lifecycle.
+
+The close transition is now centralized in `close_bottom_panel`: both the canonical Toggle Bottom Panel command and Escape hide the dock, clear hidden Terminal focus, update disclosure state, and preserve the selected panel tab plus the live Terminal object. The global keyboard shortcut passes through existing focus plumbing and returns focus to the retained trigger when it closes the dock. Opening Terminal explicitly keeps its existing semantics.
+
+### RED / GREEN
+
+- Added `keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal`, which opens the real Terminal route, clicks its content to give it keyboard ownership, closes and reopens with Ctrl+J, and presses Enter on the retained trigger.
+  - RED: the exact test failed at `keyboard close returns focus to the retained disclosure`; actual focused node was `Code editor`, expected `Show bottom panel`.
+  - GREEN: after centralizing close cleanup and forwarding the keyboard focus target, the exact test passed: `1 passed; 0 failed; 207 filtered out`.
+- Extended `dock_commands_open_the_requested_content_and_toggle_without_clearing_it` to assert the same live Terminal allocation and grid content remain across close/reopen.
+- Extended `retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes` to resize the same open driver from 480×900 to 800×700 and back. It asserts the panel remains open at the fixed height, panel bounds remain inside the viewport, the trigger stays aligned and disjoint from tabs, and expanded/selected semantics survive the resize.
+
+### Focused verification
+
+The following exact tests passed individually with `CARGO_BUILD_JOBS=4 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 cargo test -p code_editor --lib TEST -- --exact`:
+
+- `app::tests::fresh_editor_collapses_the_empty_bottom_panel`
+- `app::tests::explicit_problems_open_survives_an_empty_diagnostics_refresh`
+- `app::tests::dock_commands_open_the_requested_content_and_toggle_without_clearing_it`
+- `app::tests::retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes`
+- `app::tests::keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal`
+
+`cargo fmt --package code_editor -- --check` and `git diff --check -- apps/code_editor/src/app.rs` passed after formatting. Per the fix brief, the 207-test package suite was not repeated; its existing `/var` versus `/private/var` caveat above remains. Paint and layout behavior did not change, so the previously accepted six screenshots and their binary/source provenance remain the visual evidence; the new same-instance resize behavior is covered by the focused retained-driver regression. Task 13's 200% metric finding remains out of scope.
