@@ -1073,6 +1073,39 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
     Ok(out)
 }
 
+/// Result of resolving an installed package's signed continuity contract.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstalledContinuityRequirements {
+    /// No installed package owns this id (development/legacy callers use the
+    /// framework presentation baseline).
+    NotInstalled,
+    /// Facets parsed from the installed manifest. An old manifest produces
+    /// the presentation default.
+    Required(Vec<launcher::manifest::ContinuityFacet>),
+    /// Registry or manifest authority was present but unreadable/inconsistent.
+    /// Callers must reject rather than silently weaken the signed contract.
+    Invalid,
+}
+
+/// Read the signed continuity contract for an installed package without using
+/// the UI-oriented app cache. This keeps every checkpoint tied to current
+/// install authority and distinguishes legacy absence from corruption.
+pub fn installed_continuity_required_facets(package_id: &str) -> InstalledContinuityRequirements {
+    let Ok(entries) = launcher::registry::list_installed() else {
+        return InstalledContinuityRequirements::Invalid;
+    };
+    let Some(entry) = entries.into_iter().find(|entry| entry.id == package_id) else {
+        return InstalledContinuityRequirements::NotInstalled;
+    };
+    let Ok(manifest) = launcher::manifest::read_manifest(&entry.manifest_path) else {
+        return InstalledContinuityRequirements::Invalid;
+    };
+    if !manifest.package_id.is_empty() && manifest.package_id != package_id {
+        return InstalledContinuityRequirements::Invalid;
+    }
+    InstalledContinuityRequirements::Required(manifest.continuity.required)
+}
+
 /// Installed packages, memoised for [`APP_CACHE_TTL`]. Errors are not
 /// cached, so a transiently unreadable registry doesn't wedge the
 /// launcher for the rest of the TTL.
@@ -2730,6 +2763,38 @@ mod tests {
             vec!["dev.qos.hello"],
             "only the GUI package is launchable from the palette",
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn installed_continuity_lookup_reads_signed_manifest_facets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = install_fixture(tmp.path(), "dev.qos.browser", "gui");
+        let manifest_path = payload.join("manifest.toml");
+        let mut manifest = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&manifest_path)
+            .unwrap();
+        writeln!(
+            manifest,
+            "\n[continuity]\nrequired = [\"presentation\", \"semantic\"]"
+        )
+        .unwrap();
+
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        let required = installed_continuity_required_facets("dev.qos.browser");
+        let legacy = installed_continuity_required_facets("dev.qos.not-installed");
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+
+        assert_eq!(
+            required,
+            InstalledContinuityRequirements::Required(vec![
+                launcher::manifest::ContinuityFacet::Presentation,
+                launcher::manifest::ContinuityFacet::Semantic,
+            ])
+        );
+        assert_eq!(legacy, InstalledContinuityRequirements::NotInstalled);
     }
 
     #[test]
