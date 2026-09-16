@@ -184,6 +184,14 @@ on a disposable file, not a real retained OS or an internal-installer boot path.
 
 ## Outstanding end-state evidence
 
+The Fedora ARM64 test VM was restored after an external suspension. Podman
+5.8.4 and its required dependencies were installed from configured Fedora
+repositories (14 additions, no upgrades or removals). The system reports running
+with no failed units. Rootless Podman reports the overlay driver using the
+per-command `--cgroup-manager=cgroupfs` option for the non-login test session.
+QEMU is available, but the configured qOS disk/installer images are still absent;
+these prerequisites do not establish an actual internal boot or installation.
+
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
 - Linux interactive wizard, desktop-session installation, and complete boot flow.
 - Internal installer bundle and same-disk protected-partition protocol.
