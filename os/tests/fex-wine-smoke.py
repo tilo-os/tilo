@@ -89,11 +89,18 @@ def main():
                         [str(fex), f"/usr/bin/wineserver{bits}", "-k"], guest, 30,
                         args.output_dir / f"wine{bits}-cleanup.log",
                     )
+                    # -k returns 1 when there was no running server to signal.
+                    # Independently wait for the prefix lock to be released.
+                    wait_status, wait_timeout, _ = run(
+                        [str(fex), f"/usr/bin/wineserver{bits}", "-w"], guest, 30,
+                        args.output_dir / f"wine{bits}-server-wait.log",
+                    )
                     passed = (
                         version_status == 0 and not version_timeout
                         and status == 0 and not timed_out
                         and marker in [line.strip() for line in output.splitlines()]
-                        and cleanup_status == 0 and not cleanup_timeout
+                        and cleanup_status in (0, 1) and not cleanup_timeout
+                        and wait_status == 0 and not wait_timeout
                     )
                     results.append({
                         "bits": bits, "passed": passed, "exit_code": status,
@@ -101,6 +108,8 @@ def main():
                         "version_timed_out": version_timeout,
                         "cleanup_exit_code": cleanup_status,
                         "cleanup_timed_out": cleanup_timeout,
+                        "server_wait_exit_code": wait_status,
+                        "server_wait_timed_out": wait_timeout,
                     })
                     print(f"Wine {bits}: {'PASS' if passed else 'FAIL'}", flush=True)
             finally:
