@@ -33,6 +33,7 @@ import {
   validateFinalLoad,
   framePacingMetrics,
 } from "./benchmark-metrics.mjs";
+const scrollStepMs = 16;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const round = (x) => (typeof x === "number" ? Math.round(x * 1000) / 1000 : x);
 async function until(check, timeout = 15000) {
@@ -321,7 +322,7 @@ async function pacing(cdp, host) {
   let excursion = 0;
   for (let i = 0; i < steps.length; i++) {
     await host.send({ op: "scroll", x: 640, y: 400, dx: 0, dy: steps[i] });
-    await sleep(33);
+    await sleep(scrollStepMs);
     if (i === 29)
       excursion = Math.abs((await cdp.evaluate("scrollY")) - before.scrollY);
   }
@@ -590,6 +591,7 @@ async function main() {
       runs: options.runs,
       blocking: filters.configuration,
       scrollTrials: 5,
+      continuousScrollStepMs: scrollStepMs,
       wheelDelta: -120,
       scrollSettleQuietMs: 150,
       sandbox: "unchanged/enabled",

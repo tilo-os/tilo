@@ -34,6 +34,7 @@
 #include <signal.h>
 
 namespace {
+constexpr int kOffscreenFrameRate = 60;
 // CEF callbacks only enqueue: a slow UI must never block Chromium's UI thread.
 class Output {
  public:
@@ -140,7 +141,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     document_scripts_=new qos::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
     navigation_history_=new qos::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
   }
@@ -294,7 +295,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
 void CreateTab(int id) {
   if(closing || id<=0 || clients.count(id) || clients.size()>=32) return;
   auto client=CefRefPtr<Client>(new Client(id));clients.emplace(id,client);
-  CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=30;
+  CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=kOffscreenFrameRate;
   if(!CefBrowserHost::CreateBrowserSync(window,client,"about:blank",settings,nullptr,shared_context)) {clients.erase(id);CloseHost();}
 }
 void Dispatch(CefRefPtr<CefDictionaryValue> d) {
