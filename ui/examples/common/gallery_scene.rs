@@ -367,7 +367,6 @@ fn seed_gallery_state(state: &mut State) {
         let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
     }
 
-    // Editable table model (lives directly under root, like the old gallery).
     for _ in 0..3 {
         table::insert_column(&mut state.doc, &root, usize::MAX);
     }

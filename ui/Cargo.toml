@@ -173,11 +173,8 @@ arboard = { workspace = true, features = ["image-data"] }
 # explorer already uses to open files with the desktop default; already
 # resolved in the workspace lockfile, so this adds no registry fetch.
 open.workspace = true
-# Shared collaboration-types crate. Phase 1 widgets
-# (`widget::activity_timeline`, `widget::history_scrubber`,
-# `widget::conflict_picker`, `widget::channel_browser`) read `OpClass`
-# / `ArtifactKind` from here; Phase 3 also uses `SignedOp` +
-# `validate_inbound_op` for the wire envelopes carried by
+# Shared collaboration types used by the history/conflict/channel widgets and
+# by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
 collab-types = { path = "../crates/collab/collab-types" }
@@ -198,20 +195,20 @@ qos-actions = { path = "../crates/collab/actions" }
 # without reaching into the qos-collab-types private module path. Pinned
 # to the same major as `qos-collab-types`.
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
-# Phase 8 identity-flow widgets: FROST threshold identity engine. The
+# FROST threshold identity engine used by the identity-flow widgets. The
 # screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
 # `begin_enrolment`, `adopt_dkg_outcome`, and `export_recovery_share`.
 threshold-identity = { path = "../crates/collab/threshold-identity" }
-# Phase 8 identity-flow QR widget: `widget::qr` encodes both the
+# `widget::qr` encodes both the
 # pairing-channel JSON payload (screen 3) and the `qos://invite/...`
 # URL (screen 5). `qrcode` is a small (no transitive deps), pure-Rust
 # QR encoder that produces a module-matrix we paint with Vello.
 qrcode.workspace = true
-# Phase 8 invite encoding: the `qos://invite/<base32>` URL packs a
+# The `qos://invite/<base32>` URL packs a
 # postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
 # so it stays URL-safe and case-insensitive when read aloud.
 base32.workspace = true
-# Phase 8 pairing one-time MAC: derived from the 6-digit code so the
+# The pairing one-time MAC is derived from the 6-digit code so the
 # host can authenticate the pairer's DKG round-2 reply without a
 # pre-shared long-term key. SHA-512 is already a transitive via
 # `qos-threshold-identity`, so direct pin keeps the lock single-copy.

@@ -3,10 +3,6 @@
 //! envelope into one live app share. Transport, cursor overlay, sandbox
 //! brokering, and input routing live elsewhere — this module only produces
 //! encoded frames and stream-start/stream-end envelopes.
-//!
-//! `EncoderChoice::Vaapi` / `EncoderChoice::Nvenc` are declared in config but
-//! not linked in v1; requesting one returns `ShareError::EncoderUnavailable`
-//! from the constructor rather than silently falling back.
 
 use std::os::fd::AsRawFd;
 use std::sync::{
@@ -124,14 +120,10 @@ fn dmabuf_frame_input(dmabuf: &Dmabuf) -> FrameInput<'_> {
     }
 }
 
-/// One encoded frame, ready to wrap in `NeighbourMsg::SurfaceFrame`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EncodedFrame {
-    /// Surface the encoder is capturing.
     pub surface: SurfaceId,
-    /// Authenticated session handle of the stream owner.
     pub source_peer: PeerId,
-    /// H.264 Annex-B NALU payload.
     pub nalus: Vec<u8>,
     /// Owner-side capture timestamp (monotonic ns). Receivers subtract their
     /// translated local clock to compute motion-to-photon latency.
@@ -139,7 +131,6 @@ pub struct EncodedFrame {
 }
 
 impl EncodedFrame {
-    /// Consumes `self` — NALUs move into the message rather than being cloned.
     pub fn into_neighbour_msg(self) -> NeighbourMsg {
         NeighbourMsg::SurfaceFrame {
             surface: self.surface,
@@ -150,54 +141,35 @@ impl EncodedFrame {
     }
 }
 
-/// Errors from session construction or lifecycle.
 #[derive(Debug, thiserror::Error)]
 pub enum ShareError {
-    /// Requested encoder not resolvable to a working backend.
     #[error("encoder {choice:?} is not available in this build")]
     EncoderUnavailable { choice: EncoderChoice },
     /// Chosen encoder failed to construct — bad dimensions, unsupported
     /// profile, or a device disappeared between probe and open.
     #[error("encoder construction failed: {0:?}")]
     EncoderConstruction(EncodeError),
-    /// Share dimensions exceed the 4096×4096 ceiling.
     #[error("dimensions {width}×{height} exceed the 4096×4096 ceiling")]
     DimensionsExceeded { width: u32, height: u32 },
 }
 
-/// Client-declared colorimetry override plus optional HDR static metadata,
-/// as attached by [`SharedFlatpakSession::set_color_override`].
 type ColorOverride = Option<(Colorimetry, Option<Hdr10Metadata>)>;
 
 /// A live share session on the owner side. Drop it — or call [`Self::stop`]
 /// for an explicit tear-down — to release the encoder and registry entries.
 pub struct SharedFlatpakSession {
-    /// User hosting the share; matches `NeighbourMsg`'s `source_peer`.
     pub host_user_id: PeerId,
-    /// Flatpak app-id; display-only, not used for logic.
     pub app_id: String,
     pub surface_id: SurfaceId,
     width: u32,
     height: u32,
-    /// Config snapshot at session start — no hot-reload; changes require
-    /// stop/restart.
     config: FlatpakShareConfig,
-    /// Owned encoder. `Arc<Mutex<_>>` so tests can share the handle across
-    /// threads; production never contends (single-threaded pump).
-    /// Type-erased so hardware and software backends share one interface.
     encoder: Arc<Mutex<Box<dyn Encoder>>>,
     /// Runtime-selected encoder backend; distinct from `config.encoder`
     /// (the config-time request) — they diverge when the probe falls back.
     chosen_encoder: EncoderKind,
-    /// Optional shared metrics handle; `encode_next_frame` records encode
-    /// stats here, and the receiving `PeerView` shares the same `Arc` for a
-    /// unified OSD stat block.
     metrics: Option<PeerSurfaceMetrics>,
-    /// Current capture path; flipped by [`Self::set_capture_path`] when the
-    /// compositor's commit hook re-routes the surface's buffer between SHM
-    /// and DMABUF.
     capture_path: Arc<Mutex<CapturePath>>,
-    /// Owned throttle. Same locking rationale as `encoder`.
     throttle: Arc<Mutex<StreamingThrottle>>,
     /// Owner-side gate for inbound `NeighbourMsg::RemoteInput`; shared with
     /// the compositor's `State` via `Arc` so input routing sees the same
@@ -208,11 +180,7 @@ pub struct SharedFlatpakSession {
     /// The capture timestamp is stamped at deposit time, not encode time,
     /// so the receiver's latency measurement includes encode cost.
     staged_frame: Arc<Mutex<Option<StagedFrame>>>,
-    /// Monotonic-clock origin; `Instant::now() - origin` gives the `u64` ns
-    /// used in every wire `ts` field.
     origin: Instant,
-    /// Still-alive flag; `stop()` flips it false so the pump short-circuits
-    /// and a double-stop is safe.
     active: Arc<AtomicBool>,
     /// Per-share video substream sender — every `encode_next_frame` deposits
     /// here in addition to returning the frame; the transport adapter polls
@@ -220,11 +188,6 @@ pub struct SharedFlatpakSession {
     /// queue with drop-oldest backpressure; a keyframe flag in the header
     /// lets late-joining viewers know when it's safe to start decoding.
     stream_sender: Arc<SurfaceStreamSender>,
-    /// Client-declared colorimetry override, set via
-    /// [`Self::set_color_override`] when the compositor sees
-    /// `wp_color_management_surface_v1.set_image_description`.
-    /// [`Self::stream_start_msg`] prefers this over the config default.
-    /// `None` means no override.
     color_override: Arc<Mutex<ColorOverride>>,
     /// True when HDR was configured but no HEVC hardware was available at
     /// start, so the session fell back to SDR H.264 and `stream_start_msg`
@@ -397,13 +360,10 @@ impl SharedFlatpakSession {
         }
     }
 
-    /// Currently-active colorimetry override.
     pub fn current_color_override(&self) -> ColorOverride {
         self.color_override.lock().ok().and_then(|g| *g)
     }
 
-    /// Runtime-selected encoder; distinct from `config.encoder` (the
-    /// config-time request).
     pub fn chosen_encoder(&self) -> EncoderKind {
         self.chosen_encoder
     }
@@ -412,7 +372,6 @@ impl SharedFlatpakSession {
     /// `chosen_encoder` since one backend can drive either H.264 or HEVC
     /// Main10 depending on the HDR config.
     pub fn chosen_codec(&self) -> super::encoder::Codec {
-        // Lock held only for a cheap Copy read; no contention with encode_next_frame.
         self.encoder
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -422,7 +381,6 @@ impl SharedFlatpakSession {
     /// Update the capture path (SHM ↔ DMABUF); propagates into the shared
     /// metrics handle so the OSD sees the switch immediately.
     pub fn set_capture_path(&self, path: CapturePath) {
-        // Dropped before the metrics call below, which doesn't need it.
         let mut slot = self
             .capture_path
             .lock()
@@ -441,19 +399,14 @@ impl SharedFlatpakSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Dimensions the encoder is configured for; constant for the session
-    /// lifetime (resize requires stop+start).
     pub fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
     }
 
-    /// Effective config after any clamping applied at `start`.
     pub fn snapshot_config(&self) -> FlatpakShareConfig {
         self.config.clone()
     }
 
-    /// Build the `NeighbourMsg::SurfaceStreamStart` payload to publish on
-    /// session start.
     pub fn stream_start_msg(&self) -> NeighbourMsg {
         // Single monotonic reading stamped into both `ts` and
         // `sender_monotonic_ns_at_send` — reading twice would smear the
@@ -704,17 +657,14 @@ impl SharedFlatpakSession {
         self.stream_sender.drops_for(peer)
     }
 
-    /// Total drops across every subscriber. Diagnostic aggregate.
     pub fn stream_total_drops(&self) -> u64 {
         self.stream_sender.total_drops()
     }
 
-    /// Pending queue depth for a viewer's substream. Diagnostic.
     pub fn stream_pending_for(&self, peer: PeerId) -> usize {
         self.stream_sender.pending_for(peer)
     }
 
-    /// Poll the next queued frame for `peer`; `None` when unsubscribed or drained.
     pub fn poll_stream_frame(
         &self,
         peer: PeerId,
@@ -722,13 +672,10 @@ impl SharedFlatpakSession {
         self.stream_sender.poll(peer)
     }
 
-    /// Direct handle onto the substream sender, for the actor's QUIC
-    /// adapter (or test inspection).
     pub fn stream_sender(&self) -> Arc<SurfaceStreamSender> {
         self.stream_sender.clone()
     }
 
-    /// Flip the read-only flag on an existing viewer.
     pub fn set_read_only(&self, peer: PeerId, read_only: bool) {
         let mut reg = self
             .share_registry
@@ -737,7 +684,6 @@ impl SharedFlatpakSession {
         reg.set_read_only(peer, self.surface_id, read_only);
     }
 
-    /// Consult the share registry — same gate `State::apply_remote_input` uses.
     pub fn accept_remote_input(&self, peer: PeerId) -> bool {
         let reg = self
             .share_registry
@@ -757,7 +703,6 @@ impl SharedFlatpakSession {
         reg.get(peer, self.surface_id).cloned()
     }
 
-    /// Snapshot the exact recipients currently admitted to this share.
     pub fn viewer_ids(&self) -> Vec<PeerId> {
         self.share_registry
             .lock()
@@ -806,8 +751,6 @@ impl SharedFlatpakSession {
         self.origin
     }
 
-    /// Monotonic ns since `origin`, measured now — same conversion the wire
-    /// timestamps use.
     pub fn elapsed_ns(&self) -> u64 {
         self.monotonic_ns_now()
     }

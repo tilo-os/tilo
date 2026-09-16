@@ -5,10 +5,6 @@ use std::fs;
 pub struct DesktopConfig {
     pub shell: ShellConfig,
     pub collaboration: CollaborationConfig,
-    /// Tunable knobs for the Flatpak-app share pipeline (video capture /
-    /// encode / transport). Defaults hit the 720p60 ~8 Mbps sweet spot;
-    /// heavier presenters can raise `max_bitrate_kbps` in the per-workspace
-    /// collab profile. Absent from a legacy config falls through to [`FlatpakShareConfig::default`] via serde.
     #[serde(default)]
     pub flatpak_share: FlatpakShareConfig,
     #[serde(default)]
@@ -69,30 +65,16 @@ impl Default for DesktopConfig {
     }
 }
 
-/// Tunable knobs for the Flatpak-app share pipeline. Lives on
-/// [`DesktopConfig`] under `[flatpak_share]` — v1 has no per-workspace
-/// override, every workspace uses the same profile.
-///
-/// The encoder choice is declared here rather than probed at runtime so
-/// a user with both VA-API and NVENC available can pin one — helpful on hybrid laptops where `Auto` might guess wrong.
+/// Video settings for shared application windows.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(default)]
 pub struct FlatpakShareConfig {
-    /// Cap on the video-stream bitrate (kbps). At 720p60 the v1 default
-    /// lands ~5–8 Mbps of visually clean encode; slow-uplink users should drop this to 3000 to keep motion-to-photon under 100ms on WAN.
+    /// Video bitrate cap in kbps.
     pub max_bitrate_kbps: u32,
-    /// Target frame rate for the owner-side capture, enforced by
-    /// [`crate::network::streaming::StreamingThrottle`]. v1 caps at 30 fps
-    /// since the openh264 software encoder can't sustain 60 fps at 720p on a typical laptop; values above the cap silently clamp.
+    /// `OpenH264` sessions clamp this to 30 fps; hardware encoders do not.
     pub target_fps: u32,
-    /// Which encoder to select. `Auto` runtime-detects — v1's detect is "always pick openh264" since hardware bindings aren't in-tree.
     pub encoder: EncoderChoice,
-    /// HDR pipeline configuration. `None` → SDR H.264 (default, widest
-    /// compatibility). `Some(HdrConfig)` → HEVC Main10 with the configured
-    /// transfer (PQ or HLG) + static metadata. HDR requires a hardware
-    /// encoder supporting HEVC Main10 (`hevc_vaapi` on modern Intel/AMD,
-    /// `hevc_nvenc` on NVIDIA); without one the session constructor returns
-    /// [`crate::collab::flatpak_share::ShareError::EncoderUnavailable`] rather than silently downgrading.
+    /// HDR uses HEVC Main10 when a compatible hardware encoder is available.
     #[serde(default)]
     pub hdr: Option<crate::collab::hdr_metadata::HdrConfig>,
 }
@@ -108,23 +90,17 @@ impl Default for FlatpakShareConfig {
     }
 }
 
-/// Which H.264 encoder implementation to build.
-///
-/// `Vaapi` / `Nvenc` are *declared* in v1 so config files can pin them
-/// without breaking on future upgrades, but currently resolve to the
-/// same openh264 software path — bindings aren't yet in the workspace.
-/// Selecting one today returns
-/// [`crate::collab::flatpak_share::ShareError::EncoderUnavailable`] from the session constructor rather than silently falling back.
+/// Preferred video encoder backend.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EncoderChoice {
-    /// Runtime-detect. v1 → always openh264 (hardware bindings pending).
+    /// Select the best available backend at runtime.
     Auto,
-    /// Force openh264 software encode; portable, no GPU required, 30 fps at 720p on a modern laptop.
+    /// Force `OpenH264` software encoding.
     Openh264,
-    /// VA-API hardware encode (Intel iGPU, AMD). Not linked in v1.
+    /// Prefer VA-API, falling back to `OpenH264` for SDR if unavailable.
     Vaapi,
-    /// NVENC hardware encode. Not linked in v1.
+    /// Prefer NVENC, falling back to `OpenH264` for SDR if unavailable.
     Nvenc,
 }
 

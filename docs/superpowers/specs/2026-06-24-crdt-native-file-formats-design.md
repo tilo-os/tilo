@@ -1,13 +1,15 @@
 # CRDT-Native File Formats — Design
 
-**Status:** Approved design (brainstorming complete). Implementation plan to follow.
+**Status:** Implemented design record. The qdoc model and built-in office codecs
+live under `crates/doc/qdoc`; this document records the format-neutral rationale
+and the remaining extension boundary (not a task checklist).
 **Date:** 2026-06-24
 **Scope owner:** qOS / nirios (`fs`, `ui`, `shell`, system apps)
-**Goal for this effort (definition of done):** a **fully implemented, CRDT-native `.odt`** path —
+**Goal for this effort (definition of done):** a **fully implemented, CRDT-native office-codec** path —
 the generic Layer-1 substrate + registration (so other apps can register formats), the Layer-2
-rich-text model, FS integration, and the `.odt` codec — i.e. **Phases 0–4 below**, with
-**comprehensive testing** throughout. `.docx` (Phase 5) is the documented next step *beyond* this
-goal: designed-for here, implemented later.
+rich-text model, FS integration, and the office codecs, with comprehensive
+testing throughout. The built-in `.odt` and `.docx` codecs now cover the office
+document path; future formats remain extension work on the same provider API.
 
 ## 1. Problem & goal
 
@@ -253,8 +255,8 @@ expensive codec work (Phases 4–5) builds on something proven.
 - **Phase 4 — `.odt` codec.** Full ODF import/export + preservation layer (ODF first — clean,
   well-specified).
   *Milestone:* round-trip a real LibreOffice `.odt` losslessly; edit collaboratively.
-- **Phase 5 — `.docx` codec.** OOXML import/export + preservation (the messiest). *Beyond this
-  effort's goal — designed-for, implemented later.*
+- **Phase 5 — `.docx` codec.** OOXML import/export + preservation (the messiest);
+  implemented alongside the ODT path and covered by office round-trip tests.
   *Milestone:* round-trip a real Word `.docx` losslessly; `.odt` ↔ `.docx` convert through the
   shared model.
 

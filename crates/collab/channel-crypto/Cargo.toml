@@ -11,8 +11,7 @@ license.workspace = true
 name = "channel_crypto"
 path = "src/lib.rs"
 
-# Phase 7 of the `2026-06-29-spaces-channels-and-cryptographic-roles.md`
-# spec: per-channel MLS group encryption. Each channel = one MLS group;
+# Per-channel MLS group encryption. Each channel is one MLS group;
 # the group key rotates on every membership change via openmls's
 # epoch counter. The crate wraps openmls in a narrow API focused on
 # the operations qOS needs (create / add member via Welcome / join /
@@ -21,7 +20,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Sibling crate — re-uses `ChannelId` so the encrypted-metadata field
-# on `SignedOp` (added under Phase 7) names the same identifier this
+# on `SignedOp` names the same identifier this
 # crate keys its groups by.
 collab-types = { path = "../collab-types" }
 
@@ -35,7 +34,7 @@ openmls = "0.9"
 # and per-member signing-key persistence (via `SignatureKeyPair::store`).
 openmls_rust_crypto = "0.6"
 # Basic credential (= identity name) implementation; we don't ship
-# X.509 in Phase 7.
+# X.509 credentials.
 openmls_basic_credential = "0.6"
 # Trait crate — pulled in for the `OpenMlsProvider` trait, needed to
 # call `.storage()` on `OpenMlsRustCrypto`.

@@ -20,7 +20,7 @@ pub enum WorkspaceSwitchDirection {
 pub struct WorkspaceView {
     workspace_count: usize,
     active_index: usize,
-    slide: Spring, // animates signed offset back to 0
+    slide: Spring,
     rect: Rect,
 }
 
@@ -65,7 +65,6 @@ impl WorkspaceView {
             }
         };
         self.active_index = new_idx;
-        // Kick the slide spring: snap to incoming offset then relax to 0.
         // The workspace view's own on-screen height is always many orders
         // of magnitude below f32::MAX, so this narrowing can't truncate.
         #[allow(
