@@ -147,6 +147,31 @@ impl WorkspaceTree {
             active_strip,
         }
     }
+
+    /// Move the active workspace's focused strip one step in `dir`, clamping
+    /// at both ends. Returns the resulting index, or `None` when the active
+    /// workspace has no strips.
+    pub fn move_active_strip(&mut self, dir: i32) -> Option<usize> {
+        let workspace = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == self.active)?;
+        let last = workspace.strips.len().checked_sub(1)?;
+        let current = self
+            .active_strip
+            .get(&self.active)
+            .and_then(|id| workspace.strips.iter().position(|strip| strip.id == *id))
+            .unwrap_or(0)
+            .min(last);
+        let next = match dir.signum() {
+            -1 => current.saturating_sub(1),
+            1 => current.saturating_add(1).min(last),
+            _ => current,
+        };
+        self.active_strip
+            .insert(self.active, workspace.strips.get(next)?.id);
+        Some(next)
+    }
 }
 
 /// Runtime-only id counter for tabs/groups, starting at a high offset so
@@ -155,4 +180,28 @@ fn next_runtime_id() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(1 << 32);
     N.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Strip, Workspace, WorkspaceTree};
+
+    #[test]
+    fn active_strip_navigation_clamps_and_handles_empty_workspaces() {
+        let mut empty = WorkspaceTree::new(vec![Workspace::new("Empty", Vec::new())]);
+        assert_eq!(empty.move_active_strip(1), None);
+
+        let strips = vec![
+            Strip::new("One", Vec::new()),
+            Strip::new("Two", Vec::new()),
+            Strip::new("Three", Vec::new()),
+        ];
+        let mut tree = WorkspaceTree::new(vec![Workspace::new("Home", strips)]);
+        assert_eq!(tree.move_active_strip(-1), Some(0));
+        assert_eq!(tree.move_active_strip(1), Some(1));
+        assert_eq!(tree.move_active_strip(1), Some(2));
+        assert_eq!(tree.move_active_strip(1), Some(2));
+        assert_eq!(tree.move_active_strip(-1), Some(1));
+        assert_eq!(tree.move_active_strip(0), Some(1));
+    }
 }
