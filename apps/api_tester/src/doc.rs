@@ -215,12 +215,17 @@ impl ApiDoc {
     /// monolithic JSON core.  This is used for record metadata where a
     /// concurrent whole-name winner is preferable to interleaving characters.
     fn put_string_if_changed(doc: &mut AutoCommit, map: &ObjId, key: &str, value: &str) {
-        let current = doc.get_all(map, key).ok().and_then(|values| {
-            values.into_iter().find_map(|(stored, _)| match stored {
+        // `get` is Automerge's materialized deterministic winner. `get_all`
+        // includes losing concurrent values, so treating *any* matching value
+        // as current could incorrectly suppress a requested visible update.
+        let current = doc
+            .get(map, key)
+            .ok()
+            .flatten()
+            .and_then(|(stored, _)| match stored {
                 Value::Scalar(stored) => stored.to_str().map(str::to_owned),
                 Value::Object(_) => None,
-            })
-        });
+            });
         if current.as_deref() != Some(value) {
             let _ = doc.put(map, key, value);
         }
@@ -230,15 +235,17 @@ impl ApiDoc {
     /// and the enabled marker are deliberately scalar fields, but reapplying
     /// their idempotent actions must not create an ever-growing CRDT history.
     fn put_bool_if_changed(doc: &mut AutoCommit, map: &ObjId, key: &str, value: bool) {
-        let current = doc.get_all(map, key).ok().and_then(|values| {
-            values.into_iter().find_map(|(stored, _)| match stored {
+        let current = doc
+            .get(map, key)
+            .ok()
+            .flatten()
+            .and_then(|(stored, _)| match stored {
                 Value::Scalar(stored) => match stored.as_ref() {
                     ScalarValue::Boolean(stored) => Some(*stored),
                     _ => None,
                 },
                 Value::Object(_) => None,
-            })
-        });
+            });
         if current != Some(value) {
             let _ = doc.put(map, key, value);
         }
@@ -1345,6 +1352,43 @@ mod tests {
             heads_before,
             d.get_heads(),
             "replaying equal variable and environment selections must not grow the CRDT"
+        );
+    }
+
+    #[test]
+    fn scalar_update_replaces_a_visible_conflict_winner_even_if_loser_matches() {
+        let (mut base, root) = doc();
+        let map = base
+            .put_object(&root, "scalars", ObjType::Map)
+            .expect("test map");
+        base.put(&map, "name", "base").expect("initial scalar");
+        let bytes = base.save();
+        let mut left = AutoCommit::load(&bytes).expect("left peer");
+        let mut right = AutoCommit::load(&bytes).expect("right peer");
+        left.put(&map, "name", "left").expect("left write");
+        right.put(&map, "name", "right").expect("right write");
+        left.merge(&mut right).expect("merge concurrent writes");
+
+        let visible = left
+            .get(&map, "name")
+            .expect("read winner")
+            .and_then(|(value, _)| value.to_str().map(str::to_owned))
+            .expect("string winner");
+        let losing = left
+            .get_all(&map, "name")
+            .expect("read conflicts")
+            .into_iter()
+            .filter_map(|(value, _)| value.to_str().map(str::to_owned))
+            .find(|value| value != &visible)
+            .expect("a concurrent losing value");
+
+        ApiDoc::put_string_if_changed(&mut left, &map, "name", &losing);
+        assert_eq!(
+            left.get(&map, "name")
+                .expect("read requested winner")
+                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+            Some(losing),
+            "requesting a value held only by a losing conflict updates the visible result"
         );
     }
 

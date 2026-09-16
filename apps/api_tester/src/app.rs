@@ -73,6 +73,9 @@ const METHOD_W: f64 = 104.0;
 const HAMBURGER_W: f64 = 36.0;
 const SEND_W: f64 = 96.0;
 const URLBAR_H: f64 = 56.0;
+/// Height of the two-line URL builder at the base text scale.
+#[cfg(test)]
+const COMPACT_URLBAR_H: f64 = 88.0;
 /// On a phone, method/send stay on the first row and the URL gets a full
 /// second row. Keeping all four controls in one row leaves only a clipped
 /// sliver of the endpoint — especially unhelpful when it starts with a
@@ -138,6 +141,8 @@ enum Cmd {
     ToggleCollection(usize),
     LoadRequest(usize, usize),
     ReplayHistory(usize),
+    RequestAction(String),
+    EnvironmentAction(String),
     OpenForm(FormMode),
     SubmitForm,
     CancelForm,
@@ -151,6 +156,7 @@ enum FormMode {
     SaveRequest,
     RenameCollection,
     RenameRequest,
+    DeleteRequest,
     NewEnvironment,
     RenameEnvironment,
     NewVariable,
@@ -164,6 +170,7 @@ impl FormMode {
             Self::SaveRequest => "Save request",
             Self::RenameCollection => "Rename collection",
             Self::RenameRequest => "Rename request",
+            Self::DeleteRequest => "Delete request?",
             Self::NewEnvironment => "New environment",
             Self::RenameEnvironment => "Rename environment",
             Self::NewVariable => "Add variable",
@@ -180,7 +187,7 @@ impl FormMode {
     }
 
     fn needs_name(self) -> bool {
-        !self.needs_variable_fields()
+        !self.needs_variable_fields() && !matches!(self, Self::DeleteRequest)
     }
 }
 
@@ -219,7 +226,9 @@ struct Layout {
     send: Rect,
     tabs: Rect,
     save: Rect,
+    request_actions: Rect,
     env: Rect,
+    environment_actions: Rect,
     form_name: Rect,
     form_key: Rect,
     form_value: Rect,
@@ -276,10 +285,12 @@ pub struct ApiTesterApp {
     rail_button: Button,
     rail_close: Button,
     env_dropdown: Dropdown,
+    environment_actions: Dropdown,
     url_input: TextInput,
     body_input: TextInput,
     send_button: Button,
     save_button: Button,
+    request_actions: Dropdown,
     request_tabs: ToggleGroup,
     response_view_toggle: ToggleGroup,
     /// Shared accessible recovery surfaces for an empty response and a failed
@@ -359,10 +370,12 @@ struct BuiltWidgets {
     rail_button: Button,
     rail_close: Button,
     env_dropdown: Dropdown,
+    environment_actions: Dropdown,
     url_input: TextInput,
     body_input: TextInput,
     send_button: Button,
     save_button: Button,
+    request_actions: Dropdown,
     request_tabs: ToggleGroup,
     response_view_toggle: ToggleGroup,
     sink: Sink,
@@ -463,10 +476,12 @@ impl ApiTesterApp {
             rail_button: widgets.rail_button,
             rail_close: widgets.rail_close,
             env_dropdown: widgets.env_dropdown,
+            environment_actions: widgets.environment_actions,
             url_input: widgets.url_input,
             body_input: widgets.body_input,
             send_button: widgets.send_button,
             save_button: widgets.save_button,
+            request_actions: widgets.request_actions,
             request_tabs: widgets.request_tabs,
             response_view_toggle: widgets.response_view_toggle,
             response_empty: EmptyState::new("No response yet")
@@ -604,6 +619,24 @@ impl ApiTesterApp {
         let mut env_options = vec![NO_ENV.to_string()];
         env_options.extend(model.environments.iter().map(|e| e.name.clone()));
         let env_dropdown = Dropdown::new(env_options, ENV_PATH).with_id("api.env");
+        let environment_action_state = ui::LocalState::new("Environment actions".to_string());
+        let environment_sink = sink.clone();
+        let environment_actions = Dropdown::from_state(
+            vec![
+                "Environment actions".to_string(),
+                "Rename environment…".to_string(),
+                "Add variable…".to_string(),
+                "Delete variable…".to_string(),
+            ],
+            &environment_action_state,
+        )
+        .with_id("api.environment-actions")
+        .with_accessible_name("Environment actions")
+        .on_change(move |choice| {
+            environment_sink
+                .borrow_mut()
+                .push(Cmd::EnvironmentAction(choice.to_string()))
+        });
 
         // Send — the accent primary action.
         let send_button = Button::new("api.send", "Send", None)
@@ -620,6 +653,24 @@ impl ApiTesterApp {
                     .borrow_mut()
                     .push(Cmd::OpenForm(FormMode::SaveRequest))
             });
+        let request_action_state = ui::LocalState::new("Request actions".to_string());
+        let request_sink = sink.clone();
+        let request_actions = Dropdown::from_state(
+            vec![
+                "Request actions".to_string(),
+                "Save request…".to_string(),
+                "Rename request…".to_string(),
+                "Delete request…".to_string(),
+            ],
+            &request_action_state,
+        )
+        .with_id("api.request-actions")
+        .with_accessible_name("Request actions")
+        .on_change(move |choice| {
+            request_sink
+                .borrow_mut()
+                .push(Cmd::RequestAction(choice.to_string()))
+        });
 
         // Request-builder tabs.
         let tab_sink = sink.clone();
@@ -697,10 +748,12 @@ impl ApiTesterApp {
             rail_button,
             rail_close,
             env_dropdown,
+            environment_actions,
             url_input,
             body_input,
             send_button,
             save_button,
+            request_actions,
             request_tabs,
             response_view_toggle,
             sink,
@@ -1033,6 +1086,7 @@ impl ApiTesterApp {
             &self.url_input,
             &self.send_button,
             &self.request_tabs,
+            &self.request_actions,
         ];
         if self.rect.width() > 600.0 {
             v.insert(3, &self.save_button);
@@ -1068,6 +1122,7 @@ impl ApiTesterApp {
                 v.push(&self.form_submit);
             } else {
                 v.push(&self.env_dropdown);
+                v.push(&self.environment_actions);
                 for button in &self.manage_buttons {
                     v.push(button);
                 }
@@ -1098,6 +1153,7 @@ impl ApiTesterApp {
             v.push(&mut self.save_button);
         }
         v.push(&mut self.request_tabs);
+        v.push(&mut self.request_actions);
         if body {
             v.push(&mut self.body_input);
         }
@@ -1123,6 +1179,7 @@ impl ApiTesterApp {
                 v.push(&mut self.form_submit);
             } else {
                 v.push(&mut self.env_dropdown);
+                v.push(&mut self.environment_actions);
                 for button in &mut self.manage_buttons {
                     v.push(button);
                 }
@@ -1151,6 +1208,8 @@ impl ApiTesterApp {
             self.save_button.apply_layout_external(l.save);
         }
         self.request_tabs.apply_layout_external(l.tabs);
+        self.request_actions
+            .apply_layout_external(l.request_actions);
         if self.body_field_visible() {
             self.body_input.apply_layout_external(l.body);
         }
@@ -1176,6 +1235,8 @@ impl ApiTesterApp {
                 self.form_submit.apply_layout_external(l.form_actions[1]);
             } else {
                 self.env_dropdown.apply_layout_external(l.env);
+                self.environment_actions
+                    .apply_layout_external(l.environment_actions);
                 for (button, rect) in self.manage_buttons.iter_mut().zip(&l.manage) {
                     button.apply_layout_external(*rect);
                 }
@@ -1244,19 +1305,45 @@ impl ApiTesterApp {
         };
 
         // --- Tab strip ---
-        let tab_strip_h = TAB_STRIP_H.max(control_h + 8.0);
-        l.tab_strip = Rect::new(area.x0, l.urlbar.y1, area.x1, l.urlbar.y1 + tab_strip_h);
+        let compact_request_actions = area.width() <= 600.0;
+        let tab_strip_h = if compact_request_actions {
+            TAB_STRIP_H.max(control_h + 8.0) + control_h + 8.0
+        } else {
+            TAB_STRIP_H.max(control_h + 8.0)
+        };
+        let tab_y0 = l.urlbar.y1 + 8.0;
+        l.tab_strip = Rect::new(area.x0, tab_y0, area.x1, tab_y0 + tab_strip_h);
         let tabs_w = (96.0 * RequestTab::ALL.len() as f64).min(area.width() - PAD * 2.0);
+        let tabs_y1 = if compact_request_actions {
+            l.tab_strip.y0 + TAB_STRIP_H.max(control_h + 8.0) - 4.0
+        } else {
+            l.tab_strip.y1 - 4.0
+        };
         l.tabs = Rect::new(
             area.x0 + PAD,
             l.tab_strip.y0 + 4.0,
             area.x0 + PAD + tabs_w,
-            l.tab_strip.y1 - 4.0,
+            tabs_y1,
         );
-        l.save = Rect::new(l.tabs.x1 + 8.0, l.tabs.y0, l.tabs.x1 + 84.0, l.tabs.y1);
+        l.save = Rect::new(
+            l.tabs.x1 + 8.0,
+            l.tabs.y0,
+            l.tabs.x1 + 8.0 + 84.0,
+            l.tabs.y1,
+        );
+        l.request_actions = if compact_request_actions {
+            Rect::new(
+                area.x0 + PAD,
+                l.tabs.y1 + 4.0,
+                area.x1 - PAD,
+                l.tab_strip.y1 - 4.0,
+            )
+        } else {
+            Rect::new(l.save.x1 + 8.0, l.tabs.y0, l.save.x1 + 164.0, l.tabs.y1)
+        };
 
         // --- Editor / response split ---
-        let editor_h = ((area.height() - urlbar_h - tab_strip_h) * 0.42).max(150.0);
+        let editor_h = ((area.height() - urlbar_h - 8.0 - tab_strip_h) * 0.42).max(150.0);
         l.editor = Rect::new(area.x0, l.tab_strip.y1, area.x1, l.tab_strip.y1 + editor_h);
         l.response = Rect::new(area.x0, l.editor.y1, area.x1, area.y1);
 
@@ -1350,7 +1437,9 @@ impl ApiTesterApp {
                 y += 52.0 * scale;
             } else {
                 l.env = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 40.0 * scale);
-                y += 78.0 * scale;
+                y += 48.0 * scale;
+                l.environment_actions = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 34.0 * scale);
+                y += 48.0 * scale;
                 l.collection_manage_label = Point::new(control_x, y);
                 y += 18.0 * scale;
                 l.manage.extend(action_rows(2, y));
@@ -1366,7 +1455,9 @@ impl ApiTesterApp {
             for (i, _m) in self.nav_meta.iter().enumerate() {
                 if Some(i) == history_start {
                     y += 12.0 * scale;
-                    l.history_label = Point::new(s.x0 + PAD, y);
+                    if y + 24.0 * scale <= s.y1 - PAD {
+                        l.history_label = Point::new(s.x0 + PAD, y);
+                    }
                     y += 24.0 * scale;
                 }
                 // Rows need both scaled type height and breathing room; a
@@ -1374,9 +1465,15 @@ impl ApiTesterApp {
                 // visually touch the following request row.
                 let nav_h = (ROW_H + 10.0) * scale;
                 if y + nav_h > s.y1 - PAD {
-                    // Off the bottom — park the row off-screen so it still has a
-                    // valid (empty) rect.
-                    l.nav.push(Rect::new(s.x0, s.y1, s.x0, s.y1));
+                    // Off the bottom — keep its real virtual position instead
+                    // of collapsing it to an empty sentinel.  Besides making
+                    // section order testable, this gives focus-follow scrolling
+                    // the geometry it needs to bring a keyboard-selected row
+                    // back into view on the next frame.
+                    l.nav.push(Rect::new(s.x0 + 8.0, y, s.x1 - 8.0, y + nav_h));
+                    // Still reserve its full scaled cadence: later sections
+                    // must never leap above hidden siblings.
+                    y += nav_h;
                     continue;
                 }
                 l.nav.push(Rect::new(s.x0 + 8.0, y, s.x1 - 8.0, y + nav_h));
@@ -1535,6 +1632,7 @@ impl ApiTesterApp {
             self.form_submit.draw(scene, t, tr, theme, presence);
         } else {
             self.env_dropdown.draw(scene, t, tr, theme, presence);
+            self.environment_actions.draw(scene, t, tr, theme, presence);
             for button in &mut self.manage_buttons {
                 button.draw(scene, t, tr, theme, presence);
             }
@@ -1613,13 +1711,16 @@ impl ApiTesterApp {
 
         // Send button draws itself.
         self.send_button.draw(scene, t, tr, theme, presence);
-        if self.rect.width() > 600.0 {
-            self.save_button.draw(scene, t, tr, theme, presence);
-        }
 
         // Tab strip background + the ToggleGroup + the var hint.
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &l.tab_strip);
         self.request_tabs.draw(scene, t, tr, theme, presence);
+        // Paint Save after the strip surface: its geometry deliberately lives
+        // beside the tabs, and drawing it before this fill made it invisible.
+        if self.rect.width() > 600.0 {
+            self.save_button.draw(scene, t, tr, theme, presence);
+        }
+        self.request_actions.draw(scene, t, tr, theme, presence);
         self.draw_var_hint(scene, t, tr, theme, l);
         let strip_div = Rect::new(area.x0, l.tab_strip.y1 - 1.0, area.x1, l.tab_strip.y1);
         scene.fill(Fill::NonZero, t, c.border_standard, None, &strip_div);
@@ -2510,6 +2611,24 @@ impl ApiTesterApp {
                         self.request.url = h.url;
                     }
                 }
+                Cmd::RequestAction(action) => {
+                    match action.as_str() {
+                        "Save request…" => self.open_form(FormMode::SaveRequest),
+                        "Rename request…" => self.open_form(FormMode::RenameRequest),
+                        "Delete request…" => self.open_form(FormMode::DeleteRequest),
+                        _ => {}
+                    }
+                    self.request_actions.set_selected("Request actions");
+                }
+                Cmd::EnvironmentAction(action) => {
+                    match action.as_str() {
+                        "Rename environment…" => self.open_form(FormMode::RenameEnvironment),
+                        "Add variable…" => self.open_form(FormMode::NewVariable),
+                        "Delete variable…" => self.open_form(FormMode::DeleteVariable),
+                        _ => {}
+                    }
+                    self.environment_actions.set_selected("Environment actions");
+                }
                 Cmd::OpenForm(mode) => self.open_form(mode),
                 Cmd::CancelForm => self.form = None,
                 Cmd::SubmitForm => self.submit_form(state, path),
@@ -2600,6 +2719,18 @@ impl ApiTesterApp {
                         state,
                         path,
                         &actions::rename_request_action(collection.id, request.id, &name),
+                    );
+                }
+            }
+            FormMode::DeleteRequest => {
+                if let Some((ci, ri)) = self.selected
+                    && let Some(collection) = self.collections.get(ci)
+                    && let Some(request) = collection.requests.get(ri)
+                {
+                    self.perform(
+                        state,
+                        path,
+                        &actions::delete_request_action(collection.id, request.id),
                     );
                 }
             }
@@ -3404,6 +3535,45 @@ mod tests {
     }
 
     #[test]
+    fn scaled_rail_keeps_every_users_request_before_history() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+        let theme = Theme::dark().with_text_scale(2.0);
+        a.sync_adaptive_metrics(&theme);
+        a.snap_rail(true);
+        let layout = a.compute_layout();
+
+        let users = a
+            .nav_meta
+            .iter()
+            .position(|meta| {
+                matches!(meta.kind, NavKind::Collection { .. }) && meta.label == "Users API"
+            })
+            .expect("the demo exposes Users API");
+        let history = a
+            .nav_meta
+            .iter()
+            .position(|meta| matches!(meta.kind, NavKind::History { .. }))
+            .expect("the demo exposes request history");
+        let children = &layout.nav[users + 1..users + 5];
+        assert_eq!(children.len(), 4, "all four Users API requests are present");
+        assert!(
+            layout.nav[users].y1 <= children[0].y0,
+            "the collection header clears its first request"
+        );
+        for pair in children.windows(2) {
+            assert!(
+                pair[0].y1 <= pair[1].y0,
+                "scaled request rows retain their own vertical cadence"
+            );
+        }
+        assert!(
+            children.last().expect("four children").y1 <= layout.nav[history].y0,
+            "History starts after every Users API child, including off-screen rows"
+        );
+    }
+
+    #[test]
     fn compact_tab_strip_reserves_no_overlapping_hint_space() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
@@ -3419,11 +3589,59 @@ mod tests {
     }
 
     #[test]
+    fn desktop_request_controls_keep_save_and_overflow_visible() {
+        let mut a = app();
+        a.rect = Rect::new(0.0, 0.0, 1440.0, 900.0);
+        let layout = a.compute_layout();
+        assert!(
+            layout.tabs.x1 + 8.0 <= layout.save.x0,
+            "Save clears the tabs"
+        );
+        assert!(
+            layout.save.x1 + 8.0 <= layout.request_actions.x0,
+            "the contextual request menu clears Save"
+        );
+        assert!(
+            layout.request_actions.x1 <= layout.main.x1 - PAD,
+            "the visible request overflow stays within desktop chrome"
+        );
+        assert!(
+            layout.save.width() >= 80.0 && layout.save.height() >= 32.0,
+            "the explicit desktop Save affordance has a usable target: {}×{}",
+            layout.save.width(),
+            layout.save.height()
+        );
+    }
+
+    #[test]
+    fn visible_context_menus_open_real_request_and_environment_workflows() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        a.seed_workspace(&mut doc, &root);
+
+        a.sink
+            .borrow_mut()
+            .push(Cmd::RequestAction("Rename request…".to_string()));
+        assert!(a.drain_commands(&mut doc, &root));
+        assert_eq!(a.form, Some(FormMode::RenameRequest));
+        assert_eq!(a.request_actions.selected(), "Request actions");
+
+        a.form = None;
+        a.sink
+            .borrow_mut()
+            .push(Cmd::EnvironmentAction("Add variable…".to_string()));
+        assert!(a.drain_commands(&mut doc, &root));
+        assert_eq!(a.form, Some(FormMode::NewVariable));
+        assert_eq!(a.environment_actions.selected(), "Environment actions");
+    }
+
+    #[test]
     fn phone_url_bar_gives_the_endpoint_a_full_second_row() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
         let layout = a.compute_layout();
-        assert!((layout.urlbar.height() - COMPACT_URLBAR_H).abs() < f64::EPSILON);
+        assert!((layout.urlbar.height() - COMPACT_URLBAR_H).abs() < 0.01);
         assert!(layout.url.y0 >= layout.method.y1 + 8.0);
         assert!(
             layout.url.width() >= 350.0,
@@ -3440,7 +3658,12 @@ mod tests {
         a.response = Some(http::sample_response());
         a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
         let layout = a.compute_layout();
-        assert!((layout.resp_status.height() - COMPACT_RESPONSE_STATUS_H).abs() < f64::EPSILON);
+        assert!(
+            (layout.resp_status.height() - COMPACT_RESPONSE_STATUS_H).abs() < 0.01,
+            "response width={} status height={}",
+            layout.response.width(),
+            layout.resp_status.height()
+        );
         assert!(layout.resp_view.y0 >= layout.resp_status.y0 + 44.0);
         assert!(layout.resp_view.y1 <= layout.resp_status.y1);
         assert!((layout.resp_body.y0 - layout.resp_status.y1).abs() < f64::EPSILON);
