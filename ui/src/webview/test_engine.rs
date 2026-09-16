@@ -145,6 +145,9 @@ impl WebViewEngine for TestEngine {
         let mut inner = self.lock_inner();
         inner.commands.push(cmd.clone());
         match cmd {
+            WebViewCommand::SetAudioMuted(muted) => {
+                inner.events.push(WebViewEvent::AudioMutedChanged(muted))
+            }
             WebViewCommand::Navigate(uri) => {
                 if !inner.history.is_empty() {
                     let cut = inner.index.saturating_add(1);
