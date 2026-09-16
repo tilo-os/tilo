@@ -8558,6 +8558,7 @@ dependencies = [
  "base64 0.22.1",
  "gstreamer",
  "image",
+ "media",
  "qos-actions",
  "qos-app",
  "reqwest 0.12.28",

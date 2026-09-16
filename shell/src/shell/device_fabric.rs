@@ -153,6 +153,7 @@ pub struct MediaHandoff {
 pub enum MediaSourceLocator {
     Workspace { path: String },
     RemoteStream { url: String },
+    AppResource { uri: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -959,6 +960,20 @@ fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
                     .bytes()
                     .any(|byte| byte.is_ascii_control() || byte == b'\\')
         }
+        MediaSourceLocator::AppResource { uri } => {
+            let Some((scheme, rest)) = uri.split_once(':') else {
+                return false;
+            };
+            !scheme.is_empty()
+                && scheme.len() <= 64
+                && scheme.bytes().enumerate().all(|(index, byte)| {
+                    byte.is_ascii_alphabetic()
+                        || (index > 0 && matches!(byte, b'0'..=b'9' | b'+' | b'-' | b'.'))
+                })
+                && !rest.is_empty()
+                && uri.len() <= 8192
+                && !uri.chars().any(char::is_control)
+        }
     }
 }
 
@@ -1426,6 +1441,9 @@ mod tests {
             },
             MediaSourceLocator::RemoteStream {
                 url: "https://secret@example.com/song".into(),
+            },
+            MediaSourceLocator::AppResource {
+                uri: "1music://track/foreign".into(),
             },
         ] {
             let envelope = PersonalFabricActionEnvelope {
