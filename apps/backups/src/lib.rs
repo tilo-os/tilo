@@ -49,6 +49,7 @@ pub mod doc;
 pub mod engine;
 pub mod model;
 pub mod paint;
+pub mod search_provider;
 
 pub use app::BackupsApp;
 
