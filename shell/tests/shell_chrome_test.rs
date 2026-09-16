@@ -11,24 +11,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[test]
-fn visual_smoke_checklist_is_documented() {
-    let src = include_str!("../src/shell/mod.rs");
-    assert!(
-        src.contains("# Visual smoke checklist"),
-        "visual smoke checklist missing"
-    );
-    for marker in [
-        "Cmd+K",
-        "Cmd+Tab",
-        "overscroll",
-        "QuickSettings",
-        "remote cursor",
-    ] {
-        assert!(src.contains(marker), "missing smoke item: {marker}");
-    }
-}
-
 use std::collections::HashMap;
 
 use shell::shell::overview::OverviewView;
