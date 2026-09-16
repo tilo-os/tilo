@@ -1242,7 +1242,15 @@ impl VpnApp {
     fn layout(&self) -> LayoutRects {
         let r = self.rect;
         let compact = r.width() < 720.0;
-        let base_header_h = if compact { 144.0 } else { HEADER_H };
+        // The compact title occupies the first row; controls occupy the second.
+        // The body and optional notice follow the actual control band.
+        let controls_top = if compact { 52.0 } else { 18.0 };
+        let controls_bottom = controls_top + 36.0;
+        let base_header_h = if compact {
+            controls_bottom + 16.0
+        } else {
+            HEADER_H
+        };
         let has_notice =
             self.import_rx.is_some() || self.operation_error.is_some() || self.shot_loading;
         let header_h = base_header_h + if has_notice { 48.0 } else { 0.0 };
@@ -1282,12 +1290,8 @@ impl VpnApp {
 
         // One clear import entry point. Protocol-specific imports remain
         // available as typed resource actions for keyboard/agent invocation.
-        let by0 = if compact {
-            header.y0 + 52.0
-        } else {
-            header.y0 + 18.0
-        };
-        let by1 = by0 + 36.0;
+        let by0 = header.y0 + controls_top;
+        let by1 = header.y0 + controls_bottom;
         let (add_btn, tor_pill, imp_conf, imp_ovpn) = if compact {
             let left = header.x0 + 16.0;
             let right = header.x1 - 16.0;
@@ -4104,6 +4108,32 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.refresh(&mut doc);
         (app, doc)
+    }
+
+    #[test]
+    fn narrow_header_ends_after_controls_and_keeps_notice_actions_in_band() {
+        let (mut app, mut doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
+        let clean = app.layout();
+        assert!(clean.header.y1 - clean.add_btn.y1 <= 16.0);
+        assert!(clean.rows[0].1.y0 >= clean.header.y1);
+        app.shot_loading = true;
+        let busy = app.layout();
+        let notice = busy.notice.unwrap();
+        assert!(notice.y0 >= busy.add_btn.y1);
+        for target in [busy.notice_retry.unwrap(), busy.notice_dismiss.unwrap()] {
+            assert!(notice.contains(target.origin()) && target.y1 <= notice.y1);
+        }
+        assert!(busy.rows[0].1.y0 >= notice.y1);
+        app.shot_loading = false;
+        let p = app.layout().tor_pill.center();
+        let before = app.vault.tor_global;
+        dispatch(&mut app, &mut doc, &cursor_at(p));
+        dispatch(&mut app, &mut doc, &press());
+        assert!(matches!(app.pending, Some(Pending::TorGlobal(next, _)) if next != before));
+        dispatch(&mut app, &mut doc, &esc_key());
+        assert!(app.pending.is_none());
+        assert_eq!(app.vault.tor_global, before);
     }
 
     #[test]

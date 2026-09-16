@@ -46,7 +46,10 @@ pub fn hgap(px: f32) -> El {
 /// pattern, which renders the cards flush against each other because an
 /// intrinsic-height (block-display) column ignores the toolkit gap.
 pub fn cards(items: Vec<El>) -> El {
-    let mut col = Column::new().with_no_padding().with_intrinsic_height();
+    let mut col = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(0.0);
     let last = items.len().saturating_sub(1);
     for (i, item) in items.into_iter().enumerate() {
         col = col.push(item);
@@ -70,12 +73,11 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
+            .with_gap(5.0)
             .push(Box::new(
                 Text::new("SETTINGS").with_scaled_size(12.0).dimmed(),
             ))
-            .push(vgap(5.0))
             .push(Box::new(Text::new(title).with_scaled_size(24.0)))
-            .push(vgap(5.0))
             .push(Box::new(
                 Text::new(subtitle).with_scaled_size(13.0).dimmed(),
             )),
@@ -223,7 +225,10 @@ pub const ROW_GAP: f32 = 12.0;
 /// toolkit's inter-child gap; without them the rows would render flush
 /// against each other.
 pub fn rows(items: Vec<El>) -> El {
-    let mut col = Column::new().with_no_padding().with_intrinsic_height();
+    let mut col = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(0.0);
     let last = items.len().saturating_sub(1);
     for (i, item) in items.into_iter().enumerate() {
         col = col.push(item);

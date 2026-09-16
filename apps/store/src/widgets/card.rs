@@ -15,7 +15,7 @@
 //! caller: this fn is pure composition.
 
 use ui::text_render::TextWeight;
-use ui::widget::{Button, Column, Container, Row, Spacer, Text, Widget};
+use ui::widget::{Actions, Button, Card, Column, Container, Row, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 
@@ -115,79 +115,32 @@ pub fn store_card(
         .tooltip(format!("Show details for {}", item.name));
     let action_btn = action_btn.fit_content(40.0);
 
-    let content: Box<dyn Widget> = if compact {
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(10.0)
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(icon_artwork(item, images))
-                        .push(Box::new(
-                            Container::new()
-                                .with_no_padding()
-                                .with_flex_grow()
-                                .with_child(Box::new(identity)),
-                        )),
-                ))
-                .push(Box::new(
-                    Text::new(&item.description)
-                        .with_scaled_size(14.0)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(details))
-                        .push(Box::new(action_btn)),
-                )),
-        )
+    let artwork = if compact {
+        icon_artwork(item, images)
     } else {
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_gap(12.0)
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(super::Artwork::new(
-                            images,
-                            item.icon_url.as_deref(),
-                            &item.name,
-                            52.0,
-                            52.0,
-                        )))
-                        .push(Box::new(
-                            Container::new()
-                                .with_no_padding()
-                                .with_flex_grow()
-                                .with_child(Box::new(identity)),
-                        )),
-                ))
-                .push(Box::new(
-                    Text::new(&item.description)
-                        .with_scaled_size(14.0)
-                        .with_color(theme.text_dim),
-                ))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .push(Box::new(Spacer::new()))
-                        .push(Box::new(details))
-                        .push(Box::new(action_btn)),
-                )),
-        )
+        Box::new(super::Artwork::new(
+            images,
+            item.icon_url.as_deref(),
+            &item.name,
+            52.0,
+            52.0,
+        ))
     };
-    let card = Container::new().with_background().with_child(content);
-    if compact {
-        Box::new(card)
-    } else {
-        Box::new(card.filling())
-    }
+    let header = Row::new().no_wrap().push(artwork).push(Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_flex_grow()
+            .with_child(Box::new(identity)),
+    ));
+    Box::new(
+        Card::composed(Box::new(
+            Text::new(&item.description)
+                .with_scaled_size(14.0)
+                .with_color(theme.text_dim),
+        ))
+        .with_header(Box::new(header))
+        .with_footer(Box::new(Actions::new(action_btn).secondary(details))),
+    )
 }
 
 /// Bounded remote icon with the shared deterministic initial-art fallback.

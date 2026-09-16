@@ -16,7 +16,7 @@
 //! other adaptive-sidebar app in the suite shares), so no collapse logic is
 //! hand-rolled here.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Instant;
@@ -29,7 +29,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Button, FlapState, SplitLayout, Widget};
+use ui::widget::{Button, FlapState, Row, SplitLayout, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -87,6 +87,13 @@ pub struct ThemesApp {
     top_commands: Rc<RefCell<Vec<String>>>,
     gallery: Gallery,
     preview: PreviewPane,
+    narrow_preview: bool,
+    narrow_view_chosen: bool,
+    narrow_view_request: Rc<Cell<Option<bool>>>,
+    narrow_tabs: Row,
+    narrow_tabs_node: Option<NodeId>,
+    customize_scroll: f64,
+    preview_scroll: f64,
     customizer: Customizer,
     /// Per-window navigation/editor state. Never placed in the collaborative
     /// Automerge document or exposed to presence/history.
@@ -180,7 +187,29 @@ impl Default for ThemesApp {
 impl ThemesApp {
     pub fn new() -> Self {
         let top_commands = Rc::new(RefCell::new(Vec::new()));
+        let narrow_view_request = Rc::new(Cell::new(None));
+        let customize_request = narrow_view_request.clone();
+        let preview_request = narrow_view_request.clone();
+        let narrow_tabs = Row::new()
+            .no_wrap()
+            .push(Box::new(
+                Button::new("themes.customize", "Customize", None)
+                    .fit_content(40.0)
+                    .on_view(move || customize_request.set(Some(false))),
+            ))
+            .push(Box::new(
+                Button::new("themes.full-preview", "Full preview", None)
+                    .fit_content(40.0)
+                    .on_view(move || preview_request.set(Some(true))),
+            ));
         Self {
+            narrow_preview: false,
+            narrow_view_chosen: false,
+            narrow_view_request,
+            narrow_tabs,
+            narrow_tabs_node: None,
+            customize_scroll: 0.0,
+            preview_scroll: 0.0,
             catalog: default_catalog(),
             topbar_buttons: vec![
                 Button::new("themes.new", "New", None)
@@ -273,6 +302,12 @@ impl ThemesApp {
         let layout = SplitLayout::from_width(width, BREAKPOINT);
         self.last_layout = Some(layout);
         match scenario {
+            "live" => self.gallery_flap.snap(false),
+            "preview" => {
+                self.gallery_flap.snap(false);
+                self.narrow_preview = true;
+                self.narrow_view_chosen = true;
+            }
             "scroll" => {
                 self.gallery_flap.snap(false);
                 self.shot.scroll = true;
@@ -803,6 +838,35 @@ impl ThemesApp {
         topbar
     }
 
+    fn set_narrow_preview(&mut self, preview: bool) {
+        if self.narrow_preview == preview {
+            return;
+        }
+        if self.narrow_preview {
+            self.preview_scroll = self.scroll;
+        } else {
+            self.customize_scroll = self.scroll;
+        }
+        self.narrow_preview = preview;
+        self.scroll = if preview {
+            self.preview_scroll
+        } else {
+            self.customize_scroll
+        };
+        fn clear_focus(widget: &mut dyn Widget) {
+            widget.set_focus(false);
+            for child in widget.children_mut() {
+                clear_focus(child);
+            }
+        }
+        if preview {
+            clear_focus(&mut self.customizer);
+        } else {
+            clear_focus(&mut self.preview);
+        }
+        self.structure_dirty = true;
+    }
+
     /// Lay out the gallery / preview / customizer panes and size each for
     /// the current layout class (part of [`Widget::build_layout`]). Records
     /// the three `*_node` fields and returns their nodes.
@@ -827,7 +891,11 @@ impl ThemesApp {
         );
         self.gallery_node = Some(gallery);
 
-        let preview = self.preview.build_layout(taffy, theme, node_map);
+        let preview = if !overlay || self.narrow_preview {
+            self.preview.build_layout(taffy, theme, node_map)
+        } else {
+            parent_node(taffy, Style::default(), &[])
+        };
         if overlay {
             // Collapsed: the preview takes the full width at a fixed height so
             // it stacks above the customizer inside the vertical scroll.
@@ -847,9 +915,13 @@ impl ThemesApp {
                 },
             );
         }
-        self.preview_node = Some(preview);
+        self.preview_node = (!overlay || self.narrow_preview).then_some(preview);
 
-        let customizer = self.customizer.build_layout(taffy, theme, node_map);
+        let customizer = if !overlay || !self.narrow_preview {
+            self.customizer.build_layout(taffy, theme, node_map)
+        } else {
+            parent_node(taffy, Style::default(), &[])
+        };
         let cust_style = if overlay {
             // Collapsed: full width, intrinsic height, no shrink — a scrolling
             // stack member rather than a fixed side column.
@@ -873,7 +945,7 @@ impl ThemesApp {
             }
         };
         let _ = taffy.set_style(customizer, cust_style);
-        self.customizer_node = Some(customizer);
+        self.customizer_node = (!overlay || !self.narrow_preview).then_some(customizer);
 
         (gallery, preview, customizer)
     }
@@ -888,6 +960,7 @@ impl ThemesApp {
         gallery: NodeId,
         preview: NodeId,
         customizer: NodeId,
+        narrow: Option<(NodeId, bool)>,
     ) -> NodeId {
         if overlay {
             parent_node(
@@ -907,7 +980,9 @@ impl ThemesApp {
                     },
                     ..Default::default()
                 },
-                &[preview, customizer],
+                &narrow.map_or_else(Vec::new, |(tabs, full)| {
+                    vec![tabs, if full { preview } else { customizer }]
+                }),
             )
         } else {
             parent_node(
@@ -1074,13 +1149,20 @@ impl ThemesApp {
             .customizer_node
             .and_then(|n| taffy.layout(n).ok())
             .map_or(0.0, |l| f64::from(l.size.height));
-        self.scroll_content_h = ph + ch;
+        let tabs_height = self
+            .narrow_tabs_node
+            .and_then(|n| taffy.layout(n).ok())
+            .map_or(0.0, |l| f64::from(l.size.height));
+        self.scroll_content_h = ph + ch + tabs_height;
         if self.shot.scroll {
             self.scroll = 260.0;
         }
         let max_scroll = (self.scroll_content_h - self.scroll_viewport_h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         let scrolled = Point::new(c_o.x, c_o.y - self.scroll);
+        if let Some(n) = self.narrow_tabs_node {
+            self.narrow_tabs.apply_layout(taffy, n, scrolled);
+        }
         if let Some(n) = self.preview_node {
             self.preview.apply_layout(taffy, n, scrolled);
         }
@@ -1398,6 +1480,10 @@ impl Widget for ThemesApp {
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if let Some(preview) = self.narrow_view_request.take() {
+            self.narrow_view_chosen = true;
+            self.set_narrow_preview(preview);
+        }
         // 1. Seed the document on first run.
         self.seed_document_if_needed(state, path);
 
@@ -1452,6 +1538,12 @@ impl Widget for ThemesApp {
             return;
         };
 
+        // A live preset is primarily a specimen; an editable theme starts at
+        // its controls. Once a view is chosen, preserve that local preference.
+        if !self.narrow_view_chosen {
+            self.set_narrow_preview(!editable);
+        }
+
         // 6. Cache. Durable custom mutations above are dispatched as granular
         // ThemesAction values; never write this rendered snapshot wholesale.
         self.catalog = catalog;
@@ -1476,7 +1568,16 @@ impl Widget for ThemesApp {
         let (gallery, preview, customizer) =
             self.build_panes_layout(taffy, theme, node_map, overlay);
 
-        let content = Self::build_content_layout(taffy, overlay, gallery, preview, customizer);
+        let narrow = if overlay {
+            let tabs = self.narrow_tabs.build_layout(taffy, theme, node_map);
+            self.narrow_tabs_node = Some(tabs);
+            Some((tabs, self.narrow_preview))
+        } else {
+            self.narrow_tabs_node = None;
+            None
+        };
+        let content =
+            Self::build_content_layout(taffy, overlay, gallery, preview, customizer, narrow);
         self.content_node = Some(content);
 
         let root = Self::build_root_layout(taffy, overlay, topbar, content, gallery);
@@ -1538,8 +1639,12 @@ impl Widget for ThemesApp {
                 t,
                 &self.content_rect,
             );
-            self.preview.draw(scene, t, tr, theme, p);
-            self.customizer.draw(scene, t, tr, theme, p);
+            self.narrow_tabs.draw(scene, t, tr, theme, p);
+            if self.narrow_preview {
+                self.preview.draw(scene, t, tr, theme, p);
+            } else {
+                self.customizer.draw(scene, t, tr, theme, p);
+            }
             scene.pop_layer();
             self.draw_scroll_indicator(scene, t, theme);
         } else {
@@ -1661,6 +1766,45 @@ impl Widget for ThemesApp {
         let overlay = self.layout_class() == SplitLayout::Overlay;
         let gallery_open = overlay && self.gallery_flap.is_open(SplitLayout::Overlay);
 
+        if overlay
+            && !gallery_open
+            && self.narrow_preview
+            && let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+            && key.logical_key == Key::Named(NamedKey::Escape)
+        {
+            self.narrow_view_chosen = true;
+            self.set_narrow_preview(false);
+            if let Some(trigger) = self.narrow_tabs.children_mut().get_mut(1) {
+                trigger.set_focus(true);
+            }
+            *focus_target = self
+                .narrow_tabs_node
+                .and_then(|n| taffy.children(n).ok())
+                .and_then(|children| children.get(1).copied());
+            *handled = true;
+            return;
+        }
+        if overlay
+            && !gallery_open
+            && let Some(node) = self.narrow_tabs_node
+        {
+            self.narrow_tabs.handle_event(
+                event,
+                scale,
+                m,
+                state,
+                path,
+                handled,
+                focus_target,
+                node,
+                taffy,
+            );
+            if *handled {
+                return;
+            }
+        }
+
         if self.handle_overlay_shortcuts(event, overlay, gallery_open, handled) {
             return;
         }
@@ -1724,10 +1868,57 @@ impl Widget for ThemesApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.gallery, &self.preview, &self.customizer]
+        let mut children: Vec<&dyn Widget> = self
+            .topbar_buttons
+            .iter()
+            .map(|b| b as &dyn Widget)
+            .collect();
+        if self.layout_class() == SplitLayout::Overlay {
+            if self.gallery_flap.is_open(SplitLayout::Overlay) {
+                children.push(&self.gallery);
+            } else {
+                children.push(&self.narrow_tabs);
+                if self.narrow_preview {
+                    children.push(&self.preview);
+                } else {
+                    children.push(&self.customizer);
+                }
+            }
+        } else {
+            children.extend([
+                &self.gallery as &dyn Widget,
+                &self.preview,
+                &self.customizer,
+            ]);
+        }
+        children
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.gallery, &mut self.preview, &mut self.customizer]
+        let overlay = self.layout_class() == SplitLayout::Overlay;
+        let mut children: Vec<&mut dyn Widget> = self
+            .topbar_buttons
+            .iter_mut()
+            .map(|b| b as &mut dyn Widget)
+            .collect();
+        if overlay {
+            if self.gallery_flap.is_open(SplitLayout::Overlay) {
+                children.push(&mut self.gallery);
+            } else {
+                children.push(&mut self.narrow_tabs);
+                if self.narrow_preview {
+                    children.push(&mut self.preview);
+                } else {
+                    children.push(&mut self.customizer);
+                }
+            }
+        } else {
+            children.extend([
+                &mut self.gallery as &mut dyn Widget,
+                &mut self.preview,
+                &mut self.customizer,
+            ]);
+        }
+        children
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1739,6 +1930,7 @@ impl Widget for ThemesApp {
             || self.gallery.needs_redraw()
             || self.preview.needs_redraw()
             || self.customizer.needs_redraw()
+            || self.narrow_tabs.needs_redraw()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1750,6 +1942,7 @@ impl Widget for ThemesApp {
 
     fn mark_drawn(&mut self) {
         self.gallery.mark_drawn();
+        self.narrow_tabs.mark_drawn();
         self.preview.mark_drawn();
         self.customizer.mark_drawn();
     }
@@ -1824,6 +2017,139 @@ mod tests {
     fn run(app: &mut ThemesApp, st: &mut ui::State, cmd: &str) {
         app.process_command(cmd, &mut st.doc, &st.root);
         app.sync(&mut st.doc, &st.root);
+    }
+
+    fn layout_narrow(app: &mut ThemesApp, width: f32) -> (TaffyTree<()>, NodeId) {
+        app.build_width = f64::from(width);
+        let mut tree = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = app.build_layout(&mut tree, &Theme::dark(), &mut map);
+        let mut text = TextRenderer::new();
+        tree.compute_layout_with_measure(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::Definite(900.0),
+            },
+            |known, available, id, _, _| {
+                map.get(&id).map_or(Size::ZERO, |ptr| unsafe {
+                    (**ptr).measure(known, available, &mut text)
+                })
+            },
+        )
+        .unwrap();
+        app.apply_layout(&tree, node, Point::ZERO);
+        (tree, node)
+    }
+
+    #[test]
+    fn narrow_editor_is_visible_before_full_preview() {
+        let (mut app, _) = seeded_demo();
+        layout_narrow(&mut app, 480.0);
+        assert!(
+            app.customizer.get_rect().y0 < 160.0,
+            "{:?}",
+            app.customizer.get_rect()
+        );
+        assert!(
+            app.children()
+                .iter()
+                .all(|child| child.name() != "PreviewPane")
+        );
+    }
+
+    #[test]
+    fn live_preset_starts_with_its_full_specimen() {
+        let (mut app, _) = seeded();
+        layout_narrow(&mut app, 480.0);
+        assert!(app.narrow_preview);
+        assert!(app.preview_node.is_some());
+        assert!(app.customizer_node.is_none());
+    }
+
+    #[test]
+    fn full_preview_view_action_preserves_edits_and_escape_returns_focus() {
+        let (mut app, mut state) = seeded_demo();
+        app.customizer.load_picker([1, 2, 3]);
+        app.sync(&mut state.doc, &state.root);
+        layout_narrow(&mut app, 480.0);
+        state.doc.commit();
+        let heads = state.doc.get_heads();
+        {
+            let mut tabs = app.narrow_tabs.children_mut();
+            let preview = tabs.get_mut(1).unwrap();
+            assert!(preview.is_focusable());
+            assert_eq!(
+                preview.accessibility().unwrap().name.as_deref(),
+                Some("Full preview")
+            );
+            assert!(preview.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut state.doc,
+                &state.root
+            ));
+            assert!(preview.take_control_invocation().is_some());
+            assert!(
+                preview
+                    .invoke_resource_operation_v2(
+                        qos_actions::OperationKind::View,
+                        "qos.ui.control.invoke",
+                        br#""themes.full-preview""#,
+                        &state.doc,
+                        &state.root
+                    )
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        app.sync(&mut state.doc, &state.root);
+        assert!(app.narrow_preview);
+        assert_eq!(state.doc.get_heads(), heads);
+        layout_narrow(&mut app, 480.0);
+        assert!(app.customizer_node.is_none());
+        assert!(app.preview_node.is_some());
+        // Crossing the breakpoint must not reset the local selected view or edit.
+        layout_narrow(&mut app, 1200.0);
+        assert!(app.narrow_preview);
+        let (tree, node) = layout_narrow(&mut app, 480.0);
+        let mut key: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        key.logical_key = Key::Named(NamedKey::Escape);
+        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        key.location = winit::keyboard::KeyLocation::Standard;
+        key.state = ElementState::Pressed;
+        let event = WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: key,
+            is_synthetic: false,
+        };
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            &event,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
+        assert!(handled && !app.narrow_preview);
+        assert!(focus.is_some());
+        assert!(app.narrow_tabs.children()[1].is_focused());
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(
+            catalog(&state)
+                .iter()
+                .find(|t| t.id == "sunset")
+                .unwrap()
+                .accent,
+            [1, 2, 3]
+        );
+        assert_eq!(state.doc.get_heads(), heads);
     }
 
     #[test]
