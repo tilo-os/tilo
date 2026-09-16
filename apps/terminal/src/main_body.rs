@@ -3991,15 +3991,22 @@ impl TerminalWidget {
             menu.push(MenuItem::action("Select all output", || {}));
         }
         menu.push(MenuItem::action("Clear screen", || {}));
-        menu.push(MenuItem::separator());
-        menu.push(MenuItem::action(
-            if self.select_to_copy {
-                "Copy on select: On"
-            } else {
-                "Copy on select: Off"
-            },
-            || {},
-        ));
+        // This preference is useful secondary chrome, but never at the cost
+        // of an unreachable context menu. A 160px-high embedded/narrow pane
+        // can fit the copy/paste/selection/process essentials, not another
+        // row plus separator; its keyboard shortcut and desktop-sized menu
+        // still expose the toggle.
+        if self.rect.height() >= 180.0 {
+            menu.push(MenuItem::separator());
+            menu.push(MenuItem::action(
+                if self.select_to_copy {
+                    "Copy on select: On"
+                } else {
+                    "Copy on select: Off"
+                },
+                || {},
+            ));
+        }
         let p = self.last_cursor_pos;
         menu.open_at([p.x as f32, p.y as f32]);
         // `ContextMenu` owns its chrome, while the terminal owns the available
