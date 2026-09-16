@@ -46,6 +46,7 @@ env:
 jobs:
   select:
     runs-on: runner
+    timeout-minutes: 15
     container:
       image: code.sandbox.example/qos/qos-builder:latest
       credentials:
@@ -266,6 +267,7 @@ jobs:
        github.ref == 'refs/heads/codex/package-desktop-release')
     needs: [select, affected]
     runs-on: runner
+    timeout-minutes: 10
     env:
       SELECT_RESULT: ${{ needs.select.result }}
       AFFECTED_RESULT: ${{ needs.affected.result }}
