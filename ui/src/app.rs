@@ -744,9 +744,7 @@ pub struct App {
     /// When present the live document is one record's, named by the root
     /// widget via [`crate::widget::Widget::record_intent`].
     records: Option<crate::record::RecordSet>,
-    room_index: Option<automerge::AutoCommit>,
-    /// Independent frontier for the unqualified room-index route.
-    room_index_frontier: Option<crate::state::DocumentFrontier>,
+    room_index: Option<crate::state::DocumentReplica>,
 
     action_palette: Option<crate::action_palette::ActionPalette>,
     action_registry: qos_actions::ActionRegistry,
@@ -929,7 +927,6 @@ impl App {
             autosave: None,
             records: None,
             room_index: None,
-            room_index_frontier: None,
             action_palette: None,
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
@@ -3908,10 +3905,7 @@ impl App {
         let Some(room) = self.room_index.as_mut() else {
             return;
         };
-        let frontier = self
-            .room_index_frontier
-            .get_or_insert_with(|| crate::state::DocumentFrontier::at_document(room));
-        let (delta, heads) = frontier.pending_delta(room);
+        let (delta, heads) = room.pending_outbound_delta();
         if delta.is_empty() {
             return;
         }
@@ -3921,7 +3915,7 @@ impl App {
                     delta,
                 ))
             {
-                frontier.advance(heads);
+                room.advance_outbound(heads);
             }
         } else if self.records.is_some() && self.collab_manager.is_connected() {
             // Before the first record checkout the primary manager is the
@@ -3933,7 +3927,7 @@ impl App {
                     delta,
                 ))
             {
-                frontier.advance(heads);
+                room.advance_outbound(heads);
             }
         }
     }
@@ -4095,9 +4089,7 @@ impl App {
             decrypted_payload.unwrap_or(&envelope.payload),
         ) {
             Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                automerge::AutoCommit::load(&data)
-                    .and_then(|mut incoming| room.merge(&mut incoming))
-                    .is_ok()
+                room.merge_snapshot(&data).is_ok()
             }
             Ok(collab_types::DocumentMutation::Incremental(data)) => {
                 room.load_incremental(&data).is_ok()
@@ -4110,14 +4102,8 @@ impl App {
         if applied
             && let (Some(records), Some(room)) = (self.records.as_mut(), self.room_index.as_ref())
         {
-            records.discover_room(room);
+            records.discover_room(room.document());
             self.invalidate_widget_resource_cache();
-        }
-        if applied
-            && let (Some(frontier), Some(room)) =
-                (self.room_index_frontier.as_mut(), self.room_index.as_mut())
-        {
-            frontier.rebase(room);
         }
         applied
     }
@@ -5490,16 +5476,14 @@ impl App {
     pub fn with_records(
         mut self,
         mut records: crate::record::RecordSet,
-        mut room_index: automerge::AutoCommit,
+        room_index: automerge::AutoCommit,
     ) -> Self {
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
         records.discover_room(&room_index);
-        self.room_index_frontier =
-            Some(crate::state::DocumentFrontier::at_document(&mut room_index));
         self.records = Some(records);
-        self.room_index = Some(room_index);
+        self.room_index = Some(crate::state::DocumentReplica::new(room_index));
         self
     }
 
@@ -5508,7 +5492,9 @@ impl App {
     }
 
     pub fn room_index(&self) -> Option<&automerge::AutoCommit> {
-        self.room_index.as_ref()
+        self.room_index
+            .as_ref()
+            .map(crate::state::DocumentReplica::document)
     }
 
     /// The record is the collaboration routing key, so a checkout is a
@@ -5521,7 +5507,9 @@ impl App {
         let switched = crate::record::tick(
             set,
             &mut self.state,
-            self.room_index.as_mut(),
+            self.room_index
+                .as_mut()
+                .map(crate::state::DocumentReplica::document_mut),
             &*self.root_widget,
         );
         match switched {
@@ -5573,7 +5561,7 @@ impl App {
                 if let (Some(saver), Some(room)) =
                     (self.autosave.as_mut(), self.room_index.as_mut())
                 {
-                    saver.request(room);
+                    saver.request(room.document_mut());
                 }
             }
             None => {
@@ -5590,7 +5578,7 @@ impl App {
         if let Some(set) = self.records.as_mut() {
             set.flush(&mut self.state.doc);
             if let (Some(saver), Some(room)) = (self.autosave.as_mut(), self.room_index.as_mut()) {
-                saver.request(room);
+                saver.request(room.document_mut());
                 saver.flush();
             }
             return;
