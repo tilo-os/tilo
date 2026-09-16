@@ -35,6 +35,7 @@ automerge.workspace = true
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"
 cap-std = "3.4.6"
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
