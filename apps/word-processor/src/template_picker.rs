@@ -129,6 +129,18 @@ mod tests {
     }
 
     #[test]
+    fn scaled_picker_keeps_rows_mapped_to_their_templates() {
+        let mut picker = TemplatePicker::default();
+        picker.set_text_scale(2.0);
+        picker.open_at(Point::new(10.0, 20.0));
+
+        let report = picker
+            .item_center(Template::Report)
+            .expect("report stays an actionable template row at large text");
+        assert_eq!(picker.click(report), Some(Template::Report));
+    }
+
+    #[test]
     fn outside_click_dismisses_without_a_selection() {
         let mut picker = TemplatePicker::default();
         picker.open_at(Point::new(10.0, 20.0));
