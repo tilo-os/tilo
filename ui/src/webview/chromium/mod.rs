@@ -577,12 +577,11 @@ impl Drop for ChromiumEngine {
     fn drop(&mut self) {
         // Reserve native capacity until OnBeforeClose acknowledges destruction.
         // A dead route cannot receive events, but still counts against the bound.
-        self.runtime
-            .routes
-            .lock()
-            .unwrap()
-            .insert(self.tab, Weak::new());
-        let _ = self.tx.push(json!({"op":"close_tab","tab":self.tab}));
+        let mut routes = self.runtime.routes.lock().unwrap();
+        if let Some(route) = routes.get_mut(&self.tab) {
+            *route = Weak::new();
+            let _ = self.tx.push(json!({"op":"close_tab","tab":self.tab}));
+        }
     }
 }
 
