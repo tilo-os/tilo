@@ -71,6 +71,24 @@ case folding, mount safety, and authorization remain execution responsibilities.
 - Screenshots are in the task's local visualization directory under
   `guided-setup/`. Task-scoped code review is still pending.
 
+## Existing installer baseline
+
+Native Fedora ARM64 ran `bash os/tests/installer_target_invariants.sh` and
+`bash os/tests/installer_boot_menu.sh`; both exited zero. The first performs
+static boundary checks, including live-medium refusal and alongside partition
+protection. The second uses temporary fake EFI files and an injected firmware
+command to test menu ownership, cleanup, and BootOrder/BootNext restoration.
+These are baseline checks, not real retained-OS boot or USB-free installation
+proof. No real disk or firmware state was changed by these runs.
+
+`bash os/tests/installer_guided_alongside.sh` also passed natively in Fedora.
+It created a temporary sparse disk and loop device, added exactly two partitions
+through the real guided partition helper, and verified the original partition's
+bytes and GPT geometry remained unchanged. Its two expected retry refusals
+reported that the map changed; the overall test exited zero. The fixture detached
+its loop device and removed its temporary files. This exercises partition writes
+on a disposable file, not a real retained OS or an internal-installer boot path.
+
 ## Outstanding end-state evidence
 
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
