@@ -18,6 +18,7 @@ const HEADER_BAND_PX: u32 = 24;
 #[derive(Default)]
 struct Inner {
     history: Vec<String>,
+    history_snapshot: Option<(u32, Vec<usize>)>,
     /// `history.is_empty()` means nothing loaded yet.
     index: usize,
     width: u32,
@@ -103,6 +104,7 @@ impl TestEngine {
     }
 
     fn emit_navigation_locked(&self, inner: &mut Inner) {
+        inner.history_snapshot = None;
         let Some(uri) = inner.history.get(inner.index).cloned() else {
             return;
         };
@@ -151,6 +153,37 @@ impl WebViewEngine for TestEngine {
                 inner.history.push(uri);
                 inner.index = inner.history.len().saturating_sub(1);
                 self.emit_navigation_locked(&mut inner);
+            }
+            WebViewCommand::RequestNavigationHistory { request_id } => {
+                let indices: Vec<_> = (0..inner.index).rev().take(12).collect();
+                let entries = indices
+                    .iter()
+                    .filter_map(|&index| {
+                        inner.history.get(index).map(|url| super::NavigationEntry {
+                            id: u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX),
+                            url: url.clone(),
+                            title: format!("{url} — test page"),
+                        })
+                    })
+                    .collect();
+                inner.history_snapshot = Some((request_id, indices));
+                inner.events.push(WebViewEvent::NavigationHistory {
+                    request_id,
+                    entries,
+                });
+            }
+            WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
+                let index = usize::try_from(id.saturating_sub(1)).unwrap_or(usize::MAX);
+                if inner
+                    .history_snapshot
+                    .as_ref()
+                    .is_some_and(|(request, indices)| {
+                        *request == request_id && indices.contains(&index)
+                    })
+                {
+                    inner.index = index;
+                    self.emit_navigation_locked(&mut inner);
+                }
             }
             WebViewCommand::GoBack => {
                 if inner.index > 0 {

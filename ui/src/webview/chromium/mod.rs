@@ -459,6 +459,19 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
             .as_f64()
             .is_some_and(|n| n.is_finite() && (0.0..=1.0).contains(&n)),
         "loaded" => text("url") && value["status"].as_i64().is_some(),
+        "navigation_history" => {
+            value["request_id"]
+                .as_u64()
+                .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+                && value["entries"].as_array().is_some_and(|entries| {
+                    entries.len() <= 12
+                        && entries.iter().all(|entry| {
+                            valid_id(entry)
+                                && entry["url"].as_str().is_some_and(|s| s.len() <= 8192)
+                                && entry["title"].as_str().is_some_and(|s| s.len() <= 4096)
+                        })
+                })
+        }
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
         "error" => text("url") && text("message"),
         _ => true,
@@ -472,6 +485,12 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
 
 fn command_within_limits(command: &WebViewCommand) -> bool {
     match command {
+        WebViewCommand::RequestNavigationHistory { request_id } => {
+            *request_id > 0 && *request_id <= i32::MAX as u32
+        }
+        WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
+            *request_id > 0 && *request_id <= i32::MAX as u32 && *id > 0 && *id <= i32::MAX as u32
+        }
         WebViewCommand::RequestMediaElementById { element_id, .. } => element_id.len() <= 256,
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::DownloadDecision { id, .. }
@@ -594,6 +613,20 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             total: value["total"].as_f64()? as u64,
             error: value["error"].as_str()?.into(),
         },
+        "navigation_history" => WebViewEvent::NavigationHistory {
+            request_id: value["request_id"].as_u64()? as u32,
+            entries: value["entries"]
+                .as_array()?
+                .iter()
+                .map(|entry| {
+                    Some(super::NavigationEntry {
+                        id: entry["id"].as_u64()? as u32,
+                        url: entry["url"].as_str()?.into(),
+                        title: entry["title"].as_str()?.into(),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        },
         "loaded" => WebViewEvent::LoadFinished,
         "history" => WebViewEvent::HistoryChanged {
             can_go_back: value["back"].as_bool()?,
@@ -610,6 +643,12 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
 fn encode_command(command: WebViewCommand) -> Option<Value> {
     Some(match command {
         WebViewCommand::Navigate(url) => json!({"op":"navigate","url":url}),
+        WebViewCommand::RequestNavigationHistory { request_id } => {
+            json!({"op":"navigation_history","request_id":request_id})
+        }
+        WebViewCommand::NavigateToHistoryEntry { request_id, id } => {
+            json!({"op":"history_entry","request_id":request_id,"id":id})
+        }
         WebViewCommand::GoBack => json!({"op":"back"}),
         WebViewCommand::GoForward => json!({"op":"forward"}),
         WebViewCommand::Reload => json!({"op":"reload"}),
