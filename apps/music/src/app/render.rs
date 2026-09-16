@@ -588,7 +588,9 @@ impl Widget for MusicApp {
         self.drain_mpris(state);
         self.drain_cover_pick(state);
         self.drain_cover_embed(state);
+        self.apply_pending_media_handoff(state);
         self.publish_mpris();
+        self.publish_handoff();
     }
 
     /// Publish the open library + its playlists/tracks so the host's Ctrl+K action

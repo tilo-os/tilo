@@ -99,6 +99,32 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(app)
 }
 
+/// Build the live root from a validated app-owned resource argument. The
+/// shell adds transport state only for an authenticated media handoff; an
+/// ordinary `music://` launch opens the track paused at the beginning.
+///
+/// # Errors
+///
+/// Reserved for future fallible app-resource initialization; the current
+/// implementation accepts the launch after the shared lifecycle validates
+/// its bounded positional argument.
+pub fn app_root_with_args(
+    args: &ui::launch::LaunchArgs,
+) -> Result<Box<dyn Widget>, ui::launch::LaunchError> {
+    let mut app = MusicApp::new();
+    app.enable_mpris();
+    if let Some(uri) = args.positionals().first() {
+        let position_ms = std::env::var("QOS_MEDIA_HANDOFF_POSITION_MS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0);
+        let resume_playing =
+            std::env::var("QOS_MEDIA_HANDOFF_RESUME_PLAYING").is_ok_and(|value| value == "1");
+        app = app.with_media_handoff(uri.clone(), position_ms, resume_playing);
+    }
+    Ok(Box::new(app))
+}
+
 /// Like [`app_root`] but staged for a named `--shots` scenario. `--shots`
 /// renders a single offscreen frame with no event loop, so a state that would
 /// normally need live input (an opened overlay sidebar, an open context menu)

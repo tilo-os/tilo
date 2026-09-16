@@ -93,7 +93,7 @@ use crate::wayland::color_management::ColorManagerState;
 
 use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use vello::kurbo::Rect;
 
 /// Stable identity from `apps/osk/qos-app.toml`. It is necessary but never
@@ -442,6 +442,146 @@ struct HostLaunchActivation {
 /// The compositor's process-wide state.
 ///
 /// The single value the calloop event loop hands to every callback, so every Wayland global gets unsynchronised mutable access without `Rc`/`Arc` plumbing.
+#[derive(Debug, Default)]
+struct PersonalFabricInputHolders {
+    keys: HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+    key_counts: HashMap<u32, usize>,
+    buttons: HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+    button_counts: HashMap<u32, usize>,
+}
+
+impl PersonalFabricInputHolders {
+    fn transition(
+        holders: &mut HashMap<crate::shell::personal_continuity::DeviceId, HashSet<u32>>,
+        counts: &mut HashMap<u32, usize>,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        code: u32,
+        pressed: bool,
+    ) -> bool {
+        if pressed {
+            let held = holders.entry(controller.clone()).or_default();
+            if !held.insert(code) {
+                return false;
+            }
+            let count = counts.entry(code).or_default();
+            *count = count.saturating_add(1);
+            *count == 1
+        } else {
+            let empty = {
+                let Some(held) = holders.get_mut(controller) else {
+                    return false;
+                };
+                if !held.remove(&code) {
+                    return false;
+                }
+                held.is_empty()
+            };
+            if empty {
+                holders.remove(controller);
+            }
+            let Some(count) = counts.get_mut(&code) else {
+                return false;
+            };
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                counts.remove(&code);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    fn key_transition(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        keycode: u32,
+        pressed: bool,
+    ) -> bool {
+        Self::transition(
+            &mut self.keys,
+            &mut self.key_counts,
+            controller,
+            keycode,
+            pressed,
+        )
+    }
+
+    fn button_transition(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        button: u32,
+        pressed: bool,
+    ) -> bool {
+        Self::transition(
+            &mut self.buttons,
+            &mut self.button_counts,
+            controller,
+            button,
+            pressed,
+        )
+    }
+
+    fn release_controller(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+    ) -> (Vec<u32>, Vec<u32>) {
+        let mut keys = self
+            .keys
+            .get(controller)
+            .map(|held| held.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut buttons = self
+            .buttons
+            .get(controller)
+            .map(|held| held.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        keys.sort_unstable();
+        buttons.sort_unstable();
+        let keys = keys
+            .into_iter()
+            .filter(|key| self.key_transition(controller, *key, false))
+            .collect();
+        let buttons = buttons
+            .into_iter()
+            .filter(|button| self.button_transition(controller, *button, false))
+            .collect();
+        self.keys.remove(controller);
+        self.buttons.remove(controller);
+        (keys, buttons)
+    }
+
+    fn controllers(&self) -> Vec<crate::shell::personal_continuity::DeviceId> {
+        let mut controllers = self
+            .keys
+            .keys()
+            .chain(self.buttons.keys())
+            .cloned()
+            .collect::<Vec<_>>();
+        controllers.sort();
+        controllers.dedup();
+        controllers
+    }
+}
+
+#[cfg(test)]
+mod personal_fabric_input_holder_tests {
+    use super::PersonalFabricInputHolders;
+    use crate::shell::personal_continuity::DeviceId;
+
+    #[test]
+    fn cleanup_releases_only_the_final_controller_holding_an_input() {
+        let first = DeviceId::new("first").unwrap();
+        let second = DeviceId::new("second").unwrap();
+        let mut held = PersonalFabricInputHolders::default();
+        assert!(held.key_transition(&first, 42, true));
+        assert!(!held.key_transition(&second, 42, true));
+        assert!(held.button_transition(&first, 0x110, true));
+        assert_eq!(held.release_controller(&first), (Vec::new(), vec![0x110]));
+        assert_eq!(held.release_controller(&second), (vec![42], Vec::new()));
+    }
+}
+
 pub struct State {
     /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
@@ -551,6 +691,7 @@ pub struct State {
     /// keyboard/text-input focus. See
     /// [`crate::compositor::remote_seat::RemoteSeats`].
     pub remote_seats: RemoteSeats,
+    personal_fabric_input: PersonalFabricInputHolders,
     /// Every live client surface, keyed by the stable collaboration id.
     /// Native output bookkeeping uses this to emit `wl_surface.enter`, and
     /// remote pointer motion uses it to resolve the real focus surface.
@@ -953,6 +1094,7 @@ impl State {
             activation_serials: VecDeque::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
+            personal_fabric_input: PersonalFabricInputHolders::default(),
             surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
             legacy_stream_publisher: None,
@@ -1863,6 +2005,8 @@ impl State {
         self.remote_input_firewall.engage_kill_switch();
         let revoked = self.share_registry.revoke_all_input();
 
+        let personal_controllers = self.release_all_personal_fabric_input();
+
         // Release keys before dropping attribution. Otherwise a peer which
         // vanished while holding a modifier could leave the app-facing seat
         // stuck after the emergency stop.
@@ -1892,6 +2036,7 @@ impl State {
         tracing::warn!(
             target: "shell::compositor::state",
             revoked,
+            personal_controllers,
             "remote-input kill switch engaged; shares and streams terminated"
         );
         revoked
@@ -1941,6 +2086,139 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Inject one event that already passed the personal-fabric identity and
+    /// lease gate. Unlike an app portal session, cross-device control must
+    /// still yield to lock, the kill switch, and recent physical input on the
+    /// target device.
+    pub fn apply_personal_fabric_input(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+        event: crate::shell::device_fabric::FabricInputEvent,
+    ) -> bool {
+        let is_release = matches!(
+            event,
+            crate::shell::device_fabric::FabricInputEvent::PointerButton { pressed: false, .. }
+                | crate::shell::device_fabric::FabricInputEvent::Key { pressed: false, .. }
+        );
+        if !is_release
+            && let Some(reason) = self
+                .remote_input_firewall
+                .host_override(std::time::Instant::now())
+        {
+            tracing::debug!(?reason, "personal-fabric input yielded to local control");
+            return false;
+        }
+        let action = match event {
+            crate::shell::device_fabric::FabricInputEvent::PointerMotion { x, y } => {
+                RemoteAction::PointerMotionAbsolute {
+                    stream: 0,
+                    x: f64::from(x),
+                    y: f64::from(y),
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
+                if !self
+                    .personal_fabric_input
+                    .button_transition(controller, button, pressed)
+                {
+                    return false;
+                }
+                RemoteAction::PointerButton {
+                    button: i32::try_from(button).unwrap_or(i32::MAX),
+                    pressed,
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::Scroll {
+                horizontal,
+                vertical,
+            } => RemoteAction::PointerAxis {
+                dx: f64::from(horizontal),
+                dy: f64::from(vertical),
+            },
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode, pressed, ..
+            } => {
+                if !self
+                    .personal_fabric_input
+                    .key_transition(controller, keycode, pressed)
+                {
+                    return false;
+                }
+                RemoteAction::KeyboardKeycode {
+                    keycode: i32::try_from(keycode).unwrap_or(i32::MAX),
+                    pressed,
+                }
+            }
+        };
+        let applied = self.apply_remote_desktop_action(action);
+        if !applied {
+            match event {
+                crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                    button,
+                    pressed: true,
+                } => {
+                    let _ = self
+                        .personal_fabric_input
+                        .button_transition(controller, button, false);
+                }
+                crate::shell::device_fabric::FabricInputEvent::Key {
+                    keycode,
+                    pressed: true,
+                    ..
+                } => {
+                    let _ = self
+                        .personal_fabric_input
+                        .key_transition(controller, keycode, false);
+                }
+                crate::shell::device_fabric::FabricInputEvent::PointerMotion { .. }
+                | crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                    pressed: false,
+                    ..
+                }
+                | crate::shell::device_fabric::FabricInputEvent::Scroll { .. }
+                | crate::shell::device_fabric::FabricInputEvent::Key { pressed: false, .. } => {}
+            }
+        }
+        applied
+    }
+
+    /// Release every key/button actually attributed to one personal-fabric
+    /// controller. Cleanup bypasses host overrides because withholding an up
+    /// edge after lock, revocation, or disconnect would leave the local seat
+    /// in a stuck state.
+    pub fn release_personal_fabric_input(
+        &mut self,
+        controller: &crate::shell::personal_continuity::DeviceId,
+    ) -> bool {
+        let (keys, buttons) = self.personal_fabric_input.release_controller(controller);
+        let mut released = false;
+        for keycode in keys {
+            let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let serial = self.next_serial();
+            released |= self.inject_seat_key(keycode, false, serial, time);
+        }
+        for button in buttons {
+            let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+            let serial = self.next_serial();
+            released |= self.remote_pointer_button(
+                i32::try_from(button).unwrap_or(i32::MAX),
+                false,
+                serial,
+                time,
+            );
+        }
+        released
+    }
+
+    pub fn release_all_personal_fabric_input(&mut self) -> usize {
+        let controllers = self.personal_fabric_input.controllers();
+        let count = controllers.len();
+        for controller in controllers {
+            let _ = self.release_personal_fabric_input(&controller);
+        }
+        count
     }
 
     fn remote_pointer_motion_absolute(

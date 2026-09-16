@@ -157,6 +157,12 @@ pub enum CollabRequest {
     ClearContinuation {
         app_id: String,
     },
+    /// Private, level-triggered playback descriptors for shell-mediated
+    /// same-person handoff. Never part of the room CRDT or peer fan-out.
+    ReportPlayback {
+        app_id: String,
+        reports_json: Vec<u8>,
+    },
     OpenWorkspaceControl {
         session_id: u64,
         target_device: [u8; 32],
@@ -806,6 +812,17 @@ fn exported_action_bytes(action: &ExportedAction, meter: &mut ByteMeter) {
     }
 }
 
+fn launch_published_application_bytes(
+    app_id: &String,
+    content_hash: Option<&String>,
+    meter: &mut ByteMeter,
+) {
+    meter.string_capacity(app_id);
+    if let Some(content_hash) = content_hash {
+        meter.string_capacity(content_hash);
+    }
+}
+
 fn request_bytes(request: &CollabRequest) -> Option<usize> {
     let mut meter = ByteMeter(Some(std::mem::size_of::<CollabRequest>()));
     match request {
@@ -849,19 +866,19 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(app_id);
             meter.bytes(metadata);
         }
-        CollabRequest::ClearContinuation { app_id } => {
+        CollabRequest::ReportPlayback {
+            app_id,
+            reports_json,
+        } => {
             meter.string_capacity(app_id);
+            meter.bytes(reports_json);
         }
+        CollabRequest::ClearContinuation { app_id } => meter.string_capacity(app_id),
         CollabRequest::LaunchPublishedApplication {
             app_id,
             content_hash,
             ..
-        } => {
-            meter.string_capacity(app_id);
-            if let Some(content_hash) = content_hash {
-                meter.string_capacity(content_hash);
-            }
-        }
+        } => launch_published_application_bytes(app_id, content_hash.as_ref(), &mut meter),
         CollabRequest::WorkspaceControlInput { event, .. } => serialized_bytes(event, &mut meter),
         CollabRequest::CompleteInvocation { code, message, .. } => {
             meter.string_capacity(code);
@@ -3447,6 +3464,14 @@ async fn dispatch_sdk_request(
         CollabRequest::ClearContinuation { app_id } => {
             if let Err(error) = route.channel.clear_continuation(&app_id).await {
                 tracing::warn!(%error, "collab: clearing continuation metadata failed");
+            }
+        }
+        CollabRequest::ReportPlayback {
+            app_id,
+            reports_json,
+        } => {
+            if let Err(error) = route.channel.report_playback(&app_id, &reports_json).await {
+                tracing::warn!(%error, "collab: reporting private playback handoff state failed");
             }
         }
         CollabRequest::OpenWorkspaceControl {
