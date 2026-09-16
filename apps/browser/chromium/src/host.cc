@@ -99,6 +99,14 @@ double Number(CefRefPtr<CefDictionaryValue> d,const char* key) {
   return d->GetType(key)==VTYPE_DOUBLE ? d->GetDouble(key) : d->GetInt(key);
 }
 class Client;
+class FaviconDownload final : public CefDownloadImageCallback {
+ public:
+  FaviconDownload(int tab,uint64_t generation,std::string page):tab_(tab),generation_(generation),page_(std::move(page)) {}
+  void OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) override;
+ private:
+  int tab_; uint64_t generation_; std::string page_;
+  IMPLEMENT_REFCOUNTING(FaviconDownload);
+};
 std::map<int,CefRefPtr<Client>> clients;
 CefRefPtr<CefRequestContext> shared_context;
 void CreateTab(int id);
@@ -195,8 +203,19 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,WindowOpenDisposition disposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
-  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { navigation_history_->Invalidate();StringEvent("uri","url",url); } }
+  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { ++favicon_generation_;navigation_history_->Invalidate();StringEvent("uri","url",url); } }
   void OnTitleChange(CefRefPtr<CefBrowser>,const CefString& title) override { StringEvent("title","title",title); }
+  void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,const std::vector<CefString>& urls) override {
+    if(urls.empty() || urls.front().ToString().size()>8192) return;
+    browser->GetHost()->DownloadImage(urls.front(),true,64,false,new FaviconDownload(id_,favicon_generation_,browser->GetMainFrame()->GetURL()));
+  }
+  void PublishFavicon(uint64_t generation,const std::string& page,CefRefPtr<CefImage> image) {
+    if(!browser_ || generation!=favicon_generation_ || browser_->GetMainFrame()->GetURL()!=page || !image || image->IsEmpty()) return;
+    int width=0,height=0;auto png=image->GetAsPNG(1.0f,true,width,height);
+    if(!png || width<=0 || height<=0 || width>64 || height>64 || png->GetSize()>256*1024) return;
+    std::string bytes(png->GetSize(),'\0');png->GetData(bytes.data(),bytes.size(),0);
+    auto d=CefDictionaryValue::Create();d->SetString("page_url",page);d->SetInt("width",width);d->SetInt("height",height);d->SetString("png",CefBase64Encode(bytes.data(),bytes.size()));Event("favicon",d);
+  }
   void OnLoadingProgressChange(CefRefPtr<CefBrowser>,double progress) override { auto d=CefDictionaryValue::Create();d->SetDouble("progress",progress);Event("progress",d); }
   void OnLoadingStateChange(CefRefPtr<CefBrowser>,bool,bool back,bool forward) override { auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d); }
   void OnLoadEnd(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,int status) override {
@@ -229,7 +248,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else {std::string routed;qos::AppendU32(routed,id_);routed+=body;output->Send(3,std::move(routed));}
   }
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
-    if(source!=PID_RENDERER || message->GetName()!="qos.config") return false;
+    if(source!=PID_RENDERER) return false;
+    if(message->GetName()=="qos.media_state" && frame && frame->IsMain() && browser_ && frame->GetURL()==browser_->GetMainFrame()->GetURL()) { auto d=CefDictionaryValue::Create();d->SetString("page_url",frame->GetURL());d->SetBool("playing",message->GetArgumentList()->GetBool(0));Event("media_state",d);return true; }
+    if(message->GetName()!="qos.config") return false;
     SendFilters(frame);SendScripts(frame);return true;
   }
   void SendFilters(CefRefPtr<CefFrame> frame) {
@@ -254,6 +275,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::string op=d->GetString("op");
     if(op=="shutdown") { CloseHost();return; }
     if(!browser_ || closing) return;
+    if(op=="audio_muted") { browser_->GetHost()->SetAudioMuted(d->GetBool("muted"));auto state=CefDictionaryValue::Create();state->SetBool("muted",browser_->GetHost()->IsAudioMuted());Event("audio_muted",state);return; }
     if((op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && document_scripts_->Busy()) {
       if(pending_navigation_.size()>=256) { StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();return; }
       pending_navigation_.push_back(d->Copy(false));return;
@@ -358,7 +380,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   CefRefPtr<CefBrowser> browser_;
  private:
-  int id_;bool visible_=true;int key_modifiers_=0;
+  int id_;bool visible_=true;int key_modifiers_=0;uint64_t favicon_generation_=0;
   CefRefPtr<qos::NavigationHistory> navigation_history_;
   CefRefPtr<qos::Capabilities> capabilities_;
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
@@ -369,6 +391,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   float scale_=1;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
+void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {
+  auto found=clients.find(tab_);if(found!=clients.end()) found->second->PublishFavicon(generation_,page_,image);
+}
 void PublishZoomLevels() { for(auto& entry:clients) entry.second->PublishZoom(); }
 void CreateTab(int id) {
   if(closing || id<=0 || clients.count(id) || clients.size()>=32) return;
@@ -407,6 +432,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto number=[&](const char* key){auto t=d->GetType(key);return t==VTYPE_INT || (t==VTYPE_DOUBLE && std::isfinite(d->GetDouble(key)));};
   if(op=="create_tab" || op=="close_tab" || op=="try_close_tab") return d->HasKey("tab");
   if(op=="visibility") return type("visible",VTYPE_BOOL);
+  if(op=="audio_muted") return type("muted",VTYPE_BOOL);
   if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" ? (!d->HasKey("direction") || (type("direction",VTYPE_STRING) && (d->GetString("direction")=="back" || d->GetString("direction")=="forward"))) : (type("id",VTYPE_INT) && d->GetInt("id")>0));
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);

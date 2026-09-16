@@ -836,6 +836,7 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
             WebViewCommand::GoForward => ffi::webkit_web_view_go_forward(state.view),
             WebViewCommand::Reload => ffi::webkit_web_view_reload(state.view),
             WebViewCommand::StopLoading => ffi::webkit_web_view_stop_loading(state.view),
+            WebViewCommand::SetAudioMuted(_) => {}
             WebViewCommand::Resize {
                 width,
                 height,

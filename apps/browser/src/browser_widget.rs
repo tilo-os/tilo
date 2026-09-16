@@ -295,6 +295,9 @@ pub struct BrowserWidget {
     /// `1.0` when idle; anything below shows the progress bar.
     progress: f64,
     title: String,
+    favicon: Option<(u32, u32, std::sync::Arc<Vec<u8>>)>,
+    audio_muted: bool,
+    media_playing: bool,
     /// Most recent URI the engine reported — recorded into history on
     /// load-finished.
     current_uri: String,
@@ -439,11 +442,26 @@ impl BrowserWidget {
         } else {
             self.tab_url()
         };
+        let title = if self.audio_muted {
+            format!("Muted · {title}")
+        } else if self.media_playing {
+            format!("Media playing · {title}")
+        } else {
+            title.to_owned()
+        };
         if self.progress < 1.0 {
             format!("Loading · {title}")
         } else {
-            title.to_owned()
+            title
         }
+    }
+    pub(crate) fn tab_muted(&self) -> bool {
+        self.audio_muted
+    }
+    pub(crate) fn set_tab_muted(&mut self, muted: bool) {
+        self.audio_muted = muted;
+        self.engine.send(WebViewCommand::SetAudioMuted(muted));
+        self.structure_dirty = true;
     }
     pub(crate) fn set_tab_identity(&mut self, id: u64) {
         self.pip_id = format!("{PIP_ID}.{id}");
@@ -557,6 +575,9 @@ impl BrowserWidget {
             can_go_forward: false,
             progress: if headless { 1.0 } else { 0.0 },
             title: String::new(),
+            favicon: None,
+            audio_muted: false,
+            media_playing: false,
             current_uri: String::new(),
             load_error: None,
             address_error_active: false,
@@ -2245,6 +2266,8 @@ impl BrowserWidget {
                 }
                 WebViewEvent::UriChanged(uri) => {
                     self.document_revision = self.document_revision.wrapping_add(1);
+                    self.favicon = None;
+                    self.media_playing = false;
                     if uri != self.current_uri {
                         self.loading_stopped = false;
                         self.structure_dirty |= self.daily.navigation_started(&self.engine);
@@ -2276,6 +2299,28 @@ impl BrowserWidget {
                     if !self.forced_load_error && !self.forced_loading =>
                 {
                     self.title = title;
+                }
+                WebViewEvent::FaviconChanged {
+                    page_url,
+                    width,
+                    height,
+                    png,
+                } if page_url == self.current_uri
+                    || (self.current_uri.is_empty() && page_url == self.initial_url) =>
+                {
+                    self.favicon = Some((width, height, png));
+                    self.structure_dirty = true;
+                }
+                WebViewEvent::FaviconChanged { .. } => {}
+                WebViewEvent::AudioMutedChanged(muted) => {
+                    self.audio_muted = muted;
+                    self.structure_dirty = true;
+                }
+                WebViewEvent::MediaPlayingChanged { page_url, playing } => {
+                    if page_url == self.current_uri {
+                        self.media_playing = playing;
+                        self.structure_dirty = true;
+                    }
                 }
                 WebViewEvent::LoadProgress(p) if !self.forced_loading && !self.loading_stopped => {
                     self.set_loading_progress(p);

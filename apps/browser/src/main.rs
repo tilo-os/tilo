@@ -47,7 +47,7 @@ extern crate runtime_dylib;
 
 use std::collections::HashMap;
 
-use browser::{BrowserTabs, BrowserWidget};
+use browser::{BrowserTabStrip, BrowserTabs, BrowserWidget};
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
@@ -98,6 +98,7 @@ pub fn main() {
                 "--shots-loading",
                 "--shots-error",
                 "--shots-library",
+                "--shots-tabs",
                 "--library-section",
                 "--audit-state",
                 "--url",
@@ -190,6 +191,34 @@ fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
             size,
             std::path::Path::new(out),
             args.has("--probe-pip"),
+            args.text_scale,
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-tabs") {
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((800, 620));
+        let descriptors = (1..=32)
+            .map(|id| {
+                ui::widget::TabDescriptor::new(
+                    id,
+                    format!("Fixture tab {id} with a deliberately long title"),
+                )
+            })
+            .collect();
+        let mut tabs = BrowserTabStrip::new(descriptors, 32);
+        tabs.set_pinned(1, true);
+        tabs.set_pinned(2, true);
+        tabs.set_active(32);
+        tabs.set_viewport_width(f64::from(size.0));
+        tabs.set_motion_reduced(true);
+        render_shot_to_png(
+            Box::new(tabs),
+            size,
+            std::path::Path::new(out),
             args.text_scale,
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;

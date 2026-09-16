@@ -139,6 +139,8 @@ pub enum WebViewCommand {
     GoForward,
     Reload,
     StopLoading,
+    /// Mute or restore native page audio without installing an audio capture handler.
+    SetAudioMuted(bool),
     Find {
         id: u32,
         text: String,
@@ -292,6 +294,17 @@ pub enum WebViewEvent {
     },
     UriChanged(String),
     TitleChanged(String),
+    FaviconChanged {
+        page_url: String,
+        width: u32,
+        height: u32,
+        png: Arc<Vec<u8>>,
+    },
+    AudioMutedChanged(bool),
+    MediaPlayingChanged {
+        page_url: String,
+        playing: bool,
+    },
     /// Load progress in `0.0..=1.0`.
     LoadProgress(f64),
     LoadFinished,
