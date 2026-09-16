@@ -1,19 +1,21 @@
 //! Chromium helper transport, independent of native CEF build dependencies.
 mod protocol;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::sync_channel;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use super::{FrameSlot, KeyInput, MouseButton, WebViewCommand, WebViewEngine, WebViewEvent};
 use serde_json::{Value, json};
 
+#[derive(Default)]
 struct Shared {
+    open_tabs: Mutex<VecDeque<(String, bool)>>,
     frames: FrameSlot,
     events: Mutex<VecDeque<WebViewEvent>>,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -93,6 +95,37 @@ impl Shared {
 pub struct ChromiumEngine {
     tx: Arc<CommandQueue>,
     shared: Arc<Shared>,
+    runtime: Arc<Runtime>,
+    tab: u32,
+}
+
+type Routes = Arc<Mutex<HashMap<u32, Weak<Shared>>>>;
+struct Runtime {
+    tx: Arc<CommandQueue>,
+    process: Arc<Shared>,
+    routes: Routes,
+    next_tab: AtomicU32,
+}
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        self.process.stopping.store(true, Ordering::Release);
+        let _ = self.tx.push(json!({"op":"shutdown"}));
+        self.tx.close();
+    }
+}
+fn fail_routes(routes: &Routes, message: String) {
+    let endpoints: Vec<_> = routes
+        .lock()
+        .unwrap()
+        .values()
+        .filter_map(Weak::upgrade)
+        .collect();
+    for shared in endpoints {
+        shared.fail(message.clone());
+    }
+}
+fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
+    routes.lock().ok()?.get(&id)?.upgrade()
 }
 
 /// Error-only surface used when a real engine cannot start. It never renders a
@@ -108,6 +141,7 @@ impl UnavailableEngine {
         Arc::new(Self {
             message,
             shared: Shared {
+                open_tabs: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
                 events: Mutex::new(VecDeque::new()),
                 waker: Mutex::new(None),
@@ -228,6 +262,7 @@ impl ChromiumEngine {
         let stdin = child.stdin.take().ok_or("Chromium stdin unavailable")?;
         let stdout = child.stdout.take().ok_or("Chromium stdout unavailable")?;
         let shared = Arc::new(Shared {
+            open_tabs: Mutex::default(),
             frames: Arc::new(Mutex::new(None)),
             events: Mutex::new(VecDeque::new()),
             waker: Mutex::new(None),
@@ -236,9 +271,17 @@ impl ChromiumEngine {
             failed: AtomicBool::new(false),
         });
         let tx = Arc::new(CommandQueue::default());
+        let routes: Routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+        let runtime = Arc::new(Runtime {
+            tx: tx.clone(),
+            process: shared.clone(),
+            routes: routes.clone(),
+            next_tab: AtomicU32::new(2),
+        });
         let rx = tx.clone();
         let (ready_tx, ready_rx) = sync_channel(1);
         let writer_shared = shared.clone();
+        let writer_routes = routes.clone();
         if let Err(error) = std::thread::Builder::new()
             .name("chromium-commands".into())
             .spawn(move || {
@@ -246,6 +289,10 @@ impl ChromiumEngine {
                 while let Some(command) = rx.pop() {
                     if let Err(error) = protocol::write_json(&mut writer, &command) {
                         writer_shared.fail(format!("Chromium command channel closed: {error}"));
+                        fail_routes(
+                            &writer_routes,
+                            format!("Chromium command channel closed: {error}"),
+                        );
                         break;
                     }
                 }
@@ -257,13 +304,22 @@ impl ChromiumEngine {
             return Err(error.to_string());
         }
         let reader_shared = shared.clone();
+        let reader_routes = routes.clone();
         if let Err(error) = std::thread::Builder::new().name("chromium-frames".into()).spawn(move || {
             let mut reader = BufReader::new(stdout);
             loop {
                 match protocol::read_packet(&mut reader) {
                     Ok(Some(protocol::Packet::Frame(frame))) => {
-                        if let Ok(mut slot) = reader_shared.frames.lock() { *slot = Some(frame); }
-                        reader_shared.wake();
+                        if let Some(shared) = route(&reader_routes, 1) {
+                            if let Ok(mut slot) = shared.frames.lock() { *slot = Some(frame); }
+                            shared.wake();
+                        }
+                    }
+                    Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
+                        if let Some(shared) = route(&reader_routes, tab) {
+                            if let Ok(mut slot) = shared.frames.lock() { *slot = Some(frame); }
+                            shared.wake();
+                        }
                     }
                     Ok(Some(protocol::Packet::Json(value))) => {
                         if let Err(error) = validate_event(&value) {
@@ -274,12 +330,23 @@ impl ChromiumEngine {
                             tracing::info!(cef = ?value["cef_version"], chromium = ?value["chromium_version"], "Chromium engine ready (CPU frame transport)");
                             let _ = ready_tx.try_send(());
                         }
-                        if let Some(event) = decode_event(&value) { reader_shared.event(event); }
+                        let tab = value["tab"].as_u64().unwrap_or(1) as u32;
+                        if let Some(shared) = route(&reader_routes, tab) {
+                            if value["event"] == "open_tab" {
+                                if let Some(url) = value["url"].as_str() {
+                                    let mut requests = shared.open_tabs.lock().unwrap();
+                                    if requests.len() < 32 { requests.push_back((url.into(), value["background"].as_bool().unwrap_or(false))); }
+                                    drop(requests); shared.wake();
+                                }
+                            }
+                            if let Some(event) = decode_event(&value) { shared.event(event); }
+                        }
                     }
                     Ok(None) => { reader_shared.fail("Chromium engine disconnected".into()); break; }
                     Err(error) => { reader_shared.fail(format!("Invalid Chromium output: {error}")); break; }
                 }
             }
+            fail_routes(&reader_routes, "Chromium engine disconnected".into());
         }) {
             tx.close();
             let _ = child.kill(); let _ = child.wait();
@@ -341,11 +408,59 @@ impl ChromiumEngine {
             tx.close();
             return Err(format!("Chromium supervisor: {error}"));
         }
-        Ok(Arc::new(Self { tx, shared }))
+        Ok(Arc::new(Self {
+            tx,
+            shared,
+            runtime,
+            tab: 1,
+        }))
     }
 }
 
 impl WebViewEngine for ChromiumEngine {
+    fn create_tab(&self) -> Result<super::SharedEngine, String> {
+        let mut routes = self
+            .runtime
+            .routes
+            .lock()
+            .map_err(|_| "Tab routes unavailable")?;
+        routes.retain(|_, route| route.strong_count() > 0);
+        if routes.len() >= 32 {
+            return Err("At most 32 tabs can be open".into());
+        }
+        let tab = self.runtime.next_tab.fetch_add(1, Ordering::Relaxed);
+        if tab > i32::MAX as u32 {
+            return Err("Tab identity exhausted".into());
+        }
+        let shared = Arc::new(Shared::default());
+        *shared.waker.lock().unwrap() = self.shared.waker.lock().unwrap().clone();
+        routes.insert(tab, Arc::downgrade(&shared));
+        if let Err(error) = self.tx.push(json!({"op":"create_tab","tab":tab})) {
+            routes.remove(&tab);
+            return Err(error.into());
+        }
+        Ok(Arc::new(Self {
+            tx: self.tx.clone(),
+            shared,
+            runtime: self.runtime.clone(),
+            tab,
+        }))
+    }
+    fn set_modifiers(&self, modifiers: super::KeyModifiers) {
+        let _ = self.tx.push(json!({"op":"modifiers","tab":self.tab,"ctrl":modifiers.ctrl,"shift":modifiers.shift,"alt":modifiers.alt,"meta":modifiers.meta}));
+    }
+    fn set_visible(&self, visible: bool) {
+        let _ = self
+            .tx
+            .push(json!({"op":"visibility","tab":self.tab,"visible":visible}));
+        if !visible {
+            *self.shared.frames.lock().unwrap() = None;
+        }
+    }
+    fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
+        self.shared.open_tabs.lock().unwrap().drain(..).collect()
+    }
+
     fn supports_native_filtering(&self) -> bool {
         true
     }
@@ -372,7 +487,8 @@ impl WebViewEngine for ChromiumEngine {
             }
             return;
         }
-        if let Some(command) = encode_command(command) {
+        if let Some(mut command) = encode_command(command) {
+            command["tab"] = json!(self.tab);
             if let Err(error) = self.tx.push(command) {
                 if self.shared.failed.load(Ordering::Acquire) {
                     return;
@@ -414,9 +530,8 @@ impl WebViewEngine for ChromiumEngine {
 
 impl Drop for ChromiumEngine {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::Release);
-        let _ = self.tx.push(json!({"op":"shutdown"}));
-        self.tx.close();
+        self.runtime.routes.lock().unwrap().remove(&self.tab);
+        let _ = self.tx.push(json!({"op":"close_tab","tab":self.tab}));
     }
 }
 
@@ -427,6 +542,12 @@ fn valid_id(value: &Value) -> bool {
 }
 
 fn validate_event(value: &Value) -> Result<(), &'static str> {
+    if value.get("tab").is_some_and(|tab| {
+        !tab.as_u64()
+            .is_some_and(|id| id > 0 && id <= i32::MAX as u64)
+    }) {
+        return Err("Invalid tab ID");
+    }
     let event = value
         .get("event")
         .and_then(Value::as_str)
@@ -453,6 +574,10 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_some_and(|n| n.is_finite() && n >= 0.0)
         }
         "ready" => text("cef_version") && text("chromium_version"),
+        "open_tab" => {
+            value["url"].as_str().is_some_and(|url| url.len() <= 8192)
+                && value["background"].is_boolean()
+        }
         "uri" => text("url"),
         "title" => text("title"),
         "progress" => value["progress"]
@@ -543,7 +668,11 @@ impl CommandQueue {
         // These operations are explicitly replaceable. Keep ordering barriers:
         // mouse motion before a click and resize before navigation stay ordered.
         if matches!(op, "mouse_move" | "resize" | "focus") {
-            if state.0.back().is_some_and(|(last, _)| last["op"] == op) {
+            if state
+                .0
+                .back()
+                .is_some_and(|(last, _)| last["op"] == op && last["tab"] == value["tab"])
+            {
                 let (_, bytes) = state.0.pop_back().unwrap();
                 state.1 -= bytes;
             }

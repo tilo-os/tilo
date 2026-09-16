@@ -278,3 +278,72 @@ fn session_history_payloads_are_bounded_and_keep_snapshot_identity() {
         }
     ));
 }
+
+#[test]
+fn pointer_coalescing_never_erases_another_tabs_input() {
+    let queue = CommandQueue::default();
+    queue
+        .push(json!({"op":"mouse_move","tab":1,"x":10}))
+        .unwrap();
+    queue
+        .push(json!({"op":"mouse_move","tab":2,"x":20}))
+        .unwrap();
+    queue.close();
+    assert_eq!(queue.pop().unwrap()["tab"], 1);
+    assert_eq!(queue.pop().unwrap()["tab"], 2);
+}
+
+#[test]
+fn routed_frame_packet_is_accepted_and_malformed_tab_rejected() {
+    let mut bytes = 17u32.to_le_bytes().to_vec();
+    bytes.push(3);
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&[10, 20, 30, 255]);
+    let Some(protocol::Packet::TabFrame(tab, frame)) =
+        protocol::read_packet(&mut std::io::Cursor::new(&bytes)).unwrap()
+    else {
+        panic!("expected routed frame");
+    };
+    assert_eq!(tab, 2);
+    assert_eq!(&*frame.rgba, &[30, 20, 10, 255]);
+    bytes[5..9].copy_from_slice(&0u32.to_le_bytes());
+    assert!(protocol::read_packet(&mut std::io::Cursor::new(&bytes)).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn tab_endpoints_keep_runtime_and_waker_after_first_endpoint_closes() {
+    let (dir, host) = helper_fixture("exec cat >/dev/null");
+    let first = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    let wakes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = wakes.clone();
+    first.set_waker(Box::new(move || {
+        seen.fetch_add(1, Ordering::Relaxed);
+    }));
+    let second = first.create_tab().unwrap();
+    let routes = first.runtime.routes.clone();
+    let process = first.runtime.process.clone();
+    drop(first);
+    assert!(!process.stopping.load(Ordering::Acquire));
+    assert!(route(&routes, 1).is_none());
+    let before = wakes.load(Ordering::Relaxed);
+    route(&routes, 2)
+        .unwrap()
+        .event(WebViewEvent::TitleChanged("Second".into()));
+    assert!(wakes.load(Ordering::Relaxed) > before);
+    assert_eq!(
+        second.drain_events(),
+        vec![WebViewEvent::TitleChanged("Second".into())]
+    );
+    fail_routes(&routes, "disconnected".into());
+    assert!(
+        second
+            .drain_events()
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::LoadFailed { .. }))
+    );
+    drop(second);
+    assert!(process.stopping.load(Ordering::Acquire));
+}
