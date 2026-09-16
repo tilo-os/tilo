@@ -931,14 +931,13 @@ impl Session {
                 // every document, not only the one we were invited to.
                 if let Some(ed) = self.editor.as_mut() {
                     let full = ed.full();
-                    self.link
-                        .send(&CollabRequest::DocumentSnapshot { data: full })?;
+                    self.link.send(&CollabRequest::document_snapshot(full))?;
                 }
                 for peer in self.peers.values_mut() {
                     let full = peer.full();
                     self.link.send_to_route(
                         RouteSpec::app(peer.contract().app_id, self.cfg.cluster),
-                        &CollabRequest::DocumentSnapshot { data: full },
+                        &CollabRequest::document_snapshot(full),
                     )?;
                 }
                 tracing::debug!(%user_id, peers = self.peers.len(), "sent our documents to a new participant");
@@ -1346,7 +1345,7 @@ impl Session {
                 let end = editor.latest_entry_id();
                 let product = (editor.contract().product)(&view, &editor.doc);
                 let record = self.cfg.record.clone().unwrap_or_default();
-                let request = CollabRequest::DocumentIncremental { data: delta };
+                let request = CollabRequest::document_incremental(delta);
                 if is_primary {
                     self.link.send(&request)?;
                 } else {
@@ -1550,8 +1549,7 @@ impl Session {
             qdoc::history::commit_stamped(&mut editor.doc);
             let data = editor.doc.save_incremental();
             if !data.is_empty() {
-                self.link
-                    .send(&CollabRequest::DocumentIncremental { data })?;
+                self.link.send(&CollabRequest::document_incremental(data))?;
             }
         }
         for editor in self.peers.values_mut() {
@@ -1983,8 +1981,7 @@ impl Session {
             .context("no document yet")?
             .apply(action)?;
         if let Some(data) = delta {
-            self.link
-                .send(&CollabRequest::DocumentIncremental { data })?;
+            self.link.send(&CollabRequest::document_incremental(data))?;
             if let WordProcessorAction::SpliceText { at, ins, .. } = action
                 && !ins.is_empty()
             {
