@@ -52,7 +52,9 @@ use ui::theme::Theme;
 use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Toggle, ToggleFace, Widget};
 
 use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
-use crate::comment_overlay::{CommentAction, CommentOverlay, CommentSemanticOutcome};
+use crate::comment_overlay::{
+    CommentAction, CommentOverlay, CommentOverlayView, CommentSemanticOutcome,
+};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::input_controls::{
@@ -7616,14 +7618,18 @@ impl BooksApp {
         // The floating comment overlay for a clicked highlight (its own composer
         // lives inside it, so the standalone note composer above stands down).
         self.comment_overlay.draw(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            self.cursor,
-            &self.annotations,
-            self.hi_color,
+            &mut InputPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &CommentOverlayView {
+                viewport: self.rect,
+                cursor: self.cursor,
+                annotations: &self.annotations,
+                default_color: self.hi_color,
+            },
         );
         // Reading-settings floats above everything and owns its own modal hit
         // stack; only the available reader span is supplied by the host.
