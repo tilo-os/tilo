@@ -395,7 +395,7 @@ class Session:
             QOS_PACKAGE_ID=spec["package"],
             QUICK_APP_ID=peer_id,
             QOS_WORKSPACE_ID=room,
-            QUICK_COLLAB_DEBUG="1",
+            RUST_LOG="qos.state=debug",
             RUST_LOG="warn",
         )
         argv = [os.path.join(REPO, "target", "debug", spec["bin"])]
