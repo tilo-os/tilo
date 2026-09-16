@@ -108,7 +108,7 @@ std::string downloads_directory;
 CefRefPtr<qos::RequestFilter> request_filter;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
-                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler {
+                     public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler {
  public:
   explicit Client(int id):id_(id),capabilities_(new qos::Capabilities(downloads_directory,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
@@ -123,6 +123,16 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool OnOpenURLFromTab(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,const CefString& url,WindowOpenDisposition disposition,bool) override {
     if(disposition==CEF_WOD_NEW_BACKGROUND_TAB || disposition==CEF_WOD_NEW_FOREGROUND_TAB || disposition==CEF_WOD_NEW_WINDOW) { OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true; }return false;
+  }
+  CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
+  void OnFindResult(CefRefPtr<CefBrowser>,int identifier,int count,const CefRect&,int active,bool final_update) override {
+    if(final_update && count>0 && active==0 && select_initial_) {
+      select_initial_=false;
+      CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){if(self->browser_ && self->finding_) self->browser_->GetHost()->Find(self->find_text_,true,false,true);},CefRefPtr<Client>(this)));
+      return;
+    }
+    auto d=CefDictionaryValue::Create();d->SetInt("id",find_id_);d->SetInt("count",count);d->SetInt("active",active);d->SetBool("final",final_update);Event("find_result",d);
+    if(final_update) { finding_=false;if(!pending_find_.empty()) { auto next=pending_find_.front();pending_find_.pop_front();CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,CefRefPtr<CefDictionaryValue> command){self->Command(command);},CefRefPtr<Client>(this),next));} }
   }
   CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return capabilities_; }
   CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return capabilities_; }
@@ -225,6 +235,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="forward") browser_->GoForward();
     else if(op=="reload") browser_->Reload();
     else if(op=="stop") browser_->StopLoad();
+    else if(op=="find") {
+      if(finding_) { if(pending_find_.size()<64) pending_find_.push_back(d->Copy(false)); }
+      else { finding_=true;find_id_=d->GetInt("id");find_text_=d->GetString("text");select_initial_=!d->GetBool("next");host->Find(d->GetString("text"),d->GetBool("forward"),false,d->GetBool("next")); }
+    }
+    else if(op=="stop_find") { pending_find_.clear();finding_=false;host->StopFinding(true); }
+    else if(op=="zoom") { host->SetZoomLevel(Number(d,"level"));auto result=CefDictionaryValue::Create();result->SetDouble("level",host->GetZoomLevel());Event("zoom",result); }
     else if(op=="focus") host->SetFocus(d->GetBool("focused"));
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
@@ -289,6 +305,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   std::string filter_rules_;bool filter_enabled_=true;
   int width_=1280,height_=800,pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
+  bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
   float scale_=1;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
@@ -330,6 +347,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
+  if(op=="stop_find") return true;
+  if(op=="zoom") return number("level") && Number(d,"level")>=-5 && Number(d,"level")<=9;
   if(op=="download_cancel") return type("id",VTYPE_INT) && d->GetInt("id")>0;
   if(op=="modifiers") return type("ctrl",VTYPE_BOOL) && type("shift",VTYPE_BOOL) && type("alt",VTYPE_BOOL) && type("meta",VTYPE_BOOL);
   if(op=="focus") return type("focused",VTYPE_BOOL);

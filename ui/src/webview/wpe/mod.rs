@@ -1110,6 +1110,9 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
             | WebViewCommand::ShowDeveloperTools
             | WebViewCommand::PermissionDecision { .. }
             | WebViewCommand::DownloadDecision { .. }
+            | WebViewCommand::Find { .. }
+            | WebViewCommand::StopFinding
+            | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::CancelDownload { .. }
             | WebViewCommand::SetNativeFilterRules { .. } => {}
         }

@@ -222,6 +222,19 @@ impl BrowserTabs {
 
 impl Widget for BrowserTabs {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // Accessibility dispatch has no following pointer event to drain the
+        // TabBar intents. Apply it at the same synchronization boundary.
+        if let Some(id) = self.bar.take_close() {
+            self.close(id);
+        }
+        if self.bar.take_new_tab().is_some() {
+            if let Err(error) = self.open(None, false) {
+                tracing::warn!(%error, "Cannot open tab");
+            }
+        }
+        if self.bar.active_id() != self.active_id {
+            self.activate(self.bar.active_id());
+        }
         let mut requests = Vec::new();
         for tab in &mut self.tabs {
             tab.widget.sync(state, path);
@@ -593,6 +606,28 @@ mod tests {
             true,
         ))
     }
+    #[test]
+    fn accessibility_tab_intents_are_applied_without_an_extra_pointer_event() {
+        let mut tabs = workspace();
+        let mut doc = AutoCommit::new();
+        assert!(tabs.bar.perform_semantic_action(
+            "tab-new",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(tabs.tabs.len(), 2);
+        assert!(tabs.bar.perform_semantic_action(
+            "tab-close:2",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        tabs.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(tabs.tabs.len(), 1);
+    }
+
     #[test]
     fn switching_retains_independent_documents_and_reorder_keeps_identity() {
         let mut tabs = workspace();

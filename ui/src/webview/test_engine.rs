@@ -229,6 +229,9 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ShowDeveloperTools
             | WebViewCommand::PermissionDecision { .. }
             | WebViewCommand::DownloadDecision { .. }
+            | WebViewCommand::Find { .. }
+            | WebViewCommand::StopFinding
+            | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::CancelDownload { .. } => {}
             WebViewCommand::RequestMediaElement { request_id } => {
                 let event = inner.media_element.clone().map_or(
