@@ -282,7 +282,7 @@ impl TargetDrive {
         {
             // The raw character device avoids the buffered `/dev/diskN` path
             // and is the interface Apple documents for imaging removable media.
-            return format!("/dev/r{}", self.name);
+            format!("/dev/r{}", self.name)
         }
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {

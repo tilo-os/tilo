@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -21,7 +22,9 @@ use vello::peniko::Fill;
 use winit::event::{Modifiers, WindowEvent};
 
 use super::folders;
-use super::migration_store::{MigrationStore, OperationRecord, OperationState};
+use super::migration_store::{
+    IssuePage, MigrationStore, OperationRecord, OperationState, StoreWriter,
+};
 use super::migration_worker::{
     MigrationJob, MigrationWorker, WorkerEvent, WorkerOutcome, durable_copy_available,
 };
@@ -47,11 +50,16 @@ enum ImportCommand {
     Cancel,
     ClearSelection,
     ToggleDetails(usize),
+    NextIssues(usize),
 }
 
 /// A later-import surface backed by the same real journaled worker as setup.
 pub struct ImportApp {
-    store: Option<MigrationStore>,
+    store: Option<Arc<MigrationStore>>,
+    writer: Option<StoreWriter>,
+    pending_saves: Vec<mpsc::Receiver<Result<Vec<OperationRecord>, String>>>,
+    detail_request: Option<(usize, mpsc::Receiver<Result<IssuePage, String>>)>,
+    detail_pages: HashMap<usize, IssuePage>,
     operations: Vec<OperationRecord>,
     source: Option<PathBuf>,
     destination_parent: Option<PathBuf>,
@@ -85,6 +93,10 @@ impl ImportApp {
     fn unavailable(error: &str) -> Self {
         Self {
             store: None,
+            writer: None,
+            pending_saves: Vec::new(),
+            detail_request: None,
+            detail_pages: HashMap::new(),
             operations: Vec::new(),
             source: None,
             destination_parent: None,
@@ -136,6 +148,30 @@ impl ImportApp {
             }
             "import-partial" => app.seed_partial_shot(&source, &destination_parent)?,
             "import-conflict" => app.seed_conflict_shot(&source, &destination_parent)?,
+            "import-issue-pages" => {
+                std::fs::write(source.join("Welcome.txt"), b"verified bytes")
+                    .map_err(|e| e.to_string())?;
+                #[cfg(unix)]
+                for index in 0..40 {
+                    std::os::unix::fs::symlink(
+                        source.join("Welcome.txt"),
+                        source.join(format!("Shortcut {index:02}")),
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
+                app.prepare_and_start_shot(&source, &destination_parent)?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                app.wait_for_shot_terminal(deadline)?;
+                app.expanded_details.insert(0);
+                app.load_issue_page(0, 0)?;
+                while app.detail_request.is_some() {
+                    app.poll_background();
+                    if std::time::Instant::now() > deadline {
+                        return Err("issue-page screenshot timed out".into());
+                    }
+                    std::thread::yield_now();
+                }
+            }
             _ => {
                 std::fs::write(source.join("Welcome.txt"), b"verified import")
                     .map_err(|error| error.to_string())?;
@@ -327,6 +363,10 @@ impl ImportApp {
         loop {
             if let Some(event) = worker.try_next() {
                 match event {
+                    WorkerEvent::Stored(saved) => {
+                        *operation = *saved;
+                        return Ok(());
+                    }
                     WorkerEvent::Progress(progress) => operation.apply_progress(&progress),
                     WorkerEvent::Finished(outcome) => {
                         operation.apply_outcome(outcome);
@@ -343,10 +383,15 @@ impl ImportApp {
     }
 
     fn with_store(store: MigrationStore) -> Result<Self, String> {
-        let operations = store.load()?;
+        let mut operations = store.load()?;
         // Persist the load-time Running -> Interrupted normalization. This is
         // an index update only; retry still goes through journal revalidation.
-        store.save(&operations)?;
+        let store = Arc::new(store);
+        let writer = StoreWriter::new(Arc::clone(&store))?;
+        let pending_saves = vec![writer.save(operations.clone())?];
+        for operation in &mut operations {
+            operation.compact();
+        }
         let status = if operations.is_empty() {
             "Choose a source folder and destination to prepare a one-time copy.".into()
         } else {
@@ -354,6 +399,10 @@ impl ImportApp {
         };
         Ok(Self {
             store: Some(store),
+            writer: Some(writer),
+            pending_saves,
+            detail_request: None,
+            detail_pages: HashMap::new(),
             operations,
             source: None,
             destination_parent: None,
@@ -370,14 +419,48 @@ impl ImportApp {
         })
     }
 
-    fn persist(&self) -> Result<(), String> {
-        self.store
+    fn persist(&mut self) -> Result<(), String> {
+        let writer = self
+            .writer
             .as_ref()
-            .ok_or_else(|| "private migration state is unavailable".to_string())?
-            .save(&self.operations)
+            .ok_or_else(|| "private migration state is unavailable".to_string())?;
+        self.pending_saves
+            .push(writer.save(self.operations.clone())?);
+        Ok(())
+    }
+
+    fn load_issue_page(&mut self, index: usize, offset: u64) -> Result<(), String> {
+        if self.detail_request.is_some() {
+            return Err("Copy details are still loading.".into());
+        }
+        let store = Arc::clone(
+            self.store
+                .as_ref()
+                .ok_or_else(|| "private migration state is unavailable".to_string())?,
+        );
+        let operation = self
+            .operations
+            .get(index)
+            .cloned()
+            .ok_or_else(|| "copy operation is unavailable".to_string())?;
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("imager-copy-details".into())
+            .spawn(move || {
+                let _ = tx.send(store.issue_page(&operation, offset));
+            })
+            .map_err(|e| e.to_string())?;
+        self.detail_request = Some((index, rx));
+        Ok(())
     }
 
     fn prepare_review(&mut self) -> Result<(), String> {
+        if self.worker.is_some() {
+            return Err("Wait for the active copy before preparing another import.".into());
+        }
+        if self.pending_saves.len() >= 2 {
+            return Err("Wait for local copy state to finish saving.".into());
+        }
         let source = self
             .source
             .clone()
@@ -442,11 +525,6 @@ impl ImportApp {
         }
         durable_copy_available()
             .map_err(|error| format!("Folder copying is unavailable on this platform: {error}"))?;
-        let before = self
-            .operations
-            .get(index)
-            .cloned()
-            .ok_or_else(|| "the selected migration operation no longer exists".to_string())?;
         let operation = self
             .operations
             .get_mut(index)
@@ -454,15 +532,14 @@ impl ImportApp {
         operation.approve();
         let job = operation.start_job()?;
         operation.mark_running()?;
-        if let Err(error) = self.persist() {
-            if let Some(operation) = self.operations.get_mut(index) {
-                *operation = before;
-            }
-            return Err(format!(
-                "copy did not start because its operation state could not be saved: {error}"
-            ));
-        }
-        match MigrationWorker::start(job) {
+        self.detail_pages.remove(&index);
+        self.detail_request = None;
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| "private migration state is unavailable".to_string())?
+            .clone();
+        match MigrationWorker::start_persisted(job, writer, self.operations.clone(), index) {
             Ok(worker) => {
                 self.worker = Some((index, worker));
                 self.status = "Copying and checking files…".into();
@@ -498,15 +575,14 @@ impl ImportApp {
             .get_mut(index)
             .ok_or_else(|| "the selected migration operation no longer exists".to_string())?
             .mark_running()?;
-        if let Err(error) = self.persist() {
-            if let Some(operation) = self.operations.get_mut(index) {
-                *operation = before;
-            }
-            return Err(format!(
-                "retry did not start because its operation state could not be saved: {error}"
-            ));
-        }
-        match MigrationWorker::start(job) {
+        self.detail_pages.remove(&index);
+        self.detail_request = None;
+        let writer = self
+            .writer
+            .as_ref()
+            .ok_or_else(|| "private migration state is unavailable".to_string())?
+            .clone();
+        match MigrationWorker::start_persisted(job, writer, self.operations.clone(), index) {
             Ok(worker) => {
                 self.worker = Some((index, worker));
                 self.status = "Continuing after checking saved progress…".into();
@@ -543,10 +619,64 @@ impl ImportApp {
         }
     }
 
+    fn poll_persistence_and_details(&mut self, changed: &mut bool) {
+        self.pending_saves.retain(|reply| match reply.try_recv() {
+            Ok(Ok(saved)) => {
+                // An older acknowledgement may fill a missing legacy detail
+                // reference, but cannot replace a newer operation state.
+                for (current, persisted) in self.operations.iter_mut().zip(saved) {
+                    current.retain_detail_reference(&persisted);
+                }
+                *changed = true;
+                false
+            }
+            Ok(Err(error)) => {
+                self.status = format!("Local copy state could not be saved: {error}");
+                self.status_is_error = true;
+                *changed = true;
+                false
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.status =
+                    "Local copy state writer stopped before confirming its checkpoint.".into();
+                self.status_is_error = true;
+                *changed = true;
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+        });
+        if let Some((index, receiver)) = &self.detail_request {
+            let result = match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Copy details could not be loaded.".into()))
+                }
+                Err(mpsc::TryRecvError::Empty) => None,
+            };
+            if let Some(result) = result {
+                match result {
+                    Ok(page) => {
+                        self.detail_pages.insert(*index, page);
+                    }
+                    Err(error) => {
+                        self.status = error;
+                        self.status_is_error = true;
+                    }
+                }
+                self.detail_request = None;
+                *changed = true;
+            }
+        }
+    }
+
     fn poll_background(&mut self) -> bool {
         let mut changed = false;
         let mut terminal = false;
-        while let Some((index, worker)) = &mut self.worker {
+        // At most one latest progress update and one terminal event per frame.
+        for _ in 0..2 {
+            let Some((index, worker)) = &mut self.worker else {
+                break;
+            };
             let Some(event) = worker.try_next() else {
                 break;
             };
@@ -562,6 +692,21 @@ impl ImportApp {
                         );
                     }
                 }
+                WorkerEvent::Stored(saved) => {
+                    if let Some(operation) = self.operations.get_mut(*index) {
+                        *operation = *saved;
+                        self.status = operation
+                            .failure()
+                            .unwrap_or_else(|| state_summary(operation.state()))
+                            .into();
+                        self.status_is_error = !matches!(
+                            operation.state(),
+                            OperationState::Complete | OperationState::Cancelled
+                        );
+                    }
+                    terminal = true;
+                    break;
+                }
                 WorkerEvent::Finished(outcome) => {
                     if let Some(operation) = self.operations.get_mut(*index) {
                         operation.apply_outcome(outcome);
@@ -575,20 +720,11 @@ impl ImportApp {
                     break;
                 }
             }
-            if let Err(error) = self.persist() {
-                self.status = format!(
-                    "Copy continues, but local operation state could not be saved: {error}"
-                );
-                self.status_is_error = true;
-            }
         }
         if terminal {
             self.worker = None;
-            if let Err(error) = self.persist() {
-                self.status = format!("The final result could not be saved locally: {error}");
-                self.status_is_error = true;
-            }
         }
+        self.poll_persistence_and_details(&mut changed);
 
         let picker_outcome = self.picker.as_ref().and_then(|(target, receiver)| {
             receiver.try_recv().ok().map(|outcome| (*target, outcome))
@@ -648,9 +784,27 @@ impl ImportApp {
                 self.status = "Selection cleared.".into();
                 Ok(())
             }
+            ImportCommand::NextIssues(index) => {
+                let offset = self
+                    .detail_pages
+                    .get(&index)
+                    .and_then(|p| p.next)
+                    .unwrap_or(0);
+                self.load_issue_page(index, offset)
+            }
             ImportCommand::ToggleDetails(index) => {
                 if !self.expanded_details.remove(&index) {
                     self.expanded_details.insert(index);
+                    if self
+                        .operations
+                        .get(index)
+                        .is_some_and(|o| o.issue_count() > 8)
+                        && !self.detail_pages.contains_key(&index)
+                        && let Err(error) = self.load_issue_page(index, 0)
+                    {
+                        self.status = error;
+                        self.status_is_error = true;
+                    }
                 }
                 Ok(())
             }
@@ -735,8 +889,26 @@ impl ImportApp {
         )
     }
 
+    fn page_details(&self, index: usize, operation: &OperationRecord, details: &mut String) {
+        if let Some(page) = self.detail_pages.get(&index) {
+            *details = page
+                .issues
+                .iter()
+                .map(|(p, reason)| format!("Needs attention: {} — {reason}", p.display()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            for limitation in operation.metadata_limitations() {
+                let _ = write!(details, "\nFile properties: {limitation}");
+            }
+            if let Some(failure) = operation.failure() {
+                let _ = write!(details, "\nCould not continue: {failure}");
+            }
+        }
+    }
+
     fn operation_card(&self, index: usize, operation: &OperationRecord) -> Card {
-        let (summary, details) = operation_text(operation);
+        let (summary, mut details) = operation_text(operation);
+        self.page_details(index, operation, &mut details);
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -757,6 +929,27 @@ impl ImportApp {
                 body = body.push(Box::new(
                     Text::new(&details).with_id(format!("import.operation.{index}.details")),
                 ));
+                if operation.issue_count() > 8 {
+                    let label = if self.detail_request.is_some() {
+                        "Loading issues…"
+                    } else if self
+                        .detail_pages
+                        .get(&index)
+                        .is_some_and(|p| p.next.is_none())
+                    {
+                        "First issue page"
+                    } else {
+                        "Next issue page"
+                    };
+                    body = body.push(Box::new(
+                        self.button(
+                            &format!("import.operation.{index}.next-issues"),
+                            label,
+                            ImportCommand::NextIssues(index),
+                        )
+                        .with_enabled(self.detail_request.is_none()),
+                    ));
+                }
             }
         }
         match operation.state() {
@@ -885,10 +1078,14 @@ fn operation_text(operation: &OperationRecord) -> (String, String) {
         let _ = write!(summary, "\nCurrent: {}", path.display());
     }
     let issues = operation.issues().unwrap_or_default();
-    if issues.len() == 1 {
+    if operation.issue_count() == 1 {
         summary.push_str("\n1 issue needs attention.");
-    } else if !issues.is_empty() {
-        let _ = write!(summary, "\n{} issues need attention.", issues.len());
+    } else if operation.issue_count() > 0 {
+        let _ = write!(
+            summary,
+            "\n{} issues need attention.",
+            operation.issue_count()
+        );
     }
     if !operation.metadata_limitations().is_empty() {
         summary.push_str("\nSome file properties may not carry over. See Details.");
@@ -1089,7 +1286,10 @@ impl Widget for ImportApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.worker.is_some() || self.picker.is_some()
+        self.worker.is_some()
+            || self.picker.is_some()
+            || !self.pending_saves.is_empty()
+            || self.detail_request.is_some()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1138,6 +1338,123 @@ mod tests {
             assert!(Instant::now() < deadline, "import worker did not finish");
             std::thread::yield_now();
         }
+    }
+
+    fn settle_index(app: &mut ImportApp) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !app.pending_saves.is_empty() {
+            app.poll_background();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn slow_start_checkpoint_keeps_stop_responsive_and_ownership_until_worker_exit() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("hello"), b"hello").unwrap();
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent.clone());
+        app.prepare_review().unwrap();
+        settle_index(&mut app);
+        let root = app.store.as_ref().unwrap().root().to_owned();
+        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 1);
+        let started = Instant::now();
+        app.start_operation(0).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(200));
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!destination_parent.join("source").exists());
+        let started = Instant::now();
+        app.poll_background();
+        assert!(app.cancel_active());
+        assert!(started.elapsed() < Duration::from_millis(200));
+        drop(app);
+        assert!(MigrationStore::open_at(&root).is_err());
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(store) = MigrationStore::open_at(&root) {
+                assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(!destination_parent.join("source").exists());
+    }
+
+    #[test]
+    fn slow_terminal_checkpoint_never_reports_premature_completion() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("hello"), b"hello").unwrap();
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent);
+        app.prepare_review().unwrap();
+        settle_index(&mut app);
+        let root = app.store.as_ref().unwrap().root().to_owned();
+        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
+        app.start_operation(0).unwrap();
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let started = Instant::now();
+        app.poll_background();
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert_eq!(app.operations[0].state(), OperationState::Running);
+        release.send(()).unwrap();
+        wait_terminal(&mut app);
+        assert_eq!(app.operations[0].state(), OperationState::Complete);
+    }
+
+    #[test]
+    fn failed_terminal_checkpoint_retains_an_honest_incomplete_result() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        fs::write(source.join("hello"), b"hello").unwrap();
+        app.source = Some(source.clone());
+        app.destination_parent = Some(destination_parent.clone());
+        app.prepare_review().unwrap();
+        settle_index(&mut app);
+        let root = app.store.as_ref().unwrap().root().to_owned();
+        let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
+        app.start_operation(0).unwrap();
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        fs::rename(root.join("ownership.lock"), root.join("old-lock")).unwrap();
+        release.send(()).unwrap();
+        wait_terminal(&mut app);
+        assert_eq!(app.operations[0].state(), OperationState::Incomplete);
+        assert_eq!(app.operations[0].verified_bytes(), 5);
+        assert!(app.status.contains("could not be saved"));
+        assert_eq!(fs::read(source.join("hello")).unwrap(), b"hello");
+        assert_eq!(
+            fs::read(destination_parent.join("source/hello")).unwrap(),
+            b"hello"
+        );
+    }
+
+    #[test]
+    fn failed_start_persistence_never_creates_output() {
+        let (_temp, mut app, source, destination_parent) = fixture();
+        settle_index(&mut app);
+        app.source = Some(source);
+        app.destination_parent = Some(destination_parent.clone());
+        app.prepare_review().unwrap();
+        settle_index(&mut app);
+        fs::rename(
+            app.store.as_ref().unwrap().root().join("ownership.lock"),
+            app.store.as_ref().unwrap().root().join("replaced-lock"),
+        )
+        .unwrap();
+        app.start_operation(0).unwrap();
+        wait_terminal(&mut app);
+        assert_eq!(app.operations[0].state(), OperationState::Failed);
+        assert!(!destination_parent.join("source").exists());
+        assert!(
+            app.operations[0]
+                .failure()
+                .unwrap()
+                .contains("could not be saved")
+        );
     }
 
     // Catches copying into a suggested setup path before both current native
@@ -1189,8 +1506,20 @@ mod tests {
         wait_terminal(&mut app);
         assert_eq!(app.operations[0].state(), OperationState::Cancelled);
 
-        let store =
-            MigrationStore::open_at(&temp.path().canonicalize().unwrap().join("state")).unwrap();
+        drop(app);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let store = loop {
+            if let Ok(store) =
+                MigrationStore::open_at(&temp.path().canonicalize().unwrap().join("state"))
+            {
+                break store;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "previous writer retained store ownership"
+            );
+            std::thread::yield_now();
+        };
         let mut reopened = ImportApp::with_store(store).unwrap();
         assert_eq!(reopened.operations[0].state(), OperationState::Cancelled);
         assert!(reopened.operations[0].verified_file_count() > 0);
@@ -1266,6 +1595,26 @@ mod tests {
         assert_eq!(fs::read(conflict_source).unwrap(), b"source version");
         assert_eq!(fs::read(conflict_destination).unwrap(), b"destination edit");
         assert!(conflict.expanded_details.is_empty());
+
+        let mut pages = ImportApp::for_shot("import-issue-pages");
+        assert_eq!(pages.operations[0].state(), OperationState::Incomplete);
+        assert_eq!(pages.operations[0].issue_count(), 40);
+        assert_eq!(pages.detail_pages[&0].issues.len(), 32);
+        pages.apply_command(ImportCommand::NextIssues(0));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pages.detail_request.is_some() {
+            pages.poll_background();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(pages.detail_pages[&0].issues.len(), 8);
+        assert!(pages.detail_pages[&0].next.is_none());
+        assert!(
+            pages.detail_pages[&0]
+                .issues
+                .iter()
+                .any(|(p, _)| p == Path::new("Shortcut 39"))
+        );
 
         let complete = ImportApp::for_shot("import-complete");
         assert_eq!(complete.operations[0].state(), OperationState::Complete);

@@ -133,6 +133,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "import-partial",
     "import-conflict",
     "import-complete",
+    "import-issue-pages",
 ];
 
 /// Pose the document for one named `--shots` scenario. Sample content is seeded
