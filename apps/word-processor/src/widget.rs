@@ -1793,6 +1793,11 @@ pub struct WordProcessorWidget {
     /// Follow the available canvas width until the user explicitly operates a
     /// zoom control. This makes a narrow/tiled editor readable on first open.
     auto_fit_page: bool,
+    /// One-shot headless visual-review staging. Deferred until the base frame
+    /// has populated its real toolbar hit map, preserving production anchors.
+    stage_template_picker: bool,
+    /// One-shot staging for the compact-toolbar overflow menu.
+    stage_toolbar_overflow: bool,
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
     /// the canvas top offset so no control is ever clipped.
     toolbar_rows: usize,
@@ -1963,6 +1968,8 @@ impl WordProcessorWidget {
             scrub: None,
             zoom: ZoomControl::new(),
             auto_fit_page: true,
+            stage_template_picker: false,
+            stage_toolbar_overflow: false,
             toolbar_rows: 1,
             notes: Vec::new(),
             dict: None,
@@ -2817,6 +2824,17 @@ impl WordProcessorWidget {
     pub fn stage_error_for_shot(&mut self) {
         self.toast = Some((t("toast-save-failed"), ToastKind::Error));
         self.dirty = true;
+    }
+
+    /// Stage the real "New ▾" menu for the next headless overlay pass.
+    pub fn stage_template_picker_for_shot(&mut self) {
+        self.stage_template_picker = true;
+    }
+
+    /// Stage the compact-toolbar overflow menu for the next headless overlay
+    /// pass, using the same typed actions as keyboard or pointer activation.
+    pub fn stage_toolbar_overflow_for_shot(&mut self) {
+        self.stage_toolbar_overflow = true;
     }
 
     /// Put the production Find bar into a deterministic populated state for
@@ -9753,6 +9771,14 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.stage_template_picker {
+            self.stage_template_picker = false;
+            self.open_template_picker();
+        }
+        if self.stage_toolbar_overflow {
+            self.stage_toolbar_overflow = false;
+            self.open_toolbar_overflow();
+        }
         // Toast first, so an open menu stacks above it.
         self.draw_toast(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
