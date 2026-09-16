@@ -178,8 +178,12 @@ fn library_vertical_metrics(scale: f64, description_lines: usize) -> (f64, f64, 
     let privacy_top = title_top + title_height + 8.0 * scale;
     let privacy_line_height = 16.0 * scale;
     let privacy_bottom = privacy_top + privacy_line_height * description_lines as f64;
-    let tabs_top = privacy_bottom + 8.0 * scale;
-    let tab_height = if scale > 1.25 { 50.0 } else { 30.0 };
+    let tabs_top = privacy_bottom + 12.0 * scale;
+    // Tabs remain generous at the default scale too. These are not merely
+    // decorative filters: Queue, Recent and Shared partition different data
+    // ownership models, so they need the same comfortable target as the row
+    // actions below them.
+    let tab_height = if scale > 1.25 { 50.0 } else { 36.0 };
     let rows_top = tabs_top + tab_height + if scale > 1.25 { 14.0 } else { 12.0 };
     (privacy_top, tabs_top, rows_top)
 }
@@ -2004,7 +2008,19 @@ impl PlayerApp {
         let colors = &theme.tokens.colors;
         let panel = self.library_panel_rect;
         let large_text = self.text_scale > 1.25;
+        // A softly distinguished header stops this persistent side panel from
+        // reading as a pile of ungrouped text over the video. It deliberately
+        // uses theme tokens rather than hard-coded dark paint, preserving the
+        // high-contrast palette.
+        let (_, tabs_top, _) =
+            library_vertical_metrics(self.text_scale, if large_text { 2 } else { 1 });
         fill_rect(scene, transform, panel, colors.surfaces.raised);
+        fill_rect(
+            scene,
+            transform,
+            Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + tabs_top - 4.0),
+            colors.neutral[1],
+        );
         fill_rect(
             scene,
             transform,
@@ -2063,7 +2079,6 @@ impl PlayerApp {
             text_renderer,
             theme,
             &ButtonFace::new(self.library_close_rect, "Close")
-                .ghost()
                 .text_size(12.0)
                 .hovered(self.library_close_rect.contains(self.last_cursor)),
         );
@@ -2129,7 +2144,7 @@ impl PlayerApp {
             LibraryTab::Shared => Vec::new(),
         };
         let mut y = panel.y0 + rows_top;
-        let row_h = if large_text { 100.0 } else { 62.0 };
+        let row_h = if large_text { 100.0 } else { 70.0 };
         if entries.is_empty() {
             panel_text(
                 scene,
@@ -2170,9 +2185,16 @@ impl PlayerApp {
                 rect.x1 - 2.0,
                 action_y + action_h,
             );
-            if rect.contains(self.last_cursor) {
-                fill_rect(scene, transform, rect, colors.neutral[2]);
-            }
+            fill_rect(
+                scene,
+                transform,
+                rect,
+                if rect.contains(self.last_cursor) {
+                    colors.neutral[2]
+                } else {
+                    colors.surfaces.base
+                },
+            );
             let active = self.current_queue_id.as_deref() == Some(entry.id.as_str());
             let label = text_renderer.elide_to_width(
                 &entry.title,
@@ -2518,6 +2540,21 @@ impl PlayerApp {
     ) -> bool {
         if event.state != ElementState::Pressed {
             return false;
+        }
+        // The library is an app-owned side panel rather than a modal supplied
+        // by the shared player surface. Give it the conventional close key so
+        // keyboard and switch-control users never have to hunt for the small
+        // header button. Do not consume Escape while the panel is absent: the
+        // shell and the embedded player may have a more relevant use for it.
+        if matches!(
+            &event.logical_key,
+            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+        ) && self.library_visible
+        {
+            self.library_visible = false;
+            self.library_focus_id = None;
+            self.dirty = true;
+            return true;
         }
         let winit::keyboard::Key::Character(key) = &event.logical_key else {
             return false;
@@ -2919,11 +2956,16 @@ impl Widget for PlayerApp {
                 .min(bx0 - OVERLAY_MARGIN),
             by0 + button_h,
         );
-        let panel_width = if self.rect.width() < 640.0 {
-            self.rect.width()
-        } else {
-            (if scale > 1.25 { 520.0_f64 } else { 360.0_f64 }).min(self.rect.width())
-        };
+        // At a large accessibility scale a 520px panel beside a narrow video
+        // leaves an unusable sliver of the player visible, and its floating
+        // title reads through the library. Treat this as a compact layout and
+        // let the library take the whole surface instead.
+        let panel_width =
+            if self.rect.width() <= 720.0 || (scale > 1.25 && self.rect.width() < 960.0) {
+                self.rect.width()
+            } else {
+                (if scale > 1.25 { 520.0_f64 } else { 420.0_f64 }).min(self.rect.width())
+            };
         self.library_panel_rect = Rect::new(
             self.rect.x1 - panel_width,
             self.rect.y0,
@@ -2931,8 +2973,8 @@ impl Widget for PlayerApp {
             self.rect.y1,
         );
         let large_text = scale > 1.25;
-        let close_w = if large_text { 96.0 } else { 56.0 };
-        let header_button_h = if large_text { 48.0 } else { 28.0 };
+        let close_w = if large_text { 96.0 } else { 68.0 };
+        let header_button_h = if large_text { 48.0 } else { 36.0 };
         self.library_close_rect = Rect::new(
             self.library_panel_rect.x1 - 12.0 - close_w,
             self.library_panel_rect.y0 + 10.0,
@@ -2946,7 +2988,7 @@ impl Widget for PlayerApp {
         ) + 1;
         let (_, tabs_top, _) = library_vertical_metrics(scale, description_lines);
         let tabs_y = self.library_panel_rect.y0 + tabs_top;
-        let tab_h = if large_text { 50.0 } else { 30.0 };
+        let tab_h = if large_text { 50.0 } else { 36.0 };
         let tab_w = if large_text { 112.0 } else { 86.0 };
         self.library_queue_tab_rect = Rect::new(
             self.library_panel_rect.x0 + 12.0,
@@ -3125,6 +3167,7 @@ impl Widget for PlayerApp {
             children.extend([
                 AccessNode::new(Role::Button)
                     .with_name("Close library")
+                    .with_description("Escape")
                     .with_action_target("video-player.library.close")
                     .with_bounds(self.library_close_rect)
                     .with_state(AccessState {
@@ -3421,7 +3464,41 @@ impl Widget for PlayerApp {
         if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
             Some("Open video (Ctrl+O)")
         } else if self.overlay_visible() && self.library_button_rect.contains(self.last_cursor) {
-            Some("Show queue and recent videos (L)")
+            Some(if self.library_visible {
+                "Hide queue and recent videos (L)"
+            } else {
+                "Show queue and recent videos (L)"
+            })
+        } else if self.library_visible && self.library_close_rect.contains(self.last_cursor) {
+            Some("Close library (Escape)")
+        } else if self.library_visible && self.library_queue_tab_rect.contains(self.last_cursor) {
+            Some("Show this device's queue")
+        } else if self.library_visible && self.library_recent_tab_rect.contains(self.last_cursor) {
+            Some("Show recently played videos on this device")
+        } else if self.library_visible && self.library_shared_tab_rect.contains(self.last_cursor) {
+            Some("Show shared playlists and timestamp notes")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Shared
+            && self.shared_watch_later_rect.contains(self.last_cursor)
+        {
+            Some("Add the current video to the shared Watch later playlist")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Shared
+            && self.shared_bookmark_rect.contains(self.last_cursor)
+        {
+            Some("Add a shared bookmark at the current playback time")
+        } else if self.library_visible
+            && self.library_tab == LibraryTab::Shared
+            && let Some(row) = self
+                .shared_row_hits
+                .iter()
+                .find(|row| row.remove.contains(self.last_cursor))
+        {
+            Some(if row.annotation {
+                "Delete this shared timestamp note"
+            } else {
+                "Delete this shared playlist"
+            })
         } else if self.library_visible
             && self.library_tab == LibraryTab::Recent
             && self.library_clear_rect.contains(self.last_cursor)
@@ -3791,6 +3868,26 @@ mod tests {
             &mut doc,
             &path,
         ));
+        assert!(!app.library_visible);
+    }
+
+    #[test]
+    fn library_has_conventional_escape_close_and_complete_hover_help() {
+        let mut app = PlayerApp::for_shot(None, Some("shared"));
+        app.library_close_rect = Rect::new(0.0, 0.0, 44.0, 44.0);
+        app.last_cursor = Point::new(20.0, 20.0);
+        assert_eq!(app.tooltip(), Some("Close library (Escape)"));
+
+        let escape = {
+            // `winit` intentionally does not expose a lightweight public key
+            // constructor. This mirrors the existing Space routing test above
+            // while only initializing the fields this handler reads.
+            let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+            event.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+            event.state = ElementState::Pressed;
+            event
+        };
+        assert!(app.handle_app_shortcut(&escape, winit::event::Modifiers::default()));
         assert!(!app.library_visible);
     }
 
