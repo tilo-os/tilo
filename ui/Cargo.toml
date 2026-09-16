@@ -71,7 +71,7 @@ qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
 # `webview-adblock`). The `content-blocking` feature provides the
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
-adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
+adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
 # runtime-collab is the qOS collab broker Cap'n Proto SDK.
 # `CollaborationManager` delegates to it via a shovel thread.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }

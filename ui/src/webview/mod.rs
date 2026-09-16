@@ -17,6 +17,7 @@
 //! translation so engines never see toolkit layout space.
 
 pub mod profile;
+pub mod chromium;
 pub mod test_engine;
 
 #[cfg(feature = "webview-adblock")]
@@ -131,6 +132,10 @@ pub enum WebViewCommand {
     /// Compiled `WebKit` content-blocker JSON (`None` clears the filter).
     /// Backends without native content filtering ignore this.
     SetContentFilter(Option<Arc<String>>),
+    /// Source filter rules for engines with native matching. An empty source
+    /// preserves current rules. `None` preserves the enabled state, so an
+    /// asynchronous list refresh cannot undo a user's disable action.
+    SetNativeFilterRules { rules: Arc<String>, enabled: Option<bool> },
     /// Several compiled content-blocker JSON blobs, split because the full
     /// filter-list rule set exceeds `WebKit`'s per-filter cap. An empty
     /// `chunks` clears all filters.
@@ -232,6 +237,9 @@ pub struct DmabufFrame {
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
 pub trait WebViewEngine: Send + Sync {
+    /// Whether this backend accepts source rules instead of WebKit JSON.
+    fn supports_native_filtering(&self) -> bool { false }
+
     /// Enqueue a command. Must never block on engine work.
     fn send(&self, cmd: WebViewCommand);
 

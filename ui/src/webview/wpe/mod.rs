@@ -1104,6 +1104,7 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                     }
                 }
             }
+            WebViewCommand::SetNativeFilterRules { .. } => {}
         }
     }
 }

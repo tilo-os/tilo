@@ -11245,6 +11245,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-chromium-blocker"
+version = "0.1.0"
+dependencies = [
+ "adblock",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "qos-cli"
 version = "0.1.0"
 dependencies = [
