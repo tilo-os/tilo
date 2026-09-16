@@ -327,3 +327,48 @@ The run used the default Podman seccomp policy, `--cap-drop=ALL`, no network,
 result is `fex-wine-resource-mount-results/result.json` in the preparation
 workspace. This is console and prefix acceptance only; graphics, representative
 applications, and integration with the product sandbox remain unverified.
+
+## Vulkan command execution
+
+`os/tests/fixtures/fex-vulkan-buffer.c` creates a Vulkan device and a 4 KiB
+host-visible buffer, submits `vkCmdFillBuffer`, applies a transfer-to-host memory
+barrier, waits for the queue, invalidates the mapped range, and checks all 1,024
+words. It exits unsuccessfully on a Vulkan error or data mismatch. This exercises
+handles, command buffers, synchronization, memory mapping, and readback across
+the bridge; it does not claim shader rendering or presentation coverage.
+
+Build the same source natively and for the x86-64 guest inside the native FEX
+build environment. `/headers` is the pinned FEX Vulkan-Headers include directory,
+`/sdk` is the complete x86 development SDK, and `/rootfs` is the Wine runtime:
+
+```sh
+clang -std=c11 -Wall -Wextra -Werror -I/headers \
+  /qos/os/tests/fixtures/fex-vulkan-buffer.c -o /tmp/native-probe \
+  -l:libvulkan.so.1
+clang --target=x86_64-linux-gnu --sysroot=/sdk --gcc-toolchain=/sdk/usr \
+  -fuse-ld=lld -std=c11 -Wall -Wextra -Werror -I/headers \
+  /qos/os/tests/fixtures/fex-vulkan-buffer.c -o /tmp/guest-probe \
+  /rootfs/usr/lib64/libvulkan.so.1
+```
+
+Link only the guest Vulkan loader from the runtime; adding the runtime's entire
+library directory to the linker search path can select its libc linker script
+outside the development sysroot. Keep the SDK's C runtime and linker inputs.
+
+With an explicitly managed FEXServer, set `FEX_ROOTFS=/rootfs` and
+`FEX_THUNKCONFIG` to the pinned `Data/CI/VulkanThunks.json`, then run the native
+probe and `FEX /tmp/guest-probe`. Both passed on ARM with the normal JIT, no added
+capabilities, default Podman seccomp policy, and no network. ELF inspection
+confirmed AArch64 and x86-64 respectively. Both reported
+`QOS_VULKAN_BUFFER_PASS 4096 bytes` using Mesa 26.1.8 llvmpipe / LLVM 22.1.8.
+A separate `LD_DEBUG=libs` run confirmed the translated process loaded
+`/usr/lib64/fex-emu/HostThunks/libvulkan-host.so` and the native
+`/usr/lib64/libvulkan_lvp.so`, and passed again.
+
+The transfer probe passed both with automatic driver selection and with
+`VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.aarch64.json`. Guest
+`vulkaninfo --summary` also passed with that explicit software driver. Its
+initial automatic-driver run terminated with SIGILL, which remains unresolved;
+the narrower transfer success does not clear that failure. These are software
+Vulkan results, not physical GPU acceptance, Windows DXVK acceptance, or proof
+of a 32-bit Vulkan guest thunk.
