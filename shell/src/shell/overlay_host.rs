@@ -19978,6 +19978,19 @@ mod overlay_event_absorb_tests {
         let (width, height) = (960.0, 540.0);
         let mut h = build_harness_sized(width, height);
         open_notification_history(&mut h, 18, width, height);
+        // Retire the still-visible capped toasts before clearing history. A
+        // later arrival can then contribute exactly one new history record,
+        // rather than first evicting an unrelated live toast as well.
+        let live_ids: Vec<_> = h
+            .chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .map(|notification| notification.id)
+            .collect();
+        for id in live_ids {
+            h.chrome.borrow_mut().dismiss_notification(id);
+        }
         let original: Vec<_> = h
             .chrome
             .borrow()
