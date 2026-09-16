@@ -31,6 +31,19 @@ use uuid::Uuid;
 
 /// Key of the saved-connection list under the document root.
 pub const CONNECTIONS_KEY: &str = "connections";
+/// Collaborative saved-query collection. Query history and result contents stay
+/// local because they reflect a live server and can expose data a peer cannot
+/// access; saved SQL itself is intentional workspace content.
+pub const SAVED_QUERIES_KEY: &str = "saved_queries";
+
+/// A named, collaborative SQL snippet. Its id survives removal as a tombstone
+/// in the Automerge list so concurrent peers do not create duplicate snippets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SavedQuery {
+    pub id: Uuid,
+    pub name: String,
+    pub sql: String,
+}
 
 /// Stateless helpers over the shared editor document.
 pub struct EditorDoc;
@@ -159,6 +172,41 @@ impl ConnectionsDoc {
             }
         }
         None
+    }
+}
+
+/// Stateless view of collaborative saved queries. Only non-tombstoned entries
+/// appear in ordinary UI/search results; the hidden rows retain stable ids for
+/// deterministic multi-peer action replay.
+pub struct SavedQueriesDoc;
+
+impl SavedQueriesDoc {
+    pub fn list(doc: &AutoCommit) -> Option<ObjId> {
+        match doc.get(&ROOT, SAVED_QUERIES_KEY) {
+            Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn read(doc: &AutoCommit) -> Vec<SavedQuery> {
+        let Some(list) = Self::list(doc) else {
+            return Vec::new();
+        };
+        (0..doc.length(&list))
+            .filter_map(|index| match doc.get(&list, index) {
+                Ok(Some((Value::Object(ObjType::Map), row)))
+                    if !bool_field(doc, &row, "removed").unwrap_or(false) =>
+                {
+                    let id = str_field(doc, &row, "id").and_then(|id| Uuid::parse_str(&id).ok())?;
+                    Some(SavedQuery {
+                        id,
+                        name: str_field(doc, &row, "name").unwrap_or_default(),
+                        sql: str_field(doc, &row, "sql").unwrap_or_default(),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 }
 

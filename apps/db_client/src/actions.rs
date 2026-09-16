@@ -55,7 +55,7 @@ use uuid::Uuid;
 use qos_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
 use ui::doc::put_if_changed;
 
-use crate::doc::CONNECTIONS_KEY;
+use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY};
 use crate::model::{ConnectionProfile, Engine};
 
 /// Wire type id under which the client's actions are encoded + registered.
@@ -82,6 +82,14 @@ pub enum DbAction {
     RemoveConnection { id: String },
     /// Rename the saved connection profile with this id.
     RenameConnection { id: String, name: String },
+    /// Save SQL as intentional, collaborative workspace content.
+    SaveQuery {
+        id: String,
+        name: String,
+        sql: String,
+    },
+    /// Hide a saved query while retaining its stable CRDT row as a tombstone.
+    RemoveQuery { id: String },
 }
 
 impl Action for DbAction {
@@ -139,6 +147,30 @@ impl Action for DbAction {
                     put_if_changed(doc, &row, "name", name.as_str());
                 }
             }
+            DbAction::SaveQuery { id, name, sql } => {
+                let list = ensure_saved_queries(doc)?;
+                if let Some(index) = row_index_for_id(doc, &list, id)
+                    && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
+                {
+                    put_if_changed(doc, &row, "removed", false);
+                    put_if_changed(doc, &row, "name", name.as_str());
+                    put_if_changed(doc, &row, "sql", sql.as_str());
+                    return Ok(());
+                }
+                let row = doc.insert_object(&list, doc.length(&list), ObjType::Map)?;
+                doc.put(&row, "id", id.as_str())?;
+                doc.put(&row, "name", name.as_str())?;
+                doc.put(&row, "sql", sql.as_str())?;
+                doc.put(&row, "removed", false)?;
+            }
+            DbAction::RemoveQuery { id } => {
+                if let Some(list) = saved_query_list_object(doc)
+                    && let Some(index) = row_index_for_id(doc, &list, id)
+                    && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
+                {
+                    put_if_changed(doc, &row, "removed", true);
+                }
+            }
         }
         Ok(())
     }
@@ -163,6 +195,20 @@ fn ensure_connections(doc: &mut Doc) -> Result<ObjId, ActionError> {
     match list_object(doc) {
         Some(id) => Ok(id),
         None => Ok(doc.put_object(&ROOT, CONNECTIONS_KEY, ObjType::List)?),
+    }
+}
+
+fn saved_query_list_object(doc: &Doc) -> Option<ObjId> {
+    match doc.get(&ROOT, SAVED_QUERIES_KEY) {
+        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+        _ => None,
+    }
+}
+
+fn ensure_saved_queries(doc: &mut Doc) -> Result<ObjId, ActionError> {
+    match saved_query_list_object(doc) {
+        Some(id) => Ok(id),
+        None => Ok(doc.put_object(&ROOT, SAVED_QUERIES_KEY, ObjType::List)?),
     }
 }
 
@@ -231,6 +277,20 @@ pub fn rename_connection_action(id: Uuid, name: &str) -> DbAction {
         id: id.to_string(),
         name: name.to_string(),
     }
+}
+
+/// Build a stable-id saved-query action. The SQL remains collaborative text,
+/// not a live server effect; running it stays a per-peer effect operation.
+pub fn save_query_action(id: Uuid, name: &str, sql: &str) -> DbAction {
+    DbAction::SaveQuery {
+        id: id.to_string(),
+        name: name.to_string(),
+        sql: sql.to_string(),
+    }
+}
+
+pub fn remove_query_action(id: Uuid) -> DbAction {
+    DbAction::RemoveQuery { id: id.to_string() }
 }
 
 /// True when `engine` is one this build knows how to open (kept next to the
@@ -316,6 +376,26 @@ mod tests {
         action.apply(&mut doc).unwrap();
         action.apply(&mut doc).unwrap();
         assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
+    }
+
+    #[test]
+    fn saved_query_actions_keep_a_tombstone_and_revive_its_id() {
+        let mut doc = AutoCommit::new();
+        let id = Uuid::new_v4();
+        save_query_action(id, "Daily totals", "SELECT count(*) FROM orders")
+            .apply(&mut doc)
+            .unwrap();
+        remove_query_action(id).apply(&mut doc).unwrap();
+        assert!(crate::doc::SavedQueriesDoc::read(&doc).is_empty());
+
+        save_query_action(id, "Daily totals", "SELECT count(*) FROM orders")
+            .apply(&mut doc)
+            .unwrap();
+        let queries = crate::doc::SavedQueriesDoc::read(&doc);
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].id, id);
+        let list = crate::doc::SavedQueriesDoc::list(&doc).expect("query list exists");
+        assert_eq!(doc.length(&list), 1, "revival must not duplicate a row");
     }
 
     /// `RemoveConnection` hides exactly the addressed profile while retaining
