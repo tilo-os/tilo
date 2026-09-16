@@ -208,6 +208,10 @@ upstream targets:
 ```sh
 export QOS_FEX_X86_SYSROOT=/x86-sdk
 cmake -S /src -B /build \
+  -DCMAKE_C_COMPILER=/usr/lib64/llvm21/bin/clang \
+  -DCMAKE_CXX_COMPILER=/usr/lib64/llvm21/bin/clang++ \
+  -DClang_DIR=/usr/lib64/llvm21/lib64/cmake/clang \
+  -DLLVM_DIR=/usr/lib64/llvm21/lib64/cmake/llvm \
   -DBUILD_THUNKS=ON -DBUILD_FEX_LINUX_TESTS=ON -DENABLE_CLANG_THUNKS=ON \
   -DX86_DEV_ROOTFS="$QOS_FEX_X86_SYSROOT" \
   -DX86_64_TOOLCHAIN_FILE=/qos/os/dev/toolchains/fex-cross-x86_64.cmake \
@@ -435,3 +439,38 @@ parse CPU ranges with `strtoul`, making that omitted terminator significant.
 The runtime used glibc 2.43-8.fc44. Restoring the Linux text-file contract is
 required; changing the expected CPU count or forcing a thread-count setting
 would not repair the underlying issue.
+
+### Validated compiler API for thunk generation
+
+An independent Clang 22.1.8 API probe reproduced the variadic-generator failure:
+`ASTContext::getSizeType().getAsString()` returns `__size_t` for ARM64, x86-64,
+and i686. Its canonical type is `unsigned long` (64 bits) for ARM64/x86-64 and
+`unsigned int` (32 bits) for i686. The pinned FEX generator emits that internal
+`__size_t` name into C++ without a declaration, causing its existing
+`VariadicFunction.ThunkGen` test to fail. This is distinct from a missing guest
+header package or an ARM ABI mismatch.
+
+The native buildroot now includes Fedora's versioned Clang/LLVM 21 packages.
+Select both compiler executables and both CMake package directories explicitly
+as shown above; installing the packages alone does not change CMake's default
+Clang 22 selection. The default compiler remains available to the existing
+explicit x86 SDK toolchains. Use a fresh FEX build directory when changing the
+native compiler.
+
+The unmodified pinned FEX source configured and built `thunkgentest` with Clang
+21.1.8, and all 15 `.ThunkGen` tests passed in 4.58 seconds. Build and test output
+is retained in `fex-clang21-generator-validation.log`. The validation disabled
+compiler caching after an unrelated cache-directory failure; optimization and
+LTO remained enabled. A nested dependency still invoked the cached launcher,
+so `CCACHE_DISABLE=1` and a writable isolated `CCACHE_DIR` were used.
+
+This resolves the generator test in the validated toolchain configuration.
+The complete emulator, guest libraries, and full runtime suite still need
+rebuilding and validation with this compiler selection. It does not repair the
+separately reproduced CPU-list or Vulkan callback defects.
+
+The exact updated `os/Containerfile.fex-buildroot` also built successfully as
+`localhost/qos-fex-buildroot:arm64-clang21`, image ID
+`2b7fdf294cd47de7465f68c96bc9ab91399950b4c63a83a052c0832158054d36`.
+It records the selected generator compiler version and refreshes the complete
+RPM inventory after installing the versioned toolchain.
