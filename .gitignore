@@ -33,6 +33,7 @@ keys/**/*.key
 keys/**/*.private.pem
 # runtime CRDT session artifacts (e.g. ui/examples write session.crdt)
 *.crdt
+rustypipe_cache.json
 .claude/test-scratch/
 # Local build infrastructure and feature worktrees. These live under
 # .claude so they travel with the checkout, but none of them belong in

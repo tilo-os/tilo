@@ -2834,11 +2834,8 @@ mod tests {
         app.dispatch_event(ev, 1.0, m, doc, &mut handled);
     }
 
-    /// Ctrl+V pastes the system clipboard into the focused composer, proving the
-    /// full shared-`TextInput` clipboard path (the hand-rolled composer had no
-    /// clipboard at all). Primes the real clipboard, checks it round-trips
-    /// (headless environments still have a backend here), then drives Ctrl+V
-    /// through the real event path and asserts the text landed.
+    /// Verifies Ctrl+V reaches the focused composer through the normal event
+    /// path after checking the headless clipboard backend.
     #[test]
     fn ctrl_v_pastes_clipboard_into_the_composer() {
         let (mut app, mut doc) = app_with_doc();
@@ -2866,9 +2863,8 @@ mod tests {
         );
     }
 
-    /// A drag across the composer selects a range, and Ctrl+C copies exactly
-    /// that selection to the clipboard — the selection + copy affordances the
-    /// hand-rolled composer lacked, now inherited from the shared widget.
+    /// A drag across the composer selects a range, and Ctrl+C copies that
+    /// selection to the clipboard.
     #[test]
     fn drag_select_then_ctrl_c_copies_the_selection() {
         let (mut app, mut doc) = app_with_doc();

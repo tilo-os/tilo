@@ -22,19 +22,14 @@
 //! exit, silent `SIGPIPE` handling (e.g. `| head`), and a `QOS_CLI_COMMAND`
 //! lookup exposed via [`invoked_command`].
 //!
-//! [`resolve_workspace_path`] returns a path a CLI can `open()` today: under
+//! [`resolve_workspace_path`] returns a path a CLI can `open()`: under
 //! `/var/workspace/` inside qOS ([`is_qos_native`]), or under
 //! `~/.local/share/<package id>/` standalone (stock Linux, Flatpak) —
 //! deliberately unrelated to `runtime-fs` so the CLI keeps working when the
 //! FUSE driver is offline.
 //!
-//! This SDK exposes **no** grant API. Access control for a CLI app is the
-//! launcher's sandbox (one writable directory, a fixed system read profile,
-//! `sandbox.net`) plus the capability model in `collab-types::caps`, all
-//! enforced outside the app — a `request_grant` helper that always returned
-//! `Ok(())` used to live here, and a permission call that always succeeds is
-//! worse than none, so it's gone. Add the real thing when the compositor
-//! grows a text/dbus portal.
+//! This SDK exposes no grant API. CLI access is enforced outside the app by
+//! the launcher's sandbox and the capability model in `collab-types::caps`.
 //!
 //! [`output`] builds a terminal-aware writer that emits ANSI OSC 8
 //! hyperlinks on an interactive terminal, degrading to plain text on pipes.

@@ -145,10 +145,8 @@ pub struct NotesApp {
     /// and `handle_event` read this so they always match the live tree,
     /// even for the one frame before a breakpoint crossing rebuilds.
     built_narrow: bool,
-    /// The responsive sidebar/drawer controller: it owns the docked-vs-overlay
-    /// decision (at [`NARROW_BREAKPOINT`]), the open/closed state, and the
-    /// dimming scrim, replacing the hand-rolled breakpoint + `drawer_open` flag +
-    /// scrim fill this app used to carry.
+    /// The responsive sidebar/drawer controller owns the docked-vs-overlay
+    /// decision (at [`NARROW_BREAKPOINT`]), open/closed state, and dimming scrim.
     drawer: SidebarDrawer,
     /// Set when the window crossed the narrow breakpoint so the tree
     /// needs a structural rebuild. Drained by `take_structure_dirty`.

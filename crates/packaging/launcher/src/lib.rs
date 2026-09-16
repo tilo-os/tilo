@@ -21,8 +21,8 @@
 //! - [`host`] — the one launch path with *no* sandbox (unpackaged
 //!   apps); read its module docs before touching it.
 //!
-//! When `qos-pkg` lands, the public surface of `manifest` is the only
-//! piece that needs to change.
+//! The launcher-facing manifest surface is kept in [`manifest`]; policy types
+//! are shared with `qos-pkg`.
 
 #![cfg_attr(
     test,

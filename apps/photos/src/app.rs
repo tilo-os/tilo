@@ -4,10 +4,7 @@
 //!
 //! Every control here is a shared toolkit widget. The buttons are
 //! [`ui::widget::Button`], the canvas is [`ui::widget::ImageViewer`], and the
-//! nothing-open state is [`ui::widget::EmptyState`]. Nothing is hand-rolled:
-//! a bespoke button would have to re-earn focus, hover, disabled contrast,
-//! accessibility roles and theming, and would drift from the rest of the
-//! system the first time any of those changed.
+//! nothing-open state is [`ui::widget::EmptyState`].
 //!
 //! There is no title bar. The compositor owns window chrome; an app that drew
 //! its own name at the top would be drawing it twice.
