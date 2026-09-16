@@ -71,14 +71,19 @@ Download qOS Imager on the computer you are using now:
 | Host | Architectures | Preferred download | Package manager |
 | --- | --- | --- | --- |
 | Linux | x86-64, ARM64 | signed AppImage | Homebrew formula after promotion |
-| Windows 10 or 11 | x86-64 | signed setup EXE | WinGet after promotion |
+| Windows 10 or 11 | x86-64, ARM64 | signed setup EXE | WinGet after promotion |
 | macOS | Intel, Apple silicon | signed and notarized DMG | Homebrew cask after promotion |
 
-The Imager authenticates the selected qOS image, writes an 8 GiB or larger USB
-drive, reads it back, and can carry account name, host name, locale, keyboard,
-time zone, and filesystem choice into the live installer. It does not inspect
-or copy your files, resize an internal disk, or carry a password or recovery
-secret.
+Choose a USB drive with usable capacity at least as large as the selected
+installer's expanded image size. The Imager checks that size against the drive
+before writing; the compressed download size is not the required capacity.
+The current full installer reserves at least 40 GiB for its live root, plus
+boot partitions, and larger payloads increase that requirement.
+
+The Imager authenticates the selected qOS image, writes the USB drive, reads it
+back, and can carry account name, host name, locale, keyboard, time zone, and
+filesystem choice into the live installer. It does not inspect or copy your
+files, resize an internal disk, or carry a password or recovery secret.
 
 Boot the USB in UEFI mode and test the hardware. The live installer offers:
 
