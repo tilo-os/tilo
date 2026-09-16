@@ -1623,6 +1623,15 @@ fn client_input_allowed(fb: &FrameBuilder) -> bool {
 /// spawned. This keeps the token single-use and binds it to the exact user
 /// action rather than accepting an app-id guess later.
 fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
+    // A host-session launch may resolve to a legacy X11-only program.  The
+    // private bridge is started asynchronously after the public Wayland
+    // socket begins dispatching, so startup restore can reach this boundary
+    // first.  Preserve the one-shot request (and its placement) until DISPLAY
+    // is published instead of spawning it into a knowingly incomplete
+    // environment and showing a false failure notification.
+    if !crate::shell::host_apps::x11_ready() {
+        return false;
+    }
     let requests = crate::shell::host_apps::drain_queued_launches();
     let mut changed = false;
     for request in requests {
@@ -8215,6 +8224,7 @@ mod gesture_wireup_tests {
     }
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod output_geometry_tests {
     use super::{output_geometry, select_fullscreen_output};
