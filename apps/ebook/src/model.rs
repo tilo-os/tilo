@@ -283,6 +283,17 @@ impl HiColor {
     }
 }
 
+/// Stable source coordinates for an annotation, independent of its identity,
+/// kind, payload, and highlight-group membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnnotationAnchor {
+    pub chapter: usize,
+    pub block: usize,
+    pub start: usize,
+    pub end: usize,
+    pub excerpt: String,
+}
+
 /// One annotation. The reusable anchor contract: `doc_id` (which document),
 /// `chapter` (coarse location: spine index / page / section), `block`
 /// (paragraph index), `start`/`end` (char offsets, both 0 for a
@@ -328,6 +339,16 @@ impl Annotation {
             color: HiColor::Yellow,
             created: now_ms(),
             group: id,
+        }
+    }
+
+    pub fn anchor(&self) -> AnnotationAnchor {
+        AnnotationAnchor {
+            chapter: self.chapter,
+            block: self.block,
+            start: self.start,
+            end: self.end,
+            excerpt: self.excerpt.clone(),
         }
     }
 

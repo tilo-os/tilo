@@ -88,15 +88,38 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         .scenario
         .as_deref()
         .map_or_else(typst_editor::demo_root, typst_editor::demo_root_scenario);
-    let theme = match args.value("--theme") {
+    // Keep the app-specific switch for existing scripts, while matching the
+    // standard qOS screenshot contract.  In particular, review captures must
+    // be able to exercise the actual high-contrast and motion preferences.
+    let theme_name = args
+        .value("--theme")
+        .map(str::to_owned)
+        .or_else(|| std::env::var("QOS_SHOTS_THEME").ok());
+    let theme = match theme_name.as_deref() {
         Some("light") => Theme::light(),
+        Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
         Some("dark") | None => Theme::dark(),
         Some(name) => {
             return Err(LaunchError::Scenario(format!(
-                "unknown screenshot theme {name:?}; expected \"light\" or \"dark\""
+                "unknown screenshot theme {name:?}; expected \"dark\", \"light\", or \"high-contrast\""
             )));
         }
     };
+    let reduced_motion = ["QOS_A11Y_REDUCE_MOTION", "QOS_REDUCE_MOTION"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .any(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        });
+    let theme = if let Some(scale) = args.text_scale {
+        theme.with_text_scale(scale)
+    } else {
+        theme
+    }
+    .with_reduce_motion(reduced_motion);
     render_shot_to_png(
         root,
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
@@ -118,6 +141,7 @@ fn render_shot_to_png(
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 

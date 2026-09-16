@@ -52,16 +52,20 @@ use ui::theme::Theme;
 use ui::widget::{EditOutcome, EditableLabel, FlapState, SplitLayout, Toggle, ToggleFace, Widget};
 
 use crate::color_picker::{ColorEdit, ColorPicker, PickTarget, PickerPress};
-use crate::comment_overlay::{CommentAction, CommentOverlay, CommentSemanticOutcome};
+use crate::comment_overlay::{
+    CommentAction, CommentOverlay, CommentOverlayView, CommentSemanticOutcome,
+};
 use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::input_controls::{
-    NoteAction, NoteComposer, NoteSemanticOutcome, NumberControls, NumberField,
+    InputEventCtx, InputPaintCtx, NoteAction, NoteComposer, NoteSemanticOutcome, NoteView,
+    NumberControls, NumberField,
 };
 use crate::local_library::LocalLibrary;
 use crate::model::{
-    AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
-    Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
+    AnnoKind, Annotation, AnnotationAnchor, Book, ColorScheme, CompositionStyle, FontEntry,
+    FontKind, HiColor, Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
+    now_ms,
 };
 use crate::paginate::{
     ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
@@ -72,8 +76,7 @@ use crate::reader_bubble::{
 };
 use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{
-    ReadingSettings, ReadingSettingsAction, ReadingSettingsEventCtx, ReadingSettingsPaintCtx,
-    ReadingSettingsView,
+    ReadingSettings, ReadingSettingsAction, ReadingSettingsPaintCtx, ReadingSettingsView,
 };
 use crate::shelf_controls::{
     ShelfBarView, ShelfControlAction, ShelfControls, ShelfMenuView, ShelfPaintCtx,
@@ -2514,17 +2517,20 @@ impl BooksApp {
             let book_id = self.book_id();
             let excerpt = self.selection_excerpt();
             let id = Uuid::new_v4();
-            let action = crate::actions::add_note_action(
-                &book_id,
+            let action = crate::actions::NoteDraft {
+                book_id,
                 id,
-                self.chapter,
-                block,
-                start,
-                end,
-                self.hi_color,
-                &excerpt,
-                "",
-            );
+                anchor: AnnotationAnchor {
+                    chapter: self.chapter,
+                    block,
+                    start,
+                    end,
+                    excerpt,
+                },
+                color: self.hi_color,
+                text: String::new(),
+            }
+            .into_action();
             self.perform_action(doc, &action);
             self.composing = Some(id);
             self.note_composer.open(id, "");
@@ -2606,18 +2612,23 @@ impl BooksApp {
         if let Some((block, start, end, color, excerpt)) = anchor {
             let book_id = self.book_id();
             let id = Uuid::new_v4();
-            let action = crate::actions::add_comment_action(
-                &book_id,
+            let action = crate::actions::CommentDraft {
                 group,
-                id,
-                self.chapter,
-                block,
-                start,
-                end,
-                color,
-                &excerpt,
-                "",
-            );
+                note: crate::actions::NoteDraft {
+                    book_id,
+                    id,
+                    anchor: AnnotationAnchor {
+                        chapter: self.chapter,
+                        block,
+                        start,
+                        end,
+                        excerpt,
+                    },
+                    color,
+                    text: String::new(),
+                },
+            }
+            .into_action();
             self.perform_action(doc, &action);
             self.comment_overlay.open(group);
             self.comment_overlay.begin_editing(id, "");
@@ -3353,11 +3364,13 @@ impl BooksApp {
             doc,
             &crate::actions::move_annotation_action(
                 piece.id,
-                self.chapter,
-                tb.index,
-                0,
-                span,
-                &excerpt,
+                AnnotationAnchor {
+                    chapter: self.chapter,
+                    block: tb.index,
+                    start: 0,
+                    end: span,
+                    excerpt,
+                },
             ),
         );
         true
@@ -4785,28 +4798,20 @@ impl Widget for BooksApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        if self.forward_rename_event(
+        let mut input_ctx = InputEventCtx {
             event,
             scale_factor,
-            *modifiers,
-            doc,
-            path,
+            modifiers: *modifiers,
+            state: doc,
+            root: path,
             node_id,
             taffy,
             handled,
-        ) {
+        };
+        if self.forward_rename_event(&mut input_ctx) {
             return;
         }
-        if self.forward_shared_input_event(
-            event,
-            scale_factor,
-            *modifiers,
-            doc,
-            path,
-            node_id,
-            taffy,
-            handled,
-        ) {
+        if self.forward_shared_input_event(&mut input_ctx) {
             return;
         }
 
@@ -5218,102 +5223,63 @@ impl Widget for BooksApp {
 }
 
 impl BooksApp {
-    #[allow(clippy::too_many_arguments)]
-    fn forward_shared_input_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) -> bool {
+    fn forward_shared_input_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
         let mut input_handled = false;
-        let (comment_text, comment_submitted) = self.comment_overlay.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            node_id,
-            taffy,
-            &mut input_handled,
-        );
+        let (comment_text, comment_submitted) = self
+            .comment_overlay
+            .handle_event(&mut ctx.reborrow(&mut input_handled));
         if let Some((id, text)) = comment_text {
-            self.set_annotation_text(doc, id, &text);
+            self.set_annotation_text(ctx.state, id, &text);
         }
         if comment_submitted {
             input_handled = true;
         }
 
-        let (note_text, submit) = self.note_composer.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            node_id,
-            taffy,
-            &mut input_handled,
-        );
+        let (note_text, submit) = self
+            .note_composer
+            .handle_event(&mut ctx.reborrow(&mut input_handled));
         if let Some(text) = note_text {
-            self.set_composing_text(doc, &text);
+            self.set_composing_text(ctx.state, &text);
         }
         if submit {
-            self.finish_composing(doc);
+            self.finish_composing(ctx.state);
             input_handled = true;
         }
 
         let settings_actions = self
             .reading_settings
-            .handle_event(&mut ReadingSettingsEventCtx {
-                event,
-                scale_factor,
-                modifiers,
-                state: doc,
-                root: path,
-                node_id,
-                taffy,
-                handled: &mut input_handled,
-            });
+            .handle_event(&mut ctx.reborrow(&mut input_handled));
         for action in settings_actions {
-            self.dispatch_reading_settings(action, doc);
+            self.dispatch_reading_settings(action, ctx.state);
         }
 
-        let changes = self.number_controls.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            doc,
-            path,
-            node_id,
-            taffy,
-            &mut input_handled,
-        );
+        let changes = self
+            .number_controls
+            .handle_event(&mut ctx.reborrow(&mut input_handled));
         for (field, value) in changes {
             match field {
                 NumberField::FontScale => {
-                    self.bump_setting(doc, |settings| settings.font_scale = (value / 100.0) as f32);
+                    self.bump_setting(ctx.state, |settings| {
+                        settings.font_scale = (value / 100.0) as f32;
+                    });
                 }
                 NumberField::LineSpacing => {
-                    self.bump_setting(doc, |settings| settings.line_spacing = value as f32);
+                    self.bump_setting(ctx.state, |settings| settings.line_spacing = value as f32);
                 }
                 NumberField::FontMult(id) => {
                     let mut fonts = self.fonts.clone();
                     if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                         font.size_mult = value as f32;
                         let font = font.clone();
-                        self.perform_action(doc, &crate::actions::upsert_font_action(font));
+                        self.perform_action(ctx.state, &crate::actions::upsert_font_action(font));
                     }
                 }
             }
         }
         if input_handled {
-            self.refresh_from_doc(doc);
+            self.refresh_from_doc(ctx.state);
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
         }
         input_handled
     }
@@ -5323,18 +5289,7 @@ impl BooksApp {
     /// `true` when the field consumed the event (the caller stops there); a
     /// press outside the field blur-commits and falls through to the rest of
     /// `handle_event`.
-    #[allow(clippy::too_many_arguments)]
-    fn forward_rename_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-        handled: &mut bool,
-    ) -> bool {
+    fn forward_rename_event(&mut self, ctx: &mut InputEventCtx<'_>) -> bool {
         if self.renaming.is_none() {
             return false;
         }
@@ -5342,22 +5297,22 @@ impl BooksApp {
         let mut field_focus = None;
         if let Some(rn) = self.renaming.as_mut() {
             rn.field.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                doc,
-                path,
+                ctx.event,
+                ctx.scale_factor,
+                &ctx.modifiers,
+                ctx.state,
+                ctx.root,
                 &mut field_handled,
                 &mut field_focus,
-                node_id,
-                taffy,
+                ctx.node_id,
+                ctx.taffy,
             );
         }
-        self.poll_rename_outcome(doc);
+        self.poll_rename_outcome(ctx.state);
         if field_handled {
-            self.refresh_from_doc(doc);
+            self.refresh_from_doc(ctx.state);
             self.dirty = true;
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -6289,10 +6244,12 @@ impl BooksApp {
             field,
             value,
             Rect::new(minus_x, by, right_x, by + btn),
-            scene,
-            t,
-            tr,
-            theme,
+            &mut InputPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
         );
         minus_x
     }
@@ -7615,14 +7572,18 @@ impl BooksApp {
         // The floating comment overlay for a clicked highlight (its own composer
         // lives inside it, so the standalone note composer above stands down).
         self.comment_overlay.draw(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            self.cursor,
-            &self.annotations,
-            self.hi_color,
+            &mut InputPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &CommentOverlayView {
+                viewport: self.rect,
+                cursor: self.cursor,
+                annotations: &self.annotations,
+                default_color: self.hi_color,
+            },
         );
         // Reading-settings floats above everything and owns its own modal hit
         // stack; only the available reader span is supplied by the host.
@@ -8801,8 +8762,19 @@ impl BooksApp {
         let Some(annotation) = self.annotations.iter().find(|a| a.id == id) else {
             return;
         };
-        self.note_composer
-            .draw(scene, t, tr, theme, self.rect, anchor_y, annotation);
+        self.note_composer.draw(
+            &mut InputPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &NoteView {
+                bounds: self.rect,
+                anchor_y,
+                annotation,
+            },
+        );
     }
 
     /// Paint the contents + annotations rails: either docked (flush, page

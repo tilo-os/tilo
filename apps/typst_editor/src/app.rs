@@ -213,6 +213,9 @@ pub struct TypstApp {
     /// Recomputed every `apply_layout` from the live width — never cached from
     /// the first frame.
     compact: bool,
+    /// The current theme's text scale, captured during layout construction so
+    /// compact-mode decisions reserve space for enlarged controls too.
+    layout_text_scale: f64,
     /// Which pane the compact layout is showing (ignored while `compact` is
     /// false).
     compact_view: CompactPane,
@@ -283,6 +286,23 @@ pub struct TypstApp {
 }
 
 impl TypstApp {
+    /// Fixed controls have to grow with system text size as well as their
+    /// labels.  Keeping this calculation beside layout prevents a 200% font
+    /// from painting outside a 100%-sized toolbar.
+    fn pill_height(&self) -> f64 {
+        PILL_H * self.layout_text_scale
+    }
+
+    fn toolbar_height(&self) -> f64 {
+        // At the default scale this remains the established 46px toolbar
+        // (28px control + 18px breathing room).
+        TOOLBAR_H + (self.pill_height() - PILL_H)
+    }
+
+    fn scaled_pill_font_height(tr: &TextRenderer) -> f64 {
+        f64::from(PILL_FONT) * f64::from(tr.text_scale())
+    }
+
     /// The live editor: its document library is the user's real `.typ` files on
     /// disk. If none exist yet it opens a single blank starter document.
     pub fn new() -> Self {
@@ -347,6 +367,7 @@ impl TypstApp {
             warn_count: 0,
             elapsed_ms: 0,
             compact: false,
+            layout_text_scale: 1.0,
             compact_view: CompactPane::Editor,
             menu_open: false,
             demo_scroll_caret_end: false,
@@ -809,7 +830,7 @@ impl TypstApp {
             TbAction::PrevDoc => self.prev_doc(doc),
             TbAction::NextDoc => self.next_doc(doc),
             TbAction::Compile => {
-                self.perform_resource_operation(crate::actions::TypstOperation::Compile, doc)
+                self.perform_resource_operation(crate::actions::TypstOperation::Compile, doc);
             }
             TbAction::Save => self.perform_resource_operation(
                 crate::actions::TypstOperation::Save { path: None },
@@ -836,13 +857,16 @@ impl TypstApp {
                 self.set_compact_view(CompactPane::Preview);
             }
             TbAction::ToggleProblems => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ToggleProblems, doc)
+                self.perform_resource_operation(
+                    crate::actions::TypstOperation::ToggleProblems,
+                    doc,
+                );
             }
             TbAction::ShowEditor => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ShowEditor, doc)
+                self.perform_resource_operation(crate::actions::TypstOperation::ShowEditor, doc);
             }
             TbAction::ShowPreview => {
-                self.perform_resource_operation(crate::actions::TypstOperation::ShowPreview, doc)
+                self.perform_resource_operation(crate::actions::TypstOperation::ShowPreview, doc);
             }
             TbAction::ToggleMenu => self.menu_open = !self.menu_open,
         }
@@ -850,6 +874,10 @@ impl TypstApp {
 
     /// Execute the semantic operation shared by exported resources and direct
     /// toolbar/shortcut affordances.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "operations are decoded as owned values and dispatched immediately"
+    )]
     fn perform_resource_operation(
         &mut self,
         operation: crate::actions::TypstOperation,
@@ -928,7 +956,7 @@ impl TypstApp {
     fn layout_in(&mut self, rect: Rect) {
         self.rect = rect;
         let r = self.rect;
-        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
+        self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.toolbar_height());
         let content_top = self.toolbar_rect.y1;
         // No permanent status strip: the content spans to the window bottom and
         // the status floats as two transient bubbles (see `draw_status_bubbles`).
@@ -937,7 +965,7 @@ impl TypstApp {
 
         // Derive the layout mode from the *current* width every pass, so a
         // resize across the threshold reflows without any cached-on-launch mode.
-        self.compact = content_w < COMPACT_W;
+        self.compact = content_w < COMPACT_W * self.layout_text_scale;
         if !self.compact {
             self.menu_open = false;
         }
@@ -1067,7 +1095,7 @@ impl TypstApp {
         let fg = if active { Color::WHITE } else { c.text_primary };
         let (tw, _) = tr.measure_weighted(label, PILL_FONT, None, TextWeight::Medium);
         let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-        let ty = rect.y0 + (rect.height() - f64::from(PILL_FONT) * 1.25) / 2.0;
+        let ty = rect.y0 + (rect.height() - Self::scaled_pill_font_height(tr) * 1.25) / 2.0;
         tr.draw_text_weighted(
             scene,
             label,
@@ -1100,7 +1128,8 @@ impl TypstApp {
             &Rect::new(tb.x0, tb.y1 - 1.0, tb.x1, tb.y1),
         );
 
-        let y = tb.y0 + (tb.height() - PILL_H) / 2.0;
+        let pill_h = self.pill_height();
+        let y = tb.y0 + (tb.height() - pill_h) / 2.0;
         if self.compact {
             self.draw_toolbar_compact(scene, t, tr, theme, y);
         } else {
@@ -1141,7 +1170,7 @@ impl TypstApp {
                 t,
                 tr,
                 theme,
-                Rect::new(x, y, x + pill_w, y + PILL_H),
+                Rect::new(x, y, x + pill_w, y + self.pill_height()),
                 lbl,
                 act,
                 false,
@@ -1157,7 +1186,7 @@ impl TypstApp {
         // zoom cluster: [ − ] [ 100% ] [ + ] [ Fit ]  (right to left)
         for (lbl, act) in [("Fit", TbAction::Fit), ("+", TbAction::ZoomIn)] {
             let pill_w = Self::pill_width(tr, lbl);
-            let pill_rect = Rect::new(rx - pill_w, y, rx, y + PILL_H);
+            let pill_rect = Rect::new(rx - pill_w, y, rx, y + self.pill_height());
             self.paint_pill(scene, t, tr, theme, pill_rect, lbl, act, false);
             rx -= pill_w + 6.0;
         }
@@ -1166,7 +1195,7 @@ impl TypstApp {
         let zlabel = format!("{:.0}%", self.preview.zoom() * 100.0);
         let (zw, _) = tr.measure_weighted(&zlabel, PILL_FONT, None, TextWeight::Medium);
         let zchip_w = f64::from(zw) + 16.0;
-        let zr = Rect::new(rx - zchip_w, y, rx, y + PILL_H);
+        let zr = Rect::new(rx - zchip_w, y, rx, y + self.pill_height());
         tr.draw_text_weighted(
             scene,
             &zlabel,
@@ -1174,14 +1203,14 @@ impl TypstApp {
             c.text_dim,
             t * Affine::translate((
                 zr.x0 + 8.0,
-                y + (PILL_H - f64::from(PILL_FONT) * 1.25) / 2.0,
+                y + (self.pill_height() - Self::scaled_pill_font_height(tr) * 1.25) / 2.0,
             )),
             None,
             TextWeight::Medium,
         );
         rx -= zchip_w + 6.0;
         let zow = Self::pill_width(tr, "−");
-        let zor = Rect::new(rx - zow, y, rx, y + PILL_H);
+        let zor = Rect::new(rx - zow, y, rx, y + self.pill_height());
         self.paint_pill(scene, t, tr, theme, zor, "−", TbAction::ZoomOut, false);
     }
 
@@ -1198,7 +1227,7 @@ impl TypstApp {
         // when there's actually something to show (an empty badge is noise).
         let mut rx = tb.x1 - 12.0;
         let kebab_w = 30.0;
-        let kr = Rect::new(rx - kebab_w, y, rx, y + PILL_H);
+        let kr = Rect::new(rx - kebab_w, y, rx, y + self.pill_height());
         self.paint_pill(
             scene,
             t,
@@ -1250,7 +1279,7 @@ impl TypstApp {
                 t,
                 tr,
                 theme,
-                Rect::new(x, y, x + prev_w, y + PILL_H),
+                Rect::new(x, y, x + prev_w, y + self.pill_height()),
                 "‹",
                 TbAction::PrevDoc,
                 false,
@@ -1271,7 +1300,7 @@ impl TypstApp {
         let label = elide_to_width(tr, &base, max_chip - 24.0);
         let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
         let chip_w = (f64::from(lw) + 24.0).min(max_chip);
-        let chip = Rect::new(x, y, x + chip_w, y + PILL_H);
+        let chip = Rect::new(x, y, x + chip_w, y + self.pill_height());
         scene.fill(
             Fill::NonZero,
             t,
@@ -1284,7 +1313,10 @@ impl TypstApp {
             &label,
             PILL_FONT,
             c.text_primary,
-            t * Affine::translate((x + 12.0, y + (PILL_H - f64::from(PILL_FONT) * 1.25) / 2.0)),
+            t * Affine::translate((
+                x + 12.0,
+                y + (self.pill_height() - Self::scaled_pill_font_height(tr) * 1.25) / 2.0,
+            )),
             None,
             TextWeight::Semibold,
         );
@@ -1297,7 +1329,7 @@ impl TypstApp {
                 t,
                 tr,
                 theme,
-                Rect::new(x, y, x + next_w, y + PILL_H),
+                Rect::new(x, y, x + next_w, y + self.pill_height()),
                 "›",
                 TbAction::NextDoc,
                 false,
@@ -1327,7 +1359,7 @@ impl TypstApp {
         let pw = f64::from(pw) + 22.0;
         let total = ew + pw;
         let x0 = (tb.x0 + tb.width() * 0.5 - total * 0.5).round();
-        let outer = Rect::new(x0, y, x0 + total, y + PILL_H);
+        let outer = Rect::new(x0, y, x0 + total, y + self.pill_height());
         scene.fill(
             Fill::NonZero,
             t,
@@ -1345,7 +1377,7 @@ impl TypstApp {
 
         let edit_active = matches!(self.compact_view, CompactPane::Editor);
         // Edit segment.
-        let er = Rect::new(x0, y, x0 + ew, y + PILL_H);
+        let er = Rect::new(x0, y, x0 + ew, y + self.pill_height());
         self.paint_segment(
             scene,
             t,
@@ -1357,7 +1389,7 @@ impl TypstApp {
             edit_active,
         );
         // Preview segment.
-        let pr = Rect::new(x0 + ew, y, x0 + ew + pw, y + PILL_H);
+        let pr = Rect::new(x0 + ew, y, x0 + ew + pw, y + self.pill_height());
         self.paint_segment(
             scene,
             t,
@@ -1402,7 +1434,7 @@ impl TypstApp {
             "●".to_string()
         };
         let w = Self::pill_width(tr, &label);
-        let r = Rect::new(rx - w, y, rx, y + PILL_H);
+        let r = Rect::new(rx - w, y, rx, y + self.pill_height());
         self.paint_pill(
             scene,
             t,
@@ -1471,17 +1503,29 @@ impl TypstApp {
             ("Fit width", TbAction::Fit),
             (problems_label, TbAction::ToggleProblems),
         ];
-        let row_h = 32.0;
+        // Leave a real touch-sized row around enlarged labels rather than
+        // letting the text scale paint through adjacent menu items.
+        let row_h = (Self::scaled_pill_font_height(tr) * 1.25 + 10.0)
+            .ceil()
+            .max(32.0);
         let pad = 6.0;
-        let mut panel_w: f64 = 150.0;
+        let available_w = (self.rect.width() - 16.0).max(1.0);
+        let mut panel_w: f64 = (150.0 * self.layout_text_scale).min(available_w);
         for (lbl, _) in &items {
             let (lw, _) = tr.measure(lbl, PILL_FONT, None);
-            panel_w = panel_w.max(f64::from(lw) + 28.0);
+            panel_w = panel_w.max(f64::from(lw) + 28.0).min(available_w);
         }
         let h = items.len() as f64 * row_h + pad * 2.0;
         let x1 = self.toolbar_rect.x1 - 10.0;
         let x0 = (x1 - panel_w).max(self.rect.x0 + 8.0);
-        let y0 = self.toolbar_rect.y1 + 4.0;
+        // Prefer the conventional below-toolbar anchor, then lift the whole
+        // panel just enough to keep every operation reachable in a short
+        // window.  It may overlay the toolbar in a very short viewport, but
+        // it never falls below the screen where keyboard and pointer users
+        // cannot reach its final rows.
+        let y0 = (self.toolbar_rect.y1 + 4.0)
+            .min(self.rect.y1 - h - 8.0)
+            .max(self.rect.y0 + 8.0);
         let panel = Rect::new(x0, y0, x1, y0 + h);
 
         // Shadow + card.
@@ -1519,9 +1563,10 @@ impl TypstApp {
                     &RoundedRect::from_rect(row, 6.0),
                 );
             }
+            let label = elide_to_width(tr, lbl, (row.width() - 20.0).max(1.0));
             tr.draw_text(
                 scene,
-                lbl,
+                &label,
                 PILL_FONT,
                 c.text_primary,
                 t * Affine::translate((
@@ -1786,13 +1831,13 @@ impl Widget for TypstApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use crate::actions::TypstOperation;
         let Some(operation) = crate::actions::decode(type_id, payload)? else {
             return Ok(None);
         };
         if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
             return Err("another file operation is already running".into());
         }
-        use crate::actions::TypstOperation;
         let resource = match operation {
             TypstOperation::Open { path: Some(path) } => Some(ResourceIo::Open(path.into())),
             TypstOperation::Save { path: Some(path) } => Some(ResourceIo::Save(path.into())),
@@ -1923,9 +1968,13 @@ impl Widget for TypstApp {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // `apply_layout` does not receive the theme, so retain its text scale
+        // here.  The toolbar and compact threshold use it to prevent enlarged
+        // labels from colliding with content or each other.
+        self.layout_text_scale = f64::from(theme.text_scale);
         // `new_leaf` on a freshly created tree never fails.
         #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
@@ -2700,6 +2749,20 @@ mod tests {
         assert!(app.preview_rect.area() > 0.0);
     }
 
+    /// Enlarged system text changes the geometry as well as glyph metrics:
+    /// the taller controls stay in their own toolbar and a formerly cramped
+    /// split switches to the compact single-pane layout.
+    #[test]
+    fn text_scale_grows_toolbar_and_compacts_before_controls_collide() {
+        let (mut app, _doc) = fresh();
+        app.layout_text_scale = 2.0;
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+
+        assert_eq!(app.toolbar_rect.height(), 74.0);
+        assert!(app.compact, "1280px is compact at 200% text scale");
+        assert_eq!(app.editor_rect.y0, app.toolbar_rect.y1);
+    }
+
     /// Tapping the compact Edit/Preview segmented control through the real
     /// pointer path swaps the visible pane.
     #[test]
@@ -2749,6 +2812,35 @@ mod tests {
         assert!(!app.menu_open, "menu closed after acting");
         assert!(app.preview.zoom() > before, "zoom applied");
         assert!(matches!(app.compact_view, CompactPane::Preview));
+    }
+
+    /// The overflow panel is its own interaction surface; even at 200% text
+    /// scale in a short window all rows remain inside the app viewport.
+    #[test]
+    fn scaled_compact_menu_keeps_every_row_reachable() {
+        let (mut app, _doc) = fresh();
+        app.layout_text_scale = 2.0;
+        app.layout_in(Rect::new(0.0, 0.0, 700.0, 520.0));
+        app.menu_open = true;
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::empty();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &presence,
+        );
+
+        assert_eq!(app.menu_hits.len(), 8);
+        assert!(app.menu_hits.iter().all(|(_, row)| {
+            row.x0 >= app.rect.x0
+                && row.x1 <= app.rect.x1
+                && row.y0 >= app.rect.y0
+                && row.y1 <= app.rect.y1
+        }));
     }
 
     #[test]

@@ -53,6 +53,11 @@ pub enum TypstOperation {
     ShowPreview,
 }
 
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::expect_used,
+    reason = "the variant is deliberately matched by value to select its exact action contract; serde-derived operation values are infallibly serializable"
+)]
 fn operation(id: &str, label: &str, kind: OperationKind, value: TypstOperation) -> ActionSpec {
     let spec = ActionSpec::operation(id, label, kind, OPERATION_TYPE, &value)
         .expect("TypstOperation is always serializable");
@@ -73,6 +78,10 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: TypstOperation) 
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "serde-derived operation values are infallibly serializable"
+)]
 fn path_operation(
     id: &'static str,
     label: &'static str,
@@ -107,24 +116,11 @@ fn path_operation(
 }
 
 pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
-    let mut document = Resource::new("typst.current", "typst.document", "Current document");
-    document = document
-        .with_action(path_operation("save", "Save Typst file", |path| {
-            TypstOperation::Save { path }
-        }))
-        .with_action(path_operation("open", "Open Typst file", |path| {
-            TypstOperation::Open { path }
-        }))
-        .with_action(path_operation("export-pdf", "Export PDF", |path| {
-            TypstOperation::ExportPdf { path }
-        }));
-    for (id, label, kind, op) in [
-        (
-            "compile",
-            "Recompile",
-            OperationKind::Effect,
-            TypstOperation::Compile,
-        ),
+    // Publish the same hierarchy a person sees: a workspace contains the
+    // active document, which contains its rendered preview and export target.
+    // This keeps global search and agents from seeing a flat pile of unrelated
+    // commands, without eagerly indexing source text or materialising files.
+    let preview = [
         (
             "zoom-in",
             "Zoom in",
@@ -144,6 +140,36 @@ pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
             TypstOperation::FitWidth,
         ),
         (
+            "preview",
+            "Show preview",
+            OperationKind::View,
+            TypstOperation::ShowPreview,
+        ),
+    ]
+    .into_iter()
+    .fold(
+        Resource::new("typst.preview", "typst.preview", "Live preview"),
+        |resource, (id, label, kind, op)| resource.with_action(operation(id, label, kind, op)),
+    );
+    let export = Resource::new("typst.export.pdf", "typst.export", "PDF export").with_action(
+        path_operation("export-pdf", "Export PDF", |path| {
+            TypstOperation::ExportPdf { path }
+        }),
+    );
+    let mut document = Resource::new("typst.current", "typst.document", "Current document")
+        .with_action(path_operation("save", "Save Typst file", |path| {
+            TypstOperation::Save { path }
+        }))
+        .with_child(preview)
+        .with_child(export);
+    for (id, label, kind, op) in [
+        (
+            "compile",
+            "Recompile",
+            OperationKind::Effect,
+            TypstOperation::Compile,
+        ),
+        (
             "problems",
             "Toggle problems",
             OperationKind::View,
@@ -155,18 +181,23 @@ pub fn resources(_doc: &AutoCommit) -> Vec<Resource> {
             OperationKind::View,
             TypstOperation::ShowEditor,
         ),
-        (
-            "preview",
-            "Show preview",
-            OperationKind::View,
-            TypstOperation::ShowPreview,
-        ),
     ] {
         document = document.with_action(operation(id, label, kind, op));
     }
-    vec![document]
+    vec![
+        Resource::new("typst.workspace", "typst.workspace", "Typst workspace")
+            .with_action(path_operation("open", "Open Typst file", |path| {
+                TypstOperation::Open { path }
+            }))
+            .with_child(document),
+    ]
 }
 
+/// Decode one operation payload advertised by this app.
+///
+/// # Errors
+///
+/// Returns an error when a payload for this app's operation type is malformed.
 pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<TypstOperation>, String> {
     if type_id != OPERATION_TYPE {
         return Ok(None);
@@ -267,7 +298,11 @@ mod tests {
     fn file_effects_bind_direct_paths_and_keep_job_confirmation_contracts() {
         let resources = resources(&AutoCommit::new());
         for id in ["open", "save", "export-pdf"] {
-            let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
+            let spec = qos_actions::flatten(&resources)
+                .into_iter()
+                .find(|flat| flat.action.id == id)
+                .map(|flat| flat.action)
+                .unwrap();
             assert_eq!(spec.params()[0].name, "path");
             assert!(matches!(
                 spec.contract.execution,
@@ -284,11 +319,11 @@ mod tests {
                 .clone();
             let encoded = spec.build_json(&args).unwrap();
             let decoded = decode(OPERATION_TYPE, &encoded.payload).unwrap().unwrap();
-            let path = match decoded {
-                TypstOperation::Open { path }
-                | TypstOperation::Save { path }
-                | TypstOperation::ExportPdf { path } => path,
-                _ => unreachable!(),
+            let (TypstOperation::Open { path }
+            | TypstOperation::Save { path }
+            | TypstOperation::ExportPdf { path }) = decoded
+            else {
+                unreachable!();
             };
             assert_eq!(path.as_deref(), Some(format!("/tmp/{id}").as_str()));
         }
@@ -381,23 +416,37 @@ mod tests {
         let (mut app, doc) = synced();
         let resources = Widget::resources(&app, &doc);
         assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].kind, "typst.workspace");
+        assert_eq!(
+            resources[0].children.len(),
+            1,
+            "workspace owns the active document"
+        );
+        let document = &resources[0].children[0];
+        assert_eq!(document.kind, "typst.document");
         assert!(
-            resources[0]
-                .actions
+            document
+                .children
                 .iter()
-                .any(|a| { a.id == "compile" && a.kind == qos_actions::OperationKind::Effect })
+                .any(|child| child.kind == "typst.preview")
         );
         assert!(
-            resources[0]
-                .actions
+            document
+                .children
                 .iter()
-                .any(|a| { a.id == "zoom-in" && a.kind == qos_actions::OperationKind::View })
+                .any(|child| child.kind == "typst.export")
         );
+        let actions = qos_actions::flatten(&resources);
+        assert!(actions.iter().any(|a| {
+            a.action.id == "compile" && a.action.kind == qos_actions::OperationKind::Effect
+        }));
+        assert!(actions.iter().any(|a| {
+            a.action.id == "zoom-in" && a.action.kind == qos_actions::OperationKind::View
+        }));
         assert!(
-            resources[0]
-                .actions
+            actions
                 .iter()
-                .all(|a| a.kind != qos_actions::OperationKind::Document)
+                .all(|a| a.action.kind != qos_actions::OperationKind::Document)
         );
         assert!(
             app.take_committed_action().is_none(),
