@@ -564,3 +564,47 @@ fn completed_navigation_preserves_page_identity() {
         })
     );
 }
+
+#[test]
+fn site_protocol_roundtrips_bounded_status_and_rejects_malformed_fields() {
+    let status = serde_json::json!({"event":"site_status","request_id":1,"origin":"https://example.test","generation":2.0,"blocked":4.0,"global_enabled":true,"excepted":false,"effective":true,"security":"secure","certificate_status":0,"tls_version":6,"content_status":0,"subject":"example.test","issuer":"fixture","expires":0.0,"permissions":{"camera":"ask","microphone":"ask","location":"ask","notifications":"blocked"}});
+    assert!(validate_event(&status).is_ok());
+    assert!(
+        matches!(decode_event(&status),Some(WebViewEvent::SiteStatus(s)) if s.blocked==4 && s.generation==2 && s.permissions.len()==4)
+    );
+    for (key, bad) in [
+        ("origin", serde_json::json!("x".repeat(8193))),
+        ("generation", serde_json::json!(-1)),
+        ("blocked", serde_json::json!(1.5)),
+        ("issuer", serde_json::json!("x".repeat(513))),
+        ("security", serde_json::json!("maybe")),
+        (
+            "permissions",
+            serde_json::json!({"notifications":"anything"}),
+        ),
+    ] {
+        let mut invalid = status.clone();
+        invalid[key] = bad;
+        assert!(validate_event(&invalid).is_err(), "{key}");
+    }
+    assert!(!command_within_limits(&WebViewCommand::SetSiteExceptions(
+        vec!["https://a.test".into(); 1025]
+    )));
+    assert!(!command_within_limits(&WebViewCommand::SiteAction {
+        request_id: 1,
+        origin: "https://a.test".into(),
+        generation: 0,
+        action: "clear".into()
+    }));
+    let command = WebViewCommand::SiteAction {
+        request_id: 7,
+        origin: "https://a.test".into(),
+        generation: 2,
+        action: "clear".into(),
+    };
+    assert!(command_within_limits(&command));
+    assert_eq!(
+        encode_command(command).unwrap(),
+        serde_json::json!({"op":"site_action","request_id":7,"origin":"https://a.test","generation":2,"action":"clear"})
+    );
+}

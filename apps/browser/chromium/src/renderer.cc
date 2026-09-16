@@ -1,3 +1,4 @@
+#include "site_policy.h"
 #include "host.h"
 #include "cosmetics.h"
 #include "include/cef_browser.h"
@@ -40,8 +41,11 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
   void OnContextCreated(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context> context) override {
     if(!IsWebDocument(frame)) return;
     auto& config=configs_[browser->GetIdentifier()];
-    if(config.filters) ApplyFilters(frame,config.filters);
-    frame->SendProcessMessage(PID_BROWSER,CefProcessMessage::Create("qos.config"));
+    // A renderer process may contain only a cross-origin child; its remote
+    // main frame cannot identify the top-level origin. Ask the browser for a
+    // document-correlated policy instead of applying the previous page's cache.
+    const auto filter_token=++filter_sequence_;filter_tokens_[frame->GetIdentifier().ToString()]=filter_token;
+    auto config_request=CefProcessMessage::Create("qos.config");config_request->GetArgumentList()->SetDouble(0,static_cast<double>(filter_token));frame->SendProcessMessage(PID_BROWSER,config_request);
     {
       auto& browser_media=media_contexts[browser->GetIdentifier()];
       const auto key=frame->GetIdentifier().ToString();
@@ -64,6 +68,7 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     auto key=frame->GetIdentifier().ToString();
     auto browser_media=media_contexts.find(browser->GetIdentifier());
     if(browser_media!=media_contexts.end()) {auto media=browser_media->second.find(key);if(media!=browser_media->second.end() && media->second.context->IsSame(context)) {auto message=CefProcessMessage::Create("qos.media_context_closed");message->GetArgumentList()->SetDouble(0,static_cast<double>(media->second.token));frame->SendProcessMessage(PID_BROWSER,message);browser_media->second.erase(media);}if(browser_media->second.empty())media_contexts.erase(browser_media);}
+    filter_tokens_.erase(key);
     auto cosmetic=cosmetics_.find(key);
     if(cosmetic!=cosmetics_.end() && cosmetic->second.context->IsSame(context)) cosmetics_.erase(cosmetic);
     auto found=applied_.find(key);
@@ -75,7 +80,9 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     if(source!=PID_BROWSER) return false;
     auto& config=configs_[browser->GetIdentifier()];
     if(message->GetName()=="qos.filters") {
-      config.filters=message->GetArgumentList()->Copy();ApplyFilters(frame,config.filters);return true;
+      auto args=message->GetArgumentList();auto found=filter_tokens_.find(frame->GetIdentifier().ToString());
+      if(found==filter_tokens_.end() || args->GetString(4)!=frame->GetURL() || (args->GetDouble(5)>0 && static_cast<uint64_t>(args->GetDouble(5))!=found->second))return true;
+      config.filters=args->Copy();ApplyFilters(frame,config.filters);return true;
     }
     if(message->GetName()!="qos.scripts") return false;
     config.scripts.clear();auto args=message->GetArgumentList();
@@ -101,11 +108,14 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
   }
   struct Config { CefRefPtr<CefListValue> filters;std::vector<CefString> scripts; };
   std::map<int,Config> configs_;
-  uint64_t media_context_counter_=0;
+  uint64_t media_context_counter_=0,filter_sequence_=0;
+  std::map<std::string,uint64_t> filter_tokens_;
   void ApplyFilters(CefRefPtr<CefFrame> frame,CefRefPtr<CefListValue> args) {
     if(!IsWebDocument(frame)) return;
     auto context=frame->GetV8Context();if(!context || !context->IsValid()) return;
-    const auto rules=args->GetString(0).ToString();const bool enabled=args->GetBool(1);
+    const auto rules=args->GetString(0).ToString();bool enabled=args->GetBool(1);
+    const auto origin=args->GetString(3).ToString();
+    auto exceptions=args->GetList(2);if(exceptions) for(size_t i=0;i<exceptions->GetSize();++i) if(exceptions->GetString(i)==origin) enabled=false;
     auto& applied=cosmetics_[frame->GetIdentifier().ToString()];
     if(applied.context && applied.context->IsSame(context) && applied.rules==rules && applied.enabled==enabled) return;
     context->Enter();

@@ -1,4 +1,4 @@
-//! Native Chromium filter-list loading, separate from WebKit JSON conversion.
+//! Native Chromium filter-list loading, separate from `WebKit` JSON conversion.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -30,8 +30,204 @@ fn cached_rules(directory: &Path) -> String {
     rules
 }
 
-/// Enqueue existing protection synchronously, ahead of the initial Navigate.
-/// Refreshes replace rules without changing the user's current enabled state.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Status {
+    pub busy: bool,
+    pub message: String,
+    pub updated: Option<u64>,
+}
+impl Default for Status {
+    fn default() -> Self {
+        Self {
+            busy: false,
+            message: "First-run protection".into(),
+            updated: None,
+        }
+    }
+}
+fn state() -> &'static std::sync::Mutex<Status> {
+    static STATE: std::sync::OnceLock<std::sync::Mutex<Status>> = std::sync::OnceLock::new();
+    STATE.get_or_init(Default::default)
+}
+pub(crate) fn status() -> Status {
+    state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+fn fetch_rules(
+    directory: &Path,
+    lists: &[(String, String)],
+    force: bool,
+) -> Result<(String, bool), String> {
+    use std::io::Read;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut rules = BASELINE.to_string();
+    let mut downloads = Vec::new();
+    for (name, url) in lists {
+        let path = directory.join(name);
+        let fresh = !force
+            && std::fs::metadata(&path).ok().is_some_and(|m| {
+                m.len() <= MAX_LIST
+                    && m.modified()
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|a| a.as_secs() < 604_800)
+            });
+        let text = if fresh {
+            crate::blocker::read_cached_list(&path).ok_or_else(|| format!("Cannot read {name}"))?
+        } else {
+            let response = client
+                .get(url)
+                .send()
+                .and_then(reqwest::blocking::Response::error_for_status)
+                .map_err(|_| format!("Could not download {name}"))?;
+            let mut text = String::new();
+            response
+                .take(MAX_LIST + 1)
+                .read_to_string(&mut text)
+                .map_err(|_| format!("Invalid {name}"))?;
+            if text.len() > MAX_LIST as usize
+                || text.trim().is_empty()
+                || text.trim_start().starts_with('<')
+            {
+                return Err(format!("Invalid {name}"));
+            }
+            downloads.push((path, text.clone()));
+            text
+        };
+        if rules.len() + text.len() + 1 > MAX_TOTAL {
+            return Err("Combined lists exceed limit".into());
+        }
+        append_bounded(&mut rules, &text);
+    }
+    // No cache is replaced until the whole requested set downloaded correctly.
+    if !downloads.is_empty() {
+        std::fs::create_dir_all(directory).map_err(|_| "Cannot save filter cache")?;
+    }
+    for (path, text) in &downloads {
+        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        std::fs::write(&temporary, text)
+            .and_then(|()| std::fs::rename(&temporary, path))
+            .map_err(|_| "Cannot save filter cache")?;
+    }
+    Ok((rules, !downloads.is_empty()))
+}
+fn begin_refresh(status: &std::sync::Mutex<Status>) -> bool {
+    let mut status = status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if status.busy {
+        return false;
+    }
+    status.busy = true;
+    status.message = "Updating filter lists…".into();
+    true
+}
+pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
+    if !begin_refresh(state()) {
+        return;
+    }
+    let engine = Arc::downgrade(engine);
+    let wake = ui::WakeHandle::new();
+    let worker = std::thread::Builder::new()
+        .name("chromium-filter-loader".into())
+        .spawn(move || {
+            let directory = crate::blocker::cache_dir();
+            // Test endpoints are opt-in and restricted to explicitly isolated app roots.
+            let endpoint = crate::storage::explicit_root()
+                .and_then(|_| std::env::var("QOS_BROWSER_FILTER_ENDPOINT").ok())
+                .filter(|s| {
+                    url::Url::parse(s).is_ok_and(|u| {
+                        matches!(u.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
+                    })
+                });
+            let lists = crate::blocker::LISTS
+                .iter()
+                .map(|(name, url)| {
+                    (
+                        name.to_string(),
+                        endpoint.clone().unwrap_or_else(|| url.to_string()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let result = directory
+                .as_ref()
+                .ok_or_else(|| "Filter cache unavailable".to_string())
+                .and_then(|d| fetch_rules(d, &lists, force));
+            let mut status = state()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            status.busy = false;
+            match result {
+                Ok((rules, downloaded)) => {
+                    if let Some(engine) = engine.upgrade() {
+                        engine.send(WebViewCommand::SetNativeFilterRules {
+                            rules: Arc::new(rules),
+                            enabled: None,
+                        });
+                    }
+                    if downloaded {
+                        status.updated = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()
+                            .map(|d| d.as_secs());
+                        if let Some(path) = directory
+                            .as_ref()
+                            .map(|d| d.join("native-filter-updated.json"))
+                        {
+                            let temporary =
+                                path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+                            if std::fs::write(
+                                &temporary,
+                                serde_json::to_vec(&status.updated).unwrap_or_default(),
+                            )
+                            .is_ok()
+                            {
+                                let _ = std::fs::rename(&temporary, path);
+                            }
+                            let _ = std::fs::remove_file(temporary);
+                        }
+                    } else if let Some(path) = directory
+                        .as_ref()
+                        .map(|d| d.join("native-filter-updated.json"))
+                    {
+                        status.updated = std::fs::metadata(&path)
+                            .ok()
+                            .filter(|m| m.len() <= 256)
+                            .and_then(|_| std::fs::read(path).ok())
+                            .and_then(|v| serde_json::from_slice(&v).ok());
+                    }
+                    status.message = if downloaded {
+                        "Filter lists updated"
+                    } else {
+                        "Using cached filter lists"
+                    }
+                    .into();
+                }
+                Err(error) => {
+                    let error = error.chars().take(512).collect::<String>();
+                    status.message = format!("Update failed: {error}. Previous rules retained.");
+                }
+            }
+            wake.wake();
+        });
+    if worker.is_err() {
+        let mut status = state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        status.busy = false;
+        status.message = "Update failed: worker unavailable. Previous rules retained.".into();
+    }
+}
+/// Enqueue cached rules synchronously, before initial navigation.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "matches the shared blocker startup interface"
+)]
 pub(crate) fn start(engine: SharedEngine) {
     let initial = crate::blocker::cache_dir().map_or_else(
         || BASELINE.to_string(),
@@ -41,33 +237,8 @@ pub(crate) fn start(engine: SharedEngine) {
         rules: Arc::new(initial),
         enabled: Some(true),
     });
-    let engine = Arc::downgrade(&engine);
-    if let Err(error) = std::thread::Builder::new()
-        .name("chromium-filter-loader".into())
-        .spawn(move || {
-            let mut rules = BASELINE.to_string();
-            let mut loaded = 0;
-            for (name, url) in crate::blocker::LISTS {
-                if engine.strong_count() == 0 {
-                    return;
-                }
-                if let Some(text) = crate::blocker::load_list(name, url) {
-                    append_bounded(&mut rules, &text);
-                    loaded += 1;
-                }
-            }
-            if let Some(engine) = engine.upgrade().filter(|_| loaded > 0) {
-                engine.send(WebViewCommand::SetNativeFilterRules {
-                    rules: Arc::new(rules),
-                    enabled: None,
-                });
-            }
-        })
-    {
-        tracing::warn!(%error, "filter refresh could not start; cached protection remains active");
-    }
+    refresh(&engine, false);
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +259,54 @@ mod tests {
         let rules = cached_rules(dir.path());
         assert!(rules.contains("||ads.fixture.test^"));
         assert!(!rules.contains("must-not-load"));
+    }
+    #[test]
+    fn refresh_cache_failure_and_retry_preserve_valid_rules() {
+        use std::io::{Read, Write};
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("fixture.txt"), "||cached.test^").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/list", listener.local_addr().unwrap());
+        let lists = vec![("fixture.txt".into(), url)];
+        let cached = fetch_rules(directory.path(), &lists, false).unwrap();
+        assert!(!cached.1);
+        assert!(cached.0.contains("cached.test"));
+        let server = std::thread::spawn(move || {
+            for response in [
+                "HTTP/1.1 503 Failed\r\nContent-Length: 0\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\n||fresh.test^",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = [0; 4096];
+                let _ = stream.read(&mut bytes);
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        assert!(fetch_rules(directory.path(), &lists, true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("fixture.txt")).unwrap(),
+            "||cached.test^"
+        );
+        let refreshed = fetch_rules(directory.path(), &lists, true).unwrap();
+        assert!(refreshed.1);
+        assert!(refreshed.0.contains("fresh.test"));
+        server.join().unwrap();
+    }
+    #[test]
+    fn concurrent_refresh_requests_admit_only_one_worker() {
+        let state = Arc::new(std::sync::Mutex::new(Status::default()));
+        let threads = (0..16)
+            .map(|_| {
+                let state = state.clone();
+                std::thread::spawn(move || begin_refresh(&state))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            threads
+                .into_iter()
+                .map(|t| usize::from(t.join().unwrap()))
+                .sum::<usize>(),
+            1
+        );
     }
 }

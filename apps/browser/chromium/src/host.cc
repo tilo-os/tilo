@@ -4,11 +4,13 @@
 #include "request_filter.h"
 #include "document_scripts.h"
 #include "capabilities.h"
+#include "site_info.h"
 #include "navigation_history.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
 #include "include/cef_cookie.h"
+#include "include/cef_ssl_info.h"
 #include "include/cef_parser.h"
 #include "include/cef_process_message.h"
 #include "include/cef_request_context.h"
@@ -113,6 +115,7 @@ std::map<int,CefRefPtr<Client>> clients;
 CefRefPtr<CefRequestContext> shared_context;
 void CreateTab(int id);
 void PublishZoomLevels();
+void PublishFilters();
 void Dispatch(CefRefPtr<CefDictionaryValue> command);
 bool closing=false;
 bool clear_on_exit=false;
@@ -191,6 +194,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_=browser;
+    request_filter->Begin(browser->GetIdentifier(),"about:blank");
+    site_clear_=new qos::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
     document_scripts_=new qos::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
     navigation_history_=new qos::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
@@ -200,7 +205,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
-    if(browser_ && browser->IsSame(browser_)) { capabilities_->Close();navigation_history_->Detach();navigation_history_=nullptr;document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");clients.erase(id_);if(closing && clients.empty()) CefQuitMessageLoop(); }
+    if(browser_ && browser->IsSame(browser_)) { request_filter->Remove(browser->GetIdentifier());site_clear_->Detach();site_clear_=nullptr;capabilities_->Close();navigation_history_->Detach();navigation_history_=nullptr;document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");clients.erase(id_);if(closing && clients.empty()) CefQuitMessageLoop(); }
+  }
+  bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool,bool) override {
+    if(frame->IsMain()) { request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,WindowOpenDisposition disposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
@@ -255,25 +263,65 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(message->GetName()=="qos.media_context_closed" && frame && browser_) {auto found=media_frames_.find(frame->GetIdentifier().ToString());if(found!=media_frames_.end() && found->second.first==static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0))){const bool was_playing=found->second.second;media_frames_.erase(found);if(was_playing)PublishMediaState();}return true;}
     if(message->GetName()=="qos.media_state" && frame && browser_) { auto found=media_frames_.find(frame->GetIdentifier().ToString());const auto token=static_cast<uint64_t>(message->GetArgumentList()->GetDouble(1));if(found!=media_frames_.end() && found->second.first==token) {found->second.second=message->GetArgumentList()->GetBool(0);PublishMediaState();}return true; }
     if(message->GetName()!="qos.config") return false;
-    SendFilters(frame);SendScripts(frame);return true;
+    SendFilters(frame,message->GetArgumentList()->GetDouble(0));SendScripts(frame);return true;
   }
   void PublishMediaState(std::optional<bool> forced=std::nullopt) {
     if(!browser_) return;bool playing=forced.value_or(std::any_of(media_frames_.begin(),media_frames_.end(),[](const auto& entry){return entry.second.second;}));
     if(!forced && last_media_playing_==playing) return;last_media_playing_=playing;
     auto d=CefDictionaryValue::Create();d->SetString("page_url",browser_->GetMainFrame()->GetURL());d->SetInt("document_generation",static_cast<int>(favicon_generation_ & 0x7fffffff));d->SetBool("playing",playing);Event("media_state",d);
   }
-  void SendFilters(CefRefPtr<CefFrame> frame) {
+  void SendFilters(CefRefPtr<CefFrame> frame,double token=0) {
     if(!frame) return;
     auto message=CefProcessMessage::Create("qos.filters");auto args=message->GetArgumentList();
-    args->SetString(0,filter_rules_);args->SetBool(1,filter_enabled_);
+    auto state=request_filter->Snapshot();args->SetString(0,state->rules);args->SetBool(1,state->enabled);
+    auto exceptions=CefListValue::Create();for(const auto& origin:state->exceptions)exceptions->SetString(exceptions->GetSize(),origin);args->SetList(2,exceptions);args->SetString(3,browser_?qos::Origin(browser_->GetMainFrame()->GetURL()):std::string());args->SetString(4,frame->GetURL());args->SetDouble(5,token);
     frame->SendProcessMessage(PID_RENDERER,message);
+  }
+  void RefreshFilters() {if(!browser_)return;UpdateScriptPolicy();std::vector<CefString> ids;browser_->GetFrameIdentifiers(ids);for(const auto& id:ids)SendFilters(browser_->GetFrameByIdentifier(id));}
+  void SiteResult(int request,const std::string& origin,uint64_t generation,const std::string& action,bool success,const std::string& message) {
+    auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",origin);d->SetDouble("generation",generation);d->SetString("action",action);d->SetBool("success",success);d->SetString("message",message);Event("site_result",d);
+  }
+  void SiteCommand(CefRefPtr<CefDictionaryValue> command) {
+    const auto origin=command->GetString("origin").ToString(),op=command->GetString("op").ToString();const int request=command->GetInt("request_id");
+    auto document=request_filter->Document(browser_->GetIdentifier());const auto actual=qos::Origin(browser_->GetMainFrame()->GetURL());
+    const auto action=op=="site_status"?"status":command->GetString("action").ToString();
+    if(origin.empty() || origin!=actual || !document || document->origin!=actual || (op=="site_action" && Number(command,"generation")!=document->generation)) {
+      SiteResult(request,origin,document?document->generation:0,action,false,"Page changed; reopen site information");return;
+    }
+    if(op=="site_action") {
+      if(action=="clear") {
+        if(site_clear_->Busy())SiteResult(request,origin,document->generation,action,false,"A storage clear is already running");
+        else site_clear_->Clear(request,origin,document->generation);
+        return;
+      }
+      if(action=="revoke") {
+        capabilities_->Close();auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:qos::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_BLOCK);
+        SiteResult(request,origin,document->generation,action,true,"Permissions blocked. Reload to end existing media sessions.");
+      } else if(action=="enable" || action=="disable") {
+        auto origins=request_filter->Snapshot()->exceptions;if(action=="disable")origins.insert(origin);else origins.erase(origin);
+        if(origins.size()>1024) {SiteResult(request,origin,document->generation,action,false,"Site exception limit reached");return;}
+        request_filter->Exceptions(origins);PublishFilters();SiteResult(request,origin,document->generation,action,true,"Protection preference changed; reload to apply all layers");
+      }
+      return;
+    }
+    auto state=request_filter->Snapshot();auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",actual);d->SetDouble("generation",document->generation);d->SetDouble("blocked",std::min<uint64_t>(document->blocked.load(),9007199254740991ULL));d->SetBool("global_enabled",state->enabled);d->SetBool("excepted",state->exceptions.count(actual));d->SetBool("effective",state->enabled && !state->exceptions.count(actual));
+    auto entry=browser_->GetHost()->GetVisibleNavigationEntry();auto ssl=entry && qos::Origin(entry->GetURL())==actual?entry->GetSSLStatus():nullptr;
+    const bool secure=ssl && ssl->IsSecureConnection() && !CefIsCertStatusError(ssl->GetCertStatus());
+    d->SetString("security",actual.starts_with("http:")?"insecure":secure?"secure":"unverified");d->SetInt("certificate_status",ssl?ssl->GetCertStatus():0);d->SetInt("tls_version",ssl?ssl->GetSSLVersion():0);d->SetInt("content_status",ssl?ssl->GetContentStatus():0);
+    std::string subject,issuer;double expires=0;
+    if(ssl)if(auto certificate=ssl->GetX509Certificate()){subject=certificate->GetSubject()->GetDisplayName();issuer=certificate->GetIssuer()->GetDisplayName();expires=certificate->GetValidExpiry().val;}
+    d->SetString("subject",subject.substr(0,512));d->SetString("issuer",issuer.substr(0,512));d->SetDouble("expires",expires);d->SetDictionary("permissions",qos::PermissionStatus(browser_->GetHost()->GetRequestContext(),actual));Event("site_status",d);
   }
   void SendScripts(CefRefPtr<CefFrame> frame=nullptr) {
     if(!frame) { if(!browser_) return;frame=browser_->GetMainFrame(); }
     auto message=CefProcessMessage::Create("qos.scripts");auto args=message->GetArgumentList();
-    args->SetString(0,qos::ScriptSource(scripts_));
+    args->SetString(0,ScriptSource());
     frame->SendProcessMessage(PID_RENDERER,message);
   }
+  std::string ScriptSource() {
+    auto scripts=scripts_;auto policy=request_filter->Snapshot();if(!blocking_scripts_.empty())scripts.push_back(qos::BlockingScriptSource(blocking_scripts_,policy->enabled,policy->exceptions));return qos::ScriptSource(scripts);
+  }
+  void UpdateScriptPolicy() {if(document_scripts_){document_scripts_->Configure(ScriptSource());SendScripts();}}
   void FlushNavigation() {
     if(!document_scripts_ || document_scripts_->Busy()) return;
     auto pending=std::move(pending_navigation_);pending_navigation_.clear();
@@ -284,6 +332,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::string op=d->GetString("op");
     if(op=="shutdown") { CloseHost();return; }
     if(!browser_ || closing) return;
+    if(op=="site_status" || op=="site_action") {SiteCommand(d);return;}
+    if(op=="site_exceptions") {std::set<std::string> origins;auto list=d->GetList("origins");for(size_t i=0;i<list->GetSize();++i)origins.insert(list->GetString(i));request_filter->Exceptions(origins);PublishFilters();return;}
     if(op=="audio_muted") { browser_->GetHost()->SetAudioMuted(d->GetBool("muted"));auto state=CefDictionaryValue::Create();state->SetBool("muted",browser_->GetHost()->IsAudioMuted());Event("audio_muted",state);return; }
     if((op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && document_scripts_->Busy()) {
       if(pending_navigation_.size()>=256) { StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();return; }
@@ -335,7 +385,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_|key_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
     } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     else if(op=="key") Key(d);
-    else if(op=="scripts") { scripts_.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts_.push_back(list->GetString(i));document_scripts_->Configure(qos::ScriptSource(scripts_));SendScripts(); }
+    else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
     else if(op=="devtools") { CefWindowInfo window;
@@ -345,11 +395,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       host->GetRequestContext()->ClearHttpCache(nullptr);host->GetRequestContext()->ClearHttpAuthCredentials(nullptr);
     } else if(op=="filter_rules") {
       const auto rules=d->GetString("rules").ToString();
-      const bool enabled=d->GetType("enabled")==VTYPE_NULL ? filter_enabled_ : d->GetBool("enabled");
+      const bool enabled=d->GetType("enabled")==VTYPE_NULL ? request_filter->Snapshot()->enabled : d->GetBool("enabled");
       if(!request_filter->Configure(rules,enabled)) { StringEvent("error","message","Native request filter compilation failed; previous rules retained");return; }
-      filter_rules_=rules;filter_enabled_=enabled;
-      std::vector<CefString> ids;browser_->GetFrameIdentifiers(ids);
-      for(const auto& id:ids) SendFilters(browser_->GetFrameByIdentifier(id));
+      PublishFilters();
     }
     else { StringEvent("error","message","Unknown command: "+op);CloseHost(); }
   }
@@ -396,16 +444,17 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<qos::NavigationHistory> navigation_history_;
   CefRefPtr<qos::Capabilities> capabilities_;
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
-  std::string filter_rules_;bool filter_enabled_=true;
+  CefRefPtr<qos::SiteClear> site_clear_;
   int width_=1280,height_=800,pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
-  float scale_=1;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_;
+  float scale_=1;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
 void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {
   auto found=clients.find(tab_);if(found!=clients.end()) found->second->PublishFavicon(generation_,page_,image);
 }
+void PublishFilters() {for(auto& entry:clients)entry.second->RefreshFilters();}
 void PublishZoomLevels() { for(auto& entry:clients) entry.second->PublishZoom(); }
 void CreateTab(int id) {
   if(closing || id<=0 || clients.count(id) || clients.size()>=32) return;
@@ -464,10 +513,16 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return true;
   }
   if(op=="key") return type("key",VTYPE_STRING) && type("down",VTYPE_BOOL);
-  if(op=="scripts") {
+  if(op=="scripts" || op=="blocking_scripts") {
     if(!type("scripts",VTYPE_LIST)) return false;
     auto list=d->GetList("scripts");for(size_t i=0;i<list->GetSize();++i) if(list->GetType(i)!=VTYPE_STRING) return false;
     return true;
+  }
+  if(op=="site_exceptions") {if(!type("origins",VTYPE_LIST))return false;auto list=d->GetList("origins");if(list->GetSize()>1024)return false;for(size_t i=0;i<list->GetSize();++i){if(list->GetType(i)!=VTYPE_STRING)return false;const auto origin=list->GetString(i).ToString();if(origin.empty() || qos::Origin(origin)!=origin)return false;}return true;}
+  if(op=="site_status" || op=="site_action") {
+    if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("origin",VTYPE_STRING) || d->GetString("origin").length()>8192)return false;
+    if(op=="site_status")return true;
+    const auto action=d->GetString("action");return number("generation") && Number(d,"generation")>0 && (action=="clear" || action=="revoke" || action=="enable" || action=="disable");
   }
   if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
   return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="shutdown";

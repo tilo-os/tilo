@@ -1,0 +1,651 @@
+//! Exact-origin site protection and information, owned by browser chrome.
+use std::collections::BTreeSet;
+use std::path::Path;
+
+pub(crate) fn origin(input: &str) -> Option<String> {
+    if input.len() > 8192 {
+        return None;
+    }
+    let url = url::Url::parse(input).ok()?;
+    matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
+}
+#[derive(Default, Debug, PartialEq)]
+pub(crate) struct Exceptions(BTreeSet<String>);
+impl Exceptions {
+    fn set(&mut self, url: &str, disabled: bool) {
+        if let Some(origin) = origin(url) {
+            if disabled {
+                if self.0.len() < 1024 {
+                    self.0.insert(origin);
+                }
+            } else {
+                self.0.remove(&origin);
+            }
+        }
+    }
+    #[cfg(test)]
+    fn contains(&self, url: &str) -> bool {
+        origin(url).is_some_and(|o| self.0.contains(&o))
+    }
+    fn save(&self, path: &Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        std::fs::write(&temporary, serde_json::to_vec(&self.0)?)?;
+        let result = std::fs::rename(&temporary, path);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    }
+    fn load(path: &Path) -> Self {
+        if !std::fs::metadata(path).is_ok_and(|m| m.len() <= 1024 * 1024) {
+            return Self::default();
+        }
+        let values: Vec<String> = std::fs::read(path)
+            .ok()
+            .and_then(|v| serde_json::from_slice(&v).ok())
+            .unwrap_or_default();
+        let mut rules = Self::default();
+        for value in values.into_iter().take(1024) {
+            rules.set(&value, true);
+        }
+        rules
+    }
+}
+use std::time::{Duration, Instant};
+use ui::{
+    LocalState,
+    webview::{SharedEngine, SiteStatus, WebViewCommand, WebViewEvent},
+    widget::{Button, Column, Container, Row, ScrollAxis, Scrollable, Text, Widget},
+};
+#[derive(Clone, Debug)]
+enum Pending {
+    Open(bool),
+    Close,
+    Action {
+        origin: String,
+        generation: u64,
+        kind: String,
+    },
+    Refresh,
+}
+pub(crate) struct SiteControls {
+    pub open: bool,
+    information: bool,
+    committed: Option<String>,
+    status: Option<SiteStatus>,
+    pending: LocalState<Option<Pending>>,
+    sequence: u32,
+    query: Option<(u32, Instant)>,
+    action: Option<(u32, String, u64, String, Instant)>,
+    next_poll: Instant,
+    notice: String,
+    filters: crate::native_blocker::Status,
+    persistent: bool,
+}
+impl Default for SiteControls {
+    fn default() -> Self {
+        Self {
+            open: false,
+            information: false,
+            committed: None,
+            status: None,
+            pending: LocalState::new(None),
+            sequence: 0,
+            query: None,
+            action: None,
+            next_poll: Instant::now(),
+            notice: String::new(),
+            filters: crate::native_blocker::status(),
+            persistent: false,
+        }
+    }
+}
+impl SiteControls {
+    pub fn initialize(&mut self, engine: &SharedEngine, persistent: bool) {
+        self.persistent = persistent;
+        if engine.supports_native_filtering() {
+            let exceptions = if persistent {
+                crate::storage::config_dir()
+                    .map(|p| Exceptions::load(&p.join("site-exceptions.json")))
+                    .unwrap_or_default()
+            } else {
+                Exceptions::default()
+            };
+            engine.send(WebViewCommand::SetSiteExceptions(
+                exceptions.0.into_iter().collect(),
+            ));
+        }
+    }
+    pub fn navigation(&mut self, url: &str) {
+        self.committed = origin(url);
+        self.open = false;
+        self.status = None;
+        self.query = None;
+        self.action = None;
+        self.pending.set(None);
+        self.notice.clear();
+        self.next_poll = Instant::now();
+    }
+    pub fn close(&mut self) {
+        self.open = false;
+        self.query = None;
+        self.pending.set(None);
+    }
+    fn id(&mut self) -> u32 {
+        self.sequence = self.sequence % (i32::MAX as u32) + 1;
+        self.sequence
+    }
+    pub fn apply(&mut self, event: WebViewEvent) -> bool {
+        match event {
+            WebViewEvent::SiteStatus(status)
+                if self.open
+                    && self.committed.as_deref() == Some(status.origin.as_str())
+                    && self.query.is_some_and(|(id, _)| id == status.request_id) =>
+            {
+                self.query = None;
+                let mut comparable = status.clone();
+                if let Some(old) = &self.status {
+                    comparable.request_id = old.request_id;
+                }
+                let changed = self.status.as_ref() != Some(&comparable);
+                self.status = Some(status);
+                changed
+            }
+            WebViewEvent::SiteResult {
+                request_id,
+                origin,
+                generation,
+                action,
+                success,
+                message,
+            } if self.committed.as_deref() == Some(origin.as_str()) => {
+                if action == "status" && self.query.is_some_and(|(id, _)| id == request_id) {
+                    self.query = None;
+                    self.notice = message;
+                    self.status = None;
+                    return true;
+                }
+                let Some((id, expected, document, kind, _)) = &self.action else {
+                    return false;
+                };
+                if *id != request_id
+                    || *expected != origin
+                    || *document != generation
+                    || *kind != action
+                {
+                    return false;
+                }
+                self.action = None;
+                self.notice = message;
+                if success && matches!(action.as_str(), "enable" | "disable") && self.persistent {
+                    if let Some(path) =
+                        crate::storage::config_dir().map(|p| p.join("site-exceptions.json"))
+                    {
+                        let mut exceptions = Exceptions::load(&path);
+                        exceptions.set(&origin, action == "disable");
+                        if exceptions.save(&path).is_err() {
+                            self.notice =
+                                "Changed for this session; could not save the preference".into();
+                        }
+                    }
+                }
+                self.next_poll = Instant::now();
+                true
+            }
+            _ => false,
+        }
+    }
+    pub fn deadline(&self) -> Option<Instant> {
+        self.open.then_some(self.next_poll)
+    }
+    pub fn sync(&mut self, engine: &SharedEngine) -> bool {
+        let mut dirty = false;
+        if let Some(pending) = self.pending.get() {
+            self.pending.set(None);
+            dirty = true;
+            match pending {
+                Pending::Open(information) => {
+                    self.open = true;
+                    self.information = information;
+                    self.next_poll = Instant::now();
+                    self.notice.clear();
+                }
+                Pending::Close => self.close(),
+                Pending::Refresh => crate::native_blocker::refresh(engine, true),
+                Pending::Action {
+                    origin,
+                    generation,
+                    kind,
+                } => {
+                    if self.action.is_none()
+                        && self.committed.as_deref() == Some(origin.as_str())
+                        && self
+                            .status
+                            .as_ref()
+                            .is_some_and(|s| s.generation == generation)
+                    {
+                        let request_id = self.id();
+                        engine.send(WebViewCommand::SiteAction {
+                            request_id,
+                            origin: origin.clone(),
+                            generation,
+                            action: kind.clone(),
+                        });
+                        self.action = Some((request_id, origin, generation, kind, Instant::now()));
+                        self.notice = "Working…".into();
+                    }
+                }
+            }
+        }
+        let filters = crate::native_blocker::status();
+        if self.filters != filters {
+            self.filters = filters;
+            dirty |= self.open;
+        }
+        let now = Instant::now();
+        if self.open && now >= self.next_poll {
+            self.next_poll = now + Duration::from_secs(1);
+            if self
+                .query
+                .is_some_and(|(_, sent)| sent.elapsed() > Duration::from_secs(5))
+            {
+                self.query = None;
+                self.notice = "Site information timed out; retrying…".into();
+                dirty = true;
+            }
+            if self
+                .action
+                .as_ref()
+                .is_some_and(|(_, _, _, _, sent)| sent.elapsed() > Duration::from_secs(20))
+            {
+                self.action = None;
+                self.notice = "Action timed out; refresh the page before retrying".into();
+                dirty = true;
+            }
+            if self.query.is_none()
+                && let Some(origin) = self.committed.clone()
+            {
+                let request_id = self.id();
+                self.query = Some((request_id, now));
+                engine.send(WebViewCommand::RequestSiteStatus { request_id, origin });
+            }
+        }
+        dirty
+    }
+    fn button(&self, id: &str, label: &str, pending: Pending) -> Button {
+        let state = self.pending.clone();
+        Button::new(id, label, None)
+            .with_size(160.0, 32.0)
+            .on_effect(move || state.set(Some(pending.clone())))
+    }
+    pub fn launcher(&self, information: bool) -> Button {
+        self.button(
+            if information {
+                "browser.site.info"
+            } else {
+                "browser.site.shield"
+            },
+            if information { "Site" } else { "" },
+            Pending::Open(information),
+        )
+        .with_icon(ui::icons::Icon::Shield)
+        .with_accessible_name(if information {
+            "Site information"
+        } else {
+            "Ads and trackers protection"
+        })
+        .with_size(56.0, 32.0)
+        .tooltip(if information {
+            "Connection, permissions and stored data"
+        } else {
+            "Protection for the top-level origin"
+        })
+    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the two bounded site-panel sections share their action context"
+    )]
+    pub fn panel(&self, width: f32, height: f32) -> Box<dyn Widget> {
+        let line = |text: &str| Box::new(Text::new(text).with_size(13.0)) as Box<dyn Widget>;
+        let title = if self.information {
+            "Site information"
+        } else {
+            "Ads and trackers"
+        };
+        let mut column = Column::new()
+            .with_gap(10.0)
+            .with_intrinsic_height()
+            .push(Box::new(
+                Row::new()
+                    .push(Box::new(Text::new(title).with_size(18.0)))
+                    .push(Box::new(
+                        self.button("browser.site.close", "Done", Pending::Close)
+                            .with_size(64.0, 32.0),
+                    )),
+            ))
+            .push(line(
+                self.committed
+                    .as_deref()
+                    .unwrap_or("No HTTP or HTTPS origin"),
+            ))
+            .push(Box::new(
+                Row::new()
+                    .push(Box::new(self.button(
+                        "browser.site.protection",
+                        "Protection",
+                        Pending::Open(false),
+                    )))
+                    .push(Box::new(self.button(
+                        "browser.site.connection",
+                        "Connection & data",
+                        Pending::Open(true),
+                    ))),
+            ));
+        if let Some(status) = &self.status {
+            let action = |kind: &str| Pending::Action {
+                origin: status.origin.clone(),
+                generation: status.generation,
+                kind: kind.into(),
+            };
+            if self.information {
+                let connection = match status.security.as_str() {
+                    "secure" if status.content_status == 0 => "Connection is secure",
+                    "secure" => "Encrypted connection with mixed content",
+                    "insecure" => "HTTP connection is not encrypted",
+                    _ => "Connection security is not verified",
+                };
+                column = column.push(line(connection));
+                if !status.subject.is_empty() {
+                    column = column
+                        .push(line(&format!("Certificate: {}", status.subject)))
+                        .push(line(&format!("Issuer: {}", status.issuer)))
+                        .push(line(&format!(
+                            "{} · certificate status {}",
+                            tls_version(status.tls_version),
+                            status.certificate_status
+                        )))
+                        .push(line(&format!(
+                            "Certificate expires: {}",
+                            certificate_date(status.expires)
+                        )));
+                }
+                for (name, value) in &status.permissions {
+                    column = column.push(line(&format!("{name}: {value}")));
+                }
+                column=column.push(Box::new(self.button("browser.site.revoke","Block permissions",action("revoke")).with_enabled(self.action.is_none())))
+                    .push(line("Blocks camera, microphone, location and notifications for this origin. Reload to end existing media sessions."))
+                    .push(Box::new(self.button("browser.site.clear","Clear site data",action("clear")).with_enabled(self.action.is_none())))
+                    .push(line("Clears this origin’s storage and matching cookies. Cookies may also be used on other ports and subdomains. Reload to reset data still in this page."));
+            } else {
+                column=column.push(line(if !status.global_enabled{"Global protection is off in Settings"}else if status.excepted{"Protection is off for this origin"}else{"Protection is on for this origin"}))
+                    .push(line(&format!("{} requests blocked or replaced in this document",status.blocked)))
+                    .push(line("This exact origin includes its embedded frames. Requests without a known top-level page stay protected and are not counted here."))
+                    .push(Box::new(self.button("browser.site.toggle",if status.excepted{"Enable for this origin"}else{"Disable for this origin"},action(if status.excepted{"enable"}else{"disable"})).with_size(210.0,32.0).with_enabled(self.action.is_none())))
+                    .push(line("Reload after changing protection to apply all network, cosmetic and scriptlet rules."))
+                    .push(line(&self.filters.message));
+                if let Some(updated) = self.filters.updated {
+                    column = column.push(line(&format!(
+                        "Last successful download: {} UTC",
+                        unix_date(updated)
+                    )));
+                }
+                column = column.push(Box::new(
+                    self.button(
+                        "browser.site.filters.retry",
+                        "Update / retry",
+                        Pending::Refresh,
+                    )
+                    .with_enabled(!self.filters.busy),
+                ));
+            }
+        } else if self.committed.is_some() {
+            column = column.push(line("Reading native site information…"));
+        }
+        if !self.notice.is_empty() {
+            column = column.push(line(&self.notice));
+        }
+        Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_background()
+                .with_width(width)
+                .with_height(height)
+                .with_child(Box::new(
+                    Scrollable::new(ScrollAxis::Vertical)
+                        .with_height(height)
+                        .with_child(Box::new(column)),
+                )),
+        )
+    }
+}
+// Calendar conversion without a timezone or page-controlled formatter.
+fn unix_date(seconds: u64) -> String {
+    let days = (seconds / 86400) as i64 + 719_468;
+    let era = days / 146_097;
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = mp + if mp < 10 { 3 } else { -9 };
+    let y = y + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        (seconds % 86400) / 3600,
+        (seconds % 3600) / 60
+    )
+}
+fn tls_version(version: u32) -> &'static str {
+    match version {
+        3 => "TLS 1.0",
+        4 => "TLS 1.1",
+        5 => "TLS 1.2",
+        6 => "TLS 1.3",
+        7 => "QUIC",
+        _ => "TLS version unavailable",
+    }
+}
+fn certificate_date(base_micros: f64) -> String {
+    let unix = base_micros / 1_000_000.0 - 11_644_473_600.0;
+    if unix.is_finite() && unix > 0.0 {
+        format!("{} UTC", unix_date(unix as u64))
+    } else {
+        "unavailable".into()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn canonical_origin_rejects_nonweb_and_preserves_ports() {
+        assert_eq!(
+            origin("HTTPS://User:pass@EXAMPLE.com:443/path?q=1#x"),
+            Some("https://example.com".into())
+        );
+        assert_eq!(
+            origin("http://[::1]:8080/a"),
+            Some("http://[::1]:8080".into())
+        );
+        for url in [
+            "data:text/html,test",
+            "about:blank",
+            "file:///tmp/a",
+            "https://",
+            "null",
+        ] {
+            assert_eq!(origin(url), None);
+        }
+    }
+    #[test]
+    fn exceptions_roundtrip_exact_origins_and_reenable() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sites.json");
+        let mut rules = Exceptions::default();
+        rules.set("https://EXAMPLE.com:443/path", true);
+        rules.save(&path).unwrap();
+        let mut loaded = Exceptions::load(&path);
+        assert!(loaded.contains("https://example.com/other"));
+        assert!(!loaded.contains("http://example.com/"));
+        assert!(!loaded.contains("https://example.com:444/"));
+        loaded.set("https://example.com/", false);
+        assert!(!loaded.contains("https://example.com/"));
+    }
+    #[test]
+    fn navigation_discards_count_pending_actions_and_stale_status() {
+        let mut controls = SiteControls::default();
+        controls.open = true;
+        controls.committed = Some("https://one.test".into());
+        controls.query = Some((7, Instant::now()));
+        controls.notice = "old notice".into();
+        controls.navigation("https://two.test/page");
+        assert!(!controls.open);
+        assert!(controls.query.is_none());
+        assert!(controls.notice.is_empty());
+        assert_eq!(controls.committed.as_deref(), Some("https://two.test"));
+        assert!(!controls.apply(WebViewEvent::SiteResult {
+            request_id: 7,
+            origin: "https://one.test".into(),
+            generation: 1,
+            action: "clear".into(),
+            success: true,
+            message: "cleared".into()
+        }));
+        assert!(controls.notice.is_empty());
+    }
+
+    #[test]
+    fn site_panel_has_a_visible_scroll_viewport_and_actionable_children() {
+        let mut controls = SiteControls::default();
+        controls.open = true;
+        controls.committed = Some("https://example.test".into());
+        let mut panel = controls.panel(480.0, 444.0);
+        let mut tree = taffy::TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        let theme = ui::theme::Theme::dark();
+        let mut text = ui::text_render::TextRenderer::new();
+        let node = panel.build_layout(&mut tree, &theme, &mut nodes);
+        tree.compute_layout_with_measure(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(480.0),
+                height: taffy::AvailableSpace::Definite(444.0),
+            },
+            |known, available, node, _, _| {
+                nodes.get(&node).map_or(taffy::Size::ZERO, |ptr| unsafe {
+                    (**ptr).measure(known, available, &mut text)
+                })
+            },
+        )
+        .unwrap();
+        panel.apply_layout(&tree, node, vello::kurbo::Point::ORIGIN);
+        let scroll = panel.children()[0];
+        assert!(
+            scroll.get_rect().height() > 100.0,
+            "scroll viewport: {:?}",
+            scroll.get_rect()
+        );
+        fn find(w: &dyn Widget, id: &str) -> Option<vello::kurbo::Rect> {
+            if w.test_id() == Some(id) {
+                return Some(w.get_rect());
+            }
+            w.children().iter().find_map(|c| find(*c, id))
+        }
+        let done = find(panel.as_ref(), "browser.site.close").unwrap();
+        assert!(done.height() > 0.0);
+        assert!(scroll.get_rect().contains(done.center()));
+        let mut doc = automerge::AutoCommit::new();
+        let mut handled;
+        let mut focus = None;
+        for event in [
+            winit::event::WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(done.center().x, done.center().y),
+            },
+            winit::event::WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            winit::event::WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            handled = false;
+            panel.handle_event(
+                &event,
+                1.0,
+                &Default::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
+            );
+        }
+        let intent = panel
+            .take_control_invocation()
+            .expect("pointer emits the Done operation");
+        assert_eq!(intent.address.resource, "qos.control:browser.site.close");
+        let result = panel
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                ui::qos_actions::OperationKind::Effect,
+                "qos.ui.control.invoke",
+                &serde_json::to_vec("browser.site.close").unwrap(),
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert!(result.is_some());
+        assert!(matches!(controls.pending.get(), Some(Pending::Close)));
+    }
+
+    #[test]
+    fn polling_is_bounded_and_stale_buttons_cannot_act_after_navigation() {
+        let capture = ui::webview::test_engine::TestEngine::new();
+        let engine: SharedEngine = capture.clone();
+        let mut controls = SiteControls::default();
+        controls.committed = Some("https://one.test".into());
+        controls.open = true;
+        for _ in 0..100 {
+            controls.sync(&engine);
+        }
+        assert_eq!(
+            capture
+                .commands()
+                .iter()
+                .filter(|c| matches!(c, WebViewCommand::RequestSiteStatus { .. }))
+                .count(),
+            1
+        );
+        controls.navigation("https://two.test");
+        controls.pending.set(Some(Pending::Action {
+            origin: "https://one.test".into(),
+            generation: 1,
+            kind: "clear".into(),
+        }));
+        controls.sync(&engine);
+        assert!(
+            !capture
+                .commands()
+                .iter()
+                .any(|c| matches!(c, WebViewCommand::SiteAction { .. }))
+        );
+    }
+    #[test]
+    fn certificate_dates_and_protocol_versions_are_human_readable() {
+        assert_eq!(unix_date(0), "1970-01-01 00:00");
+        assert_eq!(
+            certificate_date(11_644_473_600.0 * 1_000_000.0 + 86400.0 * 1_000_000.0),
+            "1970-01-02 00:00 UTC"
+        );
+        assert_eq!(tls_version(6), "TLS 1.3");
+    }
+}

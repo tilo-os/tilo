@@ -319,6 +319,8 @@ pub struct BrowserWidget {
     address: ui::LocalState<String>,
     daily: crate::daily_controls::DailyControls,
     page_menu: crate::page_menu::PageMenu,
+    site: crate::site_controls::SiteControls,
+    site_panel: Option<Box<dyn Widget>>,
     pending_chrome_focus: Option<(NodeId, &'static str)>,
     window_scale: f32,
     native_closed: bool,
@@ -622,6 +624,8 @@ impl BrowserWidget {
             address: ui::LocalState::new(initial_url.clone()),
             daily: Default::default(),
             page_menu: Default::default(),
+            site: crate::site_controls::SiteControls::default(),
+            site_panel: None,
             pending_chrome_focus: None,
             window_scale: 1.0,
             native_closed: false,
@@ -1432,13 +1436,13 @@ impl BrowserWidget {
         // target) instead of the toolkit's 120×40 label-button default,
         // so three of them leave the address bar the rest of the width
         // even on a narrow / mobile-width window.
-        const NAV_BTN: (f32, f32) = (44.0, 40.0);
+        let nav_btn: (f32, f32) = (if self.compact_chrome { 33.0 } else { 44.0 }, 40.0);
         let back = self.bind_button(
             Button::new("browser.back", "", None)
                 .with_icon(Icon::ArrowLeft)
                 .with_accessible_name("Back; hold or right-click for history")
                 .tooltip("Back (Alt+Left); hold or right-click for history")
-                .with_size(NAV_BTN.0, NAV_BTN.1)
+                .with_size(nav_btn.0, nav_btn.1)
                 .with_enabled(self.can_go_back),
             "browser.page",
             "back",
@@ -1448,7 +1452,7 @@ impl BrowserWidget {
                 .with_icon(Icon::ArrowRight)
                 .with_accessible_name("Forward; hold or right-click for history")
                 .tooltip("Forward (Alt+Right); hold or right-click for history")
-                .with_size(NAV_BTN.0, NAV_BTN.1)
+                .with_size(nav_btn.0, nav_btn.1)
                 .with_enabled(self.can_go_forward),
             "browser.page",
             "forward",
@@ -1471,7 +1475,7 @@ impl BrowserWidget {
             } else {
                 "Reload (Ctrl+R)"
             })
-            .with_size(NAV_BTN.0, NAV_BTN.1),
+            .with_size(nav_btn.0, nav_btn.1),
             "browser.page",
             if loading { "stop" } else { "reload" },
         );
@@ -1502,7 +1506,7 @@ impl BrowserWidget {
                 } else {
                     "Browser settings"
                 })
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_btn.0, nav_btn.1),
             settings_resource,
             settings_action,
         );
@@ -1516,7 +1520,7 @@ impl BrowserWidget {
                 .with_icon(Icon::PictureInPicture2)
                 .with_accessible_name(pip_label)
                 .tooltip(pip_label)
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_btn.0, nav_btn.1),
             "browser.page",
             "picture-in-picture",
         );
@@ -1535,7 +1539,7 @@ impl BrowserWidget {
                 .with_icon(Icon::Shield)
                 .with_accessible_name(history_pause_label)
                 .tooltip(history_pause_label)
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_btn.0, nav_btn.1),
             // The pause state is a local session resource.  Its *kind* is
             // `browser.history-pause`, but its stable resource identity is
             // `browser.session`; binding to the kind silently left this
@@ -1559,7 +1563,15 @@ impl BrowserWidget {
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(forward));
         }
-        toolbar = toolbar.push(Box::new(url_input));
+        if !self.compact_chrome {
+            toolbar = toolbar.push(Box::new(self.site.launcher(true)));
+        }
+        toolbar = toolbar
+            .push(Box::new(self.site.launcher(false).with_size(
+                if self.compact_chrome { 32.0 } else { 56.0 },
+                32.0,
+            )))
+            .push(Box::new(url_input));
         let bookmark_label = if self.bookmarks.contains(&self.current_uri) {
             "Page bookmarked"
         } else {
@@ -1571,7 +1583,7 @@ impl BrowserWidget {
                 .with_accessible_name(bookmark_label)
                 .tooltip(bookmark_label)
                 .with_enabled(!self.current_uri.trim().is_empty())
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_btn.0, nav_btn.1),
             "browser.page",
             "bookmark",
         );
@@ -1589,7 +1601,7 @@ impl BrowserWidget {
                     "Open browser library"
                 })
                 .tooltip("History, bookmarks and downloads")
-                .with_size(NAV_BTN.0, NAV_BTN.1),
+                .with_size(nav_btn.0, nav_btn.1),
             library_resource,
             library_action,
         );
@@ -2285,6 +2297,9 @@ impl BrowserWidget {
             };
             match event {
                 WebViewEvent::LoadFinishedAt { .. } => {}
+                event @ (WebViewEvent::SiteStatus(_) | WebViewEvent::SiteResult { .. }) => {
+                    self.structure_dirty |= self.site.apply(event);
+                }
                 WebViewEvent::TabClosed => {
                     self.native_closed = true;
                 }
@@ -2336,6 +2351,8 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                 }
                 WebViewEvent::UriChanged(uri) => {
+                    self.site.navigation(&uri);
+                    self.structure_dirty = true;
                     if !self.navigation_deferred
                         && (uri != "about:blank"
                             || self.initial_url == "about:blank"
@@ -2497,13 +2514,19 @@ impl BrowserWidget {
     }
 
     /// Enable or disable ad blocking on the engine (filter + scriptlets).
+    fn install_blocking_scripts(&self) {
+        let scripts = std::sync::Arc::new(crate::blocker::user_scripts());
+        self.engine
+            .send(if self.engine.supports_native_filtering() {
+                WebViewCommand::SetBlockingScripts(scripts)
+            } else {
+                WebViewCommand::SetUserScripts(scripts)
+            });
+    }
     fn set_adblock(&self, enabled: bool) {
         if enabled {
             crate::blocker::spawn_filter_loader(self.engine.clone());
-            self.engine
-                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                    crate::blocker::user_scripts(),
-                )));
+            self.install_blocking_scripts();
         } else {
             if self.engine.supports_native_filtering() {
                 self.engine.send(WebViewCommand::SetNativeFilterRules {
@@ -3434,12 +3457,14 @@ impl Widget for BrowserWidget {
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
         if kind == OperationKind::Document || type_id != BROWSER_OPERATION_TYPE {
-            return match self.composed.as_mut() {
-                Some(composed) => {
-                    composed.start_resource_operation(invocation, kind, type_id, payload, doc, path)
+            for child in self.children_mut() {
+                if let Some(result) =
+                    child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
+                {
+                    return Ok(Some(result));
                 }
-                None => Ok(None),
-            };
+            }
+            return Ok(None);
         }
         let operation = decode_browser_operation(payload)?;
         let is_navigation = matches!(
@@ -3578,6 +3603,7 @@ impl Widget for BrowserWidget {
             self.structure_dirty = true;
         }
         if !self.bootstrap_done {
+            self.site.initialize(&self.engine, !self.headless);
             if !self.headless {
                 self.engine
                     .send(WebViewCommand::SetClearOnExit(self.settings.clear_on_exit));
@@ -3585,10 +3611,10 @@ impl Widget for BrowserWidget {
                     crate::blocker::spawn_filter_loader(self.engine.clone());
                     // Scriptlet-style blocking (YouTube ad-skip etc.) the
                     // declarative content filter can't express.
-                    self.engine
-                        .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                            crate::blocker::user_scripts(),
-                        )));
+                    self.install_blocking_scripts();
+                }
+                if !self.settings.adblock_enabled {
+                    self.set_adblock(false);
                 }
                 if !self.navigation_deferred {
                     self.engine
@@ -3608,6 +3634,7 @@ impl Widget for BrowserWidget {
             self.structure_dirty = true;
         }
         self.structure_dirty |= self.daily.sync(&self.engine);
+        self.structure_dirty |= self.site.sync(&self.engine);
         self.tick_back_hold(std::time::Instant::now());
         self.apply_engine_events();
         self.structure_dirty |= self.capabilities.downloads_changed();
@@ -3700,11 +3727,30 @@ impl Widget for BrowserWidget {
         };
         // `new_with_children` only fails when a child belongs to a different
         // tree; `child_node` was just built in this one above.
+        let mut children = vec![child_node];
+        self.site_panel = None;
+        if self.site.open {
+            let width = (self.rect.width() as f32 - 24.0).clamp(240.0, 480.0);
+            let height = (self.rect.height() as f32 - 112.0).clamp(180.0, 510.0);
+            let mut panel = self.site.panel(width, height);
+            let panel_node = panel.build_layout(taffy, theme, node_map);
+            #[allow(
+                clippy::unwrap_used,
+                reason = "panel node was just created in this tree"
+            )]
+            let mut panel_style = taffy.style(panel_node).unwrap().clone();
+            panel_style.position = taffy::Position::Absolute;
+            panel_style.inset.left = taffy::LengthPercentageAuto::length(12.0);
+            panel_style.inset.top = taffy::LengthPercentageAuto::length(64.0);
+            let _ = taffy.set_style(panel_node, panel_style);
+            children.push(panel_node);
+            self.site_panel = Some(panel);
+        }
         #[allow(
             clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
+            reason = "all child nodes were just created in this tree"
         )]
-        let node = taffy.new_with_children(style, &[child_node]).unwrap();
+        let node = taffy.new_with_children(style, &children).unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -3729,6 +3775,12 @@ impl Widget for BrowserWidget {
             && let Some(&child_node) = children.first()
         {
             c.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+        }
+        if let Some(panel) = &mut self.site_panel
+            && let Ok(children) = taffy.children(node)
+            && let Some(&panel_node) = children.get(1)
+        {
+            panel.apply_layout(taffy, panel_node, Point::new(self.rect.x0, self.rect.y0));
         }
         // Anchor the suggestion dropdown flush under the address input.
         if let Some(r) = self.address_input_rect() {
@@ -3770,6 +3822,10 @@ impl Widget for BrowserWidget {
     ) {
         if let Some(c) = &mut self.composed {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if let Some(panel) = &mut self.site_panel {
+            panel.draw(scene, transform, text_renderer, theme, presence);
+            panel.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         // Re-anchor under the address bar every draw (layout may not have
         // re-run since the suggestions changed).
@@ -3958,6 +4014,34 @@ impl Widget for BrowserWidget {
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);
             *focus_target = Some(node);
+        }
+        if self.site.open {
+            let dismiss = matches!(event,WindowEvent::KeyboardInput {event:key,..} if key.state==ElementState::Pressed && key.logical_key==WKey::Named(WNamedKey::Escape))
+                || matches!(event,WindowEvent::MouseInput {state:ElementState::Pressed,..} if self.site_panel.as_ref().is_some_and(|p|!p.get_rect().contains(self.cursor)));
+            if dismiss {
+                self.site.close();
+                self.structure_dirty = true;
+                *handled = true;
+                return;
+            }
+            if let Some(panel) = &mut self.site_panel
+                && let Ok(children) = taffy.children(node_id)
+                && let Some(&panel_node) = children.get(1)
+            {
+                panel.handle_event(
+                    event,
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    panel_node,
+                    taffy,
+                );
+            }
+            *handled = true;
+            return;
         }
         if self.page_menu.menu.is_open() {
             self.page_menu.menu.handle_event(
@@ -4333,7 +4417,21 @@ impl Widget for BrowserWidget {
         true
     }
 
+    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+        self.site
+            .deadline()
+            .into_iter()
+            .chain(
+                self.children()
+                    .into_iter()
+                    .filter_map(Widget::next_wake_deadline),
+            )
+            .min()
+    }
     fn modal_capture(&self) -> Option<Rect> {
+        if self.site.open {
+            return self.site_panel.as_ref().map(|p| p.get_rect());
+        }
         self.page_menu
             .menu
             .modal_capture()
@@ -4345,6 +4443,7 @@ impl Widget for BrowserWidget {
             .as_ref()
             .map(|c| c.as_ref() as &dyn Widget)
             .into_iter()
+            .chain(self.site_panel.as_ref().map(|p| p.as_ref() as &dyn Widget))
             .collect()
     }
 
@@ -4353,14 +4452,19 @@ impl Widget for BrowserWidget {
             .as_mut()
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .into_iter()
+            .chain(
+                self.site_panel
+                    .as_mut()
+                    .map(|p| p.as_mut() as &mut (dyn Widget + '_)),
+            )
             .collect()
     }
 
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
         self.pending_controls.pop_front().or_else(|| {
-            self.composed
-                .as_mut()
-                .and_then(|composed| composed.take_control_invocation())
+            self.children_mut()
+                .into_iter()
+                .find_map(Widget::take_control_invocation)
         })
     }
 
@@ -5571,6 +5675,80 @@ mod tests {
     }
 
     #[test]
+    fn site_panel_remains_in_workspace_tree_across_sync() {
+        let mut widget = BrowserWidget::new_headless();
+        layout_at(&mut widget, 800.0, 588.0);
+        widget.site.open = true;
+        let tabs = crate::browser_tabs::BrowserTabs::new(widget);
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(tabs), (800, 632));
+        for _ in 0..3 {
+            harness.relayout();
+        }
+        assert!(harness.targets().contains_key("browser.site.connection"));
+        assert!(harness.targets().contains_key("browser.site.close"));
+    }
+
+    #[test]
+    fn site_panel_composes_above_page_across_repeated_layouts() {
+        let mut widget = BrowserWidget::new_headless();
+        layout_at(&mut widget, 800.0, 560.0);
+        widget.site.open = true;
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        for pass in 0..3 {
+            layout_at(&mut widget, 800.0, 560.0);
+            let panel = widget.site_panel.as_ref().unwrap();
+            assert!(panel.get_rect().height() > 100.0);
+            let mut scene = Scene::new();
+            widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            let page_tags = scene.encoding().draw_tags.len();
+            widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            assert!(
+                scene.encoding().draw_tags.len() > page_tags + 5,
+                "overlay must emit visible content"
+            );
+            if let Some(directory) = std::env::var_os("QOS_SITE_RENDER_EVIDENCE") {
+                let path = std::path::PathBuf::from(directory);
+                std::fs::create_dir_all(&path).unwrap();
+                let mut renderer = ui::offscreen::OffscreenRenderer::new(800, 560);
+                renderer.render_png(
+                    &scene,
+                    theme.bg_app,
+                    &path.join(format!("panel-pass-{pass}.png")),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn site_panel_resource_actions_reach_the_retained_panel() {
+        let mut widget = BrowserWidget::new_headless();
+        let (mut doc, root) = synced(&mut widget);
+        layout_at(&mut widget, 1000.0, 700.0);
+        widget.site.open = true;
+        layout_at(&mut widget, 1000.0, 700.0);
+        assert!(widget.site_panel.is_some());
+        let result = widget
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                OperationKind::Effect,
+                "qos.ui.control.invoke",
+                &serde_json::to_vec("browser.site.close").unwrap(),
+                &doc,
+                &root,
+            )
+            .unwrap();
+        assert!(
+            result.is_some(),
+            "native button operation must reach overlay child"
+        );
+        widget.site.sync(&widget.engine);
+        assert!(!widget.site.open);
+    }
+
+    #[test]
     fn narrow_chrome_keeps_a_nonzero_page_viewport() {
         let mut widget = BrowserWidget::new_headless();
         widget.debug_set_viewport_width(390);
@@ -5618,7 +5796,8 @@ mod tests {
         assert!(viewport.y0 < 100.0, "viewport starts beneath the toolbar");
         assert!(
             address.width() >= 140.0,
-            "compact chrome preserves a usable address/search field"
+            "compact chrome preserves a usable address/search field: {}",
+            address.width()
         );
     }
 
