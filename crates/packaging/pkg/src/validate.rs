@@ -15,7 +15,7 @@
 use semver::Version;
 
 use crate::id::Kind;
-use crate::manifest::{EntrypointType, Manifest};
+use crate::manifest::{ContinuityFacet, EntrypointType, Manifest};
 
 /// Validation failure reasons; each variant is one concrete invariant a manifest can violate, surfaced verbatim by the CLI.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -42,6 +42,10 @@ pub enum ManifestError {
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
     BadPublisherSignature(String),
+    #[error("continuity.required repeats facet {0:?}")]
+    DuplicateContinuityFacet(ContinuityFacet),
+    #[error("continuity.required semantic state also requires presentation state")]
+    SemanticContinuityWithoutPresentation,
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -97,6 +101,18 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             package: m.package.id.clone(),
             entry: entry.clone(),
         });
+    }
+
+    let mut facets = std::collections::BTreeSet::new();
+    for facet in &m.continuity.required {
+        if !facets.insert(*facet) {
+            return Err(ManifestError::DuplicateContinuityFacet(*facet));
+        }
+    }
+    if facets.contains(&ContinuityFacet::Semantic)
+        && !facets.contains(&ContinuityFacet::Presentation)
+    {
+        return Err(ManifestError::SemanticContinuityWithoutPresentation);
     }
 
     Version::parse(&m.package.version)
@@ -327,6 +343,28 @@ mode = "off"
         assert!(
             matches!(e, ManifestError::AppMissingEntrypoint),
             "expected app-entrypoint error, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn semantic_continuity_requires_presentation() {
+        let mut m = minimal_runtime_manifest();
+        m.continuity.required = vec![ContinuityFacet::Semantic];
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::SemanticContinuityWithoutPresentation)
+        );
+    }
+
+    #[test]
+    fn continuity_facets_cannot_be_repeated() {
+        let mut m = minimal_runtime_manifest();
+        m.continuity.required = vec![ContinuityFacet::Presentation, ContinuityFacet::Presentation];
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::DuplicateContinuityFacet(
+                ContinuityFacet::Presentation
+            ))
         );
     }
 }
