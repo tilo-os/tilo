@@ -305,8 +305,8 @@ impl Session {
                 if self.active_connection_id() != Some(connection_id)
                     || self.selected_relation.as_ref()
                         != Some(&RelationRef {
-                            schema: schema.clone(),
-                            name: table.clone(),
+                            schema,
+                            name: table,
                         })
                     || self.data_offset != offset
                 {
