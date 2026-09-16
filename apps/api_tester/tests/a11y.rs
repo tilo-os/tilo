@@ -211,7 +211,8 @@ fn tab_traverses_every_control_in_order() {
     let stops = d.tab_through();
 
     // The builder chrome comes first, top-left to top-right: method picker,
-    // URL field, Send, then the request-tab group.
+    // URL field, Send, the explicit Save affordance, then the request-tab
+    // group and its contextual action menu.
     let roles: Vec<Role> = stops.iter().map(|(r, _)| *r).collect();
     assert_eq!(
         roles.first(),
@@ -225,10 +226,17 @@ fn tab_traverses_every_control_in_order() {
     );
     assert_eq!(roles.get(2), Some(&Role::Button), "third stop is Send");
     assert_eq!(stops[2].1.as_deref(), Some("Send"));
+    assert_eq!(roles.get(3), Some(&Role::Button), "fourth stop is Save");
+    assert_eq!(stops[3].1.as_deref(), Some("Save"));
     assert_eq!(
-        roles.get(3),
+        roles.get(4),
         Some(&Role::Group),
-        "fourth stop is the request tabs"
+        "fifth stop is the request tabs"
+    );
+    assert_eq!(
+        roles.get(5),
+        Some(&Role::ComboBox),
+        "sixth stop is the request actions menu"
     );
 
     // Every focusable control is reached exactly once.
