@@ -872,17 +872,31 @@ impl Widget for DbClientApp {
             // connection. We do not fabricate schemas for disconnected
             // profiles merely to make search look fuller than the backend is.
             if active_id == Some(id) && self.session.connected {
-                let mut schema = Resource::new(
-                    format!("schema:{id}:live"),
-                    "database.schema",
-                    "Live schema",
+                let database_name = if connection.database.is_empty() {
+                    "Connected database".to_string()
+                } else {
+                    connection.database.clone()
+                };
+                let mut database = Resource::new(
+                    format!("database:{id}:{database_name}"),
+                    "database.database",
+                    database_name,
                 );
                 for schema_info in &self.session.schema.schemas {
+                    let schema_name = schema_info.name.clone();
+                    let mut schema = Resource::new(
+                        format!("schema:{id}:{schema_name}"),
+                        "database.schema",
+                        schema_name.clone(),
+                    );
                     for table in &schema_info.tables {
                         let table_name = table.name.clone();
                         let mut table_resource = Resource::new(
-                            format!("table:{id}:{table_name}"),
-                            "database.table",
+                            format!("relation:{id}:{schema_name}:{table_name}"),
+                            match table.kind {
+                                crate::model::RelationKind::Table => "database.table",
+                                crate::model::RelationKind::View => "database.view",
+                            },
                             table_name.clone(),
                         );
                         if let Ok(spec) = ActionSpec::operation(
@@ -902,15 +916,16 @@ impl Widget for DbClientApp {
                         }
                         for column in &table.columns {
                             table_resource.children.push(Resource::new(
-                                format!("column:{id}:{table_name}:{}", column.name),
+                                format!("column:{id}:{schema_name}:{table_name}:{}", column.name),
                                 "database.column",
                                 column.name.clone(),
                             ));
                         }
                         schema.children.push(table_resource);
                     }
+                    database.children.push(schema);
                 }
-                resource.children.push(schema);
+                resource.children.push(database);
 
                 // Export snapshots the current bounded result, then uses the
                 // host save portal; neither a path nor any result data is
@@ -3247,8 +3262,13 @@ mod behavior_tests {
         app.session.connections[0].password = "never-publish-this".into();
         let resources = app.resources(&doc);
         let connection = &resources[0].children[0];
+        let database = connection
+            .children
+            .iter()
+            .find(|resource| resource.kind == "database.database")
+            .expect("live connection publishes its database before schemas");
         assert!(
-            connection
+            database
                 .children
                 .iter()
                 .any(|resource| resource.kind == "database.schema")
