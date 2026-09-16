@@ -50,3 +50,27 @@ symlink walk and `codesign --verify --deep --strict` afterward.
 - One upstream parameterized redirect (`click2load.html`) is deliberately excluded. Trusted-only resources remain unavailable to ordinary lists. No universal extension/filter/scriptlet compatibility claim is made.
 - UI-supplied bundled/cached filter readiness, asynchronous list refresh, per-site controls, and Rust packaging are parent-owned integrations.
 - Linux compilation/runtime qualification is being performed by the parent. This report does not count unavailable or failing Linux runtime tests as passed.
+
+## Nested application startup regression
+
+The packaged native executable initially exited before ready with SIGTRAP inside
+`cef_initialize`. The new `nested_bundle.py` reproduced that crash. CEF defaults
+`main_bundle_path` and `framework_dir_path` to the outer application, but the
+outer Rust `Browser.app` does not contain CEF directly in its Frameworks folder.
+The host now resolves both paths from its own canonical executable, selecting
+`Browser Engine.app` and the framework inside it. No sandbox or TLS setting changed.
+
+After rebuilding and the parent's package copy:
+
+- `nested_bundle.py <packaged-host>`: **1 passed in 2.700s**, verifying ready,
+  local HTTP navigation/title, 1280×800 frame delivery and clean exit.
+- `smoke.py <packaged-host>`: **PASS**, final `https://podesta.ai/`, HTTP 200,
+  title `Podesta AI — The operating system for the AI age`, nonempty BGRA frame,
+  closed event, exit 0.
+- `smoke.py <standalone-host>`: **PASS** with the same HTTPS acceptance.
+- Rebuilt standalone bundle and parent-reported packaged strict signatures pass.
+
+CEF stderr still reports observer-list reentrancy diagnostics, a process signature
+validation-category diagnostic with ad hoc signing, and a nested helper Resources
+sandbox-extension warning. Those diagnostics did not prevent the verified renderer,
+HTTPS navigation or shutdown; they are not silently counted as resolved here.
