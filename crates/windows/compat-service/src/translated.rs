@@ -117,25 +117,45 @@ struct WineRuntime {
 impl WineRuntime {
     fn prepare(&self, server: &mut ManagedChild) -> io::Result<crate::dxvk::PrefixLease> {
         crate::dxvk::prepare(self.mode, |action| {
-            let status = run_guest(
-                &[
-                    OsString::from(self.loader),
-                    // An absolute Unix PE path requires a DOS drive mapping.
-                    // The capsule deliberately has no Z: drive. Select Wine's
-                    // immutable builtin by name and force builtin-only loading.
-                    OsString::from("wineboot.exe"),
-                    OsString::from(action.wineboot_argument()),
-                ],
-                server,
-                GuestEnvironment::WineBoot(self.mode),
-                Some(PREPARATION_TIMEOUT),
-            )?;
-            if status != 0 {
-                return Err(io::Error::other(format!(
-                    "Wine prefix update failed: {status}"
-                )));
+            // This scope is created only under the exclusive prefix lock.
+            // Reaping its descendants precedes returning (and unlocking), even
+            // if Wineboot's leader has exited but its detached server has not.
+            let descendants = PreparationChildren::new()?;
+            let result = (|| {
+                let status = run_guest(
+                    &[
+                        OsString::from(self.loader),
+                        // An absolute Unix PE path requires a DOS drive mapping.
+                        // The capsule deliberately has no Z: drive. Select Wine's
+                        // immutable builtin by name and force builtin-only loading.
+                        OsString::from("wineboot.exe"),
+                        OsString::from(action.wineboot_argument()),
+                    ],
+                    server,
+                    GuestEnvironment::WineBoot(self.mode),
+                    Some(PREPARATION_TIMEOUT),
+                )?;
+                if status != 0 {
+                    return Err(io::Error::other(format!(
+                        "Wine prefix update failed: {status}"
+                    )));
+                }
+                self.wait(server, Some(PREPARATION_TIMEOUT))
+            })();
+            if result.is_err() {
+                // Graceful prefix-specific shutdown first. Even a dead FEX
+                // server or a failed cleanup command cannot bypass the native
+                // descendant cleanup below. Shared launches never reach here.
+                let _ = run_guest(
+                    &[OsString::from(self.server), OsString::from("-k")],
+                    server,
+                    GuestEnvironment::WinePreparation(self.mode),
+                    Some(Duration::from_secs(10)),
+                );
+                let _ = self.wait(server, Some(Duration::from_secs(10)));
             }
-            self.wait(server, Some(PREPARATION_TIMEOUT))
+            drop(descendants);
+            result
         })
     }
 
@@ -153,6 +173,203 @@ impl WineRuntime {
         }
         Ok(())
     }
+}
+
+/// Native helper ownership, independent of Wine process groups and FEX's
+/// server lifetime. This is deliberately unavailable to multithreaded callers:
+/// otherwise another thread could create children inside this ownership scope.
+struct PreparationChildren {
+    existing: Vec<(libc::pid_t, OwnedFd)>,
+    previous_subreaper: libc::c_int,
+}
+
+impl PreparationChildren {
+    fn new() -> io::Result<Self> {
+        if std::fs::read_dir("/proc/self/task")?.count() != 1 {
+            return Err(io::Error::other(
+                "Wine preparation requires a single-threaded supervisor",
+            ));
+        }
+        Self::acquire()
+    }
+
+    fn acquire() -> io::Result<Self> {
+        // SIG_IGN and SA_NOCLDWAIT would auto-reap children without an explicit
+        // waiter, invalidating our PID ownership between enumeration and open.
+        // Custom handlers could do the same; require the helper's default.
+        let mut disposition = unsafe { std::mem::zeroed::<libc::sigaction>() };
+        // SAFETY: read-only query into a valid sigaction, no process mutation.
+        if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &raw mut disposition) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if disposition.sa_sigaction != libc::SIG_DFL
+            || disposition.sa_flags & libc::SA_NOCLDWAIT != 0
+        {
+            return Err(io::Error::other(
+                "Wine preparation requires the default waitable SIGCHLD disposition",
+            ));
+        }
+        let existing = direct_children()?
+            .into_iter()
+            .map(|pid| owned_pidfd(pid).map(|descriptor| (pid, descriptor)))
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut previous_subreaper = 0;
+        // SAFETY: GET writes one live integer; SET takes an integer flag.
+        if unsafe { libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &raw mut previous_subreaper) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // Check pidfd availability and signal permissions before any Wine
+        // process starts. The descriptor targets us; signal zero changes nothing.
+        let self_pidfd = owned_pidfd(std::process::id().cast_signed())?;
+        signal_pidfd(&self_pidfd, 0)?;
+        // Also establish that waitid(P_PIDFD) is supported/permitted before
+        // spawning. Our own PID is intentionally not a child (ECHILD).
+        let _ = still_our_child(&self_pidfd)?;
+        if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            existing,
+            previous_subreaper,
+        })
+    }
+
+    fn reap_descendants(&self) -> io::Result<()> {
+        loop {
+            let mut children = Vec::new();
+            for pid in direct_children()? {
+                let mut existing = false;
+                for (original_pid, descriptor) in &self.existing {
+                    if pid == *original_pid && still_our_child(descriptor)? {
+                        existing = true;
+                        break;
+                    }
+                }
+                if !existing {
+                    children.push(pid);
+                }
+            }
+            if children.is_empty() {
+                return Ok(());
+            }
+            for pid in children {
+                // Only our unreaped direct children appear here. No concurrent
+                // reaper exists in this single-threaded helper, so the PID
+                // cannot be reused before pidfd_open. The pidfd pins identity
+                // across signalling; waitpid reaps this exact owned child.
+                let descriptor = owned_pidfd(pid)?;
+                signal_pidfd(&descriptor, libc::SIGKILL)?;
+                loop {
+                    // SAFETY: pid is an owned child; no status is requested.
+                    if unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) } != -1 {
+                        break;
+                    }
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
+            }
+            // Orphans are synchronously adopted when their parent exits.
+            // Repeat for detached grandchildren, including setsid() children.
+        }
+    }
+}
+
+impl Drop for PreparationChildren {
+    fn drop(&mut self) {
+        // Never unlock a prefix with potentially live initialization writers.
+        // Kernel-stuck children or a failed cleanup syscall are exceptional:
+        // retain exclusive ownership until cleanup succeeds or the capsule is
+        // destroyed. Normal Wine command deadlines remain bounded above.
+        let mut reported = false;
+        loop {
+            match self.reap_descendants() {
+                Ok(()) => break,
+                Err(error) => {
+                    if !reported {
+                        eprintln!("Wine descendant cleanup failed; retaining prefix lock: {error}");
+                        reported = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        }
+        // SAFETY: restore the process flag captured before this exclusive scope.
+        if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, self.previous_subreaper) } == -1 {
+            // No descendants remain; restoring this adoption preference cannot
+            // compromise the completed prefix cleanup.
+            eprintln!(
+                "Could not restore child-subreaper state: {}",
+                io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+fn direct_children() -> io::Result<Vec<libc::pid_t>> {
+    let mut children = Vec::new();
+    for task in std::fs::read_dir("/proc/self/task")? {
+        for pid in std::fs::read_to_string(task?.path().join("children"))?.split_whitespace() {
+            children.push(
+                pid.parse()
+                    .map_err(|_| io::Error::other("invalid child PID"))?,
+            );
+        }
+    }
+    Ok(children)
+}
+
+fn still_our_child(descriptor: &OwnedFd) -> io::Result<bool> {
+    // SAFETY: siginfo is writable; WNOWAIT observes without reaping. An exited
+    // and reaped baseline child must not exempt a later child reusing its PID.
+    let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+    if unsafe {
+        libc::waitid(
+            libc::P_PIDFD,
+            descriptor.as_raw_fd().cast_unsigned(),
+            &raw mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    } == -1
+    {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ECHILD) {
+            return Ok(false);
+        }
+        return Err(error);
+    }
+    Ok(true)
+}
+
+fn owned_pidfd(pid: libc::pid_t) -> io::Result<OwnedFd> {
+    // SAFETY: pidfd_open returns a new owned descriptor or -1.
+    let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if descriptor == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    let descriptor = i32::try_from(descriptor).map_err(io::Error::other)?;
+    Ok(unsafe { OwnedFd::from_raw_fd(descriptor) })
+}
+
+fn signal_pidfd(descriptor: &OwnedFd, signal: libc::c_int) -> io::Result<()> {
+    // SAFETY: the pidfd remains live and no siginfo override is supplied.
+    if unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            descriptor.as_raw_fd(),
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    } == -1
+    {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -359,6 +576,156 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::io::Write;
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one isolated process owns the complete signal, adoption, cleanup, and lock-lifetime regression"
+    )]
+    fn exclusive_cleanup_reaps_detached_descendants_and_preserves_existing_children() {
+        const CHILD: &str = "QOS_TEST_PREPARATION_REAPER";
+        if std::env::var_os(CHILD).is_none() {
+            // Subreaper state is process-wide. Isolate this test from the
+            // parallel harness, whose unrelated children must never be adopted.
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "translated::tests::exclusive_cleanup_reaps_detached_descendants_and_preserves_existing_children", "--nocapture"])
+                .env(CHILD, "1")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
+        let mut disposition = unsafe { std::mem::zeroed::<libc::sigaction>() };
+        assert_eq!(
+            unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &raw mut disposition) },
+            0
+        );
+        for (handler, flags) in [(libc::SIG_IGN, 0), (libc::SIG_DFL, libc::SA_NOCLDWAIT)] {
+            let mut automatic = disposition;
+            automatic.sa_sigaction = handler;
+            automatic.sa_flags = flags;
+            assert_eq!(
+                unsafe {
+                    libc::sigaction(libc::SIGCHLD, &raw const automatic, std::ptr::null_mut())
+                },
+                0
+            );
+            let error = PreparationChildren::acquire()
+                .err()
+                .expect("auto-reaping must fail preflight");
+            assert!(error.to_string().contains("waitable SIGCHLD"));
+            assert_eq!(
+                unsafe {
+                    libc::sigaction(libc::SIGCHLD, &raw const disposition, std::ptr::null_mut())
+                },
+                0
+            );
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let prefix = File::open(temporary.path()).unwrap();
+        let competitor = File::open(temporary.path()).unwrap();
+        // SAFETY: the files are live independent descriptors for this test inode.
+        assert_eq!(
+            unsafe { libc::flock(prefix.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        let mut existing = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        // acquire bypasses only the production single-thread check: the reexec
+        // harness has an idle main thread and exactly this one test worker.
+        let descendants = PreparationChildren::acquire().unwrap();
+        let old_state = descendants.previous_subreaper;
+        let pid_file = temporary.path().join("detached-pid");
+        let script = temporary.path().join("nested.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n/bin/sleep 30 &\nprintf '%s %s' \"$$\" \"$!\" > \"$1\"\nwait\n",
+        )
+        .unwrap();
+        let status = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "setsid /bin/sh \"$1\" \"$2\" </dev/null >/dev/null 2>&1 &",
+                "sh",
+            ])
+            .arg(&script)
+            .arg(&pid_file)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let started = Instant::now();
+        let pids: Vec<libc::pid_t> = loop {
+            if let Ok(contents) = std::fs::read_to_string(&pid_file) {
+                let values: Vec<_> = contents
+                    .split_whitespace()
+                    .map(|value| value.parse().unwrap())
+                    .collect();
+                if values.len() == 2 {
+                    break values;
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "nested child must start"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let pid = pids[0];
+        assert_eq!(
+            unsafe { libc::getsid(pid) },
+            pid,
+            "child must detach its session"
+        );
+        let detached = owned_pidfd(pid).unwrap();
+        let grandchild = owned_pidfd(pids[1]).unwrap();
+        assert!(still_our_child(&detached).unwrap());
+        assert!(
+            !still_our_child(&grandchild).unwrap(),
+            "grandchild initially belongs to the detached parent"
+        );
+        assert_eq!(
+            unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+            -1
+        );
+        drop(descendants);
+        assert!(
+            !still_our_child(&detached).unwrap(),
+            "detached writer must be reaped before unlock"
+        );
+        assert!(
+            !still_our_child(&grandchild).unwrap(),
+            "adopted grandchild must also be reaped"
+        );
+        let mut exited = libc::pollfd {
+            fd: grandchild.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(
+            unsafe { libc::poll(&raw mut exited, 1, 0) },
+            1,
+            "grandchild must have exited, not merely remain unowned"
+        );
+        assert!(
+            existing.try_wait().unwrap().is_none(),
+            "preexisting server must survive"
+        );
+        assert_eq!(
+            unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+            -1
+        );
+        let mut restored = -1;
+        assert_eq!(
+            unsafe { libc::prctl(libc::PR_GET_CHILD_SUBREAPER, &raw mut restored) },
+            0
+        );
+        assert_eq!(restored, old_state);
+        existing.kill().unwrap();
+        existing.wait().unwrap();
+        drop(prefix);
+        assert_eq!(
+            unsafe { libc::flock(competitor.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+            0
+        );
+    }
 
     #[test]
     fn native_dxvk_overrides_apply_only_to_managed_wine_applications() {

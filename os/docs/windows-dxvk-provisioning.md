@@ -31,6 +31,10 @@ inode until its application, Wine server wait, and FEX server cleanup finish.
 Ready prefixes permit concurrent launches. Initialization or a changed payload
 requires an exclusive, nonblocking lock. A busy prefix returns an error so the
 caller can retry after its applications exit; it never kills those applications.
+The lease explicitly unlocks its own open-file description when its lifetime
+ends, including preparation error paths. A duplicated descriptor cannot extend
+that lifetime, while independently opened leases from other launches remain
+locked.
 
 Under exclusive ownership, the helper invokes the architecture-matching
 Wine builtin `wineboot.exe` through the existing FEX supervisor, using `-i` for
@@ -38,6 +42,22 @@ initialization and `-u` for an existing prefix update. It then waits for
 the matching Wine server. Both preparation commands have 120-second deadlines.
 The server wait is deliberately absent from the already-prepared fast path:
 `wineserver -w` waits for server termination, including other clients.
+
+Exclusive preparation runs inside a native child-subreaper scope. If Wineboot
+or its server wait fails, the helper first attempts the matching `wineserver -k`
+and `-w`, each with a ten-second deadline. Before returning from preparation,
+it kills and reaps remaining owned descendants, including detached Wine workers,
+using process descriptors. The existing FEX server is excluded. This cleanup
+also runs after successful preparation, and never runs on the shared ready-prefix
+path. The helper verifies that it is single-threaded and that process-descriptor
+operations work before starting initialization. It restores the previous
+subreaper setting after cleanup.
+
+The exclusive prefix lock remains held until all initialization descendants
+have been reaped. Exceptionally, a kernel-stuck process or unavailable cleanup
+operation can extend this wait beyond the command deadlines; the helper retains
+the lock rather than admitting another writer. Capsule teardown remains the
+external recovery mechanism in that case.
 
 Wineboot is selected by its fixed Windows name with builtin-only loading.
 An absolute Unix path failed with status 139 in the managed C-only prefix;
@@ -61,11 +81,21 @@ contents; a mutable prefix cannot independently attest historical initialization
 
 ## Validation
 
-On 2026-09-16, the service suite passed 80 tests (seven environment-dependent
+On 2026-09-16, the service suite passed 82 tests (seven environment-dependent
 tests ignored), strict Clippy passed, and the native ARM helper built with the
 pinned Rust toolchain. Regression tests cover concurrent shared leases, busy
 upgrades, corrupt payloads, redirected directories, external leaf links,
 incomplete initialization, false markers, FIFO leaves, and stale temporary files.
+An isolated native regression also verifies reaping an adopted detached child,
+preserving a preexisting child, restoring subreaper state, and keeping the prefix
+lock unavailable throughout cleanup.
+Thirty consecutive default-parallel runs of the combined 29-test DXVK and
+subprocess group passed. The final helper, including explicit lease release,
+passed the portable generated Wine32 namespace in 30.23 seconds and Wine64 in
+50.34 seconds. The lease regression retains a duplicated descriptor
+and verifies that lease destruction still releases its lock; the independent
+shared-lease regression verifies that another launch continues to prevent an
+upgrade.
 Real Wine 11.0 initialization confirmed the expected `system.reg`, `user.reg`,
 and `userdef.reg` architecture headers for both modes.
 Controlled Wineboot tests confirmed that builtin-only selection ignored a native
@@ -77,7 +107,13 @@ substitute instead produced a different failure, confirming the selection test.
 The generated ARM Wine namespace fixtures also passed with the current helper,
 the original native FEX runtime, and the derived guest root containing the
 verified DXVK inputs. Wine32 completed in 29.43 seconds and Wine64 in 49.03
-seconds. These are end-to-end fresh-prefix console-test times, not isolated
+seconds. The portable FEX runtime also passed both generated namespaces:
+Wine32 in 30.10 seconds and Wine64 in 47.99 seconds. With the capsule working
+directory fixed to its private `drive_c`, portable Wine64 passed in 48.12 seconds
+without the previous unavailable-working-directory warning. The descendant
+cleanup helper subsequently passed portable Wine32 in 30.55 seconds and Wine64
+in 50.26 seconds, also without that warning. These are end-to-end fresh-prefix
+console-test times, not isolated
 DXVK provisioning overhead measurements. Each test required a real Windows
 file marker and retained the generated offline namespace and JIT syscall
 filter. These fixtures omit the executable Landlock shim on the WSL kernel;
