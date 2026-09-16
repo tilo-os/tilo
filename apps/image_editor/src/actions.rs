@@ -243,10 +243,9 @@ pub fn resource(project: &Project) -> Resource {
             REMOVE_ADJUSTMENT_TYPE,
             &RemoveAdjustment { id: id.clone() },
         ) {
-            adjustment = adjustment.with_action(
-                spec.reversible()
-                    .with_description("Remove this step while keeping later steps connected"),
-            );
+            adjustment = adjustment.with_action(spec.destructive().with_description(
+                "Permanently remove this step while keeping later steps connected",
+            ));
         }
         r = r.with_child(adjustment);
     }
@@ -443,6 +442,13 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "remove")
         );
+        let remove = adjustment
+            .actions
+            .iter()
+            .find(|action| action.id == "remove")
+            .expect("adjustments publish their permanent removal action");
+        assert!(!remove.contract.reversible);
+        assert_eq!(remove.contract.risk, qos_actions::RiskLevel::Destructive);
     }
 
     #[test]
