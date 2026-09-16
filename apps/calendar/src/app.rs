@@ -304,6 +304,12 @@ pub struct CalendarApp {
     /// Projection generation included in the retained catalogue currently
     /// published to Ctrl+K.
     search_catalog_projection_revision: u64,
+    /// Retained, stable-id-indexed action projection. It is rebuilt only when
+    /// the CRDT/account projection changes; exact resource resolution must not
+    /// clone or scan the full calendar corpus per request.
+    pub(crate) resource_context: Option<crate::actions::CalendarResourceCtx>,
+    resource_context_heads: Vec<ChangeHash>,
+    resource_context_projection_revision: u64,
     #[cfg(test)]
     note_projection_refreshes: usize,
     #[cfg(test)]
@@ -529,6 +535,9 @@ impl CalendarApp {
             calendar_projection_revision: 0,
             calendar_projection_snapshot: Vec::new(),
             search_catalog_projection_revision: 0,
+            resource_context: None,
+            resource_context_heads: Vec::new(),
+            resource_context_projection_revision: 0,
             #[cfg(test)]
             note_projection_refreshes: 0,
             #[cfg(test)]
@@ -1705,7 +1714,11 @@ impl CalendarApp {
                 .projects
                 .last()
                 .map_or(1, |project| project.order.saturating_add(1)),
+            event_positions: HashMap::new(),
+            task_positions: HashMap::new(),
+            project_positions: HashMap::new(),
         }
+        .with_resource_indices()
     }
 
     /// Build only the root metadata the pull directory needs.  In particular,
@@ -1752,7 +1765,11 @@ impl CalendarApp {
                 .projects
                 .last()
                 .map_or(1, |project| project.order.saturating_add(1)),
+            event_positions: HashMap::new(),
+            task_positions: HashMap::new(),
+            project_positions: HashMap::new(),
         }
+        .with_resource_indices()
     }
 
     /// Convert parsed ICS records into one deterministic action. qOS's UUID
@@ -6330,6 +6347,14 @@ impl Widget for CalendarApp {
         let document_changed = self.search_catalog_heads != post_hydration_heads;
         let calendar_projection_changed =
             self.search_catalog_projection_revision != self.calendar_projection_revision;
+        let resource_context_changed = self.resource_context_heads != post_hydration_heads
+            || self.resource_context_projection_revision != self.calendar_projection_revision;
+        if self.resource_context.is_none() || resource_context_changed {
+            self.resource_context = Some(self.calendar_resource_ctx());
+            self.resource_context_heads
+                .clone_from(&post_hydration_heads);
+            self.resource_context_projection_revision = self.calendar_projection_revision;
+        }
         if document_changed {
             self.refresh_note_search(state);
         }

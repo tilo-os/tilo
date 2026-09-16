@@ -231,6 +231,11 @@ impl CalendarSearchProvider {
     /// Atomically replace the retained snapshot from the complete loaded model.
     /// A successful rebuild publishes one new generation; an invalid row leaves
     /// the old index and its exact action resolver intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalogue validation or generation error without publishing a
+    /// partial snapshot.
     pub fn refresh(
         &self,
         model: &Model,
@@ -242,6 +247,11 @@ impl CalendarSearchProvider {
     /// Revision callers provide the live account projection too, so local and
     /// remote collections participate in the same durable search namespace as
     /// their events.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalogue validation or generation error without replacing
+    /// the previously retained resolver/index revision.
     pub fn refresh_with_calendars(
         &self,
         model: &Model,
