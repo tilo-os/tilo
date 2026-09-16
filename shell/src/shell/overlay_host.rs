@@ -12076,7 +12076,7 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::EditName => {
-                if let Some(chrome) = self.chrome.clone() {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
                     if st.editing_workspace_name.is_none() {
                         let new_name = st
@@ -12093,7 +12093,7 @@ impl ShellOverlayHost {
                 }
             }
             WorkspaceSettingsOutcome::CommitName => {
-                if let Some(chrome) = self.chrome.clone() {
+                if is_owner && let Some(chrome) = self.chrome.clone() {
                     chrome.borrow_mut().commit_workspace_name();
                 }
             }

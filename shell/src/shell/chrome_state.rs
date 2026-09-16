@@ -776,11 +776,24 @@ impl ChromeState {
         self.tree_handle.clone()
     }
 
-    /// Empty buffers are a cancel — never overwrite the name with "".
+    /// Whether the local person can administer the active workspace. This is
+    /// the same room-scoped authority used for workspace policy controls;
+    /// presentation must not offer mutations that this check would reject.
+    pub fn can_rename_active_workspace(&self) -> bool {
+        let user = self.active_local_user();
+        let tree = self.tree();
+        tree.active_workspace().is_some_and(|workspace| {
+            tree.governs_room(workspace.room) && workspace.may_administer(&user)
+        })
+    }
+
+    /// Empty buffers are a cancel — never overwrite the name with "". A
+    /// guest can never turn an inline field into an apparent local rename.
     pub fn commit_workspace_name(&mut self) {
         if let Some(buf) = self.editing_workspace_name.take() {
             let trimmed = buf.trim();
-            if !trimmed.is_empty()
+            if self.can_rename_active_workspace()
+                && !trimmed.is_empty()
                 && let Some(ws) = self.tree_mut().active_workspace_mut()
             {
                 ws.name = trimmed.to_string();
