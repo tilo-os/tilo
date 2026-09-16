@@ -66,6 +66,16 @@ pub enum NotificationIconKind {
     Permission,
 }
 
+/// Exact authenticated origin of a projected notification. Unlike
+/// [`Notification::dbus_id`], this route names another certified device and
+/// can only produce a personal-fabric command back to that same device.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteNotificationRoute {
+    pub source_device: String,
+    pub source_label: String,
+    pub notification_id: crate::notifications::ContinuityNotificationId,
+}
+
 /// Default dwell — matches the spec's "~5s" hint. Override via
 /// [`Notification::with_dismiss_after`].
 pub const DEFAULT_DISMISS_AFTER: Duration = Duration::from_secs(5);
@@ -112,6 +122,9 @@ pub struct Notification {
     /// Set when this toast originated from a D-Bus `Notify` call. `None`
     /// for shell-internal notifications.
     pub dbus_id: Option<u32>,
+    /// Present only for a notification projected from another certified
+    /// device. Remote records never carry a local D-Bus id.
+    pub remote_route: Option<RemoteNotificationRoute>,
     /// Sending application's display name; rendered as a caption above
     /// the title when present.
     pub app_name: Option<String>,
@@ -147,6 +160,7 @@ impl Notification {
             created_at: Instant::now(),
             dismiss_after: DEFAULT_DISMISS_AFTER,
             dbus_id: None,
+            remote_route: None,
             app_name: None,
             app_id: None,
             source_workspace: None,
@@ -190,6 +204,7 @@ impl Notification {
             created_at: Instant::now(),
             dismiss_after,
             dbus_id: Some(inc.dbus_id),
+            remote_route: None,
             // `app_name` is sender-controlled in the freedesktop protocol.
             // Only show the label derived from launcher attribution.
             app_name: verified_name,
@@ -202,6 +217,104 @@ impl Notification {
             show_on_lock_screen: false,
             show_preview: true,
         }
+    }
+
+    /// Convert a validated, ephemeral remote projection into the ordinary
+    /// shell toast model while preserving its authenticated provenance and
+    /// privacy ceiling. This does not create a local D-Bus route.
+    pub fn from_remote_continuity(
+        remote: crate::notifications::RemoteContinuityNotification,
+        now_unix_ms: u64,
+    ) -> Option<Self> {
+        if !remote.projection.validate_at(now_unix_ms) {
+            return None;
+        }
+        let projection = remote.projection;
+        let body_redacted = projection.body_redacted;
+        let source_caption = format!("{} · From {}", projection.app_name, remote.source_label);
+        Some(Self {
+            id: next_id(),
+            title: projection.title,
+            body: if body_redacted {
+                String::new()
+            } else {
+                projection.body
+            },
+            icon_kind: NotificationIconKind::default(),
+            severity: if projection.urgency == 2 {
+                NotificationSeverity::Error
+            } else {
+                NotificationSeverity::Info
+            },
+            created_at: Instant::now(),
+            dismiss_after: Duration::from_millis(
+                projection.expires_unix_ms.saturating_sub(now_unix_ms),
+            ),
+            dbus_id: None,
+            remote_route: Some(RemoteNotificationRoute {
+                source_device: remote.source_device,
+                source_label: remote.source_label,
+                notification_id: projection.id,
+            }),
+            app_name: Some(source_caption),
+            app_id: Some(projection.app_id),
+            source_workspace: None,
+            actions: projection.actions,
+            bypass_dnd: false,
+            // A remote device's notification never expands the local lock
+            // screen disclosure surface.
+            show_on_lock_screen: false,
+            show_preview: !body_redacted,
+        })
+    }
+
+    /// Replace this toast only when the incoming projection has the exact
+    /// same authenticated source + restart-scoped id. The process-local UI id
+    /// is retained so hit targets and notification-center identity stay
+    /// stable across freedesktop-style replacements.
+    pub fn replace_remote_continuity(
+        &mut self,
+        remote: crate::notifications::RemoteContinuityNotification,
+        now_unix_ms: u64,
+    ) -> bool {
+        let Some(mut replacement) = Self::from_remote_continuity(remote, now_unix_ms) else {
+            return false;
+        };
+        if self.remote_route != replacement.remote_route {
+            return false;
+        }
+        replacement.id = self.id;
+        *self = replacement;
+        true
+    }
+
+    pub fn remote_dismiss_command(&self) -> Option<crate::notifications::ContinuityCommandEgress> {
+        let route = self.remote_route.as_ref()?;
+        Some(crate::notifications::ContinuityCommandEgress {
+            target_device: route.source_device.clone(),
+            id: route.notification_id,
+            command: crate::notifications::ContinuityNotificationCommand::Dismiss,
+        })
+    }
+
+    /// Build an exact-origin command only for an action advertised on this
+    /// live projection. The origin bridge independently checks its own live
+    /// allowlist before emitting anything to the application.
+    pub fn remote_action_command(
+        &self,
+        action_key: &str,
+    ) -> Option<crate::notifications::ContinuityCommandEgress> {
+        if !self.actions.iter().any(|(key, _)| key == action_key) {
+            return None;
+        }
+        let route = self.remote_route.as_ref()?;
+        Some(crate::notifications::ContinuityCommandEgress {
+            target_device: route.source_device.clone(),
+            id: route.notification_id,
+            command: crate::notifications::ContinuityNotificationCommand::Invoke {
+                action_key: action_key.to_string(),
+            },
+        })
     }
 
     /// Action to invoke on activation: `"default"` if present, else the
@@ -1059,6 +1172,131 @@ mod tests {
         assert_eq!(
             Notification::from_incoming(incoming(1, 1, 2500)).dismiss_after,
             Duration::from_millis(2500)
+        );
+    }
+
+    fn remote_notification(
+        source: &str,
+        token: u8,
+        title: &str,
+        redacted: bool,
+    ) -> crate::notifications::RemoteContinuityNotification {
+        crate::notifications::RemoteContinuityNotification {
+            source_device: source.into(),
+            source_label: "ada's phone".into(),
+            projection: crate::notifications::ContinuityNotificationProjection {
+                id: crate::notifications::ContinuityNotificationId {
+                    epoch: [7; 16],
+                    token: [token; 16],
+                },
+                app_id: "dev.qos.mail".into(),
+                app_name: "Mail".into(),
+                title: title.into(),
+                body: "Secret preview".into(),
+                body_redacted: redacted,
+                actions: vec![("reply".into(), "Reply".into())],
+                urgency: 1,
+                expires_unix_ms: 12_000,
+            },
+        }
+    }
+
+    #[test]
+    fn remote_projection_becomes_attributed_non_dbus_toast() {
+        let notification = Notification::from_remote_continuity(
+            remote_notification("phone", 1, "New mail", false),
+            2_000,
+        )
+        .unwrap();
+        assert_eq!(notification.title, "New mail");
+        assert_eq!(notification.body, "Secret preview");
+        assert_eq!(
+            notification.app_name.as_deref(),
+            Some("Mail · From ada's phone")
+        );
+        assert_eq!(notification.dbus_id, None);
+        assert_eq!(notification.source_workspace, None);
+        assert_eq!(notification.actions, vec![("reply".into(), "Reply".into())]);
+        assert_eq!(notification.dismiss_after, Duration::from_secs(10));
+        assert!(!notification.show_on_lock_screen);
+        assert_eq!(
+            notification
+                .remote_route
+                .as_ref()
+                .map(|route| route.source_device.as_str()),
+            Some("phone")
+        );
+    }
+
+    #[test]
+    fn remote_redaction_cannot_be_reintroduced_by_ui_adapter() {
+        let notification = Notification::from_remote_continuity(
+            remote_notification("phone", 2, "Private", true),
+            2_000,
+        )
+        .unwrap();
+        assert!(notification.body.is_empty());
+        assert!(!notification.show_preview);
+    }
+
+    #[test]
+    fn remote_replacement_preserves_ui_identity_but_not_across_sources() {
+        let mut notification = Notification::from_remote_continuity(
+            remote_notification("phone", 3, "First", false),
+            2_000,
+        )
+        .unwrap();
+        let ui_id = notification.id;
+        assert!(
+            notification.replace_remote_continuity(
+                remote_notification("phone", 3, "Updated", false),
+                2_001,
+            )
+        );
+        assert_eq!(notification.id, ui_id);
+        assert_eq!(notification.title, "Updated");
+        assert!(
+            !notification.replace_remote_continuity(
+                remote_notification("tablet", 3, "Spoofed", false),
+                2_002,
+            )
+        );
+        assert_eq!(notification.title, "Updated");
+    }
+
+    #[test]
+    fn remote_actions_return_exact_origin_commands_without_local_dbus_route() {
+        let notification = Notification::from_remote_continuity(
+            remote_notification("phone", 4, "Action", false),
+            2_000,
+        )
+        .unwrap();
+        assert!(notification.dbus_id.is_none());
+        assert!(notification.remote_action_command("archive").is_none());
+        let action = notification.remote_action_command("reply").unwrap();
+        assert_eq!(action.target_device, "phone");
+        assert_eq!(
+            action.command,
+            crate::notifications::ContinuityNotificationCommand::Invoke {
+                action_key: "reply".into(),
+            }
+        );
+        let dismiss = notification.remote_dismiss_command().unwrap();
+        assert_eq!(dismiss.target_device, "phone");
+        assert_eq!(
+            dismiss.command,
+            crate::notifications::ContinuityNotificationCommand::Dismiss
+        );
+    }
+
+    #[test]
+    fn expired_remote_projection_is_not_adapted() {
+        assert!(
+            Notification::from_remote_continuity(
+                remote_notification("phone", 5, "Stale", false),
+                12_000,
+            )
+            .is_none()
         );
     }
 
