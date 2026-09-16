@@ -7323,6 +7323,20 @@ struct ReaderChromeView<'a> {
     selection_anchor: SelAnchor,
 }
 
+struct ReaderColumnsView<'a> {
+    layout: &'a ChapterLayout,
+    annotations: &'a [Annotation],
+    palette: &'a ReaderPalette,
+    base_family: &'a FontChoice,
+    base_mono: bool,
+    chapter: usize,
+    selection: Option<(DocPos, DocPos)>,
+    comment_group: Option<Uuid>,
+    panes: &'a [Pane],
+    geometry: &'a ReaderPageGeometry,
+    mode: ReadMode,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -7374,21 +7388,20 @@ impl BooksApp {
         let sel_ord = self.sel.filter(|s| !s.is_empty()).map(|s| s.ordered());
 
         let (sel_anchor, comment_box) = self.draw_reader_columns(
-            &mut *ctx.scene,
-            ctx.transform,
-            &mut *ctx.text,
-            ctx.theme,
-            &layout,
-            &annos,
-            &palette,
-            &base_family,
-            base_mono,
-            chapter,
-            sel_ord,
-            comment_group,
-            &panes,
-            &geom,
-            mode,
+            ctx,
+            &ReaderColumnsView {
+                layout: &layout,
+                annotations: &annos,
+                palette: &palette,
+                base_family: &base_family,
+                base_mono,
+                chapter,
+                selection: sel_ord,
+                comment_group,
+                panes: &panes,
+                geometry: &geom,
+                mode,
+            },
         );
         self.comment_overlay.set_anchor(comment_box);
         self.resolve_pending_sel_edge();
@@ -7923,25 +7936,26 @@ impl BooksApp {
     /// Draw each reading column with the page-turn slide/fade applied, and
     /// aggregate the first selected band's screen position and the open
     /// comment overlay's on-page bounds across all panes.
-    #[allow(clippy::too_many_arguments)]
     fn draw_reader_columns(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        layout: &ChapterLayout,
-        annos: &[Annotation],
-        palette: &ReaderPalette,
-        base_family: &FontChoice,
-        base_mono: bool,
-        chapter: usize,
-        sel_ord: Option<(DocPos, DocPos)>,
-        comment_group: Option<Uuid>,
-        panes: &[Pane],
-        geom: &ReaderPageGeometry,
-        mode: ReadMode,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &ReaderColumnsView<'_>,
     ) -> (SelAnchor, CommentBoxBounds) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let layout = view.layout;
+        let annos = view.annotations;
+        let palette = view.palette;
+        let base_family = view.base_family;
+        let base_mono = view.base_mono;
+        let chapter = view.chapter;
+        let sel_ord = view.selection;
+        let comment_group = view.comment_group;
+        let panes = view.panes;
+        let geom = view.geometry;
+        let mode = view.mode;
         let mut sel_anchor: SelAnchor = None;
         let mut comment_box: CommentBoxBounds = None;
 
