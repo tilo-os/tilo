@@ -17,7 +17,8 @@ sys.path.pop(0)
 
 def header(**changes):
     values = {'Name': 'wine-common', 'Version': '11.0', 'Release': '3.fc44.qos_traditional1',
-              'Arch': 'noarch', 'Filenames': '/usr/share/wine/file', 'Filedigests': 'abc',
+              'Arch': 'noarch', 'Basenames': 'file', 'Dirnames': '/usr/share/wine/',
+              'Dirindexes': '0', 'Filedigests': 'abc',
               'Filemodes': '33188', 'Fileusername': 'root', 'Fileflags': '2',
               'Prein': 'echo preserve-script', 'Requirename': 'wine-core',
               'Requireversion': '11.0-3.fc44.qos_traditional1', 'Triggername': 'wine',
@@ -25,7 +26,8 @@ def header(**changes):
     values.update(changes)
     root = ET.Element('rpmHeader')
     for name, value in values.items():
-        ET.SubElement(ET.SubElement(root, 'rpmTag', name=name), 'string').text = value
+        kind = 'integer' if name == 'Dirindexes' else 'string'
+        ET.SubElement(ET.SubElement(root, 'rpmTag', name=name), kind).text = value
     return ET.tostring(root, encoding='unicode')
 
 
@@ -41,7 +43,7 @@ class MergeTests(unittest.TestCase):
             Buildhost='builder-b', Buildtime='9999', Payloadcompressor='xz')))
 
     def test_file_script_dependency_trigger_or_license_changes_reject_merge(self):
-        for name in ('Filedigests', 'Filenames', 'Filemodes', 'Fileusername', 'Fileflags',
+        for name in ('Filedigests', 'Basenames', 'Filemodes', 'Fileusername', 'Fileflags',
                      'Prein', 'Requirename', 'Requireversion', 'Triggername', 'License'):
             def run(argv):
                 if argv[0] == 'rpmkeys':
@@ -80,6 +82,39 @@ class MergeTests(unittest.TestCase):
         root = ET.fromstring(header())
         root.remove(next(tag for tag in root if tag.attrib['name'] == 'Filedigests'))
         with self.assertRaises(ValueError):
+            M.semantic_header(ET.tostring(root, encoding='unicode'))
+
+    def test_actual_installed_rpm_xml_uses_split_filename_table(self):
+        fixtures = Path(__file__).with_name('fixtures')
+        actual = M.semantic_header((fixtures / 'rpm-nano-default-editor.xml').read_text())
+        self.assertNotIn('FILENAMES', actual)
+        self.assertEqual(len(actual['BASENAMES']), 5)
+        self.assertEqual(len(actual['DIRINDEXES']), 5)
+        self.assertEqual(len(actual['FILEDIGESTS']), 5)
+
+    def test_actual_payload_free_metapackage_is_preserved(self):
+        actual = M.semantic_header((Path(__file__).with_name('fixtures') / 'rpm-default-editor-empty.xml').read_text())
+        self.assertEqual(actual['NAME'], [('string', 'default-editor')])
+        self.assertNotIn('BASENAMES', actual)
+        self.assertIn('REQUIRENAME', actual)
+
+    def test_directory_indices_and_per_file_array_lengths_are_validated(self):
+        for index in ('-1', '1', 'garbage'):
+            with self.subTest(index=index), self.assertRaisesRegex(ValueError, 'directory index'):
+                M.semantic_header(header(Dirindexes=index))
+        for name in ('Dirindexes', 'Filedigests', 'Filemodes', 'Fileusername'):
+            root = ET.fromstring(header())
+            tag = next(tag for tag in root if tag.attrib['name'] == name)
+            ET.SubElement(tag, 'string').text = 'extra'
+            with self.subTest(tag=name), self.assertRaisesRegex(ValueError, 'length mismatch'):
+                M.semantic_header(ET.tostring(root, encoding='unicode'))
+
+    def test_partial_table_cannot_masquerade_as_empty_metapackage(self):
+        root = ET.fromstring(header())
+        for tag in list(root):
+            if tag.attrib['name'] in ('Basenames', 'Dirnames', 'Dirindexes'):
+                root.remove(tag)
+        with self.assertRaisesRegex(ValueError, 'file table is missing'):
             M.semantic_header(ET.tostring(root, encoding='unicode'))
 
 
