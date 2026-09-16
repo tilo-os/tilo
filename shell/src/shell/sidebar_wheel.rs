@@ -67,16 +67,24 @@ impl SidebarWheel {
         // `step` is always +-1 and `current_idx` a strip-list index (never
         // near i32::MAX), so this can't overflow; still spelled with
         // checked/saturating arithmetic rather than asserting that.
-        let last_idx = ws.strips.len().saturating_sub(1);
-        let next_idx = if step < 0 {
-            current_idx.saturating_sub(1)
-        } else {
-            current_idx.saturating_add(1).min(last_idx)
+        let Some(next_idx) = Self::next_strip_index(current_idx, ws.strips.len(), step) else {
+            return;
         };
         let Some(next_id) = ws.strips.get(next_idx).map(|s| s.id) else {
             return;
         };
         tree.active_strip.insert(active_ws, next_id);
+    }
+
+    /// Pure navigation policy shared by persisted and hydrated runtime trees.
+    /// Selection clamps at both ends and an empty strip list has no target.
+    pub(crate) fn next_strip_index(current: usize, count: usize, dir: i32) -> Option<usize> {
+        let last = count.checked_sub(1)?;
+        Some(match dir.signum() {
+            -1 => current.min(last).saturating_sub(1),
+            1 => current.min(last).saturating_add(1).min(last),
+            _ => current.min(last),
+        })
     }
 
     /// Always `0.0` until the widget-side animation is wired up.
@@ -160,5 +168,20 @@ impl SidebarWheel {
 impl Default for SidebarWheel {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SidebarWheel;
+
+    #[test]
+    fn strip_navigation_clamps_and_handles_empty_workspaces() {
+        assert_eq!(SidebarWheel::next_strip_index(0, 0, 1), None);
+        assert_eq!(SidebarWheel::next_strip_index(0, 3, -1), Some(0));
+        assert_eq!(SidebarWheel::next_strip_index(0, 3, 1), Some(1));
+        assert_eq!(SidebarWheel::next_strip_index(2, 3, 1), Some(2));
+        assert_eq!(SidebarWheel::next_strip_index(2, 3, -1), Some(1));
+        assert_eq!(SidebarWheel::next_strip_index(usize::MAX, 3, 0), Some(2));
     }
 }
