@@ -81,330 +81,377 @@ impl DbSearchIndex {
             &mut rows,
             &mut resources,
         );
-        if session.connected
-            && let Some(connection) = session.active_connection()
-        {
-            let connection_id = connection.id.to_string();
-            let database_name = if connection.database.is_empty() {
-                "Connected database".to_string()
-            } else {
-                connection.database.clone()
-            };
-            let database_id = catalog_resource_id("database", &[&connection_id, &database_name]);
-            let mut database = Resource::new(&database_id, "database.database", &database_name);
-            if let Ok(action) = ActionSpec::operation(
-                "focus",
-                "Show database",
-                OperationKind::View,
-                DB_OPERATION_TYPE,
-                &DbClientOperation::FocusCatalog {
-                    connection_id: connection_id.clone(),
-                    schema: None,
-                },
-            ) {
-                database.actions.push(action);
-            }
-            index_resource(
-                &mut rows,
-                &mut resources,
-                database,
-                "focus",
-                database_name.clone(),
-                SearchResult::for_action(
-                    KIND,
-                    &database_name,
-                    ActionAddress::new(&database_id, "focus"),
-                )
-                .with_subtitle("Active database"),
-            );
-            for schema in &session.schema.schemas {
-                let schema_id = catalog_resource_id("schema", &[&connection_id, &schema.name]);
-                let mut schema_resource =
-                    Resource::new(&schema_id, "database.schema", &schema.name);
-                if let Ok(action) = ActionSpec::operation(
-                    "focus",
-                    "Show schema",
-                    OperationKind::View,
-                    DB_OPERATION_TYPE,
-                    &DbClientOperation::FocusCatalog {
-                        connection_id: connection_id.clone(),
-                        schema: Some(schema.name.clone()),
-                    },
-                ) {
-                    schema_resource.actions.push(action);
-                }
-                index_resource(
-                    &mut rows,
-                    &mut resources,
-                    schema_resource,
-                    "focus",
-                    schema.name.clone(),
-                    SearchResult::for_action(
-                        KIND,
-                        &schema.name,
-                        ActionAddress::new(&schema_id, "focus"),
-                    )
-                    .with_subtitle(format!("Schema in {database_name}")),
-                );
-                for relation in &schema.tables {
-                    let relation_id = catalog_resource_id(
-                        "relation",
-                        &[&connection_id, &schema.name, &relation.name],
-                    );
-                    let result = SearchResult::for_action(
-                        KIND,
-                        &relation.name,
-                        ActionAddress::new(&relation_id, "browse"),
-                    )
-                    .with_subtitle(format!("{}.{}", schema.name, relation.name));
-                    let mut resource = Resource::new(
-                        &relation_id,
-                        match relation.kind {
-                            crate::model::RelationKind::Table => "database.table",
-                            crate::model::RelationKind::View => "database.view",
-                        },
-                        &relation.name,
-                    );
-                    if let Ok(action) = ActionSpec::operation(
-                        "browse",
-                        "Browse rows",
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &DbClientOperation::BrowseTable {
-                            connection_id: connection_id.clone(),
-                            schema: schema.name.clone(),
-                            table: relation.name.clone(),
-                        },
-                    ) {
-                        resource
-                            .actions
-                            .push(action.retry_policy(RetryPolicy::Idempotent));
-                    }
-                    index_resource(
-                        &mut rows,
-                        &mut resources,
-                        resource.clone(),
-                        "browse",
-                        format!("{} {} {:?}", schema.name, relation.name, relation.kind),
-                        result,
-                    );
-                    // A column carries its owning relation's real Browse
-                    // action under its own resource id, so exact resolution
-                    // and search activation agree without a no-op column verb.
-                    for column in &relation.columns {
-                        let column_id = catalog_resource_id(
-                            "column",
-                            &[&connection_id, &schema.name, &relation.name, &column.name],
-                        );
-                        let result = SearchResult::for_action(
-                            KIND,
-                            &column.name,
-                            ActionAddress::new(&column_id, "browse"),
-                        )
-                        .with_subtitle(format!(
-                            "{}.{} · {}",
-                            schema.name, relation.name, column.decl_type
-                        ));
-                        let mut column_resource =
-                            Resource::new(&column_id, "database.column", &column.name);
-                        column_resource.actions.clone_from(&resource.actions);
-                        index_resource(
-                            &mut rows,
-                            &mut resources,
-                            column_resource,
-                            "browse",
-                            format!(
-                                "{} {} {} {}",
-                                schema.name, relation.name, column.name, column.decl_type
-                            ),
-                            result,
-                        );
-                    }
-                }
-            }
+        index_active_catalog(session, &mut rows, &mut resources);
+        index_saved_queries(session, doc, &mut rows, &mut resources);
+        apply_catalog_snapshot(&self.state, revision, catalog, rows, resources);
+    }
+}
 
-            let result_id = catalog_resource_id(
-                "query-result",
-                &[&connection_id, &session.query_gen.to_string()],
-            );
-            if let Some(result) = &session.query_result {
-                let mut result_resource =
-                    Resource::new(&result_id, "database.query-result", result.message());
-                if let Ok(action) = ActionSpec::operation(
-                    "show",
-                    "Show query result",
-                    OperationKind::View,
-                    DB_OPERATION_TYPE,
-                    &DbClientOperation::ShowResult {
-                        connection_id: connection_id.clone(),
-                        result_generation: session.query_gen,
-                    },
-                ) {
-                    result_resource.actions.push(action);
-                }
-                if result.is_select
-                    && let Ok(action) = ActionSpec::operation(
-                        "export_csv",
-                        "Export CSV",
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &DbClientOperation::ExportCsv {
-                            connection_id: connection_id.clone(),
-                            result_generation: session.query_gen,
-                        },
-                    )
-                {
-                    result_resource.actions.push(action);
-                }
-                index_resource(
-                    &mut rows,
-                    &mut resources,
-                    result_resource,
-                    "show",
-                    format!("query result {}", result.message()),
-                    SearchResult::for_action(
-                        KIND,
-                        "Current query result",
-                        ActionAddress::new(&result_id, "show"),
-                    )
-                    .with_subtitle(result.message()),
-                );
-            }
+fn index_active_catalog(
+    session: &Session,
+    rows: &mut Vec<(String, String, SearchResult)>,
+    resources: &mut HashMap<String, Resource>,
+) {
+    let Some(connection) = session.active_connection().filter(|_| session.connected) else {
+        return;
+    };
+    let connection_id = connection.id.to_string();
+    index_database_and_schema(session, connection, &connection_id, rows, resources);
+    index_current_result(session, &connection_id, rows, resources);
+    index_transactions(&connection_id, rows, resources);
+    index_query_history(session, connection, &connection_id, rows, resources);
+}
 
-            let transaction_id = catalog_resource_id("transaction", &[&connection_id]);
-            let mut transaction =
-                Resource::new(&transaction_id, "database.transaction", "Transaction");
-            for (action_id, label, sql, destructive) in [
-                ("begin", "Begin transaction", "BEGIN", false),
-                ("commit", "Commit transaction", "COMMIT", true),
-                ("rollback", "Roll back transaction", "ROLLBACK", true),
-            ] {
-                if let Ok(action) = ActionSpec::operation(
-                    action_id,
-                    label,
-                    OperationKind::Effect,
-                    DB_OPERATION_TYPE,
-                    &DbClientOperation::RunQuery {
-                        connection_id: connection_id.clone(),
-                        sql: sql.to_string(),
-                    },
-                ) {
-                    transaction.actions.push(if destructive {
-                        action.destructive()
-                    } else {
-                        action
-                    });
-                }
-            }
-            index_resource(
-                &mut rows,
-                &mut resources,
-                transaction,
-                "begin",
-                "transaction begin commit rollback",
-                SearchResult::for_action(
-                    KIND,
-                    "Transaction",
-                    ActionAddress::new(&transaction_id, "begin"),
-                )
-                .with_subtitle("Active database"),
-            );
-
-            let history_id = catalog_resource_id("query-history", &[&connection_id]);
-            resources.insert(
-                history_id.clone(),
-                Resource::new(&history_id, "database.query-history", "Local query history"),
-            );
-            for entry in session
-                .query_history
-                .iter()
-                .filter(|entry| entry.connection_id == connection.id)
-            {
-                let entry_id = catalog_resource_id(
-                    "query-history-entry",
-                    &[&connection_id, &entry.generation.to_string()],
-                );
-                let title = format!("Query {} · {}", entry.generation, entry.summary);
-                let mut history_entry =
-                    Resource::new(&entry_id, "database.query-history-entry", &title);
-                if let Ok(action) = ActionSpec::operation(
-                    "run",
-                    "Run historical query",
-                    OperationKind::Effect,
-                    DB_OPERATION_TYPE,
-                    &DbClientOperation::RunHistory {
-                        connection_id: connection_id.clone(),
-                        generation: entry.generation,
-                    },
-                ) {
-                    history_entry.actions.push(action.destructive());
-                }
-                index_resource(
-                    &mut rows,
-                    &mut resources,
-                    history_entry,
-                    "run",
-                    format!("query {} {}", entry.generation, entry.summary),
-                    SearchResult::for_action(KIND, &title, ActionAddress::new(&entry_id, "run"))
-                        .with_subtitle("Local only — never shared with collaborators"),
-                );
-            }
+fn index_database_and_schema(
+    session: &Session,
+    connection: &crate::model::ConnectionProfile,
+    connection_id: &str,
+    rows: &mut Vec<(String, String, SearchResult)>,
+    resources: &mut HashMap<String, Resource>,
+) {
+    let database_name = if connection.database.is_empty() {
+        "Connected database".to_string()
+    } else {
+        connection.database.clone()
+    };
+    let database_id = catalog_resource_id("database", &[connection_id, &database_name]);
+    let mut database = Resource::new(&database_id, "database.database", &database_name);
+    if let Ok(action) = ActionSpec::operation(
+        "focus",
+        "Show database",
+        OperationKind::View,
+        DB_OPERATION_TYPE,
+        &DbClientOperation::FocusCatalog {
+            connection_id: connection_id.to_string(),
+            schema: None,
+        },
+    ) {
+        database.actions.push(action);
+    }
+    index_resource(
+        rows,
+        resources,
+        database,
+        "focus",
+        database_name.clone(),
+        SearchResult::for_action(
+            KIND,
+            &database_name,
+            ActionAddress::new(&database_id, "focus"),
+        )
+        .with_subtitle("Active database"),
+    );
+    for schema in &session.schema.schemas {
+        let schema_id = catalog_resource_id("schema", &[connection_id, &schema.name]);
+        let mut schema_resource = Resource::new(&schema_id, "database.schema", &schema.name);
+        if let Ok(action) = ActionSpec::operation(
+            "focus",
+            "Show schema",
+            OperationKind::View,
+            DB_OPERATION_TYPE,
+            &DbClientOperation::FocusCatalog {
+                connection_id: connection_id.to_string(),
+                schema: Some(schema.name.clone()),
+            },
+        ) {
+            schema_resource.actions.push(action);
         }
-        for query in SavedQueriesDoc::read(doc) {
-            let id = format!("saved-query:{}", query.id);
-            let result =
-                SearchResult::for_action(KIND, &query.name, ActionAddress::new(&id, "run"))
-                    .with_subtitle("Collaborative saved query");
-            // Saved SQL can contain credentials or tokens. Search only the
-            // intentional shared name/metadata, never arbitrary SQL literals.
-            let mut resource = Resource::new(&id, "database.saved-query", &query.name);
-            if let Ok(action) = ActionSpec::operation(
-                "run",
-                "Run saved query",
+        index_resource(
+            rows,
+            resources,
+            schema_resource,
+            "focus",
+            schema.name.clone(),
+            SearchResult::for_action(KIND, &schema.name, ActionAddress::new(&schema_id, "focus"))
+                .with_subtitle(format!("Schema in {database_name}")),
+        );
+        for relation in &schema.tables {
+            index_relation(connection_id, schema, relation, rows, resources);
+        }
+    }
+}
+
+fn index_relation(
+    connection_id: &str,
+    schema: &crate::model::SchemaInfo,
+    relation: &crate::model::TableInfo,
+    rows: &mut Vec<(String, String, SearchResult)>,
+    resources: &mut HashMap<String, Resource>,
+) {
+    let relation_id =
+        catalog_resource_id("relation", &[connection_id, &schema.name, &relation.name]);
+    let result = SearchResult::for_action(
+        KIND,
+        &relation.name,
+        ActionAddress::new(&relation_id, "browse"),
+    )
+    .with_subtitle(format!("{}.{}", schema.name, relation.name));
+    let mut resource = Resource::new(
+        &relation_id,
+        match relation.kind {
+            crate::model::RelationKind::Table => "database.table",
+            crate::model::RelationKind::View => "database.view",
+        },
+        &relation.name,
+    );
+    if let Ok(action) = ActionSpec::operation(
+        "browse",
+        "Browse rows",
+        OperationKind::Effect,
+        DB_OPERATION_TYPE,
+        &DbClientOperation::BrowseTable {
+            connection_id: connection_id.to_string(),
+            schema: schema.name.clone(),
+            table: relation.name.clone(),
+        },
+    ) {
+        resource
+            .actions
+            .push(action.retry_policy(RetryPolicy::Idempotent));
+    }
+    index_resource(
+        rows,
+        resources,
+        resource.clone(),
+        "browse",
+        format!("{} {} {:?}", schema.name, relation.name, relation.kind),
+        result,
+    );
+    for column in &relation.columns {
+        let column_id = catalog_resource_id(
+            "column",
+            &[connection_id, &schema.name, &relation.name, &column.name],
+        );
+        let result =
+            SearchResult::for_action(KIND, &column.name, ActionAddress::new(&column_id, "browse"))
+                .with_subtitle(format!(
+                    "{}.{} · {}",
+                    schema.name, relation.name, column.decl_type
+                ));
+        let mut column_resource = Resource::new(&column_id, "database.column", &column.name);
+        column_resource.actions.clone_from(&resource.actions);
+        index_resource(
+            rows,
+            resources,
+            column_resource,
+            "browse",
+            format!(
+                "{} {} {} {}",
+                schema.name, relation.name, column.name, column.decl_type
+            ),
+            result,
+        );
+    }
+}
+
+fn index_current_result(
+    session: &Session,
+    connection_id: &str,
+    rows: &mut Vec<(String, String, SearchResult)>,
+    resources: &mut HashMap<String, Resource>,
+) {
+    let result_id = catalog_resource_id(
+        "query-result",
+        &[connection_id, &session.query_gen.to_string()],
+    );
+    if let Some(result) = &session.query_result {
+        let mut result_resource =
+            Resource::new(&result_id, "database.query-result", result.message());
+        if let Ok(action) = ActionSpec::operation(
+            "show",
+            "Show query result",
+            OperationKind::View,
+            DB_OPERATION_TYPE,
+            &DbClientOperation::ShowResult {
+                connection_id: connection_id.to_string(),
+                result_generation: session.query_gen,
+            },
+        ) {
+            result_resource.actions.push(action);
+        }
+        if result.is_select
+            && let Ok(action) = ActionSpec::operation(
+                "export_csv",
+                "Export CSV",
                 OperationKind::Effect,
                 DB_OPERATION_TYPE,
-                &DbClientOperation::RunQuery {
-                    connection_id: session
-                        .active_connection_id()
-                        .map_or_else(String::new, |id| id.to_string()),
-                    sql: query.sql,
+                &DbClientOperation::ExportCsv {
+                    connection_id: connection_id.to_string(),
+                    result_generation: session.query_gen,
                 },
-            ) {
-                resource.actions.push(action.destructive());
-            }
-            if let Ok(action) = ActionSpec::immediate(
-                "remove",
-                "Remove saved query",
-                crate::actions::DB_ACTION_TYPE,
-                &crate::actions::remove_query_action(query.id),
-            ) {
-                resource.actions.push(action.destructive());
-            }
-            index_resource(
-                &mut rows,
-                &mut resources,
-                resource,
-                "run",
-                query.name.clone(),
-                result,
-            );
+            )
+        {
+            result_resource.actions.push(action);
         }
-        // `replace_all` reuses the retained catalogue and advances its
-        // generation exactly once, so every continuation from the previous
-        // snapshot is rejected instead of accidentally becoming current when
-        // a rebuilt catalog happens to have the same row count.
-        let Ok(()) = catalog.replace_all(rows) else {
-            return;
-        };
-        let mut state = self
-            .state
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.revision = Some(revision);
-        state.catalog = Some(catalog);
-        state.resources = resources;
+        index_resource(
+            rows,
+            resources,
+            result_resource,
+            "show",
+            format!("query result {}", result.message()),
+            SearchResult::for_action(
+                KIND,
+                "Current query result",
+                ActionAddress::new(&result_id, "show"),
+            )
+            .with_subtitle(result.message()),
+        );
     }
+}
 
+fn index_transactions(
+    connection_id: &str,
+    rows: &mut Vec<(String, String, SearchResult)>,
+    resources: &mut HashMap<String, Resource>,
+) {
+    let transaction_id = catalog_resource_id("transaction", &[connection_id]);
+    let mut transaction = Resource::new(&transaction_id, "database.transaction", "Transaction");
+    for (action_id, label, sql, destructive) in [
+        ("begin", "Begin transaction", "BEGIN", false),
+        ("commit", "Commit transaction", "COMMIT", true),
+        ("rollback", "Roll back transaction", "ROLLBACK", true),
+    ] {
+        if let Ok(action) = ActionSpec::operation(
+            action_id,
+            label,
+            OperationKind::Effect,
+            DB_OPERATION_TYPE,
+            &DbClientOperation::RunQuery {
+                connection_id: connection_id.to_string(),
+                sql: sql.to_string(),
+            },
+        ) {
+            transaction.actions.push(if destructive {
+                action.destructive()
+            } else {
+                action
+            });
+        }
+    }
+    index_resource(
+        rows,
+        resources,
+        transaction,
+        "begin",
+        "transaction begin commit rollback",
+        SearchResult::for_action(
+            KIND,
+            "Transaction",
+            ActionAddress::new(&transaction_id, "begin"),
+        )
+        .with_subtitle("Active database"),
+    );
+}
+
+fn index_query_history(
+    session: &Session,
+    connection: &crate::model::ConnectionProfile,
+    connection_id: &str,
+    rows: &mut Vec<(String, String, SearchResult)>,
+    resources: &mut HashMap<String, Resource>,
+) {
+    let history_id = catalog_resource_id("query-history", &[connection_id]);
+    resources.insert(
+        history_id.clone(),
+        Resource::new(&history_id, "database.query-history", "Local query history"),
+    );
+    for entry in session
+        .query_history
+        .iter()
+        .filter(|entry| entry.connection_id == connection.id)
+    {
+        let entry_id = catalog_resource_id(
+            "query-history-entry",
+            &[connection_id, &entry.generation.to_string()],
+        );
+        let title = format!("Query {} · {}", entry.generation, entry.summary);
+        let mut history_entry = Resource::new(&entry_id, "database.query-history-entry", &title);
+        if let Ok(action) = ActionSpec::operation(
+            "run",
+            "Run historical query",
+            OperationKind::Effect,
+            DB_OPERATION_TYPE,
+            &DbClientOperation::RunHistory {
+                connection_id: connection_id.to_string(),
+                generation: entry.generation,
+            },
+        ) {
+            history_entry.actions.push(action.destructive());
+        }
+        index_resource(
+            rows,
+            resources,
+            history_entry,
+            "run",
+            format!("query {} {}", entry.generation, entry.summary),
+            SearchResult::for_action(KIND, &title, ActionAddress::new(&entry_id, "run"))
+                .with_subtitle("Local only — never shared with collaborators"),
+        );
+    }
+}
+
+fn index_saved_queries(
+    session: &Session,
+    doc: &AutoCommit,
+    rows: &mut Vec<(String, String, SearchResult)>,
+    resources: &mut HashMap<String, Resource>,
+) {
+    for query in SavedQueriesDoc::read(doc) {
+        let id = format!("saved-query:{}", query.id);
+        let result = SearchResult::for_action(KIND, &query.name, ActionAddress::new(&id, "run"))
+            .with_subtitle("Collaborative saved query");
+        // Saved SQL can contain credentials or tokens. Search only the
+        // intentional shared name/metadata, never arbitrary SQL literals.
+        let mut resource = Resource::new(&id, "database.saved-query", &query.name);
+        if let Ok(action) = ActionSpec::operation(
+            "run",
+            "Run saved query",
+            OperationKind::Effect,
+            DB_OPERATION_TYPE,
+            &DbClientOperation::RunQuery {
+                connection_id: session
+                    .active_connection_id()
+                    .map_or_else(String::new, |id| id.to_string()),
+                sql: query.sql,
+            },
+        ) {
+            resource.actions.push(action.destructive());
+        }
+        if let Ok(action) = ActionSpec::immediate(
+            "remove",
+            "Remove saved query",
+            crate::actions::DB_ACTION_TYPE,
+            &crate::actions::remove_query_action(query.id),
+        ) {
+            resource.actions.push(action.destructive());
+        }
+        index_resource(rows, resources, resource, "run", query.name.clone(), result);
+    }
+}
+
+fn apply_catalog_snapshot(
+    state: &Arc<RwLock<IndexState>>,
+    revision: String,
+    catalog: SearchCatalog,
+    rows: Vec<(String, String, SearchResult)>,
+    resources: HashMap<String, Resource>,
+) {
+    // `replace_all` reuses the retained catalogue and advances its
+    // generation exactly once, so every continuation from the previous
+    // snapshot is rejected instead of accidentally becoming current when
+    // a rebuilt catalog happens to have the same row count.
+    let Ok(()) = catalog.replace_all(rows) else {
+        return;
+    };
+    let mut state = state
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    state.revision = Some(revision);
+    state.catalog = Some(catalog);
+    state.resources = resources;
+}
+
+impl DbSearchIndex {
     pub fn provider(&self) -> DbSearchProvider {
         DbSearchProvider {
             index: self.clone(),
