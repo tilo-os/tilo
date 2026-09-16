@@ -451,8 +451,10 @@ nix)
     nix flake check --no-build --all-systems
     stage=export-nix-closure
     mapfile -t requisites < <(nix-store --query --requisites result)
+    # Level 1 keeps the portable .nar.gz contract while avoiding a long,
+    # single-core level-9 compression tail on large ARM closures.
     nix-store --export "${requisites[@]}" \
-        | gzip -9 > "/artifacts/qos-session-$arch.nar.gz"
+        | gzip -1 > "/artifacts/qos-session-$arch.nar.gz"
     ;;
 *)
     echo "unknown package distribution: $distro" >&2
