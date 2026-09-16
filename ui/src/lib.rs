@@ -94,6 +94,7 @@ pub mod portal;
 pub mod presence;
 pub mod profiling;
 pub mod query_text;
+pub mod realtime_continuity;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange};
 pub mod text_assistance;
 pub mod text_break;

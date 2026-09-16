@@ -65,6 +65,7 @@ pub mod app;
 #[cfg(feature = "live-media")]
 pub mod audio;
 pub mod call;
+pub mod continuity;
 pub mod doc;
 pub mod emoji;
 pub mod events;

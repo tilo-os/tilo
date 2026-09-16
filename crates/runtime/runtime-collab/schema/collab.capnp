@@ -281,6 +281,14 @@ interface ChannelHandle {
   # workspace and process instance to this channel and keeps source locators
   # session-local; only sanitized now-playing metadata enters device sync.
   reportPlayback @36 (appId :Text, reportsJson :Data) -> ();
+
+  # Versioned, bounded active-session continuity control. The JSON vocabulary
+  # is owned by qos-app's realtime_continuity module. Device routing and app /
+  # workspace identity are re-derived by the broker; apps receive only opaque
+  # restart-scoped session capabilities.
+  realtimeCommand @37 (appId :Text, commandJson :Data) -> (replyJson :Data);
+  # Directed lifecycle edges for this exact certified application connection.
+  subscribeRealtime @38 () -> (stream :RealtimeStream);
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -363,6 +371,12 @@ interface ActionCatalogueStream {
   # Level-triggered: the first read returns the current complete directory,
   # then each publication/disconnect returns a fresh complete replacement.
   read @0 () -> (catalogueJson :Text);
+}
+
+interface RealtimeStream {
+  # Versioned qos-app RealtimeEvent JSON. Client-pull preserves bounded
+  # backpressure and prevents an idle app from accumulating callbacks.
+  read @0 () -> (eventJson :Data);
 }
 
 # One operation an application exports, as inert data.

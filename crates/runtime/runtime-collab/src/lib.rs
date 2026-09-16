@@ -227,6 +227,7 @@ pub use collab_capnp::collab_service::Client as CollabServiceClient;
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
+pub use collab_capnp::realtime_stream::Client as RealtimeStreamClient;
 pub use collab_capnp::stream::Client as StreamClient;
 pub use collab_capnp::task_run_stream::Client as TaskRunStreamClient;
 
@@ -386,6 +387,44 @@ pub struct ChannelHandle {
 }
 
 impl ChannelHandle {
+    /// Submit one bounded realtime-session continuity command. The broker
+    /// authenticates `app_id` against this channel and returns a versioned
+    /// application-contract reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the broker rejects the command or the
+    /// local capability disconnects.
+    pub async fn realtime_command(
+        &self,
+        app_id: &str,
+        command_json: &[u8],
+    ) -> Result<Vec<u8>, NotAvailable> {
+        let mut request = self.inner.realtime_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(command_json);
+        let reply = request.send().promise.await?;
+        Ok(reply.get()?.get_reply_json()?.to_vec())
+    }
+
+    /// Subscribe to lifecycle edges addressed to this exact application
+    /// connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the local broker is unavailable.
+    pub async fn subscribe_realtime(&self) -> Result<RealtimeStream, NotAvailable> {
+        let reply = self
+            .inner
+            .subscribe_realtime_request()
+            .send()
+            .promise
+            .await?;
+        Ok(RealtimeStream {
+            inner: Rc::new(reply.get()?.get_stream()?),
+        })
+    }
+
     /// Open the certified workspace-control capability for `target_device`.
     ///
     /// # Errors
@@ -1644,6 +1683,24 @@ pub struct Invocation {
 #[derive(Clone)]
 pub struct InvocationStream {
     inner: Rc<InvocationStreamClient>,
+}
+
+/// Client-pulled active-session lifecycle stream.
+#[derive(Clone)]
+pub struct RealtimeStream {
+    inner: Rc<RealtimeStreamClient>,
+}
+
+impl RealtimeStream {
+    /// Pull one bounded, versioned event payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker disconnects.
+    pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
+        let reply = self.inner.read_request().send().promise.await?;
+        Ok(reply.get()?.get_event_json()?.to_vec())
+    }
 }
 
 impl InvocationStream {
