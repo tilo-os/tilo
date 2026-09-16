@@ -53,6 +53,7 @@ pub mod app_chooser;
 pub mod auth;
 pub mod background;
 pub mod camera;
+pub mod capture_broker;
 pub mod clipboard;
 pub mod desktop_services;
 pub mod doc_store;
@@ -85,6 +86,10 @@ pub use app_chooser::AppChooserBackend;
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
 pub use background::BackgroundBackend;
 pub use camera::AccessBackend;
+pub use capture_broker::{
+    CaptureAuthorizationId, CaptureBroker, CaptureKind, CaptureLeaseId, CapturePrivacyEvent,
+    CaptureRevocation, CaptureSessionBinding, CaptureSourceView, LocalCaptureHandle,
+};
 pub use clipboard::ClipboardBackend;
 pub use desktop_services::DesktopPortalServices;
 pub use doc_store::{DocumentStore, DocumentStoreHandle, HostPathStore, PublishedDoc};
