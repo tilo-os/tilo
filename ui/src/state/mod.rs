@@ -78,8 +78,64 @@ impl DocumentFrontier {
         }
     }
 
+    fn observe_changes_after(&mut self, doc: &mut AutoCommit, before: &[ChangeHash]) {
+        self.observe(
+            doc.get_changes(before)
+                .into_iter()
+                .map(|change| change.hash()),
+        );
+    }
+
     pub fn heads(&self) -> &[ChangeHash] {
         &self.heads
+    }
+}
+
+/// A CRDT document paired with the explicit frontier for one collaboration
+/// route. This is the small, undo-free replica used by metadata documents such
+/// as room indexes; application documents add history through [`State`].
+pub struct DocumentReplica {
+    doc: AutoCommit,
+    outbound: DocumentFrontier,
+}
+
+impl DocumentReplica {
+    #[must_use]
+    pub fn new(mut doc: AutoCommit) -> Self {
+        let outbound = DocumentFrontier::at_document(&mut doc);
+        Self { doc, outbound }
+    }
+
+    #[must_use]
+    pub fn document(&self) -> &AutoCommit {
+        &self.doc
+    }
+
+    pub fn document_mut(&mut self) -> &mut AutoCommit {
+        &mut self.doc
+    }
+
+    pub fn pending_outbound_delta(&mut self) -> (Vec<u8>, Vec<ChangeHash>) {
+        self.outbound.pending_delta(&mut self.doc)
+    }
+
+    pub fn advance_outbound(&mut self, heads: Vec<ChangeHash>) {
+        self.outbound.advance(heads);
+    }
+
+    pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
+        let before = self.doc.get_heads();
+        let loaded = self.doc.load_incremental(data)?;
+        self.outbound.observe_changes_after(&mut self.doc, &before);
+        Ok(loaded)
+    }
+
+    pub fn merge_snapshot(&mut self, data: &[u8]) -> Result<(), automerge::AutomergeError> {
+        let mut incoming = AutoCommit::load(data)?;
+        let observed = incoming.get_heads();
+        self.doc.merge(&mut incoming)?;
+        self.outbound.observe(observed);
+        Ok(())
     }
 }
 
@@ -942,12 +998,7 @@ impl State {
         // merge, so undoing an earlier action still reverts exactly that
         // action, leaving the just-merged remote ops intact.
         self.undo.rebase(&mut self.doc);
-        let observed = self
-            .doc
-            .get_changes(&before)
-            .into_iter()
-            .map(|change| change.hash());
-        self.outbound.observe(observed);
+        self.outbound.observe_changes_after(&mut self.doc, &before);
         Ok(n)
     }
 
@@ -1262,6 +1313,27 @@ mod tests {
 
         state.advance_outbound(accepted_heads);
         assert!(state.pending_outbound_delta().0.is_empty());
+    }
+
+    #[test]
+    fn metadata_replica_does_not_lose_rejected_delta_on_receive() {
+        let mut replica = DocumentReplica::new(AutoCommit::new());
+        replica.document_mut().put(ROOT, "local", true).unwrap();
+        let (rejected, _) = replica.pending_outbound_delta();
+        assert!(!rejected.is_empty());
+
+        let mut peer = AutoCommit::new();
+        peer.put(ROOT, "remote", true).unwrap();
+        peer.commit();
+        replica.load_incremental(&peer.save_after(&[])).unwrap();
+
+        let (retry, accepted_heads) = replica.pending_outbound_delta();
+        let mut receiver = AutoCommit::new();
+        receiver.load_incremental(&retry).unwrap();
+        assert!(receiver.get(ROOT, "local").unwrap().is_some());
+        assert!(receiver.get(ROOT, "remote").unwrap().is_none());
+        replica.advance_outbound(accepted_heads);
+        assert!(replica.pending_outbound_delta().0.is_empty());
     }
 
     #[test]
