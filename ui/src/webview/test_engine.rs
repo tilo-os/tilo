@@ -191,7 +191,12 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::SetNativeFilterRules { .. }
             | WebViewCommand::SetContentFilters { .. }
             | WebViewCommand::SetUserScripts(_)
-            | WebViewCommand::ClearWebsiteData => {}
+            | WebViewCommand::ClearWebsiteData
+            | WebViewCommand::SetClearOnExit(_)
+            | WebViewCommand::ShowDeveloperTools
+            | WebViewCommand::PermissionDecision { .. }
+            | WebViewCommand::DownloadDecision { .. }
+            | WebViewCommand::CancelDownload { .. } => {}
             WebViewCommand::RequestMediaElement { request_id } => {
                 let event = inner.media_element.clone().map_or(
                     WebViewEvent::MediaElementUnavailable { request_id },

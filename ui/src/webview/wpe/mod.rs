@@ -1104,7 +1104,12 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                     }
                 }
             }
-            WebViewCommand::SetNativeFilterRules { .. } => {}
+            WebViewCommand::SetClearOnExit(_)
+            | WebViewCommand::ShowDeveloperTools
+            | WebViewCommand::PermissionDecision { .. }
+            | WebViewCommand::DownloadDecision { .. }
+            | WebViewCommand::CancelDownload { .. }
+            | WebViewCommand::SetNativeFilterRules { .. } => {}
         }
     }
 }

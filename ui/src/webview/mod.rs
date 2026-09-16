@@ -16,8 +16,8 @@
 //! view's top-left corner** — the widget does the logical→physical
 //! translation so engines never see toolkit layout space.
 
-pub mod profile;
 pub mod chromium;
+pub mod profile;
 pub mod test_engine;
 
 #[cfg(feature = "webview-adblock")]
@@ -135,7 +135,10 @@ pub enum WebViewCommand {
     /// Source filter rules for engines with native matching. An empty source
     /// preserves current rules. `None` preserves the enabled state, so an
     /// asynchronous list refresh cannot undo a user's disable action.
-    SetNativeFilterRules { rules: Arc<String>, enabled: Option<bool> },
+    SetNativeFilterRules {
+        rules: Arc<String>,
+        enabled: Option<bool>,
+    },
     /// Several compiled content-blocker JSON blobs, split because the full
     /// filter-list rule set exceeds `WebKit`'s per-filter cap. An empty
     /// `chunks` clears all filters.
@@ -170,12 +173,47 @@ pub enum WebViewCommand {
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
+    SetClearOnExit(bool),
+    ShowDeveloperTools,
+    PermissionDecision {
+        id: u32,
+        allow: bool,
+    },
+    DownloadDecision {
+        id: u32,
+        allow: bool,
+    },
+    CancelDownload {
+        id: u32,
+    },
 }
 
 /// Navigation / UI state changes from the engine to the host app, folded
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    PermissionRequested {
+        id: u32,
+        origin: String,
+        permissions: String,
+    },
+    PermissionClosed {
+        id: u32,
+    },
+    DownloadRequested {
+        id: u32,
+        url: String,
+        name: String,
+    },
+    DownloadUpdated {
+        id: u32,
+        state: String,
+        path: String,
+        name: String,
+        received: u64,
+        total: u64,
+        error: String,
+    },
     UriChanged(String),
     TitleChanged(String),
     /// Load progress in `0.0..=1.0`.
@@ -238,7 +276,9 @@ pub struct DmabufFrame {
 /// handle.
 pub trait WebViewEngine: Send + Sync {
     /// Whether this backend accepts source rules instead of WebKit JSON.
-    fn supports_native_filtering(&self) -> bool { false }
+    fn supports_native_filtering(&self) -> bool {
+        false
+    }
 
     /// Enqueue a command. Must never block on engine work.
     fn send(&self, cmd: WebViewCommand);

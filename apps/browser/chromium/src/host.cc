@@ -3,6 +3,7 @@
 #include "key_mapping.h"
 #include "request_filter.h"
 #include "document_scripts.h"
+#include "capabilities.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
@@ -96,11 +97,16 @@ double Number(CefRefPtr<CefDictionaryValue> d,const char* key) {
 class Client;
 CefRefPtr<Client> client;
 bool closing=false;
+bool clear_on_exit=false;
+std::string downloads_directory;
 CefRefPtr<qos::RequestFilter> request_filter;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
                      public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler {
  public:
+  Client():capabilities_(new qos::Capabilities(downloads_directory,Event)) {}
+  CefRefPtr<CefDownloadHandler> GetDownloadHandler() override { return capabilities_; }
+  CefRefPtr<CefPermissionHandler> GetPermissionHandler() override { return capabilities_; }
   CefRefPtr<CefRenderHandler> GetRenderHandler() override { return this; }
   CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
   CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
@@ -120,7 +126,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
-    if(browser_ && browser->IsSame(browser_)) { document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");CefQuitMessageLoop(); }
+    if(browser_ && browser->IsSame(browser_)) { capabilities_->Close();document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");CefQuitMessageLoop(); }
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,WindowOpenDisposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     browser->GetMainFrame()->LoadURL(url);return true;
@@ -207,6 +213,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
     } else if(op=="key") Key(d);
     else if(op=="scripts") { scripts_.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts_.push_back(list->GetString(i));document_scripts_->Configure(qos::ScriptSource(scripts_));SendScripts(); }
+    else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"));
+    else if(op=="download_decision") capabilities_->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));
+    else if(op=="download_cancel") capabilities_->CancelDownload(d->GetInt("id"));
+    else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
     else if(op=="devtools") { CefWindowInfo window;
       host->ShowDevTools(window,new DevToolsClient,CefBrowserSettings(),CefPoint());
     } else if(op=="clear_data") {
@@ -244,6 +254,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   CefRefPtr<CefBrowser> browser_;
  private:
+  CefRefPtr<qos::Capabilities> capabilities_;
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   std::string filter_rules_;bool filter_enabled_=true;
   int width_=1280,height_=800,pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
@@ -271,6 +282,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto type=[&](const char* key,cef_value_type_t expected){return d->GetType(key)==expected;};
   auto number=[&](const char* key){auto t=d->GetType(key);return t==VTYPE_INT || (t==VTYPE_DOUBLE && std::isfinite(d->GetDouble(key)));};
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
+  if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
+  if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="download_cancel") return type("id",VTYPE_INT) && d->GetInt("id")>0;
   if(op=="focus") return type("focused",VTYPE_BOOL);
   if(op=="resize") return type("width",VTYPE_INT) && type("height",VTYPE_INT) && number("scale_factor");
   if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
@@ -317,10 +331,11 @@ void CloseHost() {
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
   std::string profile;
-  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10); }
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12); }
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
   std::filesystem::create_directories(profile);
   profile=std::filesystem::canonical(profile).string();
+  if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
   Output writer;output=&writer;
   CefSettings settings;settings.windowless_rendering_enabled=true;settings.log_severity=LOGSEVERITY_WARNING;
   CefString(&settings.root_cache_path)=profile;CefString(&settings.cache_path)=profile+"/default";
@@ -338,5 +353,6 @@ int RunHost(int argc,char** argv) {
   if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
   std::atomic<bool> stop{false};std::thread reader([&]{ReadCommands(stop);});
   CefRunMessageLoop();stop=true;reader.join();client=nullptr;request_filter=nullptr;CefShutdown();writer.Stop();output=nullptr;
+  if(clear_on_exit) { std::error_code ec;std::filesystem::remove_all(profile+"/default",ec);if(ec) {std::cerr<<"Could not clear Chromium profile: "<<ec.message()<<"\n";return 1;} }
   return writer.Failed()?1:0;
 }
