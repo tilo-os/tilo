@@ -17,6 +17,9 @@ use cap_std::fs::Dir;
 use sha2::{Digest, Sha256};
 
 use super::destination_security;
+use super::migration_durability;
+use super::migration_journal::{FileReceipt, MigrationJournal};
+pub use super::migration_journal::{copy_folder_with_journal, resume_folder};
 use super::nofollow::{metadata_nofollow, open_directory_nofollow, same_directory_identity};
 
 const BUFFER_SIZE: usize = 64 * 1024;
@@ -50,7 +53,7 @@ impl CopyReport {
     }
 }
 
-fn changed(message: &str) -> io::Error {
+pub(super) fn changed(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
@@ -64,15 +67,15 @@ fn check_cancel(cancelled: &AtomicBool) -> io::Result<()> {
 
 /// Each edge retains both the parent capability and the observed child identity.
 /// Sharing ancestors bounds descriptors to the depth of the active traversal.
-struct PinnedDirectory {
-    file: File,
-    identity: Metadata,
+pub(super) struct PinnedDirectory {
+    pub(super) file: File,
+    pub(super) identity: Metadata,
     parent: Option<(Arc<Self>, OsString)>,
     created: bool,
 }
 
 impl PinnedDirectory {
-    fn open_absolute(path: &Path) -> io::Result<Arc<Self>> {
+    pub(super) fn open_absolute(path: &Path) -> io::Result<Arc<Self>> {
         if !path.is_absolute() {
             return Err(changed("folder grant must be a native absolute path"));
         }
@@ -103,7 +106,11 @@ impl PinnedDirectory {
         Ok(directory)
     }
 
-    fn open_child(self: &Arc<Self>, name: &OsStr, expected: &Metadata) -> io::Result<Arc<Self>> {
+    pub(super) fn open_child(
+        self: &Arc<Self>,
+        name: &OsStr,
+        expected: &Metadata,
+    ) -> io::Result<Arc<Self>> {
         reject_windows_placeholder(expected)?;
         let file = open_directory_nofollow(&self.file, Path::new(name), expected)?;
         Ok(Arc::new(Self {
@@ -114,7 +121,7 @@ impl PinnedDirectory {
         }))
     }
 
-    fn validate(&self) -> io::Result<()> {
+    pub(super) fn validate(&self) -> io::Result<()> {
         let mut current = self;
         while let Some((parent, name)) = &current.parent {
             let metadata = metadata_nofollow(&parent.file, Path::new(name))?;
@@ -132,7 +139,7 @@ impl PinnedDirectory {
         Ok(())
     }
 
-    fn contains_identity(&self, identity: &Metadata) -> bool {
+    pub(super) fn contains_identity(&self, identity: &Metadata) -> bool {
         let mut current = self;
         loop {
             if same_directory_identity(&current.identity, identity) {
@@ -145,7 +152,7 @@ impl PinnedDirectory {
         }
     }
 
-    fn validate_destination(&self) -> io::Result<()> {
+    pub(super) fn validate_destination(&self) -> io::Result<()> {
         self.validate()?;
         let mut current = self;
         let mut child = None;
@@ -160,7 +167,7 @@ impl PinnedDirectory {
         Ok(())
     }
 
-    fn create_child(self: &Arc<Self>, name: &OsStr) -> io::Result<Arc<Self>> {
+    pub(super) fn create_child(self: &Arc<Self>, name: &OsStr) -> io::Result<Arc<Self>> {
         // Establish namespace protection BEFORE mkdir. Observation after an
         // unprotected mkdir could adopt another account's replacement.
         self.validate_destination()?;
@@ -180,7 +187,7 @@ impl PinnedDirectory {
 }
 
 #[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
-fn reject_windows_placeholder(metadata: &Metadata) -> io::Result<()> {
+pub(super) fn reject_windows_placeholder(metadata: &Metadata) -> io::Result<()> {
     #[cfg(windows)]
     {
         use cap_primitives::fs::MetadataExt;
@@ -195,7 +202,7 @@ fn reject_windows_placeholder(metadata: &Metadata) -> io::Result<()> {
     Ok(())
 }
 
-fn same_snapshot(before: &Metadata, after: &Metadata) -> bool {
+pub(super) fn same_snapshot(before: &Metadata, after: &Metadata) -> bool {
     if !same_directory_identity(before, after)
         || before.len() != after.len()
         || before.modified().ok() != after.modified().ok()
@@ -244,6 +251,18 @@ fn preserve_times(file: &File, original: &Metadata) -> io::Result<()> {
 // FILE_WRITE_ATTRIBUTES. Reopen only the fresh destination using its pinned
 // parent, no-follow lookup and identity comparison before setting timestamps.
 fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) -> io::Result<()> {
+    preserve_directory_times_values(
+        directory,
+        original.accessed()?.into_std(),
+        original.modified()?.into_std(),
+    )
+}
+
+fn preserve_directory_times_values(
+    directory: &PinnedDirectory,
+    accessed: std::time::SystemTime,
+    modified: std::time::SystemTime,
+) -> io::Result<()> {
     use cap_fs_ext::OpenOptionsMaybeDirExt;
     directory.validate_destination()?;
     let (parent, name) = directory
@@ -265,20 +284,39 @@ fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) ->
     if !observed.is_dir() || !same_directory_identity(&directory.identity, &observed) {
         return Err(changed("destination changed before timestamp preservation"));
     }
-    preserve_times(&writable, original)
+    preserve_time_values(&writable, accessed, modified)
+}
+
+pub(super) fn preserve_time_values(
+    file: &File,
+    accessed: std::time::SystemTime,
+    modified: std::time::SystemTime,
+) -> io::Result<()> {
+    file.set_times(
+        fs::FileTimes::new()
+            .set_accessed(accessed)
+            .set_modified(modified),
+    )?;
+    let actual = file.metadata()?;
+    if actual.modified()? != modified || actual.accessed()? != accessed {
+        return Err(changed(
+            "destination cannot preserve source timestamps exactly",
+        ));
+    }
+    Ok(())
 }
 
 /// The only removable entry is an exclusive temporary file whose current
 /// no-follow identity still matches the handle created by this operation.
-struct OwnedTemporary {
+pub(super) struct OwnedTemporary {
     parent: Arc<PinnedDirectory>,
-    name: OsString,
-    file: File,
-    identity: Metadata,
+    pub(super) name: OsString,
+    pub(super) file: File,
+    pub(super) identity: Metadata,
 }
 
 impl OwnedTemporary {
-    fn create(parent: &Arc<PinnedDirectory>, excluded: &OsStr) -> io::Result<Self> {
+    pub(super) fn create(parent: &Arc<PinnedDirectory>, excluded: &OsStr) -> io::Result<Self> {
         parent.validate_destination()?;
         destination_security::check_private_file(&parent.file)?;
         let mut options = OpenOptions::new();
@@ -319,7 +357,7 @@ impl OwnedTemporary {
         Err(changed("cannot reserve an exclusive temporary filename"))
     }
 
-    fn validate(&self) -> io::Result<()> {
+    pub(super) fn validate(&self) -> io::Result<()> {
         self.parent.validate_destination()?;
         destination_security::check_private_file(&self.parent.file)?;
         destination_security::check_private_file(&self.file)?;
@@ -397,7 +435,11 @@ impl StagedFile {
         })
     }
 
-    fn verify_and_publish(mut self, cancelled: &AtomicBool) -> io::Result<u64> {
+    fn verify_and_publish(self, cancelled: &AtomicBool) -> io::Result<u64> {
+        self.publish(cancelled, false).map(|receipt| receipt.bytes)
+    }
+
+    fn publish(mut self, cancelled: &AtomicBool, durable: bool) -> io::Result<FileReceipt> {
         check_cancel(cancelled)?;
         self.temporary.validate()?;
         self.temporary.file.seek(SeekFrom::Start(0))?;
@@ -422,6 +464,9 @@ impl StagedFile {
         }
         preserve_times(&self.temporary.file, &self.original)?;
         self.temporary.file.sync_all()?;
+        if durable {
+            migration_durability::sync_file(&self.temporary.file)?;
+        }
         check_cancel(cancelled)?;
         self.temporary.validate()?;
         // Hard-link publication is atomic and fails if the destination exists.
@@ -438,13 +483,27 @@ impl StagedFile {
             return Err(changed("published destination identity changed"));
         }
         self.temporary.remove_owned()?;
-        Ok(self.bytes)
+        if durable {
+            migration_durability::sync_directory(&self.temporary.parent.file)?;
+        }
+        #[cfg(test)]
+        if durable {
+            super::migration_journal::crash_injection::boundary("file_published");
+        }
+        FileReceipt::new(
+            &self.source,
+            &self.original,
+            &self.temporary.file,
+            self.bytes,
+            self.digest,
+            durable,
+        )
     }
 }
 
 /// Bounded streaming, also used for the independent source/destination rereads.
 /// The expected length bounds work even if another process keeps appending.
-fn stream(
+pub(super) fn stream(
     source: &mut File,
     mut destination: Option<&mut File>,
     expected: u64,
@@ -483,6 +542,7 @@ struct Copier<'a, P> {
     cancelled: &'a AtomicBool,
     progress: P,
     report: CopyReport,
+    journal: Option<MigrationJournal>,
 }
 
 impl<P: FnMut(CopyProgress)> Copier<'_, P> {
@@ -508,6 +568,9 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
             return Err(changed("folder nesting exceeds supported depth"));
         }
         let before = Metadata::from_file(&source.file)?;
+        if let Some(journal) = &mut self.journal {
+            journal.enter_directory(relative, source, destination)?;
+        }
         let directory = Dir::from_std_file(source.file.try_clone()?);
         let mut names = Vec::new();
         for entry in directory.entries()? {
@@ -541,7 +604,16 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
             ));
         }
         destination.validate_destination()?;
-        preserve_directory_times(destination, &before)?;
+        if let Some(journal) = &self.journal {
+            let (accessed, modified) = journal.directory_times(relative)?;
+            preserve_directory_times_values(destination, accessed, modified)?;
+        } else {
+            preserve_directory_times(destination, &before)?;
+        }
+        if let Some(journal) = &mut self.journal {
+            migration_durability::sync_directory(&destination.file)?;
+            journal.complete_directory(relative)?;
+        }
         Ok(())
     }
 
@@ -553,6 +625,9 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
         relative: &Path,
         depth: usize,
     ) -> io::Result<()> {
+        if let Some(journal) = &self.journal {
+            journal.validate_relative(relative)?;
+        }
         let metadata = metadata_nofollow(&source.file, Path::new(name))?;
         if metadata.is_symlink() || (!metadata.is_dir() && !metadata.is_file()) {
             self.report.skipped.push((
@@ -564,7 +639,11 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
         reject_windows_placeholder(&metadata)?;
         if metadata.is_dir() {
             let source_child = source.open_child(name, &metadata)?;
-            let destination_child = destination.create_child(name)?;
+            let destination_child = if let Some(journal) = &mut self.journal {
+                journal.directory(relative, source, destination, name, &metadata)?
+            } else {
+                destination.create_child(name)?
+            };
             self.walk(
                 &source_child,
                 &destination_child,
@@ -572,8 +651,24 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
                 depth.saturating_add(1),
             )
         } else {
-            let staged = StagedFile::copy(source, destination, name, &metadata, self.cancelled)?;
-            let bytes = staged.verify_and_publish(self.cancelled)?;
+            let bytes = if let Some(journal) = &mut self.journal {
+                if let Some(bytes) =
+                    journal.revalidate_file(relative, source, destination, name, self.cancelled)?
+                {
+                    bytes
+                } else {
+                    let staged =
+                        StagedFile::copy(source, destination, name, &metadata, self.cancelled)?;
+                    let receipt = staged.publish(self.cancelled, true)?;
+                    let bytes = receipt.bytes;
+                    journal.record_file(relative, receipt)?;
+                    bytes
+                }
+            } else {
+                let staged =
+                    StagedFile::copy(source, destination, name, &metadata, self.cancelled)?;
+                staged.verify_and_publish(self.cancelled)?
+            };
             self.report.verified_bytes = self
                 .report
                 .verified_bytes
@@ -603,7 +698,18 @@ pub fn copy_folder(
     cancelled: &AtomicBool,
     progress: impl FnMut(CopyProgress),
 ) -> Result<CopyReport, String> {
+    copy_folder_internal(source, destination, cancelled, progress, None)
+}
+
+pub(super) fn copy_folder_internal(
+    source: &Path,
+    destination: &Path,
+    cancelled: &AtomicBool,
+    progress: impl FnMut(CopyProgress),
+    journal: Option<MigrationJournal>,
+) -> Result<CopyReport, String> {
     let mut copier = Copier {
+        journal,
         cancelled,
         progress,
         report: CopyReport {
@@ -637,9 +743,15 @@ pub fn copy_folder(
         return Ok(copier.report);
     }
     source.validate().map_err(|error| error.to_string())?;
-    let destination = parent
-        .create_child(name)
-        .map_err(|error| format!("cannot create fresh destination: {error}"))?;
+    let destination = if let Some(journal) = &mut copier.journal {
+        journal
+            .root(&source, &parent, name)
+            .map_err(|error| error.to_string())?
+    } else {
+        parent
+            .create_child(name)
+            .map_err(|error| format!("cannot create fresh destination: {error}"))?
+    };
     match copier.walk(&source, &destination, Path::new(""), 0) {
         Ok(()) => copier.report.scan_completed = true,
         Err(error) => copier
@@ -648,6 +760,11 @@ pub fn copy_folder(
             .push((PathBuf::new(), error.to_string())),
     }
     copier.report.cancelled = cancelled.load(Ordering::Relaxed);
+    if let Some(journal) = &mut copier.journal {
+        journal
+            .finish(&mut copier.report)
+            .map_err(|error| error.to_string())?;
+    }
     Ok(copier.report)
 }
 #[cfg(test)]
