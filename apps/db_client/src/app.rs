@@ -1039,6 +1039,31 @@ impl Widget for DbClientApp {
             }
             root.children.push(resource);
         }
+        // Live history is explicitly local: it is searchable and inspectable
+        // on this device, but its result-derived summaries never enter the
+        // shared document or a collaborator's resource tree.
+        if !self.session.query_history.is_empty() {
+            let mut history = Resource::new(
+                format!(
+                    "query-history:{}",
+                    active_id.map_or_else(String::new, |id| id.to_string())
+                ),
+                "database.query-history",
+                "Local query history",
+            );
+            for entry in self.session.query_history.iter().rev() {
+                history.children.push(Resource::new(
+                    format!("query-history-entry:{}", entry.generation),
+                    "database.query-history-entry",
+                    format!(
+                        "{} · {}",
+                        entry.sql.lines().next().unwrap_or("SQL"),
+                        entry.summary
+                    ),
+                ));
+            }
+            root.children.push(history);
+        }
         vec![root]
     }
 
