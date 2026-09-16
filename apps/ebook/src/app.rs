@@ -7415,6 +7415,13 @@ struct FontRowView<'a> {
     font: &'a FontEntry,
 }
 
+struct SchemeRowView<'a> {
+    rect: Rect,
+    scheme: &'a ColorScheme,
+    selected: bool,
+    renaming: bool,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -9689,9 +9696,19 @@ impl BooksApp {
                     y: start_y,
                 },
             ),
-            SettingsTab::Colours => {
-                self.draw_schemes_manager(scene, t, tr, theme, &c, col_x, col_w, start_y)
-            }
+            SettingsTab::Colours => self.draw_schemes_manager(
+                &mut EbookPaintCtx {
+                    scene: &mut *scene,
+                    transform: t,
+                    text: &mut *tr,
+                    theme,
+                },
+                SettingsColumnView {
+                    x: col_x,
+                    width: col_w,
+                    y: start_y,
+                },
+            ),
             SettingsTab::Shortcuts => self.draw_shortcuts_settings(
                 &mut EbookPaintCtx {
                     scene: &mut *scene,
@@ -10606,51 +10623,37 @@ impl BooksApp {
         }
     }
 
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
     fn draw_schemes_manager(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: SettingsColumnView,
     ) -> f64 {
-        let mut y = Self::draw_schemes_header(scene, t, tr, c, x, w, y);
-        y = self.draw_new_scheme_button(scene, t, tr, theme, x, y);
+        let mut y = Self::draw_schemes_header(ctx, view);
+        y = self.draw_new_scheme_button(ctx, SettingsColumnView { y, ..view });
 
         let schemes = self.schemes.clone();
         for s in &schemes {
-            y = self.draw_scheme_row(scene, t, tr, theme, c, x, w, y, s);
+            y = self.draw_scheme_row(ctx, SettingsColumnView { y, ..view }, s);
         }
         y + 8.0
     }
 
     /// "COLOUR SCHEMES" section title + description. Returns the y just
     /// below it.
-    fn draw_schemes_header(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        mut y: f64,
-    ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
+    fn draw_schemes_header(ctx: &mut EbookPaintCtx<'_>, view: SettingsColumnView) -> f64 {
+        let c = &ctx.theme.tokens.colors;
+        let mut y = view.y;
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "COLOUR SCHEMES",
             11.0,
             c.text_dim,
-            t * Affine::translate((x, y)),
+            ctx.transform * Affine::translate((view.x, y)),
             None,
             TextWeight::Semibold,
         );
         y += 20.0;
-        tr.draw_text(scene, "A scheme's colours are all edited through the colour picker. Toggle a scheme off to hide it from the quick settings.", 12.5, c.text_dim, t * Affine::translate((x, y)), Some(w as f32));
+        ctx.text.draw_text(ctx.scene, "A scheme's colours are all edited through the colour picker. Toggle a scheme off to hide it from the quick settings.", 12.5, c.text_dim, ctx.transform * Affine::translate((view.x, y)), Some(view.width as f32));
         y + 40.0
     }
 
@@ -10658,76 +10661,92 @@ impl BooksApp {
     /// scheme is then derived from it. Returns the y just below it.
     fn draw_new_scheme_button(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: SettingsColumnView,
     ) -> f64 {
         let new_label = "＋  New scheme from a colour…";
         let nw = f64::from(
-            tr.measure_weighted(new_label, 13.0, None, TextWeight::Semibold)
+            ctx.text
+                .measure_weighted(new_label, 13.0, None, TextWeight::Semibold)
                 .0,
         ) + 34.0;
-        let nrect = Rect::new(x, y, x + nw, y + 40.0);
+        let nrect = Rect::new(view.x, view.y, view.x + nw, view.y + 40.0);
         let nhover = self.is_hover(nrect);
         paint::fill_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             nrect,
             20.0,
             if nhover {
-                theme.accent_primary
+                ctx.theme.accent_primary
             } else {
-                theme.accent_primary.with_alpha_factor(0.16)
+                ctx.theme.accent_primary.with_alpha_factor(0.16)
             },
         );
         let ncol = if nhover {
             Color::from_rgb8(248, 248, 252)
         } else {
-            theme.accent_primary
+            ctx.theme.accent_primary
         };
-        tr.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             new_label,
             13.0,
             ncol,
-            t * Affine::translate((x + 17.0, y + 13.0)),
+            ctx.transform * Affine::translate((view.x + 17.0, view.y + 13.0)),
             None,
             TextWeight::Semibold,
         );
         self.push_hit(nrect, Action::NewSchemeViaPicker);
-        y + 40.0 + 24.0
+        view.y + 40.0 + 24.0
     }
 
     /// One colour-scheme row: swatches, name/status, and the right action
     /// cluster. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_scheme_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        column: SettingsColumnView,
         s: &ColorScheme,
     ) -> f64 {
-        let radii_md = f64::from(theme.tokens.radii.md);
+        let c = &ctx.theme.tokens.colors;
+        let radii_md = f64::from(ctx.theme.tokens.radii.md);
         let row_h = 68.0;
-        let cy = y + row_h / 2.0;
-        let card = Rect::new(x, y, x + w, y + row_h);
         let selected = if s.builtin {
             self.settings.scheme_id.is_empty() && self.settings.theme == ReadTheme::from_str(&s.id)
         } else {
             self.settings.scheme_id == s.id
         };
-        paint::fill_round(scene, t, card, radii_md, c.surfaces.raised);
+        let view = SchemeRowView {
+            rect: Rect::new(
+                column.x,
+                column.y,
+                column.x + column.width,
+                column.y + row_h,
+            ),
+            scheme: s,
+            selected,
+            renaming: matches!(
+                &self.renaming,
+                Some(rn) if rn.target == RenameTarget::Scheme(s.id.clone())
+            ),
+        };
+        paint::fill_round(
+            ctx.scene,
+            ctx.transform,
+            view.rect,
+            radii_md,
+            c.surfaces.raised,
+        );
         if selected {
-            paint::stroke_round(scene, t, card, radii_md, theme.accent_primary, 1.6);
+            paint::stroke_round(
+                ctx.scene,
+                ctx.transform,
+                view.rect,
+                radii_md,
+                ctx.theme.accent_primary,
+                1.6,
+            );
         }
 
         // For a custom scheme each swatch opens the colour picker on that
@@ -10737,75 +10756,48 @@ impl BooksApp {
         } else {
             Action::SetScheme(s.id.clone())
         };
-        let swx = self.draw_scheme_swatches(scene, t, theme, c, x, cy, s);
+        let swx = self.draw_scheme_swatches(ctx, &view);
 
         // Name + status. When renaming, the inline editor fills the name
         // slot (drawn below, once its right bound is known).
         let name_x = swx + 16.0;
-        let renaming_this =
-            matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(s.id.clone()));
-        Self::draw_scheme_name_and_status(
-            scene,
-            t,
-            tr,
-            theme,
-            c,
-            name_x,
-            y,
-            selected,
-            renaming_this,
-            s,
-        );
+        Self::draw_scheme_name_and_status(ctx, &view, name_x);
 
-        let rx = self.draw_scheme_actions(scene, t, tr, theme, c, x, w, cy, s);
+        let rx = self.draw_scheme_actions(ctx, &view);
 
-        self.draw_scheme_name_interaction(
-            scene,
-            t,
-            tr,
-            theme,
-            name_x,
-            y,
-            row_h,
-            rx,
-            renaming_this,
-            use_action,
-            s,
-        );
+        self.draw_scheme_name_interaction(ctx, &view, name_x, rx, use_action);
 
-        y + row_h + 10.0
+        view.rect.y1 + 10.0
     }
 
     /// Colour swatches (page / ink / accent). Returns the x just past
     /// them, where the name column starts.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each parameter is a distinct piece of the draw call (scene/transform/theme/\
-                  colours/position/scheme) and self is genuinely needed for push_hit; matches \
-                  the sibling draw_* row helpers in this section, which carry the same allow"
-    )]
     fn draw_scheme_swatches(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        cy: f64,
-        s: &ColorScheme,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &SchemeRowView<'_>,
     ) -> f64 {
-        let mut swx = x + 18.0;
+        let c = &ctx.theme.tokens.colors;
+        let s = view.scheme;
+        let cy = view.rect.center().y;
+        let mut swx = view.rect.x0 + 18.0;
         for (slot, col) in [s.page, s.ink, s.accent].into_iter().enumerate() {
             let srr = Rect::new(swx, cy - 12.0, swx + 24.0, cy + 12.0);
-            paint::fill_round(scene, t, srr, 6.0, Color::from_rgb8(col[0], col[1], col[2]));
+            paint::fill_round(
+                ctx.scene,
+                ctx.transform,
+                srr,
+                6.0,
+                Color::from_rgb8(col[0], col[1], col[2]),
+            );
             let edith = !s.builtin && self.is_hover(srr);
             paint::stroke_round(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 srr,
                 6.0,
                 if edith {
-                    theme.border_focus
+                    ctx.theme.border_focus
                 } else {
                     c.border_standard
                 },
@@ -10821,47 +10813,41 @@ impl BooksApp {
 
     /// Scheme name (skipped while its inline rename editor is active) and
     /// the Built-in/In use/Custom status label.
-    #[allow(clippy::too_many_arguments)]
     fn draw_scheme_name_and_status(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &SchemeRowView<'_>,
         name_x: f64,
-        y: f64,
-        selected: bool,
-        renaming_this: bool,
-        s: &ColorScheme,
     ) {
-        if !renaming_this {
-            tr.draw_text_weighted(
-                scene,
+        let c = &ctx.theme.tokens.colors;
+        let s = view.scheme;
+        if !view.renaming {
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &s.name,
                 15.0,
                 c.text_primary,
-                t * Affine::translate((name_x, y + 14.0)),
+                ctx.transform * Affine::translate((name_x, view.rect.y0 + 14.0)),
                 None,
                 TextWeight::Semibold,
             );
         }
         let sub = if s.builtin {
             "Built-in"
-        } else if selected {
+        } else if view.selected {
             "In use"
         } else {
             "Custom"
         };
-        tr.draw_text(
-            scene,
+        ctx.text.draw_text(
+            ctx.scene,
             sub,
             12.0,
-            if selected {
-                theme.accent_primary
+            if view.selected {
+                ctx.theme.accent_primary
             } else {
                 c.text_dim
             },
-            t * Affine::translate((name_x, y + 38.0)),
+            ctx.transform * Affine::translate((name_x, view.rect.y0 + 38.0)),
             None,
         );
     }
@@ -10869,27 +10855,22 @@ impl BooksApp {
     /// Right cluster, laid out right-to-left: enable switch, then the
     /// actions (Duplicate / Edit / delete — Edit and delete only for
     /// custom schemes). Returns the x just left of the cluster.
-    #[allow(clippy::too_many_arguments)]
     fn draw_scheme_actions(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        cy: f64,
-        s: &ColorScheme,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &SchemeRowView<'_>,
     ) -> f64 {
-        let mut rx = x + w - 18.0;
+        let c = &ctx.theme.tokens.colors;
+        let s = view.scheme;
+        let cy = view.rect.center().y;
+        let mut rx = view.rect.x1 - 18.0;
         let tog_w = 40.0;
         let tog_h = 22.0;
         rx -= tog_w;
         self.switch(
-            scene,
-            t,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.theme,
             Rect::new(rx, cy - tog_h / 2.0, rx + tog_w, cy + tog_h / 2.0),
             s.enabled,
             Action::ToggleSchemeEnabled(s.id.clone()),
@@ -10903,19 +10884,20 @@ impl BooksApp {
             } else {
                 c.text_dim.with_alpha_factor(0.6)
             };
-            paint::close(scene, t, del, dcolh, 1.4);
+            paint::close(ctx.scene, ctx.transform, del, dcolh, 1.4);
             self.push_hit(del, Action::DeleteScheme(s.id.clone()));
             rx -= 8.0;
             let ew = f64::from(
-                tr.measure_weighted("Edit", 12.0, None, TextWeight::Medium)
+                ctx.text
+                    .measure_weighted("Edit", 12.0, None, TextWeight::Medium)
                     .0,
             ) + 24.0;
             rx -= ew;
             self.pill(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
                 rx,
                 cy - 13.0,
                 26.0,
@@ -10927,15 +10909,16 @@ impl BooksApp {
             rx -= 8.0;
         }
         let dw = f64::from(
-            tr.measure_weighted("Duplicate", 12.0, None, TextWeight::Medium)
+            ctx.text
+                .measure_weighted("Duplicate", 12.0, None, TextWeight::Medium)
                 .0,
         ) + 24.0;
         rx -= dw;
         self.pill(
-            scene,
-            t,
-            tr,
-            theme,
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            ctx.theme,
             rx,
             cy - 13.0,
             26.0,
@@ -10949,44 +10932,48 @@ impl BooksApp {
 
     /// Name click: rename (custom) / apply (built-in), bounded before the
     /// right cluster. When renaming, the inline editor fills the slot.
-    #[allow(clippy::too_many_arguments)]
     fn draw_scheme_name_interaction(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &SchemeRowView<'_>,
         name_x: f64,
-        y: f64,
-        row_h: f64,
         rx: f64,
-        renaming_this: bool,
         use_action: Action,
-        s: &ColorScheme,
     ) {
+        let s = view.scheme;
         let name_end = rx - 12.0;
-        if renaming_this {
+        if view.renaming {
             let field_x1 = name_end.max(name_x + 120.0);
-            let field_rect = Rect::new(name_x - 6.0, y + 8.0, field_x1, y + 8.0 + 28.0);
+            let field_rect = Rect::new(
+                name_x - 6.0,
+                view.rect.y0 + 8.0,
+                field_x1,
+                view.rect.y0 + 36.0,
+            );
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field_rect);
-                rn.field
-                    .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
+                rn.field.draw(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text,
+                    ctx.theme,
+                    &ui::presence::PresenceCtx::empty(),
+                );
             }
         } else if name_end > name_x {
             if s.builtin {
                 self.push_hit(
-                    Rect::new(name_x, y + 8.0, name_end, y + row_h - 8.0),
+                    Rect::new(name_x, view.rect.y0 + 8.0, name_end, view.rect.y1 - 8.0),
                     use_action,
                 );
             } else {
                 self.push_hit(
-                    Rect::new(name_x, y + 8.0, name_end, y + 34.0),
+                    Rect::new(name_x, view.rect.y0 + 8.0, name_end, view.rect.y0 + 34.0),
                     Action::BeginRenameScheme(s.id.clone()),
                 );
                 // Below the name, the sub-label area applies the scheme.
                 self.push_hit(
-                    Rect::new(name_x, y + 34.0, name_end, y + row_h - 8.0),
+                    Rect::new(name_x, view.rect.y0 + 34.0, name_end, view.rect.y1 - 8.0),
                     use_action,
                 );
             }
