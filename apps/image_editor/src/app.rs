@@ -2795,6 +2795,19 @@ impl Widget for ImageEditorApp {
                 );
             }
         }
+        // Action targets already have stable keys. Key passive/container
+        // siblings too so this custom canvas never mixes identity- and
+        // position-addressed children.
+        for (index, child) in children.iter_mut().enumerate() {
+            if child.key.is_none() {
+                child.key = Some(ui::a11y::hash_key(&(
+                    "image-editor.root-child",
+                    child.role,
+                    child.name.as_deref(),
+                    index,
+                )));
+            }
+        }
         Some(
             AccessNode::new(Role::Canvas)
                 .with_name(if self.advanced_graph {
@@ -2810,6 +2823,19 @@ impl Widget for ImageEditorApp {
                 .with_children(children),
         )
     }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        for (_, button) in &self.toolbar {
+            if button.get_rect().area() > 0.0
+                && let Some(id) = button.test_id()
+            {
+                bindings.push(ui::widget::ControlBindingMetadata::semantic(id));
+            }
+        }
+        bindings
+    }
+
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -2853,6 +2879,27 @@ impl Widget for ImageEditorApp {
         }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
+        }
+        let toolbar_command = match target {
+            "image-editor.open" => Some(ToolbarCommand::Open),
+            "image-editor.undo" => Some(ToolbarCommand::Undo),
+            "image-editor.redo" => Some(ToolbarCommand::Redo),
+            "image-editor.exposure" => Some(ToolbarCommand::Exposure),
+            "image-editor.contrast" => Some(ToolbarCommand::Contrast),
+            "image-editor.colour" => Some(ToolbarCommand::Colour),
+            "image-editor.b&w" => Some(ToolbarCommand::Mono),
+            "image-editor.rotate" => Some(ToolbarCommand::Rotate),
+            "image-editor.crop" => Some(ToolbarCommand::Crop),
+            "image-editor.fit" => Some(ToolbarCommand::Fit),
+            "image-editor.compare" => Some(ToolbarCommand::Compare),
+            "image-editor.graph" => Some(ToolbarCommand::Graph),
+            "image-editor.more" => Some(ToolbarCommand::More),
+            "image-editor.export" => Some(ToolbarCommand::Export),
+            _ => None,
+        };
+        if let Some(command) = toolbar_command {
+            self.run_toolbar(state, command);
+            return true;
         }
         if let Some(id) = target.strip_prefix("image-editor.output.") {
             if !self.project.graph.nodes.contains_key(id) {
