@@ -11,8 +11,8 @@
 //! - The workspace-name button opens `WorkspaceSettings`; switching to the Roles
 //!   tab lets you toggle per-app permissions via `DataTable`; the Files tab
 //!   shows per-role × per-file matrix.
-//! - `SidebarWheelDisc` switches workspaces, resists at each end, and exposes
-//!   an add-workspace control on the disc band.
+//! - `SidebarWheelDisc` switches workspaces, resists with overscroll at each
+//!   end, and exposes an add-workspace control on the disc band.
 //! - Right-clicking a tile opens the context menu.
 //! - Hovering the workspace-name button reveals a tooltip after ~600 ms.
 //! - Creating a workspace (any path) triggers a toast.
