@@ -38,7 +38,7 @@ pub struct BrowserTabs {
     retired: Vec<Box<BrowserWidget>>,
     active_id: u64,
     next_id: u64,
-    bar: BrowserTabStrip,
+    bar: Box<BrowserTabStrip>,
     closed: Vec<String>,
     rect: Rect,
     dirty: bool,
@@ -64,7 +64,7 @@ impl BrowserTabs {
             retired: Vec::new(),
             active_id: 1,
             next_id: 2,
-            bar,
+            bar: Box::new(bar),
             closed: Vec::new(),
             rect: Rect::ZERO,
             dirty: true,
@@ -723,11 +723,11 @@ impl Widget for BrowserTabs {
         self.active().search_providers()
     }
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.bar, self.active()]
+        vec![self.bar.as_ref(), self.active()]
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let active_id = self.active_id;
-        let mut children: Vec<&mut dyn Widget> = vec![&mut self.bar];
+        let mut children: Vec<&mut dyn Widget> = vec![self.bar.as_mut()];
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
             children.push(tab.widget.as_mut());
         }
@@ -1051,6 +1051,48 @@ mod tests {
     }
 
     #[test]
+    fn composed_accesskit_tree_accepts_workspace_and_retained_strip_on_first_update() {
+        let mut tabs = workspace();
+        tabs.open(Some("https://two.test".into()), false).unwrap();
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let root = tabs.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        tree.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(800.0),
+                height: taffy::AvailableSpace::Definite(620.0),
+            },
+        )
+        .unwrap();
+        tabs.apply_layout(&tree, root, Point::ORIGIN);
+        let update = ui::accesskit_bridge::build_tree_update(&tabs, &nodes, None, 1.0);
+        let _consumer = accesskit_consumer::Tree::new(update, true);
+    }
+
+    #[test]
+    fn workspace_spinner_respects_loading_and_reduced_motion() {
+        let mut tabs = workspace();
+        tabs.bar.set_fixture_visual(1, None, true, false, false);
+        Widget::set_motion_reduced(&mut tabs, false);
+        assert!(Widget::needs_animation_frame(&tabs));
+        Widget::set_motion_reduced(&mut tabs, true);
+        assert!(!Widget::needs_animation_frame(&tabs));
+    }
+
+    #[test]
+    fn admitted_close_releases_cached_favicon_and_visual_state() {
+        let mut tabs = workspace();
+        for _ in 0..12 {
+            tabs.open(Some("https://icon.test/".into()), false).unwrap();
+            let id = tabs.active_id;
+            tabs.bar.set_fixture_visual(id, None, true, true, false);
+            tabs.close(id);
+            assert!(tabs.bar.visual_count() <= tabs.tabs.len());
+        }
+    }
+
+    #[test]
     fn switching_retains_independent_documents_and_reorder_keeps_identity() {
         let mut tabs = workspace();
         let first = tabs.active_id;
@@ -1149,6 +1191,25 @@ mod tests {
                 .iter()
                 .any(|node| node.action_target.as_deref() == Some("tab-overflow-after"))
         );
+        let previous = semantics
+            .children
+            .iter()
+            .find(|node| node.action_target.as_deref() == Some("tab-overflow-before"))
+            .expect("previous overflow control");
+        assert!(
+            !previous.state.disabled,
+            "pinned prefix must not hide earlier normal tabs"
+        );
+        let before = tabs.bar.active_id();
+        let mut doc = AutoCommit::new();
+        assert!(tabs.bar.perform_semantic_action(
+            "tab-overflow-before",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_ne!(tabs.bar.active_id(), before);
+        tabs.bar.set_active(before);
         let mut tree = TaffyTree::new();
         let node = tabs
             .bar

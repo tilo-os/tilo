@@ -1499,6 +1499,7 @@ dependencies = [
 name = "browser"
 version = "0.1.0"
 dependencies = [
+ "accesskit_consumer",
  "automerge",
  "base64 0.22.1",
  "blake3",

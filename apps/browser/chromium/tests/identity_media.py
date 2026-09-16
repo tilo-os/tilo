@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Native favicon, navigation-scoped media state and mute round-trip fixture."""
-import base64,http.server,io,json,os,queue,struct,subprocess,sys,tempfile,threading,time,wave
+import atexit,base64,http.server,io,json,os,queue,struct,subprocess,sys,tempfile,threading,time,wave
 
 audio=io.BytesIO()
 with wave.open(audio,"wb") as output:
@@ -14,6 +14,18 @@ class Page(http.server.BaseHTTPRequestHandler):
         elif self.path=="/frame":
             body=("<button id=p onclick='a.play()'>play</button><button id=s onclick='a.pause()'>pause</button><audio id=a loop src='data:audio/wav;base64,"+WAV+"'></audio>").encode()
             self.send_response(200);self.send_header("Content-Type","text/html")
+        elif self.path=="/slow.wav":
+            time.sleep(1.0);body=base64.b64decode(WAV)
+            self.send_response(200);self.send_header("Content-Type","audio/wav")
+        elif self.path=="/slow":
+            body=b"<button id=p onclick=\"document.title='slow clicked';a.play().catch(e=>document.title='slow failed')\">play</button><button id=s onclick='a.pause()'>pause</button><audio id=a preload=none src='/slow.wav'></audio>"
+            self.send_response(200);self.send_header("Content-Type","text/html")
+        elif self.path.startswith("/empty"):
+            body=b"<!doctype html><title>frame</title>"
+            self.send_response(200);self.send_header("Content-Type","text/html")
+        elif self.path=="/many":
+            body=("<!doctype html><title>many frames</title>"+"".join(f"<iframe src='/empty?{i}'></iframe>" for i in range(80))).encode()
+            self.send_response(200);self.send_header("Content-Type","text/html")
         else:
             body=("<link rel='icon' type='image/png' href='/icon.png'><title>media fixture</title><button id=p onclick='a.play()'>play</button><button id=s onclick='a.pause()'>pause</button><audio id=a loop src='data:audio/wav;base64,"+WAV+"'></audio><iframe src='/frame' style='position:absolute;left:0;top:50px;width:200px;height:80px;border:0'></iframe>").encode()
             self.send_response(200);self.send_header("Content-Type","text/html")
@@ -22,18 +34,30 @@ class Page(http.server.BaseHTTPRequestHandler):
 server=http.server.ThreadingHTTPServer(("127.0.0.1",0),Page);threading.Thread(target=server.serve_forever,daemon=True).start()
 with tempfile.TemporaryDirectory(prefix="qos-identity-") as profile:
     p=subprocess.Popen([sys.argv[1],"--profile="+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+    def cleanup():
+        if p.poll() is None:
+            p.terminate()
+            try:p.wait(timeout=5)
+            except subprocess.TimeoutExpired:p.kill();p.wait(timeout=5)
+        server.shutdown()
+    atexit.register(cleanup)
     q=queue.Queue()
     def exact(n):
         out=b""
-        while len(out)<n: out+=p.stdout.read(n-len(out))
+        while len(out)<n:
+            chunk=p.stdout.read(n-len(out))
+            if not chunk: raise EOFError("native helper closed its output")
+            out+=chunk
         return out
     def reader():
-        while True:
-            n,=struct.unpack("<I",exact(4));data=exact(n)
-            if data[0]==1:
-                event=json.loads(data[1:])
-                if os.environ.get("QOS_IDENTITY_DEBUG"):print(event,flush=True)
-                q.put(event)
+        try:
+            while True:
+                n,=struct.unpack("<I",exact(4));data=exact(n)
+                if data[0]==1:
+                    event=json.loads(data[1:])
+                    if os.environ.get("QOS_IDENTITY_DEBUG"):print(event,flush=True)
+                    q.put(event)
+        except Exception as error:q.put({"event":"reader_error","message":str(error)})
     threading.Thread(target=reader,daemon=True).start()
     def send(**value):
         data=b"\1"+json.dumps(value).encode();p.stdin.write(struct.pack("<I",len(data))+data);p.stdin.flush()
@@ -41,6 +65,7 @@ with tempfile.TemporaryDirectory(prefix="qos-identity-") as profile:
         end=time.monotonic()+45
         while time.monotonic()<end:
             event=q.get(timeout=end-time.monotonic())
+            if event["event"]=="reader_error":raise AssertionError(event["message"])
             if test(event):return event
         raise AssertionError("event timeout")
     base=f"http://127.0.0.1:{server.server_port}"
@@ -67,8 +92,28 @@ with tempfile.TemporaryDirectory(prefix="qos-identity-") as profile:
     send(op="navigate",url=base+"/")
     reset=until(lambda e:e["event"]=="media_state" and not e["playing"] and e["document_generation"]>before_reload["document_generation"])
     assert reset["page_url"]==base+"/"
+    send(op="navigate",url=base+"/slow");until(lambda e:e["event"]=="loaded" and e.get("url")==base+"/slow")
+    time.sleep(0.2)
+    send(op="mouse_button",button="left",down=True,x=25,y=12);send(op="mouse_button",button="left",down=False,x=25,y=12)
+    until(lambda e:e["event"]=="title" and e["title"]=="slow clicked")
+    slow_playing=until(lambda e:e["event"]=="media_state" and e["playing"] and e["page_url"]==base+"/slow")
+    send(op="mouse_button",button="left",down=True,x=75,y=12);send(op="mouse_button",button="left",down=False,x=75,y=12)
+    until(lambda e:e["event"]=="media_state" and not e["playing"] and e["document_generation"]==slow_playing["document_generation"])
+    send(op="navigate",url=base+"/many")
+    loaded_many=False;frame_limit=None
+    while not loaded_many or frame_limit is None:
+        event=q.get(timeout=45)
+        loaded_many |= event["event"]=="loaded" and event.get("url")==base+"/many"
+        if event["event"]=="media_frame_limit":frame_limit=event
+    assert frame_limit["tracked_frames"]==64
+    send(op="navigate",url=base+"/");until(lambda e:e["event"]=="loaded" and e.get("url")==base+"/")
+    time.sleep(0.2)
+    send(op="mouse_button",button="left",down=True,x=25,y=12);send(op="mouse_button",button="left",down=False,x=25,y=12)
+    until(lambda e:e["event"]=="media_state" and e["playing"] and e["page_url"]==base+"/")
+    send(op="mouse_button",button="left",down=True,x=75,y=12);send(op="mouse_button",button="left",down=False,x=75,y=12)
+    until(lambda e:e["event"]=="media_state" and not e["playing"] and e["page_url"]==base+"/")
     send(op="navigate",url=base+"/next")
     until(lambda e:e["event"]=="uri" and e["url"].endswith("/next"))
     until(lambda e:e["event"]=="media_state" and not e["playing"] and e["page_url"].endswith("/next"))
-    send(op="shutdown");p.wait(timeout=15);print("PASS: bounded favicon, frame-aggregated media start/pause, reload/navigation reset and native mute round-trip")
-server.shutdown()
+    send(op="shutdown");p.wait(timeout=15);print("PASS: bounded favicon/frame state, preload-none playback, lifecycle reset, media start/pause and native mute round-trip")
+server.shutdown();atexit.unregister(cleanup)

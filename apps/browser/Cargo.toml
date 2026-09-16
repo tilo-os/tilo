@@ -61,6 +61,7 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+accesskit_consumer = "0.39"
 # extension install tests unpack into throwaway directories
 tempfile.workspace = true
 # block_on for the headless dmabuf probe examples
