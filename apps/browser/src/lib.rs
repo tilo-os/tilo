@@ -38,6 +38,7 @@
 
 pub mod actions;
 pub mod address_overlay;
+mod back_hold;
 pub mod blocker;
 mod native_blocker;
 pub mod browser_widget;

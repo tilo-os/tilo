@@ -830,6 +830,8 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                     load_uri(state, &uri);
                 }
             }
+            WebViewCommand::RequestNavigationHistory { .. }
+            | WebViewCommand::NavigateToHistoryEntry { .. } => {}
             WebViewCommand::GoBack => ffi::webkit_web_view_go_back(state.view),
             WebViewCommand::GoForward => ffi::webkit_web_view_go_forward(state.view),
             WebViewCommand::Reload => ffi::webkit_web_view_reload(state.view),

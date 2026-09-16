@@ -4,6 +4,7 @@
 #include "request_filter.h"
 #include "document_scripts.h"
 #include "capabilities.h"
+#include "navigation_history.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
@@ -121,17 +122,18 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     browser_=browser;
     document_scripts_=new qos::DocumentScripts(browser,[this] { FlushNavigation(); },[] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
+    navigation_history_=new qos::NavigationHistory(browser,Event);navigation_history_->Attach();
     auto d=CefDictionaryValue::Create();d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event("ready",d);
     if(closing) browser_->GetHost()->CloseBrowser(true);
   }
   bool DoClose(CefRefPtr<CefBrowser>) override { return false; }
   void OnBeforeClose(CefRefPtr<CefBrowser> browser) override {
-    if(browser_ && browser->IsSame(browser_)) { capabilities_->Close();document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");CefQuitMessageLoop(); }
+    if(browser_ && browser->IsSame(browser_)) { capabilities_->Close();navigation_history_->Detach();navigation_history_=nullptr;document_scripts_->Detach();document_scripts_=nullptr;browser_=nullptr;Event("closed");CefQuitMessageLoop(); }
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,WindowOpenDisposition,bool,const CefPopupFeatures&,CefWindowInfo&,CefRefPtr<CefClient>&,CefBrowserSettings&,CefRefPtr<CefDictionaryValue>&,bool*) override {
     browser->GetMainFrame()->LoadURL(url);return true;
   }
-  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) StringEvent("uri","url",url); }
+  void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { navigation_history_->Invalidate();StringEvent("uri","url",url); } }
   void OnTitleChange(CefRefPtr<CefBrowser>,const CefString& title) override { StringEvent("title","title",title); }
   void OnLoadingProgressChange(CefRefPtr<CefBrowser>,double progress) override { auto d=CefDictionaryValue::Create();d->SetDouble("progress",progress);Event("progress",d); }
   void OnLoadingStateChange(CefRefPtr<CefBrowser>,bool,bool back,bool forward) override { auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d); }
@@ -188,12 +190,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::string op=d->GetString("op");
     if(op=="shutdown") { CloseHost();return; }
     if(!browser_ || closing) return;
-    if((op=="navigate" || op=="back" || op=="forward" || op=="reload") && document_scripts_->Busy()) {
+    if((op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && document_scripts_->Busy()) {
       if(pending_navigation_.size()>=256) { StringEvent("error","message","Document-start navigation queue exhausted");CloseHost();return; }
       pending_navigation_.push_back(d->Copy(false));return;
     }
     auto host=browser_->GetHost();auto frame=browser_->GetMainFrame();
     if(op=="navigate") frame->LoadURL(d->GetString("url"));
+    else if(op=="navigation_history") navigation_history_->Request(d->GetInt("request_id"));
+    else if(op=="history_entry") navigation_history_->Navigate(d->GetInt("request_id"),d->GetInt("id"));
     else if(op=="back") browser_->GoBack();
     else if(op=="forward") browser_->GoForward();
     else if(op=="reload") browser_->Reload();
@@ -254,6 +258,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   CefRefPtr<CefBrowser> browser_;
  private:
+  CefRefPtr<qos::NavigationHistory> navigation_history_;
   CefRefPtr<qos::Capabilities> capabilities_;
   CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
   std::string filter_rules_;bool filter_enabled_=true;
@@ -281,6 +286,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto op=d->GetString("op").ToString();
   auto type=[&](const char* key,cef_value_type_t expected){return d->GetType(key)==expected;};
   auto number=[&](const char* key){auto t=d->GetType(key);return t==VTYPE_INT || (t==VTYPE_DOUBLE && std::isfinite(d->GetDouble(key)));};
+  if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" || (type("id",VTYPE_INT) && d->GetInt("id")>0));
   if(op=="navigate") return type("url",VTYPE_STRING) && !d->GetString("url").empty();
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);

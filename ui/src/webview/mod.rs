@@ -91,10 +91,25 @@ pub enum NamedKey {
     PageDown,
 }
 
+/// An actual session entry; ids are engine-owned and valid for its snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavigationEntry {
+    pub id: u32,
+    pub url: String,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// Load the given (already normalised) URL.
     Navigate(String),
+    RequestNavigationHistory {
+        request_id: u32,
+    },
+    NavigateToHistoryEntry {
+        request_id: u32,
+        id: u32,
+    },
     GoBack,
     GoForward,
     Reload,
@@ -192,6 +207,10 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    NavigationHistory {
+        request_id: u32,
+        entries: Vec<NavigationEntry>,
+    },
     PermissionRequested {
         id: u32,
         origin: String,
