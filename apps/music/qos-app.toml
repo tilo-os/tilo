@@ -35,6 +35,9 @@ x86_64 = "v3"
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
 
+[continuity]
+required = ["presentation", "semantic"]
+
 [[trust.attested_by]]
 attestor  = "qos-demo/2026.07"
 claim     = "deadbeef"
