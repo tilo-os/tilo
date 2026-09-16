@@ -2898,6 +2898,18 @@ impl App {
         self.action_palette = Some(palette);
     }
 
+    fn open_action_palette_at(&mut self, address: &qos_actions::ActionAddress) -> bool {
+        self.open_action_palette();
+        let activated = self
+            .action_palette
+            .as_mut()
+            .is_some_and(|palette| palette.activate_address(&address.resource, &address.action));
+        if !activated {
+            self.close_action_palette();
+        }
+        activated
+    }
+
     fn filter_resource_for_local_actor(
         &self,
         mut resource: qos_actions::Resource,
@@ -7709,6 +7721,13 @@ impl AppHandler {
             window.request_redraw();
         }
 
+        if let Some(address) = app.root_widget.take_action_palette_request()
+            && app.open_action_palette_at(&address)
+        {
+            app.layout_dirty = true;
+            window.request_redraw();
+        }
+
         app.broadcast_focus_presence();
         app.broadcast_location_presence();
         app.broadcast_view_presence();
@@ -10467,6 +10486,24 @@ mod action_palette_tests {
         assert!(
             app.action_palette().is_none(),
             "palette closed after selection"
+        );
+    }
+
+    #[test]
+    fn exact_widget_palette_request_resolves_only_declared_actions() {
+        let mut app = App::new(State::new(), Box::new(Publisher));
+        app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+        assert!(app.open_action_palette_at(&qos_actions::ActionAddress::new("test.obj:1", "flip")));
+        assert!(
+            !app.open_action_palette_at(&qos_actions::ActionAddress::new(
+                "test.obj:1",
+                "not-declared"
+            )),
+            "a stale or invented widget request is refused"
+        );
+        assert!(
+            app.action_palette().is_none(),
+            "a refused exact request does not leave an unrelated palette open"
         );
     }
 

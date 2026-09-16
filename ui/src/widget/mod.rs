@@ -563,6 +563,15 @@ pub trait Widget {
         None
     }
 
+    /// One-shot request to open the host's action palette directly at a typed
+    /// resource action. Parameter collection and permission checks remain host
+    /// policy; widgets only name an address already present in `resources()`.
+    fn take_action_palette_request(&mut self) -> Option<qos_actions::ActionAddress> {
+        self.children_mut()
+            .into_iter()
+            .find_map(Widget::take_action_palette_request)
+    }
+
     /// Rising-edge source-geometry updates for an already adopted generic
     /// floating surface. App-owned native call/navigation windows publish
     /// complete presentation geometry below; browser media `PiP` instead keeps
