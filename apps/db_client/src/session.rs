@@ -55,6 +55,18 @@ pub enum RunStatus {
     Error(String),
 }
 
+/// A bounded per-peer record of a completed live query. It is discoverable as
+/// a local resource, but never replicated: result data can reveal a server or
+/// rows another collaborator is not authorized to access.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryHistoryEntry {
+    pub generation: usize,
+    pub sql: String,
+    pub summary: String,
+}
+
+const QUERY_HISTORY_LIMIT: usize = 20;
+
 /// Everything the app needs at runtime that is not collaborative.
 pub struct Session {
     /// Saved connection profiles shown in the sidebar. For the live app these
@@ -83,6 +95,8 @@ pub struct Session {
     pub data_page_size: usize,
     /// Bumped whenever a fresh query / data result lands, so the grids rebind.
     pub query_gen: usize,
+    /// Bounded local history used for search/resource discovery.
+    pub query_history: Vec<QueryHistoryEntry>,
     pub data_gen: usize,
     /// Session-only passwords keyed by profile id. Never persisted and never
     /// written to the shared document — each peer supplies its own.
@@ -91,6 +105,7 @@ pub struct Session {
     /// both match this value as well as the connection UUID.
     next_query_generation: u64,
     active_query: Option<(Uuid, u64)>,
+    active_query_sql: String,
     cancelled_query: Option<(Uuid, u64)>,
     /// The background engine thread.
     worker: DbWorker,
@@ -121,10 +136,12 @@ impl Session {
             data_offset: 0,
             data_page_size: 100,
             query_gen: 0,
+            query_history: Vec::new(),
             data_gen: 0,
             passwords: HashMap::new(),
             next_query_generation: 0,
             active_query: None,
+            active_query_sql: String::new(),
             cancelled_query: None,
             worker: DbWorker::spawn(),
         }
@@ -251,9 +268,18 @@ impl Session {
                 }
                 match result {
                     Ok(r) => {
-                        self.status = RunStatus::Ok(r.message());
+                        let summary = r.message();
+                        self.status = RunStatus::Ok(summary.clone());
                         self.query_result = Some(r);
                         self.query_gen += 1;
+                        self.query_history.push(QueryHistoryEntry {
+                            generation: self.query_gen,
+                            sql: std::mem::take(&mut self.active_query_sql),
+                            summary,
+                        });
+                        if self.query_history.len() > QUERY_HISTORY_LIMIT {
+                            self.query_history.remove(0);
+                        }
                         if let Some(schema) = schema {
                             self.schema = schema;
                         }
@@ -457,6 +483,7 @@ impl Session {
         };
         self.next_query_generation = generation;
         self.active_query = Some((connection_id, generation));
+        self.active_query_sql = sql.to_string();
         self.worker.request(DbRequest::Query {
             connection_id,
             generation,
