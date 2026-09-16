@@ -39,7 +39,7 @@ use ui::theme::Theme;
 use ui::widget::{CodeEditor, EmptyState, FlapState, Language, SplitLayout, Widget};
 
 use crate::connect_modal::ConnectModal;
-use crate::doc::{ConnectionsDoc, EditorDoc};
+use crate::doc::{ConnectionsDoc, EditorDoc, SavedQueriesDoc};
 use crate::grid::GridView;
 use crate::model::Engine;
 use crate::schema_tree::{SchemaTree, TreeClick};
@@ -793,7 +793,7 @@ impl Widget for DbClientApp {
         clippy::too_many_lines,
         reason = "the resource tree intentionally keeps every externally searchable database capability in one auditable definition"
     )]
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         let mut root = Resource::new("database", "database.workspace", "Database");
         let active_id = self.session.active_connection_id();
         let query_connection_id = active_id.map_or_else(String::new, |id| id.to_string());
@@ -819,6 +819,26 @@ impl Widget for DbClientApp {
             );
         }
         root.actions.push(query);
+        let sql = EditorDoc::read_sql(doc);
+        if !sql.trim().is_empty() {
+            root.actions.push(
+                ActionSpec::prompted(
+                    "save_query",
+                    "Save current query",
+                    "Query name",
+                    "Saved query",
+                    qos_actions::ExecutionLocus::ClientLocal,
+                    move |name| {
+                        crate::actions::encode(&crate::actions::save_query_action(
+                            Uuid::new_v4(),
+                            name,
+                            &sql,
+                        ))
+                    },
+                )
+                .reversible(),
+            );
+        }
         for connection in &self.session.connections {
             let id = connection.id;
             let mut resource = Resource::new(
@@ -985,6 +1005,37 @@ impl Widget for DbClientApp {
                     }
                 }
                 resource.children.push(transaction);
+            }
+            root.children.push(resource);
+        }
+        for saved in SavedQueriesDoc::read(doc) {
+            let query_id = saved.id;
+            let sql = saved.sql.clone();
+            let mut resource = Resource::new(
+                format!("saved-query:{query_id}"),
+                "database.saved-query",
+                saved.name,
+            );
+            let connection_id = active_id.map_or_else(String::new, |id| id.to_string());
+            if let Ok(run) = ActionSpec::operation(
+                "run",
+                "Run saved query",
+                OperationKind::Effect,
+                DB_OPERATION_TYPE,
+                &DbClientOperation::RunQuery { connection_id, sql },
+            ) {
+                resource.actions.push(
+                    run.execution(ExecutionMode::Background { cancellable: true })
+                        .retry_policy(RetryPolicy::AtMostOnce),
+                );
+            }
+            if let Ok(remove) = ActionSpec::immediate(
+                "remove",
+                "Remove saved query",
+                crate::actions::DB_ACTION_TYPE,
+                &crate::actions::remove_query_action(query_id),
+            ) {
+                resource.actions.push(remove.destructive());
             }
             root.children.push(resource);
         }
