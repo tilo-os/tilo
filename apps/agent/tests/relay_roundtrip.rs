@@ -282,9 +282,7 @@ fn drive_peer_to_table(
                 );
                 saw_scribe_presence = true;
                 publish_word_processor_actions(&mut peer, &replica);
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
             CollabEvent::RemotePresenceUpdate {
@@ -595,9 +593,7 @@ fn drive_files_peer(mut files_peer: UnixStream, mut files_doc: AutoCommit) {
             ..
         } = event
         {
-            let snap = CollabRequest::DocumentSnapshot {
-                data: files_doc.save(),
-            };
+            let snap = CollabRequest::document_snapshot(files_doc.save());
             send(&mut files_peer, &snap).unwrap();
         }
     }
@@ -629,9 +625,7 @@ fn drive_word_processor_to_table(
                 // taken the wrong document by the time this arrives.
                 std::thread::sleep(Duration::from_millis(400));
                 publish_word_processor_actions(&mut wp_peer, &replica);
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut wp_peer, &snap).unwrap();
             }
             CollabEvent::Invocation {
@@ -888,9 +882,7 @@ fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
                 ..
             } => {
                 publish_word_processor_actions(&mut peer, &replica);
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
             CollabEvent::Invocation {
@@ -1033,9 +1025,7 @@ fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
                 ..
             } => {
                 publish_word_processor_actions(&mut peer, &replica);
-                let snap = CollabRequest::DocumentSnapshot {
-                    data: replica.save(),
-                };
+                let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
             CollabEvent::Invocation {
