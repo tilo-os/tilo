@@ -74,3 +74,33 @@ CEF stderr still reports observer-list reentrancy diagnostics, a process signatu
 validation-category diagnostic with ad hoc signing, and a nested helper Resources
 sandbox-extension warning. Those diagnostics did not prevent the verified renderer,
 HTTPS navigation or shutdown; they are not silently counted as resolved here.
+
+## Review round 1: request initiators, CSP cosmetics, Linux onboarding
+
+The review fixture exposed two native defects, reproduced in permanent tests:
+
+- Cross-origin iframe navigation used the target frame URL as the source. The
+  third-party/domain rule requests incorrectly reached the server and the inverse
+  first-party rule incorrectly blocked a cross-site frame. Requests now prefer
+  the CEF request initiator; subdocument fallback uses the embedding parent frame.
+  Tests cover cross-site/same-site frames and source-domain restrictions.
+- An inserted `<style>` element was refused by `style-src 'none'`, leaving all
+  cosmetic fixtures visible. Cosmetics now use a constructed CSSStyleSheet
+  adopted by the document. This does not relax CSP. Tests verify initial/dynamic
+  hiding, disable/re-enable, preservation of the page's own adopted stylesheet,
+  and continued blocking of page-authored inline CSS.
+
+The parent separately isolated Linux startup hanging inside CefInitialize to
+Chromium's first-run flow. The original Linux host passed HTTPS smoke with only
+`--no-first-run` added. The host now adds that switch for the primary process:
+qOS owns onboarding and cannot present Chromium's separate first-run UI. No
+password-store, sandbox, or TLS override was added.
+
+Validation after these changes: macOS native build successful; all **11 blocker
+fixtures passed in 20.219s**; native protocol ctest passed; strict macOS bundle
+signature/symlink verification passed. Existing four native regressions passed in 7.796s. Parent is validating the Linux build/runtime.
+
+The new CSP fixture deliberately observes computed styles from its own permitted
+script. During its creation, a separate limitation was discovered: late custom
+script updates can be blocked by CSP due to the wrapper's indirect eval, despite
+working at document start. A separate fix and regression are required next.

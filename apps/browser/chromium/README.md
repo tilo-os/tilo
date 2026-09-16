@@ -26,7 +26,9 @@ target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host
 
 Linux produces `target/chromium/qos-chromium-host` and adjacent CEF resources.
 Linux requires Chromium sandbox support (user namespaces or the distribution's
-correctly installed setuid sandbox). The host never disables the sandbox.
+correctly installed setuid sandbox). The host never disables the sandbox. The
+primary process skips Chromium first-run UI because qOS owns onboarding; this
+also avoids an offscreen initialization stall on Linux.
 Linux packaging is implemented but has not yet been exercised on Linux.
 
 Run with `--profile=/absolute/profile/directory`. Each concurrently running host
@@ -110,14 +112,17 @@ python3 apps/browser/chromium/tests/native_regressions.py \
 ## Native blocking
 
 A request-context handler checks HTTP(S) resources, including dedicated-worker
-and service-worker requests, against a local adblock-rust instance. Source URL
-and resource type are retained. Compiled snapshots are published atomically;
+and service-worker requests, against a local adblock-rust instance. Request initiator origin
+and resource type are retained; subdocument navigation falls back to the parent
+frame rather than mistaking the destination frame for the source. Compiled snapshots are published atomically;
 requests already in flight retain their original snapshot. No request waits for
 Rust UI IPC. Exceptions, replacements and rewritten URLs use the engine result.
 Redirect resources are served from owned bytes at the original request URL.
 
-Renderer-local matchers hide domain-specific and generic CSS selectors, observing
-class/id changes and newly inserted nodes. Disabling protection disconnects the
+Renderer-local matchers hide domain-specific and generic CSS selectors using
+constructed adopted stylesheets, including under strict page style CSP, while
+preserving the page policy and its own stylesheets. They observe class/id changes
+and newly inserted nodes. Disabling protection disconnects the
 observer and removes its sheet. Cosmetic native callbacks are held in private
 closures and expose no privileged global binding. Cosmetic/scriptlet code runs
 only in direct HTTP(S) documents. Scriptlets use the bundled upstream resources,

@@ -253,6 +253,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
 class App final : public CefApp,public CefBrowserProcessHandler {
  public:
   CefRefPtr<CefBrowserProcessHandler> GetBrowserProcessHandler() override { return this; }
+  void OnBeforeCommandLineProcessing(const CefString& process_type,CefRefPtr<CefCommandLine> command_line) override {
+    // The Rust application owns browser onboarding; Chromium's first-run UI
+    // cannot be completed in an offscreen embedding and can stall Linux init.
+    if(process_type.empty()) command_line->AppendSwitch("no-first-run");
+  }
   void OnContextInitialized() override {
     client=new Client;CefWindowInfo window;window.SetAsWindowless(0);CefBrowserSettings settings;settings.windowless_frame_rate=30;
     request_filter=new qos::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
