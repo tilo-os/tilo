@@ -12,6 +12,9 @@ use std::cell::{Cell, RefCell};
 /// domain-specific projection. The CRDT document travels on its stable record
 /// route; this payload restores the complementary local presentation state.
 pub const GENERIC_VIEW_CONTINUATION_SCHEMA: u16 = u16::MAX;
+/// Framework-owned continuation envelope. Every new checkpoint uses this
+/// schema, so app semantics augment rather than replace presentation state.
+pub const STRUCTURAL_CONTINUATION_SCHEMA: u16 = u16::MAX - 1;
 
 /// Main-thread-only state behind an opaque `ActionDirectory` cursor. Search
 /// providers own their retained indexes; this retains just the provider slot
@@ -86,7 +89,7 @@ impl ApplicationLaunchPayload {
 /// strings and `RecordId::for_file` values: both may contain local paths or
 /// app secrets. File navigation is restored by the shell's typed
 /// `FileRecordId` launch intent; this fallback carries presentation only.
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PortableContinuationView {
     scroll: Vec<f64>,
     focus_ordinal: Option<usize>,
@@ -131,6 +134,145 @@ impl PortableContinuationView {
             view_mode: self.view_mode,
         }
     }
+
+    fn valid(&self) -> bool {
+        self.scroll.len() <= 32
+            && self.scroll.iter().all(|value| value.is_finite())
+            && [
+                self.viewport.x,
+                self.viewport.y,
+                self.viewport.width,
+                self.viewport.height,
+            ]
+            .into_iter()
+            .all(f64::is_finite)
+            && self.view_mode.as_ref().is_none_or(|mode| {
+                !mode.is_empty()
+                    && mode.len() <= 64
+                    && mode
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            })
+    }
+}
+
+const CONTINUATION_FACET_PRESENTATION: u8 = 1 << 0;
+const CONTINUATION_FACET_SEMANTIC: u8 = 1 << 1;
+const CONTINUATION_KNOWN_FACETS: u8 = CONTINUATION_FACET_PRESENTATION | CONTINUATION_FACET_SEMANTIC;
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct StructuralContinuationEnvelope {
+    facets: u8,
+    presentation: PortableContinuationView,
+    semantic: Option<StructuralSemanticProjection>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct StructuralSemanticProjection {
+    schema_version: u16,
+    #[serde(with = "serde_bytes")]
+    bytes: Vec<u8>,
+}
+
+/// Facets present in a validated structural continuation envelope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StructuralContinuationFacets(u8);
+
+impl StructuralContinuationFacets {
+    pub fn presentation(self) -> bool {
+        self.0 & CONTINUATION_FACET_PRESENTATION != 0
+    }
+
+    pub fn semantic(self) -> bool {
+        self.0 & CONTINUATION_FACET_SEMANTIC != 0
+    }
+}
+
+fn valid_structural_envelope(envelope: &StructuralContinuationEnvelope) -> bool {
+    envelope.facets & !CONTINUATION_KNOWN_FACETS == 0
+        && envelope.facets & CONTINUATION_FACET_PRESENTATION != 0
+        && (envelope.facets & CONTINUATION_FACET_SEMANTIC != 0) == envelope.semantic.is_some()
+        && envelope.presentation.valid()
+}
+
+/// Inspect the framework facets without exposing their private wire shape.
+pub fn structural_continuation_facets(bytes: &[u8]) -> Option<StructuralContinuationFacets> {
+    let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(bytes).ok()?;
+    valid_structural_envelope(&envelope).then_some(StructuralContinuationFacets(envelope.facets))
+}
+
+/// Compose the toolkit-owned checkpoint used by [`App`]. Public shell/runtime
+/// hosts may use this to produce the identical envelope in conformance tests.
+pub fn compose_structural_continuation_metadata(
+    view: crate::view::View,
+    semantic: Option<crate::collaboration::ContinuationMetadata>,
+) -> Option<crate::collaboration::ContinuationMetadata> {
+    // Invalid widget projections must never suppress the toolkit checkpoint.
+    // Shell policy performs app-specific validation; these common bounds
+    // prevent malformed implementations from poisoning publication.
+    let semantic = semantic
+        .filter(|metadata| {
+            metadata.schema_version != STRUCTURAL_CONTINUATION_SCHEMA
+                && metadata.schema_version != GENERIC_VIEW_CONTINUATION_SCHEMA
+                && !metadata.bytes.is_empty()
+                && metadata.bytes.len() <= 32 * 1024
+        })
+        .map(|metadata| StructuralSemanticProjection {
+            schema_version: metadata.schema_version,
+            bytes: metadata.bytes,
+        });
+    let facets = CONTINUATION_FACET_PRESENTATION
+        | if semantic.is_some() {
+            CONTINUATION_FACET_SEMANTIC
+        } else {
+            0
+        };
+    let mut envelope = StructuralContinuationEnvelope {
+        facets,
+        presentation: PortableContinuationView::capture(view),
+        semantic,
+    };
+    let mut bytes = postcard::to_stdvec(&envelope).ok()?;
+    if bytes.len() > 32 * 1024 && envelope.semantic.is_some() {
+        envelope.semantic = None;
+        envelope.facets &= !CONTINUATION_FACET_SEMANTIC;
+        bytes = postcard::to_stdvec(&envelope).ok()?;
+    }
+    (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(
+        crate::collaboration::ContinuationMetadata {
+            schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
+            bytes,
+        },
+    )
+}
+
+/// Validate and canonicalize a framework envelope at the shell boundary.
+/// An unrecognized app projection is removed rather than retained as opaque
+/// bytes; its generic presentation checkpoint remains usable on every device.
+pub fn sanitize_structural_continuation_metadata(
+    bytes: &[u8],
+    semantic_is_safe: impl FnOnce(u16, &[u8]) -> bool,
+) -> Option<Vec<u8>> {
+    if bytes.is_empty() || bytes.len() > 32 * 1024 {
+        return None;
+    }
+    let mut envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(bytes).ok()?;
+    if !valid_structural_envelope(&envelope) {
+        return None;
+    }
+    if envelope.semantic.as_ref().is_some_and(|semantic| {
+        semantic.schema_version == STRUCTURAL_CONTINUATION_SCHEMA
+            || semantic.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA
+            || semantic.bytes.is_empty()
+            || semantic.bytes.len() > 32 * 1024
+            || !semantic_is_safe(semantic.schema_version, &semantic.bytes)
+    }) {
+        envelope.semantic = None;
+        envelope.facets &= !CONTINUATION_FACET_SEMANTIC;
+    }
+    postcard::to_stdvec(&envelope)
+        .ok()
+        .filter(|canonical| !canonical.is_empty() && canonical.len() <= 32 * 1024)
 }
 
 /// Validate the toolkit-owned generic wire shape at the shell boundary.
@@ -140,23 +282,7 @@ pub fn validate_generic_continuation_metadata(bytes: &[u8]) -> bool {
     let Ok(view) = postcard::from_bytes::<PortableContinuationView>(bytes) else {
         return false;
     };
-    view.scroll.len() <= 32
-        && view.scroll.iter().all(|value| value.is_finite())
-        && [
-            view.viewport.x,
-            view.viewport.y,
-            view.viewport.width,
-            view.viewport.height,
-        ]
-        .into_iter()
-        .all(f64::is_finite)
-        && view.view_mode.as_ref().is_none_or(|mode| {
-            !mode.is_empty()
-                && mode.len() <= 64
-                && mode
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-        })
+    view.valid()
 }
 
 /// Synthetic input for `EventLoopProxy`: each variant becomes the real
@@ -2131,19 +2257,11 @@ impl App {
         if !self.collab_manager.is_connected() || self.pending_continuation_view.is_some() {
             return;
         }
-        let declared = self
+        let semantic = self
             .root_widget
             .continuation_metadata(&self.state.doc, &self.state.root);
-        let metadata = declared.or_else(|| {
-            let view = <Self as crate::view::FreezeThaw>::capture_view(self);
-            let bytes = postcard::to_stdvec(&PortableContinuationView::capture(view)).ok()?;
-            (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(
-                crate::collaboration::ContinuationMetadata {
-                    schema_version: GENERIC_VIEW_CONTINUATION_SCHEMA,
-                    bytes,
-                },
-            )
-        });
+        let view = <Self as crate::view::FreezeThaw>::capture_view(self);
+        let metadata = compose_structural_continuation_metadata(view, semantic);
         if metadata == self.last_published_continuation {
             return;
         }
@@ -2191,6 +2309,28 @@ impl App {
 
     fn apply_pending_continuation_restore(&mut self) {
         if let Some(metadata) = self.pending_continuation_restore.take() {
+            if metadata.schema_version == STRUCTURAL_CONTINUATION_SCHEMA {
+                if let Ok(envelope) =
+                    postcard::from_bytes::<StructuralContinuationEnvelope>(&metadata.bytes)
+                    && valid_structural_envelope(&envelope)
+                {
+                    self.pending_continuation_view = Some(envelope.presentation.into_view());
+                    if let Some(semantic) = envelope.semantic {
+                        let root = self.state.root.clone();
+                        let metadata = crate::collaboration::ContinuationMetadata {
+                            schema_version: semantic.schema_version,
+                            bytes: semantic.bytes,
+                        };
+                        let _ = self.root_widget.restore_continuation_metadata(
+                            &metadata,
+                            &mut self.state.doc,
+                            &root,
+                        );
+                        self.invalidate_widget_resource_cache();
+                    }
+                }
+                return;
+            }
             if metadata.schema_version == GENERIC_VIEW_CONTINUATION_SCHEMA {
                 if let Ok(view) = postcard::from_bytes::<PortableContinuationView>(&metadata.bytes)
                 {
@@ -10965,6 +11105,115 @@ mod view_presence_tests {
         let restored = portable.into_view();
         assert_eq!(restored.open_resource, None);
         assert_eq!(restored.focus.unwrap().ephemeral, "");
+    }
+
+    #[test]
+    fn custom_semantics_cannot_replace_framework_view_fidelity() {
+        let view = crate::view::View {
+            scroll: vec![81.0, 13.0],
+            focus: Some(crate::view::FocusView {
+                ordinal: 3,
+                ephemeral: "private-editor-state".into(),
+            }),
+            open_resource: Some("file:/private/document".into()),
+            viewport: crate::view::ViewRect {
+                x: 1.0,
+                y: 2.0,
+                width: 1280.0,
+                height: 720.0,
+            },
+            view_mode: Some("reader".into()),
+        };
+        let metadata = compose_structural_continuation_metadata(
+            view,
+            Some(crate::collaboration::ContinuationMetadata {
+                schema_version: 7,
+                bytes: b"custom-safe-projection".to_vec(),
+            }),
+        )
+        .expect("framework envelope");
+
+        assert_eq!(metadata.schema_version, STRUCTURAL_CONTINUATION_SCHEMA);
+        let facets = structural_continuation_facets(&metadata.bytes).expect("valid facets");
+        assert!(facets.presentation());
+        assert!(facets.semantic());
+        let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(&metadata.bytes)
+            .expect("structural envelope");
+        assert_eq!(envelope.presentation.scroll, vec![81.0, 13.0]);
+        assert_eq!(envelope.presentation.focus_ordinal, Some(3));
+        assert_eq!(envelope.presentation.view_mode.as_deref(), Some("reader"));
+        assert!(!metadata.bytes.windows(7).any(|window| window == b"private"));
+    }
+
+    #[test]
+    fn unsafe_custom_semantics_are_stripped_without_losing_the_view() {
+        let metadata = compose_structural_continuation_metadata(
+            crate::view::View {
+                scroll: vec![42.0],
+                focus: None,
+                open_resource: None,
+                viewport: crate::view::ViewRect::default(),
+                view_mode: Some("grid".into()),
+            },
+            Some(crate::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: b"opaque-unknown-payload".to_vec(),
+            }),
+        )
+        .unwrap();
+        let sanitized = sanitize_structural_continuation_metadata(&metadata.bytes, |_, _| false)
+            .expect("valid presentation survives");
+        let facets = structural_continuation_facets(&sanitized).unwrap();
+        assert!(facets.presentation());
+        assert!(!facets.semantic());
+        let envelope = postcard::from_bytes::<StructuralContinuationEnvelope>(&sanitized).unwrap();
+        assert_eq!(envelope.presentation.scroll, vec![42.0]);
+        assert_eq!(envelope.presentation.view_mode.as_deref(), Some("grid"));
+        assert!(!sanitized.windows(6).any(|window| window == b"opaque"));
+    }
+
+    #[test]
+    fn oversized_custom_semantics_cannot_suppress_framework_view_fidelity() {
+        let metadata = compose_structural_continuation_metadata(
+            crate::view::View {
+                scroll: vec![7.0],
+                focus: None,
+                open_resource: None,
+                viewport: crate::view::ViewRect::default(),
+                view_mode: Some("list".into()),
+            },
+            Some(crate::collaboration::ContinuationMetadata {
+                schema_version: 1,
+                bytes: vec![b'x'; 32 * 1024],
+            }),
+        )
+        .expect("presentation-only fallback");
+        let facets = structural_continuation_facets(&metadata.bytes).unwrap();
+        assert!(facets.presentation());
+        assert!(!facets.semantic());
+    }
+
+    #[test]
+    fn structural_continuation_restores_framework_view_before_layout() {
+        let metadata = compose_structural_continuation_metadata(
+            crate::view::View {
+                scroll: vec![64.0],
+                focus: None,
+                open_resource: None,
+                viewport: crate::view::ViewRect::default(),
+                view_mode: Some("list".into()),
+            },
+            None,
+        )
+        .unwrap();
+        let mut receiver = App::new(State::new(), Box::new(ViewRoot::new()));
+        receiver.pending_continuation_restore = Some(metadata);
+        receiver.apply_pending_continuation_restore();
+        assert!(receiver.pending_continuation_view.is_some());
+        receiver.init_layout();
+        let restored = <App as FreezeThaw>::capture_view(&receiver);
+        assert_eq!(restored.scroll, vec![64.0]);
+        assert_eq!(restored.view_mode.as_deref(), Some("list"));
     }
 
     /// Asserted on both the frame that leaves the sender (via the broadcast
