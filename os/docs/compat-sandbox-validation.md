@@ -212,5 +212,19 @@ These diagnostic fixtures remove only the executable Landlock shim because
 the WSL kernel lacks the required ABI. Generated mounts, clean environment,
 offline network namespace, seccomp and descriptor transfer remain intact.
 Their results must never substitute for full qOS-kernel capsule acceptance.
-The initial Wine64 run timed out during prefix initialization; the Proton
-identity-fix rerun and remaining runtime integration checks are still pending.
+The initial Wine64 run timed out during prefix initialization; its remaining
+runtime integration checks are still pending.
+
+The generated Proton namespace passed on 2026-09-16 after adding three exact
+native helper bindings: `readlink`, `getopt`, and `true`. The ARM handoff failed
+without `readlink`; pressure-vessel's nested Bubblewrap probe failed without
+`true`. `getopt` is required by the pinned entrypoint on native x86 hosts.
+Each helper is read-only and automatically included in the plan's Landlock
+read paths. No whole executable directory was exposed.
+
+The successful test verified the immutable Steam runtime offline, initialized
+a fresh Proton prefix, and required Windows to create the expected marker.
+It retained the generated private runtime lock, identity files, descriptor
+handoff and network namespace. Missing locale-generation inputs, session-bus
+IPC fallback, and the diagnostic container's machine-id warning remain visible
+in the log; this console result does not establish those acceptance gates.
