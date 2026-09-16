@@ -63,8 +63,9 @@ use crate::input_controls::{
 };
 use crate::local_library::LocalLibrary;
 use crate::model::{
-    AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
-    Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
+    AnnoKind, Annotation, AnnotationAnchor, Book, ColorScheme, CompositionStyle, FontEntry,
+    FontKind, HiColor, Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
+    now_ms,
 };
 use crate::paginate::{
     ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
@@ -2519,12 +2520,14 @@ impl BooksApp {
             let action = crate::actions::NoteDraft {
                 book_id,
                 id,
-                chapter: self.chapter,
-                block,
-                start,
-                end,
+                anchor: AnnotationAnchor {
+                    chapter: self.chapter,
+                    block,
+                    start,
+                    end,
+                    excerpt,
+                },
                 color: self.hi_color,
-                excerpt,
                 text: String::new(),
             }
             .into_action();
@@ -2614,12 +2617,14 @@ impl BooksApp {
                 note: crate::actions::NoteDraft {
                     book_id,
                     id,
-                    chapter: self.chapter,
-                    block,
-                    start,
-                    end,
+                    anchor: AnnotationAnchor {
+                        chapter: self.chapter,
+                        block,
+                        start,
+                        end,
+                        excerpt,
+                    },
                     color,
-                    excerpt,
                     text: String::new(),
                 },
             }
@@ -3359,11 +3364,13 @@ impl BooksApp {
             doc,
             &crate::actions::move_annotation_action(
                 piece.id,
-                self.chapter,
-                tb.index,
-                0,
-                span,
-                &excerpt,
+                AnnotationAnchor {
+                    chapter: self.chapter,
+                    block: tb.index,
+                    start: 0,
+                    end: span,
+                    excerpt,
+                },
             ),
         );
         true
