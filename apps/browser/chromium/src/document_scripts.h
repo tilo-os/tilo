@@ -3,6 +3,7 @@
 #include "include/cef_devtools_message_observer.h"
 #include "include/cef_parser.h"
 #include <functional>
+#include <set>
 
 namespace qos {
 inline std::string ScriptSource(const std::vector<CefString>& scripts) {
@@ -18,6 +19,15 @@ inline std::string ScriptSource(const std::vector<CefString>& scripts) {
   std::string source="if((location.protocol==='http:'||location.protocol==='https:')&&"+marker+"!=="+quoted+"){"+marker+"="+quoted+";\n";
   for(const auto& script:scripts) source+="try {\n"+script.ToString()+"\n} catch(qosScriptError) { console.error('qOS document script failed',qosScriptError); }\n";
   return source+"}";
+}
+// Supplemental blocking scripts have the same top-level-origin policy as the
+// native matcher. ancestorOrigins is Chromium-provided even in cross-process
+// subframes; no cross-origin DOM read or page eval is required.
+inline std::string BlockingScriptSource(const std::vector<CefString>& scripts,bool enabled,const std::set<std::string>& exceptions) {
+  auto origins=CefListValue::Create();for(const auto& origin:exceptions)origins->SetString(origins->GetSize(),origin);auto value=CefValue::Create();value->SetList(origins);
+  std::string source="(()=>{const a=location.ancestorOrigins;const o=a&&a.length?a[a.length-1]:location.origin;if("+std::string(enabled?"true":"false")+"&&!"+CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString()+".includes(o)){";
+  for(const auto& script:scripts)source+="try{\n"+script.ToString()+"\n}catch(qosBlockingScriptError){}\n";
+  return source+"}})()";
 }
 class DocumentScripts final : public CefDevToolsMessageObserver {
  public:

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Live CEF capability checks; uses actual IPC, network, and disk output."""
 import http.server
+import os
+import json
+import time
 import threading
 import unittest
 from pathlib import Path
@@ -31,7 +34,70 @@ class Capabilities(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown();cls.server.server_close()
     def setUp(self):
-        self.h=Host();self.addCleanup(self.h.close)
+        self.h=Host();self.addCleanup(self.h.close);self.addCleanup(self.save_evidence)
+    def save_evidence(self):
+        if directory:=os.environ.get('QOS_SITE_EVIDENCE_DIR'):
+            path=Path(directory);path.mkdir(parents=True,exist_ok=True)
+            (path/(self._testMethodName+'.json')).write_text(json.dumps({'events':self.h.seen[-2000:]},indent=2))
+    def status(self,origin,request=1):
+        self.h.send(op='site_status',request_id=request,origin=origin)
+        return self.h.until(lambda e:e['event']=='site_status' and e['request_id']==request)
+    def query(self,expression):
+        self.h.send(op='scripts',scripts=["document.title=JSON.stringify({value:("+expression+"),nonce:"+str(time.monotonic_ns())+"})"])
+        return json.loads(self.h.until(lambda e:e['event']=='title' and e['title'].startswith('{'))['title'])['value']
+    def test_origin_scoped_clear_preserves_other_host_and_rejects_stale_document(self):
+        other=self.url.replace('127.0.0.1','localhost')
+        for origin in [self.url,other]:
+            self.h.navigate(origin+'/')
+            self.query("(()=>{localStorage.setItem('fixture','synthetic');document.cookie='fixture=synthetic;path=/';return true})()")
+            self.h.send(op='scripts',scripts=[])
+        self.h.navigate(self.url+'/')
+        state=self.status(self.url)
+        self.h.send(op='site_action',request_id=2,origin=self.url,generation=state['generation'],action='clear')
+        result=self.h.until(lambda e:e['event']=='site_result' and e['request_id']==2)
+        self.assertTrue(result['success'],result)
+        self.h.navigate(self.url+'/')
+        self.assertEqual(self.query("[localStorage.getItem('fixture'),document.cookie]"),[None,''])
+        self.h.send(op='scripts',scripts=[])
+        self.h.navigate(other+'/')
+        self.assertEqual(self.query("[localStorage.getItem('fixture'),document.cookie]"),['synthetic','fixture=synthetic'])
+        self.h.send(op='site_action',request_id=3,origin=self.url,generation=state['generation'],action='clear')
+        stale=self.h.until(lambda e:e['event']=='site_result' and e['request_id']==3)
+        self.assertFalse(stale['success'])
+        self.assertEqual(self.query("localStorage.getItem('fixture')"),'synthetic')
+    def test_untrusted_tls_remains_blocked(self):
+        import ssl,subprocess,tempfile
+        with tempfile.TemporaryDirectory(prefix='qos-site-tls-') as directory:
+            key=Path(directory)/'key.pem';certificate=Path(directory)/'cert.pem'
+            subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(certificate),'-days','1','-subj','/CN=localhost'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler)
+            context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(certificate,key);server.socket=context.wrap_socket(server.socket,server_side=True)
+            threading.Thread(target=server.serve_forever,daemon=True).start()
+            try:
+                url=f'https://localhost:{server.server_port}/'
+                self.h.send(op='navigate',url=url)
+                error=self.h.until(lambda e:e['event']=='error' and e.get('url')==url)
+                self.assertIn('CERT',error['message'])
+                self.assertFalse(any(e['event']=='loaded' and e.get('url')==url and e.get('status')==200 for e in self.h.seen))
+            finally:server.shutdown();server.server_close()
+
+    def test_synthetic_notification_grant_then_revoke(self):
+        self.h.navigate(self.url+'/')
+        self.h.send(op='scripts',scripts=["document.body.innerHTML='<button style=position:absolute;top:0;left:0;width:200px;height:80px onclick=Notification.requestPermission()>Allow notification fixture</button>'"])
+        self.h.settle(.2)
+        self.h.send(op='mouse_button',button='left',down=True,x=40,y=30)
+        self.h.send(op='mouse_button',button='left',down=False,x=40,y=30)
+        prompt=self.h.until(lambda e:e['event']=='permission_prompt')
+        self.assertIn('notifications',prompt['permissions'])
+        self.h.send(op='permission_decision',id=prompt['id'],allow=True)
+        self.h.settle(.2)
+        status=self.status(self.url)
+        self.assertEqual(status['permissions']['notifications'],'allowed')
+        self.h.send(op='site_action',request_id=2,origin=self.url,generation=status['generation'],action='revoke')
+        self.assertTrue(self.h.until(lambda e:e['event']=='site_result' and e['request_id']==2)['success'])
+        self.assertEqual(self.status(self.url,3)['permissions']['notifications'],'blocked')
+        self.assertEqual(self.query('Notification.permission'),'denied')
+
     def test_download_waits_for_accept_and_saves_exact_bytes(self):
         self.h.navigate(self.url+'/')
         self.h.send(op='mouse_button',button='left',down=True,x=35,y=58)

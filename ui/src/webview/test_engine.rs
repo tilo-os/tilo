@@ -226,7 +226,11 @@ impl WebViewEngine for TestEngine {
             }
             // Input and filter commands are recorded (above) but have no
             // observable page effect in the test engine.
-            WebViewCommand::StopLoading
+            WebViewCommand::SetBlockingScripts(_)
+            | WebViewCommand::SetSiteExceptions(_)
+            | WebViewCommand::RequestSiteStatus { .. }
+            | WebViewCommand::SiteAction { .. }
+            | WebViewCommand::StopLoading
             | WebViewCommand::MouseMove { .. }
             | WebViewCommand::MouseButton { .. }
             | WebViewCommand::Scroll { .. }

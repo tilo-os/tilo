@@ -67,6 +67,8 @@ class Host:
     def until(self, predicate, timeout=20):
         deadline = time.monotonic()+timeout
         while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError('No matching native event; latest events: '+repr(self.seen[-8:]))
             event = self.events.get(timeout=max(.01,deadline-time.monotonic()))
             if isinstance(event, Exception):
                 raise event
