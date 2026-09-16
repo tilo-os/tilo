@@ -7422,6 +7422,11 @@ struct SchemeRowView<'a> {
     renaming: bool,
 }
 
+struct SchemeEditorView<'a> {
+    content: Rect,
+    scheme: &'a ColorScheme,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -9731,7 +9736,12 @@ impl BooksApp {
 
         // Modal overlays.
         if self.editing_scheme.is_some() {
-            self.draw_scheme_editor(scene, t, tr, theme, &c);
+            self.draw_scheme_editor(&mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            });
         }
         if self.font_picker {
             self.draw_font_picker(scene, t, tr, theme, &c);
@@ -10980,23 +10990,18 @@ impl BooksApp {
         }
     }
 
-    fn draw_scheme_editor(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-    ) {
+    fn draw_scheme_editor(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let Some(id) = self.editing_scheme.clone() else {
             return;
         };
         let Some(scheme) = self.schemes.iter().find(|s| s.id == id).cloned() else {
             return;
         };
+        let c = &ctx.theme.tokens.colors;
         let r = self.rect;
         let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(0.4);
-        scene.fill(Fill::NonZero, t, scrim, None, &r);
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, scrim, None, &r);
         self.push_hit(r, Action::CloseSchemeEditor);
 
         let pw = 440.0_f64.min(r.width() - 40.0);
@@ -11005,55 +11010,48 @@ impl BooksApp {
         let py0 = r.y0 + (r.height() - ph) / 2.0;
         let panel = Rect::new(px0, py0, px0 + pw, py0 + ph);
         paint::fill_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             panel,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             c.surfaces.raised,
         );
         paint::stroke_round(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             panel,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(ctx.theme.tokens.radii.lg),
             c.border_standard,
             1.0,
         );
         self.push_hit(panel, Action::Swallow);
 
-        let ix0 = px0 + 22.0;
-        let ix1 = px0 + pw - 22.0;
-        let y = py0 + 20.0;
-
-        let y =
-            self.draw_scheme_editor_title(scene, t, tr, theme, c, ix0, ix1, y, &id, &scheme.name);
-        let y = self.draw_scheme_editor_swatches(scene, t, tr, theme, c, ix0, ix1, y, &id, &scheme);
-        let y = Self::draw_scheme_editor_preview(scene, t, tr, c, ix0, ix1, y, &scheme);
-        self.draw_scheme_editor_done_button(scene, t, tr, theme, ix1, y);
+        let view = SchemeEditorView {
+            content: Rect::new(px0 + 22.0, py0 + 20.0, px0 + pw - 22.0, panel.y1),
+            scheme: &scheme,
+        };
+        let y = self.draw_scheme_editor_title(ctx, &view, view.content.y0);
+        let y = self.draw_scheme_editor_swatches(ctx, &view, y);
+        let y = Self::draw_scheme_editor_preview(ctx, &view, y);
+        self.draw_scheme_editor_done_button(ctx, &view, y);
     }
 
     /// "EDIT SCHEME" title + the scheme name (or its inline rename editor).
     /// Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_scheme_editor_title(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &SchemeEditorView<'_>,
         mut y: f64,
-        id: &str,
-        name: &str,
     ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
+        let c = &ctx.theme.tokens.colors;
+        let id = &view.scheme.id;
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "EDIT SCHEME",
             11.0,
             c.text_dim,
-            t * Affine::translate((ix0, y)),
+            ctx.transform * Affine::translate((view.content.x0, y)),
             None,
             TextWeight::Semibold,
         );
@@ -11061,24 +11059,34 @@ impl BooksApp {
         let renaming_this =
             matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Scheme(id.to_string()));
         if renaming_this {
-            let field_rect = Rect::new(ix0 - 6.0, y - 4.0, ix1 - 60.0, y + 30.0);
+            let field_rect = Rect::new(
+                view.content.x0 - 6.0,
+                y - 4.0,
+                view.content.x1 - 60.0,
+                y + 30.0,
+            );
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field_rect);
-                rn.field
-                    .draw(scene, t, tr, theme, &ui::presence::PresenceCtx::empty());
+                rn.field.draw(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text,
+                    ctx.theme,
+                    &ui::presence::PresenceCtx::empty(),
+                );
             }
         } else {
-            tr.draw_text_weighted(
-                scene,
-                name,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
+                &view.scheme.name,
                 20.0,
                 c.text_primary,
-                t * Affine::translate((ix0, y)),
+                ctx.transform * Affine::translate((view.content.x0, y)),
                 None,
                 TextWeight::Bold,
             );
             self.push_hit(
-                Rect::new(ix0, y - 2.0, ix1 - 60.0, y + 26.0),
+                Rect::new(view.content.x0, y - 2.0, view.content.x1 - 60.0, y + 26.0),
                 Action::BeginRenameScheme(id.to_string()),
             );
         }
@@ -11087,57 +11095,56 @@ impl BooksApp {
 
     /// "COLOURS" section: one swatch per scheme slot, each opening the
     /// colour picker. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_scheme_editor_swatches(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &SchemeEditorView<'_>,
         mut y: f64,
-        id: &str,
-        scheme: &ColorScheme,
     ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
+        let c = &ctx.theme.tokens.colors;
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "COLOURS · tap a swatch to open the picker",
             10.0,
             c.text_dim,
-            t * Affine::translate((ix0, y)),
+            ctx.transform * Affine::translate((view.content.x0, y)),
             None,
             TextWeight::Semibold,
         );
         y += 18.0;
-        let slots = scheme.slots();
-        let slot_w = (ix1 - ix0 - 2.0 * 16.0) / 3.0;
-        let mut sxx = ix0;
+        let slots = view.scheme.slots();
+        let slot_w = (view.content.width() - 2.0 * 16.0) / 3.0;
+        let mut sxx = view.content.x0;
         for (i, (label, col)) in slots.iter().enumerate() {
             let sr = Rect::new(sxx, y, sxx + slot_w, y + 60.0);
-            paint::fill_round(scene, t, sr, 10.0, Color::from_rgb8(col[0], col[1], col[2]));
+            paint::fill_round(
+                ctx.scene,
+                ctx.transform,
+                sr,
+                10.0,
+                Color::from_rgb8(col[0], col[1], col[2]),
+            );
             let hov = self.is_hover(sr);
             paint::stroke_round(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 sr,
                 10.0,
                 if hov {
-                    theme.border_focus
+                    ctx.theme.border_focus
                 } else {
                     c.border_standard
                 },
                 if hov { 2.0 } else { 1.0 },
             );
-            self.push_hit(sr, Action::PickSchemeColor(id.to_string(), i));
-            let (lw, _) = tr.measure(label, 12.0, None);
-            tr.draw_text(
-                scene,
+            self.push_hit(sr, Action::PickSchemeColor(view.scheme.id.clone(), i));
+            let (lw, _) = ctx.text.measure(label, 12.0, None);
+            ctx.text.draw_text(
+                ctx.scene,
                 label,
                 12.0,
                 c.text_dim,
-                t * Affine::translate((sxx + (slot_w - f64::from(lw)) / 2.0, y + 68.0)),
+                ctx.transform * Affine::translate((sxx + (slot_w - f64::from(lw)) / 2.0, y + 68.0)),
                 None,
             );
             sxx += slot_w + 16.0;
@@ -11147,75 +11154,79 @@ impl BooksApp {
 
     /// "PREVIEW" section: a mock reading card rendered in the scheme's own
     /// palette. Returns the y just below it.
-    #[allow(clippy::too_many_arguments)]
     fn draw_scheme_editor_preview(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        c: &ui::tokens::colors::Colors,
-        ix0: f64,
-        ix1: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &SchemeEditorView<'_>,
         mut y: f64,
-        scheme: &ColorScheme,
     ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
+        let c = &ctx.theme.tokens.colors;
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "PREVIEW",
             10.0,
             c.text_dim,
-            t * Affine::translate((ix0, y)),
+            ctx.transform * Affine::translate((view.content.x0, y)),
             None,
             TextWeight::Semibold,
         );
         y += 16.0;
-        let pal = ReaderPalette::from_scheme(scheme);
-        let prev = Rect::new(ix0, y, ix1, y + 72.0);
-        paint::fill_round(scene, t, prev, 8.0, pal.page);
-        paint::stroke_round(scene, t, prev, 8.0, pal.page_edge, 1.0);
-        tr.draw_text_weighted(
-            scene,
+        let pal = ReaderPalette::from_scheme(view.scheme);
+        let prev = Rect::new(view.content.x0, y, view.content.x1, y + 72.0);
+        paint::fill_round(ctx.scene, ctx.transform, prev, 8.0, pal.page);
+        paint::stroke_round(ctx.scene, ctx.transform, prev, 8.0, pal.page_edge, 1.0);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "The quick brown fox",
             15.0,
             pal.ink,
-            t * Affine::translate((ix0 + 14.0, y + 12.0)),
+            ctx.transform * Affine::translate((view.content.x0 + 14.0, y + 12.0)),
             None,
             TextWeight::Semibold,
         );
-        tr.draw_text(
-            scene,
+        ctx.text.draw_text(
+            ctx.scene,
             "jumps over the lazy dog.",
             13.0,
             pal.ink_dim,
-            t * Affine::translate((ix0 + 14.0, y + 38.0)),
+            ctx.transform * Affine::translate((view.content.x0 + 14.0, y + 38.0)),
             None,
         );
-        let chip = Rect::new(ix1 - 64.0, y + 46.0, ix1 - 14.0, y + 54.0);
-        paint::fill_round(scene, t, chip, 4.0, pal.accent);
+        let chip = Rect::new(
+            view.content.x1 - 64.0,
+            y + 46.0,
+            view.content.x1 - 14.0,
+            y + 54.0,
+        );
+        paint::fill_round(ctx.scene, ctx.transform, chip, 4.0, pal.accent);
         y + 72.0 + 22.0
     }
 
     /// The "Done" button that closes the editor.
     fn draw_scheme_editor_done_button(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        ix1: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: &SchemeEditorView<'_>,
         y: f64,
     ) {
         let done_w = f64::from(
-            tr.measure_weighted("Done", 13.0, None, TextWeight::Semibold)
+            ctx.text
+                .measure_weighted("Done", 13.0, None, TextWeight::Semibold)
                 .0,
         ) + 40.0;
-        let drect = Rect::new(ix1 - done_w, y, ix1, y + 34.0);
-        paint::fill_round(scene, t, drect, 17.0, theme.accent_primary);
-        tr.draw_text_weighted(
-            scene,
+        let drect = Rect::new(view.content.x1 - done_w, y, view.content.x1, y + 34.0);
+        paint::fill_round(
+            ctx.scene,
+            ctx.transform,
+            drect,
+            17.0,
+            ctx.theme.accent_primary,
+        );
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "Done",
             13.0,
             Color::from_rgb8(248, 248, 252),
-            t * Affine::translate((ix1 - done_w + 20.0, y + 9.0)),
+            ctx.transform * Affine::translate((view.content.x1 - done_w + 20.0, y + 9.0)),
             None,
             TextWeight::Semibold,
         );
