@@ -59,10 +59,11 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
             continue;
         }
         let note = match open_for(tree, &item) {
-            Ok(()) => {
+            Ok(OpenResult::Started) => {
                 started.push(item.app_id.clone());
                 OPENING.to_string()
             }
+            Ok(OpenResult::Deferred) => continue,
             Err(refusal) => refusal,
         };
         if set_note(tree, item.tab, note) {
@@ -108,13 +109,31 @@ fn pending(tree: &WorkspaceTree) -> Vec<Pending> {
 /// Start a local instance of `item`'s app, bound to `item`'s tab. `Err`
 /// carries the sentence to put on the card — what is actually the case,
 /// never a promise ("not installed", not "coming soon").
-fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenResult {
+    Started,
+    Deferred,
+}
+
+fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<OpenResult, String> {
     let Some(ws) = tree.workspaces.get(item.workspace) else {
         return Err("That workspace is gone".to_string());
     };
     let ws_id = ws.id;
     if !item.local {
         admits(ws, &item.app_id)?;
+    }
+    // A persisted host window can be X11-only. Host-session Xwayland starts
+    // asynchronously after the public Wayland socket begins dispatching, so
+    // session restore can reach this path first. Keep the symbolic LocalApp
+    // untouched until the compatibility environment is published instead of
+    // starting the app without DISPLAY and permanently replacing the retryable
+    // state with an "Opening here…" card.
+    if item.local
+        && crate::shell::host_apps::app_for_window_id(&item.app_id).is_some()
+        && !crate::shell::host_apps::x11_ready()
+    {
+        return Ok(OpenResult::Deferred);
     }
     // After `admits`, so nothing is granted for a launch the room refused.
     if !item.local {
@@ -167,7 +186,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
             Err(err)
         });
     match launched {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(OpenResult::Started),
         Err(err) => {
             launcher::clear_pending_placement(&item.app_id);
             Err(match err {
@@ -277,6 +296,54 @@ mod tests {
     }
 
     const FILES: &str = "dev.tilo.file-explorer";
+
+    fn tree_with_local_app(app_id: &str) -> (WorkspaceTree, TabId) {
+        let mut ws = room_owned_by("quinten");
+        let tab = Tab {
+            id: next_id(),
+            title: "Legacy App".into(),
+            tile: TileContent::LocalApp {
+                app_id: app_id.into(),
+                label: "Legacy App".into(),
+                note: String::new(),
+            },
+        };
+        let tab_id = tab.id;
+        let group = WindowGroup {
+            id: next_id(),
+            tabs: vec![tab],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        };
+        let mut strip = Strip::new(StripId::from(next_id()), "main");
+        strip.window_groups = vec![group];
+        ws.strips = vec![strip];
+        let ws_id = ws.id;
+        (
+            WorkspaceTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
+            tab_id,
+        )
+    }
+
+    fn local_app_note(tree: &WorkspaceTree, tab_id: TabId) -> &str {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .find_map(|tab| {
+                (tab.id == tab_id).then(|| match &tab.tile {
+                    TileContent::LocalApp { note, .. } => note.as_str(),
+                    other => panic!("expected LocalApp, got {other:?}"),
+                })
+            })
+            .expect("local app tab remains in the tree")
+    }
 
     fn tree_with_peer_window(ws: Workspace) -> (WorkspaceTree, u64) {
         tree_with_peer_window_for(ws, APP)
@@ -535,5 +602,52 @@ mod tests {
             note.is_empty(),
             "a temporary authority race must not leave a stale error card; got {note:?}"
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn restored_host_window_waits_for_xwayland_without_becoming_a_stale_opening_card() {
+        let data = tempfile::tempdir().expect("temporary XDG data home");
+        let applications = data.path().join("applications");
+        std::fs::create_dir_all(&applications).expect("applications directory");
+        std::fs::write(
+            applications.join("org.example.Legacy.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Legacy App\nExec=/bin/true\nStartupWMClass=LegacyWindow\n",
+        )
+        .expect("desktop entry");
+        let previous_data_home = std::env::var_os("XDG_DATA_HOME");
+        // SAFETY: `serial(process_env)` keeps other environment-mutating
+        // tests out until the original value is restored below.
+        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
+        crate::shell::host_apps::invalidate_cache();
+        crate::shell::host_apps::set_x11_session(None);
+        crate::shell::launcher::clear_pending_placements();
+
+        let (mut tree, tab) = tree_with_local_app("LegacyWindow");
+        assert!(crate::shell::host_apps::app_for_window_id("LegacyWindow").is_some());
+        assert!(any_pending(&tree));
+        assert!(
+            !examine(&mut tree),
+            "waiting for Xwayland is not a durable decision or layout mutation"
+        );
+        assert_eq!(local_app_note(&tree, tab), "");
+        assert!(
+            any_pending(&tree),
+            "the same symbolic tab must be retried after DISPLAY is published"
+        );
+        assert!(
+            crate::shell::launcher::placement_for_toplevel("LegacyWindow", 9001).is_none(),
+            "deferral must not stage a placement that can expire before launch"
+        );
+
+        crate::shell::host_apps::invalidate_cache();
+        crate::shell::launcher::clear_pending_placements();
+        unsafe {
+            if let Some(previous) = previous_data_home {
+                std::env::set_var("XDG_DATA_HOME", previous);
+            } else {
+                std::env::remove_var("XDG_DATA_HOME");
+            }
+        }
     }
 }
