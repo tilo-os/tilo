@@ -105,3 +105,45 @@ also passed all 48 tests; the environment-dependent regression is excluded
 from the default suite and was run separately. The shell integration check
 passed. These tests validate descriptor transfer, real mounts, and filter
 loading; they do not replace the full capsule/Landlock runtime acceptance.
+
+## Native translated-runtime supervisor
+
+`qos-windows-runtime` is a native helper intended to run after entering the
+capsule. Its allow-listed modes are `wine32`, `wine64`, and `proton`; they
+select fixed guest entry points rather than a catalogue-supplied interpreter.
+The guest root is fixed at `/opt/qos/x86`. The helper does not create or relax
+the sandbox and must not replace the outer namespace or Landlock setup.
+
+Each invocation starts its own foreground FEXServer, waits up to 20 seconds
+for the upstream readiness pipe to close, and verifies the server is still
+alive before running guest code. It monitors unexpected server exit while
+the guest runs. Wine modes additionally wait for the corresponding guest
+wineserver to finish before terminating FEXServer. Guest exit codes and
+signal status are propagated. Cleanup sends SIGTERM to the owned process,
+waits for a bounded grace period, then kills and reaps it if necessary.
+
+Six native unit tests cover readiness EOF, timeout, unexpected protocol data,
+early server exit, mode validation, and exit/signal status translation.
+The service suite passes 55 tests, with the environment-dependent Bubblewrap
+regression still run separately. Strict Clippy also passes with Rust 1.97.1.
+
+`os/tests/managed-fex-wine-smoke.py` exercises the real helper with fresh
+32-bit and 64-bit Wine prefixes. For each architecture it requires an exact
+console marker and propagation of guest exit code 23 on a second invocation.
+Unlike the earlier Wine fixture, it starts no external FEXServer: the native
+qOS helper must own readiness, monitoring, Wine-server wait, and teardown.
+All four checks passed on native ARM on 2026-09-16; the result and logs are
+retained under `managed-fex-runtime-tracked-results` in the preparation tree.
+Run it in the same offline, capability-free container described by the Wine
+fixture, with the guest filesystem at `/opt/qos/x86`, the helper at `/helper`,
+and empty writable output directory `/results`:
+
+```sh
+python3 /test.py --helper /helper --output-dir /results
+```
+
+The OS recipe builds and installs the helper at
+`/usr/libexec/qos-windows-runtime`. Trusted host-architecture selection,
+FEX/guest packaging, Proton manifest configuration, and end-to-end capsule
+acceptance remain integration work; merely installing this helper does not
+complete ARM runtime support.
