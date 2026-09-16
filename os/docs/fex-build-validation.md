@@ -408,3 +408,30 @@ Evidence logs in the preparation workspace:
 `fex-vulkan-callback-validation.log`. The callback defect remains a release
 blocker for this translated Vulkan path. Passing transfer/readback tests do not
 waive it or establish Windows DXVK compatibility.
+
+### CPU-list text truncation affects both guest architectures
+
+The `cpu_count.32` failure is not confined to i686. A controlled stack-content
+probe reproduced it in x86-64 too. Native ARM reads five bytes (`30 2d 31 31 0a`,
+`0-11` plus newline) from both CPU `online` and `present` sysfs files; the pinned
+FEX implementation returns four bytes (`30 2d 31 31`) without the newline.
+After initializing prior stack contents to an alternating digit/non-digit
+pattern, both translated libc readers report 119 CPUs instead of 12. The native
+control still reports 12. Without controlled stack contents, the same small
+program can report 12 under FEX, so a single successful query is insufficient.
+
+`os/tests/fixtures/fex-cpu-list.c` checks line termination, independently parses
+the CPU range using a safely terminated local copy, and compares the seeded
+libc online-CPU query with that count. It passes natively and exits 1 under both
+x86-64 and i686 FEX. Build it with the existing native compiler and explicit guest
+SDK targets, then run each guest executable through FEX. The evidence is in
+`fex-cpu-list-validation.log`; this is a failing compatibility contract, not an
+expected-failure waiver.
+
+The upstream emulated-file implementation writes exactly `cpus_online.size()`
+bytes, while constructing that string without a newline. Glibc's
+[`read_sysfs_file` and `next_line`](https://github.com/bminor/glibc/blob/master/sysdeps/unix/sysv/linux/getsysstats.c)
+parse CPU ranges with `strtoul`, making that omitted terminator significant.
+The runtime used glibc 2.43-8.fc44. Restoring the Linux text-file contract is
+required; changing the expected CPU count or forcing a thread-count setting
+would not repair the underlying issue.
