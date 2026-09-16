@@ -28,9 +28,20 @@ pub struct PlaybackSession {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HandoffSource {
-    LocalFile { path: PathBuf },
-    Workspace { path: PathBuf },
-    RemoteStream { url: String },
+    LocalFile {
+        path: PathBuf,
+    },
+    Workspace {
+        path: PathBuf,
+    },
+    RemoteStream {
+        url: String,
+    },
+    /// Stable app-owned resource identity. The destination asks the same app
+    /// to resolve it locally instead of transferring an expiring bearer URL.
+    AppResource {
+        uri: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -88,7 +99,106 @@ impl PlaybackReport {
                     })
             }
             HandoffSource::RemoteStream { url } => valid_remote_url(url),
+            HandoffSource::AppResource { uri } => valid_app_resource_uri(uri),
         }
+    }
+}
+
+/// Playback state for an app with its own resolver/transport rather than a
+/// [`MediaEngine`]. The URI is a durable app-owned resource identity, not the
+/// transient URL or device-local cache path currently feeding its decoder.
+#[derive(Clone, Copy, Debug)]
+pub struct AppPlayback<'a> {
+    pub resource_uri: &'a str,
+    pub title: &'a str,
+    pub position_ms: u64,
+    pub duration_ms: Option<u64>,
+    pub playing: bool,
+    pub has_video: bool,
+    pub audible: bool,
+    pub controller_bus_name: Option<&'a str>,
+}
+
+/// Process-local registration owned by an app-native media transport.
+/// Dropping it removes the session from the shell's private handoff feed.
+#[derive(Debug)]
+pub struct AppPlaybackHandle {
+    id: u64,
+}
+
+impl AppPlaybackHandle {
+    #[must_use]
+    pub fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+        Self {
+            // MediaEngine ids grow upward from one; app-owned ids grow down
+            // from MAX so their process-local registry keys cannot collide.
+            id: NEXT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Publish the latest state, or withdraw it when the source is no longer
+    /// meaningfully audible/selected. Invalid descriptors fail closed.
+    pub fn publish(&self, playback: AppPlayback<'_>) {
+        let Ok(mut sessions) = registry().lock() else {
+            return;
+        };
+        if !playback.audible
+            || playback.title.len() > 512
+            || playback.title.chars().any(char::is_control)
+            || playback
+                .duration_ms
+                .is_some_and(|duration| playback.position_ms > duration)
+            || !valid_app_resource_uri(playback.resource_uri)
+        {
+            sessions.remove(&self.id);
+            return;
+        }
+        let content_id = format!(
+            "blake3:{}",
+            blake3::hash(playback.resource_uri.as_bytes()).to_hex()
+        );
+        sessions.insert(
+            self.id,
+            RegisteredPlayback {
+                report: PlaybackReport {
+                    session: PlaybackSession {
+                        id: format!("media:{}", self.id),
+                        app_id: "media".into(),
+                        title: playback.title.to_string(),
+                        content_id,
+                        position_ms: playback.position_ms,
+                        duration_ms: playback.duration_ms,
+                        playing: playback.playing,
+                        has_video: playback.has_video,
+                    },
+                    workspace_id: String::new(),
+                    source: HandoffSource::AppResource {
+                        uri: playback.resource_uri.to_string(),
+                    },
+                    controller_bus_name: playback.controller_bus_name.map(str::to_string),
+                    accepted_handoff_request: accepted_handoff_request(),
+                },
+            },
+        );
+    }
+
+    /// Withdraw this app-owned session without fabricating a placeholder
+    /// resource. Used while a selected item is still resolving or disappears.
+    pub fn clear(&self) {
+        remove(self.id);
+    }
+}
+
+impl Default for AppPlaybackHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for AppPlaybackHandle {
+    fn drop(&mut self) {
+        remove(self.id);
     }
 }
 
@@ -145,11 +255,7 @@ pub(crate) fn update(engine_id: u64, playback: EnginePlayback<'_>) {
         blake3::hash(identity_material.as_bytes()).to_hex()
     );
     let workspace_id = std::env::var("QOS_WORKSPACE_ID").unwrap_or_default();
-    let accepted_handoff_request = std::env::var("QOS_MEDIA_HANDOFF_REQUEST_ID")
-        .ok()
-        .and_then(|value| hex::decode(value).ok())
-        .and_then(|bytes| bytes.try_into().ok())
-        .filter(|request| request != &[0; 16]);
+    let accepted_handoff_request = accepted_handoff_request();
     sessions.insert(
         engine_id,
         RegisteredPlayback {
@@ -347,6 +453,29 @@ fn valid_remote_url(url: &str) -> bool {
             .any(|byte| byte.is_ascii_control() || byte == b'\\')
 }
 
+fn valid_app_resource_uri(uri: &str) -> bool {
+    let Some((scheme, rest)) = uri.split_once(':') else {
+        return false;
+    };
+    !scheme.is_empty()
+        && scheme.len() <= 64
+        && scheme.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && matches!(byte, b'0'..=b'9' | b'+' | b'-' | b'.'))
+        })
+        && !rest.is_empty()
+        && uri.len() <= 8192
+        && !uri.chars().any(char::is_control)
+}
+
+fn accepted_handoff_request() -> Option<[u8; 16]> {
+    std::env::var("QOS_MEDIA_HANDOFF_REQUEST_ID")
+        .ok()
+        .and_then(|value| hex::decode(value).ok())
+        .and_then(|bytes| bytes.try_into().ok())
+        .filter(|request| request != &[0; 16])
+}
+
 fn source_identity(source: &Source) -> (String, String) {
     match source {
         Source::Workspace(path) => (
@@ -395,5 +524,51 @@ mod tests {
         assert!(!session.content_id.contains("secret"));
         assert_eq!(session.title, "Streaming media");
         remove(9001);
+    }
+
+    #[test]
+    fn app_resource_reports_stable_identity_without_decoder_url() {
+        let handle = AppPlaybackHandle::new();
+        handle.publish(AppPlayback {
+            resource_uri: "music://track/track-42",
+            title: "A durable song",
+            position_ms: 4_200,
+            duration_ms: Some(9_000),
+            playing: true,
+            has_video: false,
+            audible: true,
+            controller_bus_name: Some("org.mpris.MediaPlayer2.qos-music"),
+        });
+        let report = playback_reports("dev.qos.music", "workspace")
+            .into_iter()
+            .find(|report| report.session.title == "A durable song")
+            .expect("app-owned playback is reported");
+        assert_eq!(report.session.app_id, "dev.qos.music");
+        assert_eq!(report.workspace_id, "workspace");
+        assert!(matches!(
+            report.source,
+            HandoffSource::AppResource { ref uri } if uri == "music://track/track-42"
+        ));
+        assert!(!format!("{report:?}").contains("googlevideo"));
+    }
+
+    #[test]
+    fn malformed_app_resources_are_withdrawn() {
+        let handle = AppPlaybackHandle::new();
+        handle.publish(AppPlayback {
+            resource_uri: "1music://track/foreign",
+            title: "Foreign",
+            position_ms: 0,
+            duration_ms: None,
+            playing: true,
+            has_video: false,
+            audible: true,
+            controller_bus_name: None,
+        });
+        assert!(
+            playback_sessions()
+                .iter()
+                .all(|session| session.title != "Foreign")
+        );
     }
 }

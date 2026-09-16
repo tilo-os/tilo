@@ -57,6 +57,7 @@ ui = { package = "qos-app", path = "../../crates/app/qos-app" }
 # Ctrl+K palette and the on-screen affordances both dispatch — one source of
 # truth, one replay path.
 qos-actions = { path = "../../crates/collab/actions" }
+media = { path = "../../crates/media" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
