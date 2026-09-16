@@ -59,3 +59,33 @@ Native controller scripts/evidence: `.superpowers/sdd/2026-09-16-guided-folder-c
 - `apps/imager/src/setup/migration_durability.rs`
 - narrow integration in `apps/imager/src/setup/migration.rs` and `mod.rs`
 - this report
+
+## Review fix round 1 — stop after persistence failure
+
+Addressed the Important finding in `task-2-findings.md`. The original implementation treated receipt failure like an ordinary entry failure, could publish later entries, and could discard its accumulated report when final persistence failed.
+
+Changes:
+
+- Added typed internal persistence-boundary errors and explicit poisoned journal state. There is no error-string matching. Receipt construction/encoding/capacity, journal writes/replacement/flush, and output publication/directory flush failures propagate as fatal persistence errors through every recursive traversal level.
+- A poisoned operation stops before the next entry and never retries the final checkpoint. Already published/unrecorded output is retained; unsaved receipts are not included in verified counters. Initial root receipt failures and final outcome-save failures return an explicit incomplete `CopyReport` rather than losing accumulated results through a top-level error.
+- Diagnostics distinguish a retained earlier checkpoint, visible replacement with uncertain persistence, unpublished output, published output without a receipt, uncertain output metadata/publication persistence, and an unavailable/replaced journal whose prior checkpoint must not be trusted. The last distinction avoids claiming a checkpoint was retained when journal validation itself failed.
+- Existing conflict behavior remains: a later explicit resume revalidates any receipt actually present, and an output without a saved receipt remains an existing conflict. No file/directory cleanup or overwrite authority was added.
+
+TDD evidence:
+
+- RED command: `cargo test --manifest-path /var/folders/p6/fg2jh4md76b0fd2s6m_qcpv40000gn/T/qos-copy-windows-check-fu19as05/Cargo.toml migration_journal::tests::failed_ -- --nocapture`. Result: **0 passed, 4 failed**. Failures were `later file published after before_encode failure`, `parent traversal continued after directory checkpoint failure`, and missing retained reports for root/final persistence errors. These were real copies and journal updates with deterministic failure hooks at actual persistence boundaries.
+- GREEN: same initial command **4 passed, 0 failed** after fatal propagation and report retention. Expanded final journal suite: `cargo test --manifest-path <same harness> migration_journal -- --nocapture`: **27 passed, 0 failed**. Five failure regression tests exercise matrices of file receipt encoding, before/after journal replacement, post-publication directory flush, receipt construction, root publication, directory receipt/completion, and final outcome persistence. They assert no later file/directory publication, unchanged source contents, retained output/report, valid prior checkpoint or explicit uncertainty, and safe resumed conflicts.
+- Diagnostic-strengthening RED: `... migration_journal::tests::replaced_journal_is_never -- --nocapture`: **0 passed, 1 failed**, because a replaced journal incorrectly had a `previous journal checkpoint retained` prefix. GREEN after a distinct `JournalUnavailable` typed boundary: **1 passed, 0 failed**. Existing replaced-journal behavior now returns the retained incomplete report, which is the requested contract, while preserving replacement bytes.
+
+Verification:
+
+- macOS actual repository amended component suite: `cargo test -p imager setup::migration --lib`: **49 passed, 0 failed, 1 ignored**, 180 filtered; exit 0. This covered engine + journal changes before the final diagnostic-only delta; the targeted replaced-journal regression then passed on the final delta.
+- Native Fedora/Btrfs amended exact-source copy+journal suite, controller-run session 77925: **47 passed, 0 failed, 2 explicitly ignored**, exit 0, no warnings. Includes all five new persistence failure tests.
+- Final native Fedora replaced-journal diagnostic regression, controller-run session 99802: **1 passed, 0 failed**, 48 filtered, exit 0, no warnings.
+- Final scoped `cargo clippy --manifest-path <same harness> --all-targets -- -D warnings`: exit 0, no warnings.
+- Final Windows `cargo check --tests --target x86_64-pc-windows-msvc --manifest-path <same harness>`: exit 0, no warnings. Test guard types are cfg-limited to supported runtime platforms; this remains compilation-only evidence.
+- `rustfmt` applied and scoped `git diff --check` clean. No change to durability platform support, schema, or public function signatures.
+
+Deferred scale finding: controller's separate native Fedora XFS release-build probe (session 9757) copied 100 × 1 KiB files in 182 ms with an 85,814-byte journal, and 1,000 × 1 KiB files in 2,181 ms with an 842,713-byte journal. Complete reports were asserted and temporary fixtures cleaned. These are bounded local measurements only, not unrestricted-scale support or physical-storage guarantees. The 16 MiB cap and quadratic snapshot/index cost remain for final component review and workload validation, not accepted as permanent product limitations.
+
+Scoped fix files: `migration.rs`, `migration_journal.rs`, and this report. No subagents or unrelated files were changed by this fix.
