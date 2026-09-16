@@ -164,6 +164,22 @@ in 182 ms and 1,000 in 2,181 ms, with final journals of 85,814 and 842,713 bytes
 Both reports were complete. This is local scale evidence, not an unrestricted
 folder-size or physical-storage guarantee.
 
+## Folder-import UI integration checkpoint
+
+The initial worker/store/import-view integration passed the host Imager library
+suite (244 passed, one explicitly ignored) and native Fedora ARM64 setup suite
+(108 passed, two explicitly ignored). The native command was
+`cargo test --locked -p imager --lib setup::`; it completed without warnings.
+This includes actual-worker cancellation, journal retry, application reopening,
+and complete versus incomplete result handling.
+
+Eight initial screenshots used real worker outcomes for progress, a skipped
+symbolic link, a modified destination followed by resume, and completion. Visual
+inspection requested simpler user wording, an optional technical-details view,
+and current import status before the empty new-import form on compact windows.
+Those corrections and the task's independent review remain in progress. These
+checks do not establish native Windows support or first-login/Files integration.
+
 ## Existing installer baseline
 
 Native Fedora ARM64 ran `bash os/tests/installer_target_invariants.sh` and
