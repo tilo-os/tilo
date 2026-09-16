@@ -422,10 +422,10 @@ impl CredentialBroker {
             .as_deref()
             .map(canonical_origin)
             .transpose()?;
-        if let Some(origin) = &origin {
-            if !item.origins.contains(origin.as_str()) {
-                return Err(BrokerError::OriginMismatch);
-            }
+        if let Some(origin) = &origin
+            && !item.origins.contains(origin.as_str())
+        {
+            return Err(BrokerError::OriginMismatch);
         }
         let grant = GrantKey {
             app_id: request.app_id.clone(),
