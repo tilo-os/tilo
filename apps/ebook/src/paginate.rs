@@ -351,30 +351,28 @@ fn visual_order(words: &[Word], start: usize, end: usize, bidi: &BidiInfo<'_>) -
 
 /// Append the `Word` for a math span to `words`, advancing `canon`/`char_pos`
 /// and widening `line_height` to fit the formula.
-#[allow(clippy::too_many_arguments)]
 fn push_math_word(
-    words: &mut Vec<Word>,
+    built: &mut BuiltWords,
     expr: &ui::math::MathExpr,
     span: &Span,
-    canon: &mut String,
-    char_pos: &mut usize,
-    tr: &mut TextRenderer,
-    st: &BlockStyle,
-    line_height: &mut f32,
+    text: &mut TextRenderer,
+    style: &BlockStyle,
 ) {
     let space_before = span.space_before;
-    if !canon.is_empty() && space_before {
-        canon.push(' ');
-        *char_pos += 1;
+    if !built.canonical_text.is_empty() && space_before {
+        built.canonical_text.push(' ');
+        built.char_count += 1;
     }
-    let source_byte_start = canon.len();
-    let char_start = *char_pos;
+    let source_byte_start = built.canonical_text.len();
+    let char_start = built.char_count;
     let char_len = span.text.chars().count();
-    canon.push_str(&span.text);
-    *char_pos += char_len;
-    let math_layout = ui::math::layout(&expr.root, tr, st.size);
-    *line_height = line_height.max(math_layout.height as f32 + st.size * 0.18);
-    words.push(Word {
+    built.canonical_text.push_str(&span.text);
+    built.char_count += char_len;
+    let math_layout = ui::math::layout(&expr.root, text, style.size);
+    built.line_height = built
+        .line_height
+        .max(math_layout.height as f32 + style.size * 0.18);
+    built.words.push(Word {
         text: span.text.clone(),
         bold: false,
         italic: false,
@@ -437,7 +435,6 @@ fn word_break_boundaries(w: &str, settings: &Settings, language: &str) -> WordBr
 
 /// Width of one protruding character scaled by `fraction` (0 skips the
 /// measurement entirely — protrusion is the exception, not the rule).
-#[allow(clippy::too_many_arguments)]
 fn protrusion_width(
     character: char,
     fraction: f32,
@@ -497,6 +494,23 @@ struct FragmentSlice {
     byte_end: usize,
     index: usize,
     chars_before: usize,
+}
+
+struct WordBuildInput<'a> {
+    block: &'a Block,
+    style: &'a BlockStyle,
+    settings: &'a Settings,
+    language: &'a str,
+    base_family: &'a FontChoice,
+    base_mono: bool,
+    line_height: f32,
+}
+
+struct BuiltWords {
+    words: Vec<Word>,
+    canonical_text: String,
+    char_count: usize,
+    line_height: f32,
 }
 
 struct BlockComposition<'a> {
@@ -672,61 +686,45 @@ fn push_word_fragments(ctx: &mut FragmentBuildCtx<'_>, source: &SourceWord<'_>) 
 /// span inherits the span's `space_before`; later words are
 /// whitespace-separated by construction. Widens `*line_height` to fit any
 /// inline math.
-#[allow(clippy::too_many_arguments)]
-fn build_words(
-    block: &Block,
-    st: &BlockStyle,
-    settings: &Settings,
-    language: &str,
-    base_family: &FontChoice,
-    base_mono: bool,
-    tr: &mut TextRenderer,
-    line_height: &mut f32,
-) -> (Vec<Word>, String, usize) {
-    let mut words: Vec<Word> = Vec::new();
-    let mut canon = String::new();
-    let mut char_pos = 0usize;
-    for span in block.spans() {
-        let bold = span.bold || st.force_bold;
-        let italic = span.italic || st.force_italic;
-        let mono = span.code || base_mono;
+fn build_words(text: &mut TextRenderer, input: &WordBuildInput<'_>) -> BuiltWords {
+    let mut built = BuiltWords {
+        words: Vec::new(),
+        canonical_text: String::new(),
+        char_count: 0,
+        line_height: input.line_height,
+    };
+    for span in input.block.spans() {
+        let bold = span.bold || input.style.force_bold;
+        let italic = span.italic || input.style.force_italic;
+        let mono = span.code || input.base_mono;
         let word_family = if mono {
             &FontChoice::Monospace
         } else {
-            base_family
+            input.base_family
         };
         if let Some(expr) = &span.math {
-            push_math_word(
-                &mut words,
-                expr,
-                span,
-                &mut canon,
-                &mut char_pos,
-                tr,
-                st,
-                line_height,
-            );
+            push_math_word(&mut built, expr, span, text, input.style);
             continue;
         }
         for (wi, w) in span.text.split_whitespace().enumerate() {
             let space_before = if wi == 0 { span.space_before } else { true };
             // A separating space is one canonical char between words.
-            if !canon.is_empty() && space_before {
-                canon.push(' ');
-                char_pos += 1;
+            if !built.canonical_text.is_empty() && space_before {
+                built.canonical_text.push(' ');
+                built.char_count += 1;
             }
-            let source_byte_start = canon.len();
-            let char_start = char_pos;
+            let source_byte_start = built.canonical_text.len();
+            let char_start = built.char_count;
             let char_len = w.chars().count();
-            canon.push_str(w);
-            char_pos += char_len;
+            built.canonical_text.push_str(w);
+            built.char_count += char_len;
             push_word_fragments(
                 &mut FragmentBuildCtx {
-                    words: &mut words,
-                    style: st,
-                    settings,
-                    language,
-                    text: tr,
+                    words: &mut built.words,
+                    style: input.style,
+                    settings: input.settings,
+                    language: input.language,
+                    text,
                 },
                 &SourceWord {
                     text: w,
@@ -743,7 +741,7 @@ fn build_words(
             );
         }
     }
-    (words, canon, char_pos)
+    built
 }
 
 /// Build the `LineRun`s for one composed line, in visual order, ligating
@@ -1067,24 +1065,26 @@ pub fn layout_chapter(
             continue;
         }
 
-        let mut line_height = st.size * 1.25 * settings.line_spacing * text_scale;
-        let (words, canon, char_pos) = build_words(
-            block,
-            &st,
-            settings,
-            language,
-            base_family,
-            base_mono,
+        let built = build_words(
             tr,
-            &mut line_height,
+            &WordBuildInput {
+                block,
+                style: &st,
+                settings,
+                language,
+                base_family,
+                base_mono,
+                line_height: st.size * 1.25 * settings.line_spacing * text_scale,
+            },
         );
+        let line_height = built.line_height;
 
         let block_top = y;
         let lines = compose_block_lines(
             tr,
             &BlockComposition {
-                words: &words,
-                canonical_text: &canon,
+                words: &built.words,
+                canonical_text: &built.canonical_text,
                 style: &st,
                 settings,
                 content_width: content_w,
@@ -1116,8 +1116,8 @@ pub fn layout_chapter(
             lines,
             bullet,
             math: None,
-            char_len: char_pos,
-            text: canon,
+            char_len: built.char_count,
+            text: built.canonical_text,
         });
         y += height;
     }
