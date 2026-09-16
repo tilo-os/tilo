@@ -269,6 +269,9 @@ pub struct ApiTesterApp {
     collapsed: std::collections::HashSet<usize>,
     body_scroll: f64,
     selected: Option<(usize, usize)>,
+    /// Local scroll offset for the workspace rail. Essential when large text
+    /// turns a previously short control list into more than one viewport.
+    sidebar_scroll: f64,
 
     // --- Real child widgets ---
     method_dropdown: Dropdown,
@@ -315,6 +318,9 @@ pub struct ApiTesterApp {
     rail: SidebarDrawer,
 
     // --- Layout / interaction caches ---
+    /// Last theme text scale, used to keep hand-positioned chrome and the
+    /// retained controls' scaled glyphs in the same geometry system.
+    layout_text_scale: f64,
     rect: Rect,
     layout: Layout,
     last_cursor: Point,
@@ -450,6 +456,7 @@ impl ApiTesterApp {
             collapsed: std::collections::HashSet::new(),
             body_scroll: 0.0,
             selected: if demo { Some((0, 0)) } else { None },
+            sidebar_scroll: 0.0,
             method_dropdown: widgets.method_dropdown,
             rail_button: widgets.rail_button,
             env_dropdown: widgets.env_dropdown,
@@ -490,6 +497,7 @@ impl ApiTesterApp {
                 .docked_width(SIDEBAR_W)
                 .overlay_width(SIDEBAR_W)
                 .breakpoint(RAIL_BREAKPOINT),
+            layout_text_scale: 1.0,
             rect: Rect::ZERO,
             layout: Layout::default(),
             last_cursor: Point::ZERO,
@@ -1196,36 +1204,42 @@ impl ApiTesterApp {
 
         // --- URL bar row ---
         let area = l.main;
+        let control_h = 36.0 * self.layout_text_scale.min(1.5);
         let compact_urlbar =
             split == SplitLayout::Overlay && area.width() < COMPACT_URLBAR_BREAKPOINT;
         let urlbar_h = if compact_urlbar {
-            COMPACT_URLBAR_H
+            control_h * 2.0 + 16.0
         } else {
-            URLBAR_H
+            URLBAR_H.max(control_h + 20.0)
         };
         l.urlbar = Rect::new(area.x0, area.y0, area.x1, area.y0 + urlbar_h);
-        let cy0 = l.urlbar.y0 + (URLBAR_H - 36.0) / 2.0;
+        let cy0 = if compact_urlbar {
+            l.urlbar.y0 + 8.0
+        } else {
+            l.urlbar.y0 + (urlbar_h - control_h) / 2.0
+        };
         let mut row_x0 = area.x0 + PAD;
         if split == SplitLayout::Overlay {
-            l.hamburger = Rect::new(row_x0, cy0, row_x0 + HAMBURGER_W, cy0 + 36.0);
+            l.hamburger = Rect::new(row_x0, cy0, row_x0 + control_h, cy0 + control_h);
             row_x0 = l.hamburger.x1 + 8.0;
         }
-        l.method = Rect::new(row_x0, cy0, row_x0 + METHOD_W, cy0 + 36.0);
-        l.send = Rect::new(area.x1 - PAD - SEND_W, cy0, area.x1 - PAD, cy0 + 36.0);
+        l.method = Rect::new(row_x0, cy0, row_x0 + METHOD_W, cy0 + control_h);
+        l.send = Rect::new(area.x1 - PAD - SEND_W, cy0, area.x1 - PAD, cy0 + control_h);
         l.url = if compact_urlbar {
             Rect::new(
                 area.x0 + PAD,
-                l.urlbar.y0 + URLBAR_H,
+                cy0 + control_h + 8.0,
                 area.x1 - PAD,
-                l.urlbar.y0 + URLBAR_H + 36.0,
+                cy0 + control_h * 2.0 + 8.0,
             )
         } else {
-            Rect::new(l.method.x1 + 8.0, cy0, l.send.x0 - 8.0, cy0 + 36.0)
+            Rect::new(l.method.x1 + 8.0, cy0, l.send.x0 - 8.0, cy0 + control_h)
         };
 
         // --- Tab strip ---
-        l.tab_strip = Rect::new(area.x0, l.urlbar.y1, area.x1, l.urlbar.y1 + TAB_STRIP_H);
-        let tabs_w = 96.0 * RequestTab::ALL.len() as f64;
+        let tab_strip_h = TAB_STRIP_H.max(control_h + 8.0);
+        l.tab_strip = Rect::new(area.x0, l.urlbar.y1, area.x1, l.urlbar.y1 + tab_strip_h);
+        let tabs_w = (96.0 * RequestTab::ALL.len() as f64).min(area.width() - PAD * 2.0);
         l.tabs = Rect::new(
             area.x0 + PAD,
             l.tab_strip.y0 + 4.0,
@@ -1234,7 +1248,7 @@ impl ApiTesterApp {
         );
 
         // --- Editor / response split ---
-        let editor_h = ((area.height() - urlbar_h - TAB_STRIP_H) * 0.42).max(150.0);
+        let editor_h = ((area.height() - urlbar_h - tab_strip_h) * 0.42).max(150.0);
         l.editor = Rect::new(area.x0, l.tab_strip.y1, area.x1, l.tab_strip.y1 + editor_h);
         l.response = Rect::new(area.x0, l.editor.y1, area.x1, area.y1);
 
@@ -1285,54 +1299,55 @@ impl ApiTesterApp {
         // --- Sidebar rows ---
         if self.rail.reveal() > 0.001 && l.sidebar.width() > 1.0 {
             let s = l.sidebar;
+            let scale = self.layout_text_scale;
             // No app-name wordmark (the OS titlebar shows "API Tester"); the ENV
             // picker leads the sidebar. Keep room above it for the ENV caption.
-            let mut y = s.y0 + PAD + 16.0;
+            let mut y = s.y0 + (PAD + 16.0) * scale - self.sidebar_scroll;
             let control_x = s.x0 + PAD;
             let control_w = s.width() - PAD * 2.0;
             let action_rows = |count: usize, at: f64| {
                 (0..count).map(move |index| {
-                    let y0 = at + index as f64 * 38.0;
-                    Rect::new(control_x, y0, control_x + control_w, y0 + 34.0)
+                    let y0 = at + index as f64 * 38.0 * scale;
+                    Rect::new(control_x, y0, control_x + control_w, y0 + 34.0 * scale)
                 })
             };
             if let Some(form) = self.form {
                 l.form_heading = Point::new(control_x, y);
-                y += 20.0;
+                y += 20.0 * scale;
                 if form.needs_name() {
-                    l.form_name = Rect::new(control_x, y, s.x1 - PAD, y + 32.0);
-                    y += 42.0;
+                    l.form_name = Rect::new(control_x, y, s.x1 - PAD, y + 32.0 * scale);
+                    y += 42.0 * scale;
                 }
                 if form.needs_variable_fields() {
-                    l.form_key = Rect::new(control_x, y, s.x1 - PAD, y + 32.0);
-                    y += 40.0;
+                    l.form_key = Rect::new(control_x, y, s.x1 - PAD, y + 32.0 * scale);
+                    y += 40.0 * scale;
                     if form.needs_value() {
-                        l.form_value = Rect::new(control_x, y, s.x1 - PAD, y + 32.0);
-                        y += 42.0;
+                        l.form_value = Rect::new(control_x, y, s.x1 - PAD, y + 32.0 * scale);
+                        y += 42.0 * scale;
                     }
                 }
                 let half = (control_w - 8.0) / 2.0;
                 l.form_actions = [
-                    Rect::new(control_x, y, control_x + half, y + 36.0),
-                    Rect::new(control_x + half + 8.0, y, s.x1 - PAD, y + 36.0),
+                    Rect::new(control_x, y, control_x + half, y + 36.0 * scale),
+                    Rect::new(control_x + half + 8.0, y, s.x1 - PAD, y + 36.0 * scale),
                 ];
-                y += 52.0;
+                y += 52.0 * scale;
             } else {
-                l.env = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 40.0);
-                y += 78.0;
+                l.env = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 40.0 * scale);
+                y += 78.0 * scale;
                 l.collection_manage_label = Point::new(control_x, y);
-                y += 18.0;
+                y += 18.0 * scale;
                 l.manage.extend(action_rows(5, y));
-                y += 5.0 * 38.0 + 12.0;
+                y += 5.0 * 38.0 * scale + 12.0 * scale;
                 l.environment_manage_label = Point::new(control_x, y);
-                y += 18.0;
+                y += 18.0 * scale;
                 l.manage.extend(action_rows(3, y));
-                y += 3.0 * 38.0 + 12.0;
+                y += 3.0 * 38.0 * scale + 12.0 * scale;
                 l.manage.extend(action_rows(2, y));
-                y += 2.0 * 38.0 + 16.0;
+                y += 2.0 * 38.0 * scale + 16.0 * scale;
             }
             l.collections_label = Point::new(s.x0 + PAD, y);
-            y += 24.0;
+            y += 24.0 * scale;
             // Rows follow the same order as `compute_nav_meta`.
             let history_start = self
                 .nav_meta
@@ -1340,28 +1355,42 @@ impl ApiTesterApp {
                 .position(|m| matches!(m.kind, NavKind::History { .. }));
             for (i, _m) in self.nav_meta.iter().enumerate() {
                 if Some(i) == history_start {
-                    y += 12.0;
+                    y += 12.0 * scale;
                     l.history_label = Point::new(s.x0 + PAD, y);
-                    y += 24.0;
+                    y += 24.0 * scale;
                 }
-                if y + ROW_H > s.y1 - PAD {
+                let nav_h = ROW_H * scale;
+                if y + nav_h > s.y1 - PAD {
                     // Off the bottom — park the row off-screen so it still has a
                     // valid (empty) rect.
                     l.nav.push(Rect::new(s.x0, s.y1, s.x0, s.y1));
                     continue;
                 }
-                l.nav.push(Rect::new(s.x0 + 8.0, y, s.x1 - 8.0, y + ROW_H));
-                y += ROW_H;
+                l.nav.push(Rect::new(s.x0 + 8.0, y, s.x1 - 8.0, y + nav_h));
+                y += nav_h;
             }
             if history_start.is_none() {
                 // No history yet — still place the HISTORY label under the
                 // collections for parity with the original chrome.
-                y += 12.0;
+                y += 12.0 * scale;
                 l.history_label = Point::new(s.x0 + PAD, y);
             }
         }
 
         l
+    }
+
+    /// Keep the hand-positioned app chrome in step with the toolkit's text
+    /// scale. At large accessibility sizes a narrow overlay becomes a
+    /// full-width workspace rather than letting the underlying editor show
+    /// through beside clipped drawer controls.
+    fn sync_adaptive_metrics(&mut self, theme: &Theme) {
+        let scale = f64::from(theme.text_scale).clamp(1.0, 2.0);
+        self.layout_text_scale = scale;
+        self.rail.set_docked_width(SIDEBAR_W * scale);
+        self.rail
+            .set_overlay_width((SIDEBAR_W * scale).min(self.rect.width()));
+        self.rail.set_breakpoint(RAIL_BREAKPOINT * scale);
     }
 }
 
@@ -1420,7 +1449,7 @@ impl ApiTesterApp {
                 "ENV",
                 9.0,
                 c.text_dim,
-                t * Affine::translate((l.env.x0, l.env.y0 - 14.0)),
+                t * Affine::translate((l.env.x0, l.env.y0 - 14.0 * self.layout_text_scale)),
                 None,
                 TextWeight::Bold,
             );
@@ -2803,6 +2832,7 @@ impl Widget for ApiTesterApp {
         presence: &PresenceCtx,
     ) {
         self.poll_worker();
+        self.sync_adaptive_metrics(theme);
         // Advance the drawer's eased reveal (it self-ticks off wall-clock and
         // honours reduce-motion), then recompute geometry so the controls sit
         // exactly on the chrome this frame.
@@ -2909,11 +2939,18 @@ impl Widget for ApiTesterApp {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.layout.body_region.contains(self.last_cursor) {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * -40.0,
-                        MouseScrollDelta::PixelDelta(p) => -p.y,
-                    };
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * -40.0,
+                    MouseScrollDelta::PixelDelta(p) => -p.y,
+                };
+                if self.layout.sidebar.contains(self.last_cursor) {
+                    // The rail is a local view, not a collaborative document
+                    // field. Cap its offset to a generous bounded range so a
+                    // runaway wheel event cannot hide it indefinitely.
+                    self.sidebar_scroll = (self.sidebar_scroll + dy).clamp(0.0, 1200.0);
+                    self.dirty = true;
+                    *handled = true;
+                } else if self.layout.body_region.contains(self.last_cursor) {
                     self.body_scroll = (self.body_scroll + dy).max(0.0);
                     self.dirty = true;
                     *handled = true;
