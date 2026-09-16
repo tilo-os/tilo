@@ -214,6 +214,27 @@ impl ContextMenu {
         None
     }
 
+    /// Laid-out bounds of an action row while the menu is open. Consumers
+    /// that synthesize pointer routing can use this instead of duplicating
+    /// menu padding and row-height constants.
+    pub fn item_rect(&self, index: usize) -> Option<Rect> {
+        if !self.open {
+            return None;
+        }
+        let item = self.items.get(index)?;
+        if !matches!(item, MenuItem::Action { .. }) {
+            return None;
+        }
+        let y =
+            self.rect.y0 + PADDING + self.items.iter().take(index).map(item_height).sum::<f64>();
+        Some(Rect::new(
+            self.rect.x0,
+            y,
+            self.rect.x1,
+            y + item_height(item),
+        ))
+    }
+
     /// For dismiss-on-click-outside routing.
     pub fn contains(&self, point: [f64; 2]) -> bool {
         self.open
@@ -868,6 +889,16 @@ mod tests {
         let sep_y = r.y0 + PADDING + ROW_HEIGHT + SEPARATOR_HEIGHT / 2.0;
         dispatch(&mut m, &cursor_at(Point::new(r.x0 + 10.0, sep_y)));
         assert_eq!(m.hovered(), None, "cursor over a separator clears hover");
+    }
+
+    #[test]
+    fn item_rect_round_trips_through_hit_testing() {
+        let (m, _fired) = open_menu();
+        let first = m.item_rect(0).expect("first action has bounds");
+        let second = m.item_rect(2).expect("second action has bounds");
+        assert_eq!(m.item_at([first.center().x, first.center().y]), Some(0));
+        assert_eq!(m.item_rect(1), None, "separator has no action bounds");
+        assert_eq!(m.item_at([second.center().x, second.center().y]), Some(2));
     }
 
     #[test]
