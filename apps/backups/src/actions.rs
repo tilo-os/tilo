@@ -93,6 +93,7 @@ fn operation_spec(
             .retry_policy(RetryPolicy::AtMostOnce),
         BackupOperation::BackupNow => spec
             .with_description("Create one new checksummed local snapshot.")
+            .requiring(qos_actions::PermissionRequirement::Write)
             .retry_policy(RetryPolicy::AtMostOnce),
         BackupOperation::Verify { .. } => spec
             .with_description("Read every file in this stored snapshot and verify its checksum.")
@@ -102,7 +103,7 @@ fn operation_spec(
             .with_description(
                 "Choose a new or empty local folder, then restore and verify the whole snapshot.",
             )
-            .destructive()
+            .requiring(qos_actions::PermissionRequirement::Write)
             .retry_policy(RetryPolicy::AtMostOnce),
         BackupOperation::OpenSource { .. }
         | BackupOperation::OpenDestination { .. }
@@ -679,6 +680,15 @@ mod tests {
             .iter()
             .find(|resource| resource.id.as_str() == "backups.snapshots")
             .expect("snapshot collection");
+        let backup_now = workspace
+            .actions
+            .iter()
+            .find(|action| action.id == "backup-now")
+            .expect("backup action");
+        assert_eq!(
+            backup_now.contract.permission,
+            qos_actions::PermissionRequirement::Write
+        );
         let snapshot = snapshots.children.first().expect("sample snapshot");
         let verify = snapshot
             .actions
@@ -695,10 +705,14 @@ mod tests {
             .iter()
             .find(|action| action.id == "restore")
             .expect("restore action");
-        assert_eq!(restore.contract.risk, qos_actions::RiskLevel::Destructive);
+        assert_eq!(restore.contract.risk, qos_actions::RiskLevel::Low);
+        assert_eq!(
+            restore.contract.permission,
+            qos_actions::PermissionRequirement::Write
+        );
         assert!(
             restore.contract.validate_declaration().is_empty(),
-            "the destructive restore contract declares its required confirmation"
+            "the empty-target restore contract has no misleading confirmation"
         );
         let target = snapshot
             .children
