@@ -36,6 +36,8 @@ def main():
     parser.add_argument("--guest-squashfs", type=Path,
                         help="read-only guest-root SquashFS file over virtio-block instead of 9p")
     parser.add_argument("--qemu", type=Path, help="explicit QEMU binary or recorded loader wrapper")
+    parser.add_argument("--cpu", default="max",
+                        help="QEMU ARM CPU model and feature options; recorded with the result (default: max)")
     parser.add_argument("--mode", choices=("probe", "console", "namespace-diagnostic", "fex-diagnostic", "wine-diagnostic"), default="probe")
     parser.add_argument("--inside-unshare", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -94,7 +96,7 @@ def main():
                  "run.sh": fixtures / "arm-capsule-vm-run.sh"}
     for name in ("fex-emulator.json", "fex-graphics-provider.json"):
         artifacts[name] = args.manifests / name
-    records = {"native_image_id": image, "mode": args.mode,
+    records = {"native_image_id": image, "mode": args.mode, "cpu": args.cpu,
                "kernel_sha256": digest(args.kernel),
                "module_archive_sha256": digest(args.modules),
                "signed_modules": {path.name: digest(path) for path in sorted((root / "modules").iterdir())},
@@ -124,7 +126,7 @@ def main():
             raise RuntimeError(f"initramfs creation failed: {statuses}")
     native = run(["podman", "image", "mount", image], stdout=subprocess.PIPE).stdout.strip()
     try:
-        qemu = [str(qemu_binary), "-machine", "virt,gic-version=3", "-cpu", "max",
+        qemu = [str(qemu_binary), "-machine", "virt,gic-version=3", "-cpu", args.cpu,
                 "-accel", "tcg", "-smp", "2", "-m", "4096", "-nographic", "-no-reboot",
                 "-nic", "none", "-kernel", str(args.kernel.resolve()),
                 "-initrd", str(out / "initramfs.cpio.gz"),
@@ -167,7 +169,7 @@ def main():
         passed = accepted
         diagnostic = args.mode.endswith("-diagnostic")
         summary = {"accepted": passed and not diagnostic, "diagnostic_passed": passed if diagnostic else None,
-                   "mode": args.mode, "qemu_exit": result.returncode,
+                   "mode": args.mode, "cpu": args.cpu, "qemu_exit": result.returncode,
                    "scope": scope}
         (out / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(json.dumps(summary), flush=True)
