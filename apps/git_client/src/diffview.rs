@@ -41,6 +41,14 @@ pub struct HunkButton {
     pub rect: Rect,
 }
 
+/// Per-frame hunk action state supplied by the owning app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HunkInteraction {
+    pub hovered: Option<usize>,
+    pub staged_side: bool,
+    pub armed_discard: Option<usize>,
+}
+
 /// Stateless renderer for a file diff. The owning view supplies the
 /// viewport rect, scroll offset and settings; hit-test data comes back via
 /// the returned [`HunkButton`]s.
@@ -55,20 +63,16 @@ impl DiffView {
     /// Draw the diff into `viewport`, scrolled down by `scroll` px.
     /// `hover_hunk` highlights the stage button on that hunk. Returns the
     /// hunk-stage button rects for hit-testing.
-    #[allow(clippy::too_many_arguments)]
     pub fn draw(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
+        paint: &mut draw::PaintCtx<'_>,
         theme: &Theme,
         viewport: Rect,
         diff: &FileDiff,
         scroll: f64,
         settings: &Settings,
-        hover_hunk: Option<usize>,
-        staged_side: bool,
-        armed_hunk: Option<usize>,
+        interaction: HunkInteraction,
     ) -> Vec<HunkButton> {
+        let (scene, tr, t) = paint.parts();
         let c = &theme.tokens.colors;
         // Pane background.
         draw::fill_rect(scene, t, viewport, c.surfaces.base);
@@ -123,9 +127,9 @@ impl DiffView {
                 diff,
                 scroll,
                 *settings,
-                hover_hunk,
-                staged_side,
-                armed_hunk,
+                interaction.hovered,
+                interaction.staged_side,
+                interaction.armed_discard,
             )
         };
 
