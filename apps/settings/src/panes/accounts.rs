@@ -485,7 +485,14 @@ impl AccountsPane {
                  your first account.",
             ));
         }
-        panel.push(card("Accounts on this device", rows(intro)));
+        let mut introduction = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(8.0);
+        for line in intro {
+            introduction = introduction.push(line);
+        }
+        panel.push(Box::new(introduction));
 
         if let Some(kind) = self.form_kind {
             panel.push(self.account_form(kind));
