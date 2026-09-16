@@ -99,7 +99,7 @@ impl ApiDoc {
             .next()
             .or_else(|| doc.put_object(root, store, ObjType::Map).ok());
         if let Some(map) = map {
-            let _ = doc.put(&map, id, true);
+            Self::put_bool_if_changed(doc, &map, id, true);
         }
     }
 
@@ -166,7 +166,7 @@ impl ApiDoc {
         Self::put_string_if_changed(doc, &map, "id", variable_id);
         Self::put_string_if_changed(doc, &map, "key", key);
         Self::put_string_if_changed(doc, &map, "value", value);
-        let _ = doc.put(&map, "enabled", true);
+        Self::put_bool_if_changed(doc, &map, "enabled", true);
     }
 
     /// Tombstone one stable variable row.  The environment id is part of the
@@ -222,6 +222,24 @@ impl ApiDoc {
             })
         });
         if current.as_deref() != Some(value) {
+            let _ = doc.put(map, key, value);
+        }
+    }
+
+    /// Store one boolean only when its observable value changes.  Tombstones
+    /// and the enabled marker are deliberately scalar fields, but reapplying
+    /// their idempotent actions must not create an ever-growing CRDT history.
+    fn put_bool_if_changed(doc: &mut AutoCommit, map: &ObjId, key: &str, value: bool) {
+        let current = doc.get_all(map, key).ok().and_then(|values| {
+            values.into_iter().find_map(|(stored, _)| match stored {
+                Value::Scalar(stored) => match stored.as_ref() {
+                    ScalarValue::Boolean(stored) => Some(*stored),
+                    _ => None,
+                },
+                Value::Object(_) => None,
+            })
+        });
+        if current != Some(value) {
             let _ = doc.put(map, key, value);
         }
     }
@@ -564,7 +582,7 @@ impl ApiDoc {
     }
 
     pub fn set_active_env(doc: &mut AutoCommit, root: &ObjId, id: Option<&str>) {
-        let _ = doc.put(root, "active_env", id.unwrap_or("").to_string());
+        Self::put_string_if_changed(doc, root, "active_env", id.unwrap_or(""));
     }
 
     pub fn active_env(doc: &AutoCommit, root: &ObjId) -> Option<String> {
@@ -1293,6 +1311,41 @@ mod tests {
         ApiDoc::set_text(&mut d, &root, "request", "{}");
         // No-op write must not advance the document.
         assert_eq!(heads_before, d.get_heads());
+    }
+
+    #[test]
+    fn repeated_native_scalar_writes_are_noops() {
+        let (mut d, root) = doc();
+        let environment = Environment::new("Production");
+        let environment_id = environment.id.to_string();
+        let variable_id = uuid::Uuid::new_v4().to_string();
+        ApiDoc::create_environment(&mut d, &root, &environment_id, &environment.name);
+        ApiDoc::set_variable(
+            &mut d,
+            &root,
+            &environment_id,
+            &variable_id,
+            "base_url",
+            "https://api.example.test",
+        );
+        ApiDoc::set_active_env(&mut d, &root, Some(&environment_id));
+        let heads_before = d.get_heads();
+
+        ApiDoc::set_variable(
+            &mut d,
+            &root,
+            &environment_id,
+            &variable_id,
+            "base_url",
+            "https://api.example.test",
+        );
+        ApiDoc::set_active_env(&mut d, &root, Some(&environment_id));
+
+        assert_eq!(
+            heads_before,
+            d.get_heads(),
+            "replaying equal variable and environment selections must not grow the CRDT"
+        );
     }
 
     #[test]
