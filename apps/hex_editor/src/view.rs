@@ -2081,13 +2081,14 @@ impl Widget for HexView {
                         } else {
                             "No file open. Open a local file to inspect its bytes.".to_string()
                         })
-                        .with_live(Politeness::Polite),
+                        .with_live(Politeness::Polite)
+                        .with_hashed_key("hex.status"),
                 ];
                 if self.has_file {
                     children.push(
                         AccessNode::new(Role::StaticText).with_name(
                             "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F search, Ctrl+G go to offset, Ctrl+Z undo, Ctrl+Y redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
-                        ),
+                        ).with_hashed_key("hex.keyboard-help"),
                     );
                     children.push(
                         AccessNode::new(Role::Button)
