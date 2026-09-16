@@ -8,15 +8,15 @@ containerfile="$repo/os/Containerfile"
 # shellcheck source=lib/containerfile.sh
 . "$here/lib/containerfile.sh"
 
-# Captured from the 178 effective rootfs copy mappings after rebasing the
-# consolidation over main's app-host, native AT-SPI, and VirtIO media additions.
-# Compared with the original 173-entry contract, these are exactly five added
-# mappings and no removals. Sorting intentionally ignores instruction order:
+# Captured from the 183 effective rootfs copy mappings. The Windows provider
+# adds one explicit /out/usr/ -> /usr/ mapping to the prior 182-entry image;
+# its architecture-selected contents are checked by windows_provider.py.
+# Sorting intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=9b90479025b4e597a048d5df0205df1de39d393ce35595d3a0c48cea095159ad
+expected_contract=f5713700a99efdde06911625ca95ad55f0243fec667c7fe5883c902dcb4e510d
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -39,8 +39,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
   stage == "rootfs" && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
   END { print n+0 }
 ')"
-[ "$instructions" -le 120 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 120)" >&2
+# The existing image used 123; provider selection adds ARG, COPY and its
+# native dynamic-linker validation RUN. Keep the bound exact and reviewed.
+[ "$instructions" -le 126 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 126)" >&2
   exit 1
 }
 

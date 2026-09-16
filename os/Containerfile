@@ -45,6 +45,11 @@ ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
 ARG WPE_BUILDROOT_REF
+ARG QOS_WINDOWS_ARCH=x86_64
+# Scratch is only a parseable placeholder for the unselected x86_64 branch.
+# ARM validation rejects it; no diagnostic payload or mutable tag is a fallback.
+ARG FEX_PAYLOAD_REF=scratch
+ARG WINDOWS_GUEST_REF=scratch
 
 # QOS_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
 # stage, no `browser` binary. Default 1 — a normal build is unchanged.
@@ -72,6 +77,36 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # build; local builds use the same resumable verifier.
 FROM scratch AS external-assets
 COPY --from=github-assets / /
+
+FROM --platform=linux/arm64 ${FEX_PAYLOAD_REF} AS windows-fex-input
+FROM --platform=linux/amd64 ${WINDOWS_GUEST_REF} AS windows-guest-input
+
+FROM ${BASE_REF} AS windows-provider-aarch64
+ARG FEX_PAYLOAD_REF
+ARG WINDOWS_GUEST_REF
+COPY os/dev/windows_provider.py os/dev/validate-fex-payload.py os/dev/validate-windows-guest.py /qos/
+COPY os/external-assets/fex-source.env os/dev/wine-source.json /qos/
+RUN --network=none \
+    --mount=type=bind,from=windows-fex-input,source=/,target=/fex,ro \
+    --mount=type=bind,from=windows-guest-input,source=/,target=/guest,ro \
+    test "$(uname -m)" = aarch64 \
+    && mkdir -p /out/usr/share/qos/windows /out/usr/lib/qos/windows-runners \
+    && python3 /qos/windows_provider.py validate \
+      --fex-ref "$FEX_PAYLOAD_REF" --guest-ref "$WINDOWS_GUEST_REF" \
+      --fex-root /fex --guest-root /guest/rootfs \
+      --source-pin /qos/fex-source.env --wine-pin /qos/wine-source.json \
+      > /out/usr/share/qos/windows/provider.json \
+    && cp -a /fex/usr/. /out/usr/ \
+    && cp -a /guest/rootfs /out/usr/lib/qos/windows-runners/x86
+
+FROM ${BASE_REF} AS windows-provider-x86_64
+COPY os/dev/windows_provider.py /qos/
+RUN --network=none test "$(uname -m)" = x86_64 \
+    && mkdir -p /out/usr/share/qos/windows \
+    && python3 /qos/windows_provider.py inputs --arch x86_64 \
+       > /out/usr/share/qos/windows/provider.json
+
+FROM windows-provider-${QOS_WINDOWS_ARCH} AS windows-provider
 
 
 # ---- Minimal Windows paravirtual driver media -----------------------------
@@ -1633,15 +1668,32 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # KVM-accelerated, TPM-backed Windows fallback. Changing this list requires
 # refreshing RPMS_REF (see the file header).
 # qos-rpm-snapshot-package[x86_64]: edk2-ovmf
+# qos-rpm-snapshot-package[x86_64]: wine
+# qos-rpm-snapshot-package[x86_64]: wine-dxvk
 # qos-rpm-snapshot-package[aarch64]: edk2-aarch64
+# Native FEX executable/Qt frontend dependencies and host graphics/audio thunks.
+# qos-rpm-snapshot-package[aarch64]: glibc
+# qos-rpm-snapshot-package[aarch64]: libgcc
+# qos-rpm-snapshot-package[aarch64]: libstdc++
+# qos-rpm-snapshot-package[aarch64]: libglvnd-glx
+# qos-rpm-snapshot-package[aarch64]: libglvnd-opengl
+# qos-rpm-snapshot-package[aarch64]: libglvnd-egl
+# qos-rpm-snapshot-package[aarch64]: qt6-qtbase
+# qos-rpm-snapshot-package[aarch64]: qt6-qtbase-gui
+# qos-rpm-snapshot-package[aarch64]: qt6-qtdeclarative
+# qos-rpm-snapshot-package[aarch64]: alsa-lib
+# qos-rpm-snapshot-package[aarch64]: libdrm
+# qos-rpm-snapshot-package[aarch64]: wayland-libs-client
+# qos-rpm-snapshot-package[aarch64]: vulkan-loader
+ARG QOS_WINDOWS_ARCH
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    test "$(uname -m)" = "$QOS_WINDOWS_ARCH" && \
     case "$(uname -m)" in \
-      x86_64) vm_firmware=edk2-ovmf ;; \
-      aarch64) vm_firmware=edk2-aarch64 ;; \
+      x86_64) vm_firmware=edk2-ovmf; windows_packages='wine wine-dxvk' ;; \
+      aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm wayland-libs-client vulkan-loader' ;; \
       *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
     esac && dnf install -y --setopt=reposdir=/repo \
-    wine \
-    wine-dxvk \
+    $windows_packages \
     gamescope \
     qemu-kvm \
     libvirt-client \
@@ -1658,6 +1710,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     udftools \
     && dnf clean all && ${FINALIZE_RPMDB}
 
+COPY --from=windows-provider /out/usr/ /usr/
+RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/qos-windows-provider.py,ro \
+    python3 /qos-windows-provider.py host --manifest /usr/share/qos/windows/provider.json
 COPY --from=virtio-win-media /out/virtio-win.iso /usr/share/virtio-win/virtio-win.iso
 COPY --from=virtio-win-media /out/installer/virtio-win-guest-tools.exe /usr/share/virtio-win/installer/virtio-win-guest-tools.exe
 
