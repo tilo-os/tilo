@@ -426,7 +426,7 @@ fn create_restore_stage(target: &Path) -> Result<PathBuf> {
         ));
         match fs::create_dir(&stage) {
             Ok(()) => return Ok(stage),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.into()),
         }
     }
@@ -563,7 +563,7 @@ fn reserve_previous_restore_path(target: &Path) -> Result<PathBuf> {
         ));
         match fs::symlink_metadata(&previous) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(previous),
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(error) => return Err(error.into()),
         }
     }
