@@ -12,10 +12,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_primitives::fs::{DirOptions, FollowSymlinks, Metadata, OpenOptions};
+use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use cap_std::fs::Dir;
 use sha2::{Digest, Sha256};
 
+use super::destination_security;
 use super::nofollow::{metadata_nofollow, open_directory_nofollow, same_directory_identity};
 
 const BUFFER_SIZE: usize = 64 * 1024;
@@ -67,6 +68,7 @@ struct PinnedDirectory {
     file: File,
     identity: Metadata,
     parent: Option<(Arc<Self>, OsString)>,
+    created: bool,
 }
 
 impl PinnedDirectory {
@@ -92,6 +94,7 @@ impl PinnedDirectory {
             file,
             identity,
             parent: None,
+            created: false,
         });
         for name in names {
             let metadata = metadata_nofollow(&directory.file, Path::new(name))?;
@@ -107,6 +110,7 @@ impl PinnedDirectory {
             identity: Metadata::from_file(&file)?,
             file,
             parent: Some((Arc::clone(self), name.to_os_string())),
+            created: false,
         }))
     }
 
@@ -141,27 +145,38 @@ impl PinnedDirectory {
         }
     }
 
-    fn create_child(self: &Arc<Self>, name: &OsStr) -> io::Result<Arc<Self>> {
+    fn validate_destination(&self) -> io::Result<()> {
         self.validate()?;
-        let options = private_directory_options();
-        // mkdir is exclusive: an existing file, directory or link is an error.
-        cap_primitives::fs::create_dir(&self.file, Path::new(name), &options)?;
+        let mut current = self;
+        let mut child = None;
+        loop {
+            destination_security::check_directory(&current.file, child.as_ref(), current.created)?;
+            child = Some(Metadata::from_file(&current.file)?);
+            match &current.parent {
+                Some((parent, _)) => current = parent,
+                None => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn create_child(self: &Arc<Self>, name: &OsStr) -> io::Result<Arc<Self>> {
+        // Establish namespace protection BEFORE mkdir. Observation after an
+        // unprotected mkdir could adopt another account's replacement.
+        self.validate_destination()?;
+        destination_security::create_directory(&self.file, name)?;
         let expected = metadata_nofollow(&self.file, Path::new(name))?;
-        let child = self.open_child(name, &expected)?;
-        child.validate()?;
+        let file = open_directory_nofollow(&self.file, Path::new(name), &expected)?;
+        destination_security::check_private_file(&file)?;
+        let child = Arc::new(Self {
+            identity: Metadata::from_file(&file)?,
+            file,
+            parent: Some((Arc::clone(self), name.to_os_string())),
+            created: true,
+        });
+        child.validate_destination()?;
         Ok(child)
     }
-}
-
-fn private_directory_options() -> DirOptions {
-    #[allow(unused_mut)]
-    let mut options = DirOptions::new();
-    #[cfg(unix)]
-    {
-        use cap_primitives::fs::DirBuilderExt;
-        options.mode(0o700);
-    }
-    options
 }
 
 #[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
@@ -171,7 +186,7 @@ fn reject_windows_placeholder(metadata: &Metadata) -> io::Result<()> {
         use cap_primitives::fs::MetadataExt;
         // All reparse points (including cloud placeholders/junctions), offline,
         // recall-on-open and recall-on-data-access require a separate safe path.
-        if metadata.file_attributes() & (0x400 | 0x1000 | 0x40000 | 0x400000) != 0 {
+        if metadata.file_attributes() & (0x400 | 0x1000 | 0x0004_0000 | 0x0040_0000) != 0 {
             return Err(changed("reparse point or cloud placeholder is unsupported"));
         }
     }
@@ -230,7 +245,7 @@ fn preserve_times(file: &File, original: &Metadata) -> io::Result<()> {
 // parent, no-follow lookup and identity comparison before setting timestamps.
 fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) -> io::Result<()> {
     use cap_fs_ext::OpenOptionsMaybeDirExt;
-    directory.validate()?;
+    directory.validate_destination()?;
     let (parent, name) = directory
         .parent
         .as_ref()
@@ -264,7 +279,8 @@ struct OwnedTemporary {
 
 impl OwnedTemporary {
     fn create(parent: &Arc<PinnedDirectory>, excluded: &OsStr) -> io::Result<Self> {
-        parent.validate()?;
+        parent.validate_destination()?;
+        destination_security::check_private_file(&parent.file)?;
         let mut options = OpenOptions::new();
         options
             .read(true)
@@ -287,6 +303,7 @@ impl OwnedTemporary {
             }
             match cap_primitives::fs::open(&parent.file, Path::new(&name), &options) {
                 Ok(file) => {
+                    destination_security::check_private_file(&file)?;
                     let identity = Metadata::from_file(&file)?;
                     return Ok(Self {
                         parent: Arc::clone(parent),
@@ -303,7 +320,9 @@ impl OwnedTemporary {
     }
 
     fn validate(&self) -> io::Result<()> {
-        self.parent.validate()?;
+        self.parent.validate_destination()?;
+        destination_security::check_private_file(&self.parent.file)?;
+        destination_security::check_private_file(&self.file)?;
         let metadata = metadata_nofollow(&self.parent.file, Path::new(&self.name))?;
         if !metadata.is_file()
             || metadata.is_symlink()
@@ -484,7 +503,7 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
     ) -> io::Result<()> {
         check_cancel(self.cancelled)?;
         source.validate()?;
-        destination.validate()?;
+        destination.validate_destination()?;
         if depth > MAX_DEPTH {
             return Err(changed("folder nesting exceeds supported depth"));
         }
@@ -507,7 +526,7 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
             self.notify(&path);
             check_cancel(self.cancelled)?;
             source.validate()?;
-            destination.validate()?;
+            destination.validate_destination()?;
             if let Err(error) = self.copy_entry(source, destination, &name, &path, depth) {
                 if self.cancelled.load(Ordering::Relaxed) {
                     return Err(error);
@@ -521,7 +540,7 @@ impl<P: FnMut(CopyProgress)> Copier<'_, P> {
                 "source directory changed during enumeration; retry required",
             ));
         }
-        destination.validate()?;
+        destination.validate_destination()?;
         preserve_directory_times(destination, &before)?;
         Ok(())
     }
@@ -588,7 +607,7 @@ pub fn copy_folder(
         cancelled,
         progress,
         report: CopyReport {
-            metadata_limitations: vec!["Copies regular-file contents and access/modification times. Ownership, original permissions, ACLs, extended attributes, alternate streams, creation times, sparse layout and hard-link relationships are not preserved. New files use private user-owned permissions on Unix and inherit destination security on Windows.".to_string()],
+            metadata_limitations: vec!["Copies regular-file contents and access/modification times. Ownership, original permissions, ACLs, extended attributes, alternate streams, creation times, sparse layout and hard-link relationships are not preserved. New files use private user-owned permissions on Unix and use an explicit protected private directory ACL on Windows. Destination namespace protection excludes hostile same-account or administrator processes.".to_string()],
             ..CopyReport::default()
         },
     };
@@ -812,6 +831,21 @@ mod tests {
     }
 
     fn stage_fixture(source: &Path, destination: &Path) -> StagedFile {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(destination, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            // Staging requires an actually private directory, including its
+            // inherited child ACL; use the same native creation as production.
+            fs::remove_dir(destination).unwrap();
+            let parent = PinnedDirectory::open_absolute(destination.parent().unwrap()).unwrap();
+            parent
+                .create_child(destination.file_name().unwrap())
+                .unwrap();
+        }
         let source = PinnedDirectory::open_absolute(source).unwrap();
         let destination = PinnedDirectory::open_absolute(destination).unwrap();
         let expected = metadata_nofollow(&source.file, Path::new("hello")).unwrap();
@@ -983,5 +1017,201 @@ mod tests {
         assert!(attempted);
         assert!(report.complete(), "{report:?}");
         assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
+    }
+    // A private child does not prevent another account replacing it through
+    // an unsafe parent. Refusal must happen before mkdir, not after adoption.
+    #[cfg(unix)]
+    #[test]
+    fn namespace_refuses_other_writable_parent_before_creating_anything() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, source, _) = fixture();
+        let parent = temp.path().canonicalize().unwrap().join("public");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::write(parent.join("sentinel"), b"keep").unwrap();
+        let result = copy_folder(
+            &source,
+            &parent.join("copy"),
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert!(!parent.join("copy").exists());
+        assert_eq!(fs::read(parent.join("sentinel")).unwrap(), b"keep");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn namespace_checks_ancestor_replacement_rights() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, source, _) = fixture();
+        let ancestor = temp.path().canonicalize().unwrap().join("public");
+        fs::create_dir(&ancestor).unwrap();
+        fs::create_dir(ancestor.join("private")).unwrap();
+        fs::set_permissions(&ancestor, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(ancestor.join("private"), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            copy_folder(
+                &source,
+                &ancestor.join("private/copy"),
+                &AtomicBool::new(false),
+                |_| {}
+            )
+            .is_err()
+        );
+        assert!(!ancestor.join("private/copy").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn namespace_preserves_safe_sticky_temporary_paths() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, source, _) = fixture();
+        let parent = temp.path().canonicalize().unwrap().join("sticky");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o1777)).unwrap();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        let report = copy_folder(
+            &source,
+            &parent.join("copy"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert!(report.complete(), "{report:?}");
+        assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
+        assert_eq!(
+            fs::metadata(parent.join("copy"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+    }
+
+    // Once the private namespace is opened to other writers, neither publish
+    // nor cleanup is allowed to perform its name-based mutation.
+    #[cfg(unix)]
+    #[test]
+    fn namespace_changed_permissions_stop_publication_and_cleanup() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_temp, source, destination) = fixture();
+        fs::create_dir(&destination).unwrap();
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        let staged = stage_fixture(&source, &destination);
+        let temporary = destination.join(&staged.temporary.name);
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(staged.verify_and_publish(&AtomicBool::new(false)).is_err());
+        assert!(!destination.join("hello").exists());
+        assert_eq!(fs::read(&temporary).unwrap(), b"hello");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn namespace_macos_acl_write_grant_is_not_hidden_by_private_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (temp, source, _) = fixture();
+        let parent = temp.path().canonicalize().unwrap().join("acl-parent");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            std::process::Command::new("chmod")
+                .args([
+                    "+a",
+                    "everyone allow add_file,add_subdirectory,delete_child"
+                ])
+                .arg(&parent)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let result = copy_folder(
+            &source,
+            &parent.join("copy"),
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        assert!(result.is_err());
+        assert!(!parent.join("copy").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn namespace_macos_inherit_only_write_acl_is_refused_before_mkdir() {
+        let (temp, source, _) = fixture();
+        let parent = temp.path().canonicalize().unwrap().join("acl-parent");
+        fs::create_dir(&parent).unwrap();
+        assert!(std::process::Command::new("chmod").args(["+a", "everyone allow write,append,delete_child,file_inherit,directory_inherit,only_inherit"]).arg(&parent).status().unwrap().success());
+        assert!(
+            copy_folder(
+                &source,
+                &parent.join("copy"),
+                &AtomicBool::new(false),
+                |_| {}
+            )
+            .is_err()
+        );
+        assert!(!parent.join("copy").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn namespace_macos_read_only_acl_does_not_block_safe_copy() {
+        let (temp, source, _) = fixture();
+        let parent = temp.path().canonicalize().unwrap().join("acl-parent");
+        fs::create_dir(&parent).unwrap();
+        fs::write(source.join("hello"), b"hello").unwrap();
+        assert!(
+            std::process::Command::new("chmod")
+                .args([
+                    "+a",
+                    "everyone allow read,readattr,readextattr,readsecurity"
+                ])
+                .arg(&parent)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let report = copy_folder(
+            &source,
+            &parent.join("copy"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert!(report.complete(), "{report:?}");
+        assert_eq!(fs::read(parent.join("copy/hello")).unwrap(), b"hello");
+    }
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires root only to create a disposable foreign-owned child"]
+    fn namespace_sticky_parent_does_not_trust_a_foreign_owned_child() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::PermissionsExt;
+        // SAFETY: geteuid has no preconditions. This opt-in test only changes
+        // ownership of a newly created empty directory in its own fixture.
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let (temp, source, _) = fixture();
+        let parent = temp.path().canonicalize().unwrap().join("sticky");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o1777)).unwrap();
+        let child = parent.join("foreign");
+        fs::create_dir(&child).unwrap();
+        let file = fs::File::open(&child).unwrap();
+        // SAFETY: valid fixture-only descriptor; uid/gid65534 is untrusted by
+        // a uid0 worker, independently of whether it names a local account.
+        assert_eq!(unsafe { libc::fchown(file.as_raw_fd(), 65_534, 65_534) }, 0);
+        assert!(
+            copy_folder(
+                &source,
+                &child.join("copy"),
+                &AtomicBool::new(false),
+                |_| {}
+            )
+            .is_err()
+        );
+        assert!(!child.join("copy").exists());
     }
 }
