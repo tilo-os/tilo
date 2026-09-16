@@ -60,6 +60,63 @@ existing Wine smoke harness. qOS must either supply the required adapter or
 manage the server outside that optional manifest field with equivalent
 readiness and teardown guarantees.
 
+## Native ARM Proton console acceptance
+
+On 2026-09-16, `os/tests/fex-proton-smoke.py` passed with the pinned Proton
+and sniper inputs, unmodified FEX commit
+`91bbce5a96b9e1eaa32f95f440ea8b46bbfbdf20`, and these local images:
+
+- Native host: `localhost/qos-fex-graphics-host:arm64-dev`, image ID
+  `5819150611346d43c72daa5a733e207b093ef89645d727d545c4f289ce0ff8a7`.
+- Guest graphics filesystem exported from
+  `localhost/qos-fex-graphics-guest:fedora44-dev`, image ID
+  `a2e62822ac3d9498f75d38c1005fa09c089460cb1f3de9c4fee2364e8a75db14`.
+
+The test runs native ARM pressure-vessel with an emulator manifest pointing
+directly to the FEX ELF executable. It imports native dependencies plus both
+x86 graphics architectures, sets `PRESSURE_VESSEL_ARCHITECTURES` explicitly,
+and switches `FEX_ROOTFS` to empty inside the assembled runtime. A managed
+FEXServer must report readiness and remain alive through the test.
+
+Proton creates a fresh prefix and runs Windows `cmd.exe`, which must write
+`QOS_PROTON_CONSOLE_PASS` into `C:\qos-console.txt`. The harness reads that file
+from the prefix and requires the exact marker, exit 0, no timeout, and a live
+server. The checked-in harness met all four conditions. Its result and logs
+are retained in the preparation directory's `fex-proton-smoke-results`.
+
+The container used `--network=none --init --cap-drop=ALL --userns=keep-id`,
+the normal Podman seccomp policy, and private executable `/tmp` and `/dev/shm`.
+Runtime, Proton, and guest graphics content were bound read-only. No host
+binfmt registration was added or changed.
+
+### Runtime lock and writable state
+
+This pressure-vessel release opens the source platform's `files/.ref` with
+`O_RDWR | O_CREAT`, including when `--copy-runtime` is selected. Merely
+pre-creating that file in a read-only runtime does not work. The passing
+fixture binds a separate private writable file over `files/.ref`, while
+keeping all runtime content read-only. It uses `--copy-runtime` with a private
+`--variable-dir` for runtime assembly. This avoids making shared runtime
+content writable by the application. Cross-filesystem hard-link attempts
+fall back to copying in this fixture.
+
+To run the harness in an equivalent disposable container, mount the verified
+runtime at `/runtime`, Proton at `/proton`, guest rootfs at `/rootfs`, the
+test at `/test.py`, and an empty writable results directory at `/results`.
+Bind the private lock file read-write over
+`/runtime/sniper_platform_3.0.20260805.254768/files/.ref`, then run:
+
+```sh
+python3 /test.py --runtime /runtime --rootfs /rootfs \
+  --proton /proton --output-dir /results
+```
+
+This validates the actual Proton console runner inside sniper on ARM. It
+does not exercise UMU's installation/update entry point, game graphics,
+physical GPU drivers, or the complete qOS capsule policy. The test supplies
+UMU's non-Steam identity (`UMU_ID=umu-0`) directly; it does not claim to test
+the UMU launcher. The known FEX graphics failures remain unresolved.
+
 ## Remaining integration requirements
 
 - The OS image currently installs UMU and Proton but does not yet provision
@@ -74,4 +131,4 @@ readiness and teardown guarantees.
   writable storage.
 - Validate the complete nested runtime under qOS Landlock, syscall policy,
   network grants, and graphics selection before changing production launch
-  plans. Native utility startup is not acceptance for the Windows runtime.
+  plans. The offline console test does not establish those integration gates.
