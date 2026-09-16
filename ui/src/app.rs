@@ -4143,6 +4143,16 @@ impl App {
                         );
                     }
                 }
+                CollabEvent::DocumentSnapshotRequested { .. } => {
+                    if let (Some(manager), Some(room)) =
+                        (self.room_collab_manager.as_mut(), self.room_index.as_mut())
+                    {
+                        let snapshot = room.document_mut().save();
+                        let _ = manager.send(
+                            crate::collaboration::CollabRequest::document_snapshot(snapshot),
+                        );
+                    }
+                }
                 _ => {}
             }
         }
