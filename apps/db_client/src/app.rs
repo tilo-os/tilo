@@ -18,6 +18,7 @@
 //! the breakpoint default-reconciliation use the shared [`FlapState`] kernel.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::io::Write;
 use std::time::Instant;
 
@@ -32,14 +33,14 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use qos_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, RetryPolicy};
+use qos_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{CodeEditor, EmptyState, FlapState, Language, SplitLayout, Widget};
 
 use crate::connect_modal::ConnectModal;
-use crate::doc::{ConnectionsDoc, EditorDoc, SavedQueriesDoc};
+use crate::doc::{ConnectionsDoc, EditorDoc};
 use crate::grid::GridView;
 use crate::model::Engine;
 use crate::schema_tree::{SchemaTree, TreeClick};
@@ -59,17 +60,17 @@ const TOGGLE_SIZE: f64 = 26.0;
 /// The single externally-invokable effect protocol for live database work.
 /// Unlike document actions, these payloads contain only stable object ids and
 /// SQL/table names — never passwords or live driver handles.
-const DB_OPERATION_TYPE: &str = "db_client.operation";
+pub(crate) const DB_OPERATION_TYPE: &str = "db_client.operation";
 
 /// Encode arbitrary catalog text into a path component without the ambiguity
 /// of delimiter-joined ids (`a:b` vs `a`, `b`). Labels remain human-readable;
 /// only machine identities use this representation.
 fn resource_component(value: &str) -> String {
-    value
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    let mut encoded = String::with_capacity(value.len().saturating_mul(2));
+    for byte in value.bytes() {
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 pub(crate) fn catalog_resource_id(kind: &str, components: &[&str]) -> String {
@@ -84,7 +85,25 @@ pub(crate) fn catalog_resource_id(kind: &str, components: &[&str]) -> String {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-enum DbClientOperation {
+pub(crate) enum DbClientOperation {
+    /// Reveal a catalog location in the local navigator. It never touches the
+    /// database or shared document, but it is a real view transition rather
+    /// than a decorative/no-op search target.
+    FocusCatalog {
+        connection_id: String,
+        schema: Option<String>,
+    },
+    /// Bring the current result back into view after resolving its generation.
+    ShowResult {
+        connection_id: String,
+        result_generation: usize,
+    },
+    /// Re-run a bounded, per-device history entry. History itself remains
+    /// private to a peer and is re-resolved before the external effect starts.
+    RunHistory {
+        connection_id: String,
+        generation: usize,
+    },
     RunQuery {
         connection_id: String,
         sql: String,
@@ -107,7 +126,7 @@ enum DbClientOperation {
     clippy::expect_used,
     reason = "DbClientOperation contains only serializable strings, so this cannot fail without a broken serializer"
 )]
-fn encode_operation(operation: &DbClientOperation) -> EncodedAction {
+pub(crate) fn encode_operation(operation: &DbClientOperation) -> EncodedAction {
     EncodedAction::encode_operation(DB_OPERATION_TYPE, operation)
         .expect("database operation payload is serializable")
 }
@@ -362,6 +381,18 @@ impl DbClientApp {
     /// invocation arrives, so their payload is never authority by itself.
     fn execute_operation(&mut self, operation: DbClientOperation) -> Result<(), String> {
         match operation {
+            DbClientOperation::FocusCatalog {
+                connection_id,
+                schema,
+            } => self.focus_catalog(&connection_id, schema.as_deref())?,
+            DbClientOperation::ShowResult {
+                connection_id,
+                result_generation,
+            } => self.show_result(&connection_id, result_generation)?,
+            DbClientOperation::RunHistory {
+                connection_id,
+                generation,
+            } => self.run_history(&connection_id, generation)?,
             DbClientOperation::RunQuery { connection_id, sql } => {
                 let id = Uuid::parse_str(&connection_id)
                     .map_err(|_| "invalid database connection id".to_string())?;
@@ -447,6 +478,58 @@ impl DbClientApp {
             }
         }
         self.dirty = true;
+        Ok(())
+    }
+
+    fn focus_catalog(&mut self, connection_id: &str, schema: Option<&str>) -> Result<(), String> {
+        let id = Uuid::parse_str(connection_id)
+            .map_err(|_| "invalid database connection id".to_string())?;
+        if self.session.active_connection_id() != Some(id) {
+            return Err("the catalog connection is no longer active".to_string());
+        }
+        if let Some(schema) = schema {
+            if !self
+                .session
+                .schema
+                .schemas
+                .iter()
+                .any(|candidate| candidate.name == schema)
+            {
+                return Err("schema is no longer available in the active catalog".into());
+            }
+            self.tree.reveal_schema(schema);
+        }
+        self.flap.open();
+        Ok(())
+    }
+
+    fn show_result(&mut self, connection_id: &str, generation: usize) -> Result<(), String> {
+        let id = Uuid::parse_str(connection_id)
+            .map_err(|_| "invalid database connection id".to_string())?;
+        if self.session.active_connection_id() != Some(id)
+            || self.session.query_gen != generation
+            || self.session.query_result.is_none()
+        {
+            return Err("the query result is no longer current".into());
+        }
+        self.session.tab = MainTab::Query;
+        Ok(())
+    }
+
+    fn run_history(&mut self, connection_id: &str, generation: usize) -> Result<(), String> {
+        let id = Uuid::parse_str(connection_id)
+            .map_err(|_| "invalid database connection id".to_string())?;
+        let sql = self
+            .session
+            .query_history
+            .iter()
+            .find(|entry| entry.connection_id == id && entry.generation == generation)
+            .map(|entry| entry.sql.clone())
+            .ok_or_else(|| "the local history entry is no longer available".to_string())?;
+        if self.session.active_connection_id() != Some(id) || !self.session.connected {
+            return Err("the history entry's connection is no longer open".into());
+        }
+        self.session.run_query(&sql);
         Ok(())
     }
 
@@ -1071,246 +1154,6 @@ impl Widget for DbClientApp {
                 .reversible(),
             );
         }
-        for connection in &self.session.connections {
-            let id = connection.id;
-            let mut resource = Resource::new(
-                format!("connection:{id}"),
-                "database.connection",
-                connection.name.clone(),
-            );
-            if let Ok(spec) = ActionSpec::operation(
-                "connect",
-                "Connect",
-                OperationKind::Effect,
-                DB_OPERATION_TYPE,
-                &DbClientOperation::Connect {
-                    connection_id: id.to_string(),
-                },
-            ) {
-                resource.actions.push(
-                    spec.retry_policy(RetryPolicy::Idempotent)
-                        .execution(ExecutionMode::Background { cancellable: false }),
-                );
-            }
-            if !self.demo {
-                let remove = crate::actions::remove_connection_action(id);
-                if let Ok(spec) = ActionSpec::immediate(
-                    "remove",
-                    "Remove saved connection",
-                    crate::actions::DB_ACTION_TYPE,
-                    &remove,
-                ) {
-                    resource.actions.push(spec.destructive());
-                }
-                resource.actions.push(
-                    ActionSpec::prompted(
-                        "rename",
-                        "Rename",
-                        "Connection name",
-                        &connection.name,
-                        qos_actions::ExecutionLocus::ClientLocal,
-                        move |name| {
-                            crate::actions::encode(&crate::actions::rename_connection_action(
-                                id, name,
-                            ))
-                        },
-                    )
-                    .reversible()
-                    .retry_policy(RetryPolicy::Idempotent),
-                );
-            }
-
-            // Catalog resources are meaningful only for the live selected
-            // connection. We do not fabricate schemas for disconnected
-            // profiles merely to make search look fuller than the backend is.
-            if active_id == Some(id) && self.session.connected {
-                let database_name = if connection.database.is_empty() {
-                    "Connected database".to_string()
-                } else {
-                    connection.database.clone()
-                };
-                let mut database = Resource::new(
-                    catalog_resource_id("database", &[&id.to_string(), &database_name]),
-                    "database.database",
-                    database_name,
-                );
-                for schema_info in &self.session.schema.schemas {
-                    let schema_name = schema_info.name.clone();
-                    let mut schema = Resource::new(
-                        catalog_resource_id("schema", &[&id.to_string(), &schema_name]),
-                        "database.schema",
-                        schema_name.clone(),
-                    );
-                    for table in &schema_info.tables {
-                        let table_name = table.name.clone();
-                        let mut table_resource = Resource::new(
-                            catalog_resource_id(
-                                "relation",
-                                &[&id.to_string(), &schema_name, &table_name],
-                            ),
-                            match table.kind {
-                                crate::model::RelationKind::Table => "database.table",
-                                crate::model::RelationKind::View => "database.view",
-                            },
-                            table_name.clone(),
-                        );
-                        if let Ok(spec) = ActionSpec::operation(
-                            "browse",
-                            "Browse rows",
-                            OperationKind::Effect,
-                            DB_OPERATION_TYPE,
-                            &DbClientOperation::BrowseTable {
-                                connection_id: id.to_string(),
-                                schema: schema_name.clone(),
-                                table: table_name.clone(),
-                            },
-                        ) {
-                            table_resource.actions.push(
-                                spec.retry_policy(RetryPolicy::Idempotent)
-                                    .execution(ExecutionMode::Background { cancellable: false }),
-                            );
-                        }
-                        for column in &table.columns {
-                            table_resource.children.push(Resource::new(
-                                catalog_resource_id(
-                                    "column",
-                                    &[&id.to_string(), &schema_name, &table_name, &column.name],
-                                ),
-                                "database.column",
-                                column.name.clone(),
-                            ));
-                        }
-                        schema.children.push(table_resource);
-                    }
-                    database.children.push(schema);
-                }
-                resource.children.push(database);
-
-                // Export snapshots the current bounded result, then uses the
-                // host save portal; neither a path nor any result data is
-                // replicated into the workspace document.
-                if let Some(result) = &self.session.query_result {
-                    let mut results = Resource::new(
-                        format!("query-result:{id}:{}", self.session.query_gen),
-                        "database.query-result",
-                        result.message(),
-                    );
-                    if let Ok(export) = ActionSpec::operation(
-                        "export_csv",
-                        "Export CSV",
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &DbClientOperation::ExportCsv {
-                            connection_id: id.to_string(),
-                            result_generation: self.session.query_gen,
-                        },
-                    ) {
-                        results.actions.push(
-                            export.execution(ExecutionMode::Background { cancellable: false }),
-                        );
-                    }
-                    resource.children.push(results);
-                }
-
-                // Transactions use the same live connection and effect path
-                // as normal SQL. Commit/rollback stay explicit resource
-                // actions, so assistants never need to synthesize an opaque
-                // side channel for transactional work.
-                let mut transaction = Resource::new(
-                    format!("transaction:{id}"),
-                    "database.transaction",
-                    "Transaction",
-                );
-                for (action_id, label, sql, destructive) in [
-                    ("begin", "Begin transaction", "BEGIN", false),
-                    ("commit", "Commit transaction", "COMMIT", true),
-                    ("rollback", "Roll back transaction", "ROLLBACK", false),
-                ] {
-                    if let Ok(spec) = ActionSpec::operation(
-                        action_id,
-                        label,
-                        OperationKind::Effect,
-                        DB_OPERATION_TYPE,
-                        &DbClientOperation::RunQuery {
-                            connection_id: id.to_string(),
-                            sql: sql.to_string(),
-                        },
-                    ) {
-                        transaction.actions.push(if destructive {
-                            spec.destructive()
-                        } else {
-                            spec
-                        });
-                    }
-                }
-                resource.children.push(transaction);
-            }
-            root.children.push(resource);
-        }
-        for saved in SavedQueriesDoc::read(doc) {
-            let query_id = saved.id;
-            let sql = saved.sql.clone();
-            let mut resource = Resource::new(
-                format!("saved-query:{query_id}"),
-                "database.saved-query",
-                saved.name,
-            );
-            let connection_id = active_id.map_or_else(String::new, |id| id.to_string());
-            if let Ok(run) = ActionSpec::operation(
-                "run",
-                "Run saved query",
-                OperationKind::Effect,
-                DB_OPERATION_TYPE,
-                &DbClientOperation::RunQuery { connection_id, sql },
-            ) {
-                resource.actions.push(
-                    run.execution(ExecutionMode::Background { cancellable: true })
-                        .retry_policy(RetryPolicy::AtMostOnce),
-                );
-            }
-            if let Ok(remove) = ActionSpec::immediate(
-                "remove",
-                "Remove saved query",
-                crate::actions::DB_ACTION_TYPE,
-                &crate::actions::remove_query_action(query_id),
-            ) {
-                resource.actions.push(remove.destructive());
-            }
-            root.children.push(resource);
-        }
-        // Live history is explicitly local: it is searchable and inspectable
-        // on this device, but its result-derived summaries never enter the
-        // shared document or a collaborator's resource tree.
-        let local_history = self.session.query_history.iter().rev().filter(|entry| {
-            active_id.is_some_and(|connection_id| entry.connection_id == connection_id)
-        });
-        let mut local_history = local_history.peekable();
-        if local_history.peek().is_some() {
-            let mut history = Resource::new(
-                format!(
-                    "query-history:{}",
-                    active_id.map_or_else(String::new, |id| id.to_string())
-                ),
-                "database.query-history",
-                "Local query history",
-            );
-            for entry in local_history {
-                let first_line = entry.sql.lines().next().unwrap_or("SQL");
-                let mut title = first_line.chars().take(80).collect::<String>();
-                if first_line.chars().nth(80).is_some() {
-                    title.push('…');
-                }
-                history.children.push(Resource::new(
-                    format!(
-                        "query-history-entry:{}:{}",
-                        entry.connection_id, entry.generation
-                    ),
-                    "database.query-history-entry",
-                    format!("{title} · {}", entry.summary),
-                ));
-            }
-            root.children.push(history);
-        }
         vec![root]
     }
 
@@ -1320,21 +1163,30 @@ impl Widget for DbClientApp {
 
     fn action_directory_resource_page(
         &self,
-        _doc: &AutoCommit,
+        doc: &AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
         // Remote directory enumeration never walks a live schema. Deeper
         // catalog entries are reached through the retained SearchCatalog and
         // resolved by their canonical resource ids.
-        let resources = (cursor.is_empty() && max_results > 0)
-            .then(|| vec![Resource::new("database", "database.workspace", "Database")])
-            .unwrap_or_default();
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
         Some(ui::widget::ActionDirectoryResourcePage {
             resources,
             next_cursor: Vec::new(),
             exhausted: true,
         })
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        (id == "database")
+            .then(|| self.resources(doc).pop())
+            .flatten()
+            .or_else(|| self.search_index.resource(id))
     }
 
     fn invoke_resource_operation(
@@ -1345,7 +1197,9 @@ impl Widget for DbClientApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
-        if kind != OperationKind::Effect || type_id != DB_OPERATION_TYPE {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View)
+            || type_id != DB_OPERATION_TYPE
+        {
             return Ok(false);
         }
         let operation: DbClientOperation =
@@ -1363,8 +1217,21 @@ impl Widget for DbClientApp {
         doc: &AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != OperationKind::Effect || type_id != DB_OPERATION_TYPE {
+        if !matches!(kind, OperationKind::Effect | OperationKind::View)
+            || type_id != DB_OPERATION_TYPE
+        {
             return Ok(None);
+        }
+        if kind == OperationKind::View {
+            return self
+                .invoke_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            qos_actions::ActionOutput::default(),
+                        )
+                    })
+                });
         }
         if self.resource_operation.is_some() || self.session.busy() {
             return Err("another database operation is already running".into());
@@ -1483,7 +1350,8 @@ impl Widget for DbClientApp {
         let sql_text = EditorDoc::sql_text(state);
         self.editor.bind_text(sql_text);
         self.editor.pull(state);
-        self.search_index.sync(&self.session, state);
+        self.search_index
+            .sync_for_app(&self.session, state, !self.demo);
     }
 
     fn build_layout(
@@ -3792,40 +3660,18 @@ mod behavior_tests {
         let (mut app, doc) = synced();
         app.session.connections[0].password = "never-publish-this".into();
         let resources = app.resources(&doc);
-        let connection = &resources[0].children[0];
-        let database = connection
-            .children
-            .iter()
-            .find(|resource| resource.kind == "database.database")
-            .expect("live connection publishes its database before schemas");
-        assert!(
-            database
-                .children
-                .iter()
-                .any(|resource| resource.kind == "database.schema")
-        );
-        assert!(
-            connection
-                .children
-                .iter()
-                .any(|resource| resource.kind == "database.query-result")
-        );
-        let transaction = connection
-            .children
-            .iter()
-            .find(|resource| resource.kind == "database.transaction")
-            .expect("live connection publishes transaction effects");
-        assert_eq!(transaction.actions.len(), 3);
-        let labels = resources[0]
-            .children
-            .iter()
-            .map(|resource| resource.label.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        assert!(
-            !labels.contains("never-publish-this"),
-            "resource labels must not reveal secret fields"
-        );
+        assert_eq!(resources.len(), 1, "root discovery is bounded");
+        assert!(resources[0].children.is_empty());
+        let connection = app.session.active_connection().unwrap().id.to_string();
+        let schema = &app.session.schema.schemas[0];
+        let relation = &schema.tables[0];
+        let relation_id =
+            catalog_resource_id("relation", &[&connection, &schema.name, &relation.name]);
+        let resolved = app
+            .resource(&doc, &relation_id)
+            .expect("exact relation resolves");
+        assert_eq!(resolved.id.as_str(), relation_id);
+        assert!(resolved.actions.iter().any(|action| action.id == "browse"));
         let run_sql = resources[0]
             .actions
             .iter()
@@ -3837,34 +3683,41 @@ mod behavior_tests {
             qos_actions::ConfirmationPolicy::Confirm,
             "an arbitrary SQL envelope is never advertised as harmless"
         );
+        assert!(
+            app.resource(&doc, "database")
+                .expect("root resolves exactly")
+                .actions
+                .iter()
+                .any(|action| action.id == "query"),
+            "directory and exact root resolution publish the same actionable root"
+        );
     }
 
     #[test]
     fn relation_resources_and_browse_payloads_remain_schema_qualified() {
-        let (mut app, doc) = synced();
+        let (mut app, mut doc) = synced();
         let original = app.session.schema.schemas[0].tables[0].clone();
         app.session.schema.schemas.push(crate::model::SchemaInfo {
             name: "other:schema".into(),
             tables: vec![original.clone()],
         });
-        let resources = app.resources(&doc);
-        let database = resources[0].children[0]
-            .children
-            .iter()
-            .find(|resource| resource.kind == "database.database")
-            .unwrap();
-        let relations = database
-            .children
-            .iter()
-            .flat_map(|schema| schema.children.iter())
-            .filter(|relation| relation.label == original.name)
-            .collect::<Vec<_>>();
-        assert_eq!(relations.len(), 2);
-        assert_ne!(
-            relations[0].id, relations[1].id,
-            "encoded ids cannot collide on colons"
+        app.search_index.sync(&app.session, &mut doc);
+        let connection = app.session.active_connection().unwrap().id.to_string();
+        let first_id = catalog_resource_id(
+            "relation",
+            &[
+                &connection,
+                &app.session.schema.schemas[0].name,
+                &original.name,
+            ],
         );
-        let browse = relations[1]
+        let second_id =
+            catalog_resource_id("relation", &[&connection, "other:schema", &original.name]);
+        assert_ne!(first_id, second_id, "encoded ids cannot collide on colons");
+        let resolved = app
+            .resource(&doc, &second_id)
+            .expect("exact relation resolves");
+        let browse = resolved
             .actions
             .iter()
             .find(|action| action.id == "browse")
