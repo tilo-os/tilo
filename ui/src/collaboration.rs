@@ -1973,10 +1973,11 @@ impl CollaborationManager {
     /// Fire-and-forget and non-blocking on every backend. Presence may be
     /// shed under saturation; any durable enqueue failure visibly disconnects
     /// the manager, so callers never continue under the illusion it was sent.
-    pub fn send(&mut self, req: CollabRequest) {
+    pub fn send(&mut self, req: CollabRequest) -> bool {
         if let Backend::Sdk(ch) = &self.backend {
-            let _ = enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Primary(req), &ch.state);
+            return enqueue_sdk_command(&ch.outbound_tx, SdkCommand::Primary(req), &ch.state);
         }
+        false
     }
 
     /// Register the UI-owned pull directory on the primary broker route.
