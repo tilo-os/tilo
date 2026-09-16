@@ -139,7 +139,7 @@ pub use vello;
 pub use vello::{kurbo, peniko};
 pub use winit;
 
-pub use app::{App, local_surface_id};
+pub use app::{ActionUiRoute, App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
