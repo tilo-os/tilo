@@ -97,6 +97,11 @@ pub enum ReviewError {
 }
 
 impl SetupPlan {
+    /// Calculate estimated storage for the base system and active folders.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReviewError::Overflow`] when any subtotal exceeds `u64`.
     pub fn required_bytes(&self) -> Result<u64, ReviewError> {
         let base = self
             .system_bytes
@@ -117,6 +122,11 @@ impl SetupPlan {
     /// This is deliberately lexical validation. Before actual I/O, the platform
     /// adapter must canonicalize paths, compare volume identities, apply the
     /// filesystem's case-folding rules, and revalidate access and mount safety.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first unsupported choice, unsafe or invalid folder, storage
+    /// overflow, or insufficient-space condition found in the plan.
     pub fn validate(
         &self,
         capabilities: &Capabilities,
