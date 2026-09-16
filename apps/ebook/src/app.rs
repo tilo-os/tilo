@@ -621,6 +621,13 @@ enum Ico {
     ChevDown,
 }
 
+struct IconButtonView {
+    rect: Rect,
+    icon: Ico,
+    active: bool,
+    action: Action,
+}
+
 impl BooksApp {
     /// The book currently open in the reader, if the library is non-empty.
     /// Used by [`crate::actions`] to publish the open-resource tree.
@@ -6095,22 +6102,15 @@ impl BooksApp {
         reason = "t/x/y/s/c/w are the standard transform/geometry/colour/stroke-width names \
                   shared by every draw helper in this chrome section"
     )]
-    fn icon_button(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        theme: &Theme,
-        x: f64,
-        y: f64,
-        s: f64,
-        ico: Ico,
-        active: bool,
-        action: Action,
-    ) -> f64 {
-        let rect = Rect::new(x, y, x + s, y + s);
+    fn icon_button(&mut self, ctx: &mut EbookPaintCtx<'_>, view: IconButtonView) -> f64 {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let rect = view.rect;
+        let size = rect.width();
         let hover = self.is_hover(rect);
         let c = &theme.tokens.colors;
-        if active {
+        if view.active {
             paint::fill_round(
                 scene,
                 t,
@@ -6127,7 +6127,7 @@ impl BooksApp {
                 theme.bg_hover,
             );
         }
-        let icon_col = if active {
+        let icon_col = if view.active {
             Color::from_rgb8(248, 248, 252)
         } else if hover {
             c.text_primary
@@ -6136,15 +6136,15 @@ impl BooksApp {
         };
         let w = 1.9;
         let inner = rect;
-        match ico {
+        match view.icon {
             Ico::Back => paint::chevron_left(scene, t, inner, icon_col, w),
             Ico::Toc => paint::list(scene, t, inner, icon_col, w),
             Ico::Notes => paint::note(scene, t, inner, icon_col, w),
             Ico::Bookmark(filled) => paint::bookmark(scene, t, inner, icon_col, w, filled),
             Ico::ChevDown => paint::chevron_down(scene, t, inner, icon_col, w),
         }
-        self.push_hit(rect, action);
-        s
+        self.push_hit(rect, view.action);
+        size
     }
 
     /// A filled accent button with a centred label (and an optional leading `+`),
@@ -8842,18 +8842,34 @@ impl BooksApp {
         let (aa_label_w, _) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
         let aa_w = f64::from(aa_label_w) + 26.0;
         let mut x = r.x0 + 14.0;
-        x += self.icon_button(scene, t, theme, x, cy, s, Ico::Back, false, Action::Back) + 6.0;
+        x += self.icon_button(
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            IconButtonView {
+                rect: Rect::new(x, cy, x + s, cy + s),
+                icon: Ico::Back,
+                active: false,
+                action: Action::Back,
+            },
+        ) + 6.0;
         let toc_active = self.toc_open();
         self.icon_button(
-            scene,
-            t,
-            theme,
-            x,
-            cy,
-            s,
-            Ico::Toc,
-            toc_active,
-            Action::ToggleToc,
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            IconButtonView {
+                rect: Rect::new(x, cy, x + s, cy + s),
+                icon: Ico::Toc,
+                active: toc_active,
+                action: Action::ToggleToc,
+            },
         );
 
         // centre: title (+ author, when it fits). The title is clamped to the
@@ -8965,28 +8981,34 @@ impl BooksApp {
         let mut rx = r.x1 - 14.0 - s;
         let notes_active = self.notes_open();
         self.icon_button(
-            scene,
-            t,
-            theme,
-            rx,
-            cy,
-            s,
-            Ico::Notes,
-            notes_active,
-            Action::ToggleNotes,
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            IconButtonView {
+                rect: Rect::new(rx, cy, rx + s, cy + s),
+                icon: Ico::Notes,
+                active: notes_active,
+                action: Action::ToggleNotes,
+            },
         );
         rx -= s_bm + 4.0;
         let cy_bm = r.y0 + (TOP_BAR - s_bm) / 2.0;
         self.icon_button(
-            scene,
-            t,
-            theme,
-            rx,
-            cy_bm,
-            s_bm,
-            Ico::Bookmark(bookmarked),
-            bookmarked,
-            Action::ToggleBookmark,
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            IconButtonView {
+                rect: Rect::new(rx, cy_bm, rx + s_bm, cy_bm + s_bm),
+                icon: Ico::Bookmark(bookmarked),
+                active: bookmarked,
+                action: Action::ToggleBookmark,
+            },
         );
 
         rx -= 8.0 + aa_w;
@@ -9684,15 +9706,18 @@ impl BooksApp {
         let s = 34.0;
         let cy = r.y0 + (TOP_BAR - s) / 2.0;
         self.icon_button(
-            scene,
-            t,
-            theme,
-            r.x0 + 14.0,
-            cy,
-            s,
-            Ico::Back,
-            false,
-            Action::CloseSettings,
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            IconButtonView {
+                rect: Rect::new(r.x0 + 14.0, cy, r.x0 + 14.0 + s, cy + s),
+                icon: Ico::Back,
+                active: false,
+                action: Action::CloseSettings,
+            },
         );
         tr.draw_text_weighted(
             scene,
@@ -10262,15 +10287,23 @@ impl BooksApp {
             );
         }
         self.icon_button(
-            scene,
-            t,
-            theme,
-            x + w - 34.0,
-            y + dd_h / 2.0 - 14.0,
-            28.0,
-            Ico::ChevDown,
-            false,
-            Action::ToggleDefaultFontMenu,
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            IconButtonView {
+                rect: Rect::new(
+                    x + w - 34.0,
+                    y + dd_h / 2.0 - 14.0,
+                    x + w - 6.0,
+                    y + dd_h / 2.0 + 14.0,
+                ),
+                icon: Ico::ChevDown,
+                active: false,
+                action: Action::ToggleDefaultFontMenu,
+            },
         );
         self.push_hit(dd, Action::ToggleDefaultFontMenu);
         let dd_bottom = y + dd_h;
