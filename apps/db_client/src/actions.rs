@@ -55,7 +55,7 @@ use uuid::Uuid;
 use qos_actions::{Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus};
 use ui::doc::put_if_changed;
 
-use crate::doc::CONNECTIONS_KEY;
+use crate::doc::{CONNECTIONS_KEY, SAVED_QUERIES_KEY};
 use crate::model::{ConnectionProfile, Engine};
 
 /// Wire type id under which the client's actions are encoded + registered.
@@ -82,6 +82,14 @@ pub enum DbAction {
     RemoveConnection { id: String },
     /// Rename the saved connection profile with this id.
     RenameConnection { id: String, name: String },
+    /// Save SQL as intentional, collaborative workspace content.
+    SaveQuery {
+        id: String,
+        name: String,
+        sql: String,
+    },
+    /// Hide a saved query while retaining its stable CRDT row as a tombstone.
+    RemoveQuery { id: String },
 }
 
 impl Action for DbAction {
@@ -99,7 +107,13 @@ impl Action for DbAction {
             } => {
                 let list = ensure_connections(doc)?;
                 // Idempotent under replay: a profile id is added at most once.
-                if row_index_for_id(doc, &list, id).is_some() {
+                // A removed row remains as a tombstone so concurrent peers keep
+                // one stable identity; re-adding that exact id revives the row
+                // instead of creating a duplicate list entry.
+                if let Some(index) = row_index_for_id(doc, &list, id) {
+                    if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index) {
+                        put_if_changed(doc, &row, "removed", false);
+                    }
                     return Ok(());
                 }
                 let index = doc.length(&list);
@@ -112,12 +126,17 @@ impl Action for DbAction {
                 doc.put(&row, "database", database.as_str())?;
                 doc.put(&row, "user", user.as_str())?;
                 doc.put(&row, "file_path", file_path.as_str())?;
+                doc.put(&row, "removed", false)?;
             }
             DbAction::RemoveConnection { id } => {
                 if let Some(list) = list_object(doc)
                     && let Some(index) = row_index_for_id(doc, &list, id)
+                    && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
                 {
-                    doc.delete(&list, index)?;
+                    // Keep the row as a tombstone. Deleting a list element
+                    // destroys the identity a concurrent rename/re-add needs
+                    // to converge on and lets a later add duplicate it.
+                    put_if_changed(doc, &row, "removed", true);
                 }
             }
             DbAction::RenameConnection { id, name } => {
@@ -126,6 +145,30 @@ impl Action for DbAction {
                     && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
                 {
                     put_if_changed(doc, &row, "name", name.as_str());
+                }
+            }
+            DbAction::SaveQuery { id, name, sql } => {
+                let list = ensure_saved_queries(doc)?;
+                if let Some(index) = row_index_for_id(doc, &list, id)
+                    && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
+                {
+                    put_if_changed(doc, &row, "removed", false);
+                    put_if_changed(doc, &row, "name", name.as_str());
+                    put_if_changed(doc, &row, "sql", sql.as_str());
+                    return Ok(());
+                }
+                let row = doc.insert_object(&list, doc.length(&list), ObjType::Map)?;
+                doc.put(&row, "id", id.as_str())?;
+                doc.put(&row, "name", name.as_str())?;
+                doc.put(&row, "sql", sql.as_str())?;
+                doc.put(&row, "removed", false)?;
+            }
+            DbAction::RemoveQuery { id } => {
+                if let Some(list) = saved_query_list_object(doc)
+                    && let Some(index) = row_index_for_id(doc, &list, id)
+                    && let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, index)
+                {
+                    put_if_changed(doc, &row, "removed", true);
                 }
             }
         }
@@ -152,6 +195,20 @@ fn ensure_connections(doc: &mut Doc) -> Result<ObjId, ActionError> {
     match list_object(doc) {
         Some(id) => Ok(id),
         None => Ok(doc.put_object(&ROOT, CONNECTIONS_KEY, ObjType::List)?),
+    }
+}
+
+fn saved_query_list_object(doc: &Doc) -> Option<ObjId> {
+    match doc.get(&ROOT, SAVED_QUERIES_KEY) {
+        Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+        _ => None,
+    }
+}
+
+fn ensure_saved_queries(doc: &mut Doc) -> Result<ObjId, ActionError> {
+    match saved_query_list_object(doc) {
+        Some(id) => Ok(id),
+        None => Ok(doc.put_object(&ROOT, SAVED_QUERIES_KEY, ObjType::List)?),
     }
 }
 
@@ -222,6 +279,20 @@ pub fn rename_connection_action(id: Uuid, name: &str) -> DbAction {
     }
 }
 
+/// Build a stable-id saved-query action. The SQL remains collaborative text,
+/// not a live server effect; running it stays a per-peer effect operation.
+pub fn save_query_action(id: Uuid, name: &str, sql: &str) -> DbAction {
+    DbAction::SaveQuery {
+        id: id.to_string(),
+        name: name.to_string(),
+        sql: sql.to_string(),
+    }
+}
+
+pub fn remove_query_action(id: Uuid) -> DbAction {
+    DbAction::RemoveQuery { id: id.to_string() }
+}
+
 /// True when `engine` is one this build knows how to open (kept next to the
 /// action so the modal and the decoder agree).
 pub fn known_engine(engine: &str) -> bool {
@@ -236,7 +307,7 @@ mod tests {
     use super::*;
     use crate::doc::ConnectionsDoc;
     use crate::model::Engine;
-    use automerge::AutoCommit;
+    use automerge::{ActorId, AutoCommit};
 
     fn profile() -> ConnectionProfile {
         let mut p = ConnectionProfile::new("Analytics", Engine::Postgres);
@@ -307,9 +378,68 @@ mod tests {
         assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
     }
 
-    /// `RemoveConnection` deletes exactly the addressed profile.
     #[test]
-    fn remove_connection_deletes_the_row() {
+    fn saved_query_actions_keep_a_tombstone_and_revive_its_id() {
+        let mut doc = AutoCommit::new();
+        let id = Uuid::new_v4();
+        save_query_action(id, "Daily totals", "SELECT count(*) FROM orders")
+            .apply(&mut doc)
+            .unwrap();
+        remove_query_action(id).apply(&mut doc).unwrap();
+        assert!(crate::doc::SavedQueriesDoc::read(&doc).is_empty());
+
+        save_query_action(id, "Daily totals", "SELECT count(*) FROM orders")
+            .apply(&mut doc)
+            .unwrap();
+        let queries = crate::doc::SavedQueriesDoc::read(&doc);
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].id, id);
+        let list = crate::doc::SavedQueriesDoc::list(&doc).expect("query list exists");
+        assert_eq!(doc.length(&list), 1, "revival must not duplicate a row");
+    }
+
+    #[test]
+    fn concurrent_saved_queries_converge_without_losing_stable_rows() {
+        let mut base = AutoCommit::new().with_actor(ActorId::from([1; 16].as_slice()));
+        // Establish the collaborative collection and a common Automerge
+        // history before peers make independent inserts, just as an invited
+        // collaborator would.
+        save_query_action(Uuid::new_v4(), "Shared seed", "SELECT 1")
+            .apply(&mut base)
+            .unwrap();
+        base.commit();
+        let mut left = base.fork().with_actor(ActorId::from([2; 16].as_slice()));
+        let mut right = base.fork().with_actor(ActorId::from([3; 16].as_slice()));
+        let left_id = Uuid::new_v4();
+        let right_id = Uuid::new_v4();
+
+        save_query_action(left_id, "Daily totals", "SELECT count(*) FROM orders")
+            .apply(&mut left)
+            .unwrap();
+        save_query_action(
+            right_id,
+            "Recent customers",
+            "SELECT * FROM customers LIMIT 10",
+        )
+        .apply(&mut right)
+        .unwrap();
+        left.commit();
+        right.commit();
+        left.merge(&mut right).unwrap();
+        let mut merged_left = left.fork();
+        right.merge(&mut merged_left).unwrap();
+
+        let visible = crate::doc::SavedQueriesDoc::read(&left);
+        assert_eq!(visible.len(), 3);
+        assert!(visible.iter().any(|query| query.id == left_id));
+        assert!(visible.iter().any(|query| query.id == right_id));
+        assert_eq!(left.get_heads(), right.get_heads(), "two peers converge");
+    }
+
+    /// `RemoveConnection` hides exactly the addressed profile while retaining
+    /// its stable CRDT row as a tombstone for concurrent peers.
+    #[test]
+    fn remove_connection_keeps_a_stable_tombstone() {
         let mut doc = AutoCommit::new();
         let a = profile();
         let mut b = ConnectionProfile::new("Shop", Engine::MySql);
@@ -321,7 +451,17 @@ mod tests {
         remove_connection_action(a.id).apply(&mut doc).unwrap();
         let left = ConnectionsDoc::read(&doc);
         assert_eq!(left.len(), 1);
-        assert_eq!(left[0].id, b.id, "the other profile survives the delete");
+        assert_eq!(left[0].id, b.id, "the other profile survives removal");
+        let list = ConnectionsDoc::list(&doc).expect("connection list exists");
+        assert_eq!(doc.length(&list), 2, "removed row remains a tombstone");
+        let (_, removed_row) = ConnectionsDoc::find(&doc, a.id).expect("tombstone keeps id");
+        assert!(
+            matches!(
+                doc.get(&removed_row, "removed"),
+                Ok(Some((Value::Scalar(value), _))) if value.as_ref() == &ScalarValue::Boolean(true)
+            ),
+            "tombstone records removal without deleting the row"
+        );
     }
 
     /// `RenameConnection` updates the addressed profile's name in place.

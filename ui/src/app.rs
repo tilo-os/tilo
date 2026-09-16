@@ -741,15 +741,10 @@ pub struct App {
     fullscreen_active: bool,
 
     autosave: Option<crate::persist::Autosave>,
-    /// Explicit frontier for the primary app/record collaboration route.
-    /// Never shares Automerge's implicit save cursor with snapshots or disk.
-    document_frontier: crate::state::DocumentFrontier,
     /// When present the live document is one record's, named by the root
     /// widget via [`crate::widget::Widget::record_intent`].
     records: Option<crate::record::RecordSet>,
-    room_index: Option<automerge::AutoCommit>,
-    /// Independent frontier for the unqualified room-index route.
-    room_index_frontier: Option<crate::state::DocumentFrontier>,
+    room_index: Option<crate::state::DocumentReplica>,
 
     action_palette: Option<crate::action_palette::ActionPalette>,
     action_registry: qos_actions::ActionRegistry,
@@ -861,12 +856,11 @@ impl App {
         reason = "construction explicitly initializes all retained application state before applying startup projections"
     )]
     pub fn with_collaboration_manager(
-        mut state: State,
+        state: State,
         root_widget: Box<dyn Widget>,
         collab_manager: CollaborationManager,
     ) -> Self {
         let configured_theme = Theme::configured();
-        let document_frontier = crate::state::DocumentFrontier::at_document(&mut state.doc);
         let mut app = Self {
             state,
             root_widget,
@@ -931,10 +925,8 @@ impl App {
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
-            document_frontier,
             records: None,
             room_index: None,
-            room_index_frontier: None,
             action_palette: None,
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
@@ -3792,15 +3784,15 @@ impl App {
         self.presence_broadcast_scope.clone_from(&key);
         // Reset the throttle so a new scope's first move fires immediately.
         self.last_pointer_broadcast = None;
-        // Announce arrival so peers already in the room reply with a full
-        // snapshot (the late-join handshake).
+        // Arrival remains ephemeral presence only. Document catch-up is a
+        // broker-directed request with one selected snapshot responder.
         if let Some(k) = key {
-            if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                crate::diag!(
-                    "[app] set scope; collab connected={}; broadcasting Arrived",
-                    self.collab_manager.is_connected()
-                );
-            }
+            tracing::debug!(
+                target: "qos.state",
+                event = "presence_arrived",
+                connected = self.collab_manager.is_connected(),
+                "publishing collaboration presence"
+            );
             self.broadcast_presence(k, crate::collaboration::PresencePayload::Arrived);
         }
     }
@@ -3879,16 +3871,20 @@ impl App {
     /// Live-edit path (the late-join handshake still ships a full snapshot).
     fn broadcast_doc_delta(&mut self) {
         if self.collab_manager.is_connected() {
-            let (delta, heads) = self.document_frontier.pending_delta(&mut self.state.doc);
+            let (delta, heads) = self.state.pending_outbound_delta();
             if !delta.is_empty() {
-                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    crate::diag!("[app] broadcast doc delta {}B", delta.len());
-                }
-                if self
-                    .collab_manager
-                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
-                {
-                    self.document_frontier.advance(heads);
+                tracing::debug!(
+                    target: "qos.state",
+                    event = "document_send",
+                    kind = "incremental",
+                    bytes = delta.len(),
+                    heads = heads.len(),
+                    "queueing document mutation"
+                );
+                if self.collab_manager.send(
+                    crate::collaboration::CollabRequest::document_incremental(delta),
+                ) {
+                    self.state.advance_outbound(heads);
                 }
             }
         }
@@ -3909,19 +3905,17 @@ impl App {
         let Some(room) = self.room_index.as_mut() else {
             return;
         };
-        let frontier = self
-            .room_index_frontier
-            .get_or_insert_with(|| crate::state::DocumentFrontier::at_document(room));
-        let (delta, heads) = frontier.pending_delta(room);
+        let (delta, heads) = room.pending_outbound_delta();
         if delta.is_empty() {
             return;
         }
         if let Some(manager) = self.room_collab_manager.as_mut() {
             if manager.is_connected()
-                && manager
-                    .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+                && manager.send(crate::collaboration::CollabRequest::document_incremental(
+                    delta,
+                ))
             {
-                frontier.advance(heads);
+                room.advance_outbound(heads);
             }
         } else if self.records.is_some() && self.collab_manager.is_connected() {
             // Before the first record checkout the primary manager is the
@@ -3929,9 +3923,11 @@ impl App {
             // Do not advance this cursor for ordinary (non-record) apps.
             if self
                 .collab_manager
-                .send(crate::collaboration::CollabRequest::DocumentIncremental { data: delta })
+                .send(crate::collaboration::CollabRequest::document_incremental(
+                    delta,
+                ))
             {
-                frontier.advance(heads);
+                room.advance_outbound(heads);
             }
         }
     }
@@ -4061,12 +4057,7 @@ impl App {
             decrypted_payload.unwrap_or(&envelope.payload),
         ) {
             Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                if let Ok(mut incoming) = State::load(&data) {
-                    let _ = self.state.doc.merge(&mut incoming.doc);
-                    true
-                } else {
-                    false
-                }
+                self.state.merge_snapshot(&data).is_ok()
             }
             Ok(collab_types::DocumentMutation::Incremental(data)) => {
                 self.state.load_incremental(&data).is_ok()
@@ -4077,7 +4068,6 @@ impl App {
             }
         };
         if applied {
-            self.document_frontier.rebase(&mut self.state.doc);
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout_dirty = true;
@@ -4099,9 +4089,7 @@ impl App {
             decrypted_payload.unwrap_or(&envelope.payload),
         ) {
             Ok(collab_types::DocumentMutation::Snapshot(data)) => {
-                automerge::AutoCommit::load(&data)
-                    .and_then(|mut incoming| room.merge(&mut incoming))
-                    .is_ok()
+                room.merge_snapshot(&data).is_ok()
             }
             Ok(collab_types::DocumentMutation::Incremental(data)) => {
                 room.load_incremental(&data).is_ok()
@@ -4114,14 +4102,8 @@ impl App {
         if applied
             && let (Some(records), Some(room)) = (self.records.as_mut(), self.room_index.as_ref())
         {
-            records.discover_room(room);
+            records.discover_room(room.document());
             self.invalidate_widget_resource_cache();
-        }
-        if applied
-            && let (Some(frontier), Some(room)) =
-                (self.room_index_frontier.as_mut(), self.room_index.as_mut())
-        {
-            frontier.rebase(room);
         }
         applied
     }
@@ -4195,11 +4177,13 @@ impl App {
                     Some(peer_id) => self.follow(peer_id),
                     None => self.unfollow(),
                 },
+                CollabEvent::DocumentSnapshotRequested { .. } => {
+                    let data = self.state.save();
+                    let _ = self
+                        .collab_manager
+                        .send(crate::collaboration::CollabRequest::document_snapshot(data));
+                }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                    if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
-                        cursor.x = x;
-                        cursor.y = y;
-                    }
                     self.presence_ctx
                         .upsert_remote_cursor(user_id, [x, y], None);
                 }
@@ -4224,13 +4208,15 @@ impl App {
                 } => {
                     // The broker already validated the envelope (signature +
                     // role table + replay defence); the toolkit trusts it.
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        crate::diag!(
-                            "[app] recv document from {} ({}B payload)",
-                            "<peer>",
-                            envelope.payload.len()
-                        );
-                    }
+                    tracing::debug!(
+                        target: "qos.state",
+                        event = "document_receive",
+                        bytes = envelope.payload.len(),
+                        author = ?envelope.author,
+                        sequence = envelope.seq,
+                        encrypted = envelope.encryption.is_some(),
+                        "applying document mutation"
+                    );
                     self.apply_signed_document_envelope(&envelope, decrypted_payload.as_deref());
                 }
                 CollabEvent::ScrollbackBatch {
@@ -4241,9 +4227,12 @@ impl App {
                 } => {
                     // Broker pre-validated each envelope, trusted the same
                     // way as a live document mutation.
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        crate::diag!("[app] recv ScrollbackBatch ({} ops)", ops.len());
-                    }
+                    tracing::debug!(
+                        target: "qos.state",
+                        event = "document_scrollback",
+                        operations = ops.len(),
+                        "applying document scrollback"
+                    );
                     for (index, envelope) in ops.into_iter().enumerate() {
                         let decrypted = decrypted_payloads
                             .get(index)
@@ -4355,9 +4344,6 @@ impl App {
         for c in collaborators.into_iter().filter(|c| !c.is_self) {
             // Relabel only — the roster doesn't say where a peer's pointer
             // is, so it must not mint one at the origin.
-            if let Some(cursor) = self.state.collab.cursors.get_mut(&c.id) {
-                cursor.name.clone_from(&c.name);
-            }
             self.presence_ctx
                 .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
             self.presence_ctx.set_participant_kind(
@@ -4413,16 +4399,6 @@ impl App {
                 self.apply_remote_presence(user_id, key, payload);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                let entry = self.state.collab.cursors.entry(user_id.clone()).or_insert(
-                    crate::state::RemoteCursor {
-                        x: 0.0,
-                        y: 0.0,
-                        color: self.theme.text_primary,
-                        name: String::new(),
-                    },
-                );
-                entry.x = x;
-                entry.y = y;
                 self.presence_ctx
                     .upsert_remote_cursor(user_id, [x, y], None);
             }
@@ -4437,6 +4413,12 @@ impl App {
                 Some(peer_id) => self.follow(peer_id),
                 None => self.unfollow(),
             },
+            CollabEvent::DocumentSnapshotRequested { .. } => {
+                let data = self.state.save();
+                let _ = self
+                    .collab_manager
+                    .send(crate::collaboration::CollabRequest::document_snapshot(data));
+            }
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
             }
@@ -4629,7 +4611,7 @@ impl App {
             .presence_ctx
             .apply_remote_presence(user_id, key, payload)
         {
-            RemotePresenceEffect::None => {}
+            RemotePresenceEffect::None | RemotePresenceEffect::PeerArrived => {}
             RemotePresenceEffect::PeerViewChanged => self.apply_follow(),
             RemotePresenceEffect::InteractionAdvanced => {
                 if let Some(interaction) = interaction
@@ -4650,14 +4632,6 @@ impl App {
                         assertive,
                     );
                 }
-            }
-            RemotePresenceEffect::PeerArrived => {
-                let data = self.state.save();
-                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    crate::diag!("[app] recv Arrived; replying full state {}B", data.len());
-                }
-                self.collab_manager
-                    .send(crate::collaboration::CollabRequest::DocumentSnapshot { data });
             }
         }
     }
@@ -5504,16 +5478,14 @@ impl App {
     pub fn with_records(
         mut self,
         mut records: crate::record::RecordSet,
-        mut room_index: automerge::AutoCommit,
+        room_index: automerge::AutoCommit,
     ) -> Self {
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
         // replica or join a collaboration route for every indexed document.
         records.discover_room(&room_index);
-        self.room_index_frontier =
-            Some(crate::state::DocumentFrontier::at_document(&mut room_index));
         self.records = Some(records);
-        self.room_index = Some(room_index);
+        self.room_index = Some(crate::state::DocumentReplica::new(room_index));
         self
     }
 
@@ -5522,7 +5494,9 @@ impl App {
     }
 
     pub fn room_index(&self) -> Option<&automerge::AutoCommit> {
-        self.room_index.as_ref()
+        self.room_index
+            .as_ref()
+            .map(crate::state::DocumentReplica::document)
     }
 
     /// The record is the collaboration routing key, so a checkout is a
@@ -5535,13 +5509,14 @@ impl App {
         let switched = crate::record::tick(
             set,
             &mut self.state,
-            self.room_index.as_mut(),
+            self.room_index
+                .as_mut()
+                .map(crate::state::DocumentReplica::document_mut),
             &*self.root_widget,
         );
         match switched {
             Some(id) => {
-                self.document_frontier =
-                    crate::state::DocumentFrontier::at_document(&mut self.state.doc);
+                self.state.rebase_outbound();
                 // Preserve the launcher's unqualified route for the room
                 // index before moving the editable document to its record
                 // route. The two Automerge graphs never share a channel or
@@ -5555,21 +5530,23 @@ impl App {
                 } else {
                     self.collab_manager = CollaborationManager::for_record(&id);
                 }
-                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                    crate::diag!(
-                        "[app] checked out record {}; collab connected={}",
-                        id.as_str(),
-                        self.collab_manager.is_connected()
-                    );
-                }
+                tracing::debug!(
+                    target: "qos.state",
+                    event = "record_checkout",
+                    record = id.as_str(),
+                    connected = self.collab_manager.is_connected(),
+                    "switched document collaboration route"
+                );
                 self.needs_sync = true;
                 self.layout_dirty = true;
-                // `Arrived` asks peers already holding the document to reply
-                // with a full snapshot, so a window opening a file someone
-                // else is editing hears its existing content too.
+                // Presence announces the location; document catch-up is an
+                // independently directed broker request on the new route.
                 if let Some(scope) = self.presence_broadcast_scope.clone() {
                     self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
                 }
+                let _ = self
+                    .collab_manager
+                    .send(crate::collaboration::CollabRequest::RequestDocumentSnapshot);
                 true
             }
             None => false,
@@ -5586,7 +5563,7 @@ impl App {
                 if let (Some(saver), Some(room)) =
                     (self.autosave.as_mut(), self.room_index.as_mut())
                 {
-                    saver.request(room);
+                    saver.request(room.document_mut());
                 }
             }
             None => {
@@ -5603,7 +5580,7 @@ impl App {
         if let Some(set) = self.records.as_mut() {
             set.flush(&mut self.state.doc);
             if let (Some(saver), Some(room)) = (self.autosave.as_mut(), self.room_index.as_mut()) {
-                saver.request(room);
+                saver.request(room.document_mut());
                 saver.flush();
             }
             return;
@@ -6069,54 +6046,6 @@ fn draw_frame_content(
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
     (transform, window_rect, t_draw_us)
-}
-
-/// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
-/// Legacy path — `state.collab.cursors` predates `PresenceCtx`; kept for apps
-/// that still write into it directly.
-fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
-    for cursor in app.state.collab.cursors.values() {
-        let mut path = vello::kurbo::BezPath::new();
-        path.move_to(Point::new(0.0, 0.0));
-        path.line_to(Point::new(14.0, 14.0));
-        path.line_to(Point::new(6.0, 16.0));
-        path.line_to(Point::new(0.0, 22.0));
-        path.close_path();
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-        )]
-        let cursor_transform =
-            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            cursor_transform,
-            cursor.color,
-            None,
-            &path,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
-            cursor_transform,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            None,
-            &path,
-        );
-
-        app.text_renderer.draw_text(
-            scene,
-            &cursor.name,
-            10.0,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            {
-                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
-                let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
-                name_transform
-            },
-            None,
-        );
-    }
 }
 
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
@@ -7204,7 +7133,6 @@ impl AppHandler {
             || app.action_palette.is_some()
             || app.tooltip_host.needs_frame()
             || app.tooltip_host.visible().is_some()
-            || !app.state.collab.cursors.is_empty()
             || !app.presence_ctx.remote_cursors.is_empty()
             || app
                 .profiler
@@ -7220,8 +7148,6 @@ impl AppHandler {
         };
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
-
-        draw_legacy_cursors(app, &mut scene, transform);
 
         // A pointer that arrived on a desktop scope is the
         // compositor's to draw, and the helper skips it — see

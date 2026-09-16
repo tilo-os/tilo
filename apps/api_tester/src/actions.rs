@@ -169,6 +169,12 @@ pub enum ApiTesterAction {
         collection_id: String,
         request: Request,
     },
+    /// Save the live shared request into a collection without copying its
+    /// URL, body, auth, or headers into a resource directory entry.
+    SaveCurrentRequest {
+        collection_id: String,
+        request_id: String,
+    },
     /// Rename a saved request by id within its collection.
     RenameRequest {
         collection_id: String,
@@ -203,6 +209,12 @@ pub enum ApiTesterAction {
         variable_id: String,
         key: String,
         value: String,
+    },
+    /// Rename a variable without reading or serializing its secret value.
+    RenameVariable {
+        env_id: String,
+        variable_id: String,
+        key: String,
     },
     /// Delete a variable by key from an environment.
     DeleteVariable { env_id: String, variable_id: String },
@@ -307,6 +319,17 @@ impl ApiTesterAction {
                     }
                 }
             }
+            ApiTesterAction::RenameVariable {
+                env_id,
+                variable_id,
+                key,
+            } => {
+                if let Some(e) = find_environment_mut(envs, env_id)
+                    && let Some(v) = e.variables.iter_mut().find(|v| v.id == *variable_id)
+                {
+                    v.key.clone_from(key);
+                }
+            }
             ApiTesterAction::DeleteVariable {
                 env_id,
                 variable_id,
@@ -377,6 +400,20 @@ impl Action for ApiTesterAction {
                 ApiDoc::save_request(doc, &root, collection_id, before.as_ref(), request);
                 Ok(())
             }
+            ApiTesterAction::SaveCurrentRequest {
+                collection_id,
+                request_id,
+            } => {
+                let Ok(request_id) = request_id.parse::<Uuid>() else {
+                    return Ok(());
+                };
+                let Some(mut request) = ApiDoc::request(doc, &root) else {
+                    return Ok(());
+                };
+                request.id = request_id;
+                ApiDoc::save_request(doc, &root, collection_id, None, &request);
+                Ok(())
+            }
             ApiTesterAction::RenameRequest {
                 collection_id,
                 request_id,
@@ -413,6 +450,14 @@ impl Action for ApiTesterAction {
                 value,
             } => {
                 ApiDoc::set_variable(doc, &root, env_id, variable_id, key, value);
+                Ok(())
+            }
+            ApiTesterAction::RenameVariable {
+                env_id,
+                variable_id,
+                key,
+            } => {
+                ApiDoc::rename_variable(doc, &root, env_id, variable_id, key);
                 Ok(())
             }
             ApiTesterAction::DeleteVariable {
@@ -491,6 +536,13 @@ pub fn save_request_action(collection_id: Uuid, request: Request) -> ApiTesterAc
     }
 }
 
+pub fn save_current_request_action(collection_id: Uuid, request_id: Uuid) -> ApiTesterAction {
+    ApiTesterAction::SaveCurrentRequest {
+        collection_id: collection_id.to_string(),
+        request_id: request_id.to_string(),
+    }
+}
+
 pub fn rename_request_action(collection_id: Uuid, request_id: Uuid, name: &str) -> ApiTesterAction {
     ApiTesterAction::RenameRequest {
         collection_id: collection_id.to_string(),
@@ -538,6 +590,18 @@ pub fn set_variable_action(
     }
 }
 
+pub fn rename_variable_action(
+    env_id: Uuid,
+    variable_id: impl Into<String>,
+    key: &str,
+) -> ApiTesterAction {
+    ApiTesterAction::RenameVariable {
+        env_id: env_id.to_string(),
+        variable_id: variable_id.into(),
+        key: key.to_string(),
+    }
+}
+
 pub fn delete_variable_action(env_id: Uuid, variable_id: impl Into<String>) -> ApiTesterAction {
     ApiTesterAction::DeleteVariable {
         env_id: env_id.to_string(),
@@ -545,21 +609,15 @@ pub fn delete_variable_action(env_id: Uuid, variable_id: impl Into<String>) -> A
     }
 }
 
-/// Split a prompted `"key=value"` argument into its two halves (value may hold
-/// further `=` signs, e.g. a base64 token). A bare `"key"` yields an empty
-/// value.
-fn split_kv(arg: &str) -> (String, String) {
-    match arg.split_once('=') {
-        Some((k, v)) => (k.trim().to_string(), v.trim().to_string()),
-        None => (arg.trim().to_string(), String::new()),
-    }
-}
-
 // ===========================================================================
 // Resource tree
 // ===========================================================================
 
-fn immediate(id: &str, label: impl Into<String>, action: &ApiTesterAction) -> ActionSpec {
+pub(crate) fn immediate(
+    id: &str,
+    label: impl Into<String>,
+    action: &ApiTesterAction,
+) -> ActionSpec {
     let label = label.into();
     ActionSpec::immediate(id, label.clone(), API_TESTER_ACTION_TYPE, action).unwrap_or_else(|_| {
         // The fallible builder's fallback. `ActionSpec`'s fields are
@@ -569,35 +627,22 @@ fn immediate(id: &str, label: impl Into<String>, action: &ApiTesterAction) -> Ac
     })
 }
 
-/// One-line label for a saved request: its method and name.
-fn request_label(r: &Request) -> String {
-    let name = if r.name.trim().is_empty() {
-        "Untitled request"
-    } else {
-        r.name.trim()
-    };
-    format!("{} {}", r.method.as_str(), name)
+/// Frame-by-frame directory root. Deep records arrive through search or an
+/// exact stable-id resolver, preventing palette opens from allocating every
+/// request and variable action closure.
+pub fn provide_root_resources(_doc: &AutoCommit) -> Vec<Resource> {
+    vec![workspace_root().with_child(history_root())]
 }
 
-/// Build the resource tree the API tester currently has open: the workspace, its
-/// collections (each owning its saved requests), and — under a single
-/// environments node — its environments (each owning its variables). Every
-/// document-mutating operation is exported as the same action an on-screen
-/// affordance would dispatch.
-///
-/// The shared state lives in the document, so this reads the model straight from
-/// `doc`. The workspace root is always published (so Ctrl+K can create the first
-/// collection / environment even on an empty document); children appear only for
-/// rows that actually exist. Presentation — the loaded request, the active tab —
-/// is never exported.
-pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let root_obj: ObjId = ROOT;
-    let collections = ApiDoc::collections(doc, &root_obj);
-    let environments = ApiDoc::environments(doc, &root_obj);
-    let active_env = ApiDoc::active_env(doc, &root_obj);
-    let active_request = ApiDoc::request(doc, &root_obj);
-    let history = ApiDoc::history(doc, &root_obj);
+fn history_root() -> Resource {
+    Resource::new(
+        "api_tester.history",
+        "api_tester.history",
+        "Request history",
+    )
+}
 
+fn workspace_root() -> Resource {
     let mut root = Resource::new(
         "api_tester.workspace",
         "api_tester.workspace",
@@ -625,209 +670,73 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         move |name: &str| encode(&create_environment_action(Uuid::new_v4(), name.trim())),
     ));
 
-    root = add_collection_children(root, &collections, active_request.as_ref());
-    root = add_environment_children(root, &environments, active_env.as_deref());
-    root = add_history_children(root, &history);
-
-    vec![root]
-}
-
-/// History rows are durable, addressable records. Opening one is explicitly
-/// local navigation; it never claims to resend the request or to reproduce the
-/// old response.
-fn add_history_children(mut root: Resource, history: &[crate::model::HistoryEntry]) -> Resource {
-    if history.is_empty() {
-        return root;
-    }
-    let mut history_root = Resource::new(
-        "api_tester.history",
-        "api_tester.history",
-        "Request history",
-    );
-    for entry in history {
-        let label = format!("{} {} · {}", entry.method.as_str(), entry.url, entry.status);
-        let mut node = Resource::new(
-            format!("api_tester.history:{}", entry.id),
-            "api_tester.history_entry",
-            label,
-        );
-        if let Ok(replay) = replay_history_operation(entry.id) {
-            node = node.with_action(replay);
-        }
-        history_root = history_root.with_child(node);
-    }
-    root = root.with_child(history_root);
     root
 }
 
-/// Collections → a resource each, owning its saved requests. Split out of
-/// [`provide_resources`] to keep it under the line budget.
-fn add_collection_children(
-    mut root: Resource,
-    collections: &[Collection],
-    active_request: Option<&Request>,
-) -> Resource {
-    for c in collections {
-        let cid = c.id;
-        let mut node = Resource::new(
-            format!("api_tester.collection:{cid}"),
-            "api_tester.collection",
-            c.name.clone(),
-        );
-        node = node.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename collection",
-            "Collection name",
-            "new name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&rename_collection_action(cid, name.trim())),
-        ));
-        node = node.with_action(immediate(
-            "delete",
-            "Delete collection",
-            &delete_collection_action(cid),
-        ));
-        // Add a new blank request (a fresh GET named by the argument).
-        node = node.with_action(ActionSpec::prompted(
-            "add-request",
-            "Add request",
-            "Request name",
-            "e.g. List users",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| {
-                let mut req = Request::new(name.trim());
-                req.id = Uuid::new_v4();
-                encode(&save_request_action(cid, req))
-            },
-        ));
-        // Save the request currently in the builder into this collection, as a
-        // new saved copy — exercises the full whole-record write with the live
-        // method / url / params / body. Only offered when a request is loaded.
-        if let Some(active) = active_request {
-            let mut copy = active.clone();
-            copy.id = Uuid::new_v4();
-            if copy.name.trim().is_empty() {
-                copy.name = "Saved request".to_string();
-            }
-            node = node.with_action(immediate(
-                "save-active",
-                "Save current request here",
-                &save_request_action(cid, copy),
-            ));
-        }
-
-        for r in &c.requests {
-            let rid = r.id;
-            let mut child = Resource::new(
-                format!("api_tester.request:{rid}"),
-                "api_tester.request",
-                request_label(r),
-            )
-            .with_action(ActionSpec::prompted(
-                "rename",
-                "Rename request",
-                "Request name",
-                "new name…",
-                ExecutionLocus::ClientLocal,
-                move |name: &str| encode(&rename_request_action(cid, rid, name.trim())),
+/// One stable, secret-safe variable resource. Kept separate so environment
+/// traversal remains small and callers can materialize a single address later.
+pub(crate) fn variable_resource(eid: Uuid, variable_id: &str, key: &str) -> Resource {
+    let rename_id = variable_id.to_string();
+    let set_value_id = variable_id.to_string();
+    let key = key.to_string();
+    Resource::new(
+        format!("api_tester.variable:{eid}:{variable_id}"),
+        "api_tester.variable",
+        format!("Variable {key}"),
+    )
+    .with_action(ActionSpec::prompted(
+        "rename",
+        "Rename variable",
+        "Variable key",
+        "new key…",
+        ExecutionLocus::ClientLocal,
+        move |next_key: &str| {
+            encode(&rename_variable_action(
+                eid,
+                rename_id.clone(),
+                next_key.trim(),
             ))
-            .with_action(immediate(
-                "delete",
-                "Delete request",
-                &delete_request_action(cid, rid),
-            ));
-            if let Ok(send) = send_request_operation(cid, rid) {
-                child = child.with_action(send);
-            }
-            node = node.with_child(child);
-        }
-        root = root.with_child(node);
-    }
-    root
-}
-
-/// Environments → grouped under one env node, each owning its variables.
-/// Split out of [`provide_resources`] to keep it under the line budget.
-fn add_environment_children(
-    mut root: Resource,
-    environments: &[Environment],
-    active_env: Option<&str>,
-) -> Resource {
-    if environments.is_empty() {
-        return root;
-    }
-    let mut env_root = Resource::new(
-        "api_tester.environments",
-        "api_tester.environments",
-        "Environments",
-    );
-    for e in environments {
-        let eid = e.id;
-        let is_active = active_env == Some(eid.to_string().as_str());
-        let mut node = Resource::new(
-            format!("api_tester.environment:{eid}"),
-            "api_tester.environment",
-            e.name.clone(),
-        );
-        if !is_active {
-            node = node.with_action(immediate(
-                "activate",
-                format!("Use environment “{}”", e.name),
-                &set_active_environment_action(Some(eid)),
-            ));
-        }
-        node = node.with_action(ActionSpec::prompted(
-            "rename",
-            "Rename environment",
-            "Environment name",
-            "new name…",
-            ExecutionLocus::ClientLocal,
-            move |name: &str| encode(&rename_environment_action(eid, name.trim())),
-        ));
-        node = node.with_action(immediate(
-            "delete",
-            "Delete environment",
-            &delete_environment_action(eid),
-        ));
-        node = node.with_action(ActionSpec::prompted(
-            "set-variable",
-            "Set variable",
-            "key=value",
-            "e.g. base_url=https://api.example.com",
-            ExecutionLocus::ClientLocal,
-            move |arg: &str| {
-                let (k, v) = split_kv(arg);
-                encode(&set_variable_action(
-                    eid,
-                    Uuid::new_v4().to_string(),
-                    &k,
-                    &v,
-                ))
-            },
-        ));
-
-        for v in &e.variables {
-            let child = Resource::new(
-                format!("api_tester.variable:{eid}:{}", v.key),
-                "api_tester.variable",
-                format!("{} = {}", v.key, v.value),
-            )
-            .with_action(immediate(
-                "delete",
-                "Delete variable",
-                &delete_variable_action(eid, &v.id),
-            ));
-            node = node.with_child(child);
-        }
-        env_root = env_root.with_child(node);
-    }
-    root = root.with_child(env_root);
-    root
+        },
+    ))
+    .with_action(ActionSpec::prompted(
+        "set-value",
+        "Set variable value",
+        "Variable value",
+        "new value…",
+        ExecutionLocus::ClientLocal,
+        move |next_value: &str| {
+            encode(&set_variable_action(
+                eid,
+                set_value_id.clone(),
+                &key,
+                next_value,
+            ))
+        },
+    ))
+    .with_action(immediate(
+        "delete",
+        "Delete variable",
+        &delete_variable_action(eid, variable_id),
+    ))
 }
 
 impl ResourceProvider for crate::app::ApiTesterApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(doc)
+        let mut roots = provide_root_resources(doc);
+        if let Some(error) = self.search_error_message()
+            && let Some(root) = roots.first_mut()
+        {
+            root.children.push(Resource::new(
+                "api_tester.search_status",
+                "api_tester.search_status",
+                format!("Search index unavailable: {error}"),
+            ));
+        }
+        roots
+    }
+
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        self.resource_from_catalog(id)
     }
 }
 
@@ -835,26 +744,12 @@ impl ResourceProvider for crate::app::ApiTesterApp {
 mod tests {
     use super::*;
     use crate::model::HttpMethod;
-    use qos_actions::{ActionInput, LocalTransport};
+    use qos_actions::LocalTransport;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
         register(&mut r);
         r
-    }
-
-    fn immediate_encode(spec: &ActionSpec) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Immediate(enc) => enc.clone(),
-            ActionInput::Prompted { .. } => panic!("expected an immediate action: {}", spec.id),
-        }
-    }
-
-    fn prompted_encode(spec: &ActionSpec, arg: &str) -> EncodedAction {
-        match &spec.input {
-            ActionInput::Prompted { build, .. } => build(arg),
-            ActionInput::Immediate(_) => panic!("expected a prompted action: {}", spec.id),
-        }
     }
 
     /// A workspace with one collection holding one saved request, and one
@@ -880,101 +775,6 @@ mod tests {
         (doc, cid, rid, eid)
     }
 
-    /// Ctrl+K on the API tester yields the workspace tree: a collection child (its
-    /// saved request nested under it), and — under an environments node — an
-    /// environment child (its variable nested under it), plus the workspace-level
-    /// create actions. Drives the real resource path.
-    #[test]
-    fn ctrl_k_publishes_the_workspace_tree() {
-        let (doc, _cid, _rid, _eid) = seeded();
-        let resources = provide_resources(&doc);
-        assert_eq!(resources.len(), 1, "one workspace root");
-        let root = &resources[0];
-        assert_eq!(root.kind, "api_tester.workspace");
-
-        let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(root_actions.contains(&"new-collection"), "{root_actions:?}");
-        assert!(
-            root_actions.contains(&"new-environment"),
-            "{root_actions:?}"
-        );
-
-        let col = root
-            .children
-            .iter()
-            .find(|r| r.kind == "api_tester.collection")
-            .expect("a collection resource");
-        let col_actions: Vec<&str> = col.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(col_actions.contains(&"rename"), "{col_actions:?}");
-        assert!(col_actions.contains(&"delete"), "{col_actions:?}");
-        assert!(col_actions.contains(&"add-request"), "{col_actions:?}");
-        let req = col
-            .children
-            .iter()
-            .find(|r| r.kind == "api_tester.request")
-            .expect("a request resource nested under the collection");
-        let req_actions: Vec<&str> = req.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(req_actions.contains(&"rename"), "{req_actions:?}");
-        assert!(req_actions.contains(&"delete"), "{req_actions:?}");
-        assert!(req_actions.contains(&"send"), "{req_actions:?}");
-        let send = req
-            .actions
-            .iter()
-            .find(|action| action.id == "send")
-            .expect("saved requests export their network effect");
-        assert_eq!(send.kind, OperationKind::Effect);
-        let encoded = immediate_encode(send);
-        assert_eq!(encoded.type_id, API_TESTER_OPERATION_TYPE);
-        assert!(matches!(
-            serde_json::from_slice::<ApiTesterOperation>(&encoded.payload).unwrap(),
-            ApiTesterOperation::SendRequest { .. }
-        ));
-
-        let env_node = root
-            .children
-            .iter()
-            .find(|r| r.kind == "api_tester.environments")
-            .expect("an environments node");
-        let env = env_node
-            .children
-            .iter()
-            .find(|r| r.kind == "api_tester.environment")
-            .expect("an environment resource");
-        let env_actions: Vec<&str> = env.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(env_actions.contains(&"activate"), "{env_actions:?}");
-        assert!(env_actions.contains(&"rename"), "{env_actions:?}");
-        assert!(env_actions.contains(&"delete"), "{env_actions:?}");
-        assert!(env_actions.contains(&"set-variable"), "{env_actions:?}");
-        let var = env
-            .children
-            .iter()
-            .find(|r| r.kind == "api_tester.variable")
-            .expect("a variable nested under the environment");
-        assert!(
-            var.actions.iter().any(|a| a.id == "delete"),
-            "variable exports delete"
-        );
-
-        // The one palette surfaces the tree's actions as rows (the Actions group
-        // is capped, so assert on the leading, always-present ones).
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
-        palette.open();
-        let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("New collection")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Delete collection")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Add request")),
-            "{labels:?}"
-        );
-    }
-
     /// An empty document still publishes the workspace root with the create
     /// actions (so the first collection can be made from Ctrl+K), plus the
     /// device-local current-request effect resource, but no collection /
@@ -982,51 +782,103 @@ mod tests {
     #[test]
     fn empty_doc_publishes_workspace_with_create_actions_only() {
         let doc = AutoCommit::new();
-        let resources = provide_resources(&doc);
+        let resources = provide_root_resources(&doc);
         assert_eq!(resources.len(), 1);
         let root = &resources[0];
         assert_eq!(root.kind, "api_tester.workspace");
         assert!(root.actions.iter().any(|a| a.id == "new-collection"));
         assert!(root.actions.iter().any(|a| a.id == "new-environment"));
-        assert_eq!(root.children.len(), 1, "only the current-request effect");
+        assert_eq!(
+            root.children.len(),
+            2,
+            "current request and history directory"
+        );
         assert_eq!(root.children[0].kind, "api_tester.active_request");
     }
 
     #[test]
-    fn history_records_are_addressable_with_an_honest_view_operation() {
+    fn bounded_directory_resolves_each_canonical_deep_address() {
+        let mut app = crate::app::ApiTesterApp::new_demo();
+        let (doc, collection, request, environment) = seeded();
+        let collections = ApiDoc::collections(&doc, &ROOT);
+        let environments = ApiDoc::environments(&doc, &ROOT);
+        app.refresh_search_records(&collections, &environments);
+        let variable = ApiDoc::environments(&doc, &ROOT)[0].variables[0].id.clone();
+        let root = <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &doc);
+        assert_eq!(root.len(), 1, "directory is bounded to the workspace root");
+        assert!(
+            root[0]
+                .children
+                .iter()
+                .all(|child| child.kind != "api_tester.collection")
+        );
+        for (id, actions) in [
+            (
+                format!("api_tester.collection:{collection}"),
+                &["rename", "delete", "add-request", "save-active"][..],
+            ),
+            (
+                format!("api_tester.request:{request}"),
+                &["rename", "delete", "send"][..],
+            ),
+            (
+                format!("api_tester.environment:{environment}"),
+                &["activate", "rename", "delete", "set-variable"][..],
+            ),
+            (
+                format!("api_tester.variable:{environment}:{variable}"),
+                &["rename", "set-value", "delete"][..],
+            ),
+        ] {
+            let exact = <crate::app::ApiTesterApp as ResourceProvider>::resource(&app, &doc, &id)
+                .expect("stable id resolves precisely on demand");
+            assert_eq!(exact.id.0, id);
+            for action in actions {
+                assert!(
+                    exact
+                        .actions
+                        .iter()
+                        .any(|candidate| candidate.id == *action)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failed_catalog_refresh_is_exposed_as_a_palette_diagnostic_resource() {
+        let mut app = crate::app::ApiTesterApp::new_demo();
+        let collection = Collection::new("Duplicate");
+        let mut duplicate = collection.clone();
+        duplicate.name = "Conflicting duplicate".to_string();
+        app.refresh_search_records(&[collection, duplicate], &[]);
+
+        let roots =
+            <crate::app::ApiTesterApp as ResourceProvider>::resources(&app, &AutoCommit::new());
+        assert!(
+            roots[0]
+                .children
+                .iter()
+                .any(|child| child.kind == "api_tester.search_status")
+        );
+    }
+
+    #[test]
+    fn variable_rename_keeps_the_existing_secret_value_in_its_own_crdt_field() {
         let root: ObjId = ROOT;
         let mut doc = AutoCommit::new();
-        let entry = crate::model::HistoryEntry {
-            id: Uuid::new_v4(),
-            method: HttpMethod::Get,
-            url: "https://api.example.test/users".into(),
-            status: 200,
-            duration_ms: 18,
-            when: "just now".into(),
-        };
-        ApiDoc::set_history(&mut doc, &root, std::slice::from_ref(&entry));
+        let mut environment = Environment::new("Production");
+        let environment_id = environment.id;
+        let variable = KeyValue::new("token", "keep-this-secret");
+        let variable_id = variable.id.clone();
+        environment.variables.push(variable);
+        ApiDoc::set_environments(&mut doc, &root, &[environment]);
 
-        let resources = provide_resources(&doc);
-        let history_root = resources[0]
-            .children
-            .iter()
-            .find(|node| node.kind == "api_tester.history")
-            .expect("history has its own addressable resource root");
-        let row = history_root
-            .children
-            .iter()
-            .find(|node| node.id.0 == format!("api_tester.history:{}", entry.id))
-            .expect("durable history row is searchable/addressable");
-        let replay = row
-            .actions
-            .iter()
-            .find(|action| action.id == "replay")
-            .expect("history offers local navigation, not a fake resend");
-        assert_eq!(replay.kind, OperationKind::View);
-        assert!(matches!(
-            serde_json::from_slice::<ApiTesterOperation>(&immediate_encode(replay).payload).unwrap(),
-            ApiTesterOperation::ReplayHistory { history_id } if history_id == entry.id.to_string()
-        ));
+        rename_variable_action(environment_id, variable_id, "api_token")
+            .apply(&mut doc)
+            .expect("key-only rename applies");
+        let variable = &ApiDoc::environments(&doc, &root)[0].variables[0];
+        assert_eq!(variable.key, "api_token");
+        assert_eq!(variable.value, "keep-this-secret");
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
@@ -1131,42 +983,5 @@ mod tests {
         assert_eq!(cols[0].requests.len(), 1, "same id replaces, not appends");
         assert_eq!(cols[0].requests[0].method, HttpMethod::Delete);
         assert_eq!(cols[0].requests[0].name, "Remove users");
-    }
-
-    /// Single source of truth: the palette's "Delete request" spec and the
-    /// builder the on-screen trash affordance calls encode byte-identically; and
-    /// a prompted "Rename collection" spec matches its builder for the same text.
-    #[test]
-    fn palette_and_builder_encode_identically() {
-        let (doc, cid, rid, _eid) = seeded();
-        let resources = provide_resources(&doc);
-        let root = &resources[0];
-        let col = root
-            .children
-            .iter()
-            .find(|r| r.kind == "api_tester.collection")
-            .unwrap();
-
-        let req = col
-            .children
-            .iter()
-            .find(|r| r.kind == "api_tester.request")
-            .unwrap();
-        let del = req.actions.iter().find(|a| a.id == "delete").unwrap();
-        let from_spec = immediate_encode(del);
-        let from_builder = encode(&delete_request_action(cid, rid));
-        assert_eq!(from_spec.type_id, from_builder.type_id);
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "one source of truth for delete"
-        );
-
-        let rename = col.actions.iter().find(|a| a.id == "rename").unwrap();
-        let from_spec = prompted_encode(rename, "Accounts API");
-        let from_builder = encode(&rename_collection_action(cid, "Accounts API"));
-        assert_eq!(
-            from_spec.payload, from_builder.payload,
-            "rename is one source of truth"
-        );
     }
 }

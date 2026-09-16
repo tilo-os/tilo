@@ -4,7 +4,7 @@
 //! Generalizes `real_socket_two_peer.rs` to three peers, asserting the two
 //! properties that matter for N > 2:
 //!
-//!   1. **Fan-out excludes the sender.** A `DocumentIncremental` from peer A
+//!   1. **Fan-out excludes the sender.** A document incremental from peer A
 //!      reaches B and C exactly once each, and never echoes back to A.
 //!   2. **Presence is attributed per peer.** A presence from A and B
 //!      arrives at C tagged with the id each announced — so the two are
@@ -41,9 +41,7 @@ fn n_peer_fanout_and_per_peer_attribution() {
     let _ = c.poll();
 
     // --- 1. Fan-out excludes the sender -----------------------------
-    a.send(CollabRequest::DocumentIncremental {
-        data: b"X".to_vec(),
-    });
+    a.send(CollabRequest::document_incremental(b"X".to_vec()));
     thread::sleep(Duration::from_millis(150));
 
     let count_incremental = |evs: &[CollabEvent]| {

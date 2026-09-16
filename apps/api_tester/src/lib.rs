@@ -49,6 +49,7 @@ mod model;
 mod navrow;
 mod palette;
 mod responsive;
+mod search_provider;
 mod seed;
 mod vars;
 

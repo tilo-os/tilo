@@ -31,6 +31,7 @@ pub struct GridView {
     /// The display-order row index permutation after sorting.
     order: Vec<usize>,
     rect: Rect,
+    text_scale: f64,
 }
 
 impl Default for GridView {
@@ -50,6 +51,7 @@ impl GridView {
             col_widths: Vec::new(),
             order: Vec::new(),
             rect: Rect::ZERO,
+            text_scale: 1.0,
         }
     }
 
@@ -63,6 +65,7 @@ impl GridView {
 
     /// Recompute column widths + sort order when a new result lands.
     pub fn bind(&mut self, result: &QueryResult, tr: &mut TextRenderer) {
+        self.text_scale = f64::from(tr.text_scale());
         let ncols = result.columns.len();
         self.col_widths = vec![MIN_COL_W; ncols];
         for (ci, name) in result.columns.iter().enumerate() {
@@ -120,7 +123,15 @@ impl GridView {
     }
 
     pub fn visible_rows(&self) -> usize {
-        (((self.rect.height() - HEADER_H) / ROW_H).floor()).max(0.0) as usize
+        (((self.rect.height() - self.header_h()) / self.row_h()).floor()).max(0.0) as usize
+    }
+
+    fn header_h(&self) -> f64 {
+        HEADER_H * self.text_scale
+    }
+
+    fn row_h(&self) -> f64 {
+        ROW_H * self.text_scale
     }
 
     pub fn scroll(&mut self, delta_rows: isize, total: usize) {
@@ -149,7 +160,7 @@ impl GridView {
     /// Hit-test a header click; returns the column index if `p` is on a
     /// header cell. Accounts for the horizontal scroll offset.
     pub fn header_hit(&self, p: Point) -> Option<usize> {
-        if p.y < self.rect.y0 || p.y > self.rect.y0 + HEADER_H {
+        if p.y < self.rect.y0 || p.y > self.rect.y0 + self.header_h() {
             return None;
         }
         if p.x < self.rect.x0 || p.x > self.rect.x1 {
@@ -167,10 +178,10 @@ impl GridView {
 
     /// Hit-test a body row; returns the display-order index.
     pub fn row_hit(&self, p: Point) -> Option<usize> {
-        if p.y < self.rect.y0 + HEADER_H {
+        if p.y < self.rect.y0 + self.header_h() {
             return None;
         }
-        let rel = ((p.y - self.rect.y0 - HEADER_H) / ROW_H).floor() as usize;
+        let rel = ((p.y - self.rect.y0 - self.header_h()) / self.row_h()).floor() as usize;
         let idx = self.scroll_row + rel;
         if idx < self.order.len() {
             Some(idx)
@@ -247,11 +258,12 @@ impl GridView {
         let p = theme.db();
         let r = self.rect;
         let x0 = r.x0 - self.scroll_x;
-        let body_bottom = (r.y0 + HEADER_H + self.visible_rows() as f64 * ROW_H).min(r.y1);
+        let body_bottom =
+            (r.y0 + self.header_h() + self.visible_rows() as f64 * self.row_h()).min(r.y1);
         let content_right = (x0 + self.total_width()).min(r.x1);
 
         // Header background spans the full visible width.
-        let header_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
+        let header_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.header_h());
         scene.fill(Fill::NonZero, transform, p.header_bg, None, &header_rect);
 
         // Column headers.
@@ -281,7 +293,7 @@ impl GridView {
                 &label,
                 13.0,
                 theme.text_primary,
-                transform * Affine::translate((x + CELL_PAD, r.y0 + 8.0)),
+                transform * Affine::translate((x + CELL_PAD, r.y0 + 8.0 * self.text_scale)),
                 Some(max_w),
             );
             // Column divider.
@@ -301,8 +313,8 @@ impl GridView {
             theme.border_standard,
             None,
             &Line::new(
-                Point::new(r.x0, r.y0 + HEADER_H),
-                Point::new(content_right, r.y0 + HEADER_H),
+                Point::new(r.x0, r.y0 + self.header_h()),
+                Point::new(content_right, r.y0 + self.header_h()),
             ),
         );
     }
@@ -333,8 +345,8 @@ impl GridView {
             let Some(row) = result.rows.get(row_idx) else {
                 break;
             };
-            let y = r.y0 + HEADER_H + vi as f64 * ROW_H;
-            let row_rect = Rect::new(r.x0, y, content_right, y + ROW_H);
+            let y = r.y0 + self.header_h() + vi as f64 * self.row_h();
+            let row_rect = Rect::new(r.x0, y, content_right, y + self.row_h());
 
             // Zebra striping + hover.
             if Some(oidx) == self.hover_row {
@@ -353,7 +365,7 @@ impl GridView {
                     break;
                 }
                 let cell = row.get(ci).cloned().unwrap_or(Cell::Null);
-                let cell_rect = Rect::new(cx, y, cx + w, y + ROW_H);
+                let cell_rect = Rect::new(cx, y, cx + w, y + self.row_h());
                 draw_cell(scene, transform, tr, theme, &p, &cell, cell_rect);
                 cx += w;
             }
@@ -417,7 +429,7 @@ fn draw_cell(
         theme.text_primary
     };
 
-    let ty = cell_rect.y0 + 6.0;
+    let ty = cell_rect.y0 + 6.0 * f64::from(theme.text_scale);
     if cell.is_numeric() {
         // Right-align numerics within the cell.
         let (tw, _) = tr.measure(&truncated, 13.0, None);

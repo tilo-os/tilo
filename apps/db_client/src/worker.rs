@@ -40,6 +40,7 @@ pub enum DbRequest {
     /// Read one page of a table's rows (Data tab browsing).
     Browse {
         connection_id: Uuid,
+        schema: String,
         table: String,
         limit: usize,
         offset: usize,
@@ -76,6 +77,7 @@ pub enum DbReply {
     /// A table page finished loading (Data tab).
     Browsed {
         connection_id: Uuid,
+        schema: String,
         table: String,
         offset: usize,
         result: Result<QueryResult, String>,
@@ -277,16 +279,18 @@ fn worker_loop(
             },
             DbRequest::Browse {
                 connection_id,
+                schema,
                 table,
                 limit,
                 offset,
             } => {
                 let result = match engine.as_mut() {
-                    Some(eng) => eng.browse_table(&table, limit, offset),
+                    Some(eng) => eng.browse_table(&schema, &table, limit, offset),
                     None => Err("No live connection".to_string()),
                 };
                 DbReply::Browsed {
                     connection_id,
+                    schema,
                     table,
                     offset,
                     result,
