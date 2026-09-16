@@ -30,6 +30,10 @@ fn visual_notification_alerts_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn notification_unix_ms() -> u64 {
+    u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0)
+}
+
 /// One capability request waiting for the user to answer it. Dropping
 /// without answering drops the `reply` sender, which the portal side
 /// reads as deny — refusal, not a hang.
@@ -1138,7 +1142,11 @@ impl ChromeState {
     pub fn dismiss_notification(&mut self, id: u64) {
         if let Some(pos) = self.notifications.iter().position(|n| n.id == id) {
             let removed = self.notifications.remove(pos);
-            self.emit_closed(&removed, CloseReason::Dismissed);
+            if let Some(command) = removed.remote_dismiss_command() {
+                self.queue_remote_notification_command(command);
+            } else {
+                self.emit_closed(&removed, CloseReason::Dismissed);
+            }
             self.record_history(removed);
             self.bump();
         }
@@ -1152,7 +1160,14 @@ impl ChromeState {
             return false;
         };
         let removed = self.notifications.remove(pos);
-        if let (Some(bridge), Some(dbus_id)) = (self.notification_bridge.as_ref(), removed.dbus_id)
+        if let Some(command) = removed
+            .default_action_key()
+            .and_then(|key| removed.remote_action_command(&key))
+            .or_else(|| removed.remote_dismiss_command())
+        {
+            self.queue_remote_notification_command(command);
+        } else if let (Some(bridge), Some(dbus_id)) =
+            (self.notification_bridge.as_ref(), removed.dbus_id)
         {
             if let Some(key) = removed.default_action_key() {
                 bridge.note_action(dbus_id, key);
@@ -1162,6 +1177,21 @@ impl ChromeState {
         self.record_history(removed);
         self.bump();
         true
+    }
+
+    fn queue_remote_notification_command(
+        &self,
+        command: crate::notifications::ContinuityCommandEgress,
+    ) {
+        let Some(bridge) = self.notification_bridge.as_ref() else {
+            return;
+        };
+        let _ = bridge.request_remote_continuity_command(
+            &command.target_device,
+            command.id,
+            command.command,
+            notification_unix_ms(),
+        );
     }
 
     /// Used by the `CloseNotification` pump path. No-op if no live
@@ -1174,6 +1204,18 @@ impl ChromeState {
         {
             let removed = self.notifications.remove(pos);
             self.emit_closed(&removed, reason);
+            self.record_history(removed);
+            self.bump();
+        }
+    }
+
+    fn close_notification_by_dbus_id_silently(&mut self, dbus_id: u32) {
+        if let Some(pos) = self
+            .notifications
+            .iter()
+            .position(|notification| notification.dbus_id == Some(dbus_id))
+        {
+            let removed = self.notifications.remove(pos);
             self.record_history(removed);
             self.bump();
         }
@@ -1402,6 +1444,8 @@ impl ChromeState {
             // A fresh Notify with an existing id supersedes the prior toast.
             self.notifications.retain(|n| n.dbus_id != Some(dbus_id));
             let verified_app_id = inc.caller.as_ref().map(|caller| caller.app_id.clone());
+            let sharing = bridge.take_sharing(dbus_id);
+            let urgency = inc.urgency;
             let badge_count = inc.badge_count;
             let verified_priority_contact = verified_app_id.is_some()
                 && inc
@@ -1420,6 +1464,30 @@ impl ChromeState {
             let mut notification = Notification::from_incoming(inc);
             notification.show_preview = effective.previews;
             notification.show_on_lock_screen = effective.lock_screen;
+            if effective.cross_device
+                && let (Some(app_id), Some(app_name)) =
+                    (verified_app_id.clone(), notification.app_name.clone())
+            {
+                let now_unix_ms = notification_unix_ms();
+                let lifetime_ms = u64::try_from(notification.dismiss_after.as_millis())
+                    .unwrap_or(crate::notifications::MAX_CONTINUITY_NOTIFICATION_TTL_MS)
+                    .clamp(1, crate::notifications::MAX_CONTINUITY_NOTIFICATION_TTL_MS);
+                let _ = bridge.project_continuity_notification(
+                    crate::notifications::ContinuityNotificationDraft {
+                        dbus_id,
+                        app_id,
+                        app_name,
+                        title: notification.title.clone(),
+                        body: notification.body.clone(),
+                        actions: notification.actions.clone(),
+                        urgency,
+                        sharing,
+                        previews_allowed: effective.previews,
+                        expires_unix_ms: now_unix_ms.saturating_add(lifetime_ms),
+                    },
+                    now_unix_ms,
+                );
+            }
             // Keep the verified producer's latest state even while badge
             // display is disabled. Visibility is a policy filter below; if we
             // discarded updates here, re-enabling badges would resurrect a
@@ -1446,6 +1514,123 @@ impl ChromeState {
         }
         for id in bridge.drain_close_requests() {
             self.close_notification_by_dbus_id(id, CloseReason::Closed);
+        }
+        for id in bridge.drain_continuity_local_closes() {
+            self.close_notification_by_dbus_id_silently(id);
+        }
+        self.pump_remote_continuity_notifications(&bridge);
+    }
+
+    fn pump_remote_continuity_notifications(&mut self, bridge: &NotificationBridge) {
+        use chrono::{Datelike, Timelike};
+
+        let now_unix_ms = notification_unix_ms();
+        bridge.expire_remote_continuity(now_unix_ms);
+        for event in bridge.drain_remote_continuity_events() {
+            match event {
+                crate::notifications::RemoteContinuityEvent::Upsert(remote) => {
+                    let app_id = remote.projection.app_id.clone();
+                    let now = chrono::Local::now();
+                    let effective = self.notification_policy.effective_for(
+                        Some(&app_id),
+                        now.timestamp(),
+                        u16::try_from(now.hour().saturating_mul(60).saturating_add(now.minute()))
+                            .unwrap_or(u16::MAX),
+                        u8::try_from(now.weekday().num_days_from_monday()).unwrap_or(u8::MAX),
+                    );
+                    if !effective.cross_device {
+                        continue;
+                    }
+                    let Some(mut notification) =
+                        Notification::from_remote_continuity(remote, now_unix_ms)
+                    else {
+                        continue;
+                    };
+                    if !effective.previews {
+                        notification.body.clear();
+                        notification.show_preview = false;
+                    }
+                    if self.replace_remote_notification(&notification) {
+                        continue;
+                    }
+                    if effective.banners {
+                        self.push_notification_full(notification);
+                    } else {
+                        self.record_history(notification);
+                        self.bump();
+                    }
+                }
+                crate::notifications::RemoteContinuityEvent::Retire { source_device, id } => {
+                    self.retire_remote_notification(&source_device, id);
+                }
+            }
+        }
+    }
+
+    fn replace_remote_notification(&mut self, replacement: &Notification) -> bool {
+        let Some(route) = replacement.remote_route.as_ref() else {
+            return false;
+        };
+        if let Some(existing) = self
+            .notifications
+            .iter_mut()
+            .find(|notification| notification.remote_route.as_ref() == Some(route))
+        {
+            let id = existing.id;
+            *existing = replacement.clone();
+            existing.id = id;
+            self.bump();
+            return true;
+        }
+        if let Some(existing) = self
+            .notification_history
+            .iter_mut()
+            .find(|notification| notification.remote_route.as_ref() == Some(route))
+        {
+            let id = existing.id;
+            *existing = replacement.clone();
+            existing.id = id;
+            self.bump();
+            return true;
+        }
+        false
+    }
+
+    fn retire_remote_notification(
+        &mut self,
+        source_device: &str,
+        id: crate::notifications::ContinuityNotificationId,
+    ) {
+        let matches = |notification: &Notification| {
+            notification.remote_route.as_ref().is_some_and(|route| {
+                route.source_device == source_device && route.notification_id == id
+            })
+        };
+        let before = (
+            self.notifications.len(),
+            self.notification_history.len(),
+            self.pending_notification_history_clear
+                .as_ref()
+                .map_or(0, |pending| pending.notifications.len()),
+        );
+        self.notifications
+            .retain(|notification| !matches(notification));
+        self.notification_history
+            .retain(|notification| !matches(notification));
+        if let Some(pending) = self.pending_notification_history_clear.as_mut() {
+            pending
+                .notifications
+                .retain(|notification| !matches(notification));
+        }
+        let after = (
+            self.notifications.len(),
+            self.notification_history.len(),
+            self.pending_notification_history_clear
+                .as_ref()
+                .map_or(0, |pending| pending.notifications.len()),
+        );
+        if after != before {
+            self.bump();
         }
     }
 
