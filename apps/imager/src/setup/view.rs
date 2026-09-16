@@ -2,6 +2,7 @@
 
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -22,7 +23,7 @@ use vello::peniko::Fill;
 use winit::event::{Modifiers, WindowEvent};
 
 use super::controller::{SetupController, SetupPage};
-use super::folders::{self, FolderScan};
+use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
 use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
 
@@ -179,9 +180,16 @@ impl SetupApp {
         app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
         if scenario != "setup-experience" {
             app.apply_command(SetupCommand::Next);
+            let mut documents = shot_scan("Documents", 38, 2_460_000_000);
+            if scenario == "setup-review" {
+                documents.skipped.push(SkippedEntry {
+                    path: documents.source.join("Old Photos shortcut"),
+                    reason: SkipReason::SymbolicLink,
+                });
+            }
             app.apply_worker_message(WorkerMessage::ScanFinished {
                 destination: PathBuf::from("/home/qos/Documents"),
-                result: Ok(shot_scan("Documents", 38, 2_460_000_000)),
+                result: Ok(documents),
             });
             app.apply_worker_message(WorkerMessage::ScanFinished {
                 destination: PathBuf::from("/home/qos/Pictures"),
@@ -364,6 +372,30 @@ impl SetupApp {
             .then(|| format!("{source_label} is already covered by another selected folder."))
     }
 
+    fn distinct_suggested_destination(&self, preferred: &Path) -> Result<PathBuf, String> {
+        let controller = self.controller();
+        if !controller.destination_conflicts(preferred) {
+            return Ok(preferred.to_path_buf());
+        }
+        let base_name = preferred
+            .file_name()
+            .ok_or_else(|| "folder destination has no suggested name".to_string())?;
+        let parent = preferred.parent().unwrap_or_else(|| Path::new(""));
+        let max_suffix =
+            controller.folders().len().checked_add(2).ok_or_else(|| {
+                "too many folder destinations to suggest another name".to_string()
+            })?;
+        for suffix in 2..=max_suffix {
+            let mut name = base_name.to_os_string();
+            name.push(format!(" ({suffix})"));
+            let candidate = parent.join(name);
+            if !controller.destination_conflicts(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        Err("folder destination overlaps another selected destination".to_string())
+    }
+
     fn apply_worker_message(&mut self, message: WorkerMessage) {
         match message {
             WorkerMessage::KnownFolders(folders) => {
@@ -387,9 +419,27 @@ impl SetupApp {
                             self.structure_dirty = true;
                             return;
                         }
+                        let destination = match self.distinct_suggested_destination(&destination) {
+                            Ok(destination) => destination,
+                            Err(error) => {
+                                self.status = error;
+                                self.status_is_error = true;
+                                self.structure_dirty = true;
+                                return;
+                            }
+                        };
+                        let skipped_count = scan.skipped.len();
                         match self.controller.borrow_mut().add_folder(scan, destination) {
                             Ok(()) => {
-                                self.status = format!("{source} is ready to copy after review.");
+                                if skipped_count == 0 {
+                                    self.status =
+                                        format!("{source} is ready to copy after review.");
+                                } else {
+                                    self.status = format!(
+                                        "Folder added with an incomplete estimate: {} skipped. Review the listed paths before continuing.",
+                                        skipped_count_phrase(skipped_count)
+                                    );
+                                }
                                 self.status_is_error = false;
                             }
                             Err(error) => {
@@ -645,28 +695,32 @@ impl SetupApp {
             "Remove",
             SetupCommand::RemoveFolder(index),
         );
-        Card::titled(
-            source,
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(&details).dimmed()))
-                    .push(Box::new(
-                        Text::new("Destination").with_role(TextRole::Label),
-                    ))
-                    .push(Box::new(destination_field))
-                    .push(Box::new(
-                        Row::new()
-                            .push(Box::new(copy))
-                            .push(Box::new(connected))
-                            .push(Box::new(later)),
-                    ))
-                    .push(Box::new(
-                        Row::new().push(Box::new(follow)).push(Box::new(remove)),
-                    )),
-            ),
-        )
+        let mut card_body = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(Text::new(&details).dimmed()));
+        if let Some(warning) = scan_warning(&folder.scan) {
+            card_body = card_body.push(Box::new(
+                Text::new(&warning)
+                    .with_id(format!("setup.folder.{index}.warnings"))
+                    .with_live(Politeness::Polite),
+            ));
+        }
+        card_body = card_body
+            .push(Box::new(
+                Text::new("Destination").with_role(TextRole::Label),
+            ))
+            .push(Box::new(destination_field))
+            .push(Box::new(
+                Row::new()
+                    .push(Box::new(copy))
+                    .push(Box::new(connected))
+                    .push(Box::new(later)),
+            ))
+            .push(Box::new(
+                Row::new().push(Box::new(follow)).push(Box::new(remove)),
+            ));
+        Card::titled(source, Box::new(card_body))
     }
 
     fn folders_body(&self) -> Box<dyn Widget> {
@@ -746,30 +800,51 @@ impl SetupApp {
             HostOs::Linux => "Your Linux installation remains installed",
             HostOs::Other => "Your current operating system remains installed",
         };
-        let folders = if plan.folders.is_empty() {
+        let scheduled = controller
+            .folders()
+            .iter()
+            .filter(|folder| folder.mode != FolderMode::Later)
+            .collect::<Vec<_>>();
+        let folders = if scheduled.is_empty() {
             "No folders are scheduled. You can add them later.".to_string()
         } else {
-            plan.folders
+            scheduled
                 .iter()
                 .map(|folder| {
-                    format!(
+                    let summary = format!(
                         "{} → {} · {} · {}",
-                        folder.source.display(),
+                        folder.scan.source.display(),
                         folder.destination.display(),
                         mode_label(folder.mode),
-                        format_bytes(folder.bytes)
+                        format_bytes(folder.scan.bytes)
+                    );
+                    scan_warning(&folder.scan).map_or_else(
+                        || summary.clone(),
+                        |warning| format!("{summary}\n{warning}"),
                     )
                 })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
+        let skipped_count = scheduled
+            .iter()
+            .map(|folder| folder.scan.skipped.len())
+            .sum::<usize>();
         let estimate = plan.required_bytes().map_or_else(
             |_| "Space estimate is unavailable because the total overflowed.".to_string(),
             |bytes| {
-                format!(
-                    "Estimated qOS space for selected files: {}",
-                    format_bytes(bytes)
-                )
+                if skipped_count == 0 {
+                    format!(
+                        "Estimated qOS space for selected files: {}",
+                        format_bytes(bytes)
+                    )
+                } else {
+                    format!(
+                        "Estimated qOS space for counted files: {}. This total is incomplete because {} skipped.",
+                        format_bytes(bytes),
+                        skipped_count_phrase(skipped_count)
+                    )
+                }
             },
         );
         let connected_blocker = plan
@@ -800,11 +875,11 @@ impl SetupApp {
                 )))
                 .push(Box::new(Card::titled(
                     "Folder policies",
-                    Box::new(Text::new(&folders)),
+                    Box::new(Text::new(&folders).with_id("setup.review.folders")),
                 )))
                 .push(Box::new(Card::titled(
                     "Space estimate",
-                    Box::new(Text::new(&estimate)),
+                    Box::new(Text::new(&estimate).with_id("setup.review.estimate")),
                 )))
                 .push(Box::new(Card::titled(
                     "Current blockers",
@@ -1000,6 +1075,34 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn scan_warning(scan: &FolderScan) -> Option<String> {
+    if scan.skipped.is_empty() {
+        return None;
+    }
+    let count = scan.skipped.len();
+    let mut warning = format!(
+        "Estimate incomplete: {} skipped. File count and size exclude them.",
+        skipped_count_phrase(count)
+    );
+    for skipped in &scan.skipped {
+        let reason = match &skipped.reason {
+            SkipReason::SymbolicLink => "symbolic link".to_string(),
+            SkipReason::ReadError(error) => format!("could not read: {error}"),
+            SkipReason::UnsupportedFileType => "unsupported file type".to_string(),
+        };
+        let _ = write!(warning, "\n{} — {reason}", skipped.path.display());
+    }
+    Some(warning)
+}
+
+fn skipped_count_phrase(count: usize) -> String {
+    if count == 1 {
+        "1 entry was".to_string()
+    } else {
+        format!("{count} entries were")
+    }
+}
+
 fn shot_scan(name: &str, file_count: u64, bytes: u64) -> FolderScan {
     FolderScan {
         source: PathBuf::from("/home/ada").join(name),
@@ -1168,10 +1271,10 @@ mod tests {
     use std::path::PathBuf;
 
     use ui::a11y::Action;
-    use ui::headless::FrameHarness;
+    use ui::headless::{FrameHarness, SemanticExpectation};
 
     use super::*;
-    use crate::setup::folders::FolderScan;
+    use crate::setup::folders::{FolderScan, SkipReason, SkippedEntry};
     use crate::setup::model::{Capabilities, Experience, FolderMode, HostOs};
 
     #[cfg(windows)]
@@ -1205,6 +1308,26 @@ mod tests {
             bytes,
             empty_directories: Vec::new(),
             skipped: Vec::new(),
+        }
+    }
+
+    fn scan_with_warnings(name: &str, bytes: u64) -> FolderScan {
+        let source = PathBuf::from(TEST_SOURCE_ROOT).join(name);
+        FolderScan {
+            source: source.clone(),
+            file_count: 2,
+            bytes,
+            empty_directories: Vec::new(),
+            skipped: vec![
+                SkippedEntry {
+                    path: source.join("private"),
+                    reason: SkipReason::ReadError("permission denied".into()),
+                },
+                SkippedEntry {
+                    path: source.join("linked"),
+                    reason: SkipReason::SymbolicLink,
+                },
+            ],
         }
     }
 
@@ -1281,12 +1404,90 @@ mod tests {
         assert!(!app.status.contains("ready to copy"));
     }
 
-    fn fail_worker_launch(_: &str, _: WorkerTask) -> Result<(), String> {
-        Err("test launcher refused the worker".into())
+    #[test]
+    fn partial_scan_warnings_persist_on_folder_and_review_screens() {
+        let mut app = supported_fixture();
+        app.apply_command(SetupCommand::ChooseExperience(Experience::Desktop));
+        app.apply_command(SetupCommand::Next);
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
+            result: Ok(scan_with_warnings("Documents", 4096)),
+        });
+
+        assert!(app.status.contains("incomplete estimate"));
+        assert!(app.status.contains("2 entries"));
+
+        app.apply_command(SetupCommand::Next);
+        let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.review.folders")
+                    .name_contains("permission denied"),
+            )
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.review.folders").name_contains("symbolic link"),
+            )
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.review.estimate").name_contains("incomplete"),
+            )
+            .unwrap();
+
+        harness
+            .perform_named("setup.back", &Action::Activate)
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.folder.0.warnings").name_contains(
+                    PathBuf::from(TEST_SOURCE_ROOT)
+                        .join("Documents/private")
+                        .display()
+                        .to_string(),
+                ),
+            )
+            .unwrap();
+        harness
+            .expect(
+                &SemanticExpectation::named("setup.folder.0.warnings").name_contains(
+                    PathBuf::from(TEST_SOURCE_ROOT)
+                        .join("Documents/linked")
+                        .display()
+                        .to_string(),
+                ),
+            )
+            .unwrap();
     }
 
-    fn panic_worker_launch(_: &str, _: WorkerTask) -> Result<(), String> {
-        panic!("a rejected source reached the worker launcher")
+    #[test]
+    fn concurrent_same_basename_completions_receive_distinct_destinations() {
+        let mut app = supported_fixture();
+        let destination = PathBuf::from(TEST_DEST_ROOT).join("Documents");
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination: destination.clone(),
+            result: Ok(scan("account-a/Documents", 12)),
+        });
+        app.apply_worker_message(WorkerMessage::ScanFinished {
+            destination,
+            result: Ok(scan("account-b/Documents", 8)),
+        });
+
+        let folders = app.controller();
+        assert_eq!(folders.folders().len(), 2);
+        assert_eq!(
+            folders.folders()[0].destination,
+            PathBuf::from(TEST_DEST_ROOT).join("Documents")
+        );
+        assert_eq!(
+            folders.folders()[1].destination,
+            PathBuf::from(TEST_DEST_ROOT).join("Documents (2)")
+        );
+    }
+
+    fn fail_worker_launch(_: &str, _: WorkerTask) -> Result<(), String> {
+        Err("test launcher refused the worker".into())
     }
 
     #[test]
@@ -1311,14 +1512,14 @@ mod tests {
     #[test]
     fn protected_and_overlapping_sources_are_rejected_before_worker_launch() {
         let mut protected =
-            SetupApp::with_worker_launcher(supported_fixture().capabilities, panic_worker_launch);
+            SetupApp::with_worker_launcher(supported_fixture().capabilities, fail_worker_launch);
         protected.start_scan(PathBuf::from(TEST_SYSTEM_ROOT));
 
         assert_eq!(protected.pending_scans, 0);
         assert!(protected.status.contains("system folder"));
 
         let mut overlapping =
-            SetupApp::with_worker_launcher(supported_fixture().capabilities, panic_worker_launch);
+            SetupApp::with_worker_launcher(supported_fixture().capabilities, fail_worker_launch);
         overlapping.apply_worker_message(WorkerMessage::ScanFinished {
             destination: PathBuf::from(TEST_DEST_ROOT).join("Documents"),
             result: Ok(scan("Documents", 12)),

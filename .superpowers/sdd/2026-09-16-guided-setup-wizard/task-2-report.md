@@ -63,3 +63,28 @@ Fedora ARM64 also rendered `linux-setup-folders-copy-640x640.png` through the na
 - Fedora ARM64: `cargo test --locked -p imager --lib setup:: -- --skip setup::migration` — 43 passed, 0 failed, 142 filtered; exit 0 with no warnings. The paused migration task remained intentionally excluded.
 - Imager lint: `cargo clippy --locked -p imager --lib --no-deps -- -D warnings -A clippy::needless-return -A clippy::missing-errors-doc` — passed. The allowances cover an existing model finding and the separate paused migration file. A strict `ui` package Clippy run reached 91 findings in unrelated concurrent UI work and reported none in `ui/src/headless.rs`; those files were not changed in this task.
 - Formatting and patch hygiene: direct `rustfmt` on `controller.rs`, `view.rs`, and `ui/src/headless.rs`, plus `git diff --check` on owned paths, passed.
+
+## Final integrated wizard review fixes
+
+- Successful scans with skipped entries now remain visibly incomplete. The folder card and Review show the skipped count, each skipped path, and its reason; the review total explicitly covers counted files only. These warnings persist when status text changes and after navigating to Review and back.
+- Completed scans now receive stable collision-free suggested destinations. The first basename keeps its original suggestion and later collisions receive ` (2)`, ` (3)`, and so on. The controller also rejects duplicate, ancestor, and descendant destinations at its boundary using a platform-neutral lexical check.
+- Replaced the panic-based worker-launch test spy with the existing deterministic error-returning spy. The pre-launch guard assertions still prove rejected sources never increment pending work or reach a successful launch, without triggering `clippy::panic_in_result_fn`.
+
+### Final review TDD and verification
+
+- Warning RED: `partial_scan_warnings_persist_on_folder_and_review_screens` failed because a successful partial scan still reported `ready to copy` and exposed no warning semantics.
+- Destination RED: `concurrent_same_basename_completions_receive_distinct_destinations` received one remembered folder instead of two because both scans proposed the same destination. The controller boundary regression likewise accepted a duplicate destination before the guard.
+- macOS controller: `cargo test --locked -p imager --lib setup::controller::tests::` — 7 passed, 0 failed, 188 filtered; exit 0.
+- macOS view after the final wording and lint fixes: `cargo test --locked -p imager --lib setup::view::tests::` — 14 passed, 0 failed, 181 filtered; exit 0.
+- Fedora ARM64 final setup suite after the singular wording correction: 61 passed, 0 failed, 135 filtered; exit 0 with no warnings.
+- Test-inclusive Imager lint: `cargo clippy --locked -p imager --lib --tests --no-deps -- -D warnings -A clippy::needless-return -A clippy::needless-borrow -A clippy::float-cmp` — passed. A strict run first identified and led to fixes for all new `view.rs` findings; the allowances cover existing findings in `model.rs` and `main.rs` outside this task's owned diff.
+- Formatting and patch hygiene: `cargo fmt -- apps/imager/src/setup/controller.rs apps/imager/src/setup/view.rs` and `git diff --check` on the two source files and this report passed.
+
+### Final warning layout evidence
+
+- Compact: `/Users/xaver/.codex/visualizations/2026/09/16/01a0aaae-f9fd-7760-8e38-cc0eb4ac8ed1/guided-setup/final-review-warning-640x640.png`
+- Wide: `/Users/xaver/.codex/visualizations/2026/09/16/01a0aaae-f9fd-7760-8e38-cc0eb4ac8ed1/guided-setup/final-review-warning-1180x820.png`
+
+Both renders completed successfully and were inspected on macOS and by the root reviewer. Skipped-entry warnings, incomplete totals, and navigation remain legible at both sizes; compact overflow scrolls without overlapping the sticky status and navigation.
+
+The new destination check remains a lexical planning guard. Actual destination existence, user-home mapping, grants, and filesystem authorization remain the responsibility of the future executor.
