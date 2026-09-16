@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -28,7 +29,7 @@ printf '%s\n' "$1" >> "$TEST_CALLS"
 case "$1" in
  create) printf 'test-container\n';;
  image) printf '%s\n' "$TEST_IMAGE_ARCH";;
- cp) printf 'example-package\n' > "$3";;
+ cp) printf '%s\n' "${TEST_SNAPSHOT_PACKAGES:-example-package}" > "$3";;
  rm) :;;
  *) exit 2;;
 esac
@@ -39,13 +40,15 @@ esac
         path.write_text(text)
         path.chmod(0o755)
 
-    def run_check(self, host, image):
+    def run_check(self, host, image, manifest=None):
         calls = self.root / "calls"
         environment = os.environ | {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "TEST_HOST_ARCH": host, "TEST_IMAGE_ARCH": image,
             "TEST_CALLS": str(calls), "TMPDIR": str(self.root / "scratch"),
         }
+        if manifest is not None:
+            environment["TEST_SNAPSHOT_PACKAGES"] = manifest.rstrip("\n")
         process = subprocess.run(
             ["bash", str(self.script), "runtime", "example@sha256:fixture"],
             env=environment, text=True, capture_output=True, timeout=10,
@@ -74,6 +77,34 @@ esac
         self.assertEqual(process.returncode, 2)
         self.assertIn("supported native build host", process.stderr)
         self.assertEqual(calls, [])
+
+    def test_wifi_packages_required_in_each_native_snapshot(self):
+        derive = Path(__file__).resolve().parents[1] / "dev/derive-rpm-package-set.py"
+        for host, image in (("x86_64", "amd64"), ("aarch64", "arm64")):
+            with self.subTest(host=host):
+                packages = subprocess.check_output(
+                    [sys.executable, str(derive), "--arch", host], text=True,
+                ).splitlines()
+                required = {"NetworkManager-wifi", "wireless-regdb"}
+                self.assertTrue(required.issubset(packages))
+                manifest = "\n".join(packages) + "\n"
+                # Feed the real architecture-specific consumer set to the
+                # runtime fixture, then exercise the production stale-snapshot
+                # check independently for each missing wireless dependency.
+                self.executable(
+                    self.script.parent / derive.name,
+                    "#!/bin/sh\ncat <<'PACKAGES'\n" + manifest + "PACKAGES\n",
+                )
+                process, _ = self.run_check(host, image, manifest)
+                self.assertEqual(process.returncode, 0, process.stderr)
+                for missing in sorted(required):
+                    with self.subTest(missing=missing):
+                        stale = "\n".join(p for p in packages if p != missing)
+                        process, calls = self.run_check(host, image, stale)
+                        self.assertNotEqual(process.returncode, 0)
+                        self.assertIn("does not match the current Containerfiles", process.stderr)
+                        self.assertIn(missing, process.stdout)
+                        self.assertEqual(calls[-1], "rm")
 
 
 if __name__ == "__main__":

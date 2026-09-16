@@ -856,7 +856,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     polkit \
     && dnf clean all && ${FINALIZE_RPMDB}
 
-# System utilities.
+# System utilities. Wi-Fi needs NetworkManager's separately packaged plugin
+# and cfg80211's signed regulatory database; neither is supplied by the base
+# image's NetworkManager package. Keep both in the frozen snapshot roots.
 #
 # `xdg-dbus-proxy` (Fedora package name) is the filtered D-Bus proxy
 # `qos-launcher` spawns per-sandbox so an app that declares
@@ -888,6 +890,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     foot \
     wl-clipboard \
     NetworkManager \
+    NetworkManager-wifi \
+    wireless-regdb \
     NetworkManager-openvpn \
     ModemManager \
     fwupd \
