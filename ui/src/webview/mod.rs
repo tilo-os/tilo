@@ -294,6 +294,19 @@ pub struct DmabufFrame {
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
 pub trait WebViewEngine: Send + Sync {
+    /// Create an independent document in the same runtime/profile.
+    fn create_tab(&self) -> Result<SharedEngine, String> {
+        Err("This engine does not support tabs".into())
+    }
+    /// Suspend painting without discarding the document or its session history.
+    fn set_visible(&self, _visible: bool) {}
+    /// Keep pointer modifiers current even when no key event reaches the page.
+    fn set_modifiers(&self, _modifiers: KeyModifiers) {}
+    /// Native new-window intents, delivered to browser chrome as tab requests.
+    fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
+        Vec::new()
+    }
+
     /// Whether this backend accepts source rules instead of WebKit JSON.
     fn supports_native_filtering(&self) -> bool {
         false

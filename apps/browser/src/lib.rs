@@ -5,8 +5,7 @@
 //! The browser is deliberately small: it is chrome (address bar,
 //! navigation, progress, filter loading) around the `ui` toolkit's
 //! `WebView` widget. The web engine itself lives behind
-//! `ui::webview::WebViewEngine`; there is no tab UI — tabbing is the
-//! compositor's `WindowGroup` frame primitive.
+//! `ui::webview::WebViewEngine`; retained tabs share one native runtime.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -40,7 +39,7 @@ pub mod actions;
 pub mod address_overlay;
 mod back_hold;
 pub mod blocker;
-mod native_blocker;
+pub mod browser_tabs;
 pub mod browser_widget;
 /// Zero-copy WebView compositor — needs the WPE engine's dmabuf import.
 #[cfg(feature = "wpe")]
@@ -48,9 +47,11 @@ pub mod compositor;
 pub mod extensions;
 pub mod history;
 pub mod library;
+mod native_blocker;
 pub mod search_provider;
 pub mod settings;
 
+pub use browser_tabs::BrowserTabs;
 pub use browser_widget::BrowserWidget;
 
 mod capabilities;

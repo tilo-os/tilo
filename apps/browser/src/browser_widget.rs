@@ -401,6 +401,39 @@ impl BrowserWidget {
     }
 
     /// Widget over an explicit engine — used by tests.
+    pub(crate) fn is_headless(&self) -> bool {
+        self.headless
+    }
+    pub(crate) fn tab_url(&self) -> &str {
+        if self.current_uri.is_empty() {
+            &self.initial_url
+        } else {
+            &self.current_uri
+        }
+    }
+    pub(crate) fn tab_title(&self) -> String {
+        let title = if !self.title.is_empty() {
+            &self.title
+        } else if self.tab_url() == "about:blank" {
+            "New tab"
+        } else {
+            self.tab_url()
+        };
+        if self.progress < 1.0 {
+            format!("Loading · {title}")
+        } else {
+            title.to_owned()
+        }
+    }
+    pub(crate) fn focus_tab_address(&mut self) -> bool {
+        self.focus_address_input()
+    }
+    pub(crate) fn refresh_shared_history(&mut self) {
+        if !self.headless {
+            self.history = History::load();
+        }
+    }
+
     pub fn with_engine(engine: SharedEngine, headless: bool) -> Self {
         // Persisted state; `load()` returns defaults/empty when absent, so
         // `--shots` runs are unaffected by (and don't write) real files.
@@ -2098,6 +2131,7 @@ impl BrowserWidget {
                         && !self.history_paused
                         && self.current_uri.starts_with("http")
                     {
+                        self.history = History::load();
                         self.history.record(&self.current_uri, &self.title);
                         let _ = self.history.save();
                     }

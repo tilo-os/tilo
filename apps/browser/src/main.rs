@@ -47,7 +47,7 @@ extern crate runtime_dylib;
 
 use std::collections::HashMap;
 
-use browser::BrowserWidget;
+use browser::{BrowserTabs, BrowserWidget};
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::offscreen::OffscreenRenderer;
@@ -115,7 +115,7 @@ pub fn main() {
     reason = "signature is fixed by LaunchSpec's argument-aware root factory"
 )]
 fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(Box::new(browser_widget(args)))
+    Ok(Box::new(BrowserTabs::new(browser_widget(args))))
 }
 
 fn browser_widget(args: &LaunchArgs) -> BrowserWidget {
@@ -158,6 +158,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
         ));
     }
 
+    let widget = BrowserTabs::new(widget);
     let (state, autosave) = ui::persist::open("dev.qos.browser");
     let mut app =
         ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
