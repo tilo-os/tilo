@@ -618,6 +618,10 @@ type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<Strin
 /// relationship. Kept separate from [`FollowBridge`]: the latter is private
 /// local app control, while this one only paints a room-scoped cue remotely.
 type FollowPresenceBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
+type StatusPresenceBridge =
+    std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<ui::LiveStatus>)>;
+type ActiveTabPresenceBridge =
+    std::rc::Rc<dyn Fn(crate::shell::state::RoomId, crate::shell::state::TabId, bool)>;
 
 /// Privileged clipboard-manager operation. Payload bytes never cross this UI
 /// bridge; only the compositor can activate a retained item as the live
@@ -1183,6 +1187,7 @@ enum AccessibleOverlay {
     CommandPalette,
     MemberSheet,
     WorkspaceSettings,
+    Collaborators,
     RoomActivity,
     QuickSettings,
     ShortcutHelp,
@@ -1459,6 +1464,14 @@ pub struct ShellOverlayHost {
     /// Authenticated ephemeral relationship cue for the people already in
     /// this room. It is neither durable workspace state nor a control path.
     follow_presence_bridge: Option<FollowPresenceBridge>,
+    status_presence_bridge: Option<StatusPresenceBridge>,
+    active_tab_presence_bridge: Option<ActiveTabPresenceBridge>,
+    published_active_tab: Option<(crate::shell::state::RoomId, crate::shell::state::TabId)>,
+    local_status: Option<String>,
+    local_status_origin: ui::StatusOrigin,
+    status_draft: String,
+    status_editing: bool,
+    status_sharing: ui::StatusSharing,
     /// Owns the invite/connect prompt state, painting, hit-testing and input.
     peer_sync_overlay: PeerSyncOverlay,
     /// Top-right notification stack, above content but below the
@@ -1513,11 +1526,21 @@ pub struct ShellOverlayHost {
     /// Background, local-only prose renderer. Deterministic summaries remain
     /// installed until a cited model result passes validation.
     history_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    status_narrator: crate::shell::history_narrative::LocalHistoryNarrator,
+    status_narrative_request: Option<ui::NarrativeRequest>,
     /// Open/close curve for the room-activity sheet.
     room_activity_transition: ui::Transition,
     /// Whether the sheet was open last frame, to invalidate derived rows
     /// on the rising edge.
     room_activity_was_open: bool,
+    /// Workspace whose passive activity was last presented. Entering a
+    /// different workspace with unseen work opens Catch up once, so the user
+    /// does not have to notice and decode a tiny unread badge after time away.
+    activity_awareness_workspace: Option<u64>,
+    /// Unseen work discovered during a workspace transition waits until
+    /// Overview/People/another modal releases attention. Cleared as soon as
+    /// Catch up is shown or opened manually, so dismissal remains sticky.
+    activity_pending_reveal: Option<u64>,
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
@@ -2005,6 +2028,155 @@ const QS_OPEN_ANIM_MS: u64 = 180;
 /// the travel distance is larger.
 pub(crate) const MODAL_OPEN_ANIM_MS: u64 = 220;
 
+fn should_reveal_activity_on_entry(
+    entering_workspace: bool,
+    unread: usize,
+    overlays: crate::shell::chrome_state::OverlayFlags,
+) -> bool {
+    entering_workspace
+        && unread > 0
+        && overlays == crate::shell::chrome_state::OverlayFlags::default()
+}
+
+fn enter_activity_workspace(last_workspace: &mut Option<u64>, workspace: u64) -> bool {
+    let entering = *last_workspace != Some(workspace);
+    *last_workspace = Some(workspace);
+    entering
+}
+
+fn take_pending_activity_reveal(
+    pending: &mut Option<u64>,
+    entering: bool,
+    workspace: u64,
+    unread: usize,
+    overlays: crate::shell::chrome_state::OverlayFlags,
+) -> bool {
+    if entering {
+        *pending = (unread > 0).then_some(workspace);
+    } else if unread == 0 && *pending == Some(workspace) {
+        *pending = None;
+    }
+    if overlays.room_activity {
+        *pending = None;
+        return false;
+    }
+    if *pending == Some(workspace) && should_reveal_activity_on_entry(true, unread, overlays) {
+        *pending = None;
+        return true;
+    }
+    false
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CollaborationPreferences {
+    sharing: ui::StatusSharing,
+    manual_status: Option<String>,
+}
+
+impl CollaborationPreferences {
+    fn from_values(values: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let sharing = match values
+            .get("status_sharing")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("manual") => ui::StatusSharing::ManualOnly,
+            Some("off") => ui::StatusSharing::Off,
+            Some("automatic") | None => ui::StatusSharing::Automatic,
+            Some(_) => ui::StatusSharing::ManualOnly,
+        };
+        let manual_status = values
+            .get("manual_status")
+            .and_then(serde_json::Value::as_str)
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty() && text.chars().count() <= ui::MAX_STATUS_CHARS);
+        Self {
+            sharing,
+            manual_status,
+        }
+    }
+
+    fn load() -> Self {
+        Self::from_values(&settings_store::load_section("collaboration"))
+    }
+
+    fn values(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut values = serde_json::Map::new();
+        let sharing = match self.sharing {
+            ui::StatusSharing::Automatic => "automatic",
+            ui::StatusSharing::ManualOnly => "manual",
+            ui::StatusSharing::Off => "off",
+        };
+        values.insert("status_sharing".into(), sharing.into());
+        values.insert(
+            "manual_status".into(),
+            self.manual_status
+                .clone()
+                .map_or(serde_json::Value::Null, serde_json::Value::String),
+        );
+        values
+    }
+}
+
+fn grounded_intent_fallback(entries: &[ui::widget::history::HistoryEntry]) -> String {
+    let Some(entry) = entries.first() else {
+        return String::new();
+    };
+    if let Some(context) = entry.context.as_ref() {
+        if let Some(purpose) = context
+            .purpose
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            return purpose.to_string();
+        }
+        if let Some(group) = context
+            .group
+            .as_ref()
+            .map(|group| group.label.trim())
+            .filter(|text| !text.is_empty())
+        {
+            return format!("Working on {group}");
+        }
+        if let Some(resource) = context
+            .resource
+            .as_ref()
+            .map(|resource| resource.label.trim())
+            .filter(|text| !text.is_empty())
+        {
+            return format!("Working on {resource}");
+        }
+        if let Some(app) = context
+            .app
+            .as_ref()
+            .map(|app| app.label.trim())
+            .filter(|text| !text.is_empty())
+        {
+            return format!("Working in {app}");
+        }
+    }
+    match entry.op_class {
+        collab_types::OpClass::Splice => "Editing shared content",
+        collab_types::OpClass::Move => "Organizing shared content",
+        collab_types::OpClass::EditMeta => "Updating workspace details",
+        collab_types::OpClass::Comment => "Reviewing the discussion",
+        collab_types::OpClass::Tombstone => "Cleaning up shared content",
+        collab_types::OpClass::Restore => "Restoring shared content",
+        collab_types::OpClass::Govern => "Managing workspace access",
+        collab_types::OpClass::Compaction => "Maintaining workspace history",
+        collab_types::OpClass::Redact => "Reviewing sensitive history",
+    }
+    .to_string()
+}
+
+fn prepare_status_evidence(
+    mut newest_first: Vec<ui::widget::history::HistoryEntry>,
+) -> (String, Vec<ui::widget::history::HistoryEntry>) {
+    let fallback = grounded_intent_fallback(&newest_first);
+    newest_first.reverse();
+    (fallback, newest_first)
+}
+
 // Surface and scrim alphas. The pinned Vello has no backdrop filter, so
 // chrome surfaces are opaque and scrims carry the depth instead.
 // Centralised so `shell_chrome_test` can pin the numeric values.
@@ -2243,6 +2415,9 @@ impl ShellOverlayHost {
         if flags.ws_settings {
             order.push(AccessibleOverlay::WorkspaceSettings);
         }
+        if flags.collaborators {
+            order.push(AccessibleOverlay::Collaborators);
+        }
         if flags.room_activity {
             order.push(AccessibleOverlay::RoomActivity);
         }
@@ -2331,6 +2506,7 @@ impl ShellOverlayHost {
         // reserved filter band, inside the card.
         palette.set_host_filter_strip(true);
         let (search_registry, room_records) = Self::build_search_registry();
+        let collaboration_preferences = CollaborationPreferences::load();
         Self {
             rect: Rect::ZERO,
             interaction: ui::InteractionEnvironment::default(),
@@ -2414,6 +2590,14 @@ impl ShellOverlayHost {
             wifi_secret_bridge: None,
             follow_bridge: None,
             follow_presence_bridge: None,
+            status_presence_bridge: None,
+            active_tab_presence_bridge: None,
+            published_active_tab: None,
+            local_status: collaboration_preferences.manual_status,
+            local_status_origin: ui::StatusOrigin::Manual,
+            status_draft: String::new(),
+            status_editing: false,
+            status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
@@ -2433,8 +2617,12 @@ impl ShellOverlayHost {
             session_audio_policy: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new_persistent(),
             history_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+            status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
+            status_narrative_request: None,
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
+            activity_awareness_workspace: None,
+            activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: ProjectionOverlay::default(),
             followed_peer: None,
@@ -3360,6 +3548,43 @@ impl ShellOverlayHost {
     /// compositor provides this only with an authenticated peer network.
     pub fn set_follow_presence_bridge(&mut self, bridge: FollowPresenceBridge) {
         self.follow_presence_bridge = Some(bridge);
+    }
+
+    pub fn set_status_presence_bridge(&mut self, bridge: StatusPresenceBridge) {
+        self.status_presence_bridge = Some(bridge);
+        if self.status_sharing != ui::StatusSharing::Off && self.local_status.is_some() {
+            self.publish_local_status(self.local_status.clone());
+        }
+    }
+
+    pub fn set_active_tab_presence_bridge(&mut self, bridge: ActiveTabPresenceBridge) {
+        self.active_tab_presence_bridge = Some(bridge);
+        self.published_active_tab = None;
+    }
+
+    fn refresh_active_tab_presence(&mut self) {
+        let current = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let room = state
+                .tree()
+                .active_workspace()
+                .map(|workspace| workspace.room)?;
+            Some((room, state.active_tab_id()?))
+        });
+        if current == self.published_active_tab {
+            return;
+        }
+        let Some(bridge) = self.active_tab_presence_bridge.as_ref() else {
+            self.published_active_tab = current;
+            return;
+        };
+        if let Some((room, tab)) = self.published_active_tab {
+            bridge(room, tab, false);
+        }
+        if let Some((room, tab)) = current {
+            bridge(room, tab, true);
+        }
+        self.published_active_tab = current;
     }
 
     /// Run one peer-sync request through the installed bridge.
@@ -7908,6 +8133,8 @@ impl ShellOverlayHost {
         };
         self.refresh_history_narrative();
         let (headline, unread, pulse) = self.room_activity.glance_signal(workspace);
+        let entering_workspace =
+            enter_activity_workspace(&mut self.activity_awareness_workspace, workspace);
         let passive_digest = self.room_activity.digest_for_workspace(workspace);
         let focus =
             passive_digest
@@ -7920,14 +8147,127 @@ impl ShellOverlayHost {
                     resource_id: None,
                     resource_version: None,
                 });
-        chrome
-            .borrow_mut()
-            .publish_activity_glance(headline, unread, pulse, focus);
+        {
+            let mut state = chrome.borrow_mut();
+            state.publish_activity_glance(headline, unread, pulse, focus);
+            if take_pending_activity_reveal(
+                &mut self.activity_pending_reveal,
+                entering_workspace,
+                workspace,
+                unread,
+                state.overlays,
+            ) {
+                state.open_room_activity(None);
+            }
+        }
+        self.refresh_automatic_status();
+    }
+
+    fn refresh_automatic_status(&mut self) {
+        if self.status_sharing != ui::StatusSharing::Automatic
+            || (self.local_status.is_some()
+                && matches!(self.local_status_origin, ui::StatusOrigin::Manual))
+        {
+            return;
+        }
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let local_ids = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let mut ids = vec![
+                state.local_user_id.clone(),
+                crate::shell::state::local_user_id(),
+            ];
+            if let Some(workspace) = tree.active_workspace() {
+                ids.push(state.local_user_for_room(&workspace.room));
+            }
+            ids.retain(|id| !id.is_empty());
+            ids
+        };
+        let now = std::time::SystemTime::now();
+        let cutoff = now
+            .checked_sub(std::time::Duration::from_secs(5 * 60))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let recent = self
+            .room_activity
+            .entries()
+            .iter()
+            .filter(|entry| entry.timestamp >= cutoff)
+            .filter(|entry| {
+                local_ids.iter().any(|id| {
+                    entry.author.name.eq_ignore_ascii_case(id)
+                        || entry.author.name.eq_ignore_ascii_case(
+                            &ui::history_source::participant_display_label(id),
+                        )
+                        || entry.author.identity_short == ui::history_source::short_id(id)
+                })
+            })
+            .rev()
+            .take(12)
+            .cloned()
+            .collect::<Vec<_>>();
+        if recent.is_empty() {
+            if matches!(self.local_status_origin, ui::StatusOrigin::Inferred { .. }) {
+                self.local_status = None;
+                self.local_status_origin = ui::StatusOrigin::Manual;
+                self.status_narrative_request = None;
+                self.publish_local_status(None);
+            }
+            return;
+        }
+        // Selection above walks newest-first so the bounded window retains
+        // the latest action. Grouping, however, consumes causal order. Keep
+        // the newest item for the immediate grounded fallback, then restore
+        // oldest-first order before building the local-model evidence.
+        let (deterministic_status, recent) = prepare_status_evidence(recent);
+        let digest = ui::ActivityDigest::from_entries(&recent, cutoff, 3);
+        let Some(mut request) = ui::NarrativeRequest::from_digest(&digest) else {
+            return;
+        };
+        request.deterministic_text = deterministic_status;
+        if self.status_narrative_request.as_ref() != Some(&request) {
+            self.status_narrative_request = Some(request.clone());
+            self.install_inferred_status(
+                request.deterministic_text.clone(),
+                "qos-deterministic".into(),
+            );
+            self.status_narrator.request_status(&request);
+        }
+        if let Some(narrative) = self.status_narrator.take_status_for(&request)
+            && let Some(narrative) = ui::validate_narrative(&request, narrative)
+        {
+            self.install_inferred_status(narrative.text, narrative.generator);
+        }
+    }
+
+    fn install_inferred_status(&mut self, text: String, generator: String) {
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text.is_empty() || text.chars().count() > ui::MAX_STATUS_CHARS {
+            return;
+        }
+        let unchanged = self.local_status.as_deref() == Some(text.as_str())
+            && matches!(self.local_status_origin, ui::StatusOrigin::Inferred { .. });
+        if unchanged {
+            return;
+        }
+        self.local_status = Some(text.clone());
+        self.local_status_origin = ui::StatusOrigin::Inferred { generator };
+        self.publish_local_status(Some(text));
     }
 
     /// The room-activity sheet, for tests and for the shots driver.
     pub fn room_activity(&self) -> &crate::shell::room_activity::RoomActivityPane {
         &self.room_activity
+    }
+
+    #[cfg(feature = "hosted-test-control")]
+    pub fn seed_inferred_status_for_shots(&mut self, text: &str) {
+        self.status_sharing = ui::StatusSharing::Automatic;
+        self.local_status = None;
+        self.local_status_origin = ui::StatusOrigin::Manual;
+        self.install_inferred_status(text.to_string(), "shots-local-model".to_string());
     }
 
     /// Mutable handle to the room-activity sheet, so a test can pin its clock
@@ -9159,6 +9499,42 @@ impl ShellOverlayHost {
         let mstate = modifiers.state();
         let super_down = mstate.super_key();
         let shift_down = mstate.shift_key();
+        if self.status_editing {
+            match logical_key {
+                Key::Named(NamedKey::Escape) => {
+                    self.status_editing = false;
+                    self.status_draft.clear();
+                }
+                Key::Named(NamedKey::Enter) => {
+                    let text = self
+                        .status_draft
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    self.local_status = (!text.is_empty()).then_some(text);
+                    self.local_status_origin = ui::StatusOrigin::Manual;
+                    self.status_editing = false;
+                    self.status_draft.clear();
+                    self.persist_collaboration_preferences();
+                    if self.status_sharing == ui::StatusSharing::Off {
+                        self.publish_local_status(None);
+                    } else {
+                        self.publish_local_status(self.local_status.clone());
+                    }
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    self.status_draft.pop();
+                }
+                Key::Character(text) if !mstate.control_key() && !mstate.super_key() && !repeat => {
+                    let room =
+                        ui::MAX_STATUS_CHARS.saturating_sub(self.status_draft.chars().count());
+                    self.status_draft.extend(text.chars().take(room));
+                }
+                _ => {}
+            }
+            *handled = true;
+            return true;
+        }
         // The session action sheet is modal. It owns every key while open so
         // typing cannot leak into a hosted or Wayland app behind it; the
         // conventional navigation keys make every action reachable.
@@ -9200,6 +9576,9 @@ impl ShellOverlayHost {
         // character, and a `k` in one must not open search instead.
         if self.handle_wifi_password_key(logical_key, modifiers) {
             *handled = true;
+            return true;
+        }
+        if self.handle_collaborators_keyboard(logical_key, shift_down, handled) {
             return true;
         }
         if self.handle_quick_settings_keyboard(
@@ -10397,6 +10776,24 @@ impl ShellOverlayHost {
     /// path absorbs the click.
     fn handle_shell_collaborators_click(&mut self, p: Point, handled: &mut bool) {
         let hit = self.collaborators_overlay.hit_test(p);
+        self.apply_collaborators_hit(hit, handled);
+    }
+
+    fn apply_collaborators_hit(&mut self, hit: CollaboratorsHit, handled: &mut bool) {
+        if matches!(
+            hit,
+            CollaboratorsHit::PreviousPeople | CollaboratorsHit::NextPeople
+        ) {
+            let member_count = self
+                .chrome
+                .as_ref()
+                .map(|chrome| collaborator_roster_rows(&chrome.borrow().tree()).len())
+                .unwrap_or_default();
+            self.collaborators_overlay
+                .change_people_page(hit == CollaboratorsHit::NextPeople, member_count);
+            *handled = true;
+            return;
+        }
         if let CollaboratorsHit::ToggleFollow(index) = hit {
             let target = self.chrome.as_ref().and_then(|chrome| {
                 let state = chrome.borrow();
@@ -10414,6 +10811,38 @@ impl ShellOverlayHost {
             }
             *handled = true;
             return;
+        }
+        match hit {
+            CollaboratorsHit::EditStatus => {
+                self.status_draft = if matches!(self.local_status_origin, ui::StatusOrigin::Manual)
+                {
+                    self.local_status.clone().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                self.status_editing = true;
+                *handled = true;
+                return;
+            }
+            CollaboratorsHit::SetStatusSharing(mode) => {
+                self.status_sharing = mode;
+                if mode != ui::StatusSharing::Automatic
+                    && matches!(self.local_status_origin, ui::StatusOrigin::Inferred { .. })
+                {
+                    self.local_status = None;
+                    self.local_status_origin = ui::StatusOrigin::Manual;
+                    self.status_narrative_request = None;
+                }
+                if mode == ui::StatusSharing::Off {
+                    self.publish_local_status(None);
+                } else {
+                    self.publish_local_status(self.local_status.clone());
+                }
+                self.persist_collaboration_preferences();
+                *handled = true;
+                return;
+            }
+            _ => {}
         }
         if let Some(chrome) = self.chrome.clone() {
             let mut state = chrome.borrow_mut();
@@ -10437,10 +10866,69 @@ impl ShellOverlayHost {
                     state.overlays.collaborators = false;
                     state.bump();
                 }
-                CollaboratorsHit::ToggleFollow(_) | CollaboratorsHit::Absorb => {}
+                CollaboratorsHit::ToggleFollow(_)
+                | CollaboratorsHit::PreviousPeople
+                | CollaboratorsHit::NextPeople
+                | CollaboratorsHit::EditStatus
+                | CollaboratorsHit::SetStatusSharing(_)
+                | CollaboratorsHit::Absorb => {}
             }
         }
         *handled = true;
+    }
+
+    fn handle_collaborators_keyboard(
+        &mut self,
+        logical_key: &Key,
+        shift_down: bool,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.overlay_flags().collaborators {
+            return false;
+        }
+        if let Some(hit) = self.collaborators_overlay.key(logical_key, shift_down) {
+            self.apply_collaborators_hit(hit, handled);
+        } else {
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            *handled = true;
+        }
+        true
+    }
+
+    fn publish_local_status(&self, text: Option<String>) {
+        let Some(bridge) = self.status_presence_bridge.as_ref() else {
+            return;
+        };
+        let room = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let room = tree.active_workspace().map(|workspace| workspace.room);
+            drop(tree);
+            drop(state);
+            room
+        });
+        let Some(room) = room else { return };
+        let status = text.map(|text| ui::LiveStatus {
+            text,
+            origin: self.local_status_origin.clone(),
+            updated_at: std::time::SystemTime::now(),
+        });
+        bridge(room, status);
+    }
+
+    fn persist_collaboration_preferences(&self) {
+        let manual_status = matches!(self.local_status_origin, ui::StatusOrigin::Manual)
+            .then(|| self.local_status.clone())
+            .flatten();
+        let preferences = CollaborationPreferences {
+            sharing: self.status_sharing,
+            manual_status,
+        };
+        if let Err(error) = settings_store::update_section("collaboration", preferences.values()) {
+            tracing::warn!(%error, "collaboration preferences save failed");
+        }
     }
 
     /// Clicks inside the open quick-settings popover: dismiss outside
@@ -12590,6 +13078,7 @@ impl Widget for ShellOverlayHost {
         // The root needs the active text scale before any of its popover
         // geometry is resolved below; otherwise a first frame at large type
         // has a default-height card and clips its two-line controls.
+        self.refresh_active_tab_presence();
         self.qs_root.set_layout_text_scale(theme.text_scale);
         if let Some(chrome) = self.chrome.as_ref() {
             let state = chrome.borrow();
@@ -13067,6 +13556,9 @@ impl Widget for ShellOverlayHost {
                     }
                     root.children.push(settings);
                 }
+                AccessibleOverlay::Collaborators => root
+                    .children
+                    .push(self.collaborators_overlay.accessibility_snapshot()),
                 AccessibleOverlay::RoomActivity => root
                     .children
                     .push(self.room_activity.accessibility_snapshot()),
@@ -13446,6 +13938,9 @@ impl Widget for ShellOverlayHost {
                 local_path.extend_from_slice(child_path);
                 self.room_activity.accessibility_rect_for_path(&local_path)
             }
+            AccessibleOverlay::Collaborators => self
+                .collaborators_overlay
+                .accessibility_rect_for_path(child_path),
             AccessibleOverlay::QuickSettings => {
                 let notification_action = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
@@ -13502,6 +13997,9 @@ impl Widget for ShellOverlayHost {
                 local_path.extend_from_slice(child_path);
                 self.room_activity.focus_accessibility_path(&local_path)
             }
+            AccessibleOverlay::Collaborators => self
+                .collaborators_overlay
+                .focus_accessibility_path(child_path),
             AccessibleOverlay::QuickSettings => {
                 let notification_focus = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
@@ -14445,7 +14943,7 @@ impl ShellOverlayHost {
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
         if flags.collaborators {
-            let (rows, unavailable) = self.chrome.as_ref().map_or_else(
+            let (mut rows, unavailable) = self.chrome.as_ref().map_or_else(
                 || (Vec::new(), None),
                 |chrome| {
                     let state = chrome.borrow();
@@ -14455,8 +14953,69 @@ impl ShellOverlayHost {
                     )
                 },
             );
+            let now = std::time::SystemTime::now();
+            let interactions = presence.visible_interactions(std::time::Instant::now());
+            for row in &mut rows {
+                let direct = ui::permissions::UserId(row.id.clone());
+                let presence_id = presence
+                    .status_for(&direct, now)
+                    .map(|_| direct.clone())
+                    .or_else(|| {
+                        presence.names.iter().find_map(|(id, name)| {
+                            name.eq_ignore_ascii_case(&row.label).then(|| id.clone())
+                        })
+                    });
+                if let Some(id) = presence_id {
+                    row.status = presence.status_for(&id, now).map(|status| {
+                        crate::shell::collaborators_overlay::RosterStatus {
+                            text: status.text.clone(),
+                            automatic: matches!(status.origin, ui::StatusOrigin::Inferred { .. }),
+                        }
+                    });
+                }
+                if let Some(interaction) = interactions.iter().find(|interaction| {
+                    interaction.actor.id == row.id
+                        || presence
+                            .names
+                            .get(&ui::permissions::UserId(interaction.actor.id.clone()))
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&row.label))
+                }) {
+                    row.activity = Some(format!(
+                        "{} · {}",
+                        interaction.action.label, interaction.resource.label
+                    ));
+                }
+            }
             let may_invite = self.may_invite_here();
             let following_pairs = self.roster_following_pairs(presence, &rows);
+            let own_id = self
+                .chrome
+                .as_ref()
+                .map(|chrome| chrome.borrow().local_user_id.clone())
+                .filter(|id| !id.trim().is_empty())
+                .unwrap_or_else(crate::shell::state::local_user_id);
+            let own_label = ui::history_source::participant_display_label(&own_id);
+            let own_activity = interactions
+                .iter()
+                .find(|interaction| {
+                    interaction.actor.id == own_id
+                        || presence
+                            .names
+                            .get(&ui::permissions::UserId(interaction.actor.id.clone()))
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&own_label))
+                })
+                .map(|interaction| {
+                    format!(
+                        "{} · {}",
+                        interaction.action.label, interaction.resource.label
+                    )
+                });
+            let own_initial = own_label
+                .chars()
+                .next()
+                .unwrap_or('\u{2022}')
+                .to_ascii_uppercase();
+            let (red, green, blue) = ui::presence::user_color(&own_id);
             self.collaborators_overlay.draw(
                 scene,
                 transform,
@@ -14465,10 +15024,24 @@ impl ShellOverlayHost {
                 &CollaboratorsModel {
                     host: self.rect,
                     rows: &rows,
+                    own_initial,
+                    own_color: Color::from_rgb8(red, green, blue),
                     unavailable: unavailable.as_deref(),
                     followed_id: self.followed_peer.as_deref(),
                     following_pairs: &following_pairs,
                     may_invite,
+                    own_status: if self.status_editing {
+                        Some(self.status_draft.as_str())
+                    } else {
+                        self.local_status.as_deref()
+                    },
+                    own_activity: own_activity.as_deref(),
+                    own_status_automatic: matches!(
+                        self.local_status_origin,
+                        ui::StatusOrigin::Inferred { .. }
+                    ),
+                    status_sharing: self.status_sharing,
+                    status_editing: self.status_editing,
                 },
                 self.last_cursor,
             );
@@ -19665,6 +20238,92 @@ mod palette_dispatch_tests {
         (host, chrome)
     }
 
+    #[test]
+    fn inline_status_editor_commits_and_publishes_without_leaking_keys_to_apps() {
+        let (mut host, _) = host_with_chrome();
+        let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let capture = std::rc::Rc::clone(&published);
+        host.set_status_presence_bridge(std::rc::Rc::new(move |_room, status| {
+            capture.borrow_mut().push(status.map(|status| status.text));
+        }));
+        host.status_editing = true;
+        let state = AutoCommit::new();
+        let mut handled = false;
+        let modifiers = winit::event::Modifiers::default();
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Character("Preparing Q2 review".into()),
+            modifiers,
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert!(handled);
+        handled = false;
+        assert!(host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Enter),
+            modifiers,
+            false,
+            &state,
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        assert_eq!(host.local_status.as_deref(), Some("Preparing Q2 review"));
+        assert_eq!(
+            published.borrow().as_slice(),
+            &[Some("Preparing Q2 review".into())]
+        );
+    }
+
+    #[test]
+    fn editing_an_inferred_status_starts_a_fresh_manual_sentence() {
+        let (mut host, _) = host_with_chrome();
+        host.local_status = Some("Summarizing recent file changes".into());
+        host.local_status_origin = ui::StatusOrigin::Inferred {
+            generator: "local-model".into(),
+        };
+        let mut handled = false;
+        host.apply_collaborators_hit(CollaboratorsHit::EditStatus, &mut handled);
+
+        assert!(handled);
+        assert!(host.status_editing);
+        assert!(host.status_draft.is_empty());
+
+        host.status_editing = false;
+        host.local_status = Some("Closing the Q3 forecast".into());
+        host.local_status_origin = ui::StatusOrigin::Manual;
+        handled = false;
+        host.apply_collaborators_hit(CollaboratorsHit::EditStatus, &mut handled);
+        assert_eq!(host.status_draft, "Closing the Q3 forecast");
+    }
+
+    #[test]
+    fn focused_app_presence_is_edge_triggered_and_clears_when_focus_disappears() {
+        let (mut host, chrome) = host_with_chrome();
+        let published = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let capture = std::rc::Rc::clone(&published);
+        host.set_active_tab_presence_bridge(std::rc::Rc::new(move |room, tab, present| {
+            capture.borrow_mut().push((room, tab, present));
+        }));
+        host.refresh_active_tab_presence();
+        let first = published.borrow().clone();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].2, "the focused app is announced as present");
+        host.refresh_active_tab_presence();
+        assert_eq!(published.borrow().len(), 1, "steady frames publish nothing");
+
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let active = tree.active;
+            tree.active_strip.remove(&active);
+        }
+        host.refresh_active_tab_presence();
+        let events = published.borrow();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1], (first[0].0, first[0].1, false));
+    }
+
     fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
         let payload = dir.join("payloads").join(package_id);
         std::fs::create_dir_all(payload.join("bin")).unwrap();
@@ -22691,6 +23350,195 @@ mod tests {
     use crate::shell::chrome_state::{ChromeState, WsTab};
     use crate::shell::state::WorkspaceTree;
 
+    #[test]
+    fn unseen_activity_reveals_catch_up_only_on_workspace_entry() {
+        let mut presented_workspace = None;
+        let overlays = crate::shell::chrome_state::OverlayFlags::default();
+
+        let entering = enter_activity_workspace(&mut presented_workspace, 7);
+        assert!(should_reveal_activity_on_entry(entering, 3, overlays));
+
+        // Closing the sheet must stick: subsequent frames in the same
+        // workspace cannot continuously reopen it.
+        let entering = enter_activity_workspace(&mut presented_workspace, 7);
+        assert!(!should_reveal_activity_on_entry(entering, 3, overlays));
+
+        let entering = enter_activity_workspace(&mut presented_workspace, 8);
+        assert!(should_reveal_activity_on_entry(entering, 1, overlays));
+    }
+
+    #[test]
+    fn catch_up_entry_reveal_requires_unseen_work_and_clear_attention() {
+        let clear = crate::shell::chrome_state::OverlayFlags::default();
+        assert!(!should_reveal_activity_on_entry(true, 0, clear));
+
+        let mut occupied = clear;
+        occupied.quick_settings = true;
+        assert!(!should_reveal_activity_on_entry(true, 4, occupied));
+
+        occupied.quick_settings = false;
+        occupied.collaborators = true;
+        assert!(!should_reveal_activity_on_entry(true, 4, occupied));
+    }
+
+    #[test]
+    fn catch_up_waits_for_workspace_transition_ui_instead_of_being_lost() {
+        let mut pending = None;
+        let mut occupied = crate::shell::chrome_state::OverlayFlags::default();
+        occupied.overview = true;
+        assert!(!take_pending_activity_reveal(
+            &mut pending,
+            true,
+            7,
+            4,
+            occupied,
+        ));
+        assert_eq!(pending, Some(7));
+
+        assert!(take_pending_activity_reveal(
+            &mut pending,
+            false,
+            7,
+            4,
+            crate::shell::chrome_state::OverlayFlags::default(),
+        ));
+        assert_eq!(pending, None, "the reveal is consumed exactly once");
+        assert!(!take_pending_activity_reveal(
+            &mut pending,
+            false,
+            7,
+            4,
+            crate::shell::chrome_state::OverlayFlags::default(),
+        ));
+    }
+
+    #[test]
+    fn manually_opening_catch_up_consumes_a_pending_automatic_reveal() {
+        let mut pending = Some(7);
+        let mut overlays = crate::shell::chrome_state::OverlayFlags::default();
+        overlays.room_activity = true;
+        assert!(!take_pending_activity_reveal(
+            &mut pending,
+            false,
+            7,
+            3,
+            overlays,
+        ));
+        assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn collaboration_preferences_round_trip_privacy_and_manual_intent() {
+        let preferences = CollaborationPreferences {
+            sharing: ui::StatusSharing::Off,
+            manual_status: Some("Reviewing Q2 assumptions".into()),
+        };
+        assert_eq!(
+            CollaborationPreferences::from_values(&preferences.values()),
+            preferences,
+            "Hidden is a durable privacy choice, while explicit text remains available when sharing is re-enabled"
+        );
+    }
+
+    #[test]
+    fn collaboration_preferences_reject_stale_or_malformed_status_text() {
+        let mut values = serde_json::Map::new();
+        values.insert("status_sharing".into(), "manual".into());
+        values.insert(
+            "manual_status".into(),
+            serde_json::Value::String("x".repeat(ui::MAX_STATUS_CHARS + 1)),
+        );
+        let preferences = CollaborationPreferences::from_values(&values);
+        assert_eq!(preferences.sharing, ui::StatusSharing::ManualOnly);
+        assert_eq!(preferences.manual_status, None);
+
+        values.insert("status_sharing".into(), "future-unknown-mode".into());
+        assert_eq!(
+            CollaborationPreferences::from_values(&values).sharing,
+            ui::StatusSharing::ManualOnly,
+            "an unknown stored value must not unexpectedly enable inference"
+        );
+    }
+
+    #[test]
+    fn automatic_status_fallback_describes_intent_not_an_activity_count() {
+        let entry = ui::widget::history::HistoryEntry {
+            id: ui::widget::history::HistoryEntryId([1; 16]),
+            author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
+            op_class: collab_types::OpClass::Govern,
+            artifact_kind: collab_types::ArtifactKind::Note,
+            timestamp: std::time::SystemTime::now(),
+            summary: "5 permission changes".into(),
+            text_delta: None,
+            diff_payload: None,
+            redaction: None,
+            context: None,
+        };
+        assert_eq!(
+            grounded_intent_fallback(&[entry]),
+            "Managing workspace access"
+        );
+    }
+
+    #[test]
+    fn explicit_action_purpose_is_the_strongest_grounded_status() {
+        let entry = ui::widget::history::HistoryEntry {
+            id: ui::widget::history::HistoryEntryId([2; 16]),
+            author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
+            op_class: collab_types::OpClass::Splice,
+            artifact_kind: collab_types::ArtifactKind::File,
+            timestamp: std::time::SystemTime::now(),
+            summary: "+4 -1 chars".into(),
+            text_delta: Some((4, 1)),
+            diff_payload: None,
+            redaction: None,
+            context: Some(
+                ui::qos_actions::ActionContext::for_resource(
+                    "Edit",
+                    "finance:q2",
+                    "sheet",
+                    "Q2 finance report",
+                )
+                .with_purpose("Preparing the board review"),
+            ),
+        };
+        assert_eq!(
+            grounded_intent_fallback(&[entry]),
+            "Preparing the board review"
+        );
+    }
+
+    #[test]
+    fn status_fallback_uses_latest_action_while_model_evidence_is_chronological() {
+        let make_entry = |id, purpose: &str| ui::widget::history::HistoryEntry {
+            id: ui::widget::history::HistoryEntryId([id; 16]),
+            author: ui::widget::history::HistoryAuthor::new("Ada", 120.0, "ada"),
+            op_class: collab_types::OpClass::Splice,
+            artifact_kind: collab_types::ArtifactKind::File,
+            timestamp: std::time::SystemTime::now(),
+            summary: purpose.into(),
+            text_delta: None,
+            diff_payload: None,
+            redaction: None,
+            context: Some(
+                ui::qos_actions::ActionContext::for_resource(
+                    "Edit",
+                    format!("resource:{id}"),
+                    "document",
+                    purpose,
+                )
+                .with_purpose(purpose),
+            ),
+        };
+        let older = make_entry(1, "Checking assumptions");
+        let newer = make_entry(2, "Preparing the board review");
+        let (fallback, evidence) = prepare_status_evidence(vec![newer.clone(), older.clone()]);
+
+        assert_eq!(fallback, "Preparing the board review");
+        assert_eq!(evidence[0].id, older.id);
+        assert_eq!(evidence[1].id, newer.id);
+    }
+
     fn history_target(id: &str) -> ui::HistoryResourceTarget {
         ui::HistoryResourceTarget {
             app_id: Some("org.qos.Notes".to_string()),
@@ -23183,6 +24031,37 @@ mod tests {
             !h.host.focus_synthetic_accessibility(&[0, 0]),
             "the member-sheet path must not leak through to a different overlay"
         );
+    }
+
+    #[test]
+    fn people_overlay_publishes_live_roster_and_focusable_status_controls() {
+        let mut h = build_harness();
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            chrome
+                .tree_mut()
+                .collaborators
+                .push(crate::shell::state::Collaborator::new("ada", "Ada").with_role("editor"));
+            chrome.overlays.collaborators = true;
+        }
+        paint(&mut h);
+
+        let semantics = h.host.accessibility().expect("shell semantics");
+        let people = semantics
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("People"))
+            .expect("the visible People popover is in the semantic overlay tree");
+        assert_eq!(
+            people
+                .children
+                .first()
+                .and_then(|list| list.children.first())
+                .and_then(|person| person.name.as_deref()),
+            Some("Ada")
+        );
+        assert!(h.host.synthetic_accessibility_rect(&[0, 1]).is_some());
+        assert!(h.host.focus_synthetic_accessibility(&[0, 1]));
     }
 
     /// Super+S calls the wheel to wherever the pointer is, so the
@@ -26167,7 +27046,10 @@ mod roster_rows {
         assert!(!rows[0].is_agent);
         assert_eq!(rows[0].label, "bob");
         assert!(rows[0].followable);
-        assert_eq!(rows[0].activity.as_deref(), Some("Here now"));
+        assert_eq!(
+            rows[0].activity, None,
+            "the live avatar already communicates presence; the action line stays empty until a real view or semantic action exists"
+        );
     }
 
     #[test]

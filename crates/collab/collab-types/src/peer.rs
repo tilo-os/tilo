@@ -72,6 +72,11 @@ pub enum PeerPresencePayload {
     /// authenticated actor; this JSON contains no identity or screen-space
     /// coordinates.
     InteractionJson(String),
+    /// Short transient intention. Empty text clears the previous status.
+    Status {
+        text: String,
+        automatic: bool,
+    },
 }
 
 #[cfg(test)]
@@ -93,6 +98,10 @@ mod tests {
             PeerPresencePayload::InteractionJson(
                 r#"{"version":1,"invocation":"00000000-0000-0000-0000-000000000001"}"#.into(),
             ),
+            PeerPresencePayload::Status {
+                text: "Reviewing Q2 assumptions".into(),
+                automatic: true,
+            },
         ]
     }
 

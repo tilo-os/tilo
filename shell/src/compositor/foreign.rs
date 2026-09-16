@@ -1265,6 +1265,25 @@ impl ForeignSurfaceWidget {
         (self.display_name().to_string(), detail.to_string())
     }
 
+    fn draw_collaboration_overlay(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        presence.draw_interactions_for_app(
+            scene,
+            transform,
+            self.rect,
+            text_renderer,
+            theme,
+            Instant::now(),
+            &self.app_id,
+        );
+    }
+
     pub fn surface_id(&self) -> SurfaceId {
         self.surface_id
     }
@@ -1460,7 +1479,7 @@ impl Widget for ForeignSurfaceWidget {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.refresh_cache();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
@@ -1488,6 +1507,7 @@ impl Widget for ForeignSurfaceWidget {
                     None,
                     &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
                 );
+                self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
                 return;
             }
             // Neutral backdrop so letterbox bands (and client transparency) read as compositor surface, not whatever the tile card painted.
@@ -1513,6 +1533,7 @@ impl Widget for ForeignSurfaceWidget {
                 &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
             );
             scene.pop_layer();
+            self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
             return;
         }
 
@@ -1549,6 +1570,7 @@ impl Widget for ForeignSurfaceWidget {
             ),
             None,
         );
+        self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(

@@ -1801,6 +1801,7 @@ pub use banner::{Banner, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
 pub mod card;
+pub mod collaboration_overview;
 pub use card::{Card, CardGrid, card_column_width, card_columns};
 mod section;
 pub use section::{DEFAULT_SECTION_GAP, Section};

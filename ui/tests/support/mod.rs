@@ -221,11 +221,11 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::WorkspaceControlInput { .. }
             | CollabRequest::CloseWorkspaceControl { .. }
+            | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::Hello { .. }
             | CollabRequest::PublishActions { .. }
             | CollabRequest::ReportContinuation { .. }
             | CollabRequest::ReportPlayback { .. }
-            | CollabRequest::RealtimeCommand { .. }
             | CollabRequest::ClearContinuation { .. }
             | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }

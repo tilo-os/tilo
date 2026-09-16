@@ -6005,8 +6005,27 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         invocation: qos_actions::InvocationId,
         actor: &str,
+        context: qos_actions::ActionContext,
+        status: qos_actions::EffectReceiptStatus,
+    ) -> bool {
+        self.append_workspace_effect_receipt_at(
+            workspace_id,
+            invocation,
+            actor,
+            context,
+            status,
+            unix_now(),
+        )
+    }
+
+    fn append_workspace_effect_receipt_at(
+        &mut self,
+        workspace_id: WorkspaceId,
+        invocation: qos_actions::InvocationId,
+        actor: &str,
         mut context: qos_actions::ActionContext,
         status: qos_actions::EffectReceiptStatus,
+        completed_at: i64,
     ) -> bool {
         let Some(workspace) = self
             .workspaces
@@ -6022,7 +6041,6 @@ impl WorkspaceTree {
         {
             return false;
         }
-        let completed_at = unix_now();
         let original_action = bounded_receipt_text(&context.action_label, 160);
         context.action_label = if original_action.is_empty() {
             status.label().to_string()
@@ -6048,6 +6066,40 @@ impl WorkspaceTree {
         self.doc_upsert_workspace_effect_receipt(workspace_id, &receipt);
         self.flush_to_disk();
         true
+    }
+
+    /// Deterministic history clock for screenshot journeys that create
+    /// several receipts inside one wall-clock second.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn append_workspace_effect_receipt_for_shots(
+        &mut self,
+        workspace_id: WorkspaceId,
+        invocation: qos_actions::InvocationId,
+        actor: &str,
+        context: qos_actions::ActionContext,
+        status: qos_actions::EffectReceiptStatus,
+    ) -> bool {
+        let completed_at = self
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .and_then(|workspace| {
+                workspace
+                    .effect_receipts
+                    .iter()
+                    .map(|receipt| receipt.completed_at)
+                    .max()
+            })
+            .unwrap_or_else(unix_now)
+            .saturating_add(1);
+        self.append_workspace_effect_receipt_at(
+            workspace_id,
+            invocation,
+            actor,
+            context,
+            status,
+            completed_at,
+        )
     }
 
     fn doc_upsert_workspace_task(&mut self, workspace_id: WorkspaceId, task: &WorkspaceTask) {
@@ -6105,8 +6157,9 @@ impl WorkspaceTree {
             receipt.invocation.0.to_string(),
             ScalarValue::Bytes(blob),
         );
-        let _ = qdoc::history::commit_stamped_with_message(
+        let _ = qdoc::history::commit_stamped_at_with_message(
             &mut self.doc,
+            receipt.completed_at,
             receipt.context.change_message(),
         );
     }

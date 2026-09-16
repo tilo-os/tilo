@@ -31,6 +31,10 @@ pub fn to_peer(key: &PresenceKey, payload: &PresencePayload) -> Option<PeerPrese
         PresencePayload::Interaction(update) => {
             PeerPresencePayload::InteractionJson(serde_json::to_string(update).ok()?)
         }
+        PresencePayload::Status { text, automatic } => PeerPresencePayload::Status {
+            text: text.clone(),
+            automatic: *automatic,
+        },
     };
     Some(PeerPresence { key, payload })
 }
@@ -61,6 +65,9 @@ pub fn from_peer(presence: PeerPresence) -> Option<(PresenceKey, PresencePayload
         PeerPresencePayload::Following { target } => PresencePayload::Following { target },
         PeerPresencePayload::InteractionJson(json) => {
             PresencePayload::Interaction(Box::new(serde_json::from_str(&json).ok()?))
+        }
+        PeerPresencePayload::Status { text, automatic } => {
+            PresencePayload::Status { text, automatic }
         }
     };
     Some((key, payload))
@@ -108,6 +115,10 @@ mod tests {
                 },
                 group: None,
             })),
+            PresencePayload::Status {
+                text: "Reviewing Q2 assumptions".into(),
+                automatic: true,
+            },
         ];
         for payload in variants {
             let wire = to_peer(&key, &payload).expect("encode typed presence");
