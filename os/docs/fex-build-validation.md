@@ -261,13 +261,14 @@ Its image ID is
 Both `/usr/bin/wine64 --version` and `/usr/bin/wine32 --version` report Wine 11.0
 (Staging) when explicitly launched through native ARM FEX.
 
-Actual console execution is **not passing**. With separate user-owned temporary
-homes and win64/win32 prefixes, both `cmd /c echo` checks exit 53 because
+The initial console execution checks failed. With separate user-owned temporary
+homes and win64/win32 prefixes, both `cmd /c echo` checks exited 53 because
 `kernel32.dll` cannot be loaded (`c0000135`). The packaged DLLs exist in Fedora's
 `wine-wow64/wine/{x86_64,i386}-windows` directories. Explicit `WINEDLLPATH` did
 not resolve the failure. Preserve this distinction between version startup and
 working Windows applications; prefix creation, DLL loading, graphics, and
-sandbox integration remain acceptance requirements.
+sandbox integration remain acceptance requirements. The resource-path diagnosis
+and subsequent console validation are recorded below.
 
 Run the repeatable console check inside a dedicated native ARM container with
 an init process, no network, a private executable `/tmp`, a read-only guest
@@ -283,3 +284,46 @@ win64 and win32 prefixes, and requires both a successful exit and the expected
 Windows `cmd.exe` output for each architecture. It records version, console,
 cleanup, and server logs plus `result.json`, and returns nonzero on failure.
 Run with normal FEX settings; diagnostic JIT overrides are not acceptance.
+
+### Wine resource paths must be visible to Windows path resolution
+
+The initial DLL failure was reproduced under a file-operation trace. Wine
+resolved its built-in DLL through
+`.../dosdevices/z:/usr/lib64/wine-wow64/wine/x86_64-windows/kernel32.dll`.
+That prefix is outside the guest rootfs and its `z:` symlink points to the
+container root. FEX's guest-library lookup alone does not make this Windows
+path resolve into `/rootfs`. The DLL was present, but not at the path Wine used.
+Neither an explicit guest `WINEDLLPATH`, single-instruction JIT blocks, nor
+disabling the outer container seccomp filter fixed this failure.
+
+For the Fedora diagnostic runtime, expose its packaged resource trees at the
+same paths in the isolated container, read-only, alongside the guest rootfs:
+
+```sh
+-v "$rootfs/usr/lib64/wine-wow64:/usr/lib64/wine-wow64:ro" \
+-v "$rootfs/usr/lib/wine-wow64:/usr/lib/wine-wow64:ro" \
+-v "$rootfs/usr/share/wine:/usr/share/wine:ro" \
+-v "$rootfs:/rootfs:ro"
+```
+
+This preserves the original DLLs, package layout, and normal FEX settings.
+Do not expose the host filesystem wholesale or populate prefixes by manually
+copying DLLs. Product sandbox integration must make its packaged Wine resources
+visible to both Unix and Windows path resolution; these Fedora paths are a
+validation input, not a portable assumption about every Wine distribution.
+
+The smoke test accepts `wineserver -k` returning 1 when no server remains and
+then separately requires `wineserver -w` to finish successfully. Upstream
+[`kill_lock_owner`](https://github.com/wine-mirror/wine/blob/wine-11.0/server/request.c)
+and the [command-line handler](https://github.com/wine-mirror/wine/blob/wine-11.0/server/main.c)
+explain why requiring a zero kill status after normal server exit was incorrect.
+Console execution still requires exit zero and the exact output marker.
+
+With these read-only resource mounts, the tracked smoke test passed for both
+64-bit and 32-bit Wine. Each created a fresh prefix, ran `cmd.exe /c echo`,
+returned zero with the exact marker, and completed the independent server wait.
+The run used the default Podman seccomp policy, `--cap-drop=ALL`, no network,
+`--init`, a private executable `/tmp`, and normal FEX JIT settings. The recorded
+result is `fex-wine-resource-mount-results/result.json` in the preparation
+workspace. This is console and prefix acceptance only; graphics, representative
+applications, and integration with the product sandbox remain unverified.
