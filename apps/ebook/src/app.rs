@@ -67,7 +67,9 @@ use crate::paginate::{
     ChapterLayout, ChapterLayoutRequest, LayoutKey, LayoutKind, font_choice, layout_chapter,
 };
 use crate::paint;
-use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
+use crate::reader_bubble::{
+    ReaderBubble, ReaderBubbleAction, ReaderBubblePaintCtx, ReaderBubbleView, ReaderPosition,
+};
 use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{
     ReadingSettings, ReadingSettingsAction, ReadingSettingsEventCtx, ReadingSettingsPaintCtx,
@@ -7561,19 +7563,23 @@ impl BooksApp {
         // ---- chrome: top bar, floating page bubble, selection HUD, drawers -
         self.draw_reader_topbar(scene, t, tr, theme, &lib, c);
         self.reader_bubble.draw(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            self.cursor,
-            geom.center_x0,
-            geom.center_x1,
-            ReaderPosition {
-                chapter: self.chapter,
-                page: self.page,
-                page_count: self.cur_page_count,
-                chapter_count: nchap.max(1),
+            &mut ReaderBubblePaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            ReaderBubbleView {
+                viewport: self.rect,
+                cursor: self.cursor,
+                center_x0: geom.center_x0,
+                center_x1: geom.center_x1,
+                position: ReaderPosition {
+                    chapter: self.chapter,
+                    page: self.page,
+                    page_count: self.cur_page_count,
+                    chapter_count: nchap.max(1),
+                },
             },
         );
         // Floating selection toolbar over the page (under any overlay rail).
