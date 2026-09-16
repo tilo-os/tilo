@@ -621,24 +621,32 @@ impl QuickSettingsRoot {
             return RootAction::None;
         };
         if self.edit_mode {
-            let all = self.edit_controls(state);
-            if let Some(c) = all.get(i).copied()
-                && !c.required()
-            {
-                if self.config.controls.contains(&c) {
-                    self.config.controls.retain(|x| *x != c);
-                } else {
-                    self.config.controls.push(c);
+            // The visual and keyboard order is active rows, available chips,
+            // Reset, Done.  A focus stop must always name the control that is
+            // visibly outlined rather than an item in a hidden combined list.
+            let active = self.active_edit_controls(state);
+            let available = self.available_edit_controls(state);
+            if let Some(c) = active.get(i).copied() {
+                if c.required() {
+                    return RootAction::None;
                 }
+                self.config.controls.retain(|x| *x != c);
                 self.save_config();
                 return RootAction::LayoutChanged;
             }
-            if i == all.len() {
+            let available_index = i.saturating_sub(active.len());
+            if let Some(c) = available.get(available_index).copied() {
+                self.config.controls.push(c);
+                self.save_config();
+                return RootAction::LayoutChanged;
+            }
+            let edit_count = active.len().saturating_add(available.len());
+            if i == edit_count {
                 self.config = QuickSettingsConfig::default();
                 self.save_config();
                 return RootAction::LayoutChanged;
             }
-            if all.len().checked_add(1) == Some(i) {
+            if edit_count.checked_add(1) == Some(i) {
                 self.edit_mode = false;
                 return RootAction::LayoutChanged;
             }
@@ -685,11 +693,11 @@ impl QuickSettingsRoot {
         if !self.edit_mode {
             return false;
         }
-        let all = self.edit_controls(state);
-        let Some(i) = self.keyboard_focus.filter(|i| *i < all.len()) else {
+        let active = self.active_edit_controls(state);
+        let Some(i) = self.keyboard_focus.filter(|i| *i < active.len()) else {
             return false;
         };
-        let Some(c) = all.get(i).copied() else {
+        let Some(c) = active.get(i).copied() else {
             return false;
         };
         let Some(from) = self.config.controls.iter().position(|x| *x == c) else {
@@ -703,12 +711,12 @@ impl QuickSettingsRoot {
         let neighbour = if direction < 0 {
             i.checked_sub(1)
         } else {
-            i.checked_add(1).filter(|next| *next < all.len())
+            i.checked_add(1).filter(|next| *next < active.len())
         };
         let Some(neighbour) = neighbour else {
             return false;
         };
-        let Some(neighbour_control) = all.get(neighbour).copied() else {
+        let Some(neighbour_control) = active.get(neighbour).copied() else {
             return false;
         };
         let Some(to) = self
@@ -1026,6 +1034,7 @@ impl QuickSettingsRoot {
                 &ButtonFace::new(r, "")
                     .ghost()
                     .hovered(cursor.is_some_and(|p| r.contains(p)))
+                    .focused(self.keyboard_focus == Some(0))
                     .accessible_name(name),
             );
             ui::icons::draw_icon(
@@ -1418,15 +1427,15 @@ impl QuickSettingsRoot {
             ),
             None,
         );
-        let all = self.active_edit_controls(state);
+        let active = self.active_edit_controls(state);
         let metrics = ListMetrics::uniform(
             self.edit_grid_top(self.panel),
             self.scaled(Self::EDIT_ROW),
             self.scaled(6.),
-            all.len(),
+            active.len(),
         );
         self.edit_drag.sync_insertion(&metrics);
-        for (i, c) in all.iter().copied().enumerate() {
+        for (i, c) in active.iter().copied().enumerate() {
             // The dragged control is represented by the elevated ghost
             // below.  Painting its original row as well makes the item that
             // reflows into the vacated slot paint on top of it, which is why
@@ -1444,7 +1453,7 @@ impl QuickSettingsRoot {
                 theme,
                 &ButtonFace::new(r, "")
                     .hovered(cursor.is_some_and(|p| r.contains(p)))
-                    .focused(self.keyboard_focus == Some(i.saturating_add(1)))
+                    .focused(self.keyboard_focus == Some(i))
                     .accessible_name(Self::label(c)),
             );
             // A six-dot grip is a familiar, intentional reorder affordance;
@@ -1679,7 +1688,7 @@ impl QuickSettingsRoot {
                 - self.scaled(Self::PAD * 2.0)
                 - gap * n(available.len().saturating_sub(1)))
                 / n(available.len());
-            for (i, control) in available.into_iter().enumerate() {
+            for (i, control) in available.iter().copied().enumerate() {
                 let x = x0 + n(i) * (width + gap);
                 let chip = Rect::new(
                     x,
@@ -1696,13 +1705,14 @@ impl QuickSettingsRoot {
                         .icon(ui::icons::Icon::Plus)
                         .text_size(theme.tokens.typography.scale.xs)
                         .hovered(cursor.is_some_and(|point| chip.contains(point)))
+                        .focused(self.keyboard_focus == Some(active.len().saturating_add(i)))
                         .accessible_name(Self::label(control)),
                 );
             }
         }
         let reset = self.edit_reset(state);
         let done = self.edit_done(state);
-        let edit_count = self.edit_controls(state).len();
+        let edit_count = active.len().saturating_add(available.len());
         Button::paint(
             scene,
             transform,
@@ -1767,11 +1777,15 @@ impl QuickSettingsRoot {
                 );
             }
         }
-        for c in if self.edit_mode {
-            self.edit_controls(state)
+        let controls = if self.edit_mode {
+            self.active_edit_controls(state)
+                .into_iter()
+                .chain(self.available_edit_controls(state))
+                .collect()
         } else {
             self.visible_controls(state)
-        } {
+        };
+        for c in controls {
             let role = if self.edit_mode || matches!(c, QuickSettingsControl::Vpn) {
                 Role::Button
             } else {
@@ -1794,12 +1808,28 @@ impl QuickSettingsRoot {
             }
             root.children.push(node);
         }
+        if self.edit_mode {
+            root.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Reset defaults")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            root.children.push(
+                AccessNode::new(Role::Button)
+                    .with_name("Done")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         root
     }
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
         match path {
             [] => Some(self.panel),
             [0] if !self.edit_mode => Some(self.edit_rect()),
+            [i] if !self.edit_mode => {
+                let action = i.checked_sub(1)?;
+                (action < 4).then(|| self.action(action))
+            }
             _ => None,
         }
     }
@@ -1908,6 +1938,75 @@ mod tests {
         );
         assert!(root.edit_mode());
         assert_eq!(root.keyboard_focus, None);
+    }
+    #[test]
+    fn normal_focus_order_matches_visible_actions_and_accessibility_paths() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+
+        assert!(root.focus_accessibility_path(&[0], &state));
+        assert_eq!(root.keyboard_focus, Some(0));
+        assert_eq!(
+            root.activate_focused(PANEL, &mut state),
+            RootAction::LayoutChanged
+        );
+        assert!(root.edit_mode());
+
+        root.edit_mode = false;
+        for (path, expected) in [
+            (1, RootAction::OpenSettings),
+            (2, RootAction::Privacy),
+            (3, RootAction::OpenNotifications),
+            (4, RootAction::OpenPowerMenu),
+        ] {
+            assert!(root.focus_accessibility_path(&[path], &state));
+            assert_eq!(root.keyboard_focus, Some(path));
+            assert_eq!(root.activate_focused(PANEL, &mut state), expected);
+        }
+    }
+    #[test]
+    fn edit_focus_order_covers_visible_rows_available_controls_and_footer() {
+        let mut root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState::default();
+        state.radios.wifi_available = true;
+        state.bluetooth_available = true;
+        root.edit_mode = true;
+
+        let active = root.active_edit_controls(&state);
+        let available = root.available_edit_controls(&state);
+        assert!(!active.is_empty());
+        assert!(!available.is_empty());
+
+        // The first available chip follows every active row and adds exactly
+        // that visible control when activated.
+        root.keyboard_focus = Some(active.len());
+        assert_eq!(
+            root.activate_focused(PANEL, &mut state),
+            RootAction::LayoutChanged
+        );
+        assert!(root.config.controls.contains(&available[0]));
+
+        // Done is the final focus stop, never an alias for a row or an
+        // available chip.
+        let edit_count = root.edit_controls(&state).len();
+        root.keyboard_focus = Some(edit_count.saturating_add(1));
+        assert_eq!(
+            root.activate_focused(PANEL, &mut state),
+            RootAction::LayoutChanged
+        );
+        assert!(!root.edit_mode());
+
+        // Reset is immediately before Done and may change which optional
+        // controls are active. Assert it independently so the test never
+        // carries a now-stale focus index across that structural change.
+        root.edit_mode = true;
+        let edit_count = root.edit_controls(&state).len();
+        root.keyboard_focus = Some(edit_count);
+        assert_eq!(
+            root.activate_focused(PANEL, &mut state),
+            RootAction::LayoutChanged
+        );
+        assert_eq!(root.config, QuickSettingsConfig::default());
     }
     #[test]
     fn edit_add_remove_and_keyboard_reorder_change_model() {
