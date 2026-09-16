@@ -57,7 +57,7 @@ pub fn commit_stamped_with_message(
     commit_stamped_at_with_message(doc, secs, message)
 }
 
-fn commit_stamped_at_with_message(
+pub fn commit_stamped_at_with_message(
     doc: &mut AutoCommit,
     unix_secs: i64,
     message: Option<String>,

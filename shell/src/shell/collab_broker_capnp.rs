@@ -6716,6 +6716,36 @@ impl presence_handle::Server for CapnpPresenceHandle {
         })
     }
 
+    fn publish_status(
+        self: Rc<Self>,
+        params: presence_handle::PublishStatusParams,
+        _results: presence_handle::PublishStatusResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self.revalidate() {
+            return Promise::err(error);
+        }
+        Promise::from_future(async move {
+            let r = params.get()?;
+            let key_bytes = r.get_key_bytes()?.to_vec();
+            let raw = r
+                .get_text()?
+                .to_str()
+                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?;
+            let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            if text.chars().count() > ui::MAX_STATUS_CHARS {
+                return Err(capnp::Error::failed("status exceeds 96 characters".into()));
+            }
+            self.publish_keyed(
+                &key_bytes,
+                PresencePayload::Status {
+                    text,
+                    automatic: r.get_automatic(),
+                },
+            );
+            Ok(())
+        })
+    }
+
     fn publish_arrived(
         self: Rc<Self>,
         params: presence_handle::PublishArrivedParams,
@@ -6974,6 +7004,11 @@ impl presence_stream::Server for PresenceStreamServer {
                         capnp::Error::failed(format!("encode semantic interaction: {error}"))
                     })?;
                     payload.set_interaction_json(&json);
+                }
+                PresencePayload::Status { text, automatic } => {
+                    let mut status = payload.init_status();
+                    status.set_text(&text);
+                    status.set_automatic(automatic);
                 }
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
