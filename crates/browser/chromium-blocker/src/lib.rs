@@ -4,7 +4,7 @@ use adblock::{Engine, request::Request};
 use serde_json::{Value, json};
 use std::ffi::{CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 const MAX_RULE_BYTES: usize = 32 * 1024 * 1024;
 
@@ -20,8 +20,15 @@ fn web_url(value: &str) -> bool {
 
 impl Blocker {
     pub fn new(rules: &str) -> Self {
+        static RESOURCES: OnceLock<Vec<adblock::resources::Resource>> = OnceLock::new();
+        let resources = RESOURCES.get_or_init(|| {
+            serde_json::from_str(include_str!("../resources/resources.json"))
+                .expect("checked-in blocker resources must match the pinned adblock schema")
+        });
+        let mut engine = Engine::from_rules(rules.lines(), Default::default());
+        engine.use_resources(resources.clone());
         Self {
-            engine: Mutex::new(Engine::from_rules(rules.lines(), Default::default())),
+            engine: Mutex::new(engine),
         }
     }
 
