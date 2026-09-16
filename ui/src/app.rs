@@ -894,6 +894,41 @@ impl App {
         }
     }
 
+    /// Apply the native host's fallback for an Enter/Space press that the
+    /// focused widget did not consume during normal event dispatch.
+    fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
+        if *handled
+            || !matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: winit::event::KeyEvent {
+                        logical_key: winit::keyboard::Key::Named(
+                            winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space,
+                        ),
+                        state: winit::event::ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                }
+            )
+        {
+            return;
+        }
+        let Some(focused) = self.focused_node else {
+            return;
+        };
+        let activated = self
+            .dispatch_node(focused, |widget, doc, root| {
+                widget.perform_action(&crate::a11y::Action::Activate, doc, root)
+            })
+            .unwrap_or(false);
+        if activated {
+            *handled = true;
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+    }
+
     fn initial_presence_context() -> PresenceCtx {
         // Own identity, in preference order: the handle announced on `Hello`,
         // then the fallback app id. Anything else is somebody else and gets
@@ -8530,32 +8565,7 @@ impl AppHandler {
 
         // If no widget consumed Enter/Space (text inputs do), activate
         // the focused control the same way a mouse click would.
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key:
-                            winit::keyboard::Key::Named(
-                                winit::keyboard::NamedKey::Enter | winit::keyboard::NamedKey::Space,
-                            ),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-            && let Some(fid) = app.focused_node
-        {
-            let did = app
-                .dispatch_node(fid, |widget, doc, root| {
-                    widget.perform_action(&crate::a11y::Action::Activate, doc, root)
-                })
-                .unwrap_or(false);
-            if did {
-                handled = true;
-                app.needs_sync = true;
-                app.layout_dirty = true;
-            }
-        }
+        app.handle_unconsumed_activation_key(&event, &mut handled);
 
         // A focused range control consumes Left/Right; Up/Down and Tab
         // still move focus. Modifiers scale the step:
