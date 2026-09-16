@@ -7315,15 +7315,18 @@ struct ReaderPageGeometry {
     gutter: f64,
 }
 
+struct ReaderChromeView<'a> {
+    palette: &'a ReaderPalette,
+    geometry: &'a ReaderPageGeometry,
+    mode: ReadMode,
+    chapter_count: usize,
+    selection_anchor: SelAnchor,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
-        let scene = &mut *ctx.scene;
-        let t = ctx.transform;
-        let tr = &mut *ctx.text;
-        let theme = ctx.theme;
         let lib = std::mem::take(&mut self.library);
         let annos = std::mem::take(&mut self.annotations);
-        let c = theme.tokens.colors.clone();
         let r = self.rect;
         self.book_idx = self.book_idx.min(lib.len().saturating_sub(1));
         let nchap = lib.get(self.book_idx).map_or(0, |b| b.chapters.len());
@@ -7331,12 +7334,18 @@ impl BooksApp {
 
         let mode = self.settings.mode;
         let geom = self.reader_page_geometry(r, mode);
-        let palette = self.resolve_palette(theme);
+        let palette = self.resolve_palette(ctx.theme);
 
         // ---- (re)compute the chapter layout -----------------------------
         let (base_family, font_mult, font_sig, base_mono) = self.body_font();
-        let layout =
-            self.resolve_chapter_layout(tr, &lib, &geom, font_sig, &base_family, font_mult);
+        let layout = self.resolve_chapter_layout(
+            &mut *ctx.text,
+            &lib,
+            &geom,
+            font_sig,
+            &base_family,
+            font_mult,
+        );
         self.cur_page_count = layout.page_count();
         self.resolve_reader_page_index(&layout, mode, &geom);
 
@@ -7344,7 +7353,14 @@ impl BooksApp {
         let panes = self.compute_panes(&layout, mode, &geom);
 
         // ---- page surface ------------------------------------------------
-        self.draw_reader_page_surface(scene, t, tr, &lib, &palette, &geom);
+        self.draw_reader_page_surface(
+            &mut *ctx.scene,
+            ctx.transform,
+            &mut *ctx.text,
+            &lib,
+            &palette,
+            &geom,
+        );
 
         // ---- draw each reading column (margins → selection bands → text) -
         let chapter = self.chapter;
@@ -7358,10 +7374,10 @@ impl BooksApp {
         let sel_ord = self.sel.filter(|s| !s.is_empty()).map(|s| s.ordered());
 
         let (sel_anchor, comment_box) = self.draw_reader_columns(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut *ctx.scene,
+            ctx.transform,
+            &mut *ctx.text,
+            ctx.theme,
             &layout,
             &annos,
             &palette,
@@ -7378,7 +7394,17 @@ impl BooksApp {
         self.resolve_pending_sel_edge();
 
         self.draw_reader_footer_and_chrome(
-            scene, t, tr, theme, &c, lib, annos, layout, &palette, &geom, mode, nchap, sel_anchor,
+            ctx,
+            lib,
+            annos,
+            layout,
+            &ReaderChromeView {
+                palette: &palette,
+                geometry: &geom,
+                mode,
+                chapter_count: nchap,
+                selection_anchor: sel_anchor,
+            },
         );
     }
 
@@ -7454,23 +7480,24 @@ impl BooksApp {
     /// composer, comment overlay, and reading-settings popover. Restores
     /// `self.layout`/`self.library`/`self.annotations`, taken at the top of
     /// [`Self::draw_reader`].
-    #[allow(clippy::too_many_arguments)]
     fn draw_reader_footer_and_chrome(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
+        ctx: &mut EbookPaintCtx<'_>,
         lib: Vec<Book>,
         annos: Vec<Annotation>,
         layout: ChapterLayout,
-        palette: &ReaderPalette,
-        geom: &ReaderPageGeometry,
-        mode: ReadMode,
-        nchap: usize,
-        sel_anchor: SelAnchor,
+        view: &ReaderChromeView<'_>,
     ) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
+        let c = &theme.tokens.colors;
+        let palette = view.palette;
+        let geom = view.geometry;
+        let mode = view.mode;
+        let nchap = view.chapter_count;
+        let sel_anchor = view.selection_anchor;
         // ---- page footer -------------------------------------------------
         // The page stays clean: only a thin book-progress bar spanning the full
         // page width. The page/chapter locators live in the bottom chrome bar.
