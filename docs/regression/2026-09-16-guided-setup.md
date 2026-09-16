@@ -21,6 +21,19 @@ the host name, counts both copied and synchronized local files, and rejects
 overflow and lexical source/destination overlaps. Actual filesystem identity,
 case folding, mount safety, and authorization remain execution responsibilities.
 
+## Controller and folder discovery — bdde7f895
+
+- Host setup tests: 27 passed; scoped Clippy exits 0 with an existing
+  `needless_return` warning outside setup.
+- Native Fedora ARM64 `cargo check --locked -p imager --lib`: passed.
+- Native Fedora ARM64 `cargo test --locked -p imager --lib setup`: 26 passed,
+  135 filtered out. The native-dialog stdout test is excluded on Linux. The
+  shared UI crate emits an existing unused profiling-function warning.
+- Task review found two issues: writable controller state bypassed its methods,
+  and queued directory paths could follow a replacement symlink. Fix round 1 is
+  active. The passing tests above predate those fixes and do not prove the race
+  is fixed. The controller is not yet accepted for the dependent view.
+
 ## Outstanding end-state evidence
 
 - Native Windows build, UI, folder picker, package, and retained-Windows boot.
