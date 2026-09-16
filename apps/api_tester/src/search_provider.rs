@@ -412,7 +412,15 @@ mod tests {
     fn late_request_is_found_with_bounded_cursor_work_and_no_variable_values() {
         let mut collection = Collection::new("Load test");
         collection.requests = (0..100_001)
-            .map(|i| Request::new(format!("Request {i}")))
+            .map(|i| {
+                let mut request = Request::new(if i == 100_000 {
+                    "Late unique request needle".to_string()
+                } else {
+                    format!("Request {i}")
+                });
+                request.id = uuid::Uuid::from_u128(i as u128 + 1);
+                request
+            })
             .collect();
         let mut environment = Environment::new("Secrets");
         environment
@@ -422,9 +430,9 @@ mod tests {
         provider
             .refresh(&[collection], &[environment], &[])
             .expect("valid workspace catalog");
-        let hit = provider.search_page("Request 100000", None, 8, 1);
+        let hit = provider.search_page("late unique request needle", None, 8, 1);
         assert!(hit.inspected <= 8 && hit.results.len() <= 1);
-        assert_eq!(hit.results[0].title, "GET Request 100000");
+        assert_eq!(hit.results[0].title, "GET Late unique request needle");
         let address = hit.results[0].action_address().expect("canonical address");
         let resource = provider
             .resolve_action_resource(&address)
