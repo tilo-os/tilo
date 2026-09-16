@@ -129,7 +129,7 @@ cross-check failed in the `ring` C build because the macOS host lacks Windows
 SDK headers (`assert.h`); native Windows execution and full-app verification
 remain outstanding.
 
-## Durable copy recovery — task review pending
+## Durable copy recovery
 
 Commit `4c8fcd403` adds private versioned journals, verified resume, persistent
 directory outcomes and conflict preservation. Real subprocess exits exercise
@@ -148,8 +148,21 @@ constitute an actual reboot or physical power-loss test.
 Windows cfg compilation and scoped Clippy passed. Windows journaled copying
 currently refuses before mutation pending a verified native durability adapter;
 the existing nonjournal API remains available. Journals currently use complete
-JSON snapshots with a 16 MiB bound and quadratic cumulative write cost. The task
-review must assess these limits; this is not yet the worker/UI import flow.
+JSON snapshots with a 16 MiB bound and quadratic cumulative write cost. These
+limits remain a deferred final-review item; this is not yet the worker/UI import
+flow.
+
+Task review found that checkpoint failures could allow subsequent publication
+and discard the accumulated report. Commit `e308647ff` stops traversal on typed
+persistence failure and retains the incomplete report, distinguishing retained,
+uncertain and unavailable checkpoints. The amended macOS component suite passed
+49 tests and native Btrfs passed 47; a final diagnostic-only change passed its
+targeted regression on both platforms. Scoped re-review approved the fix.
+
+A bounded native Fedora XFS optimized-build measurement copied 100 one-KiB files
+in 182 ms and 1,000 in 2,181 ms, with final journals of 85,814 and 842,713 bytes.
+Both reports were complete. This is local scale evidence, not an unrestricted
+folder-size or physical-storage guarantee.
 
 ## Existing installer baseline
 
