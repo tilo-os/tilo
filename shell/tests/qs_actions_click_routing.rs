@@ -375,8 +375,9 @@ fn keyboard_slider_arrows_route_through_the_host() {
         .with_quick_settings_config(QuickSettingsConfig::default());
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-    // None → Edit → four destination buttons → Brightness.
-    for _ in 0..6 {
+    // None → Edit → six labeled destinations → Brightness. The full set of
+    // destinations must remain keyboard-reachable before the live controls.
+    for _ in 0..8 {
         assert!(press_key(
             &mut host,
             &taffy,
