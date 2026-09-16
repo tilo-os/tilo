@@ -138,6 +138,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
                 version: "0.2.0".into(),
                 available: "0.2.0".into(),
                 pinned: true,
+                user_managed: true,
             },
             "0.2.0",
         ),
@@ -150,6 +151,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
                 version: "0.3.0".into(),
                 available: "0.4.0".into(),
                 pinned: false,
+                user_managed: true,
             },
             "0.4.0",
         ),
@@ -173,6 +175,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
                 version: "3.2.1".into(),
                 available: "3.2.1".into(),
                 pinned: false,
+                user_managed: true,
             },
         ),
     ]
