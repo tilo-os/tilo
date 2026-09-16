@@ -1162,6 +1162,30 @@ pub fn request_media_handoff(
     Ok(request_id)
 }
 
+fn fabric_transfer_views(
+    network: &ShellNetwork,
+) -> Vec<crate::shell::overlay_host::FabricTransferView> {
+    use crate::network::actor::PersonalMediaTransferStatus;
+    use crate::shell::overlay_host::{FabricTransferStatus, FabricTransferView};
+
+    network
+        .outgoing_personal_media_transfers()
+        .into_iter()
+        .map(|transfer| FabricTransferView {
+            target: transfer.target,
+            sent_bytes: transfer.sent_bytes,
+            total_bytes: transfer.total_bytes,
+            status: match transfer.status {
+                PersonalMediaTransferStatus::Started | PersonalMediaTransferStatus::Progress => {
+                    FabricTransferStatus::Sending
+                }
+                PersonalMediaTransferStatus::Completed => FabricTransferStatus::Sent,
+                PersonalMediaTransferStatus::Failed => FabricTransferStatus::Failed,
+            },
+        })
+        .collect()
+}
+
 /// Build the bounded presentation model for Quick Settings. Every remote row
 /// comes from a snapshot authored by that certified device; local `PipeWire`
 /// outputs are deliberately kept separate from personal-fabric identities.
@@ -1263,10 +1287,13 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
             .then_with(|| left.label.cmp(&right.label))
     });
 
+    let transfers = fabric_transfer_views(network);
+
     DeviceFabricView {
         devices,
         local_media,
         local_outputs,
+        transfers,
     }
 }
 
