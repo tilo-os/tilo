@@ -682,6 +682,7 @@ fn collect_items(
             id: package.app_id,
             version: package.version,
             pinned: package.pinned,
+            user_managed: package.user_managed,
             ..crate::installed::InstalledEntry::default()
         })
         .collect::<Vec<_>>();

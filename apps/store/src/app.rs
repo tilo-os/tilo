@@ -208,10 +208,13 @@ fn device_state_label(item: &StoreItem) -> String {
                 version,
                 available,
                 pinned,
+                user_managed,
             },
         ) => format!(
             "Cached {version} · available {available}\n{}",
-            if *pinned {
+            if !*user_managed {
+                "Provided by the system"
+            } else if *pinned {
                 "Kept on this device"
             } else {
                 "Not kept · cache may be reclaimed"
@@ -4776,6 +4779,7 @@ mod tests {
                     version: "1".into(),
                     available: "1".into(),
                     pinned: false,
+                    user_managed: true,
                 },
             ),
             item("Chess", StoreSource::Flathub, "Games", InstalledState::Not),
@@ -5364,6 +5368,7 @@ mod tests {
             version: "1".into(),
             available: "1".into(),
             pinned: false,
+            user_managed: true,
         };
         app.set_flatpak_available(false);
         let doc = AutoCommit::new();
@@ -5547,6 +5552,7 @@ mod tests {
             version: "1".into(),
             available: "1".into(),
             pinned: false,
+            user_managed: true,
         };
         let resource = store_app_resource(
             app.items.iter().find(|item| item.id == "id.chess").unwrap(),

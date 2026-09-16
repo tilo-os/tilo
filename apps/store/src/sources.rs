@@ -44,6 +44,7 @@ pub fn tilo_to_store_item(
             version: e.version.clone(),
             available: latest.clone(),
             pinned: e.pinned,
+            user_managed: e.user_managed,
         });
     StoreItem {
         id: entry.package_id.clone(),
@@ -115,6 +116,7 @@ pub fn installed_tilo_to_store_item(entry: &InstalledEntry) -> StoreItem {
             // "Update" affordance.
             available: entry.version.clone(),
             pinned: entry.pinned,
+            user_managed: entry.user_managed,
         },
     }
 }
@@ -146,6 +148,7 @@ pub fn flathub_placeholder_to_item(
             version: v.clone(),
             available: String::new(),
             pinned: false,
+            user_managed: true,
         });
     StoreItem {
         id: p.app_id.clone(),
@@ -200,6 +203,7 @@ pub fn installed_flatpak_to_item(app_id: &str, version: &str) -> StoreItem {
             version: version.to_string(),
             available: version.to_string(),
             pinned: false,
+            user_managed: true,
         },
     }
 }
@@ -224,6 +228,7 @@ pub fn flathub_record_to_item(
             version: v.clone(),
             available: latest.clone(),
             pinned: false,
+            user_managed: true,
         });
     let homepage_url = r
         .homepage
@@ -365,6 +370,7 @@ mod tests {
             publisher_key_hex: entry.publisher_pubkey_hex.clone(),
             installed_at: 0,
             pinned: true,
+            user_managed: true,
         }];
         let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
         assert!(matches!(item.installed, InstalledState::Installed { .. }));
@@ -384,9 +390,28 @@ mod tests {
             publisher_key_hex: entry.publisher_pubkey_hex.clone(),
             installed_at: 0,
             pinned: false,
+            user_managed: true,
         }];
         let item = tilo_to_store_item(&verified(entry), "Tilo main", &installed);
         assert!(item.installed.update_available());
+    }
+
+    #[test]
+    fn immutable_system_entry_is_installed_but_not_mutable() {
+        let entry = tilo_entry("dev.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
+        let installed = vec![InstalledEntry {
+            id: entry.package_id.clone(),
+            version: "1.0.0".into(),
+            publisher_key_hex: entry.publisher_pubkey_hex.clone(),
+            installed_at: 0,
+            pinned: false,
+            user_managed: false,
+        }];
+        let item = tilo_to_store_item(&verified(entry), "Tilo system", &installed);
+        assert!(item.installed.is_installed());
+        assert_eq!(item.action_kind(true), crate::model::ActionKind::Open);
+        assert!(item.pin_action().is_none());
+        assert!(item.remove_action().is_none());
     }
 
     #[test]
@@ -397,6 +422,7 @@ mod tests {
             publisher_key_hex: "ab".repeat(32),
             installed_at: 0,
             pinned: true,
+            user_managed: true,
         });
         assert_eq!(item.name, "dev.tilo.offline");
         assert!(item.installed.is_installed());
