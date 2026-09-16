@@ -108,8 +108,10 @@ for desktop in contract["desktopSession"]:
     assert len(desktop["architectures"]) == 1
     assert len(desktop["plannedArchitectures"]) == 1
 assert 'refs/tags/desktop-v* || ${FULL_NATIVE:-false} == true' in session_workflow
-assert '{arch:"amd64",runner:"runner",targets:$amd64_targets}' in session_workflow
-assert '{arch:"arm64",runner:"runner-arm64",targets:$arm64_targets}' in session_workflow
+assert "amd64_runner=runner-large" in session_workflow
+assert "arm64_runner=runner-large-arm64" in session_workflow
+assert '{arch:"amd64",runner:$amd64_runner,targets:$amd64_targets}' in session_workflow
+assert '{arch:"arm64",runner:$arm64_runner,targets:$arm64_targets}' in session_workflow
 assert "docker.io/menci/archlinuxarm@sha256:" in session_workflow
 assert "docker.io/gomasy/archlinuxarm@sha256:" in session_workflow
 assert "release_arches=amd64,arm64" in session_workflow
