@@ -373,11 +373,16 @@ impl Text {
     }
 
     fn renderer_input_style(&self, renderer: &TextRenderer) -> TextStyle {
-        let mut style = self.style.clone();
         if self.follows_role_style || self.scales_with_theme || self.has_fixed_size {
-            style.size /= renderer.text_scale();
+            let mut style = renderer.renderer_input_style(&self.style);
+            // Text's public modifiers have always defined pixel spacing as a
+            // renderer-relative value, including fixed-size text. Preserve
+            // that contract while sharing the resolved font-size boundary.
+            style.letter_spacing = self.style.letter_spacing;
+            style
+        } else {
+            self.style.clone()
         }
-        style
     }
 
     fn observe_renderer_text_scale(&mut self, renderer: &TextRenderer) {
