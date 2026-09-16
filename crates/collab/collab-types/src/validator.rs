@@ -533,7 +533,7 @@ fn validate_authorized_op(
     // Step 8: clearance gate.
     check_clearance_gate(channel_state, op)?;
 
-    // Step 9 (Phase 9): redaction-aware filter. An op whose derived OpId
+    // Step 9: redaction-aware filter. An op whose derived OpId
     // is in `redacted_ops` is the late-arrival case — the redaction
     // reached this peer before the op did. Surfaced as a typed error so
     // the broker can audit-log `OpArrivedRedacted`, push a marker entry
@@ -635,7 +635,7 @@ fn check_op_permission(
     }
 }
 
-/// Step 5b (Phase 9): if Redact, parse the payload and reject recursive
+/// Step 5b: if Redact, parse the payload and reject recursive
 /// redactions. Parsing also catches the envelope-author/payload-redactor
 /// mismatch and the reason-length bound, surfaced as `MalformedRedact`.
 fn check_redact_payload(
