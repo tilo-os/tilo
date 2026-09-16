@@ -145,9 +145,12 @@ that identity.
 
 ## Remaining integration requirements
 
-- The OS image currently installs UMU and Proton but does not yet provision
-  this Steam runtime into capsules. Adding its checksum pin alone does not
-  make offline Proton launches work.
+- The OS recipe now installs this runtime under
+  `/usr/lib/qos/windows-runners/steam-runtime/SteamLinuxRuntime_sniper` and
+  runs the host-native `pv-verify` during artifact preparation. The ARM
+  extraction and verification commands passed in the local build container;
+  this is not a completed final OS image build. Production capsule
+  provisioning must still bind this content and create its private state.
 - UMU's `UMU_RUNTIME_UPDATE=0` prevents updates to an installed runtime; it
   does not suppress initial installation. Provisioning must satisfy UMU's
   integrity checks and installation marker contract without granting an
