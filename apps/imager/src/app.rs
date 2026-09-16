@@ -616,13 +616,17 @@ impl ImagerApp {
                 Hit::Release(index) => self.releases.get(index).map(|release| {
                     self.a11y_control(
                         ui::a11y::Role::Button,
-                        format!("Download qOS {}", release.version),
+                        format!("Download {}", release.display_name()),
                         *rect,
                         *hit,
                         false,
                     )
-                    .with_description(format!("{} image", fmt_size(release.size)))
-                    .with_action_target(format!("imager:release:{}", release.version))
+                    .with_description(format!(
+                        "{} · {} image",
+                        release.target_label(),
+                        fmt_size(release.size)
+                    ))
+                    .with_action_target(format!("imager:release:{}", release.selection_id()))
                 }),
                 Hit::Recent(index) => self.recent.get(index).map(|source| {
                     self.a11y_control(
@@ -2066,9 +2070,10 @@ impl ImagerApp {
     ) -> f64 {
         let c = &theme.tokens.colors;
         let r = Rect::new(content.x0, y, content.x1, y + 54.0);
-        let selected = self.source.as_ref().is_some_and(|s| {
-            s.kind == SourceKind::QosImage && s.name == format!("{} {}", rel.name, rel.version)
-        });
+        let selected = self
+            .source
+            .as_ref()
+            .is_some_and(|source| rel.matches_source(source));
         let hov = r.contains(self.last_mouse);
         Self::fill_rr(
             scene,
@@ -2115,7 +2120,7 @@ impl ImagerApp {
         Self::txt(
             scene,
             tr,
-            &format!("qOS {}", rel.version),
+            &rel.display_name(),
             14.5,
             c.text_primary,
             r.x0 + 68.0,
@@ -2131,7 +2136,13 @@ impl ImagerApp {
         Self::txt(
             scene,
             tr,
-            &format!("{}  ·  {}  ·  {}", rel.channel, fmt_size(rel.size), where_),
+            &format!(
+                "{}  ·  {}  ·  {}  ·  {}",
+                rel.target_label(),
+                rel.channel,
+                fmt_size(rel.size),
+                where_
+            ),
             11.5,
             c.text_dim,
             r.x0 + 68.0,
@@ -3529,7 +3540,7 @@ impl ImagerApp {
         }
         self.set_status(
             state,
-            &format!("Downloading and verifying qOS {}…", release.version),
+            &format!("Downloading and verifying {}…", release.display_name()),
         );
         self.release_rx = Some(crate::release::spawn_download(release));
         self.dirty = true;
@@ -3550,7 +3561,7 @@ impl ImagerApp {
                 if let Some(release) = self
                     .releases
                     .iter_mut()
-                    .find(|release| source.name == format!("{} {}", release.name, release.version))
+                    .find(|release| release.matches_source(&source))
                 {
                     release.local_path.clone_from(&source.path);
                 }
@@ -4469,10 +4480,10 @@ impl Widget for ImagerApp {
 
         let identity_hit = target
             .strip_prefix("imager:release:")
-            .and_then(|version| {
+            .and_then(|identity| {
                 self.releases
                     .iter()
-                    .position(|release| release.version == version)
+                    .position(|release| release.selection_id() == identity)
                     .map(Hit::Release)
             })
             .or_else(|| {
@@ -4989,6 +5000,42 @@ mod tests {
                 .expect("future customize step")
                 .state
                 .disabled
+        );
+    }
+
+    #[test]
+    fn hardware_variants_have_distinct_semantic_selection_and_review_labels() {
+        use ui::a11y::Action as AccessAction;
+
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        let mut generic = crate::model::sample_releases().remove(0);
+        generic.architecture = "aarch64".into();
+        let mut board = generic.clone();
+        board.hardware_profile = "lenovo-83ed".into();
+        let target = format!("imager:release:{}", board.selection_id());
+        assert_ne!(generic.selection_id(), board.selection_id());
+        app.releases = vec![generic, board.clone()];
+        let tree = app.accessibility_tree();
+        assert!(accessible_named(&tree, &format!("Download {}", board.display_name())).is_some());
+        assert!(app.perform_semantic_action(
+            &target,
+            &AccessAction::Activate,
+            &mut doc,
+            &automerge::ROOT
+        ));
+        assert!(board.matches_source(app.source.as_ref().unwrap()));
+        assert!(!app.releases[0].matches_source(app.source.as_ref().unwrap()));
+        app.select_target(&doc, 0);
+        app.goto(&mut doc, Step::Confirm);
+        let tree = app.accessibility_tree();
+        assert!(
+            accessible_named(&tree, "Image")
+                .unwrap()
+                .value
+                .as_deref()
+                .unwrap()
+                .contains("lenovo-83ed only")
         );
     }
 

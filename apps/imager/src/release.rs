@@ -30,6 +30,10 @@ struct CatalogRelease {
     version: String,
     channel: String,
     arch: String,
+    #[serde(default)]
+    hardware_profile: Option<String>,
+    #[serde(default)]
+    provenance: Option<MediaProvenance>,
     url: String,
     archive_sha256: String,
     archive_size: u64,
@@ -37,8 +41,57 @@ struct CatalogRelease {
     image_size: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct MediaProvenance {
+    source_image_id: String,
+    input_qcow2_sha256: String,
+    hardware_profile_sha256: Option<String>,
+    target_update_ref: Option<String>,
+}
+
+impl MediaProvenance {
+    fn validate(&self) -> Result<(), String> {
+        let source_digest = self
+            .source_image_id
+            .strip_prefix("sha256:")
+            .ok_or_else(|| {
+                "The release catalog contains an invalid source image identity.".to_string()
+            })?;
+        validate_digest(source_digest)?;
+        validate_digest(&self.input_qcow2_sha256)?;
+        let profile_digest = self.hardware_profile_sha256.as_deref().ok_or_else(|| {
+            "The release catalog is missing a hardware profile digest.".to_string()
+        })?;
+        validate_digest(profile_digest)?;
+        let origin = self.target_update_ref.as_deref().ok_or_else(|| {
+            "The release catalog is missing a hardware update origin.".to_string()
+        })?;
+        let valid_origin =
+            if let Some(digest) = origin.strip_prefix("code.podesta.ai/qos/qos@sha256:") {
+                validate_digest(digest).is_ok()
+            } else if let Some(tag) = origin.strip_prefix("code.podesta.ai/qos/qos:") {
+                !tag.is_empty()
+                    && tag.len() <= 128
+                    && tag
+                        .bytes()
+                        .next()
+                        .is_some_and(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                    && tag.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
+                    })
+            } else {
+                false
+            };
+        if !valid_origin {
+            return Err("The release catalog contains an untrusted hardware update origin.".into());
+        }
+        Ok(())
+    }
+}
+
 /// Releases authenticated by the signature on this Imager build, filtered to
-/// media bootable by the current host architecture.
+/// media for the current host CPU architecture. Board compatibility still
+/// requires selecting the explicitly labeled target hardware profile.
 ///
 /// # Errors
 ///
@@ -56,7 +109,7 @@ fn releases_for_host(
     let host_arch = host_arch?;
     let catalog: Catalog = serde_json::from_str(catalog_json)
         .map_err(|error| format!("The bundled release catalog is invalid: {error}"))?;
-    if catalog.schema != 1 {
+    if !matches!(catalog.schema, 1 | 2) {
         return Err("The bundled release catalog uses an unsupported schema.".into());
     }
     if catalog.releases.is_empty() && catalog.tag == "unreleased" {
@@ -64,6 +117,46 @@ fn releases_for_host(
     }
     if !catalog.tag.starts_with("imager-v") {
         return Err("The bundled release catalog has an invalid release tag.".into());
+    }
+    let mut identities = std::collections::HashSet::new();
+    for release in &catalog.releases {
+        let profile = match (catalog.schema, release.hardware_profile.as_deref()) {
+            (1, None | Some("generic")) => "generic",
+            (2, Some(profile)) => profile,
+            _ => {
+                return Err(
+                    "The release catalog has an invalid hardware profile for its schema.".into(),
+                );
+            }
+        };
+        if !matches!(release.arch.as_str(), "x86_64" | "aarch64")
+            || !valid_hardware_profile(profile)
+        {
+            return Err(
+                "The release catalog contains an unsupported architecture and hardware profile."
+                    .into(),
+            );
+        }
+        if !identities.insert((release.arch.as_str(), profile)) {
+            return Err(
+                "The release catalog contains duplicate architecture and hardware profiles.".into(),
+            );
+        }
+    }
+    for release in &catalog.releases {
+        if release
+            .hardware_profile
+            .as_deref()
+            .is_some_and(|profile| profile != "generic")
+        {
+            release
+                .provenance
+                .as_ref()
+                .ok_or_else(|| {
+                    "The release catalog is missing hardware media provenance.".to_string()
+                })?
+                .validate()?;
+        }
     }
     let Some(host_arch) = host_arch else {
         return Ok(Vec::new());
@@ -88,6 +181,8 @@ fn releases_for_host(
                 version: release.version,
                 size: release.image_size,
                 channel: release.channel,
+                architecture: release.arch,
+                hardware_profile: release.hardware_profile.unwrap_or_else(|| "generic".into()),
                 local_path: String::new(),
                 url: release.url,
                 archive_sha256: release.archive_sha256,
@@ -96,6 +191,18 @@ fn releases_for_host(
             })
         })
         .collect()
+}
+
+fn valid_hardware_profile(profile: &str) -> bool {
+    !profile.is_empty()
+        && profile.len() <= 64
+        && profile
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && profile
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn validate_digest(digest: &str) -> Result<(), String> {
@@ -504,6 +611,121 @@ mod tests {
         assert_eq!(releases[0].name, "qOS x86_64");
     }
 
+    fn catalog_with_hardware_variant() -> serde_json::Value {
+        let mut catalog: serde_json::Value =
+            serde_json::from_str(&catalog_with_both_architectures()).unwrap();
+        catalog["schema"] = 2.into();
+        for release in catalog["releases"].as_array_mut().unwrap() {
+            release["hardware_profile"] = "generic".into();
+        }
+        let mut board = catalog["releases"][1].clone();
+        board["hardware_profile"] = "lenovo-83ed".into();
+        board["image_sha256"] = "c".repeat(64).into();
+        board["provenance"] = serde_json::json!({
+            "source_image_id": format!("sha256:{}", "d".repeat(64)),
+            "input_qcow2_sha256": "e".repeat(64),
+            "hardware_profile_sha256": "f".repeat(64),
+            "target_update_ref": "code.podesta.ai/qos/qos:board-fixture",
+        });
+        catalog["releases"].as_array_mut().unwrap().push(board);
+        catalog
+    }
+
+    #[test]
+    fn hardware_variants_keep_distinct_authenticated_selection_and_source_labels() {
+        let releases = releases_for_host(
+            &catalog_with_hardware_variant().to_string(),
+            Ok(Some("aarch64")),
+        )
+        .unwrap();
+        assert_eq!(releases.len(), 2);
+        assert_eq!(releases[0].hardware_profile, "generic");
+        assert_eq!(releases[1].hardware_profile, "lenovo-83ed");
+        assert_ne!(releases[0].selection_id(), releases[1].selection_id());
+        let board = releases[1].to_source();
+        assert!(board.name.contains("lenovo-83ed only"));
+        assert!(board.label.contains("lenovo-83ed only"));
+        assert_eq!(
+            board.expected_sha256.as_deref(),
+            Some("c".repeat(64).as_str())
+        );
+        assert!(!releases[0].matches_source(&board));
+        assert!(releases[1].matches_source(&board));
+    }
+
+    #[test]
+    fn legacy_catalogs_mean_generic_and_cannot_silently_claim_a_board() {
+        let legacy =
+            releases_for_host(&catalog_with_both_architectures(), Ok(Some("aarch64"))).unwrap();
+        assert_eq!(legacy[0].hardware_profile, "generic");
+        let mut catalog = catalog_with_hardware_variant();
+        catalog["schema"] = 1.into();
+        assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+    }
+
+    #[test]
+    fn generic_media_provenance_does_not_require_a_board_profile_payload() {
+        let mut catalog: serde_json::Value =
+            serde_json::from_str(&catalog_with_both_architectures()).unwrap();
+        catalog["releases"][1]["provenance"] = serde_json::json!({
+            "source_image_id": format!("sha256:{}", "d".repeat(64)),
+            "input_qcow2_sha256": "e".repeat(64),
+            "hardware_profile_sha256": null,
+            "target_update_ref": null,
+        });
+        let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
+        assert_eq!(releases[0].hardware_profile, "generic");
+    }
+
+    #[test]
+    fn v2_requires_safe_explicit_unique_profiles_and_bound_provenance() {
+        for invalid in [
+            serde_json::Value::Null,
+            "".into(),
+            "../board".into(),
+            "Board".into(),
+        ] {
+            let mut catalog = catalog_with_hardware_variant();
+            catalog["releases"][2]["hardware_profile"] = invalid;
+            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+        }
+        for field in ["hardware_profile", "provenance"] {
+            let mut catalog = catalog_with_hardware_variant();
+            catalog["releases"][2]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+        }
+        for field in [
+            "source_image_id",
+            "hardware_profile_sha256",
+            "input_qcow2_sha256",
+            "target_update_ref",
+        ] {
+            let mut catalog = catalog_with_hardware_variant();
+            catalog["releases"][2]["provenance"][field] = "untrusted".into();
+            assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+        }
+        let mut catalog = catalog_with_hardware_variant();
+        let duplicate = catalog["releases"][2].clone();
+        catalog["releases"].as_array_mut().unwrap().push(duplicate);
+        assert!(releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).is_err());
+    }
+
+    #[test]
+    fn hardware_profile_ids_are_data_driven_not_a_model_allowlist() {
+        let mut catalog = catalog_with_hardware_variant();
+        catalog["releases"][2]["hardware_profile"] = "another-reviewed-board".into();
+        let releases = releases_for_host(&catalog.to_string(), Ok(Some("aarch64"))).unwrap();
+        assert!(
+            releases[1]
+                .to_source()
+                .name
+                .contains("another-reviewed-board only")
+        );
+    }
+
     #[test]
     fn native_arm64_host_does_not_fall_back_when_only_x86_media_is_published() {
         let mut catalog: serde_json::Value =
@@ -556,6 +778,8 @@ mod tests {
             version: "1.0".into(),
             size: 1,
             channel: "stable".into(),
+            architecture: "aarch64".into(),
+            hardware_profile: "generic".into(),
             local_path: String::new(),
             url: "https://code.podesta.ai/qos/qos/releases/download/imager-v1.0.0/qos.img.zst"
                 .into(),

@@ -9,7 +9,7 @@ Release hosts produce this matrix (architecture is part of every filename):
 | Host | Native downloads | Package-manager publication |
 |---|---|---|
 | Linux x86-64 + ARM64 | signed Flatpak, AppImage, and portable tarball | Homebrew tap formula |
-| Windows x86-64 | signed standalone EXE, modern Inno Setup EXE, portable zip | WinGet manifest |
+| Windows x86-64 + ARM64 | signed standalone EXE, modern Inno Setup EXE, portable zip | WinGet manifest |
 | macOS x86-64 + Apple silicon | signed/notarized DMG and app zip | Homebrew cask |
 
 The protected tag workflow also builds the live installer on native x86-64 and
@@ -21,6 +21,33 @@ The catalog is also embedded into every signed Imager package. Selecting its qOS
 release downloads the compressed image into a per-user cache and verifies both
 the transport SHA-256 and expanded-image SHA-256/size before the raw image is
 offered to the writer.
+
+Hardware-specific media also carries an explicit `hardware_profile` identity.
+The packager validates the selected ID against `os/hardware/profiles/` and its
+declared architecture; CPU architecture alone does not establish board support.
+Generic media retains `qos-installer-linux-ARCH.img.zst` and schema-1 catalogs.
+Board media uses `qos-installer-linux-ARCH-PROFILE.img.zst` and a separate
+`catalog-ARCH-PROFILE.json` fragment. A catalog containing any board variant is
+schema 2, emitted as `qos-installer-catalog-v2.json`; clients deliberately treat
+legacy schema-1 entries without a profile as generic only. The catalog requires
+one generic image for each architecture and rejects duplicate profile identities.
+
+After the installer has finished resealing and optional PCR signing,
+`build-custom-installer.sh` records `INSTALLER.qcow2.hardware.json`. The sidecar
+binds the final immutable OCI image ID, validated image-owned profile payload
+(including its update origin), and completed qcow2 SHA-256. Package board media
+with `QOS_HARDWARE_PROFILE=PROFILE`; a missing or mismatched sidecar fails before
+conversion. This is build provenance, separate from the UKI/rootfs acceptance
+checks and physical boot validation. Generic builds from older tooling may omit
+the sidecar; when a sidecar exists it is always checked, even for generic media.
+
+The Imager labels board media with `PROFILE only` in selection and write review.
+Selection IDs include architecture, profile and image digest; the download cache
+remains addressed by the authenticated expanded-image digest. Required USB
+capacity follows the actual expanded image size, not a fixed advertised minimum.
+Board release publication must additionally sign and verify its media and v2
+catalog and embed that catalog in signed host packages; the existing generic
+release matrix does not automatically publish the extra files.
 
 Every package launches the wizard as the signed-in user. Only after the exact
 external device name is typed does it request polkit, macOS administrator, or
