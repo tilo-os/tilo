@@ -307,7 +307,7 @@ mod tests {
     use super::*;
     use crate::doc::ConnectionsDoc;
     use crate::model::Engine;
-    use automerge::AutoCommit;
+    use automerge::{ActorId, AutoCommit};
 
     fn profile() -> ConnectionProfile {
         let mut p = ConnectionProfile::new("Analytics", Engine::Postgres);
@@ -396,6 +396,44 @@ mod tests {
         assert_eq!(queries[0].id, id);
         let list = crate::doc::SavedQueriesDoc::list(&doc).expect("query list exists");
         assert_eq!(doc.length(&list), 1, "revival must not duplicate a row");
+    }
+
+    #[test]
+    fn concurrent_saved_queries_converge_without_losing_stable_rows() {
+        let mut base = AutoCommit::new().with_actor(ActorId::from([1; 16].as_slice()));
+        // Establish the collaborative collection and a common Automerge
+        // history before peers make independent inserts, just as an invited
+        // collaborator would.
+        save_query_action(Uuid::new_v4(), "Shared seed", "SELECT 1")
+            .apply(&mut base)
+            .unwrap();
+        base.commit();
+        let mut left = base.fork().with_actor(ActorId::from([2; 16].as_slice()));
+        let mut right = base.fork().with_actor(ActorId::from([3; 16].as_slice()));
+        let left_id = Uuid::new_v4();
+        let right_id = Uuid::new_v4();
+
+        save_query_action(left_id, "Daily totals", "SELECT count(*) FROM orders")
+            .apply(&mut left)
+            .unwrap();
+        save_query_action(
+            right_id,
+            "Recent customers",
+            "SELECT * FROM customers LIMIT 10",
+        )
+        .apply(&mut right)
+        .unwrap();
+        left.commit();
+        right.commit();
+        left.merge(&mut right).unwrap();
+        let mut merged_left = left.fork();
+        right.merge(&mut merged_left).unwrap();
+
+        let visible = crate::doc::SavedQueriesDoc::read(&left);
+        assert_eq!(visible.len(), 3);
+        assert!(visible.iter().any(|query| query.id == left_id));
+        assert!(visible.iter().any(|query| query.id == right_id));
+        assert_eq!(left.get_heads(), right.get_heads(), "two peers converge");
     }
 
     /// `RemoveConnection` hides exactly the addressed profile while retaining
