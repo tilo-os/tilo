@@ -508,3 +508,39 @@ The two formerly failing clock tests passed with the real rebuilt server in
 1.66 seconds. A separate process-lifecycle check verified that simulated server
 exit is detected and its sleeping test child is terminated within five seconds.
 The complete suite must still finish with this corrected fixture.
+
+### Complete Clang 21 suite audit
+
+The corrected server fixture completed all 12,188 configured tests in 481.59
+seconds: 11,700 passed, 460 were skipped by upstream, and 28 failed. The log is
+`fex-clang21-full-validation.log`. This is not a passing acceptance run:
+
+- Twenty failures came from mismatched Clang resource headers. All 40 ABI
+  checks subsequently passed with the matched driver described above.
+- Two `glxinfo` tests resolved an ARM executable because the guest rootfs did
+  not contain the requested x86 executable.
+- Untranslated `vulkaninfo` found no usable guest driver.
+- Translated `vulkaninfo`, `vulkan_procaddr.64`, and both `thunk_testlib`
+  architectures lacked their installed guest libraries.
+- `syscalls_efault.64` passed all 20 assertions in three cases, but upstream
+  marks it as an expected failure. Its expectation remains unchanged.
+
+The complete build produced guest libraries under both `Guest` and `Guest_32`,
+but the initial installed image lacked them. Verify staged artifacts as well
+as the top-level install command's exit status. Both guest subprojects have
+their own install manifests:
+
+```sh
+DESTDIR=/stage cmake --install /build/Guest
+DESTDIR=/stage cmake --install /build/Guest_32
+file /stage/usr/share/fex-emu/GuestThunks/libvulkan-guest.so
+file /stage/usr/share/fex-emu/GuestThunks_32/libfex_thunk_test-guest.so
+```
+
+The resulting files were verified as x86-64 and i386 ELF libraries respectively.
+The complete local validation image is
+`localhost/qos-fex-clang21-runtime:arm64-guests`, ID
+`6213032510a9da2cb348976c9900228ac8b8c7f8bed5c88c3bcf2a41f7483a2b`.
+Runtime acceptance must be repeated against this artifact. A passing unseeded
+CPU-count test in the full suite does not supersede the failing controlled
+CPU-list regression fixture documented above.
