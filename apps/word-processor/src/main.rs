@@ -118,6 +118,8 @@ fn main() {
                 "--styles",
                 "--comments",
                 "--threaded-comments",
+                "--template-picker",
+                "--toolbar-overflow",
                 "--find",
                 "--error",
                 "--image-object",
@@ -184,6 +186,12 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     }
     if args.has("--error") {
         wp.stage_error_for_shot();
+    }
+    if args.has("--template-picker") {
+        wp.stage_template_picker_for_shot();
+    }
+    if args.has("--toolbar-overflow") {
+        wp.stage_toolbar_overflow_for_shot();
     }
     render_shot(
         state,
