@@ -1,5 +1,7 @@
 use super::*;
-use crate::widget::{Actions, Button, Card, CardGrid, Column, Element, Scrollable, Text};
+use crate::widget::{
+    Actions, Button, Card, CardGrid, Column, Element, EmptyState, Scrollable, Text,
+};
 use automerge::ReadDoc;
 use std::cell::Cell;
 use std::rc::Rc;
@@ -247,4 +249,51 @@ fn short_card_stack_scroll_and_tab_activate_final_action_once_from_enter() {
         1,
         "a widget-consumed Enter press must not invoke the host fallback"
     );
+}
+
+#[test]
+fn scrollable_empty_state_action_uses_the_real_tab_and_enter_host_route() {
+    let root = EmptyState::new("No messages are available")
+        .with_icon(crate::icons::Icon::Inbox)
+        .with_message("Reconnect to load messages.")
+        .with_action("Review connection settings")
+        .with_action_path("empty.review")
+        .into_scrollable()
+        .with_height(50.0);
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
+    app.init_layout();
+    layout_in(&mut app, 240, 50);
+
+    let action_node = *app
+        .focusable_order
+        .iter()
+        .find(|&&node| {
+            app.inspect_node(node, |widget| widget.name() == "EmptyState")
+                .unwrap_or(false)
+        })
+        .expect("empty-state action is in host focus order");
+    let wheel = WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -10_000.0)),
+        phase: TouchPhase::Moved,
+    };
+    assert!(send_widget_then_host_fallback(&mut app, &wheel));
+    layout_in(&mut app, 240, 50);
+
+    for _ in 0..app.focusable_order.len() {
+        if app.focused_node == Some(action_node) {
+            break;
+        }
+        assert!(app.focus_tab(false));
+    }
+    assert_eq!(app.focused_node, Some(action_node));
+    assert!(send_widget_then_host_fallback(
+        &mut app,
+        &named_key_event(NamedKey::Enter, ElementState::Pressed),
+    ));
+    assert!(matches!(
+        app.state.doc.get(automerge::ROOT, "empty.review"),
+        Ok(Some((automerge::Value::Scalar(value), _)))
+            if value.as_ref().to_bool() == Some(true)
+    ));
 }
