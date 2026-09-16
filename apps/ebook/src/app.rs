@@ -67,7 +67,10 @@ use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice, layout_
 use crate::paint;
 use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
-use crate::reading_settings::{ReadingSettings, ReadingSettingsAction, ReadingSettingsEventCtx};
+use crate::reading_settings::{
+    ReadingSettings, ReadingSettingsAction, ReadingSettingsEventCtx, ReadingSettingsPaintCtx,
+    ReadingSettingsView,
+};
 use crate::shelf_controls::{ShelfControlAction, ShelfControls};
 
 const TOP_BAR: f64 = 54.0;
@@ -7603,17 +7606,21 @@ impl BooksApp {
         // Reading-settings floats above everything and owns its own modal hit
         // stack; only the available reader span is supplied by the host.
         self.reading_settings.draw(
-            scene,
-            t,
-            tr,
-            theme,
-            self.rect,
-            geom.center_x0 + 12.0,
-            geom.center_x1 - 18.0,
-            &self.settings,
-            &self.fonts,
-            &self.default_font_id,
-            &self.schemes,
+            &mut ReadingSettingsPaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
+            &ReadingSettingsView {
+                viewport: self.rect,
+                content_x0: geom.center_x0 + 12.0,
+                content_x1: geom.center_x1 - 18.0,
+                settings: &self.settings,
+                fonts: &self.fonts,
+                default_font_id: &self.default_font_id,
+                schemes: &self.schemes,
+            },
         );
 
         self.library = lib;
