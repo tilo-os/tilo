@@ -806,63 +806,62 @@ fn add_environment_children(
             },
         ));
 
-        for v in &e.variables {
-            let rename_id = v.id.clone();
-            let set_value_id = v.id.clone();
-            let variable_key = v.key.clone();
-            let variable_value = v.value.clone();
-            let child = Resource::new(
-                // A visible variable key can be renamed and duplicated.  The
-                // resource id must retain the durable row UUID so palette / agent
-                // references remain valid across a rename and never collide.
-                format!("api_tester.variable:{eid}:{}", v.id),
-                "api_tester.variable",
-                // Environment values commonly hold bearer tokens.  They are
-                // addressable through an action, but never copied into a
-                // searchable resource label or palette row.
-                format!("Variable {}", v.key),
-            )
-            .with_action(ActionSpec::prompted(
-                "rename",
-                "Rename variable",
-                "Variable key",
-                "new key…",
-                ExecutionLocus::ClientLocal,
-                move |key: &str| {
-                    encode(&set_variable_action(
-                        eid,
-                        rename_id.clone(),
-                        key.trim(),
-                        &variable_value,
-                    ))
-                },
-            ))
-            .with_action(ActionSpec::prompted(
-                "set-value",
-                "Set variable value",
-                "Variable value",
-                "new value…",
-                ExecutionLocus::ClientLocal,
-                move |value: &str| {
-                    encode(&set_variable_action(
-                        eid,
-                        set_value_id.clone(),
-                        &variable_key,
-                        value,
-                    ))
-                },
-            ))
-            .with_action(immediate(
-                "delete",
-                "Delete variable",
-                &delete_variable_action(eid, &v.id),
-            ));
-            node = node.with_child(child);
+        for variable in &e.variables {
+            node = node.with_child(variable_resource(eid, variable));
         }
         env_root = env_root.with_child(node);
     }
     root = root.with_child(env_root);
     root
+}
+
+/// One stable, secret-safe variable resource. Kept separate so environment
+/// traversal remains small and callers can materialize a single address later.
+fn variable_resource(eid: Uuid, variable: &KeyValue) -> Resource {
+    let rename_id = variable.id.clone();
+    let set_value_id = variable.id.clone();
+    let key = variable.key.clone();
+    let value = variable.value.clone();
+    Resource::new(
+        format!("api_tester.variable:{eid}:{}", variable.id),
+        "api_tester.variable",
+        format!("Variable {}", variable.key),
+    )
+    .with_action(ActionSpec::prompted(
+        "rename",
+        "Rename variable",
+        "Variable key",
+        "new key…",
+        ExecutionLocus::ClientLocal,
+        move |next_key: &str| {
+            encode(&set_variable_action(
+                eid,
+                rename_id.clone(),
+                next_key.trim(),
+                &value,
+            ))
+        },
+    ))
+    .with_action(ActionSpec::prompted(
+        "set-value",
+        "Set variable value",
+        "Variable value",
+        "new value…",
+        ExecutionLocus::ClientLocal,
+        move |next_value: &str| {
+            encode(&set_variable_action(
+                eid,
+                set_value_id.clone(),
+                &key,
+                next_value,
+            ))
+        },
+    ))
+    .with_action(immediate(
+        "delete",
+        "Delete variable",
+        &delete_variable_action(eid, &variable.id),
+    ))
 }
 
 impl ResourceProvider for crate::app::ApiTesterApp {
@@ -1016,24 +1015,20 @@ mod tests {
             "variable exports delete"
         );
 
-        // The one palette surfaces the tree's actions as rows (the Actions group
-        // is capped, so assert on the leading, always-present ones).
+        assert_palette_has_workspace_actions(&resources);
+    }
+
+    fn assert_palette_has_workspace_actions(resources: &[Resource]) {
         let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&resources);
+        palette.load_open_resources(resources);
         palette.open();
         let labels = palette.result_labels();
-        assert!(
-            labels.iter().any(|l| l.contains("New collection")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Delete collection")),
-            "{labels:?}"
-        );
-        assert!(
-            labels.iter().any(|l| l.contains("Add request")),
-            "{labels:?}"
-        );
+        for label in ["New collection", "Delete collection", "Add request"] {
+            assert!(
+                labels.iter().any(|candidate| candidate.contains(label)),
+                "{labels:?}"
+            );
+        }
     }
 
     #[test]
