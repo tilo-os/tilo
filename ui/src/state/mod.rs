@@ -3,8 +3,6 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
 
-pub mod collab;
-pub use collab::{CollaborationState, RemoteCursor};
 pub mod revision;
 pub use revision::{Revision, RevisionHistory, RevisionId, UnknownRevision};
 
@@ -556,7 +554,6 @@ impl UndoLog {
 pub struct State {
     pub doc: AutoCommit,
     pub root: ObjId,
-    pub collab: CollaborationState,
     /// This document's history. Swapped out with the document itself in
     /// [`Self::adopt_doc`] — see there for why it cannot travel.
     undo: UndoLog,
@@ -573,12 +570,7 @@ impl State {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         let undo = UndoLog::new(&mut doc);
-        Self {
-            doc,
-            root,
-            collab: CollaborationState::new(),
-            undo,
-        }
+        Self { doc, root, undo }
     }
 
     /// Replace the live document with another one — a different record's.
@@ -874,7 +866,6 @@ impl State {
         Self {
             doc,
             root: automerge::ROOT,
-            collab: CollaborationState::new(),
             undo,
         }
     }
@@ -889,12 +880,7 @@ impl State {
         let mut doc = AutoCommit::load(data)?;
         let root = automerge::ROOT;
         let undo = UndoLog::new(&mut doc);
-        Ok(Self {
-            doc,
-            root,
-            collab: CollaborationState::new(),
-            undo,
-        })
+        Ok(Self { doc, root, undo })
     }
 
     /// Apply an incremental CRDT patch (bytes produced by

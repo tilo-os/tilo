@@ -4204,10 +4204,6 @@ impl App {
                         .send(crate::collaboration::CollabRequest::document_snapshot(data));
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                    if let Some(cursor) = self.state.collab.cursors.get_mut(&user_id) {
-                        cursor.x = x;
-                        cursor.y = y;
-                    }
                     self.presence_ctx
                         .upsert_remote_cursor(user_id, [x, y], None);
                 }
@@ -4361,9 +4357,6 @@ impl App {
         for c in collaborators.into_iter().filter(|c| !c.is_self) {
             // Relabel only — the roster doesn't say where a peer's pointer
             // is, so it must not mint one at the origin.
-            if let Some(cursor) = self.state.collab.cursors.get_mut(&c.id) {
-                cursor.name.clone_from(&c.name);
-            }
             self.presence_ctx
                 .set_display_name(crate::permissions::UserId(c.id.clone()), c.name.clone());
             self.presence_ctx.set_participant_kind(
@@ -4419,16 +4412,6 @@ impl App {
                 self.apply_remote_presence(user_id, key, payload);
             }
             CollabEvent::RemoteCursorMoved { user_id, x, y } => {
-                let entry = self.state.collab.cursors.entry(user_id.clone()).or_insert(
-                    crate::state::RemoteCursor {
-                        x: 0.0,
-                        y: 0.0,
-                        color: self.theme.text_primary,
-                        name: String::new(),
-                    },
-                );
-                entry.x = x;
-                entry.y = y;
                 self.presence_ctx
                     .upsert_remote_cursor(user_id, [x, y], None);
             }
@@ -6079,54 +6062,6 @@ fn draw_frame_content(
 }
 
 /// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
-/// Legacy path — `state.collab.cursors` predates `PresenceCtx`; kept for apps
-/// that still write into it directly.
-fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
-    for cursor in app.state.collab.cursors.values() {
-        let mut path = vello::kurbo::BezPath::new();
-        path.move_to(Point::new(0.0, 0.0));
-        path.line_to(Point::new(14.0, 14.0));
-        path.line_to(Point::new(6.0, 16.0));
-        path.line_to(Point::new(0.0, 22.0));
-        path.close_path();
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-        )]
-        let cursor_transform =
-            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            cursor_transform,
-            cursor.color,
-            None,
-            &path,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
-            cursor_transform,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            None,
-            &path,
-        );
-
-        app.text_renderer.draw_text(
-            scene,
-            &cursor.name,
-            10.0,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            {
-                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
-                let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
-                name_transform
-            },
-            None,
-        );
-    }
-}
-
-/// Split out of `AppHandler::handle_redraw_requested` (`clippy::too_many_lines`).
 /// Only active in `App::debug_mode` — draws each widget's layout rect and a
 /// depth-cycled label over the frame just rendered.
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -7211,7 +7146,6 @@ impl AppHandler {
             || app.action_palette.is_some()
             || app.tooltip_host.needs_frame()
             || app.tooltip_host.visible().is_some()
-            || !app.state.collab.cursors.is_empty()
             || !app.presence_ctx.remote_cursors.is_empty()
             || app
                 .profiler
@@ -7227,8 +7161,6 @@ impl AppHandler {
         };
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
-
-        draw_legacy_cursors(app, &mut scene, transform);
 
         // A pointer that arrived on a desktop scope is the
         // compositor's to draw, and the helper skips it — see
