@@ -46,6 +46,11 @@ impl State {
             history_revision: self.undo.revision(),
         }
     }
+
+    #[must_use]
+    pub fn outbound_diagnostics(&self) -> FrontierDiagnostics {
+        self.outbound.diagnostics()
+    }
 }
 
 impl DocumentFrontier {
