@@ -42,8 +42,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 <div class="csp-control">control</div><div class="site-sheet-control">site sheet</div><div class="sponsor">ad</div><div id="domain-ad">ad</div>
 <script>
 setTimeout(()=>{const node=document.createElement('div');node.className='late-ad';document.body.append(node)},100);
+try { eval('window.pageEvalAllowed=true') } catch (_) { window.pageEvalAllowed=false }
 const siteSheet=new CSSStyleSheet();siteSheet.replaceSync('.site-sheet-control {display:grid}');document.adoptedStyleSheets=[...document.adoptedStyleSheets,siteSheet];
-setInterval(()=>{const late=document.querySelector('.late-ad');if(late)document.title=JSON.stringify({styles:['.sponsor','.late-ad','#domain-ad'].map(s=>getComputedStyle(document.querySelector(s)).display),control:getComputedStyle(document.querySelector('.csp-control')).display,site:getComputedStyle(document.querySelector('.site-sheet-control')).display,nonce:Date.now()})},100);
+setInterval(()=>{const late=document.querySelector('.late-ad');if(late)document.title=JSON.stringify({styles:['.sponsor','.late-ad','#domain-ad'].map(s=>getComputedStyle(document.querySelector(s)).display),control:getComputedStyle(document.querySelector('.csp-control')).display,site:getComputedStyle(document.querySelector('.site-sheet-control')).display,late:window.qosLateCount||0,pageEvalAllowed:window.pageEvalAllowed,nonce:Date.now()})},100);
 </script>'''
         if path=='/iframes':
             body=b'<!doctype html><title>iframe source</title>'
@@ -110,6 +111,21 @@ class BlockingRegressions(unittest.TestCase):
         self.assertEqual(disabled['site'],'grid','Disabling protection must preserve page-owned sheets')
         self.config(True)
         self.assertEqual(state()['styles'],['none','none','none'])
+    def test_late_script_configuration_under_csp(self):
+        self.server.csp=True
+        self.host.navigate(self.url+'csp')
+        script='var qosLateCount=(window.qosLateCount||0)+1'
+        def state():
+            self.host.settle(.2)
+            return json.loads(self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{'))['title'])
+        self.host.send(op='scripts',scripts=[script])
+        first=state()
+        self.assertEqual(first['late'],1)
+        self.assertFalse(first['pageEvalAllowed'],'Page-authored eval must remain blocked by CSP')
+        self.host.send(op='scripts',scripts=[script])
+        self.assertEqual(state()['late'],1,'Identical configuration must run once per document')
+        self.host.send(op='scripts',scripts=[script+';void 0'])
+        self.assertEqual(state()['late'],2)
     def test_document_start_scripts(self):
         self.host.send(op='scripts',scripts=['window.docStartReady=true'])
         self.loaded()

@@ -10,10 +10,14 @@ inline std::string ScriptSource(const std::vector<CefString>& scripts) {
   auto value=CefValue::Create();value->SetList(list);
   const auto json=CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString();
   // Registration is browser-wide, but actual scripts are restricted to direct
-  // HTTP(S) documents. The same wrapper is used for live configuration updates;
-  // its per-document value prevents load-end synchronization from running twice.
-  return "(()=>{if(location.protocol!=='http:'&&location.protocol!=='https:')return;const scripts="+json+
-    ";const key=Symbol.for('qos.documentScripts');const signature=JSON.stringify(scripts);if(window[key]===signature)return;window[key]=signature;for(const script of scripts){try{(0,eval)(script)}catch(e){console.error('qOS document script failed',e)}}})()";
+  // HTTP(S) documents. The same source is used for live updates. Execute trusted
+  // bodies directly: page eval() is subject to CSP on already loaded documents.
+  auto signature=CefValue::Create();signature->SetString(json);
+  const auto quoted=CefWriteJSON(signature,JSON_WRITER_DEFAULT).ToString();
+  const std::string marker="window[Symbol.for('qos.documentScripts')]";
+  std::string source="if((location.protocol==='http:'||location.protocol==='https:')&&"+marker+"!=="+quoted+"){"+marker+"="+quoted+";\n";
+  for(const auto& script:scripts) source+="try {\n"+script.ToString()+"\n} catch(qosScriptError) { console.error('qOS document script failed',qosScriptError); }\n";
+  return source+"}";
 }
 class DocumentScripts final : public CefDevToolsMessageObserver {
  public:
