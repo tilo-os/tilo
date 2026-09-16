@@ -15,7 +15,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
 use crate::widget::{ActionEmitter, ControlBindingMetadata, TaffyTreeExt, Widget};
@@ -699,7 +699,8 @@ impl Widget for ToggleGroup {
 
         // Vertical centering uses the typography scale because cosmic-text's
         // measure returns the visual line height.
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_style =
+            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
         for (i, seg_rect) in self.segment_rects.iter().enumerate() {
             let Some(segment) = self.segments.get(i) else {
                 continue;
@@ -710,7 +711,7 @@ impl Widget for ToggleGroup {
             } else {
                 colors.text_primary
             };
-            let (tw, th) = text_renderer.measure(label, text_size, None);
+            let (tw, th) = text_renderer.measure_style(label, None, &text_style);
             let text_x = seg_rect.center().x - (f64::from(tw) / 2.0);
             let text_y = seg_rect.y0 + (seg_rect.height() - f64::from(th)) / 2.0;
             #[allow(
@@ -719,7 +720,7 @@ impl Widget for ToggleGroup {
                           overflow or panic"
             )]
             let label_transform = transform * Affine::translate((text_x, text_y));
-            text_renderer.draw_text(scene, label, text_size, text_color, label_transform, None);
+            text_renderer.draw_style(scene, label, text_color, label_transform, None, &text_style);
         }
         self.cache_rect = self.rect;
         out_scene.append(&self.cached, Some(out_transform));
@@ -1056,6 +1057,38 @@ mod tests {
             &tree,
         );
         handled
+    }
+
+    #[test]
+    fn retained_labels_apply_resolved_text_scale_exactly_once() {
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut text = crate::font_catalog::fixture_renderer();
+            text.set_text_scale(scale);
+            let mut group = group_at(
+                vec![Segment::new("Params"), Segment::new("Headers")],
+                0,
+                Rect::new(0.0, 0.0, 384.0, 52.0),
+            );
+            let mut scene = Scene::new();
+            group.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty());
+            for run in runs {
+                assert!(
+                    (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.001,
+                    "{scale}x text must paint once at resolved size {}, got {}",
+                    theme.tokens.typography.scale.sm,
+                    run.font_size
+                );
+            }
+        }
     }
 
     #[test]
