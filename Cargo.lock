@@ -9885,6 +9885,8 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "nix 0.30.1",
  "qos-bluez",
  "qos-power-mgmt",
  "rand_core 0.6.4",
