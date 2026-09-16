@@ -6149,50 +6149,52 @@ impl BooksApp {
 
     /// A filled accent button with a centred label (and an optional leading `+`),
     /// the single primary action on a screen. Pushes a hit for `action`.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn accent_button(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        with_plus: bool,
-        action: Action,
-    ) {
-        let radius = (rect.height() / 2.0).min(f64::from(theme.tokens.radii.lg) + 4.0);
-        paint::fill_round(scene, t, rect, radius, theme.accent_primary);
-        if self.is_hover(rect) {
+    fn accent_button(&mut self, ctx: &mut EbookPaintCtx<'_>, view: AccentButtonView<'_>) {
+        let radius = (view.rect.height() / 2.0).min(f64::from(ctx.theme.tokens.radii.lg) + 4.0);
+        paint::fill_round(
+            ctx.scene,
+            ctx.transform,
+            view.rect,
+            radius,
+            ctx.theme.accent_primary,
+        );
+        if self.is_hover(view.rect) {
             // A soft white veil is the hover state on a filled accent surface.
-            paint::fill_round(scene, t, rect, radius, Color::from_rgba8(255, 255, 255, 26));
+            paint::fill_round(
+                ctx.scene,
+                ctx.transform,
+                view.rect,
+                radius,
+                Color::from_rgba8(255, 255, 255, 26),
+            );
         }
         let ink = Color::from_rgb8(250, 250, 252);
-        let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
-        let glyph = if with_plus { 16.0 + 9.0 } else { 0.0 };
+        let (lw, _) = ctx
+            .text
+            .measure_weighted(view.label, 14.0, None, TextWeight::Semibold);
+        let glyph = if view.with_plus { 16.0 + 9.0 } else { 0.0 };
         let group_w = glyph + f64::from(lw);
-        let gx = rect.x0 + (rect.width() - group_w) / 2.0;
-        let cy = f64::midpoint(rect.y0, rect.y1);
-        if with_plus {
+        let gx = view.rect.x0 + (view.rect.width() - group_w) / 2.0;
+        let cy = f64::midpoint(view.rect.y0, view.rect.y1);
+        if view.with_plus {
             paint::plus(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 Rect::new(gx, cy - 8.0, gx + 16.0, cy + 8.0),
                 ink,
                 2.0,
             );
         }
-        tr.draw_text_weighted(
-            scene,
-            label,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
+            view.label,
             14.0,
             ink,
-            t * Affine::translate((gx + glyph, cy - 9.0)),
+            ctx.transform * Affine::translate((gx + glyph, cy - 9.0)),
             None,
             TextWeight::Semibold,
         );
-        self.push_hit(rect, action);
+        self.push_hit(view.rect, view.action);
     }
 
     /// Draw a shared toggle face and retain the app-specific action routing.
@@ -6216,91 +6218,65 @@ impl BooksApp {
 
     /// A compact shared numeric control. Lays out right-to-left from `right_x`;
     /// returns the left edge it consumed so every font row stays aligned.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    fn size_stepper(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _c: &ui::tokens::colors::Colors,
-        right_x: f64,
-        cy: f64,
-        value: f64,
-        field: &NumberField,
-    ) -> f64 {
+    fn size_stepper(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &SizeStepperView<'_>) -> f64 {
         let btn = 28.0;
         let vslot_w = 52.0;
-        let by = cy - btn / 2.0;
+        let by = view.center_y - btn / 2.0;
         let width = btn * 2.0 + vslot_w + 8.0;
-        let minus_x = right_x - width;
+        let minus_x = view.right_x - width;
         self.number_controls.draw(
-            field,
-            value,
-            Rect::new(minus_x, by, right_x, by + btn),
+            view.field,
+            view.value,
+            Rect::new(minus_x, by, view.right_x, by + btn),
             &mut InputPaintCtx {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
+                scene: ctx.scene,
+                transform: ctx.transform,
+                text: ctx.text,
+                theme: ctx.theme,
             },
         );
         minus_x
     }
 
     /// A text pill (used for segmented controls + tags). Returns its width.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "t/x/y/h/w/c are the standard transform/geometry/colours names shared by \
-                  every draw helper in this chrome section"
-    )]
-    fn pill(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
-        h: f64,
-        label: &str,
-        size: f32,
-        active: bool,
-        action: Option<Action>,
-    ) -> f64 {
-        let (tw, _) = tr.measure_weighted(label, size, None, TextWeight::Medium);
+    fn pill(&mut self, ctx: &mut EbookPaintCtx<'_>, view: PillView<'_>) -> f64 {
+        let (tw, _) =
+            ctx.text
+                .measure_weighted(view.label, view.text_size, None, TextWeight::Medium);
         let pad = 12.0;
         let w = f64::from(tw) + pad * 2.0;
-        let rect = Rect::new(x, y, x + w, y + h);
-        let hover = action.is_some() && self.is_hover(rect);
-        let c = &theme.tokens.colors;
-        let bg = if active {
-            theme.accent_primary
+        let rect = Rect::new(
+            view.origin.x,
+            view.origin.y,
+            view.origin.x + w,
+            view.origin.y + view.height,
+        );
+        let hover = view.action.is_some() && self.is_hover(rect);
+        let c = &ctx.theme.tokens.colors;
+        let bg = if view.active {
+            ctx.theme.accent_primary
         } else if hover {
-            theme.bg_hover
+            ctx.theme.bg_hover
         } else {
             c.surfaces.overlay
         };
-        paint::fill_round(scene, t, rect, h / 2.0, bg);
-        let text_col = if active {
+        paint::fill_round(ctx.scene, ctx.transform, rect, view.height / 2.0, bg);
+        let text_col = if view.active {
             Color::from_rgb8(248, 248, 252)
         } else {
             c.text_primary
         };
-        let ty = y + (h - f64::from(size)) / 2.0;
-        tr.draw_text_weighted(
-            scene,
-            label,
-            size,
+        let ty = view.origin.y + (view.height - f64::from(view.text_size)) / 2.0;
+        ctx.text.draw_text_weighted(
+            ctx.scene,
+            view.label,
+            view.text_size,
             text_col,
-            t * Affine::translate((x + pad, ty)),
+            ctx.transform * Affine::translate((view.origin.x + pad, ty)),
             None,
             TextWeight::Medium,
         );
-        if let Some(a) = action {
+        if let Some(a) = view.action {
             self.push_hit(rect, a);
         }
         w
@@ -6465,14 +6441,18 @@ impl BooksApp {
         let open_w = f64::from(olw) + 25.0 + 32.0;
         let open_x = r.x1 - if compact { 16.0 } else { 22.0 } - open_w;
         self.accent_button(
-            scene,
-            t,
-            tr,
-            theme,
-            Rect::new(open_x, btn_cy, open_x + open_w, btn_cy + 34.0),
-            open_label,
-            true,
-            Action::OpenViaPortal,
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            AccentButtonView {
+                rect: Rect::new(open_x, btn_cy, open_x + open_w, btn_cy + 34.0),
+                label: open_label,
+                with_plus: true,
+                action: Action::OpenViaPortal,
+            },
         );
         open_x
     }
@@ -6738,14 +6718,18 @@ impl BooksApp {
         let cta_h = 44.0;
         let cta_y = cy + 62.0;
         self.accent_button(
-            scene,
-            t,
-            tr,
-            theme,
-            Rect::new(cx - cta_w / 2.0, cta_y, cx + cta_w / 2.0, cta_y + cta_h),
-            cta_label,
-            true,
-            Action::OpenViaPortal,
+            &mut EbookPaintCtx {
+                scene: &mut *scene,
+                transform: t,
+                text: &mut *tr,
+                theme,
+            },
+            AccentButtonView {
+                rect: Rect::new(cx - cta_w / 2.0, cta_y, cx + cta_w / 2.0, cta_y + cta_h),
+                label: cta_label,
+                with_plus: true,
+                action: Action::OpenViaPortal,
+            },
         );
 
         // A quiet pointer to where watched folders are managed (secondary, never
@@ -7425,6 +7409,29 @@ struct SchemeRowView<'a> {
 struct SchemeEditorView<'a> {
     content: Rect,
     scheme: &'a ColorScheme,
+}
+
+struct AccentButtonView<'a> {
+    rect: Rect,
+    label: &'a str,
+    with_plus: bool,
+    action: Action,
+}
+
+struct SizeStepperView<'a> {
+    right_x: f64,
+    center_y: f64,
+    value: f64,
+    field: &'a NumberField,
+}
+
+struct PillView<'a> {
+    origin: Point,
+    height: f64,
+    label: &'a str,
+    text_size: f32,
+    active: bool,
+    action: Option<Action>,
 }
 
 impl BooksApp {
@@ -10125,14 +10132,13 @@ impl BooksApp {
         y += 84.0 + 16.0;
         let bw = 150.0;
         self.accent_button(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            Rect::new(view.x, y, view.x + bw, y + 40.0),
-            "Open a book…",
-            true,
-            Action::OpenViaPortal,
+            ctx,
+            AccentButtonView {
+                rect: Rect::new(view.x, y, view.x + bw, y + 40.0),
+                label: "Open a book…",
+                with_plus: true,
+                action: Action::OpenViaPortal,
+            },
         );
         y + 40.0
     }
@@ -10484,15 +10490,13 @@ impl BooksApp {
         }
         let size_right = del_col - 12.0;
         let left = self.size_stepper(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            c,
-            size_right,
-            cy,
-            f64::from(f.size_mult),
-            &NumberField::FontMult(f.id.clone()),
+            ctx,
+            &SizeStepperView {
+                right_x: size_right,
+                center_y: cy,
+                value: f64::from(f.size_mult),
+                field: &NumberField::FontMult(f.id.clone()),
+            },
         );
         // Enable/disable toggle (= whether it appears in quick settings).
         let tog_w = 40.0;
@@ -10904,17 +10908,15 @@ impl BooksApp {
             ) + 24.0;
             rx -= ew;
             self.pill(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                rx,
-                cy - 13.0,
-                26.0,
-                "Edit",
-                12.0,
-                false,
-                Some(Action::EditScheme(s.id.clone())),
+                ctx,
+                PillView {
+                    origin: Point::new(rx, cy - 13.0),
+                    height: 26.0,
+                    label: "Edit",
+                    text_size: 12.0,
+                    active: false,
+                    action: Some(Action::EditScheme(s.id.clone())),
+                },
             );
             rx -= 8.0;
         }
@@ -10925,17 +10927,15 @@ impl BooksApp {
         ) + 24.0;
         rx -= dw;
         self.pill(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            rx,
-            cy - 13.0,
-            26.0,
-            "Duplicate",
-            12.0,
-            false,
-            Some(Action::DuplicateScheme(s.id.clone())),
+            ctx,
+            PillView {
+                origin: Point::new(rx, cy - 13.0),
+                height: 26.0,
+                label: "Duplicate",
+                text_size: 12.0,
+                active: false,
+                action: Some(Action::DuplicateScheme(s.id.clone())),
+            },
         );
         rx
     }
