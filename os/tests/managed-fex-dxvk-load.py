@@ -8,6 +8,8 @@ Provide a dedicated writable, empty /run/qos mount. Prefixes remain there as
 capsule/prefix-win32 and capsule/prefix-win64 for inspection. A timed-out prefix
 stays at capsule/prefix until the enclosing disposable container is torn down.
 Passing proves native DLL loading and export lookup, not GPU rendering.
+All three cases are required: PE32 in Win32, PE64 in Win64, then PE32 in
+that same Win64 prefix. WoW64 must load the x32 payload from syswow64.
 """
 
 import argparse
@@ -46,14 +48,17 @@ def native_load_logged(lines, module_path):
     return False
 
 
-def assess(output, bits, prefix, dxvk):
+def assess(output, bits, prefix, dxvk, prefix_bits=None):
+    prefix_bits = bits if prefix_bits is None else prefix_bits
+    if (prefix_bits, bits) not in ((32, 32), (64, 64), (64, 32)):
+        raise ValueError("unsupported prefix/PE architecture pair")
     lines = [line.strip() for line in output.splitlines()]
     results = []
     for dll, export in EXPORTS.items():
         module_prefix = f"QOS_DXVK_MODULE_{bits} {dll} "
         module_paths = [line[len(module_prefix):] for line in lines if line.startswith(module_prefix)]
         module_path = module_paths[0] if len(module_paths) == 1 else ""
-        directories = "system32" if bits == 64 else "system32|syswow64"
+        directories = "syswow64" if prefix_bits == 64 and bits == 32 else "system32"
         match = re.fullmatch(r"c:\\windows\\(" + directories + r")\\" + re.escape(dll),
                              module_path, flags=re.IGNORECASE)
         native = bool(match) and native_load_logged(lines, module_path)
@@ -92,6 +97,62 @@ def create_prefix(prefix, fixture):
     shutil.copyfile(fixture, prefix / "drive_c/qos-dxvk-load.exe")
 
 
+def run_cases(helper, fixtures, dxvk, output_dir, prefix):
+    """Keep one prefix and HOME per Wine mode, including both Win64 cases."""
+    results = []
+    for prefix_bits, pe_widths in ((32, (32,)), (64, (64, 32))):
+        create_prefix(prefix, fixtures[prefix_bits])
+        group_results = []
+        timed_out = False
+        with tempfile.TemporaryDirectory(prefix=f"qos-dxvk-load-{prefix_bits}-") as temporary:
+            home = Path(temporary)
+            environment = os.environ | {
+                "HOME": str(home), "XDG_RUNTIME_DIR": str(home),
+                "WINEPREFIX": str(prefix), "WINEARCH": f"win{prefix_bits}",
+                "WINEDEBUG": "+loaddll",
+            }
+            environment.pop("WINEDLLOVERRIDES", None)
+            for bits in pe_widths:
+                # Only the test executable changes. The managed helper owns all
+                # prefix initialization, DLL provisioning and native overrides.
+                shutil.copyfile(fixtures[bits], prefix / "drive_c/qos-dxvk-load.exe")
+                case = f"wine{prefix_bits}-pe{bits}"
+                try:
+                    process = subprocess.run(
+                        [str(helper), f"wine{prefix_bits}", r"C:\qos-dxvk-load.exe"],
+                        env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, timeout=240, text=True, errors="replace")
+                    output, code = process.stdout, process.returncode
+                except subprocess.TimeoutExpired as error:
+                    output = error.stdout or b""
+                    if isinstance(output, bytes):
+                        output = output.decode(errors="replace")
+                    code, timed_out = None, True
+                (output_dir / f"{case}-load.log").write_text(output)
+                passed, dlls = assess(output, bits, prefix, dxvk, prefix_bits)
+                group_results.append({
+                    "case": case, "mode": f"wine{prefix_bits}",
+                    "prefix_architecture": f"win{prefix_bits}", "pe_bits": bits,
+                    "fixture_sha256": digest(fixtures[bits]),
+                    "exit_code": code, "timed_out": timed_out, "dlls": dlls,
+                    "passed": code == 0 and not timed_out and passed})
+                if timed_out:
+                    break  # The disposable container owns orphan cleanup.
+            retained = prefix if timed_out else prefix.with_name(f"prefix-win{prefix_bits}")
+            if not timed_out:
+                if retained.exists() or retained.is_symlink():
+                    raise ValueError(f"refusing to replace existing retained prefix: {retained}")
+                prefix.rename(retained)
+            for result in group_results:
+                result["retained_prefix"] = str(retained)
+                results.append(result)
+                print(json.dumps(result), flush=True)
+        if timed_out:
+            break
+    (output_dir / "result.json").write_text(json.dumps(results, indent=2) + "\n")
+    return 0 if len(results) == 3 and all(item["passed"] for item in results) else 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--helper", required=True, type=Path)
@@ -109,44 +170,7 @@ def main():
         prefix = prepare_capsule_root(Path("/run/qos"))
     except (ValueError, OSError) as error:
         parser.error(str(error))
-    results = []
-    for bits in (32, 64):
-        create_prefix(prefix, fixtures[bits])
-        with tempfile.TemporaryDirectory(prefix=f"qos-dxvk-load-{bits}-") as temporary:
-            home = Path(temporary)
-            environment = os.environ | {
-                "HOME": str(home), "XDG_RUNTIME_DIR": str(home),
-                "WINEPREFIX": str(prefix), "WINEARCH": f"win{bits}",
-                "WINEDEBUG": "+loaddll",
-            }
-            environment.pop("WINEDLLOVERRIDES", None)
-            try:
-                process = subprocess.run(
-                    [str(helper), f"wine{bits}", r"C:\qos-dxvk-load.exe"],
-                    env=environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, timeout=240, text=True, errors="replace")
-                output, code, timed_out = process.stdout, process.returncode, False
-            except subprocess.TimeoutExpired as error:
-                output = error.stdout or b""
-                if isinstance(output, bytes):
-                    output = output.decode(errors="replace")
-                code, timed_out = None, True
-            (args.output_dir / f"wine{bits}-load.log").write_text(output)
-            passed, dlls = assess(output, bits, prefix, args.dxvk)
-            result = {"bits": bits, "fixture_sha256": digest(fixtures[bits]),
-                      "exit_code": code, "timed_out": timed_out, "dlls": dlls,
-                      "retained_prefix": str(prefix if timed_out else prefix.with_name(f"prefix-win{bits}")),
-                      "passed": code == 0 and not timed_out and passed}
-            results.append(result)
-            print(json.dumps(result), flush=True)
-            if timed_out:
-                break  # The enclosing disposable container owns orphan cleanup.
-        retained = prefix.with_name(f"prefix-win{bits}")
-        if retained.exists() or retained.is_symlink():
-            raise ValueError(f"refusing to replace existing retained prefix: {retained}")
-        prefix.rename(retained)
-    (args.output_dir / "result.json").write_text(json.dumps(results, indent=2) + "\n")
-    return 0 if len(results) == 2 and all(item["passed"] for item in results) else 1
+    return run_cases(helper, fixtures, args.dxvk, args.output_dir, prefix)
 
 
 if __name__ == "__main__":
