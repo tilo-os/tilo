@@ -69,7 +69,12 @@ For each target, pass its full immutable `WINE_BUILDROOT_REF`, `WINE_TARGET`,
 and a `wine-source` named context to `os/Containerfile.wine-rpms`. The only
 build RUN has network disabled. The consumer compares the installed package
 and compiler inventory with the frozen buildroot contract, checks the source
-again, then invokes normal `rpmbuild --rebuild --without new_wow64`.
+again, then invokes normal `rpmbuild -ba --without new_wow64` on the unchanged
+extracted spec. Its existing `Release: 3%{?dist}` receives the pinned
+`dist=.fc44.qos_traditional1` macro, yielding `3.fc44.qos_traditional1` for
+every subpackage and its exact-version internal dependencies. The source
+timestamp comes from the same pin. A matching rebuilt source RPM accompanies
+the binaries; the original Fedora-signed source remains separate provenance.
 Dependency checking, staging patches, scriptlets, documentation, licenses and
 debug artifacts remain enabled. `BUILD_JOBS` limits concurrency only.
 
@@ -80,13 +85,11 @@ links; new-WoW64 paths fail validation. The actual loader bytes must also have
 the correct ELF class/machine. These checks do not prove full runtime
 dependency closure, successful execution or scriptlet success.
 
-Both outputs retain upstream NEVRAs. Never mix them with stock same-NEVRA Wine
-RPMs, silently choose duplicate noarch packages, or use metadata alone to
-select a provider. A later reviewed merge must compare shared RPM payloads,
-build one explicitly pinned repository, and resolve the complete guest
-transaction against that provider. No signature bypass is authorized for
-unrelated Fedora runtime packages. Publication/signing policy is still needed
-for these locally rebuilt RPMs.
+The qOS release suffix distinguishes both outputs from Fedora's new-mode
+NEVRAs. The complete guest transaction must still select this pinned provider
+explicitly, including all matching exact-version dependencies. Publication
+and signing policy is still needed for these locally rebuilt RPMs; no signature
+bypass is authorized for unrelated Fedora runtime packages.
 
 ## Required acceptance before integration
 
