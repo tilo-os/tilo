@@ -68,11 +68,30 @@ impl WineMode {
     }
 }
 
-/// Closing this descriptor releases the shared inode lock. Do not discard the
-/// lease immediately after preparation: it prevents upgrades during execution.
+/// This lease owns the shared inode lock, independently of transient references
+/// to its open-file description. It prevents upgrades during execution.
 #[derive(Debug)]
 pub(crate) struct PrefixLease {
-    _directory: File,
+    directory: File,
+}
+
+impl Drop for PrefixLease {
+    fn drop(&mut self) {
+        // Explicitly release our own open-file-description lock. A duplicated
+        // or briefly inherited descriptor must not prolong the supervisor's
+        // lease. Other launches hold independently opened descriptions.
+        loop {
+            // SAFETY: our retained directory descriptor remains live.
+            if unsafe { libc::flock(self.directory.as_raw_fd(), libc::LOCK_UN) } == 0 {
+                return;
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                eprintln!("Could not release Wine prefix lease: {error}");
+                return;
+            }
+        }
+    }
 }
 
 /// `initialize` must run the matching immutable Wineboot executable and wait
@@ -114,41 +133,44 @@ fn prepare_at(
     build_metadata: &Path,
     initialize: impl FnOnce(PrefixAction) -> io::Result<()>,
 ) -> io::Result<PrefixLease> {
-    let prefix = open_directory(prefix_path)?;
-    lock(&prefix, libc::LOCK_SH | libc::LOCK_NB)?;
+    let lease = PrefixLease {
+        directory: open_directory(prefix_path)?,
+    };
+    let prefix = &lease.directory;
+    lock(prefix, libc::LOCK_SH | libc::LOCK_NB)?;
     let mut payload = Payload::load(mode, payload_path, build_metadata)?;
-    if !payload.ready(&prefix, mode)? {
+    if !payload.ready(prefix, mode)? {
         // Do not upgrade while another managed launch is reading/running from
         // this prefix. Never wait for arbitrary application lifetimes here.
-        lock(&prefix, libc::LOCK_UN)?;
-        lock(&prefix, libc::LOCK_EX | libc::LOCK_NB)?;
+        lock(prefix, libc::LOCK_UN)?;
+        lock(prefix, libc::LOCK_EX | libc::LOCK_NB)?;
         // Another preparer could have finished between our two acquisitions.
-        if !payload.ready(&prefix, mode)? {
-            payload.remove_linked_destinations(&prefix)?;
-            let action = if registry_ready(&prefix, mode)? {
+        if !payload.ready(prefix, mode)? {
+            payload.remove_linked_destinations(prefix)?;
+            let action = if registry_ready(prefix, mode)? {
                 PrefixAction::Update
             } else {
                 PrefixAction::Initialize
             };
             initialize(action)?;
-            if !registry_ready(&prefix, mode)? {
+            if !registry_ready(prefix, mode)? {
                 return Err(invalid(
                     "Wine initialization did not create the expected registry",
                 ));
             }
-            payload.install(&prefix)?;
-            if !payload.ready(&prefix, mode)? {
+            payload.install(prefix)?;
+            if !payload.ready(prefix, mode)? {
                 return Err(invalid("DXVK prefix changed during provisioning"));
             }
         }
         // flock conversion is not promised to be atomic. Revalidate after
         // acquiring the shared lock before allowing application execution.
-        lock(&prefix, libc::LOCK_SH | libc::LOCK_NB)?;
-        if !payload.ready(&prefix, mode)? {
+        lock(prefix, libc::LOCK_SH | libc::LOCK_NB)?;
+        if !payload.ready(prefix, mode)? {
             return Err(invalid("DXVK prefix changed before launch"));
         }
     }
-    Ok(PrefixLease { _directory: prefix })
+    Ok(lease)
 }
 
 struct Dll {
@@ -588,6 +610,31 @@ mod tests {
             assert!(validate_prefix(value).is_err());
         }
         assert_eq!(NATIVE_OVERRIDES, "d3d8,d3d9,d3d10core,d3d11,dxgi=n");
+    }
+
+    #[test]
+    fn lease_drop_unlocks_even_while_its_open_file_description_is_duplicated() {
+        let fixture = Fixture::new();
+        let lease = fixture
+            .prepare(WineMode::Win32, || {
+                fixture.initialize(WineMode::Win32);
+                Ok(())
+            })
+            .unwrap();
+        let duplicate = lease.directory.try_clone().unwrap();
+        let contender = open_directory(&fixture.prefix).unwrap();
+        assert_eq!(
+            lock(&contender, libc::LOCK_EX | libc::LOCK_NB)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(lease);
+        lock(&contender, libc::LOCK_EX | libc::LOCK_NB).unwrap();
+        assert!(
+            duplicate.metadata().unwrap().is_dir(),
+            "duplicate remains open after explicit lease release"
+        );
     }
 
     #[test]
