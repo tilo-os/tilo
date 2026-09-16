@@ -231,6 +231,7 @@ mod device_fabric_ui_tests {
         let remote = DeviceId::new("certified-laptop").unwrap();
         (
             DeviceFabricView {
+                bluetooth_authorizations: Vec::new(),
                 devices: vec![FabricDeviceView {
                     id: remote.clone(),
                     label: "Travel laptop".into(),
@@ -303,6 +304,35 @@ mod device_fabric_ui_tests {
         assert!(actions.contains(&DeviceFabricUiAction::GrantControl {
             controller: DeviceId::new("certified-laptop").unwrap(),
         }));
+    }
+
+    #[test]
+    fn device_pane_requires_a_local_click_for_new_bluetooth_pairing() {
+        let (mut view, _) = fixture();
+        view.bluetooth_authorizations = vec![BluetoothHandoffAuthorizationView {
+            request_id: [9; 16],
+            accessory_name: "Headphones".into(),
+            source_label: "Laptop".into(),
+        }];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        assert!(actions.borrow().is_empty());
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(0).center());
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                    request_id: [9; 16],
+                    approved: true,
+                })
+        );
     }
 
     #[test]
@@ -657,8 +687,16 @@ pub struct FabricTransferView {
     pub status: FabricTransferStatus,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BluetoothHandoffAuthorizationView {
+    pub request_id: [u8; 16],
+    pub accessory_name: String,
+    pub source_label: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeviceFabricView {
+    pub bluetooth_authorizations: Vec<BluetoothHandoffAuthorizationView>,
     pub devices: Vec<FabricDeviceView>,
     pub local_media: Vec<FabricMediaView>,
     pub local_outputs: Vec<LocalMediaOutputView>,
@@ -680,6 +718,10 @@ pub enum DeviceFabricUiAction {
         name: String,
         target: crate::shell::personal_continuity::DeviceId,
     },
+    AuthorizeBluetoothHandoff {
+        request_id: [u8; 16],
+        approved: bool,
+    },
     Place {
         device: crate::shell::personal_continuity::DeviceId,
         edge: crate::shell::device_fabric::DisplayEdge,
@@ -697,16 +739,23 @@ pub type DeviceFabricBridge =
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum DeviceFabricPaneRow {
+    BluetoothAuthorization(BluetoothHandoffAuthorizationView),
     Media(FabricMediaView),
     LocalOutput(LocalMediaOutputView),
     Device(FabricDeviceView),
 }
 
 fn device_fabric_pane_rows(view: &DeviceFabricView) -> Vec<DeviceFabricPaneRow> {
-    view.local_media
+    view.bluetooth_authorizations
         .iter()
         .cloned()
-        .map(DeviceFabricPaneRow::Media)
+        .map(DeviceFabricPaneRow::BluetoothAuthorization)
+        .chain(
+            view.local_media
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::Media),
+        )
         .chain(
             view.local_outputs
                 .iter()
@@ -10539,6 +10588,16 @@ impl ShellOverlayHost {
             return;
         }
         let action = match item {
+            DeviceFabricPaneRow::BluetoothAuthorization(authorization) => Some((
+                DeviceFabricUiAction::AuthorizeBluetoothHandoff {
+                    request_id: authorization.request_id,
+                    approved: true,
+                },
+                format!(
+                    "Approved pairing {} for this handoff",
+                    authorization.accessory_name
+                ),
+            )),
             DeviceFabricPaneRow::Media(media) => {
                 self.qs_selected_media = Some(media.session_id);
                 if let Some(chrome) = self.chrome.as_ref() {
@@ -13158,6 +13217,16 @@ impl Widget for ShellOverlayHost {
                                 .enumerate()
                                 .map(|(index, item)| {
                                     let (name, description, children) = match item {
+                                        DeviceFabricPaneRow::BluetoothAuthorization(
+                                            authorization,
+                                        ) => (
+                                            format!("Pair {}", authorization.accessory_name),
+                                            format!(
+                                                "Approve one handoff requested by {}",
+                                                authorization.source_label
+                                            ),
+                                            Vec::new(),
+                                        ),
                                         DeviceFabricPaneRow::Media(media) => (
                                             media.title,
                                             if media.playing {
@@ -17752,6 +17821,16 @@ impl ShellOverlayHost {
         {
             let row = self.qs_device_row_rect(index);
             let (title, detail, icon, selected_row, enabled) = match item {
+                DeviceFabricPaneRow::BluetoothAuthorization(authorization) => (
+                    format!("Pair {}", authorization.accessory_name),
+                    format!(
+                        "{} requested this handoff · select to approve once",
+                        authorization.source_label
+                    ),
+                    ui::icons::Icon::Bluetooth,
+                    false,
+                    true,
+                ),
                 DeviceFabricPaneRow::Media(media) => (
                     media.title.clone(),
                     if media.playing {
