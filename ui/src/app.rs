@@ -2724,10 +2724,7 @@ impl App {
                 // A bound control never manufactures confirmation. Hand the
                 // exact address to the standard palette flow, which owns the
                 // explicit confirm/phrase UI and only then enters the door.
-                self.open_action_palette();
-                if let Some(palette) = self.action_palette.as_mut() {
-                    palette.activate_address(&intent.address.resource, &intent.address.action);
-                }
+                let _ = self.open_action_palette_at(&intent.address);
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
@@ -4860,10 +4857,7 @@ impl App {
                     .map(|spec| spec.contract.confirmation.clone())
                     .unwrap_or_default();
                 if !matches!(confirmation, qos_actions::ConfirmationPolicy::None) {
-                    self.open_action_palette();
-                    if let Some(palette) = self.action_palette.as_mut() {
-                        palette.activate_address(&address.resource, &address.action);
-                    }
+                    let _ = self.open_action_palette_at(&address);
                     return None;
                 }
                 let actor = crate::collaboration::local_user_id().0;
