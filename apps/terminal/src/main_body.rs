@@ -662,9 +662,9 @@ pub struct TerminalWidget {
     /// standalone terminal can idle (`ControlFlow::Wait`) instead of polling at
     /// ~60 Hz. The binary arms it via `App::run_with_setup` (see
     /// [`waker_handle`](Self::waker_handle)); it stays `None` when the terminal
-    /// is embedded in a host that pumps it, or before the loop starts, in which
-    /// case [`needs_animation_frame`](Widget::needs_animation_frame) keeps
-    /// requesting frames.
+    /// is embedded in a host that pumps it. Embedded hosts call `sync`/`update`
+    /// independently of painting, so they can remain visually idle until the
+    /// channel actually contains output.
     waker: Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
     /// Coalesces reader wakes: set when a wake is in flight, cleared when the
     /// App delivers the resulting `External` event (`on_external_event`), so a
@@ -2036,8 +2036,8 @@ impl Widget for TerminalWidget {
         // The plain `ui::App` event loop only ever calls `sync` (never
         // `update`), so if the pty were only pumped from `update` the live
         // terminal would never advance. Pumping from `sync` — combined with
-        // `needs_animation_frame` keeping the loop ticking — is what makes a
-        // standalone or embedded terminal actually show output.
+        // the standalone waker (or an embedding host's app pump) driving the
+        // loop — is what makes a terminal actually show output.
         self.pump(state, root);
 
         let current_heads = state.get_heads();
@@ -2084,21 +2084,17 @@ impl Widget for TerminalWidget {
         self.pump(state, root)
     }
 
-    /// Whether the App should keep ticking at ~60 Hz. Once the PTY reader can
-    /// wake the loop (a standalone terminal that armed its `waker` via
-    /// `App::run_with_setup`), we idle instead: the reader sends a
-    /// `UserEvent::External` on new output, which drives a re-sync + redraw, so
-    /// there is no reason to poll while nothing is happening. Until the waker is
-    /// armed — embedded in a host that pumps us, or during startup before the
-    /// loop runs — we keep requesting frames so output still surfaces.
+    /// Whether queued output needs another visual frame. A standalone terminal
+    /// is woken by its event-loop proxy; an embedded terminal is pumped by its
+    /// host independently of painting. Treating an absent standalone proxy as
+    /// animation demand made every idle embedded terminal repaint the complete
+    /// desktop continuously.
     fn needs_animation_frame(&self) -> bool {
         // A bounded pump deliberately leaves excess output queued. Keep frames
         // flowing until it is drained even when the reader's coalesced wake is
         // already in flight; otherwise a saturated producer could strand the
         // final queue behind `ControlFlow::Wait`.
-        self.deferred_output.is_some()
-            || !self.output_rx.is_empty()
-            || self.waker.lock().map_or(true, |g| g.is_none())
+        self.deferred_output.is_some() || !self.output_rx.is_empty()
     }
 
     /// The event-loop wake we requested has been delivered. Clear the coalescing
