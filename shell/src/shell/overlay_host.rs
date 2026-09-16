@@ -206,6 +206,7 @@ mod device_fabric_ui_tests {
         let chrome = ChromeState::new(tree);
         let mut host =
             ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(bridge_view.clone())
@@ -246,6 +247,7 @@ mod device_fabric_ui_tests {
         let recorded = Rc::clone(&actions);
         let host_view = view.clone();
         let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         host.set_device_fabric_bridge(Rc::new(move |action| {
             recorded.borrow_mut().push(action);
             Ok(host_view.clone())
@@ -257,6 +259,44 @@ mod device_fabric_ui_tests {
                 .iter()
                 .any(|action| matches!(action, DeviceFabricUiAction::HandoffMedia { .. }))
         );
+    }
+
+    #[test]
+    fn every_enrolled_device_remains_reachable_beyond_the_compact_first_page() {
+        let (mut view, _) = fixture();
+        view.devices = (0..12)
+            .map(|index| FabricDeviceView {
+                id: DeviceId::new(format!("device-{index}")).unwrap(),
+                label: format!("Device {index}"),
+                kind: DeviceKind::Laptop,
+                is_local: false,
+                online: true,
+                audio_output: true,
+                video_output: true,
+                display: true,
+                controls_local: false,
+                local_can_control: false,
+            })
+            .collect();
+        assert_eq!(
+            device_fabric_pane_rows(&view).len(),
+            view.local_media.len() + view.local_outputs.len() + view.devices.len(),
+            "the pane model must not truncate media, outputs, or devices"
+        );
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        host.apply_quick_settings_root_action(RootAction::OpenDevices, &chrome);
+        assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::End)));
+        assert!(
+            host.qs_device_fabric_start > 0,
+            "End must reveal destinations below the first page"
+        );
+        assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::Home)));
+        assert_eq!(host.qs_device_fabric_start, 0);
     }
 }
 
@@ -485,20 +525,17 @@ enum DeviceFabricPaneRow {
 fn device_fabric_pane_rows(view: &DeviceFabricView) -> Vec<DeviceFabricPaneRow> {
     view.local_media
         .iter()
-        .take(2)
         .cloned()
         .map(DeviceFabricPaneRow::Media)
         .chain(
             view.local_outputs
                 .iter()
-                .take(2)
                 .cloned()
                 .map(DeviceFabricPaneRow::LocalOutput),
         )
         .chain(
             view.devices
                 .iter()
-                .take(3)
                 .cloned()
                 .map(DeviceFabricPaneRow::Device),
         )
@@ -1079,6 +1116,10 @@ pub struct ShellOverlayHost {
     /// them.
     qs_clipboard_history_start: usize,
     qs_clipboard_wheel_remainder: f64,
+    /// Offset into the complete media/output/device list. Unlike the initial
+    /// compact implementation, no enrolled device disappears after row seven.
+    qs_device_fabric_start: usize,
+    qs_device_fabric_wheel_remainder: f64,
     /// The local session selected as the source for a certified-device route.
     /// This is private view state, never convergent fabric state.
     qs_selected_media: Option<String>,
@@ -2082,6 +2123,8 @@ impl ShellOverlayHost {
             qs_notification_wheel_remainder: 0.0,
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
+            qs_device_fabric_start: 0,
+            qs_device_fabric_wheel_remainder: 0.0,
             qs_selected_media: None,
             power_menu: PowerMenu::default(),
             session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
@@ -7038,6 +7081,108 @@ impl ShellOverlayHost {
         true
     }
 
+    fn qs_device_fabric_visible_rows(&self) -> usize {
+        f64_floor_to_usize_saturating((self.quick_settings_rect().height() - 78.0) / 58.0)
+            .clamp(1, 7)
+    }
+
+    fn clamp_qs_device_fabric_start(&mut self, row_count: usize) -> bool {
+        let max_start = row_count.saturating_sub(self.qs_device_fabric_visible_rows());
+        let next = self.qs_device_fabric_start.min(max_start);
+        let changed = next != self.qs_device_fabric_start;
+        self.qs_device_fabric_start = next;
+        changed
+    }
+
+    fn scroll_qs_device_fabric(&mut self, movement: isize) -> bool {
+        let row_count = self
+            .device_fabric_call(DeviceFabricUiAction::Snapshot)
+            .map_or(0, |view| device_fabric_pane_rows(&view).len());
+        let max_start = row_count.saturating_sub(self.qs_device_fabric_visible_rows());
+        let current = self.qs_device_fabric_start.min(max_start);
+        let next = if movement.is_negative() {
+            current.saturating_sub(movement.unsigned_abs())
+        } else {
+            current.saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
+        }
+        .min(max_start);
+        if next == self.qs_device_fabric_start {
+            return false;
+        }
+        self.qs_device_fabric_start = next;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        true
+    }
+
+    fn handle_qs_device_fabric_wheel(
+        &mut self,
+        delta: MouseScrollDelta,
+        scale_factor: f64,
+    ) -> bool {
+        let devices_open = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Devices
+                )
+        });
+        if !devices_open
+            || !self
+                .last_cursor
+                .is_some_and(|point| self.quick_settings_rect().contains(point))
+        {
+            return false;
+        }
+        let rows = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
+            MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
+        };
+        if rows.abs() <= f64::EPSILON {
+            return true;
+        }
+        self.qs_device_fabric_wheel_remainder += rows;
+        let whole = self.qs_device_fabric_wheel_remainder.trunc();
+        if whole.abs() >= 1.0 {
+            self.qs_device_fabric_wheel_remainder -= whole;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a wheel delta is bounded by input hardware; this only converts complete row movement"
+            )]
+            let movement = whole as isize;
+            let _ = self.scroll_qs_device_fabric(movement);
+        }
+        true
+    }
+
+    fn handle_qs_device_fabric_keyboard(&mut self, logical_key: &Key) -> bool {
+        let page = isize::try_from(self.qs_device_fabric_visible_rows()).unwrap_or(isize::MAX);
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let _ = self.scroll_qs_device_fabric(1);
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let _ = self.scroll_qs_device_fabric(-1);
+            }
+            Key::Named(NamedKey::PageDown) => {
+                let _ = self.scroll_qs_device_fabric(page);
+            }
+            Key::Named(NamedKey::PageUp) => {
+                let _ = self.scroll_qs_device_fabric(page.saturating_neg());
+            }
+            Key::Named(NamedKey::Home) => {
+                let _ = self.scroll_qs_device_fabric(-isize::MAX);
+            }
+            Key::Named(NamedKey::End) => {
+                let _ = self.scroll_qs_device_fabric(isize::MAX);
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// The strip ribbon for the active workspace, anchored to the content
     /// area's right edge. Costs no layout — it sits in
     /// [`STRIP_TRAILING_GUTTER_PX`], which the strips already leave clear.
@@ -9984,8 +10129,11 @@ impl ShellOverlayHost {
         };
         self.normalise_qs_selected_media(&view);
         let rows = device_fabric_pane_rows(&view);
+        let _ = self.clamp_qs_device_fabric_start(rows.len());
         let Some((row_index, item)) = rows
             .iter()
+            .skip(self.qs_device_fabric_start)
+            .take(self.qs_device_fabric_visible_rows())
             .enumerate()
             .find(|(index, _)| self.qs_device_row_rect(*index).contains(point))
             .map(|(index, item)| (index, item.clone()))
@@ -10211,6 +10359,14 @@ impl ShellOverlayHost {
             *handled = consumed;
             return consumed;
         }
+        if matches!(
+            history_level,
+            Some(crate::shell::quick_settings::QsLevel::Devices)
+        ) {
+            let consumed = self.handle_qs_device_fabric_keyboard(logical_key);
+            *handled = consumed;
+            return consumed;
+        }
         let at_root = {
             let state = chrome.borrow();
             state.overlays.quick_settings
@@ -10353,6 +10509,8 @@ impl ShellOverlayHost {
                 st.bump();
                 drop(st);
                 self.qs_selected_media = None;
+                self.qs_device_fabric_start = 0;
+                self.qs_device_fabric_wheel_remainder = 0.0;
             }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
@@ -12080,7 +12238,8 @@ impl Widget for ShellOverlayHost {
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
             && (self.handle_qs_notification_wheel(*delta, scale_factor)
-                || self.handle_qs_clipboard_wheel(*delta, scale_factor))
+                || self.handle_qs_clipboard_wheel(*delta, scale_factor)
+                || self.handle_qs_device_fabric_wheel(*delta, scale_factor))
         {
             *handled = true;
             return;
@@ -12424,7 +12583,7 @@ impl Widget for ShellOverlayHost {
                                 AccessNode::new(Role::Dialog)
                                     .with_name("Devices and media")
                                     .with_description(
-                                        "Local audio outputs and identity-certified qOS devices. Remote handoffs are direct and encrypted when reachable.",
+                                        "Local audio outputs and identity-certified qOS devices. Remote handoffs are direct and encrypted when reachable. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.",
                                     )
                                     .with_state(AccessState::new().modal(true))
                                     .with_children(vec![
@@ -16627,7 +16786,14 @@ impl ShellOverlayHost {
             );
             return;
         }
-        for (index, item) in rows.iter().enumerate() {
+        let _ = self.clamp_qs_device_fabric_start(rows.len());
+        let visible_rows = self.qs_device_fabric_visible_rows();
+        for (index, item) in rows
+            .iter()
+            .skip(self.qs_device_fabric_start)
+            .take(visible_rows)
+            .enumerate()
+        {
             let row = self.qs_device_row_rect(index);
             let (title, detail, icon, selected_row, enabled) = match item {
                 DeviceFabricPaneRow::Media(media) => (
@@ -16787,6 +16953,23 @@ impl ShellOverlayHost {
                 }
                 Button::paint(scene, transform, text_renderer, theme, &control_face);
             }
+        }
+        if rows.len() > visible_rows {
+            let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
+            let position = format!(
+                "Showing {}–{} of {} · scroll for more",
+                self.qs_device_fabric_start.saturating_add(1),
+                self.qs_device_fabric_start.saturating_add(shown),
+                rows.len()
+            );
+            text_renderer.draw_text(
+                scene,
+                &position,
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((panel.x0 + 12.0, panel.y1 - 22.0).into()),
+                Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            );
         }
     }
 
