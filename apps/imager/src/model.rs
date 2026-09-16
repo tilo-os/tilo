@@ -144,14 +144,22 @@ impl Source {
     }
 }
 
-/// A locally-known qOS release the user can pick without browsing for a
-/// file. The `path` is filled in once it is fetched / located on disk.
+fn generic_hardware_profile() -> String {
+    "generic".into()
+}
+
+/// Authenticated release identity includes both CPU architecture and board.
+/// Matching the host CPU alone does not establish device compatibility.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QosRelease {
     pub name: String,
     pub version: String,
     pub size: u64,
     pub channel: String,
+    #[serde(default)]
+    pub architecture: String,
+    #[serde(default = "generic_hardware_profile")]
+    pub hardware_profile: String,
     /// Local path once available; empty means "needs download".
     pub local_path: String,
     /// Immutable release asset URL. Empty only in screenshot/demo fixtures.
@@ -169,13 +177,53 @@ pub struct QosRelease {
 }
 
 impl QosRelease {
+    pub fn display_name(&self) -> String {
+        let name = format!("{} {}", self.name, self.version);
+        if self.hardware_profile == "generic" {
+            name
+        } else {
+            format!("{name} ({} only)", self.hardware_profile)
+        }
+    }
+
+    pub fn target_label(&self) -> String {
+        if self.hardware_profile != "generic" {
+            return format!("{} only", self.hardware_profile);
+        }
+        match self.architecture.as_str() {
+            "aarch64" => "Generic ARM64",
+            "x86_64" => "Generic x86-64",
+            _ => "Generic media",
+        }
+        .into()
+    }
+
+    pub fn selection_id(&self) -> String {
+        format!(
+            "{}:{}:{}:{}",
+            self.version, self.architecture, self.hardware_profile, self.image_sha256
+        )
+    }
+
+    pub fn matches_source(&self, source: &Source) -> bool {
+        source.kind == SourceKind::QosImage
+            && source.name == self.display_name()
+            && (self.image_sha256.is_empty()
+                || source.expected_sha256.as_deref() == Some(self.image_sha256.as_str()))
+    }
+
     pub fn to_source(&self) -> Source {
         Source {
             kind: SourceKind::QosImage,
             path: self.local_path.clone(),
-            name: format!("{} {}", self.name, self.version),
+            name: self.display_name(),
             size: self.size,
-            label: format!("qOS {} ({})", self.version, self.channel),
+            label: format!(
+                "qOS {} ({}) · {}",
+                self.version,
+                self.channel,
+                self.target_label()
+            ),
             installable: true,
             identity: None,
             expected_sha256: (!self.image_sha256.is_empty()).then(|| self.image_sha256.clone()),
@@ -1043,6 +1091,8 @@ pub fn sample_releases() -> Vec<QosRelease> {
             version: "1.0".into(),
             size: 2_415_919_104,
             channel: "stable".into(),
+            architecture: "x86_64".into(),
+            hardware_profile: "generic".into(),
             local_path: "/var/lib/qos/images/qos-1.0-x86_64.iso".into(),
             url: String::new(),
             archive_sha256: String::new(),
@@ -1054,6 +1104,8 @@ pub fn sample_releases() -> Vec<QosRelease> {
             version: "1.1-rc2".into(),
             size: 2_499_805_184,
             channel: "testing".into(),
+            architecture: "x86_64".into(),
+            hardware_profile: "generic".into(),
             local_path: String::new(),
             url: String::new(),
             archive_sha256: String::new(),
