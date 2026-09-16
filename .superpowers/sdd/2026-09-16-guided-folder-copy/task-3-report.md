@@ -129,3 +129,67 @@ still requires validated native volume identity and target path translation.
 Two-way synchronization, installation executors, and native Windows runtime
 evidence remain separate work; this one-time copy does not claim those
 capabilities.
+
+## Review fix round 1
+
+The Task 3 review found that the import action existed only on an unreachable
+Review page when live installation capabilities were unavailable, and that a
+retry kept displaying the preceding attempt's report instead of renewed
+progress.
+
+The setup Experience footer now exposes **Add folders now…** independently of
+the disabled installation choices. The regression renders the initial 640×640
+live-unavailable experience, verifies both install choices remain disabled,
+semantically activates the real retained button, and then finds the source
+picker on `ImportApp`. The deterministic `setup-experience` shot now uses these
+truthful live capability gates.
+
+`OperationRecord::mark_running` now clears attempt-local progress, report,
+failure details and limitations only after approval/state checks succeed. The
+journal remains the retry authority. New progress therefore reports the new
+attempt's counts and current path, while old issues disappear from the active
+card. The application restart test now verifies the reset immediately after an
+explicit retry and still reaches checked completion.
+
+### RED evidence
+
+- `cargo test -p imager initial_unavailable_experience_can_activate_the_real_import_surface --lib`
+  failed with `no addressable widget named "setup.open-imports"`.
+- `cargo test -p imager retry_progress_replaces_the_prior_incomplete_attempt --lib`
+  failed with the stale report count: `left: 1`, `right: 2`.
+
+### GREEN evidence
+
+- `cargo test -p imager initial_unavailable_experience_can_activate_the_real_import_surface --lib`:
+  **1 passed**.
+- `cargo test -p imager retry_progress_replaces_the_prior_incomplete_attempt --lib`:
+  **1 passed**.
+- `cargo test -p imager application_restart_requires_explicit_retry_and_reaches_verified_completion --lib`:
+  **1 passed**.
+- `cargo test -p imager screenshot_states_come_from_real_worker_events --lib`:
+  **1 passed**, including the new real stop → explicit retry → renewed progress
+  scenario.
+- `cargo test -p imager 'setup::' --lib`: **112 passed, 0 failed, 1 explicitly
+  ignored**.
+
+The accepted fix-round renders are:
+
+- `/tmp/qos-task3-fix1-shots/setup-experience-compact.png` — 640×640
+- `/tmp/qos-task3-fix1-shots/setup-experience-normal.png` — 1180×820
+- `/tmp/qos-task3-fix1-shots/import-retry-progress-compact.png` — 640×640
+- `/tmp/qos-task3-fix1-shots/import-retry-progress-normal.png` — 1180×820
+
+The retry screenshot is derived from a real copy, safe stop, explicit journal
+retry and renewed worker progress. Visual review confirmed the reachable initial
+action and fresh retry counters with no stale issues.
+
+Root-coordinated fix-round evidence:
+
+- Fedora 44 ARM64 `cargo test --locked -p imager --lib setup::`: **109 passed,
+  0 failed, 2 explicitly ignored**.
+- The exact-source Windows worker/store plus copy/journal `--tests` cfg check:
+  **exit 0**. Its harness emitted five expected dead-code warnings because UI
+  callers were deliberately excluded. This is compile evidence for the focused
+  modules, not a full Windows UI or runtime claim.
+- Re-running the focused host Clippy command produced only the same nine
+  pre-existing diagnostics listed above and no fix-round findings.

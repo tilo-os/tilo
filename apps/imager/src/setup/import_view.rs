@@ -131,6 +131,9 @@ impl ImportApp {
 
         match scenario {
             "import-progress" => app.seed_progress_shot(&source, &destination_parent)?,
+            "import-retry-progress" => {
+                app.seed_retry_progress_shot(&source, &destination_parent)?;
+            }
             "import-partial" => app.seed_partial_shot(&source, &destination_parent)?,
             "import-conflict" => app.seed_conflict_shot(&source, &destination_parent)?,
             _ => {
@@ -198,6 +201,66 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
         self.wait_for_shot_terminal(std::time::Instant::now() + std::time::Duration::from_secs(15))
+    }
+
+    fn seed_retry_progress_shot(
+        &mut self,
+        source: &Path,
+        destination_parent: &Path,
+    ) -> Result<(), String> {
+        for index in 0..24 {
+            std::fs::write(
+                source.join(format!("Archive {index:02}.bin")),
+                vec![index as u8; 1024 * 1024],
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        self.prepare_and_start_shot(source, destination_parent)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            self.poll_background();
+            if self
+                .operations
+                .first()
+                .is_some_and(|operation| operation.verified_file_count() > 0)
+            {
+                self.cancel_active();
+                self.wait_for_shot_terminal(deadline)?;
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("retry screenshot setup timed out".into());
+            }
+            std::thread::yield_now();
+        }
+        if self.operations.first().map(OperationRecord::state) != Some(OperationState::Cancelled) {
+            return Err("retry screenshot did not retain a stopped attempt".into());
+        }
+        self.retry_operation(0)?;
+        loop {
+            self.poll_background();
+            if self.operations.first().is_some_and(|operation| {
+                operation.state() == OperationState::Running
+                    && operation.verified_file_count() > 0
+                    && operation.issues().is_ok_and(|issues| issues.is_empty())
+            }) {
+                let snapshot = self.operations.first().cloned();
+                self.cancel_active();
+                self.wait_for_shot_terminal(deadline)?;
+                if let Some(snapshot) = snapshot
+                    && let Some(operation) = self.operations.first_mut()
+                {
+                    *operation = snapshot;
+                }
+                self.status = "Continuing copy from checked progress…".into();
+                self.status_is_error = false;
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline || self.worker.is_none() {
+                return Err("retry screenshot worker finished before progress was captured".into());
+            }
+            std::thread::yield_now();
+        }
     }
 
     fn seed_conflict_shot(
@@ -1130,7 +1193,18 @@ mod tests {
             MigrationStore::open_at(&temp.path().canonicalize().unwrap().join("state")).unwrap();
         let mut reopened = ImportApp::with_store(store).unwrap();
         assert_eq!(reopened.operations[0].state(), OperationState::Cancelled);
+        assert!(reopened.operations[0].verified_file_count() > 0);
         reopened.retry_operation(0).unwrap();
+        assert_eq!(reopened.operations[0].state(), OperationState::Running);
+        assert_eq!(reopened.operations[0].verified_file_count(), 0);
+        assert_eq!(reopened.operations[0].verified_bytes(), 0);
+        assert!(reopened.operations[0].issues().unwrap().is_empty());
+        assert!(
+            reopened.operations[0]
+                .current_relative_path()
+                .unwrap()
+                .is_none()
+        );
         wait_terminal(&mut reopened);
 
         assert_eq!(reopened.operations[0].state(), OperationState::Complete);
@@ -1168,6 +1242,11 @@ mod tests {
         let progress = ImportApp::for_shot("import-progress");
         assert_eq!(progress.operations[0].state(), OperationState::Running);
         assert!(progress.operations[0].verified_file_count() > 0);
+
+        let retry = ImportApp::for_shot("import-retry-progress");
+        assert_eq!(retry.operations[0].state(), OperationState::Running);
+        assert!(retry.operations[0].verified_file_count() > 0);
+        assert!(retry.operations[0].issues().unwrap().is_empty());
 
         let mut partial = ImportApp::for_shot("import-partial");
         assert_eq!(partial.operations[0].state(), OperationState::Incomplete);
