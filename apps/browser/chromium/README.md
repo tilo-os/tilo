@@ -96,7 +96,9 @@ shutdown may take several seconds while Chromium's subprocesses unwind.
 Configured scripts execute at document start in direct HTTP/HTTPS documents.
 The host enables the DevTools Page domain and waits for document-start script
 registration acknowledgments before executing queued navigation commands.
-Explicit configuration updates also apply to the current document. Internal pages, extensions,
+Explicit configuration updates also apply to the current document. Trusted
+script bodies execute directly rather than through page `eval()`, so updates
+work under strict script CSP while page-authored eval remains blocked. Internal pages, extensions,
 file/data URLs, inherited about:blank/srcdoc and blob documents are excluded.
 Execution is deduplicated by document and script configuration; reload
 and cross-site renderer replacement receive the current configuration once.
