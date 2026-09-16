@@ -51,6 +51,7 @@ pub struct Toolbar {
     separator: f32,
     overflow_rect: Rect,
     hovered: Option<Target>,
+    pointer: Option<Point>,
     pressed: Option<Target>,
     focused: bool,
     focus: Option<Target>,
@@ -77,6 +78,7 @@ impl Toolbar {
             separator: 9.0,
             overflow_rect: Rect::ZERO,
             hovered: None,
+            pointer: None,
             pressed: None,
             focused: false,
             focus: None,
@@ -303,7 +305,7 @@ impl Toolbar {
         if self.focus.is_some_and(|target| !targets.contains(&target)) {
             self.focus = targets.last().copied();
         }
-        self.hovered = self.hovered.filter(|target| targets.contains(target));
+        self.refresh_hover();
         self.pressed = self.pressed.filter(|target| targets.contains(target));
     }
 
@@ -366,6 +368,8 @@ impl Toolbar {
         self.menu
             .open_anchored(self.overflow_rect, self.viewport.unwrap_or(self.rect));
         self.focus = Some(Target::Overflow);
+        self.hovered = None;
+        self.pressed = None;
         if keyboard {
             self.menu.focus_first_action();
         }
@@ -385,8 +389,29 @@ impl Toolbar {
         }
         if !self.menu.is_open() {
             self.focus = Some(Target::Overflow);
+            self.pressed = None;
+            self.refresh_hover();
         }
     }
+
+    /// Popup routing still updates `pointer`, so closing or relayout cannot
+    /// arm a command using a hover target from before the popup opened.
+    fn refresh_hover(&mut self) -> bool {
+        let hovered = if self.menu.is_open() {
+            None
+        } else {
+            self.pointer.and_then(|point| {
+                self.targets().into_iter().find(|target| {
+                    self.target_rect(*target)
+                        .is_some_and(|rect| rect.contains(point))
+                })
+            })
+        };
+        let changed = hovered != self.hovered;
+        self.hovered = hovered;
+        changed
+    }
+
     fn targets(&self) -> Vec<Target> {
         let mut targets: Vec<_> = self
             .items
@@ -671,6 +696,9 @@ impl Widget for Toolbar {
         node: NodeId,
         tree: &TaffyTree<()>,
     ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Some(Point::new(position.x / scale, position.y / scale));
+        }
         if self.menu.is_open() {
             self.menu.handle_event(
                 event,
@@ -687,6 +715,7 @@ impl Widget for Toolbar {
                 event,
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
+                    button: MouseButton::Left,
                     ..
                 }
             ) {
@@ -696,22 +725,15 @@ impl Widget for Toolbar {
             return;
         }
         match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale, position.y / scale);
-                let hovered = self.targets().into_iter().find(|target| {
-                    self.target_rect(*target)
-                        .is_some_and(|rect| rect.contains(point))
-                });
-                if hovered != self.hovered {
-                    self.hovered = hovered;
-                    *handled = true;
-                }
+            WindowEvent::CursorMoved { .. } => {
+                *handled |= self.refresh_hover();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
+                self.refresh_hover();
                 self.pressed = self.hovered;
                 if let Some(target) = self.pressed {
                     self.focus_target(target);
@@ -724,6 +746,7 @@ impl Widget for Toolbar {
                 button: MouseButton::Left,
                 ..
             } => {
+                self.refresh_hover();
                 if self.swallow_release {
                     self.swallow_release = false;
                     self.pressed = None;
@@ -790,6 +813,7 @@ impl Widget for Toolbar {
         if !focused {
             self.menu.close();
             self.pressed = None;
+            self.refresh_hover();
         }
     }
     fn is_focused(&self) -> bool {
@@ -833,6 +857,7 @@ impl Widget for Toolbar {
                 AccessNode::new(Role::Button)
                     .with_name(name)
                     .with_action_target(route)
+                    .with_bounds(self.target_rect(*target).unwrap_or(Rect::ZERO))
                     .with_state(AccessState {
                         focusable: true,
                         focused: self.focused
@@ -857,6 +882,9 @@ impl Widget for Toolbar {
                         AccessNode::new(Role::MenuItem)
                             .with_name(label.clone())
                             .with_action_target(format!("toolbar.item.{index}"))
+                            // Keep scrolled-out actions focusable so semantic focus
+                            // can reveal them, but export no fabricated painted area.
+                            .with_bounds(self.menu.item_rect(row).unwrap_or(Rect::ZERO))
                             .with_state(AccessState {
                                 focusable: true,
                                 focused: self.focused && self.menu.hovered() == Some(row),
@@ -865,7 +893,11 @@ impl Widget for Toolbar {
                     )
                 })
                 .collect();
-            children.push(AccessNode::new(Role::Menu).with_children(rows));
+            children.push(
+                AccessNode::new(Role::Menu)
+                    .with_bounds(self.menu.get_rect())
+                    .with_children(rows),
+            );
         }
         Some(
             AccessNode::new(Role::Toolbar)
@@ -1331,7 +1363,7 @@ mod lifecycle_tests {
             },
         )
     }
-    fn key(tb: &mut Toolbar, key: NamedKey) -> bool {
+    fn key_event(key: NamedKey) -> WindowEvent {
         let mut event: KeyEvent = unsafe { std::mem::zeroed() };
         event.logical_key = Key::Named(key);
         event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
@@ -1340,14 +1372,14 @@ mod lifecycle_tests {
         event.location = winit::keyboard::KeyLocation::Standard;
         event.state = ElementState::Pressed;
         event.text = None;
-        dispatch(
-            tb,
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event,
-                is_synthetic: true,
-            },
-        )
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event,
+            is_synthetic: true,
+        }
+    }
+    fn key(tb: &mut Toolbar, key: NamedKey) -> bool {
+        dispatch(tb, key_event(key))
     }
     fn counted(n: usize) -> (Toolbar, Rc<RefCell<Vec<usize>>>) {
         let counts = Rc::new(RefCell::new(vec![0; n]));
@@ -1652,6 +1684,207 @@ mod lifecycle_tests {
             assert_eq!(*fired.borrow(), 1);
             eprintln!(
                 "capture {path}; viewport={width}x{height}; toolbar_width={toolbar_width}; Theme::dark().with_text_scale({scale}); last command fired once"
+            );
+        }
+    }
+    #[test]
+    fn review_emitted_accessibility_bounds_match_paint_and_scrolling() {
+        let (mut tb, _) = counted(12);
+        settle(&mut tb, 180.0, 45.0, 1.0);
+        let node = tb.accessibility().unwrap();
+        for (child, target) in node.children.iter().zip(tb.targets()) {
+            assert_eq!(
+                child.bounds.map(|bounds| bounds.to_rect()),
+                tb.target_rect(target)
+            );
+        }
+        tb.open_menu(true);
+        let menu_child = tb.targets().len();
+        let first_height = tb.menu.item_rect(0).unwrap().height();
+        tb.menu.focus_item(tb.menu_indices.len() - 1);
+        let node = tb.accessibility().unwrap();
+        let menu = &node.children[menu_child];
+        assert_eq!(menu.bounds.unwrap().to_rect(), tb.menu.get_rect());
+        let mut clipped = false;
+        for (child, row) in menu.children.iter().zip(
+            tb.menu_indices
+                .iter()
+                .enumerate()
+                .filter_map(|(row, index)| index.map(|_| row)),
+        ) {
+            let expected = tb.menu.item_rect(row).unwrap_or(Rect::ZERO);
+            assert_eq!(child.bounds.unwrap().to_rect(), expected);
+            clipped |= expected.height() > 0.0 && expected.height() < first_height;
+        }
+        assert!(clipped);
+        assert_eq!(menu.children[0].bounds.unwrap().to_rect(), Rect::ZERO);
+        assert!(
+            !menu.children[0].state.hidden,
+            "offscreen commands retain semantic focus access"
+        );
+        assert!(tb.focus_synthetic_accessibility(&[menu_child, 0]));
+        assert!(
+            !tb.accessibility().unwrap().children[menu_child].children[0]
+                .bounds
+                .unwrap()
+                .to_rect()
+                .is_zero_area()
+        );
+    }
+
+    #[test]
+    fn review_popup_close_rehits_pointer_before_second_click() {
+        for pointer_open in [false, true] {
+            for relayout in [false, true] {
+                let (mut tb, counts) = counted(8);
+                settle(&mut tb, 180.0, 45.0, 1.0);
+                let point = if pointer_open {
+                    tb.overflow_rect.center()
+                } else {
+                    tb.item_rects[0].center()
+                };
+                cursor(&mut tb, point);
+                if pointer_open {
+                    mouse(&mut tb, ElementState::Pressed);
+                    mouse(&mut tb, ElementState::Released);
+                } else {
+                    tb.set_focus(true);
+                    while tb.focus != Some(Target::Overflow) {
+                        key(&mut tb, NamedKey::ArrowRight);
+                    }
+                    key(&mut tb, NamedKey::Space);
+                }
+                let hidden = tb.menu_indices[0].unwrap();
+                let point = tb.menu.item_rect(0).unwrap().center();
+                assert!(!tb.rect.contains(point));
+                cursor(&mut tb, point);
+                mouse(&mut tb, ElementState::Pressed);
+                mouse(&mut tb, ElementState::Released);
+                if relayout {
+                    settle(&mut tb, 180.0, 45.0, 1.0);
+                }
+                mouse(&mut tb, ElementState::Pressed);
+                mouse(&mut tb, ElementState::Released);
+                let mut expected = vec![0; 8];
+                expected[hidden] = 1;
+                assert_eq!(
+                    *counts.borrow(),
+                    expected,
+                    "pointer_open={pointer_open}, relayout={relayout}"
+                );
+                assert!(
+                    !tb.menu.is_open(),
+                    "stale overflow hover must not reopen the menu"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn review_nonleft_popup_press_does_not_capture_next_sibling_click() {
+        for button in [MouseButton::Right, MouseButton::Middle] {
+            let (toolbar, _) = counted(8);
+            let (sibling, count) = counted(1);
+            let mut host = crate::widget::Row::new()
+                .no_wrap()
+                .push(Box::new(toolbar))
+                .push(Box::new(sibling));
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let theme = Theme::dark();
+            let node = host.build_layout(&mut tree, &theme, &mut nodes);
+            let children = tree.children(node).unwrap();
+            for (child, width) in children.iter().zip([180.0, 150.0]) {
+                let mut style = tree.style(*child).unwrap().clone();
+                style.size = Size {
+                    width: Dimension::length(width),
+                    height: Dimension::length(45.0),
+                };
+                tree.set_style(*child, style).unwrap();
+            }
+            let mut text = TextRenderer::new();
+            let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
+            unsafe {
+                bindings.rebuild(&host, &tree, node, &nodes);
+                crate::widget::compute_widget_layout(
+                    &mut tree,
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(360.0),
+                        height: taffy::AvailableSpace::Definite(220.0),
+                    },
+                    &nodes,
+                    &bindings,
+                    &mut text,
+                )
+                .unwrap();
+            }
+            host.apply_layout(&tree, node, Point::ZERO);
+            let presence = PresenceCtx::default();
+            presence
+                .viewport
+                .set(Some(Rect::new(0.0, 0.0, 360.0, 220.0)));
+            host.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &presence,
+            );
+            assert!(host.children_mut()[0].perform_semantic_action(
+                "toolbar.overflow",
+                &Action::Activate,
+                &mut AutoCommit::new(),
+                &automerge::ROOT
+            ));
+            let send = |host: &mut crate::widget::Row, event: WindowEvent| {
+                host.handle_event(
+                    &event,
+                    1.0,
+                    &Default::default(),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT,
+                    &mut false,
+                    &mut None,
+                    node,
+                    &tree,
+                );
+            };
+            let mouse_event = |button, state| WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                button,
+                state,
+            };
+            send(&mut host, mouse_event(button, ElementState::Pressed));
+            send(&mut host, mouse_event(button, ElementState::Released));
+            send(&mut host, key_event(NamedKey::Escape));
+            assert!(
+                !host.wants_pointer_capture(),
+                "{button:?} must not leave capture stuck"
+            );
+            let point = host.children()[1]
+                .synthetic_accessibility_rect(&[0])
+                .unwrap()
+                .center();
+            send(
+                &mut host,
+                WindowEvent::CursorMoved {
+                    device_id: unsafe { std::mem::zeroed() },
+                    position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+                },
+            );
+            send(
+                &mut host,
+                mouse_event(MouseButton::Left, ElementState::Pressed),
+            );
+            send(
+                &mut host,
+                mouse_event(MouseButton::Left, ElementState::Released),
+            );
+            assert_eq!(
+                *count.borrow(),
+                vec![1],
+                "next sibling click must arrive through Row"
             );
         }
     }
