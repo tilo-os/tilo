@@ -552,3 +552,15 @@ fn admitted_close_does_not_reinsert_capacity_when_endpoint_drops() {
         );
     }
 }
+
+#[test]
+fn completed_navigation_preserves_page_identity() {
+    let event =
+        decode_event(&serde_json::json!({"event":"loaded","url":"about:blank","status":200}));
+    assert_eq!(
+        event,
+        Some(WebViewEvent::LoadFinishedAt {
+            uri: "about:blank".into()
+        })
+    );
+}

@@ -50,6 +50,12 @@ pub struct BrowserTabs {
     tab_menu: ContextMenu,
     tab_menu_target: Option<u64>,
     tab_menu_actions: Vec<Option<TabMenuAction>>,
+    session: Option<crate::session::SessionStore>,
+    saved_session: Option<crate::session::Snapshot>,
+    session_initialized: bool,
+    recovery: Option<crate::session::Snapshot>,
+    recovery_choice: ui::LocalState<Option<bool>>,
+    recovery_panel: Option<Box<dyn Widget>>,
 }
 
 impl BrowserTabs {
@@ -76,7 +82,163 @@ impl BrowserTabs {
             tab_menu: ContextMenu::new(),
             tab_menu_target: None,
             tab_menu_actions: Vec::new(),
+            session: None,
+            saved_session: None,
+            session_initialized: false,
+            recovery: None,
+            recovery_choice: ui::LocalState::new(None),
+            recovery_panel: None,
         }
+    }
+    pub fn with_session(mut self, store: crate::session::SessionStore) -> Result<Self, String> {
+        let saved = match store.load() {
+            Ok(saved) => saved,
+            Err(error) => {
+                tracing::warn!(%error, "Ignoring invalid browser session");
+                None
+            }
+        };
+        self.session = Some(store);
+        match saved {
+            Some(snapshot) if !snapshot.clean_exit => {
+                self.active_mut()
+                    .prepare_session_uri("about:blank".into(), true);
+                self.recovery = Some(snapshot);
+                self.recovery_panel = Some(self.make_recovery_panel());
+            }
+            Some(snapshot) => {
+                self.restore_snapshot(&snapshot)?;
+                self.persist_session(false)?;
+            }
+            None => {
+                self.persist_session(false)?;
+            }
+        }
+        self.session_initialized = true;
+        Ok(self)
+    }
+    fn make_recovery_panel(&self) -> Box<dyn Widget> {
+        use ui::widget::{Button, Column, Container, Row, Text};
+        let restore = self.recovery_choice.writer();
+        let fresh = self.recovery_choice.writer();
+        Box::new(Container::new().with_background().with_child(Box::new(Column::new()
+            .push(Box::new(Text::new("Restore your browser session?").with_size(24.0)))
+            .push(Box::new(Text::new("The browser did not close cleanly. Restore your saved tabs, or start fresh.")))
+            .push(Box::new(Row::new()
+                .push(Box::new(Button::new("browser.session.restore", "Restore", None).on_effect(move || restore.set(Some(true)))))
+                .push(Box::new(Button::new("browser.session.fresh", "Start fresh", None).on_effect(move || fresh.set(Some(false))))))))))
+    }
+    fn session_snapshot(&self, clean: bool) -> crate::session::Snapshot {
+        crate::session::Snapshot {
+            version: 1,
+            tabs: self
+                .tabs
+                .iter()
+                .map(|tab| crate::session::SavedTab {
+                    url: if crate::session::safe_url(tab.widget.persisted_url()) {
+                        tab.widget.persisted_url().to_owned()
+                    } else {
+                        "about:blank".into()
+                    },
+                    pinned: self.bar.is_pinned(tab.id),
+                })
+                .collect(),
+            active: self
+                .tabs
+                .iter()
+                .position(|tab| tab.id == self.active_id)
+                .unwrap_or(0),
+            clean_exit: clean,
+        }
+    }
+    fn persist_session(&mut self, clean: bool) -> Result<(), String> {
+        if self.recovery.is_some() {
+            return Ok(());
+        }
+        let snapshot = self.session_snapshot(clean);
+        if self.saved_session.as_ref() != Some(&snapshot) {
+            if let Some(store) = &self.session {
+                store.save(&snapshot)?;
+            }
+            self.saved_session = Some(snapshot);
+        }
+        Ok(())
+    }
+    fn restore_snapshot(&mut self, snapshot: &crate::session::Snapshot) -> Result<(), String> {
+        snapshot.validate()?;
+        let mut restored = Vec::new();
+        // Reuse the already-created engine for the active page. Other endpoints
+        // start at about:blank and defer their URL until selected.
+        let active = snapshot.active;
+        self.active_mut()
+            .prepare_session_uri(snapshot.tabs[active].url.clone(), false);
+        for (index, saved) in snapshot.tabs.iter().enumerate() {
+            if index == active {
+                continue;
+            }
+            let engine = self.active().engine_handle().create_tab()?;
+            engine.set_visible(false);
+            let mut widget = BrowserWidget::with_engine(engine, self.active().is_headless());
+            widget.inherit_workspace_state(self.active());
+            widget.share_history_pause(self.active());
+            widget.prepare_session_uri(saved.url.clone(), true);
+            let id = self.next_id;
+            self.next_id += 1;
+            widget.set_tab_identity(id);
+            restored.push((
+                index,
+                Tab {
+                    id,
+                    widget: Box::new(widget),
+                },
+            ));
+        }
+        let active_tab = self.tabs.remove(0);
+        restored.push((active, active_tab));
+        restored.sort_by_key(|(index, _)| *index);
+        self.tabs = restored.into_iter().map(|(_, tab)| tab).collect();
+        let descriptors = self
+            .tabs
+            .iter()
+            .map(|tab| TabDescriptor::new(tab.id, tab.widget.tab_title()))
+            .collect();
+        self.bar = Box::new(BrowserTabStrip::new(descriptors, self.active_id));
+        for (tab, saved) in self.tabs.iter().zip(&snapshot.tabs) {
+            self.bar.set_pinned(tab.id, saved.pinned);
+        }
+        self.dirty = true;
+        Ok(())
+    }
+    fn choose_recovery(&mut self, restore: bool) -> Result<(), String> {
+        let Some(snapshot) = self.recovery.as_ref() else {
+            return Ok(());
+        };
+        let mut chosen = if restore {
+            snapshot.clone()
+        } else {
+            crate::session::Snapshot {
+                version: 1,
+                tabs: vec![crate::session::SavedTab {
+                    url: "about:blank".into(),
+                    pinned: false,
+                }],
+                active: 0,
+                clean_exit: false,
+            }
+        };
+        chosen.clean_exit = false;
+        if let Some(store) = &self.session {
+            store.save(&chosen)?;
+        }
+        self.restore_snapshot(&chosen)?;
+        self.recovery = None;
+        self.saved_session = Some(chosen);
+        self.dirty = true;
+        Ok(())
+    }
+    #[cfg(feature = "wpe")]
+    pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
+        self.active().content_rect_handle()
     }
     fn active(&self) -> &BrowserWidget {
         // A workspace always contains its active tab, including after last close.
@@ -138,6 +300,7 @@ impl BrowserTabs {
         self.bar.set_active(id);
         self.active().engine_handle().set_visible(true);
         self.active_mut().refresh_shared_history();
+        self.active_mut().activate_session_uri();
         self.dirty = true;
     }
     fn close(&mut self, id: u64) {
@@ -401,6 +564,17 @@ impl BrowserTabs {
 
 impl Widget for BrowserTabs {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        if self.recovery.is_some() {
+            if let Some(choice) = self.recovery_choice.get() {
+                self.recovery_choice.set(None);
+                if let Err(error) = self.choose_recovery(choice) {
+                    tracing::error!(%error, "Cannot restore browser session");
+                }
+            }
+            if self.recovery.is_some() {
+                return;
+            }
+        }
         // Accessibility dispatch has no following pointer event to drain the
         // TabBar intents. Apply it at the same synchronization boundary.
         if let Some(id) = self.bar.take_close() {
@@ -452,6 +626,9 @@ impl Widget for BrowserTabs {
                 tracing::warn!(%error, "Cannot open link tab");
             }
         }
+        if let Err(error) = self.persist_session(false) {
+            tracing::error!(%error, "Cannot save browser session");
+        }
     }
     fn build_layout(
         &mut self,
@@ -460,6 +637,13 @@ impl Widget for BrowserTabs {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.retired.clear();
+        if self.recovery.is_some() {
+            return self
+                .recovery_panel
+                .as_mut()
+                .unwrap()
+                .build_layout(taffy, theme, nodes);
+        }
         let bar = self.bar.build_layout(taffy, theme, nodes);
         let page = self.active_mut().build_layout(taffy, theme, nodes);
         self.layout_active_id = Some(self.active_id);
@@ -495,6 +679,13 @@ impl Widget for BrowserTabs {
         root
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        if self.recovery.is_some() {
+            self.recovery_panel
+                .as_mut()
+                .unwrap()
+                .apply_layout(taffy, node, origin);
+            return;
+        }
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
@@ -523,6 +714,13 @@ impl Widget for BrowserTabs {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.recovery.is_some() {
+            self.recovery_panel
+                .as_mut()
+                .unwrap()
+                .draw(scene, transform, tr, theme, presence);
+            return;
+        }
         self.bar.draw(scene, transform, tr, theme, presence);
         self.active_mut()
             .draw(scene, transform, tr, theme, presence);
@@ -675,6 +873,13 @@ impl Widget for BrowserTabs {
         state: &mut AutoCommit,
         path: &ObjId,
     ) -> bool {
+        if self.recovery.is_some() {
+            return self
+                .recovery_panel
+                .as_mut()
+                .unwrap()
+                .perform_semantic_action(target, action, state, path);
+        }
         if matches!(action, ui::a11y::Action::Activate)
             && let Some(index) = target
                 .strip_prefix("tab-menu:")
@@ -703,6 +908,9 @@ impl Widget for BrowserTabs {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.recovery.is_some() {
+            return;
+        }
         self.active_mut()
             .draw_overlay(scene, transform, tr, theme, presence);
         self.tab_menu.draw(scene, transform, tr, theme, presence);
@@ -723,9 +931,15 @@ impl Widget for BrowserTabs {
         self.active().search_providers()
     }
     fn children(&self) -> Vec<&dyn Widget> {
+        if self.recovery.is_some() {
+            return vec![self.recovery_panel.as_ref().unwrap().as_ref()];
+        }
         vec![self.bar.as_ref(), self.active()]
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.recovery.is_some() {
+            return vec![self.recovery_panel.as_mut().unwrap().as_mut()];
+        }
         let active_id = self.active_id;
         let mut children: Vec<&mut dyn Widget> = vec![self.bar.as_mut()];
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
@@ -735,6 +949,9 @@ impl Widget for BrowserTabs {
     }
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        if self.recovery.is_some() {
+            return Some(AccessNode::new(Role::Group).with_name("Browser session recovery"));
+        }
         let menu_children = if self.tab_menu.is_open() {
             self.tab_menu_actions
                 .iter()
@@ -812,6 +1029,12 @@ impl Widget for BrowserTabs {
         }
     }
     fn take_control_invocation(&mut self) -> Option<ui::qos_actions::ControlInvocation> {
+        if self.recovery.is_some() {
+            return self
+                .recovery_panel
+                .as_mut()
+                .and_then(|panel| panel.take_control_invocation());
+        }
         self.active_mut().take_control_invocation()
     }
     fn take_floating_surface_request(
@@ -882,6 +1105,11 @@ impl Widget for BrowserTabs {
 }
 impl Drop for BrowserTabs {
     fn drop(&mut self) {
+        if self.session_initialized && !std::thread::panicking() {
+            if let Err(error) = self.persist_session(true) {
+                tracing::error!(%error, "Cannot mark browser session clean");
+            }
+        }
         self.active_mut().clear_history_on_workspace_exit();
     }
 }
@@ -929,6 +1157,100 @@ mod tests {
             true,
         ))
     }
+    #[test]
+    fn crash_recovery_waits_for_explicit_choice_and_survives_prompt_close() {
+        use crate::session::{SavedTab, SessionMode, SessionStore, Snapshot};
+        let dir = tempfile::tempdir().unwrap();
+        let dirty = Snapshot {
+            version: 1,
+            tabs: vec![SavedTab {
+                url: "https://crash.test/".into(),
+                pinned: false,
+            }],
+            active: 0,
+            clean_exit: false,
+        };
+        let store = SessionStore::open(dir.path(), SessionMode::Normal)
+            .unwrap()
+            .unwrap();
+        store.save(&dirty).unwrap();
+        let mut tabs = workspace().with_session(store).unwrap();
+        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(tabs.recovery.is_some());
+        drop(tabs);
+        let store = SessionStore::open(dir.path(), SessionMode::Normal)
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.load().unwrap(), Some(dirty.clone()));
+        let mut tabs = workspace().with_session(store).unwrap();
+        // Exercise the exact action-bound button operation used by the host.
+        let result = tabs
+            .start_resource_operation(
+                ui::qos_actions::InvocationId::new(),
+                ui::qos_actions::OperationKind::Effect,
+                "qos.ui.control.invoke",
+                &serde_json::to_vec("browser.session.fresh").unwrap(),
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .unwrap();
+        assert!(result.is_some());
+        tabs.sync(&mut AutoCommit::new(), &automerge::ROOT);
+        assert!(tabs.recovery.is_none());
+        assert_eq!(tabs.session_snapshot(false).tabs[0].url, "about:blank");
+        drop(tabs);
+        let store = SessionStore::open(dir.path(), SessionMode::Normal)
+            .unwrap()
+            .unwrap();
+        let fresh = store.load().unwrap().unwrap();
+        assert!(fresh.clean_exit);
+        assert_eq!(fresh.tabs.len(), 1);
+        assert_eq!(fresh.tabs[0].url, "about:blank");
+    }
+
+    #[test]
+    fn clean_session_restores_order_pin_active_and_committed_urls() {
+        use crate::session::{SavedTab, SessionMode, SessionStore, Snapshot};
+        let dir = tempfile::tempdir().unwrap();
+        let saved = Snapshot {
+            version: 1,
+            tabs: vec![
+                SavedTab {
+                    url: "https://alpha.test/".into(),
+                    pinned: true,
+                },
+                SavedTab {
+                    url: "https://beta.test/second".into(),
+                    pinned: false,
+                },
+                SavedTab {
+                    url: "https://gamma.test/".into(),
+                    pinned: false,
+                },
+            ],
+            active: 1,
+            clean_exit: true,
+        };
+        let store = SessionStore::open(dir.path(), SessionMode::Normal)
+            .unwrap()
+            .unwrap();
+        store.save(&saved).unwrap();
+        let mut tabs = workspace().with_session(store).unwrap();
+        assert_eq!(tabs.session_snapshot(true), saved);
+        assert_eq!(tabs.tabs.len(), 3);
+        tabs.active_mut()
+            .buffer_tab_address(&Key::Character("draft must not persist".into()), true);
+        assert_eq!(tabs.session_snapshot(true), saved);
+        tabs.close(tabs.tabs[2].id);
+        drop(tabs);
+        let store = SessionStore::open(dir.path(), SessionMode::Normal)
+            .unwrap()
+            .unwrap();
+        let restored = store.load().unwrap().unwrap();
+        assert!(restored.clean_exit);
+        assert_eq!(restored.tabs.len(), 2);
+    }
+
     #[test]
     fn native_close_admission_keeps_tab_visible_until_closed_event() {
         struct ClosingEngine {

@@ -58,12 +58,16 @@ impl Shared {
                 events.retain(|old| std::mem::discriminant(old) != std::mem::discriminant(&event));
             } else if matches!(
                 &event,
-                WebViewEvent::LoadFinished | WebViewEvent::LoadFailed { .. }
+                WebViewEvent::LoadFinished
+                    | WebViewEvent::LoadFinishedAt { .. }
+                    | WebViewEvent::LoadFailed { .. }
             ) {
                 events.retain(|old| {
                     !matches!(
                         old,
-                        WebViewEvent::LoadFinished | WebViewEvent::LoadFailed { .. }
+                        WebViewEvent::LoadFinished
+                            | WebViewEvent::LoadFinishedAt { .. }
+                            | WebViewEvent::LoadFailed { .. }
                     )
                 });
             }
@@ -71,7 +75,9 @@ impl Shared {
                 if let Some(index) = events.iter().position(|old| {
                     !matches!(
                         old,
-                        WebViewEvent::LoadFinished | WebViewEvent::LoadFailed { .. }
+                        WebViewEvent::LoadFinished
+                            | WebViewEvent::LoadFinishedAt { .. }
+                            | WebViewEvent::LoadFailed { .. }
                     )
                 }) {
                     events.remove(index);
@@ -233,6 +239,14 @@ impl ChromiumEngine {
             .or_else(|| dirs::data_dir().map(|path| path.join("qos-browser/chromium")))
             .ok_or("Cannot locate Chromium profile directory")?;
         Self::with_host_extensions(&host_path()?, &profile, extensions)
+    }
+
+    /// Explicit profile with the packaged helper and approved extensions.
+    pub fn with_profile_extensions(
+        profile: &Path,
+        extensions: &[PathBuf],
+    ) -> Result<Arc<Self>, String> {
+        Self::with_host_extensions(&host_path()?, profile, extensions)
     }
 
     /// Explicit runtime/profile paths for packaging and isolated live tests.
@@ -890,7 +904,9 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
                 })
                 .collect::<Option<Vec<_>>>()?,
         },
-        "loaded" => WebViewEvent::LoadFinished,
+        "loaded" => WebViewEvent::LoadFinishedAt {
+            uri: value.get("url")?.as_str()?.to_owned(),
+        },
         "history" => WebViewEvent::HistoryChanged {
             can_go_back: value["back"].as_bool()?,
             can_go_forward: value["forward"].as_bool()?,

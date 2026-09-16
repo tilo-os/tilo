@@ -311,6 +311,9 @@ pub struct BrowserWidget {
     /// `--shots` mode: no network, no filter loader, deterministic page.
     headless: bool,
     initial_url: String,
+    session_url: String,
+    session_first_commit: bool,
+    navigation_deferred: bool,
     /// An address draft belongs to this window. Only an explicit Navigate
     /// resource operation crosses the browser/engine boundary.
     address: ui::LocalState<String>,
@@ -447,8 +450,28 @@ impl BrowserWidget {
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
     pub fn with_initial_uri(mut self, uri: String) -> Self {
+        self.session_url = uri.clone();
         self.initial_url = uri;
         self
+    }
+
+    pub(crate) fn prepare_session_uri(&mut self, uri: String, deferred: bool) {
+        self.initial_url = uri.clone();
+        self.session_url = uri.clone();
+        self.address.set(uri);
+        self.current_uri.clear();
+        self.session_first_commit = false;
+        self.navigation_deferred = deferred;
+        self.bootstrap_done = false;
+    }
+    pub(crate) fn activate_session_uri(&mut self) {
+        if self.navigation_deferred {
+            self.navigation_deferred = false;
+            self.bootstrap_done = false;
+        }
+    }
+    pub(crate) fn persisted_url(&self) -> &str {
+        &self.session_url
     }
 
     /// Handle to the engine this widget drives — the binary uses it to
@@ -462,13 +485,16 @@ impl BrowserWidget {
         self.headless
     }
     pub(crate) fn tab_url(&self) -> &str {
-        if self.current_uri.is_empty() {
+        if self.navigation_deferred || self.current_uri.is_empty() {
             &self.initial_url
         } else {
             &self.current_uri
         }
     }
     pub(crate) fn tab_title(&self) -> String {
+        if self.navigation_deferred {
+            return self.initial_url.clone();
+        }
         let title = if !self.title.is_empty() {
             &self.title
         } else if self.tab_url() == "about:blank" {
@@ -600,6 +626,9 @@ impl BrowserWidget {
             window_scale: 1.0,
             native_closed: false,
             close_blocked: false,
+            session_url: initial_url.clone(),
+            session_first_commit: false,
+            navigation_deferred: false,
             initial_url,
             can_go_back: false,
             loading_stopped: false,
@@ -2245,7 +2274,17 @@ impl BrowserWidget {
             .into_iter()
             .chain(self.engine.drain_download_events())
         {
+            let event = match event {
+                WebViewEvent::LoadFinishedAt { uri } => {
+                    if self.navigation_deferred || uri != self.current_uri {
+                        continue;
+                    }
+                    WebViewEvent::LoadFinished
+                }
+                event => event,
+            };
             match event {
+                WebViewEvent::LoadFinishedAt { .. } => {}
                 WebViewEvent::TabClosed => {
                     self.native_closed = true;
                 }
@@ -2297,11 +2336,20 @@ impl BrowserWidget {
                     self.structure_dirty = true;
                 }
                 WebViewEvent::UriChanged(uri) => {
+                    if !self.navigation_deferred
+                        && (uri != "about:blank"
+                            || self.initial_url == "about:blank"
+                            || self.session_first_commit)
+                    {
+                        self.session_url = uri.clone();
+                        self.session_first_commit = true;
+                    }
                     self.document_revision = self.document_revision.wrapping_add(1);
                     self.favicon = None;
                     self.media_playing = false;
                     self.media_document_generation = None;
                     if uri != self.current_uri {
+                        self.title.clear();
                         self.loading_stopped = false;
                         self.structure_dirty |= self.daily.navigation_started(&self.engine);
                     }
@@ -2856,6 +2904,15 @@ fn default_engine() -> SharedEngine {
     if std::env::var("QOS_BROWSER_ENGINE").as_deref() == Ok("wpe") {
         return engine_or_error(
             ui::webview::wpe::WpeEngine::new().map(|engine| engine as SharedEngine),
+        );
+    }
+    if let Some(root) = crate::storage::explicit_root() {
+        return engine_or_error(
+            ui::webview::chromium::ChromiumEngine::with_profile_extensions(
+                &root.join("chromium"),
+                &crate::extensions::approved_paths(),
+            )
+            .map(|engine| engine as SharedEngine),
         );
     }
     engine_or_error(
@@ -3533,8 +3590,10 @@ impl Widget for BrowserWidget {
                             crate::blocker::user_scripts(),
                         )));
                 }
-                self.engine
-                    .send(WebViewCommand::Navigate(self.initial_url.clone()));
+                if !self.navigation_deferred {
+                    self.engine
+                        .send(WebViewCommand::Navigate(self.initial_url.clone()));
+                }
             }
             self.bootstrap_done = true;
         }
@@ -4226,13 +4285,11 @@ impl Widget for BrowserWidget {
             NavigationDirection::Back => "Back history",
             NavigationDirection::Forward => "Forward history",
         };
-        Some(
-            AccessNode::new(Role::Group).with_children(vec![
+        Some(AccessNode::new(Role::Group).with_children(vec![
                 AccessNode::new(Role::Menu)
                     .with_name(name)
                     .with_children(rows),
-            ]),
-        )
+            ]))
     }
 
     fn perform_semantic_action(
@@ -6592,6 +6649,59 @@ mod tests {
         // The composed tree is not otherwise synchronized in this layout-only
         // regression test; keep the document borrow explicitly live.
         w.sync(&mut doc, &root);
+    }
+
+    #[test]
+    fn stale_blank_completion_does_not_finish_restored_page() {
+        struct Events(
+            std::sync::Mutex<Vec<WebViewEvent>>,
+            std::sync::Arc<TestEngine>,
+        );
+        impl WebViewEngine for Events {
+            fn send(&self, command: WebViewCommand) {
+                self.1.send(command);
+            }
+            fn frames(&self) -> ui::webview::FrameSlot {
+                self.1.frames()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.0.lock().unwrap())
+            }
+        }
+        let engine = std::sync::Arc::new(Events(
+            std::sync::Mutex::new(vec![
+                WebViewEvent::UriChanged("https://example.test/saved".into()),
+                WebViewEvent::LoadProgress(0.3),
+                WebViewEvent::LoadFinishedAt {
+                    uri: "about:blank".into(),
+                },
+            ]),
+            TestEngine::new(),
+        ));
+        let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+        widget.prepare_session_uri("https://example.test/saved".into(), false);
+        widget.title = "about:blank".into();
+        widget.apply_engine_events();
+        assert!(
+            widget.title.is_empty(),
+            "a new document must not inherit the blank page title"
+        );
+        assert_eq!(widget.progress, 0.3);
+        engine.0.lock().unwrap().push(WebViewEvent::LoadFinishedAt {
+            uri: "https://example.test/saved".into(),
+        });
+        widget.apply_engine_events();
+        assert_eq!(widget.progress, 1.0);
+    }
+
+    #[test]
+    fn deferred_session_tab_keeps_saved_identity_before_activation() {
+        let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
+        widget.prepare_session_uri("https://example.test/saved".into(), true);
+        widget.title = "about:blank".into();
+        widget.current_uri = "about:blank".into();
+        assert_eq!(widget.tab_title(), "https://example.test/saved");
+        assert_eq!(widget.persisted_url(), "https://example.test/saved");
     }
 
     #[test]

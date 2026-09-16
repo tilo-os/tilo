@@ -154,7 +154,7 @@ impl Settings {
     /// `dirs::config_dir()/qos-browser/settings.json`. `None` when the
     /// platform has no config directory.
     pub fn config_path() -> Option<PathBuf> {
-        dirs::config_dir().map(|d| d.join("qos-browser").join("settings.json"))
+        crate::storage::config_dir().map(|d| d.join("settings.json"))
     }
 
     /// Load the settings from the standard config path. Any failure —
