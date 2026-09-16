@@ -1,5 +1,4 @@
-//! `channel_browser` example — eyeball the Phase 5 channel-browser
-//! modal sheet with seeded mock entries.
+//! Interactive channel-browser demo with seeded entries.
 //!
 //! Run with:
 //!
@@ -8,10 +7,8 @@
 //! ```
 //!
 //! Notes:
-//! - No broker / wheel-disc / shell integration — the widget is pure
-//!   UI and consumes `Vec<ChannelEntry>` directly. The wheel-disc
-//!   spoke overflow that opens this in production lives in `shell`
-//!   and is blocked on the Phase-5 follow-up.
+//! - No broker, wheel-disc, or shell integration: the widget consumes
+//!   `Vec<ChannelEntry>` directly.
 //! - Click a space-filter pill to narrow; arrow keys cycle through
 //!   pills + rows; Enter prints the selected channel; Esc dismisses.
 
@@ -45,9 +42,7 @@ fn ch(
 }
 
 pub fn run(_args: &[String]) {
-    // Mocked entries — two spaces, a mix of roles, pins, and unread
-    // counts. Matches the shape the shell will produce in Phase 5
-    // once the wheel-disc auto-promote algorithm runs.
+    // Cover multiple spaces, roles, pin states, and unread counts.
     let entries = vec![
         ch("engineering", "Company", 220.0, 5, 12, true, Some("Editor")),
         ch("design", "Company", 220.0, 25, 0, false, Some("Editor")),

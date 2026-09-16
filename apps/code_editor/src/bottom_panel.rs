@@ -1005,11 +1005,9 @@ mod tests {
 
     #[test]
     fn a_long_path_keeps_its_file_and_line() {
-        // The point of trimming a path from the front: whatever survives must
-        // still name the file and the line. This is the row that used to wrap
-        // onto a second line and overprint the hit below it.
+        // Front trimming must preserve the actionable file and line suffix.
         let mut t = tr();
-        let long = "docs/superpowers/archive/2026-04-18-nirios-chrome.md:682";
+        let long = "workspace/components/editor/src/diagnostics/rendering.rs:682";
         let out = ellipsize_front(&mut t, long, 12.0, 120.0);
         assert!(out.starts_with('\u{2026}'), "trimmed from the front: {out}");
         assert!(out.ends_with(":682"), "the line number survives: {out}");
