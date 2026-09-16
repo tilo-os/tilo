@@ -504,6 +504,7 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "time.timezone"
         | "power.profile"
         | "power.blank"
+        | "power.lock"
         | "power.suspend"
         | "power.lid"
         | "power.power_key"
@@ -1935,6 +1936,20 @@ fn power_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "10 minutes",
         ),
         (
+            "lock-after",
+            "Set automatic lock delay",
+            panes::power::LOCK_KEY,
+            &[
+                "1 minute",
+                "5 minutes",
+                "10 minutes",
+                "15 minutes",
+                "30 minutes",
+                "Never",
+            ][..],
+            "5 minutes",
+        ),
+        (
             "saver-suspend",
             "Set Power Saver suspend delay",
             panes::power::SAVER_SUSPEND_KEY,
@@ -3330,6 +3345,7 @@ mod tests {
             "auto_suspend",
             "suspend-after",
             "blank-after",
+            "lock-after",
             "saver-suspend",
             "balanced-suspend",
             "performance-suspend",
