@@ -72,10 +72,8 @@ later worker implementation, not a new sync or identity stack.
      and the external AT-SPI endpoint have since landed; their current status and release evidence are
      recorded below.
 
-## Stale/divergent branches (reference only — off an old base, not clean merges)
-`docs/sync-host-model`, big `app-model-*`, `legacy-collab-*`, `nirios-shell`, `apps-fleet`,
-`worktree-*`, `feat-qos-tts`, `scrub-planning-refs`. Local unpushed `wt-{actionmodel,presence,
-deskenv,fracscale,hdr}` are likely superseded by the concurrent-session branches above.
+Historical branch names are intentionally omitted here; the current checkout and
+its git history are the source of truth for integration state.
 
 ## Phase 6c — daily-driver subsystems (mostly already built; corrected 2026-07-11)
 A careful re-grep overturned the first-pass "settings-UI-only" read — most of these ARE on `main`;

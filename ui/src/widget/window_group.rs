@@ -67,11 +67,8 @@ pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
     }
 }
 
-/// 420ms: mirrors the reference concept's spring timing
-/// (`radial-workspace-switcher/src/App.tsx:407`).
 const SPAWN_ANIM_MS: u64 = 420;
-/// Mirrors the concept's `x: -20` initial, tuned to -16 to stay inside
-/// the row's visible margin.
+/// Kept inside the row's visible margin during the spawn animation.
 const SPAWN_ANIM_X_OFFSET: f64 = -16.0;
 const SPAWN_ANIM_INITIAL_SCALE: f64 = 0.92;
 /// Matches the tab-pill `CLOSE_FADE_MS` in `tabs.rs` so the group's
@@ -111,9 +108,8 @@ fn px_f32(v: f64) -> f32 {
     v as f32
 }
 
-/// Mirrors the concept's `clientY <= 80` check (`WindowFrame.tsx:108-123`):
-/// above this y the floating title/restore/close cluster paints, below it
-/// they hide. Hit-testing is unaffected — only the paint is gated.
+/// Pointer band that reveals the floating title/restore/close controls.
+/// Hit-testing is unaffected; only paint is gated.
 const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
 
 /// A width only becomes pixels through [`WindowWidth::resolve`], against
@@ -832,7 +828,6 @@ impl WindowGroup {
         }
     }
 
-    /// On hover promoted to full white (concept: `hover:text-white`).
     #[cfg(test)]
     pub(crate) fn maximized_close_glyph_color_for_tests(
         &self,
@@ -1179,8 +1174,7 @@ impl WindowGroup {
     }
 
     /// The floating `[app title]  …  [Restore][×]` pill drawn over a
-    /// maximized group's content, matching the concept layout. Also
-    /// updates `restore_rect`/`close_rect` for hit-testing, which keeps
+    /// maximized group's content. Also updates `restore_rect`/`close_rect` for hit-testing, which keeps
     /// running regardless of the cursor band — only the paint is gated by
     /// [`Self::should_show_maximized_chrome`].
     fn draw_maximized_chrome(
@@ -1193,7 +1187,6 @@ impl WindowGroup {
         if !self.should_show_maximized_chrome(Some(self.last_cursor.y)) {
             return;
         }
-        // `[app title]  …  [Restore][×]`, matching the concept layout.
         let pad = 6.0_f64;
         let layout = ChromePillLayout {
             pad,
@@ -1340,7 +1333,6 @@ impl WindowGroup {
     /// pill row, painted into `self.close_rect` (already computed by
     /// [`Self::draw_maximized_buttons`]).
     fn draw_maximized_close_button(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        // Concept: `hover:bg-red-500/80` (danger token at 80% alpha).
         crate::surface::shadow(
             scene,
             transform,
@@ -1408,12 +1400,10 @@ impl Widget for WindowGroup {
         } else {
             taffy.leaf_node(Style::default())
         };
-        // Niri-style infinite strip: `flex_grow: 0` keeps a group at its
+        // `flex_grow: 0` keeps a group at its
         // declared `WindowWidth` regardless of sibling count or slack —
         // placing a new app never resizes siblings, the strip extends
-        // past the viewport instead. Maximized overrides to `flex_grow:
-        // 1e6` below, mirroring the concept's fixed `width: 100vw`
-        // maximized window (`WindowFrame.tsx:188-200`).
+        // past the viewport instead. Maximized overrides this below.
         let mut style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
@@ -3462,8 +3452,6 @@ mod tests {
         );
     }
 
-    /// Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80%
-    /// alpha, glyph promoted to full white.
     #[test]
     fn maximized_close_chip_uses_danger_token_on_hover() {
         let mut g = make_group();
@@ -3517,11 +3505,10 @@ mod tests {
                 hover_glyph.a()
             ),
             (255, 255, 255, 255),
-            "hover glyph promotes to opaque white (concept: hover:text-white)",
+            "hover glyph promotes to opaque white",
         );
     }
 
-    /// Concept parity: `WindowFrame.tsx:108-123`'s `clientY <= 80` gate.
     #[test]
     fn maximized_chrome_visible_when_cursor_y_le_80() {
         let mut g = make_group();
