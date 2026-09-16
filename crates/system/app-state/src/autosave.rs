@@ -227,11 +227,35 @@ fn writer_loop(
     let mut deadline: Option<Instant> = None;
 
     let commit = |pending: &mut Option<Pending>| -> Result<(), StoreError> {
-        match pending.take() {
-            Some(Pending::Full(bytes)) => store.write_full(&bytes),
-            Some(Pending::Append(bytes)) => store.append_bytes(&bytes),
-            None => Ok(()),
+        let Some(write) = pending.take() else {
+            return Ok(());
+        };
+        let (kind, bytes, result) = match write {
+            Pending::Full(bytes) => {
+                let len = bytes.len();
+                let started = Instant::now();
+                let result = store.write_full(&bytes);
+                ("full", len, (result, started.elapsed()))
+            }
+            Pending::Append(bytes) => {
+                let len = bytes.len();
+                let started = Instant::now();
+                let result = store.append_bytes(&bytes);
+                ("append", len, (result, started.elapsed()))
+            }
+        };
+        let (result, elapsed) = result;
+        if result.is_ok() {
+            tracing::debug!(
+                target: "qos.state",
+                event = "document_persist",
+                kind,
+                bytes,
+                elapsed_us = elapsed.as_micros(),
+                "persisted application document"
+            );
         }
+        result
     };
     let record = |last_error: &Arc<Mutex<Option<String>>>, r: Result<(), StoreError>| {
         if let Err(e) = r {
