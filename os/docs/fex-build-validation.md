@@ -465,12 +465,19 @@ LTO remained enabled. A nested dependency still invoked the cached launcher,
 so `CCACHE_DISABLE=1` and a writable isolated `CCACHE_DIR` were used.
 
 This resolves the generator test in the validated toolchain configuration.
-The complete emulator, guest libraries, and full runtime suite still need
-rebuilding and validation with this compiler selection. It does not repair the
-separately reproduced CPU-list or Vulkan callback defects.
+The complete emulator and guest libraries were subsequently rebuilt successfully
+with this compiler selection. Full runtime validation is still required; the
+compiler change does not repair the separately reproduced CPU-list or Vulkan
+callback defects.
 
 The exact updated `os/Containerfile.fex-buildroot` also built successfully as
 `localhost/qos-fex-buildroot:arm64-clang21`, image ID
 `2b7fdf294cd47de7465f68c96bc9ab91399950b4c63a83a052c0832158054d36`.
 It records the selected generator compiler version and refreshes the complete
 RPM inventory after installing the versioned toolchain.
+
+The complete build finished successfully in `fex-clang21-full-build.log`, using
+the checked-in guest toolchains and the unmodified pinned FEX source. Its
+installed validation image is `localhost/qos-fex-clang21-runtime:arm64-dev`,
+image ID `7f006db926f9213e38c7ba09ce4665aa5aa4951be7ff87f6a5ac959c77c7a157`.
+Keep this build evidence separate from test-suite and application acceptance.
