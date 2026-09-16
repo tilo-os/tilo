@@ -2274,6 +2274,10 @@ impl MusicApp {
 
     // ---- master frame -----------------------------------------------------
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the frame pipeline deliberately keeps its ordered worker, layout, overlay, and chrome passes together"
+    )]
     pub(super) fn render_frame(
         &mut self,
         scene: &mut Scene,
@@ -2283,6 +2287,7 @@ impl MusicApp {
     ) {
         self.hits.clear();
         self.row_menu_hits.clear();
+        self.sync_context_menu_geometry(theme);
         // Fold in any streaming-worker results (resolved stream URLs → audio
         // engine, real search hits → library), then keep live search results
         // visible after a `sync` reloaded the catalog from the document.

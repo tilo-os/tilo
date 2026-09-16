@@ -229,9 +229,10 @@ jobs:
       # not make an unrelated change impossible to merge, while compiler errors
       # and every newly introduced Clippy site still fail this exact SHA.
       #
-      # The pre-commit hook runs the same lints on the crates a commit
-      # touches, but a hook is per-clone and `--no-verify`-able. This is the
-      # gate that actually holds.
+      # Compilation deliberately stays here rather than in the pre-commit
+      # hook: local hooks are bypassable and must remain fast enough to keep
+      # their formatting, secret, and staged-diff checks useful. This is the
+      # authoritative, base-aware lint gate.
       - name: Clippy shard ${{ matrix.shard }}
         env:
           XDG_RUNTIME_DIR: /tmp/qos-xdg-runtime

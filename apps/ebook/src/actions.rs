@@ -27,8 +27,8 @@ use qos_actions::{
 
 use crate::doc::BooksDoc;
 use crate::model::{
-    AnnoKind, Annotation, ColorScheme, CompositionStyle, FontEntry, HiColor, LibraryEntry,
-    LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
+    AnnoKind, Annotation, AnnotationAnchor, ColorScheme, CompositionStyle, FontEntry, HiColor,
+    LibraryEntry, LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
 };
 
 /// Registry `type_id` for every Books action.
@@ -362,6 +362,37 @@ pub enum EbookAction {
         end: usize,
         excerpt: String,
     },
+}
+
+struct SerializedNote<'a> {
+    book_id: &'a str,
+    id: &'a str,
+    chapter: usize,
+    block: usize,
+    start: usize,
+    end: usize,
+    excerpt: &'a str,
+    color: &'a str,
+    text: &'a str,
+}
+
+impl SerializedNote<'_> {
+    fn into_annotation(self, id: Uuid, group: Uuid) -> Annotation {
+        Annotation {
+            id,
+            doc_id: self.book_id.to_string(),
+            kind: AnnoKind::Note,
+            chapter: self.chapter,
+            block: self.block,
+            start: self.start,
+            end: self.end,
+            excerpt: self.excerpt.to_string(),
+            note: self.text.to_string(),
+            color: HiColor::from_str(self.color),
+            created: 0,
+            group,
+        }
+    }
 }
 
 // Per-variant `apply` bodies, kept as inherent methods (not trait methods) so
@@ -736,36 +767,10 @@ impl EbookAction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn apply_add_note(
-        doc: &mut Doc,
-        book_id: &str,
-        id: &str,
-        chapter: usize,
-        block: usize,
-        start: usize,
-        end: usize,
-        excerpt: &str,
-        color: &str,
-        text: &str,
-    ) -> Result<(), ActionError> {
-        let uuid = Self::parse_uuid(id, "annotation")?;
+    fn apply_add_note(doc: &mut Doc, note: SerializedNote<'_>) -> Result<(), ActionError> {
+        let uuid = Self::parse_uuid(note.id, "annotation")?;
         Self::require_new_annotation_target(doc, uuid, uuid)?;
-        let anno = Annotation {
-            id: uuid,
-            doc_id: book_id.to_string(),
-            kind: AnnoKind::Note,
-            chapter,
-            block,
-            start,
-            end,
-            excerpt: excerpt.to_string(),
-            note: text.to_string(),
-            color: HiColor::from_str(color),
-            // Deterministic: no wall-clock in `apply`.
-            created: 0,
-            group: uuid,
-        };
+        let anno = note.into_annotation(uuid, uuid);
         BooksDoc::upsert_annotation(doc, &anno);
         Ok(())
     }
@@ -907,38 +912,16 @@ impl EbookAction {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn apply_add_comment(
         doc: &mut Doc,
-        book_id: &str,
         group: &str,
-        id: &str,
-        chapter: usize,
-        block: usize,
-        start: usize,
-        end: usize,
-        excerpt: &str,
-        color: &str,
-        text: &str,
+        note: SerializedNote<'_>,
     ) -> Result<(), ActionError> {
         let group_uuid = Self::parse_uuid(group, "highlight")?;
-        let cid = Self::parse_uuid(id, "comment")?;
+        let cid = Self::parse_uuid(note.id, "comment")?;
         Self::require_live_highlight(doc, group_uuid)?;
         Self::require_new_annotation_target(doc, cid, group_uuid)?;
-        let anno = Annotation {
-            id: cid,
-            doc_id: book_id.to_string(),
-            kind: AnnoKind::Note,
-            chapter,
-            block,
-            start,
-            end,
-            excerpt: excerpt.to_string(),
-            note: text.to_string(),
-            color: HiColor::from_str(color),
-            created: 0,
-            group: group_uuid,
-        };
+        let anno = note.into_annotation(cid, group_uuid);
         BooksDoc::upsert_annotation(doc, &anno);
         Ok(())
     }
@@ -953,9 +936,19 @@ impl EbookAction {
         excerpt: &str,
     ) -> Result<(), ActionError> {
         let uuid = Self::require_live_annotation(doc, id)?;
-        BooksDoc::move_annotation(doc, uuid, chapter, block, start, end, excerpt)
-            .then_some(())
-            .ok_or_else(|| Self::refused("annotation is no longer available"))
+        BooksDoc::move_annotation(
+            doc,
+            uuid,
+            &AnnotationAnchor {
+                chapter,
+                block,
+                start,
+                end,
+                excerpt: excerpt.to_string(),
+            },
+        )
+        .then_some(())
+        .ok_or_else(|| Self::refused("annotation is no longer available"))
     }
 }
 
@@ -1053,7 +1046,18 @@ impl Action for EbookAction {
                 color,
                 text,
             } => Self::apply_add_note(
-                doc, book_id, id, *chapter, *block, *start, *end, excerpt, color, text,
+                doc,
+                SerializedNote {
+                    book_id,
+                    id,
+                    chapter: *chapter,
+                    block: *block,
+                    start: *start,
+                    end: *end,
+                    excerpt,
+                    color,
+                    text,
+                },
             ),
             EbookAction::ToggleBookmark { .. } => Err(Self::refused(
                 "legacy bookmark toggles cannot replay deterministically",
@@ -1104,7 +1108,19 @@ impl Action for EbookAction {
                 color,
                 text,
             } => Self::apply_add_comment(
-                doc, book_id, group, id, *chapter, *block, *start, *end, excerpt, color, text,
+                doc,
+                group,
+                SerializedNote {
+                    book_id,
+                    id,
+                    chapter: *chapter,
+                    block: *block,
+                    start: *start,
+                    end: *end,
+                    excerpt,
+                    color,
+                    text,
+                },
             ),
             EbookAction::MoveAnnotation {
                 id,
@@ -1236,28 +1252,30 @@ pub fn set_progress_action(book_id: &str, progress: Progress) -> EbookAction {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn add_note_action(
-    book_id: &str,
-    id: Uuid,
-    chapter: usize,
-    block: usize,
-    start: usize,
-    end: usize,
-    color: HiColor,
-    excerpt: &str,
-    text: &str,
-) -> EbookAction {
-    EbookAction::AddNote {
-        book_id: book_id.to_string(),
-        id: id.to_string(),
-        chapter,
-        block,
-        start,
-        end,
-        excerpt: excerpt.to_string(),
-        color: color.as_str().to_string(),
-        text: text.to_string(),
+/// A fully authored standalone note. Group membership is added separately by
+/// [`CommentDraft`], so note/comment call sites share one anchor contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteDraft {
+    pub book_id: String,
+    pub id: Uuid,
+    pub anchor: AnnotationAnchor,
+    pub color: HiColor,
+    pub text: String,
+}
+
+impl NoteDraft {
+    pub fn into_action(self) -> EbookAction {
+        EbookAction::AddNote {
+            book_id: self.book_id,
+            id: self.id.to_string(),
+            chapter: self.anchor.chapter,
+            block: self.anchor.block,
+            start: self.anchor.start,
+            end: self.anchor.end,
+            excerpt: self.anchor.excerpt,
+            color: self.color.as_str().to_string(),
+            text: self.text,
+        }
     }
 }
 
@@ -1333,21 +1351,14 @@ pub fn change_color_action(group: Uuid, color: HiColor) -> EbookAction {
 
 /// Re-anchor a single annotation row (a highlight piece or a note) to a new
 /// passage. Used by the draggable margin markers.
-pub fn move_annotation_action(
-    id: Uuid,
-    chapter: usize,
-    block: usize,
-    start: usize,
-    end: usize,
-    excerpt: &str,
-) -> EbookAction {
+pub fn move_annotation_action(id: Uuid, anchor: AnnotationAnchor) -> EbookAction {
     EbookAction::MoveAnnotation {
         id: id.to_string(),
-        chapter,
-        block,
-        start,
-        end,
-        excerpt: excerpt.to_string(),
+        chapter: anchor.chapter,
+        block: anchor.block,
+        start: anchor.start,
+        end: anchor.end,
+        excerpt: anchor.excerpt,
     }
 }
 
@@ -1357,30 +1368,28 @@ pub fn delete_highlight_action(group: Uuid) -> EbookAction {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn add_comment_action(
-    book_id: &str,
-    group: Uuid,
-    id: Uuid,
-    chapter: usize,
-    block: usize,
-    start: usize,
-    end: usize,
-    color: HiColor,
-    excerpt: &str,
-    text: &str,
-) -> EbookAction {
-    EbookAction::AddComment {
-        book_id: book_id.to_string(),
-        group: group.to_string(),
-        id: id.to_string(),
-        chapter,
-        block,
-        start,
-        end,
-        excerpt: excerpt.to_string(),
-        color: color.as_str().to_string(),
-        text: text.to_string(),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentDraft {
+    pub group: Uuid,
+    pub note: NoteDraft,
+}
+
+impl CommentDraft {
+    pub fn into_action(self) -> EbookAction {
+        let note = self.note;
+        let anchor = note.anchor;
+        EbookAction::AddComment {
+            book_id: note.book_id,
+            group: self.group.to_string(),
+            id: note.id.to_string(),
+            chapter: anchor.chapter,
+            block: anchor.block,
+            start: anchor.start,
+            end: anchor.end,
+            excerpt: anchor.excerpt,
+            color: note.color.as_str().to_string(),
+            text: note.text,
+        }
     }
 }
 
@@ -1506,17 +1515,22 @@ fn book_level_actions(mut root: Resource, ctx: &BookResourceCtx) -> Resource {
         "your note…",
         ExecutionLocus::ClientLocal,
         move |text: &str| {
-            encode(&add_note_action(
-                &bid,
-                Uuid::new_v4(),
-                chapter,
-                block,
-                0,
-                0,
-                HiColor::Yellow,
-                "",
-                text,
-            ))
+            encode(
+                &NoteDraft {
+                    book_id: bid.clone(),
+                    id: Uuid::new_v4(),
+                    anchor: AnnotationAnchor {
+                        chapter,
+                        block,
+                        start: 0,
+                        end: 0,
+                        excerpt: String::new(),
+                    },
+                    color: HiColor::Yellow,
+                    text: text.to_string(),
+                }
+                .into_action(),
+            )
         },
     ))
 }
@@ -1558,14 +1572,8 @@ fn highlight_resource(group: Uuid, annos: &[Annotation], book_id: &str) -> Optio
     // Add a comment — prompted; the comment id is minted at commit time and
     // the anchor is copied from the highlight's first piece.
     let bid = book_id.to_string();
-    let anchor = (
-        first.chapter,
-        first.block,
-        first.start,
-        first.end,
-        first.color,
-        first.excerpt.clone(),
-    );
+    let anchor = first.anchor();
+    let color = first.color;
     hl = hl.with_action(ActionSpec::prompted(
         "add-comment",
         "Add comment",
@@ -1573,18 +1581,19 @@ fn highlight_resource(group: Uuid, annos: &[Annotation], book_id: &str) -> Optio
         "your comment…",
         ExecutionLocus::ClientLocal,
         move |text: &str| {
-            encode(&add_comment_action(
-                &bid,
-                group,
-                Uuid::new_v4(),
-                anchor.0,
-                anchor.1,
-                anchor.2,
-                anchor.3,
-                anchor.4,
-                &anchor.5,
-                text,
-            ))
+            encode(
+                &CommentDraft {
+                    group,
+                    note: NoteDraft {
+                        book_id: bid.clone(),
+                        id: Uuid::new_v4(),
+                        anchor: anchor.clone(),
+                        color,
+                        text: text.to_string(),
+                    },
+                }
+                .into_action(),
+            )
         },
     ));
 
@@ -2568,7 +2577,16 @@ mod tests {
         for action in [
             edit_note_action(id, "late edit"),
             finalize_annotation_action(id, 1_700_000_123_456),
-            move_annotation_action(id, 0, 9, 0, 5, "late move"),
+            move_annotation_action(
+                id,
+                AnnotationAnchor {
+                    chapter: 0,
+                    block: 9,
+                    start: 0,
+                    end: 5,
+                    excerpt: "late move".into(),
+                },
+            ),
         ] {
             assert!(
                 matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
@@ -2587,18 +2605,23 @@ mod tests {
         let new_id = Uuid::from_u128(0xBADD_CAFE_0000_0000_0000_0000_0000_0001);
 
         let actions = [
-            add_comment_action(
-                &book_id,
+            CommentDraft {
                 group,
-                new_id,
-                0,
-                3,
-                0,
-                12,
-                HiColor::Green,
-                "a passage",
-                "late comment",
-            ),
+                note: NoteDraft {
+                    book_id: book_id.clone(),
+                    id: new_id,
+                    anchor: AnnotationAnchor {
+                        chapter: 0,
+                        block: 3,
+                        start: 0,
+                        end: 12,
+                        excerpt: "a passage".into(),
+                    },
+                    color: HiColor::Green,
+                    text: "late comment".into(),
+                },
+            }
+            .into_action(),
             change_color_action(group, HiColor::Pink),
             EbookAction::HighlightSelection {
                 book_id,
@@ -2689,18 +2712,23 @@ mod tests {
             "precondition: same base state"
         );
 
-        let action = add_comment_action(
-            &book_id,
-            Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888),
-            Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_00FE),
-            0,
-            3,
-            0,
-            12,
-            HiColor::Green,
-            "a passage",
-            "converge",
-        );
+        let action = CommentDraft {
+            group: Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888),
+            note: NoteDraft {
+                book_id: book_id.clone(),
+                id: Uuid::from_u128(0x0BAD_0000_0000_0000_0000_0000_0000_00FE),
+                anchor: AnnotationAnchor {
+                    chapter: 0,
+                    block: 3,
+                    start: 0,
+                    end: 12,
+                    excerpt: "a passage".into(),
+                },
+                color: HiColor::Green,
+                text: "converge".into(),
+            },
+        }
+        .into_action();
         let encoded = encode(&action);
 
         // A applies locally, producing the envelope; B replays it.
@@ -2873,7 +2901,16 @@ mod tests {
             "precondition: same base state"
         );
 
-        let action = move_annotation_action(hl.id, 0, 9, 0, 5, "moved");
+        let action = move_annotation_action(
+            hl.id,
+            AnnotationAnchor {
+                chapter: 0,
+                block: 9,
+                start: 0,
+                end: 5,
+                excerpt: "moved".into(),
+            },
+        );
         let encoded = encode(&action);
         let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
         qos_actions::replay(&mut b, &env, &registry()).unwrap();
@@ -2985,9 +3022,18 @@ mod tests {
         edit_note_action(note.id, "edited concurrently")
             .apply(&mut editing)
             .unwrap();
-        move_annotation_action(note.id, 2, 7, 3, 12, "new anchor")
-            .apply(&mut moving)
-            .unwrap();
+        move_annotation_action(
+            note.id,
+            AnnotationAnchor {
+                chapter: 2,
+                block: 7,
+                start: 3,
+                end: 12,
+                excerpt: "new anchor".into(),
+            },
+        )
+        .apply(&mut moving)
+        .unwrap();
         editing.merge(&mut moving).unwrap();
         moving.merge(&mut editing).unwrap();
 

@@ -5,16 +5,14 @@
 //! responsible for persisting those effects in the books document.
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use winit::event::{Modifiers, WindowEvent};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use crate::input_controls::{NumberControls, NumberField};
+use crate::input_controls::{InputEventCtx, InputPaintCtx, NumberControls, NumberField};
 use crate::model::{ColorScheme, CompositionStyle, FontEntry, ReadMode, ReadTheme, Settings};
 use crate::paint;
 
@@ -32,21 +30,6 @@ pub(crate) enum ReadingSettingsAction {
     SetFont(String),
     SetReadTheme(ReadTheme),
     SetScheme(String),
-}
-
-/// Event-routing services shared by the quick settings' numeric editors.
-/// The host constructs this once at its widget boundary so the component API
-/// exposes one coherent interaction contract instead of mirroring every
-/// argument required by [`NumberControls`].
-pub(crate) struct ReadingSettingsEventCtx<'a> {
-    pub event: &'a WindowEvent,
-    pub scale_factor: f64,
-    pub modifiers: Modifiers,
-    pub state: &'a mut AutoCommit,
-    pub root: &'a ObjId,
-    pub node_id: NodeId,
-    pub taffy: &'a TaffyTree<()>,
-    pub handled: &'a mut bool,
 }
 
 /// Paint services supplied by the reader host for one settings frame.
@@ -291,19 +274,10 @@ impl ReadingSettings {
 
     pub(crate) fn handle_event(
         &mut self,
-        ctx: &mut ReadingSettingsEventCtx<'_>,
+        ctx: &mut InputEventCtx<'_>,
     ) -> Vec<ReadingSettingsAction> {
         self.numbers
-            .handle_event(
-                ctx.event,
-                ctx.scale_factor,
-                ctx.modifiers,
-                ctx.state,
-                ctx.root,
-                ctx.node_id,
-                ctx.taffy,
-                ctx.handled,
-            )
+            .handle_event(ctx)
             .into_iter()
             .filter_map(|(field, value)| match field {
                 NumberField::FontScale => {
@@ -610,10 +584,12 @@ impl ReadingSettings {
             field,
             value,
             Rect::new(row.x1 - width, row.y, row.x1, row.y + row.height),
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
+            &mut InputPaintCtx {
+                scene: ctx.scene,
+                transform: ctx.transform,
+                text: ctx.text,
+                theme: ctx.theme,
+            },
         );
     }
 
