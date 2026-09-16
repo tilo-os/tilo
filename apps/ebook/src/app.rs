@@ -84,6 +84,13 @@ use crate::shelf_controls::{
 
 const TOP_BAR: f64 = 54.0;
 
+struct EbookPaintCtx<'a> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+}
+
 /// Whether a parsed book should replace the reader's current content or only
 /// join a watched shelf. The worker carries this presentation intent but never
 /// touches the document.
@@ -4193,15 +4200,11 @@ impl BooksApp {
         )
     }
 
-    fn draw_load_toast(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        message: &str,
-        border: Color,
-    ) {
+    fn draw_load_toast(&self, ctx: &mut EbookPaintCtx<'_>, message: &str, border: Color) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
         let r = self.rect;
         // Keep the surface wholly on-screen at phone widths.  The previous
         // `clamp(220, 460)` could choose the full viewport width, putting its
@@ -4727,16 +4730,22 @@ impl Widget for BooksApp {
             self.notes_flap.tick(self.notes_layout(), dt);
         }
         // App-base fill so nothing shows through.
-        paint::fill_rect(
+        let mut ctx = EbookPaintCtx {
             scene,
             transform,
+            text: tr,
+            theme,
+        };
+        paint::fill_rect(
+            ctx.scene,
+            ctx.transform,
             self.rect,
-            theme.tokens.colors.surfaces.base,
+            ctx.theme.tokens.colors.surfaces.base,
         );
         match self.view {
-            View::Library => self.draw_library(scene, transform, tr, theme),
-            View::Reader => self.draw_reader(scene, transform, tr, theme),
-            View::Settings => self.draw_settings(scene, transform, tr, theme),
+            View::Library => self.draw_library(&mut ctx),
+            View::Reader => self.draw_reader(&mut ctx),
+            View::Settings => self.draw_settings(&mut ctx),
         }
         // The empty shelf has a dedicated error position beneath its primary
         // action. Every other view needs an honest loading/result surface:
@@ -4748,23 +4757,11 @@ impl Widget for BooksApp {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("book");
-                self.draw_load_toast(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    &format!("Opening {name}…"),
-                    theme.tokens.colors.semantic.info,
-                );
+                let border = ctx.theme.tokens.colors.semantic.info;
+                self.draw_load_toast(&mut ctx, &format!("Opening {name}…"), border);
             } else if let Some(error) = self.load_error.as_deref() {
-                self.draw_load_toast(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    error,
-                    theme.tokens.colors.semantic.danger,
-                );
+                let border = ctx.theme.tokens.colors.semantic.danger;
+                self.draw_load_toast(&mut ctx, error, border);
             }
         }
         self.refresh_hover_tooltip();
@@ -4776,11 +4773,11 @@ impl Widget for BooksApp {
                 .find(|hit| self.semantic_target(&hit.action).as_deref() == Some(focused))
         {
             paint::stroke_round(
-                scene,
-                transform,
+                ctx.scene,
+                ctx.transform,
                 hit.rect.inset(-2.0),
                 8.0,
-                theme.tokens.colors.border_focus,
+                ctx.theme.tokens.colors.border_focus,
                 2.0,
             );
         }
@@ -6331,7 +6328,11 @@ struct ShelfGrid {
 }
 
 impl BooksApp {
-    fn draw_library(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_library(&mut self, ctx: &mut EbookPaintCtx<'_>) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
         self.shelf_controls.begin_frame();
         let lib = std::mem::take(&mut self.library);
         let c = theme.tokens.colors.clone();
@@ -7352,7 +7353,11 @@ struct ReaderPageGeometry {
 }
 
 impl BooksApp {
-    fn draw_reader(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
         let lib = std::mem::take(&mut self.library);
         let annos = std::mem::take(&mut self.annotations);
         let c = theme.tokens.colors.clone();
@@ -9652,13 +9657,11 @@ impl BooksApp {
 // --- Settings screen: the font + colour-scheme managers ---------------------
 
 impl BooksApp {
-    fn draw_settings(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
+    fn draw_settings(&mut self, ctx: &mut EbookPaintCtx<'_>) {
+        let scene = &mut *ctx.scene;
+        let t = ctx.transform;
+        let tr = &mut *ctx.text;
+        let theme = ctx.theme;
         let c = theme.tokens.colors.clone();
         let r = self.rect;
 
