@@ -475,6 +475,30 @@ struct WordFlags {
     mono: bool,
 }
 
+struct FragmentBuildCtx<'a> {
+    words: &'a mut Vec<Word>,
+    style: &'a BlockStyle,
+    settings: &'a Settings,
+    language: &'a str,
+    text: &'a mut TextRenderer,
+}
+
+struct SourceWord<'a> {
+    text: &'a str,
+    char_start: usize,
+    source_byte_start: usize,
+    flags: WordFlags,
+    family: &'a FontChoice,
+}
+
+#[derive(Clone, Copy)]
+struct FragmentSlice {
+    byte_start: usize,
+    byte_end: usize,
+    index: usize,
+    chars_before: usize,
+}
+
 struct BlockComposition<'a> {
     words: &'a [Word],
     canonical_text: &'a str,
@@ -506,84 +530,93 @@ struct LinePlacement {
 
 /// Measure and push the single fragment `w[byte_start..byte_end]` as a
 /// `Word`. Returns its char count, so the caller can advance `chars_before`.
-#[allow(clippy::too_many_arguments)]
 fn push_one_fragment(
-    words: &mut Vec<Word>,
-    w: &str,
-    byte_start: usize,
-    byte_end: usize,
-    fragment_index: usize,
-    chars_before: usize,
-    char_start: usize,
-    source_byte_start: usize,
-    flags: WordFlags,
+    ctx: &mut FragmentBuildCtx<'_>,
+    source: &SourceWord<'_>,
+    slice: FragmentSlice,
     breaks: &WordBreaks,
     hyphen_width: f32,
-    st: &BlockStyle,
-    settings: &Settings,
-    tr: &mut TextRenderer,
-    word_family: &FontChoice,
 ) -> usize {
     let WordFlags {
         space_before,
         bold,
         italic,
         mono,
-    } = flags;
-    let fragment = w.get(byte_start..byte_end).unwrap_or_default();
+    } = source.flags;
+    let fragment = source
+        .text
+        .get(slice.byte_start..slice.byte_end)
+        .unwrap_or_default();
     let hyphen_break_before =
-        fragment_index != 0 && breaks.hyphen.binary_search(&byte_start).is_ok();
+        slice.index != 0 && breaks.hyphen.binary_search(&slice.byte_start).is_ok();
     let natural_break_before =
-        fragment_index != 0 && breaks.unicode.binary_search(&byte_start).is_ok();
-    let stretch_before = if natural_break_before && settings.composition.justified() {
-        script_stretch_before(w, byte_start, st.size)
+        slice.index != 0 && breaks.unicode.binary_search(&slice.byte_start).is_ok();
+    let stretch_before = if natural_break_before && ctx.settings.composition.justified() {
+        script_stretch_before(source.text, slice.byte_start, ctx.style.size)
     } else {
         0.0
     };
     let fragment_chars = fragment.chars().count();
-    let fragment_width = tr
-        .measure_font(fragment, st.size, None, weight(bold), italic, word_family)
+    let fragment_width = ctx
+        .text
+        .measure_font(
+            fragment,
+            ctx.style.size,
+            None,
+            weight(bold),
+            italic,
+            source.family,
+        )
         .0;
-    let end_protrusion = if byte_end == w.len() {
+    let end_protrusion = if slice.byte_end == source.text.len() {
         fragment.chars().last().map_or(0.0, |character| {
-            let fraction = if settings.composition.justified() {
+            let fraction = if ctx.settings.composition.justified() {
                 punctuation_protrusion(character)
             } else {
                 0.0
             };
-            protrusion_width(character, fraction, st, bold, italic, tr, word_family)
+            protrusion_width(
+                character,
+                fraction,
+                ctx.style,
+                bold,
+                italic,
+                ctx.text,
+                source.family,
+            )
         })
     } else {
         0.0
     };
-    let start_protrusion =
-        if settings.composition.justified() && fragment_index == 0 && breaks.opening_fraction > 0.0
-        {
-            fragment.chars().next().map_or(0.0, |character| {
-                protrusion_width(
-                    character,
-                    breaks.opening_fraction,
-                    st,
-                    bold,
-                    italic,
-                    tr,
-                    word_family,
-                )
-            })
-        } else {
-            0.0
-        };
-    words.push(Word {
+    let start_protrusion = if ctx.settings.composition.justified()
+        && slice.index == 0
+        && breaks.opening_fraction > 0.0
+    {
+        fragment.chars().next().map_or(0.0, |character| {
+            protrusion_width(
+                character,
+                breaks.opening_fraction,
+                ctx.style,
+                bold,
+                italic,
+                ctx.text,
+                source.family,
+            )
+        })
+    } else {
+        0.0
+    };
+    ctx.words.push(Word {
         text: fragment.to_string(),
         bold,
         italic,
         mono,
         math: None,
         w: fragment_width,
-        space_before: fragment_index == 0 && space_before,
-        char_start: char_start + chars_before,
+        space_before: slice.index == 0 && space_before,
+        char_start: source.char_start + slice.chars_before,
         char_len: fragment_chars,
-        source_byte_start: source_byte_start + byte_start,
+        source_byte_start: source.source_byte_start + slice.byte_start,
         hyphen_break_before,
         hyphen_width_before: if hyphen_break_before {
             hyphen_width
@@ -601,49 +634,33 @@ fn push_one_fragment(
 
 /// Split one whitespace-separated source word `w` into hyphenation/line-break
 /// fragments and push each as a `Word` (measured, with protrusion).
-#[allow(clippy::too_many_arguments)]
-fn push_word_fragments(
-    words: &mut Vec<Word>,
-    w: &str,
-    char_start: usize,
-    source_byte_start: usize,
-    flags: WordFlags,
-    st: &BlockStyle,
-    settings: &Settings,
-    language: &str,
-    tr: &mut TextRenderer,
-    word_family: &FontChoice,
-) {
-    let breaks = word_break_boundaries(w, settings, language);
-    let hyphen_width = tr
+fn push_word_fragments(ctx: &mut FragmentBuildCtx<'_>, source: &SourceWord<'_>) {
+    let breaks = word_break_boundaries(source.text, ctx.settings, ctx.language);
+    let hyphen_width = ctx
+        .text
         .measure_font(
             "-",
-            st.size,
+            ctx.style.size,
             None,
-            weight(flags.bold),
-            flags.italic,
-            word_family,
+            weight(source.flags.bold),
+            source.flags.italic,
+            source.family,
         )
         .0;
     let mut byte_start = 0;
     let mut chars_before = 0;
     for (fragment_index, &byte_end) in breaks.boundaries.iter().enumerate() {
         let fragment_chars = push_one_fragment(
-            words,
-            w,
-            byte_start,
-            byte_end,
-            fragment_index,
-            chars_before,
-            char_start,
-            source_byte_start,
-            flags,
+            ctx,
+            source,
+            FragmentSlice {
+                byte_start,
+                byte_end,
+                index: fragment_index,
+                chars_before,
+            },
             &breaks,
             hyphen_width,
-            st,
-            settings,
-            tr,
-            word_family,
         );
         byte_start = byte_end;
         chars_before += fragment_chars;
@@ -704,21 +721,25 @@ fn build_words(
             canon.push_str(w);
             char_pos += char_len;
             push_word_fragments(
-                &mut words,
-                w,
-                char_start,
-                source_byte_start,
-                WordFlags {
-                    space_before,
-                    bold,
-                    italic,
-                    mono,
+                &mut FragmentBuildCtx {
+                    words: &mut words,
+                    style: st,
+                    settings,
+                    language,
+                    text: tr,
                 },
-                st,
-                settings,
-                language,
-                tr,
-                word_family,
+                &SourceWord {
+                    text: w,
+                    char_start,
+                    source_byte_start,
+                    flags: WordFlags {
+                        space_before,
+                        bold,
+                        italic,
+                        mono,
+                    },
+                    family: word_family,
+                },
             );
         }
     }
