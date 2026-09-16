@@ -318,6 +318,7 @@ pub struct ApiTesterApp {
     /// the last action — the same path a Ctrl+K palette dispatch takes.
     actions: ui::ActionHost,
     search_provider: crate::search_provider::ApiSearchProvider,
+    search_error: Option<ui::search::SearchCatalogError>,
 
     // --- Worker plumbing ---
     tx: Sender<SendOutcome>,
@@ -509,6 +510,7 @@ impl ApiTesterApp {
             sink: widgets.sink,
             actions: ui::ActionHost::new(),
             search_provider: crate::search_provider::ApiSearchProvider::new(),
+            search_error: None,
             tx,
             rx,
             resource_send_invocation: None,
@@ -959,12 +961,18 @@ impl ApiTesterApp {
     }
 
     fn refresh_search(&mut self) {
-        self.search_provider
-            .refresh(&self.collections, &self.environments);
+        self.search_error = self
+            .search_provider
+            .refresh(&self.collections, &self.environments, &self.history)
+            .err();
     }
 
     pub(crate) fn resource_from_catalog(&self, id: &str) -> Option<qos_actions::Resource> {
         self.search_provider.resource(id)
+    }
+
+    pub(crate) fn search_error_message(&self) -> Option<String> {
+        self.search_error.as_ref().map(ToString::to_string)
     }
 
     #[cfg(test)]
@@ -973,7 +981,10 @@ impl ApiTesterApp {
         collections: &[Collection],
         environments: &[Environment],
     ) {
-        self.search_provider.refresh(collections, environments);
+        self.search_error = self
+            .search_provider
+            .refresh(collections, environments, &[])
+            .err();
     }
 
     /// Number shown on a request-builder tab badge (kept for the tests + the
