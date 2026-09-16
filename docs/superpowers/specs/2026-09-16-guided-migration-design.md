@@ -1,7 +1,8 @@
 # Guided qOS setup and migration
 
 Date: 2026-09-16
-Status: Conversation design approved; written specification awaiting review.
+Status: Approved for implementation by the user's request to implement the app
+for Windows and Linux. Platform feasibility and release validation remain gates.
 
 ## Outcome and scope
 
@@ -251,7 +252,8 @@ review, and implementation plan:
 The user approved the experience choices, preserving the existing OS, copied and
 synchronized folder modes, connected-folder behavior, and the installation flow
 with the old OS retained as default. This written specification makes those
-decisions reviewable; implementation has not started. The 30-day recovery policy
-and detailed component/acceptance boundaries are proposals for written review.
-After approval, create the first subproject's implementation plan beginning with
-platform feasibility; do not treat unproven platform support as established.
+decisions reviewable. The subsequent instruction to implement the app authorizes
+execution of this design, including the 30-day recovery policy and component
+boundaries. Begin with platform feasibility and the non-mutating setup foundation;
+do not treat unproven platform support as established. Track remaining delivery
+components and their verification explicitly until the full app is complete.
