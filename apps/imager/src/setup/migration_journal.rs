@@ -9,16 +9,104 @@ use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     ffi::{OsStr, OsString},
     fs::File,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
     time::SystemTime,
 };
 
+// The old whole-document bound remains only for legacy decoding. V2 bounds
+// each frame, never the complete operation. Checksums detect corruption, not
+// malicious edits; receipts still confer no overwrite authority.
 const MAX_JOURNAL: u64 = 16 * 1024 * 1024;
+const MAX_RECORD: usize = 128 * 1024;
+const MAGIC: &[u8; 8] = b"QOSJNL2\n";
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "record", deny_unknown_fields)]
+enum Record {
+    Header {
+        document: Document,
+    },
+    Receipt {
+        receipt: Receipt,
+    },
+    Outcome {
+        bytes: u64,
+        cancelled: bool,
+        scan_completed: bool,
+        metadata_limitations: Vec<String>,
+    },
+    Issue {
+        failed: bool,
+        path: RelativePath,
+        message: String,
+    },
+    CommitOutcome,
+}
+
+fn write_record(file: &mut File, sequence: &mut u64, record: &Record) -> io::Result<()> {
+    use sha2::{Digest, Sha256};
+    let payload = serde_json::to_vec(record)?;
+    if payload.len() > MAX_RECORD {
+        return Err(changed("journal record exceeds size bound"));
+    }
+    let len = u32::try_from(payload.len())
+        .map_err(|_| changed("record length overflow"))?
+        .to_le_bytes();
+    let seq = sequence.to_le_bytes();
+    let mut hash = Sha256::new();
+    hash.update(len);
+    hash.update(seq);
+    hash.update(&payload);
+    file.write_all(&len)?;
+    file.write_all(&seq)?;
+    file.write_all(&hash.finalize())?;
+    file.write_all(&payload)?;
+    *sequence = sequence
+        .checked_add(1)
+        .ok_or_else(|| changed("journal sequence exhausted"))?;
+    Ok(())
+}
+
+// A partial last frame may be an interrupted write. A complete frame with a
+// bad checksum/sequence/schema is corruption and must never be skipped.
+fn read_record(file: &mut File, sequence: u64) -> io::Result<Option<Record>> {
+    use sha2::{Digest, Sha256};
+    let mut header = [0; 44];
+    match file.read_exact(&mut header) {
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        result => result?,
+    }
+    let len = u32::from_le_bytes(
+        header[..4]
+            .try_into()
+            .map_err(|_| changed("invalid length"))?,
+    ) as usize;
+    let seq = u64::from_le_bytes(
+        header[4..12]
+            .try_into()
+            .map_err(|_| changed("invalid sequence"))?,
+    );
+    if len == 0 || len > MAX_RECORD || seq != sequence {
+        return Err(changed("invalid journal record bounds or sequence"));
+    }
+    let mut payload = vec![0; len];
+    match file.read_exact(&mut payload) {
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+        result => result?,
+    }
+    let mut hash = Sha256::new();
+    hash.update(&header[..12]);
+    hash.update(&payload);
+    if hash.finalize().as_slice() != &header[12..] {
+        return Err(changed("journal record checksum mismatch"));
+    }
+    Ok(Some(serde_json::from_slice(&payload)?))
+}
 
 /// Internal classification travels with I/O errors; callers never infer
 /// persistence state from an error message or ordinary per-file conflicts.
@@ -77,7 +165,7 @@ pub(super) fn persistence_result<T>(
     result.map_err(|cause| {
         if cause
             .get_ref()
-            .is_some_and(|error| error.is::<PersistenceError>())
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<PersistenceError>)
         {
             cause
         } else {
@@ -188,7 +276,10 @@ impl Snapshot {
         Ok(Self {
             size: m.len(),
             modified: m.modified()?.into_std(),
-            created: m.created().ok().map(|t| t.into_std()),
+            created: m
+                .created()
+                .ok()
+                .map(cap_primitives::time::SystemTime::into_std),
             inode: m.ino(),
             #[cfg(unix)]
             changed: {
@@ -262,7 +353,7 @@ impl Receipt {
         }
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Outcome {
     verified: Vec<RelativePath>,
@@ -273,7 +364,7 @@ struct Outcome {
     scan_completed: bool,
     metadata_limitations: Vec<String>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
     version: u32,
@@ -289,6 +380,8 @@ struct Document {
 /// All persisted paths are native code units; no permissions or grants are serialized.
 pub struct MigrationJournal {
     document: Document,
+    index: BTreeMap<PathBuf, usize>,
+    sequence: u64,
     parent: Arc<PinnedDirectory>,
     name: OsString,
     file: File,
@@ -345,14 +438,18 @@ impl MigrationJournal {
         let (parent, name) = journal_parent(journal_path)?;
         if parent.contains_identity(&source.identity)
             || source.contains_identity(&parent.identity)
-            || destination_path.starts_with(journal_path.parent().unwrap())
+            || destination_path.starts_with(
+                journal_path
+                    .parent()
+                    .ok_or_else(|| changed("journal parent missing"))?,
+            )
         {
             return Err(changed(
                 "journal must be outside both copied trees in a separate private directory",
             ));
         }
         let document = Document {
-            version: 1,
+            version: 2,
             operation: format!("{}-{:?}", std::process::id(), SystemTime::now()),
             source: NativeName::encode(source_path.as_os_str()),
             destination: NativeName::encode(destination_path.as_os_str()),
@@ -364,7 +461,15 @@ impl MigrationJournal {
         absolute(&document.source)?;
         absolute(&document.destination)?;
         let mut temporary = OwnedTemporary::create(&parent, &name)?;
-        temporary.file.write_all(&serde_json::to_vec(&document)?)?;
+        temporary.file.write_all(MAGIC)?;
+        let mut sequence = 0;
+        write_record(
+            &mut temporary.file,
+            &mut sequence,
+            &Record::Header {
+                document: document.clone(),
+            },
+        )?;
         durability::sync_file(&temporary.file)?;
         parent.validate_destination()?;
         cap_primitives::fs::hard_link(
@@ -375,9 +480,13 @@ impl MigrationJournal {
         )?;
         durability::sync_directory(&parent.file)?;
         let file = temporary.file.try_clone()?;
+        file.try_lock()
+            .map_err(|e| changed(&format!("journal is busy: {e}")))?;
         let identity = Metadata::from_file(&file)?;
         Ok(Self {
             document,
+            index: BTreeMap::new(),
+            sequence,
             parent,
             name,
             file,
@@ -391,35 +500,100 @@ impl MigrationJournal {
         durability::supported()?;
         let (parent, name) = journal_parent(path)?;
         let expected = metadata_nofollow(&parent.file, Path::new(&name))?;
-        if !expected.is_file() || expected.is_symlink() || expected.len() > MAX_JOURNAL {
-            return Err(changed("journal is not a bounded regular file"));
+        if !expected.is_file() || expected.is_symlink() {
+            return Err(changed("journal is not a regular file"));
         }
         let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No).nonblock(true);
+        options
+            .read(true)
+            .write(true)
+            .follow(FollowSymlinks::No)
+            .nonblock(true);
         let mut file = cap_primitives::fs::open(&parent.file, Path::new(&name), &options)?;
         destination_security::check_private_file(&file)?;
+        file.try_lock()
+            .map_err(|e| changed(&format!("journal is busy: {e}")))?;
         let identity = Metadata::from_file(&file)?;
         if !migration::same_snapshot(&expected, &identity) {
             return Err(changed("journal replaced while opening"));
         }
-        let mut data = Vec::new();
-        (&mut file).take(MAX_JOURNAL + 1).read_to_end(&mut data)?;
-        if data.len() as u64 > MAX_JOURNAL {
-            return Err(changed("journal exceeds size bound"));
-        }
-        let document: Document = serde_json::from_slice(&data)?;
-        if document.version != 1 || document.operation.is_empty() || document.operation.len() > 128
-        {
-            return Err(changed("unsupported journal schema or operation"));
+        let mut magic = [0; 8];
+        let modern = file.read_exact(&mut magic).is_ok() && &magic == MAGIC;
+        file.seek(SeekFrom::Start(if modern { 8 } else { 0 }))?;
+        let mut sequence = 0;
+        let mut end = 8;
+        let mut document = if modern {
+            let Some(Record::Header { document }) = read_record(&mut file, sequence)? else {
+                return Err(changed("journal header missing"));
+            };
+            sequence += 1;
+            end = file.stream_position()?;
+            if document.version != 2 || !document.receipts.is_empty() || document.outcome.is_some()
+            {
+                return Err(changed("invalid journal header"));
+            }
+            document
+        } else {
+            let mut data = Vec::new();
+            (&mut file).take(MAX_JOURNAL + 1).read_to_end(&mut data)?;
+            if data.len() as u64 > MAX_JOURNAL {
+                return Err(changed("legacy journal exceeds size bound"));
+            }
+            let document: Document = serde_json::from_slice(&data)?;
+            if document.version != 1 {
+                return Err(changed("unsupported legacy journal schema"));
+            }
+            document
+        };
+        if document.operation.is_empty() || document.operation.len() > 128 {
+            return Err(changed("unsupported journal operation"));
         }
         absolute(&document.source)?;
         absolute(&document.destination)?;
-        let mut paths = BTreeSet::new();
-        for receipt in &document.receipts {
-            if !paths.insert(receipt.path().decode()?) {
+        let mut index = BTreeMap::new();
+        for (position, receipt) in document.receipts.iter().enumerate() {
+            if index.insert(receipt.path().decode()?, position).is_some() {
                 return Err(changed("duplicate journal receipt"));
             }
         }
+        if modern {
+            let mut pending = None;
+            while let Some(record) = read_record(&mut file, sequence)? {
+                Self::replay_record(&mut document, &mut index, &mut pending, record)?;
+                sequence += 1;
+                end = file.stream_position()?;
+            }
+        }
+        Self::validate_outcome_paths(&document)?;
+        let mut result = Self {
+            document,
+            index,
+            sequence,
+            parent,
+            name,
+            file,
+            identity,
+            resume: true,
+            seen: BTreeSet::new(),
+            failure: None,
+        };
+        result.validate()?;
+        if modern {
+            if end != result.file.metadata()?.len() {
+                result.validate_recovery_location()?;
+                // Revalidate before repairing only the uncommitted final tail.
+                #[cfg(test)]
+                persistence_injection::fail_at("before_recover_tail")?;
+                result.file.set_len(end)?;
+                durability::sync_file(&result.file)?;
+            }
+            result.file.seek(SeekFrom::Start(end))?;
+        } else {
+            result.upgrade_legacy()?;
+        }
+        Ok(result)
+    }
+    fn validate_outcome_paths(document: &Document) -> io::Result<()> {
         if let Some(outcome) = &document.outcome {
             for path in outcome
                 .verified
@@ -430,19 +604,134 @@ impl MigrationJournal {
                 path.decode()?;
             }
         }
-        let result = Self {
-            document,
-            parent,
-            name,
-            file,
-            identity,
-            resume: true,
-            seen: BTreeSet::new(),
-            failure: None,
-        };
-        result.validate()?;
-        Ok(result)
+        Ok(())
     }
+
+    fn replay_record(
+        document: &mut Document,
+        index: &mut BTreeMap<PathBuf, usize>,
+        pending: &mut Option<Outcome>,
+        record: Record,
+    ) -> io::Result<()> {
+        match record {
+            Record::Header { .. } => return Err(changed("duplicate journal header")),
+            Record::Receipt { receipt } => {
+                let path = receipt.path().decode()?;
+                if let Some(position) = index.get(&path) {
+                    // Only directory completion can update a receipt.
+                    match (
+                        &*document
+                            .receipts
+                            .get_mut(*position)
+                            .ok_or_else(|| changed("journal receipt index missing"))?,
+                        &receipt,
+                    ) {
+                        (
+                            Receipt::Directory {
+                                source: old_source,
+                                destination: old_destination,
+                                accessed: old_accessed,
+                                modified: old_modified,
+                                ..
+                            },
+                            Receipt::Directory {
+                                source: new_source,
+                                destination: new_destination,
+                                accessed: new_accessed,
+                                modified: new_modified,
+                                completed: true,
+                                ..
+                            },
+                        ) if (old_source, old_destination, old_accessed, old_modified)
+                            == (new_source, new_destination, new_accessed, new_modified) => {}
+                        _ => return Err(changed("conflicting journal receipt update")),
+                    }
+                    *document
+                        .receipts
+                        .get_mut(*position)
+                        .ok_or_else(|| changed("journal receipt index missing"))? = receipt;
+                } else {
+                    index.insert(path, document.receipts.len());
+                    document.receipts.push(receipt);
+                }
+            }
+            Record::Outcome {
+                bytes,
+                cancelled,
+                scan_completed,
+                metadata_limitations,
+            } => {
+                *pending = Some(Outcome {
+                    verified: Vec::new(),
+                    bytes,
+                    skipped: Vec::new(),
+                    failed: Vec::new(),
+                    cancelled,
+                    scan_completed,
+                    metadata_limitations,
+                });
+                document.outcome = None;
+            }
+            Record::Issue {
+                failed,
+                path,
+                message,
+            } => {
+                path.decode()?;
+                let outcome = pending
+                    .as_mut()
+                    .ok_or_else(|| changed("issue outside outcome"))?;
+                if failed {
+                    outcome.failed.push((path, message));
+                } else {
+                    outcome.skipped.push((path, message));
+                }
+            }
+            Record::CommitOutcome => {
+                document.outcome = Some(
+                    pending
+                        .take()
+                        .ok_or_else(|| changed("outcome commit without outcome"))?,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    // Repair/conversion writes are permitted only outside both copied trees,
+    // after root identity revalidation. Bad locations remain byte-for-byte intact.
+    fn validate_recovery_location(&self) -> io::Result<()> {
+        let source = PinnedDirectory::open_absolute(&absolute(&self.document.source)?)?;
+        let destination_path = absolute(&self.document.destination)?;
+        let destination_parent_path = destination_path
+            .parent()
+            .ok_or_else(|| changed("destination parent missing"))?;
+        let destination_parent = PinnedDirectory::open_absolute(destination_parent_path)?;
+        if directory_identity(&source)? != self.document.source_identity
+            || directory_identity(&destination_parent)? != self.document.destination_parent_identity
+        {
+            return Err(changed(
+                "root identity changed; journal recovery requires review",
+            ));
+        }
+        if self.parent.contains_identity(&source.identity)
+            || source.contains_identity(&self.parent.identity)
+        {
+            return Err(changed(
+                "journal recovery must remain outside the source tree",
+            ));
+        }
+        if let Ok(destination) = PinnedDirectory::open_absolute(&destination_path)
+            && (self.parent.contains_identity(&destination.identity)
+                || destination.contains_identity(&self.parent.identity))
+        {
+            return Err(changed(
+                "journal recovery must remain outside the destination tree",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> io::Result<()> {
         self.parent.validate_destination()?;
         destination_security::check_private_file(&self.parent.file)?;
@@ -503,49 +792,138 @@ impl MigrationJournal {
         result
     }
 
-    fn save(&mut self) -> io::Result<()> {
+    fn append(
+        &mut self,
+        records: impl FnOnce(&mut File, &mut u64) -> io::Result<()>,
+    ) -> io::Result<()> {
         let mut boundary = PersistenceBoundary::PreviousCheckpoint;
         let result = (|| {
             persistence_result(self.validate(), PersistenceBoundary::JournalUnavailable)?;
             #[cfg(test)]
             persistence_injection::fail_at("before_encode")?;
-            let bytes = serde_json::to_vec(&self.document)?;
-            if bytes.len() as u64 > MAX_JOURNAL {
-                return Err(changed("journal capacity exceeded"));
-            }
-            let mut temporary = OwnedTemporary::create(&self.parent, &self.name)?;
-            temporary.file.write_all(&bytes)?;
-            durability::sync_file(&temporary.file)?;
-            persistence_result(self.validate(), PersistenceBoundary::JournalUnavailable)?;
             #[cfg(test)]
             crash_injection::boundary("journal_before_replace");
             #[cfg(test)]
             persistence_injection::fail_at("before_replace")?;
-            cap_primitives::fs::rename(
-                &self.parent.file,
-                Path::new(&temporary.name),
-                &self.parent.file,
-                Path::new(&self.name),
-            )?;
             boundary = PersistenceBoundary::JournalReplacementUncertain;
+            records(&mut self.file, &mut self.sequence)?;
             #[cfg(test)]
             crash_injection::boundary("journal_after_replace");
             #[cfg(test)]
             persistence_injection::fail_at("after_replace")?;
-            self.file = temporary.file.try_clone()?;
-            self.identity = Metadata::from_file(&self.file)?;
-            durability::sync_directory(&self.parent.file)
+            durability::sync_file(&self.file)
         })();
         persistence_result(result, boundary)
     }
+
+    fn save_receipt(&mut self, receipt: Receipt) -> io::Result<()> {
+        let path = receipt.path().decode()?;
+        self.append(|file, sequence| {
+            write_record(
+                file,
+                sequence,
+                &Record::Receipt {
+                    receipt: receipt.clone(),
+                },
+            )
+        })?;
+        if let Some(position) = self.index.get(&path) {
+            *self
+                .document
+                .receipts
+                .get_mut(*position)
+                .ok_or_else(|| changed("journal receipt index missing"))? = receipt;
+        } else {
+            self.index.insert(path, self.document.receipts.len());
+            self.document.receipts.push(receipt);
+        }
+        Ok(())
+    }
+
+    fn write_outcome(file: &mut File, sequence: &mut u64, outcome: &Outcome) -> io::Result<()> {
+        write_record(
+            file,
+            sequence,
+            &Record::Outcome {
+                bytes: outcome.bytes,
+                cancelled: outcome.cancelled,
+                scan_completed: outcome.scan_completed,
+                metadata_limitations: outcome.metadata_limitations.clone(),
+            },
+        )?;
+        for (failed, issues) in [(false, &outcome.skipped), (true, &outcome.failed)] {
+            for (path, message) in issues {
+                write_record(
+                    file,
+                    sequence,
+                    &Record::Issue {
+                        failed,
+                        path: path.clone(),
+                        message: message.clone(),
+                    },
+                )?;
+            }
+        }
+        write_record(file, sequence, &Record::CommitOutcome)
+    }
+
+    fn upgrade_legacy(&mut self) -> io::Result<()> {
+        self.validate()?;
+        self.validate_recovery_location()?;
+        let mut temporary = OwnedTemporary::create(&self.parent, &self.name)?;
+        temporary.file.write_all(MAGIC)?;
+        let mut sequence = 0;
+        let mut header = self.document.clone();
+        header.version = 2;
+        header.receipts.clear();
+        header.outcome = None;
+        write_record(
+            &mut temporary.file,
+            &mut sequence,
+            &Record::Header { document: header },
+        )?;
+        for receipt in &self.document.receipts {
+            write_record(
+                &mut temporary.file,
+                &mut sequence,
+                &Record::Receipt {
+                    receipt: receipt.clone(),
+                },
+            )?;
+        }
+        if let Some(outcome) = &self.document.outcome {
+            Self::write_outcome(&mut temporary.file, &mut sequence, outcome)?;
+        }
+        durability::sync_file(&temporary.file)?;
+        temporary
+            .file
+            .try_lock()
+            .map_err(|e| changed(&format!("journal is busy: {e}")))?;
+        self.validate()?;
+        #[cfg(test)]
+        persistence_injection::fail_at("legacy_before_replace")?;
+        cap_primitives::fs::rename(
+            &self.parent.file,
+            Path::new(&temporary.name),
+            &self.parent.file,
+            Path::new(&self.name),
+        )?;
+        durability::sync_directory(&self.parent.file)?;
+        self.file = temporary.file.try_clone()?;
+        self.identity = Metadata::from_file(&self.file)?;
+        self.sequence = sequence;
+        self.document.version = 2;
+        Ok(())
+    }
+
     pub(super) fn validate_relative(&self, path: &Path) -> io::Result<()> {
+        self.validate()?;
         RelativePath::encode(path).map(|_| ())
     }
     fn lookup(&self, path: &Path) -> Option<&Receipt> {
-        self.document
-            .receipts
-            .iter()
-            .find(|r| r.path().decode().is_ok_and(|p| p == path))
+        self.index
+            .get(path)
+            .and_then(|position| self.document.receipts.get(*position))
     }
     pub(super) fn root(
         &mut self,
@@ -631,15 +1009,14 @@ impl MigrationJournal {
             self.check_directory(path, source, destination)?;
         } else {
             self.checkpoint(path, PersistenceBoundary::OutputUnrecorded, |journal| {
-                journal.document.receipts.push(Receipt::Directory {
+                journal.save_receipt(Receipt::Directory {
                     path: RelativePath::encode(path)?,
                     source: directory_identity(source)?,
                     destination: directory_identity(destination)?,
                     accessed: Metadata::from_file(&source.file)?.accessed()?.into_std(),
                     modified: Metadata::from_file(&source.file)?.modified()?.into_std(),
                     completed: false,
-                });
-                journal.save()
+                })
             })?;
         }
         self.seen.insert(path.to_path_buf());
@@ -695,26 +1072,23 @@ impl MigrationJournal {
                 #[cfg(test)]
                 persistence_injection::fail_at("directory_completion_flush")?;
                 durability::sync_directory(&destination.file)?;
-                for receipt in &mut journal.document.receipts {
-                    if let Receipt::Directory {
-                        path: p, completed, ..
-                    } = receipt
-                        && p.decode()? == path
-                    {
-                        *completed = true;
-                    }
+                let mut receipt = journal
+                    .lookup(path)
+                    .cloned()
+                    .ok_or_else(|| changed("directory receipt missing"))?;
+                if let Receipt::Directory { completed, .. } = &mut receipt {
+                    *completed = true;
                 }
-                journal.save()
+                journal.save_receipt(receipt)
             },
         )
     }
     pub(super) fn record_file(&mut self, path: &Path, facts: FileReceipt) -> io::Result<()> {
         self.checkpoint(path, PersistenceBoundary::OutputUnrecorded, |journal| {
-            journal.document.receipts.push(Receipt::File {
+            journal.save_receipt(Receipt::File {
                 path: RelativePath::encode(path)?,
                 facts,
-            });
-            journal.save()?;
+            })?;
             journal.seen.insert(path.to_path_buf());
             Ok(())
         })
@@ -806,12 +1180,8 @@ impl MigrationJournal {
                 report.failed.push((path,"recorded source missing or no longer safely reachable; conflict requires review".into()));
             }
         }
-        self.document.outcome = Some(Outcome {
-            verified: report
-                .verified_files
-                .iter()
-                .map(|p| RelativePath::encode(p))
-                .collect::<io::Result<_>>()?,
+        let outcome = Outcome {
+            verified: Vec::new(),
             bytes: report.verified_bytes,
             skipped: report
                 .skipped
@@ -826,8 +1196,10 @@ impl MigrationJournal {
             cancelled: report.cancelled,
             scan_completed: report.scan_completed,
             metadata_limitations: report.metadata_limitations.clone(),
-        });
-        self.save()
+        };
+        self.append(|file, sequence| Self::write_outcome(file, sequence, &outcome))?;
+        self.document.outcome = Some(outcome);
+        Ok(())
     }
 }
 
@@ -835,6 +1207,9 @@ impl MigrationJournal {
 /// journal directory outside both copied trees. Existing journal/output names
 /// are conflicts. Windows currently refuses before creating any files because
 /// unprivileged directory-entry persistence is not yet established.
+///
+/// # Errors
+/// Returns an error if grants, journal identity, or initial persistence cannot be validated.
 pub fn copy_folder_with_journal(
     source: &Path,
     destination: &Path,
@@ -855,6 +1230,9 @@ pub fn copy_folder_with_journal(
 /// Reopen a private journal and revalidate native roots, source facts and output
 /// bytes. Changed or unrecorded output is retained as a conflict requiring review.
 /// Linux without a persistent filesystem UUID is restricted to the same boot.
+///
+/// # Errors
+/// Returns an error for corrupt receipts, changed roots, or unavailable durable storage.
 pub fn resume_folder(
     journal_path: &Path,
     cancelled: &AtomicBool,
@@ -869,6 +1247,116 @@ pub fn resume_folder(
 mod tests {
     use super::*;
     use std::{fs, path::PathBuf, sync::atomic::Ordering};
+
+    fn decoded_document<T: serde::de::DeserializeOwned>(path: &Path) -> T {
+        let journal = MigrationJournal::open(path).unwrap();
+        let mut document = journal.document;
+        document.version = 1;
+        serde_json::from_value(serde_json::to_value(document).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn torn_tail_is_repaired_but_complete_corruption_is_refused() {
+        let (_temp, _source, output, journal) = completed_fixture();
+        let clean = fs::read(&journal).unwrap();
+        for tail in [vec![1, 2, 3], {
+            let mut bytes = 100_u32.to_le_bytes().to_vec();
+            let sequence = MigrationJournal::open(&journal).unwrap().sequence;
+            bytes.extend_from_slice(&sequence.to_le_bytes());
+            bytes.extend_from_slice(&[0; 32]);
+            bytes.extend_from_slice(b"incomplete");
+            bytes
+        }] {
+            let mut torn = clean.clone();
+            torn.extend(tail);
+            fs::write(&journal, torn).unwrap();
+            let reopened = MigrationJournal::open(&journal).unwrap();
+            assert_eq!(fs::read(&journal).unwrap(), clean);
+            drop(reopened);
+        }
+        let mut corrupt = clean;
+        corrupt[60] ^= 1;
+        fs::write(&journal, &corrupt).unwrap();
+        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+        assert_eq!(fs::read(&journal).unwrap(), corrupt);
+        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn recovery_failure_never_traverses_or_publishes() {
+        let (_temp, source, output, journal) = fixture();
+        let cancelled = AtomicBool::new(false);
+        copy_folder_with_journal(&source, &output, &journal, &cancelled, |p| {
+            if p.verified_files == 1 {
+                cancelled.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+        let mut bytes = fs::read(&journal).unwrap();
+        bytes.extend_from_slice(b"torn");
+        fs::write(&journal, &bytes).unwrap();
+        let failure = persistence_injection::Failure::at("before_recover_tail", 1);
+        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+        assert_eq!(fs::read(&journal).unwrap(), bytes);
+        assert!(!output.join("b").exists());
+        drop(failure);
+        assert!(
+            resume_folder(&journal, &AtomicBool::new(false), |_| {})
+                .unwrap()
+                .complete()
+        );
+    }
+
+    #[test]
+    fn legacy_upgrade_failure_preserves_original_and_native_conflict() {
+        let (_temp, _source, output, journal) = completed_fixture();
+        let legacy: Document = decoded_document(&journal);
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&journal, &bytes).unwrap();
+        let failure = persistence_injection::Failure::at("legacy_before_replace", 1);
+        assert!(resume_folder(&journal, &AtomicBool::new(false), |_| {}).is_err());
+        assert_eq!(fs::read(&journal).unwrap(), bytes);
+        assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
+        drop(failure);
+        fs::write(output.join("a"), b"other").unwrap();
+        let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
+        assert!(!report.complete());
+        assert_eq!(fs::read(output.join("a")).unwrap(), b"other");
+        assert!(fs::read(&journal).unwrap().starts_with(MAGIC));
+    }
+
+    // Even migration/repair of the journal must not mutate a copied tree.
+    #[test]
+    fn legacy_journal_moved_into_output_is_refused_without_conversion() {
+        let (_temp, _source, output, journal) = completed_fixture();
+        let legacy: Document = decoded_document(&journal);
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        let moved = output.join("moved.journal");
+        fs::write(&journal, &bytes).unwrap();
+        fs::rename(&journal, &moved).unwrap();
+        assert!(resume_folder(&moved, &AtomicBool::new(false), |_| {}).is_err());
+        assert_eq!(fs::read(&moved).unwrap(), bytes);
+    }
+
+    // A receipt must append bounded bytes, not rewrite all prior checkpoints.
+    #[test]
+    fn receipt_checkpoint_preserves_the_durable_prefix() {
+        let (_temp, source, output, journal) = fixture();
+        let cancel = AtomicBool::new(false);
+        let mut prefix = Vec::new();
+        copy_folder_with_journal(&source, &output, &journal, &cancel, |p| {
+            if p.verified_files == 1 && prefix.is_empty() {
+                prefix = fs::read(&journal).unwrap();
+            }
+        })
+        .unwrap();
+        let finished = fs::read(&journal).unwrap();
+        assert!(
+            finished.starts_with(&prefix),
+            "checkpoint rewrote earlier durable receipts"
+        );
+        assert!(resume_folder(&journal, &cancel, |_| {}).unwrap().complete());
+    }
 
     fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
@@ -977,8 +1465,7 @@ mod tests {
     #[test]
     fn malformed_schema_and_traversal_are_refused_before_writes() {
         let (_temp, _source, output, journal) = completed_fixture();
-        let original: serde_json::Value =
-            serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+        let original: serde_json::Value = decoded_document(&journal);
         let mut cases = vec![b"not json".to_vec()];
         let mut unknown = original.clone();
         unknown["unknown"] = true.into();
@@ -1221,10 +1708,17 @@ mod tests {
         let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
         assert!(report.complete(), "{report:?}");
         assert!(output.join("nested/empty").is_dir());
-        let document: serde_json::Value =
-            serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+        let document: serde_json::Value = decoded_document(&journal);
         assert_eq!(document["outcome"]["scan_completed"], true);
-        assert_eq!(document["outcome"]["verified"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            document["receipts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| r["kind"] == "File")
+                .count(),
+            3
+        );
         assert!(
             !document["outcome"]["metadata_limitations"]
                 .as_array()
@@ -1244,8 +1738,7 @@ mod tests {
     #[test]
     fn platform_and_boot_identity_mismatch_require_reselection() {
         let (_temp, _source, output, journal) = completed_fixture();
-        let original: serde_json::Value =
-            serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+        let original: serde_json::Value = decoded_document(&journal);
         let mut foreign = original.clone();
         foreign["source"]["platform"] = "Windows".into();
         fs::write(&journal, serde_json::to_vec(&foreign).unwrap()).unwrap();
@@ -1304,7 +1797,7 @@ mod tests {
                 let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
                 // SAFETY: NUL-terminated path in this test's disposable directory.
                 assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
-            }))
+            }));
         });
         let report = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
         assert!(!report.complete());
@@ -1377,8 +1870,7 @@ mod tests {
             assert_eq!(fs::read(source.join("a")).unwrap(), b"hello");
             assert_eq!(fs::read(source.join("b")).unwrap(), b"world");
             drop(failure);
-            let checkpoint: Document =
-                serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+            let checkpoint: Document = decoded_document(&journal);
             if boundary != "after_replace" {
                 assert_eq!(
                     checkpoint.receipts.len(),
@@ -1464,8 +1956,7 @@ mod tests {
             } else {
                 "previous journal checkpoint retained"
             }));
-            let checkpoint: Document =
-                serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+            let checkpoint: Document = decoded_document(&journal);
             if boundary != "after_replace" {
                 assert!(checkpoint.outcome.is_none());
             }
@@ -1523,8 +2014,7 @@ mod tests {
             assert_eq!(fs::read(output.join("a")).unwrap(), b"hello");
             assert!(!output.join("b").exists());
             assert!(report.failed.iter().any(|(path, _)| path == Path::new("a")));
-            let checkpoint: Document =
-                serde_json::from_slice(&fs::read(&journal).unwrap()).unwrap();
+            let checkpoint: Document = decoded_document(&journal);
             assert_eq!(checkpoint.receipts.len(), 1);
             drop(failure);
             let resumed = resume_folder(&journal, &AtomicBool::new(false), |_| {}).unwrap();
@@ -1541,6 +2031,8 @@ mod tests {
 pub(super) mod crash_injection {
     use std::cell::Cell;
     thread_local! { static COUNT: Cell<usize> = const { Cell::new(0) }; }
+    // Intentional abrupt child exit exercises process-crash recovery boundaries.
+    #[allow(clippy::exit)]
     pub(crate) fn boundary(name: &str) {
         if std::env::var("QOS_JOURNAL_BOUNDARY").ok().as_deref() != Some(name) {
             return;

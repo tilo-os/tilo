@@ -45,7 +45,7 @@ fn volume(file: &File) -> io::Result<Vec<u8>> {
     if unsafe {
         libc::fgetattrlist(
             file.as_raw_fd(),
-            (&mut attributes as *mut libc::attrlist).cast(),
+            (&raw mut attributes).cast(),
             result.as_mut_ptr().cast(),
             result.len(),
             0,
@@ -54,7 +54,7 @@ fn volume(file: &File) -> io::Result<Vec<u8>> {
     {
         return Err(io::Error::last_os_error());
     }
-    if u32::from_ne_bytes(result[..4].try_into().unwrap()) != 20
+    if u32::from_ne_bytes([result[0], result[1], result[2], result[3]]) != 20
         || result[4..].iter().all(|b| *b == 0)
     {
         return Err(io::Error::other(

@@ -1,12 +1,13 @@
 //! Background integration for durable, verified folder copies.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 
 use super::migration::{CopyProgress, CopyReport, copy_folder_with_journal, resume_folder};
 use super::migration_durability;
+use super::migration_store::{OperationRecord, StoreWriter};
 
 const RUNNING: u8 = 0;
 const CANCELLATION_REQUESTED: u8 = 1;
@@ -110,6 +111,7 @@ pub(super) enum WorkerOutcome {
 pub(super) enum WorkerEvent {
     Progress(CopyProgress),
     Finished(WorkerOutcome),
+    Stored(Box<OperationRecord>),
 }
 
 /// Owns the only cancellation flag and receives verified engine events.
@@ -117,12 +119,34 @@ pub(super) struct MigrationWorker {
     cancelled: Arc<AtomicBool>,
     phase: Arc<AtomicU8>,
     events: Receiver<WorkerEvent>,
+    progress: Arc<Mutex<Option<CopyProgress>>>,
     terminal_observed: bool,
 }
 
 impl MigrationWorker {
     /// Start one real copy or resume operation on a named background thread.
     pub(super) fn start(job: MigrationJob) -> Result<Self, String> {
+        Self::start_inner(job, None)
+    }
+
+    pub(super) fn start_persisted(
+        job: MigrationJob,
+        writer: StoreWriter,
+        operations: Vec<OperationRecord>,
+        index: usize,
+    ) -> Result<Self, String> {
+        if index >= operations.len() {
+            return Err("copy operation index is unavailable".into());
+        }
+        Self::start_inner(job, Some((writer, operations, index)))
+    }
+
+    fn start_inner(
+        job: MigrationJob,
+        persistence: Option<(StoreWriter, Vec<OperationRecord>, usize)>,
+    ) -> Result<Self, String> {
+        let progress_slot = Arc::new(Mutex::new(None));
+        let worker_progress = Arc::clone(&progress_slot);
         let cancelled = Arc::new(AtomicBool::new(false));
         let phase = Arc::new(AtomicU8::new(RUNNING));
         let (tx, events) = mpsc::channel();
@@ -132,11 +156,18 @@ impl MigrationWorker {
         std::thread::Builder::new()
             .name(name)
             .spawn(move || {
-                let progress_tx = tx.clone();
-                let progress_cancelled = Arc::clone(&worker_cancelled);
+                if let Some((writer, operations, _)) = &persistence
+                    && let Err(error) = writer.checkpoint(operations.clone())
+                {
+                    let _ = tx.send(WorkerEvent::Finished(WorkerOutcome::Failed(format!(
+                        "Copy did not start because its state could not be saved: {error}"
+                    ))));
+                    worker_phase.store(FINISHED, Ordering::Release);
+                    return;
+                }
                 let progress = move |progress| {
-                    if progress_tx.send(WorkerEvent::Progress(progress)).is_err() {
-                        progress_cancelled.store(true, Ordering::Release);
+                    if let Ok(mut latest) = worker_progress.lock() {
+                        *latest = Some(progress);
                     }
                 };
                 let result = match job.kind {
@@ -154,8 +185,26 @@ impl MigrationWorker {
                     Ok(report) => WorkerOutcome::Incomplete(report),
                     Err(error) => WorkerOutcome::Failed(error),
                 };
+                let event = if let Some((writer, mut operations, index)) = persistence {
+                    if let Some(operation) = operations.get_mut(index) {
+                        operation.apply_outcome(outcome);
+                    }
+                    match writer.checkpoint(operations.clone()) {
+                        Ok(saved) => operations = saved,
+                        Err(error) => {
+                            if let Some(operation) = operations.get_mut(index) {
+                                operation.persistence_failed(&error);
+                            }
+                        }
+                    }
+                    let mut operation = operations.swap_remove(index);
+                    operation.compact();
+                    WorkerEvent::Stored(Box::new(operation))
+                } else {
+                    WorkerEvent::Finished(outcome)
+                };
+                let _ = tx.send(event);
                 worker_phase.store(FINISHED, Ordering::Release);
-                let _ = tx.send(WorkerEvent::Finished(outcome));
             })
             .map(drop)
             .map_err(|error| format!("migration worker could not start: {error}"))?;
@@ -163,6 +212,7 @@ impl MigrationWorker {
             cancelled,
             phase,
             events,
+            progress: progress_slot,
             terminal_observed: false,
         })
     }
@@ -191,15 +241,18 @@ impl MigrationWorker {
         if self.terminal_observed {
             return None;
         }
+        // Terminal always wins over a continuously updating progress slot.
         match self.events.try_recv() {
             Ok(event) => {
-                if matches!(event, WorkerEvent::Finished(_)) {
+                if matches!(event, WorkerEvent::Finished(_) | WorkerEvent::Stored(_)) {
                     self.terminal_observed = true;
                     self.phase.store(FINISHED, Ordering::Release);
                 }
                 Some(event)
             }
-            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Empty) => {
+                self.progress.lock().ok()?.take().map(WorkerEvent::Progress)
+            }
             Err(TryRecvError::Disconnected) => {
                 self.terminal_observed = true;
                 self.phase.store(FINISHED, Ordering::Release);
@@ -214,8 +267,15 @@ impl MigrationWorker {
             cancelled: Arc::new(AtomicBool::new(false)),
             phase: Arc::new(AtomicU8::new(RUNNING)),
             events,
+            progress: Arc::new(Mutex::new(None)),
             terminal_observed: false,
         }
+    }
+}
+
+impl Drop for MigrationWorker {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -260,6 +320,34 @@ mod tests {
             assert!(Instant::now() < deadline, "worker did not finish");
             std::thread::yield_now();
         }
+    }
+
+    // An unread burst must occupy one latest-value slot, without delaying the
+    // terminal result or requiring the UI to consume every per-file update.
+    #[test]
+    fn progress_burst_is_coalesced_before_the_terminal_event() {
+        let (_temp, job) = fixture();
+        for n in 0..80 {
+            fs::write(job.source().join(format!("{n:03}")), b"x").unwrap();
+        }
+        let mut worker = MigrationWorker::start(job).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while worker.phase.load(Ordering::Acquire) != FINISHED {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let mut updates = 0;
+        loop {
+            match worker.try_next() {
+                Some(WorkerEvent::Progress(_)) => updates += 1,
+                Some(WorkerEvent::Finished(WorkerOutcome::Complete(_))) => break,
+                event => panic!("missing terminal event: {event:?}"),
+            }
+        }
+        assert!(
+            updates <= 1,
+            "UI must drain {updates} stale progress updates"
+        );
     }
 
     // Catches treating progress or a successful thread exit as completion
