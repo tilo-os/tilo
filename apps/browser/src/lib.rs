@@ -50,6 +50,7 @@ pub mod extensions;
 pub mod history;
 pub mod library;
 mod native_blocker;
+mod site_controls;
 mod page_menu;
 pub mod search_provider;
 pub mod settings;

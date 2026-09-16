@@ -621,6 +621,54 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         .ok_or("missing event name")?;
     let text = |key: &str| value.get(key).is_some_and(Value::is_string);
     let valid = match event {
+        "site_status" | "site_result" => {
+            let header = value["request_id"]
+                .as_u64()
+                .is_some_and(|n| n > 0 && n <= i32::MAX as u64)
+                && value["origin"].as_str().is_some_and(|s| s.len() <= 8192)
+                && value["generation"].as_f64().is_some_and(|n| {
+                    n.is_finite() && (0.0..=9007199254740991.0).contains(&n) && n.fract() == 0.0
+                });
+            header
+                && if event == "site_result" {
+                    value["success"].is_boolean()
+                        && value["action"].as_str().is_some_and(|s| {
+                            matches!(s, "status" | "clear" | "revoke" | "enable" | "disable")
+                        })
+                        && value["message"].as_str().is_some_and(|s| s.len() <= 1024)
+                } else {
+                    ["global_enabled", "excepted", "effective"]
+                        .iter()
+                        .all(|k| value[*k].is_boolean())
+                        && value["blocked"].as_f64().is_some_and(|n| {
+                            n.is_finite()
+                                && (0.0..=9007199254740991.0).contains(&n)
+                                && n.fract() == 0.0
+                        })
+                        && matches!(
+                            value["security"].as_str(),
+                            Some("insecure" | "secure" | "unverified")
+                        )
+                        && ["subject", "issuer"]
+                            .iter()
+                            .all(|k| value[*k].as_str().is_some_and(|s| s.len() <= 512))
+                        && ["certificate_status", "tls_version", "content_status"]
+                            .iter()
+                            .all(|k| value[*k].as_u64().is_some_and(|n| n <= u32::MAX as u64))
+                        && value["expires"].as_f64().is_some_and(f64::is_finite)
+                        && value["permissions"].as_object().is_some_and(|p| {
+                            p.len() == 4
+                                && ["camera", "microphone", "location", "notifications"]
+                                    .iter()
+                                    .all(|k| {
+                                        matches!(
+                                            p.get(*k).and_then(Value::as_str),
+                                            Some("allowed" | "blocked" | "ask")
+                                        )
+                                    })
+                        })
+                }
+        }
         "context_closed" => valid_id(value),
         "context_menu" => {
             valid_id(value)
@@ -707,6 +755,29 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
 
 fn command_within_limits(command: &WebViewCommand) -> bool {
     match command {
+        WebViewCommand::SetSiteExceptions(origins) => {
+            origins.len() <= 1024 && origins.iter().all(|s| !s.is_empty() && s.len() <= 8192)
+        }
+        WebViewCommand::RequestSiteStatus { request_id, origin } => {
+            *request_id > 0
+                && *request_id <= i32::MAX as u32
+                && !origin.is_empty()
+                && origin.len() <= 8192
+        }
+        WebViewCommand::SiteAction {
+            request_id,
+            origin,
+            generation,
+            action,
+        } => {
+            *request_id > 0
+                && *request_id <= i32::MAX as u32
+                && !origin.is_empty()
+                && origin.len() <= 8192
+                && *generation > 0
+                && *generation <= 9007199254740991
+                && matches!(action.as_str(), "clear" | "revoke" | "enable" | "disable")
+        }
         WebViewCommand::ContextMenuAction { id, command } => {
             *id > 0 && *id <= i32::MAX as u32 && *command <= i32::MAX as u32
         }
@@ -729,7 +800,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             key: KeyInput::Character(text),
             ..
         } => text.len() <= 65536,
-        WebViewCommand::SetUserScripts(scripts) => {
+        WebViewCommand::SetUserScripts(scripts) | WebViewCommand::SetBlockingScripts(scripts) => {
             scripts.len() <= 1024
                 && scripts
                     .iter()
@@ -823,6 +894,35 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
     Some(match value["event"].as_str()? {
         "closed" => WebViewEvent::TabClosed,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
+        "site_status" => WebViewEvent::SiteStatus(super::SiteStatus {
+            request_id: value["request_id"].as_u64()? as u32,
+            origin: value["origin"].as_str()?.into(),
+            generation: value["generation"].as_f64()? as u64,
+            blocked: value["blocked"].as_f64()? as u64,
+            global_enabled: value["global_enabled"].as_bool()?,
+            excepted: value["excepted"].as_bool()?,
+            effective: value["effective"].as_bool()?,
+            security: value["security"].as_str()?.into(),
+            certificate_status: value["certificate_status"].as_u64()? as u32,
+            tls_version: value["tls_version"].as_u64()? as u32,
+            content_status: value["content_status"].as_u64()? as u32,
+            subject: value["subject"].as_str()?.into(),
+            issuer: value["issuer"].as_str()?.into(),
+            expires: value["expires"].as_f64()?,
+            permissions: value["permissions"]
+                .as_object()?
+                .iter()
+                .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
+                .collect::<Option<Vec<_>>>()?,
+        }),
+        "site_result" => WebViewEvent::SiteResult {
+            request_id: value["request_id"].as_u64()? as u32,
+            origin: value["origin"].as_str()?.into(),
+            generation: value["generation"].as_f64()? as u64,
+            action: value["action"].as_str()?.into(),
+            success: value["success"].as_bool()?,
+            message: value["message"].as_str()?.into(),
+        },
         "context_closed" => WebViewEvent::ContextMenuClosed {
             id: value["id"].as_u64()? as u32,
         },
@@ -992,7 +1092,24 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             };
             json!({"op":"key","key":key,"down":down,"ctrl":modifiers.ctrl,"shift":modifiers.shift,"alt":modifiers.alt,"meta":modifiers.meta})
         }
+        WebViewCommand::SetBlockingScripts(scripts) => {
+            json!({"op":"blocking_scripts","scripts": &*scripts})
+        }
         WebViewCommand::SetUserScripts(scripts) => json!({"op":"scripts","scripts": &*scripts}),
+        WebViewCommand::SetSiteExceptions(origins) => {
+            json!({"op":"site_exceptions","origins":origins})
+        }
+        WebViewCommand::RequestSiteStatus { request_id, origin } => {
+            json!({"op":"site_status","request_id":request_id,"origin":origin})
+        }
+        WebViewCommand::SiteAction {
+            request_id,
+            origin,
+            generation,
+            action,
+        } => {
+            json!({"op":"site_action","request_id":request_id,"origin":origin,"generation":generation,"action":action})
+        }
         WebViewCommand::ClearWebsiteData => json!({"op":"clear_data"}),
         WebViewCommand::SetClearOnExit(enabled) => json!({"op":"clear_on_exit","enabled":enabled}),
         WebViewCommand::ShowDeveloperTools => json!({"op":"devtools"}),

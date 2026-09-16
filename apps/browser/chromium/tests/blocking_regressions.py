@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Local HTTP integration tests: real sandboxed CEF + the native Rust matcher."""
 import http.server
+import os
+from pathlib import Path
 import json
 import threading
 import time
@@ -34,7 +36,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Cache-Control','no-store')
         if getattr(self.server,'csp',False): self.send_header('Content-Security-Policy',"style-src 'none'; script-src 'self' 'unsafe-inline'")
-        self.send_header('Content-Type','text/html' if path in ('/','/iframes','/csp') else 'text/javascript')
+        self.send_header('Content-Type','text/html' if path in ('/','/iframes','/csp','/site-parent','/site-child') else 'text/javascript')
         self.end_headers()
         body=b"self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(fetch('/sw-ad').catch(()=>{}).then(()=>fetch('/sw-ready'))));" if path=='/sw.js' else PAGE if path=='/' else b"fetch('/worker-ad').catch(()=>{})" if path=='/worker.js' else b'window.originalReplacement=true;' if path=='/replace.js' else b'void 0;'
         if path=='/csp':
@@ -50,6 +52,16 @@ setInterval(()=>{const late=document.querySelector('.late-ad');if(late)document.
             body=b'<!doctype html><title>iframe source</title>'
             for host,name in [('localhost','thirdparty-frame'),('localhost','firstparty-frame'),('localhost','domain-frame'),('127.0.0.1','same-first-frame'),('127.0.0.1','same-third-frame')]:
                 body+=f'<iframe src="http://{host}:{self.server.server_port}/{name}"></iframe>'.encode()
+        if path in ('/site-parent','/site-child'):
+            body=b'''<!doctype html><div class="site-ad">ad</div><script>
+const blockedScript=document.createElement('script');blockedScript.src='/site-ad.js';document.head.append(blockedScript);
+window.network=false;fetch('/site-ad-fetch').then(()=>window.network=true).catch(()=>{});
+setInterval(()=>{const state={cosmetic:getComputedStyle(document.querySelector('.site-ad')).display,scriptlet:window.siteFixture===true,supplement:window.siteSupplement===true,network:window.network};if(window===top)document.title=JSON.stringify({main:state,child:window.childState||null,nonce:Date.now()});else parent.postMessage(state,'*')},100);
+addEventListener('message',e=>window.childState=e.data);
+</script>'''
+            if path=='/site-parent':
+                other='localhost' if self.headers['Host'].startswith('127.0.0.1') else '127.0.0.1'
+                body+=f'<iframe src="http://{other}:{self.server.server_port}/site-child"></iframe>'.encode()
         self.wfile.write(body)
     def log_message(self,*args): pass
 
@@ -63,6 +75,13 @@ class BlockingRegressions(unittest.TestCase):
         self.host=Host()
         self.addCleanup(self.host.close)
         self.url=f'http://127.0.0.1:{self.server.server_port}/'
+        self.addCleanup(self.save_evidence)
+    def save_evidence(self):
+        if directory:=os.environ.get('QOS_SITE_EVIDENCE_DIR'):
+            path=Path(directory);path.mkdir(parents=True,exist_ok=True)
+            self.host.log.seek(0)
+            (path/(self._testMethodName+'.stderr')).write_bytes(self.host.log.read())
+            (path/(self._testMethodName+'.json')).write_text(json.dumps({'events':self.host.seen[-2000:],'requests':self.server.requests[-2000:]},indent=2))
     def config(self,enabled=True,rules=RULES):
         self.host.send(op='filter_rules',rules=rules,enabled=enabled)
     def loaded(self):
@@ -71,6 +90,64 @@ class BlockingRegressions(unittest.TestCase):
     def styles(self):
         self.host.send(op='scripts',scripts=["document.title=JSON.stringify({styles:['.sponsor','.late-ad','#domain-ad'].map(s=>getComputedStyle(document.querySelector(s)).display),nonce:"+str(time.monotonic_ns())+"})"])
         return json.loads(self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{'))['title'])['styles']
+    def site_status(self,request=1):
+        self.host.send(op='site_status',request_id=request,origin=self.site_origin)
+        return self.host.until(lambda e:e['event']=='site_status' and e['request_id']==request)
+    def site_action(self,kind,request=2,origin=None,generation=None):
+        status=self.site_status(request+100)
+        self.host.send(op='site_action',request_id=request,origin=origin or self.site_origin,generation=generation or status['generation'],action=kind)
+        return self.host.until(lambda e:e['event']=='site_result' and e['request_id']==request)
+    def site_state(self):
+        self.host.settle(.3)
+        return json.loads(self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{"main":') and json.loads(e['title'])['child'] is not None)['title'])
+    def test_exact_top_origin_exception_covers_frames_and_all_blocking_layers(self):
+        rules='/site-ad.js$script\n/site-ad-fetch$xmlhttprequest\n##.site-ad\n127.0.0.1##+js(set-constant, siteFixture, true)\nlocalhost##+js(set-constant, siteFixture, true)'
+        self.config(rules=rules)
+        self.host.send(op='blocking_scripts',scripts=['window.siteSupplement=true'])
+        self.site_origin=self.url.rstrip('/')
+        def verify(protected):
+            state=self.site_state()
+            for frame in ['main','child']:
+                self.assertEqual(state[frame],{'cosmetic':'none' if protected else 'block','scriptlet':protected,'supplement':protected,'network':not protected},state)
+            self.assertEqual(self.site_status()['blocked'],4 if protected else 0)
+        self.host.navigate(self.site_origin+'/site-parent');verify(True)
+        self.assertTrue(self.site_action('disable')['success'])
+        self.host.navigate(self.site_origin+'/site-parent');verify(False)
+        self.site_origin=self.site_origin.replace('127.0.0.1','localhost')
+        self.host.navigate(self.site_origin+'/site-parent');verify(True)
+        self.site_origin=self.site_origin.replace('localhost','127.0.0.1')
+        self.host.navigate(self.site_origin+'/site-parent');verify(False)
+        self.assertTrue(self.site_action('enable')['success'])
+        self.host.navigate(self.site_origin+'/site-parent');verify(True)
+        old=self.site_status();self.host.navigate(self.site_origin+'/site-parent')
+        self.assertFalse(self.site_action('disable',generation=old['generation'])['success'])
+        self.assertFalse(self.site_action('clear',origin='http://wrong.test')['success'])
+        self.config(False,rules='');status=self.site_status();self.assertFalse(status['effective']);self.assertFalse(status['global_enabled'])
+        self.host.navigate(self.site_origin+'/site-parent');verify(False)
+
+    def test_burst_counts_are_aggregated_and_reset_on_document_navigation(self):
+        self.config(rules='/counted-burst$xmlhttprequest')
+        self.site_origin=self.url.rstrip('/')
+        self.host.navigate(self.url)
+        self.host.send(op='scripts',scripts=["Promise.all(Array.from({length:600},(_,i)=>fetch('/counted-burst?i='+i).catch(()=>{}))).then(()=>document.title='burst-done')"])
+        self.host.until(lambda e:e['event']=='title' and e['title']=='burst-done')
+        status=self.site_status();self.assertEqual(status['blocked'],600)
+        self.assertEqual(sum(e['event']=='site_status' for e in self.host.seen),1,'No per-request IPC status flood')
+        self.assertFalse(any('/counted-burst' in path for path in self.server.requests))
+        self.host.send(op='scripts',scripts=[])
+        self.host.navigate(self.url+'csp')
+        reset=self.site_status(3);self.assertEqual(reset['blocked'],0);self.assertNotEqual(reset['generation'],status['generation'])
+
+    def test_site_status_reports_actual_network_decisions(self):
+        self.config()
+        self.loaded()
+        self.host.send(op='site_status',request_id=1,origin=self.url.rstrip('/'))
+        status=self.host.until(lambda e:e['event']=='site_status' and e['request_id']==1)
+        self.assertEqual(status['origin'],self.url.rstrip('/'))
+        self.assertGreaterEqual(status['blocked'],2)
+        self.assertEqual(status['security'],'insecure')
+        self.assertTrue(status['effective'])
+
     def test_network_exceptions_resource_type_party_and_worker(self):
         self.config()
         self.loaded()
@@ -82,6 +159,21 @@ class BlockingRegressions(unittest.TestCase):
         self.assertIn('/sw-ready',self.server.requests)
         for allowed in ['/ad.js?allow','/image-only.js','/first.js','/worker.js']:
             self.assertIn(allowed,self.server.requests)
+    def test_worker_attribution_respects_frame_ownership_under_site_exception(self):
+        self.config(rules='/worker-ad$xmlhttprequest\n/sw-ad$xmlhttprequest')
+        self.site_origin=self.url.rstrip('/')
+        self.host.send(op='site_exceptions',origins=[self.site_origin])
+        self.loaded()
+        self.assertIn('/worker.js',self.server.requests)
+        self.assertIn('/sw-ready',self.server.requests)
+        # Dedicated workers retain an owning frame here; service workers do not.
+        self.assertIn('/worker-ad',self.server.requests)
+        self.assertNotIn('/sw-ad',self.server.requests)
+        status=self.site_status()
+        self.assertTrue(status['excepted'])
+        self.assertFalse(status['effective'])
+        self.assertEqual(status['blocked'],0,'Unattributed workers must not charge the visible document')
+
     def test_subdocument_navigation_uses_initiator_context(self):
         self.config(rules='\n'.join(['/thirdparty-frame$subdocument,third-party',
             '/firstparty-frame$subdocument,~third-party',

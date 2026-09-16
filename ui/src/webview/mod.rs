@@ -123,8 +123,40 @@ impl NavigationDirection {
     }
 }
 
+/// Bounded snapshot for one committed top-level origin and document generation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SiteStatus {
+    pub request_id: u32,
+    pub origin: String,
+    pub generation: u64,
+    pub blocked: u64,
+    pub global_enabled: bool,
+    pub excepted: bool,
+    pub effective: bool,
+    pub security: String,
+    pub certificate_status: u32,
+    pub tls_version: u32,
+    pub content_status: u32,
+    pub subject: String,
+    pub issuer: String,
+    /// Chromium base::Time microseconds since 1601-01-01.
+    pub expires: f64,
+    pub permissions: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
+    SetSiteExceptions(Vec<String>),
+    RequestSiteStatus {
+        request_id: u32,
+        origin: String,
+    },
+    SiteAction {
+        request_id: u32,
+        origin: String,
+        generation: u64,
+        action: String,
+    },
     /// Load the given (already normalised) URL.
     Navigate(String),
     RequestNavigationHistory {
@@ -210,6 +242,8 @@ pub enum WebViewCommand {
     /// express (e.g. skipping `YouTube` video ads). Run at document-start
     /// in all frames.
     SetUserScripts(Arc<Vec<String>>),
+    /// Native blocker supplements, guarded by the top-level site policy.
+    SetBlockingScripts(Arc<Vec<String>>),
     /// Find the most useful visible HTML video in the current page. The
     /// result is delivered asynchronously as [`WebViewEvent::MediaElement`]
     /// or [`WebViewEvent::MediaElementUnavailable`]. Browser chrome uses the
@@ -246,6 +280,15 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    SiteStatus(SiteStatus),
+    SiteResult {
+        request_id: u32,
+        origin: String,
+        generation: u64,
+        action: String,
+        success: bool,
+        message: String,
+    },
     TabClosed,
     TabCloseBlocked,
     ContextMenu {

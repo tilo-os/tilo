@@ -1116,7 +1116,11 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::CancelDownload { .. }
-            | WebViewCommand::SetNativeFilterRules { .. } => {}
+            | WebViewCommand::SetNativeFilterRules { .. }
+            | WebViewCommand::SetBlockingScripts(_)
+            | WebViewCommand::SetSiteExceptions(_)
+            | WebViewCommand::RequestSiteStatus { .. }
+            | WebViewCommand::SiteAction { .. } => {}
         }
     }
 }
