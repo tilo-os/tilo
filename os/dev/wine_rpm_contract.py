@@ -35,6 +35,18 @@ def target(value):
     return value
 
 
+def build_identity(pin):
+    if not re.fullmatch(r'\.fc44\.qos_traditional[1-9][0-9]*', pin['build_dist']):
+        raise ValueError('invalid traditional Wine release namespace')
+    if pin['build_release'] != pin['release'].removesuffix('.fc44') + pin['build_dist']:
+        raise ValueError('build release does not match unchanged spec dist expansion')
+    if type(pin['source_date_epoch']) is not int or pin['source_date_epoch'] <= 0:
+        raise ValueError('source_date_epoch must be a positive integer')
+    return {'dist': pin['build_dist'], 'release': pin['build_release'],
+            'source_rpm': f"wine-{pin['version']}-{pin['build_release']}.src.rpm",
+            'source_date_epoch': pin['source_date_epoch']}
+
+
 def verify_file(path, expected, size=None):
     path = Path(path)
     if path.is_symlink() or not path.is_file():
@@ -106,6 +118,7 @@ def buildroot(architecture, pin):
     if release.get('ID', '').strip('"') != 'fedora' or release.get('VERSION_ID', '').strip('"') != '44':
         raise ValueError('Fedora 44 buildroot required')
     return {'schema': 1, 'target': architecture, 'source_sha256': pin['sha256'],
+            'build_identity': build_identity(pin),
             'without': ['new_wow64'], 'compiler': compiler_probe(architecture),
             'packages': packages(), 'buildrequires_sha256': sha('/usr/lib/qos/wine-buildrequires.txt')}
 
@@ -126,7 +139,7 @@ def validate_core_layout(architecture, files):
             raise ValueError(f'missing exact alternate-loader link: {name} -> {destination}')
 
 
-def output(architecture, pin, buildroot_ref, directory=Path('/wine-output')):
+def output(architecture, pin, buildroot_ref, directory=Path('/wine-output'), write=True):
     inventory, seen = {}, set()
     core_found = False
     for path in sorted((directory / 'rpms').glob('*.rpm')):
@@ -136,7 +149,8 @@ def output(architecture, pin, buildroot_ref, directory=Path('/wine-output')):
         if len(identity) != 6:
             raise ValueError('malformed output RPM identity')
         name, version, release, arch, srpm, license_name = identity
-        if arch not in (architecture, 'noarch') or (version, release, srpm) != (pin['version'], pin['release'], pin['filename']):
+        build = build_identity(pin)
+        if arch not in (architecture, 'noarch') or (version, release, srpm) != (pin['version'], build['release'], build['source_rpm']):
             raise ValueError('unexpected output RPM architecture/source/version')
         if tuple(identity[:4]) in seen or not license_name:
             raise ValueError('duplicate output identity or absent license metadata')
@@ -151,10 +165,15 @@ def output(architecture, pin, buildroot_ref, directory=Path('/wine-output')):
             inventory[path.name]['loader'] = loader
     if not core_found:
         raise ValueError('output has no validated wine-core RPM')
+    rebuilt_source = directory / 'provenance' / build_identity(pin)['source_rpm']
+    if rebuilt_source.is_symlink() or not rebuilt_source.is_file():
+        raise ValueError('missing rebuilt source RPM for qOS release identity')
     contract = {'schema': 1, 'target': architecture, 'source': pin,
+                'build_identity': build_identity(pin), 'rebuilt_source_sha256': sha(rebuilt_source),
                 'buildroot_ref': reference(buildroot_ref), 'without': ['new_wow64'],
                 'rpms': inventory, 'execution_validated': False}
-    (directory / 'provenance/contract.json').write_text(json.dumps(contract, indent=2) + '\n')
+    if write:
+        (directory / 'provenance/contract.json').write_text(json.dumps(contract, indent=2) + '\n')
     return contract
 
 
@@ -165,6 +184,8 @@ def main(argv):
         print(source(value, pin))
     elif operation == 'spec':
         verify_file(value, pin['spec_sha256'])
+    elif operation == 'setting':
+        print(build_identity(pin)[value])
     elif operation == 'record-buildroot':
         Path('/usr/lib/qos/wine-buildroot.json').write_text(json.dumps(buildroot(value, pin), indent=2) + '\n')
     elif operation == 'verify-buildroot':
