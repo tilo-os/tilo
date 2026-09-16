@@ -2675,7 +2675,11 @@ impl CodeApp {
                 }
             }
             Command::ToggleBottomPanel => {
-                self.panel_visible = !self.panel_visible;
+                if self.panel_visible {
+                    self.close_bottom_panel();
+                } else {
+                    self.panel_visible = true;
+                }
             }
             Command::ToggleSidebar => {
                 self.toggle_sidebar();
@@ -2696,6 +2700,15 @@ impl CodeApp {
         }
         self.panel_toggle.set_expanded(self.panel_visible);
         self.dispatch_editor_text_edits(doc);
+    }
+
+    /// Close the retained dock without destroying its selected tab or live
+    /// Terminal. Every close route uses this transition so hidden Terminal
+    /// content cannot retain keyboard ownership.
+    fn close_bottom_panel(&mut self) {
+        self.panel_visible = false;
+        self.terminal_focused = false;
+        self.panel_toggle.set_expanded(false);
     }
 
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
@@ -3816,6 +3829,7 @@ impl CodeApp {
         modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
     ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
@@ -3861,7 +3875,11 @@ impl CodeApp {
             _ => None,
         };
         if let Some(command) = command {
+            let closes_bottom_panel = command == Command::ToggleBottomPanel && self.panel_visible;
             self.apply_command(command, state);
+            if closes_bottom_panel {
+                *focus_target = self.panel_toggle_node;
+            }
             *handled = true;
             return true;
         }
@@ -4587,7 +4605,7 @@ impl Widget for CodeApp {
             return;
         }
 
-        if self.handle_global_shortcuts(event, *modifiers, state, handled) {
+        if self.handle_global_shortcuts(event, *modifiers, state, handled, focus_target) {
             return;
         }
 
@@ -4630,9 +4648,7 @@ impl Widget for CodeApp {
                 }
             )
         {
-            self.panel_visible = false;
-            self.terminal_focused = false;
-            self.panel_toggle.set_expanded(false);
+            self.close_bottom_panel();
             *focus_target = self.panel_toggle_node;
             *handled = true;
             return;
@@ -5535,12 +5551,28 @@ mod tests {
             app.terminal.is_some(),
             "Terminal command keeps the live terminal opener"
         );
+        let terminal_before = app
+            .terminal
+            .as_ref()
+            .map(std::ptr::from_ref)
+            .expect("Terminal command creates a retained terminal");
+        let terminal_content_before = app.shots_terminal_grid_text();
         app.apply_command(Command::ToggleBottomPanel, &mut doc);
         app.apply_command(Command::ToggleBottomPanel, &mut doc);
         assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
         assert!(
             app.terminal.is_some(),
             "closing and reopening preserves the terminal session"
+        );
+        assert_eq!(
+            app.terminal.as_ref().map(std::ptr::from_ref),
+            Some(terminal_before),
+            "closing and reopening retains the same live Terminal object"
+        );
+        assert_eq!(
+            app.shots_terminal_grid_text(),
+            terminal_content_before,
+            "closing and reopening does not replace Terminal content"
         );
     }
 
@@ -5638,6 +5670,84 @@ mod tests {
         assert!(
             driver.targets().contains_key("bottom_panel"),
             "assistive activation reaches the same canonical toggle"
+        );
+
+        let panel_narrow = driver.targets()["bottom_panel"];
+        assert!(
+            panel_narrow.x0 >= 0.0
+                && panel_narrow.y0 >= 0.0
+                && panel_narrow.x1 <= 480.0
+                && panel_narrow.y1 <= 900.0,
+            "open panel stays inside the narrow viewport"
+        );
+        driver.resize((800, 700)).expect("resize open editor");
+        let resized = driver.targets();
+        let panel_standard = resized["bottom_panel"];
+        let tabs_standard = resized["tabs"];
+        let trigger_standard = resized["code.bottom-panel-toggle"];
+        assert!(
+            panel_standard.x0 >= 0.0
+                && panel_standard.y0 >= 0.0
+                && panel_standard.x1 <= 800.0
+                && panel_standard.y1 <= 700.0,
+            "open panel stays inside the resized viewport"
+        );
+        assert_eq!(panel_standard.height(), panel_narrow.height());
+        assert_eq!(trigger_standard.y0, tabs_standard.y0);
+        assert_eq!(trigger_standard.height(), tabs_standard.height());
+        assert!(tabs_standard.x1 <= trigger_standard.x0);
+        let resized_snapshot = driver.inspection();
+        let resized_trigger = trigger_semantics(&resized_snapshot);
+        assert_eq!(resized_trigger.name.as_deref(), Some("Hide bottom panel"));
+        assert_eq!(resized_trigger.state.expanded, Some(true));
+        assert!(resized_trigger.state.selected);
+
+        driver.resize((480, 900)).expect("resize back while open");
+        let restored = driver.targets();
+        assert!(restored.contains_key("bottom_panel"));
+        assert_eq!(restored["bottom_panel"].height(), panel_narrow.height());
+        assert!(restored["tabs"].x1 <= restored["code.bottom-panel-toggle"].x0);
+    }
+
+    #[test]
+    fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal() {
+        let mut app = CodeApp::with_sample();
+        app.shots_open_terminal();
+        let mut driver = ui::headless::Driver::new(ui::State::new(), Box::new(app), (480, 900));
+
+        let panel = driver.targets()["bottom_panel"];
+        driver.click_at(panel.center().x, panel.y1 - 20.0);
+        driver.set_modifiers(&["ctrl".to_string()]);
+        driver.key("j");
+        driver.set_modifiers(&[]);
+
+        assert!(!driver.targets().contains_key("bottom_panel"));
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Show bottom panel"),
+            "keyboard close returns focus to the retained disclosure"
+        );
+
+        driver.set_modifiers(&["ctrl".to_string()]);
+        driver.key("j");
+        driver.set_modifiers(&[]);
+        assert!(driver.targets().contains_key("bottom_panel"));
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|node| node.name)
+                .as_deref(),
+            Some("Hide bottom panel"),
+            "reopening keeps focus on the disclosure instead of hidden Terminal content"
+        );
+
+        driver.key("Enter");
+        assert!(
+            !driver.targets().contains_key("bottom_panel"),
+            "Enter reaches the focused disclosure after reopening instead of the Terminal"
         );
     }
 
