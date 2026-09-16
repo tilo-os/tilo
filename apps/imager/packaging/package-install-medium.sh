@@ -25,14 +25,18 @@ esac
 input="${1:?usage: package-install-medium.sh INSTALLER.qcow2 ARCH [OUT]}"
 arch="${2:?missing architecture}"
 out="${3:-dist/qos-installer}"
+profile="${QOS_HARDWARE_PROFILE:-generic}"
 case "$arch" in x86_64|aarch64) ;; *) printf 'unsupported architecture: %s\n' "$arch" >&2; exit 2 ;; esac
 command -v qemu-img >/dev/null
 command -v zstd >/dev/null
 command -v jq >/dev/null
 test -s "$input"
+provenance="$(python3 "$(dirname "${BASH_SOURCE[0]}")/media-provenance.py" validate "$input" "$arch" "$profile")"
 
 mkdir -p "$out"
-base="qos-installer-linux-${arch}.img"
+suffix=""
+[ "$profile" = generic ] || suffix="-$profile"
+base="qos-installer-linux-${arch}${suffix}.img"
 raw="$out/$base"
 archive="$raw.zst"
 qemu-img convert -p -f qcow2 -O raw "$input" "$raw"
@@ -49,10 +53,12 @@ jq -n \
   --arg version "$version" \
   --arg channel "$channel" \
   --arg arch "$arch" \
+  --arg hardware_profile "$profile" \
+  --argjson provenance "$provenance" \
   --arg url "https://code.sandbox.example/qos/qos/releases/download/${release_tag}/$(basename "$archive")" \
   --arg archive_sha256 "$archive_sha256" \
   --argjson archive_size "$archive_size" \
   --arg image_sha256 "$image_sha256" \
   --argjson image_size "$image_size" \
-  '{name:$name,version:$version,channel:$channel,arch:$arch,url:$url,archive_sha256:$archive_sha256,archive_size:$archive_size,image_sha256:$image_sha256,image_size:$image_size}' \
-  >"$out/catalog-${arch}.json"
+  '{name:$name,version:$version,channel:$channel,arch:$arch,hardware_profile:$hardware_profile,provenance:$provenance,url:$url,archive_sha256:$archive_sha256,archive_size:$archive_size,image_sha256:$image_sha256,image_size:$image_size}' \
+  >"$out/catalog-${arch}${suffix}.json"

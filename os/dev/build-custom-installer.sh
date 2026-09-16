@@ -171,5 +171,10 @@ if [ "$require_prediction" = 1 ] || [ "$allow_local_prediction" = 1 ]; then
   fi
 fi
 
+# Bind the completed qcow2 to the final installer image after all resealing and
+# prediction sidecars. This is build provenance, separate from boot acceptance.
+python3 "$QOS_REPO/apps/imager/packaging/media-provenance.py" create \
+  "$QOS_INSTALLER_IMAGE" "$QOS_INSTALLER_DISK"
+
 msg "DONE: $QOS_INSTALLER_DISK"
 ls -lh "$QOS_INSTALLER_DISK"
