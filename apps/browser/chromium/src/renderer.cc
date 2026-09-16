@@ -6,10 +6,12 @@
 #include "include/cef_process_message.h"
 #include "include/cef_render_process_handler.h"
 #include "include/cef_v8.h"
+#include <algorithm>
 #include <map>
 #include <vector>
 
 namespace {
+constexpr size_t kMaxMediaFrames=64;
 // Deliberately require a direct web document. Inherited about:blank/srcdoc and
 // blob documents are excluded: a URL alone cannot prove their creator origin.
 // This also excludes chrome:, chrome-extension:, devtools:, file: and data:.
@@ -27,32 +29,41 @@ class MediaStateHandler final : public CefV8Handler {
   }
  private: CefRefPtr<CefFrame> frame_;uint64_t token_; IMPLEMENT_REFCOUNTING(MediaStateHandler);
 };
-std::map<std::string,uint64_t> media_contexts;
+struct MediaContext { CefRefPtr<CefV8Context> context;CefRefPtr<CefFrame> frame;uint64_t token;bool main; };
+std::map<int,std::map<std::string,MediaContext>> media_contexts;
 }
 
 class Renderer final : public CefApp, public CefRenderProcessHandler {
  public:
   CefRefPtr<CefRenderProcessHandler> GetRenderProcessHandler() override { return this; }
 
-  void OnContextCreated(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context>) override {
+  void OnContextCreated(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefV8Context> context) override {
     if(!IsWebDocument(frame)) return;
     auto& config=configs_[browser->GetIdentifier()];
     if(config.filters) ApplyFilters(frame,config.filters);
     frame->SendProcessMessage(PID_BROWSER,CefProcessMessage::Create("qos.config"));
     {
+      auto& browser_media=media_contexts[browser->GetIdentifier()];
+      const auto key=frame->GetIdentifier().ToString();
+      if(browser_media.find(key)==browser_media.end()) {
+        const bool has_main=std::any_of(browser_media.begin(),browser_media.end(),[](const auto& entry){return entry.second.main;});
+        if(!frame->IsMain() && browser_media.size()>=kMaxMediaFrames-(has_main?0:1)) return;
+        if(frame->IsMain() && browser_media.size()>=kMaxMediaFrames) {auto victim=std::find_if(browser_media.begin(),browser_media.end(),[](const auto& entry){return !entry.second.main;});if(victim==browser_media.end())return;auto closed=CefProcessMessage::Create("qos.media_context_closed");closed->GetArgumentList()->SetDouble(0,static_cast<double>(victim->second.token));victim->second.frame->SendProcessMessage(PID_BROWSER,closed);browser_media.erase(victim);}
+      }
       const uint64_t token=++media_context_counter_;
-      media_contexts[frame->GetIdentifier().ToString()]=token;
+      browser_media[key]={context,frame,token,frame->IsMain()};
       auto media_context=CefProcessMessage::Create("qos.media_context");media_context->GetArgumentList()->SetDouble(0,static_cast<double>(token));frame->SendProcessMessage(PID_BROWSER,media_context);
-      auto context=frame->GetV8Context();context->Enter();context->GetGlobal()->SetValue("__qosMediaState",CefV8Value::CreateFunction("__qosMediaState",new MediaStateHandler(frame,token)),V8_PROPERTY_ATTRIBUTE_DONTDELETE);
+      context->Enter();context->GetGlobal()->SetValue("__qosMediaState",CefV8Value::CreateFunction("__qosMediaState",new MediaStateHandler(frame,token)),V8_PROPERTY_ATTRIBUTE_DONTDELETE);
       CefRefPtr<CefV8Value> result;CefRefPtr<CefV8Exception> exception;
-      context->Eval("(()=>{let playing=null;const update=()=>{const next=[...document.querySelectorAll('audio,video')].some(e=>!e.paused&&!e.ended&&e.readyState>1);if(next!==playing){playing=next;__qosMediaState(next)}};addEventListener('play',update,true);addEventListener('pause',update,true);addEventListener('ended',update,true);addEventListener('emptied',update,true);update()})()",frame->GetURL(),0,result,exception);context->Exit();
+      context->Eval("(()=>{let playing=null;const update=()=>{const next=[...document.querySelectorAll('audio,video')].some(e=>!e.paused&&!e.ended&&e.readyState>1);if(next!==playing){playing=next;__qosMediaState(next)}};for(const event of ['play','playing','canplay','pause','ended','emptied'])addEventListener(event,update,true);update()})()",frame->GetURL(),0,result,exception);context->Exit();
     }
   }
-  void OnContextReleased(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame> frame,
+  void OnBrowserDestroyed(CefRefPtr<CefBrowser> browser) override { media_contexts.erase(browser->GetIdentifier());configs_.erase(browser->GetIdentifier()); }
+  void OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame,
                          CefRefPtr<CefV8Context> context) override {
     auto key=frame->GetIdentifier().ToString();
-    auto media=media_contexts.find(key);
-    if(media!=media_contexts.end()) {auto message=CefProcessMessage::Create("qos.media_context_closed");message->GetArgumentList()->SetDouble(0,static_cast<double>(media->second));frame->SendProcessMessage(PID_BROWSER,message);media_contexts.erase(media);}
+    auto browser_media=media_contexts.find(browser->GetIdentifier());
+    if(browser_media!=media_contexts.end()) {auto media=browser_media->second.find(key);if(media!=browser_media->second.end() && media->second.context->IsSame(context)) {auto message=CefProcessMessage::Create("qos.media_context_closed");message->GetArgumentList()->SetDouble(0,static_cast<double>(media->second.token));frame->SendProcessMessage(PID_BROWSER,message);browser_media->second.erase(media);}if(browser_media->second.empty())media_contexts.erase(browser_media);}
     auto cosmetic=cosmetics_.find(key);
     if(cosmetic!=cosmetics_.end() && cosmetic->second.context->IsSame(context)) cosmetics_.erase(cosmetic);
     auto found=applied_.find(key);
