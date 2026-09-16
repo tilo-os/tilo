@@ -1,5 +1,6 @@
 #include "host.h"
 #include "protocol.h"
+#include "key_mapping.h"
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_command_line.h"
@@ -168,12 +169,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="focus") host->SetFocus(d->GetBool("focused"));
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
-      if(!std::isfinite(scale)||scale<0.25||scale>8||!qos::FrameSize(w,h)||!qos::FrameSize(static_cast<uint32_t>(std::ceil(w*scale)),static_cast<uint32_t>(std::ceil(h*scale)))) { CloseHost(); return; }
-      width_=w;height_=h;scale_=scale;popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();
+      if(!std::isfinite(scale)||scale<0.25||scale>8||!qos::FrameSize(w,h)) { CloseHost(); return; }
+      // IPC sizes and pointer coordinates are physical pixels; CEF uses DIP.
+      width_=static_cast<int>(std::ceil(w/scale));height_=static_cast<int>(std::ceil(h/scale));scale_=scale;popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
-      CefMouseEvent event;event.x=static_cast<int>(Number(d,"x"));event.y=static_cast<int>(Number(d,"y"));event.modifiers=mouse_modifiers_;
+      CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/scale_);event.y=static_cast<int>(Number(d,"y")/scale_);event.modifiers=mouse_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
-      else if(op=="scroll") host->SendMouseWheelEvent(event,static_cast<int>(Number(d,"dx")),static_cast<int>(Number(d,"dy")));
+      else if(op=="scroll") host->SendMouseWheelEvent(event,static_cast<int>(Number(d,"dx")/scale_),static_cast<int>(Number(d,"dy")/scale_));
       else { std::string button=d->GetString("button");auto type=button=="right"?MBT_RIGHT:button=="middle"?MBT_MIDDLE:MBT_LEFT;bool down=d->GetBool("down");
         int flag=type==MBT_RIGHT?EVENTFLAG_RIGHT_MOUSE_BUTTON:type==MBT_MIDDLE?EVENTFLAG_MIDDLE_MOUSE_BUTTON:EVENTFLAG_LEFT_MOUSE_BUTTON;
         if(down) mouse_modifiers_|=flag;else mouse_modifiers_&=~flag; event.modifiers=mouse_modifiers_;host->SendMouseClickEvent(event,type,!down,1); }
@@ -191,11 +193,19 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     CefKeyEvent e;e.type=d->GetBool("down")?KEYEVENT_RAWKEYDOWN:KEYEVENT_KEYUP;
     e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     std::string key=d->GetString("key");
-    const std::pair<const char*,int> keys[]={{"Enter",13},{"Tab",9},{"Backspace",8},{"Delete",46},{"Escape",27},{"ArrowLeft",37},{"ArrowUp",38},{"ArrowRight",39},{"ArrowDown",40},{"Home",36},{"End",35},{"PageUp",33},{"PageDown",34}};
-    for(auto& pair:keys) if(key==pair.first) e.windows_key_code=pair.second;
+    const auto mapping=qos::MapKey(key);
+    e.windows_key_code=mapping.windows;
+    e.character=mapping.character;
+    e.unmodified_character=mapping.character;
+#if defined(OS_MAC)
+    e.native_key_code=mapping.mac;
+    e.character=mapping.mac_character;
+    e.unmodified_character=mapping.mac_character;
+#elif defined(OS_LINUX)
+    e.native_key_code=mapping.x11;
+#endif
     CefString text(key);auto utf16=text.ToString16();
-    if(utf16.size()==1) { e.character=utf16[0];e.unmodified_character=utf16[0];e.windows_key_code=static_cast<int>(std::toupper(static_cast<unsigned char>(key[0]))); }
-    if(key=="Enter") e.character=e.unmodified_character='\r';
+    if(utf16.size()==1) e.character=e.unmodified_character=utf16[0];
     browser_->GetHost()->SendKeyEvent(e);
     if(d->GetBool("down") && (utf16.size()==1 || key=="Enter") && !d->GetBool("ctrl")&&!d->GetBool("meta")) { e.type=KEYEVENT_CHAR;browser_->GetHost()->SendKeyEvent(e); }
   }
