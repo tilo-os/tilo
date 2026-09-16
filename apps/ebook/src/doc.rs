@@ -32,8 +32,9 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::model::{
-    AnnoKind, Annotation, ColorScheme, FontEntry, FontKind, HiColor, LibraryEntry, LibraryPrefs,
-    LibrarySort, Progress, ReadMode, ReadTheme, Settings, default_fonts, default_schemes, now_ms,
+    AnnoKind, Annotation, AnnotationAnchor, ColorScheme, FontEntry, FontKind, HiColor,
+    LibraryEntry, LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
+    default_fonts, default_schemes, now_ms,
 };
 
 /// Pack an sRGB triple into a single int for the CRDT.
@@ -825,25 +826,16 @@ impl BooksDoc {
         !entries.is_empty()
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn move_annotation(
-        doc: &mut AutoCommit,
-        id: Uuid,
-        chapter: usize,
-        block: usize,
-        start: usize,
-        end: usize,
-        excerpt: &str,
-    ) -> bool {
+    pub fn move_annotation(doc: &mut AutoCommit, id: Uuid, anchor: &AnnotationAnchor) -> bool {
         let entries = Self::keyed_map_entries(doc, "annotations")
             .remove(&id.to_string())
             .unwrap_or_default();
         for entry in &entries {
-            let _ = doc.put(entry, "chapter", chapter as i64);
-            let _ = doc.put(entry, "block", block as i64);
-            let _ = doc.put(entry, "start", start as i64);
-            let _ = doc.put(entry, "end", end as i64);
-            let _ = doc.put(entry, "excerpt", excerpt);
+            let _ = doc.put(entry, "chapter", anchor.chapter as i64);
+            let _ = doc.put(entry, "block", anchor.block as i64);
+            let _ = doc.put(entry, "start", anchor.start as i64);
+            let _ = doc.put(entry, "end", anchor.end as i64);
+            let _ = doc.put(entry, "excerpt", &anchor.excerpt);
         }
         !entries.is_empty()
     }
