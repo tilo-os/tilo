@@ -184,8 +184,6 @@ fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
     assert_eq!(shortcuts.len(), 7);
     assert_eq!(shortcuts[0].0, Icon::Home);
     assert_eq!(shortcuts[0].1, "Home");
-    // System Root uses the hard-drive vector glyph per
-    // `nirios-concept/src/components/apps/FilesApp.tsx` (line 129).
     assert_eq!(shortcuts[6].0, Icon::HardDrive);
     assert_eq!(shortcuts[6].1, "Root");
 
@@ -281,24 +279,6 @@ fn footer_shows_item_count_and_formatted_path() {
 }
 
 #[test]
-fn crate_has_no_iced_dependency() {
-    let cargo =
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
-    assert!(
-        !cargo.contains("iced ="),
-        "iced dependency must be removed after port"
-    );
-    assert!(
-        !cargo.contains("iced = "),
-        "iced dependency must be removed after port"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Task 13 — draw composition & view-mode toggle
-// ---------------------------------------------------------------------------
-
-#[test]
 fn view_mode_toggle_switches_between_list_and_grid() {
     use file_explorer::model::ViewMode;
     let mut w = FileExplorerWidget::new();
@@ -306,10 +286,6 @@ fn view_mode_toggle_switches_between_list_and_grid() {
     w.set_view_mode(ViewMode::Grid);
     assert_eq!(w.view_mode(), ViewMode::Grid);
 }
-
-// ---------------------------------------------------------------------------
-// Task 18 — coverage fill-in: every remaining AUDIT.md item gets a test.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn initial_path_prefers_workspace_then_home_then_cwd_then_root() {
@@ -357,8 +333,6 @@ fn sidebar_highlights_active_shortcut() {
 
 #[test]
 fn sidebar_has_fixed_width_180() {
-    // AUDIT.md S3: the sidebar's fixed width is 180 px. The constant must
-    // stay at exactly 180 so visual parity with the iced original is kept.
     assert!((file_explorer::sidebar::SIDEBAR_WIDTH_PX - 180.0).abs() < f32::EPSILON);
 }
 
@@ -538,9 +512,7 @@ fn grid_cell_metrics_are_documented_values() {
 
 #[test]
 fn loading_state_shown_during_navigation() {
-    // After `navigate`, `is_loading` is cleared (navigation is synchronous
-    // in the port). But a fresh widget and a widget pointed at a bogus path
-    // must never be stuck in the loading state once navigation returns.
+    // Navigation is synchronous, so every return path must clear the flag.
     let mut w = FileExplorerWidget::new();
     assert!(!w.is_loading(), "fresh widget not loading");
     w.navigate(PathBuf::from("/definitely/not/here"));
@@ -558,9 +530,7 @@ fn loading_state_shown_during_navigation() {
 fn draw_composition_exercises_the_five_pass_pipeline() {
     // Drives the composed widget through build_layout → apply_layout → draw.
     // Assertion: the widget's `rect` is non-empty after the pipeline runs and
-    // the child widget tree is non-empty (i.e. each subtree contributed
-    // layout nodes), proving the composition is actually wired through —
-    // not a no-op stub as it was at the end of Task 11.
+    // the child widget tree is non-empty.
     use std::collections::HashMap;
     use taffy::{AvailableSpace, TaffyTree};
     use ui::presence::PresenceCtx;

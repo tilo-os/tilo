@@ -1,7 +1,5 @@
-//! Responsive gallery — shows the toolkit's flex/wrap behaviour and CRDT
-//! session persistence, now also exercising the newer shared components
-//! (`SearchField`, Chip, `StatTile`, Banner) in a layout that reflows as the
-//! window narrows. Chips and stat tiles wrap; the toolbar buttons wrap.
+//! Responsive gallery showing flex/wrap behavior and CRDT session persistence.
+//! `SearchField`, `Chip`, `StatTile`, and `Banner` reflow as the window narrows.
 //!
 //! Run:  cargo run -p ui --example ui-lab -- `responsive_gallery`
 
@@ -73,7 +71,6 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
     Box::new(
         Column::new()
             .with_gap(14.0)
-            // Header: title + session buttons.
             .push(Box::new(
                 Row::new()
                     .push(Box::new(Text::new("title").with_size(24.0)))
@@ -89,11 +86,9 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
                         Some("request_load"),
                     ))),
             ))
-            // An inline banner spanning the width.
             .push(Box::new(Banner::info("Resize the window").with_message(
                 "The chips and stat tiles below reflow as the width changes.",
             )))
-            // A search field + a persisted text field inside a card.
             .push(Box::new(
                 Container::new().with_background().with_child(Box::new(
                     Column::new()
@@ -109,7 +104,6 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
                         )),
                 )),
             ))
-            // Wrapping filter chips.
             .push(Box::new(
                 Row::new()
                     .push(Box::new(Chip::new("All").selected(true)))
@@ -122,7 +116,6 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
                     .push(Box::new(Chip::new("Research").selectable()))
                     .push(Box::new(Chip::new("archived").removable())),
             ))
-            // Wrapping stat tiles.
             .push(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -139,7 +132,6 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
                             .with_delta("1", Trend::Down),
                     )),
             ))
-            // Wrapping action buttons (original responsive demo).
             .push(Box::new(
                 Row::new()
                     .push(Box::new(Button::new("b1", "Wrap Item 1", None)))

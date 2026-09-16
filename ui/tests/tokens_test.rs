@@ -44,9 +44,7 @@ fn radii_has_five_steps_plus_full() {
 #[test]
 fn theme_exposes_tokens() {
     let t = Theme::dark();
-    // legacy shortcuts still work
     assert_eq!(t.padding_standard, t.tokens.spacing.s3);
-    // tokens are the source of truth
     assert_eq!(f64::from(t.tokens.radii.md), t.radius_standard);
 }
 

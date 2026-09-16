@@ -602,9 +602,7 @@ fn disconnected_badge_keeps_a_complete_concise_state_at_large_text_scale() {
 #[test]
 fn terminal_ansi_mapping_tracks_palette_swaps() {
     // Swap the palette and prove the ANSI 0..=15 color table the terminal
-    // uses moves with it. Task 19 requires a behavioural proof that
-    // theme swaps reach rendered output — not just a compile-time
-    // assertion that a token exists.
+    // uses moves with it; the existence of a token alone would not prove that.
     use ui::tokens::TerminalPalette;
     use vello::peniko::Color;
 

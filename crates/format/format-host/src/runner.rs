@@ -20,15 +20,11 @@ use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
 use wasmtime_wasi::{ResourceTableError, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
-/// 256 MiB per call. The host rejects any growth beyond this in
-/// `WasiHostState::memory_growing`.
+/// Maximum guest memory per call.
 pub const MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
-/// Wallclock budget per call.
 pub const MAX_WALLCLOCK: Duration = Duration::from_secs(10);
-/// Epoch tick rate. Picking 1 Hz keeps overhead negligible and gives us 1-s
-/// resolution on the wallclock budget.
+/// Epoch interruption uses one-second resolution to keep timer overhead low.
 pub const EPOCH_TICK: Duration = Duration::from_secs(1);
-/// Ticks-ahead deadline corresponding to [`MAX_WALLCLOCK`].
 pub const MAX_TICKS: u64 = MAX_WALLCLOCK.as_secs() / EPOCH_TICK.as_secs();
 
 // Generate host-side Component Model bindings from the WIT package shipped by
@@ -39,15 +35,8 @@ wasmtime::component::bindgen!({
     world: "provider",
 });
 
-// The bindgen macro emits a top-level `Provider` struct (from the world name)
-// with a method to instantiate the component and accessors for the exported
-// interface(s). We pull a short alias for the interface module so the call
-// sites stay readable.
 use exports::qos::format_provider::format_provider as wit_iface;
 
-/// Per-Store state. Holds the WASI table + ctx (so we can hand WASI capabilities
-/// to providers if/when they need them) and the resource limiter that enforces
-/// our memory ceiling.
 pub struct WasiHostState {
     table: ResourceTable,
     wasi: WasiCtx,
@@ -63,7 +52,6 @@ impl WasiView for WasiHostState {
     }
 }
 
-/// A loaded provider component. Cheap to clone (everything inside is `Arc`).
 #[derive(Clone)]
 pub struct LoadedComponent {
     engine: Engine,

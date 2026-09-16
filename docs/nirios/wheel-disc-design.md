@@ -2,7 +2,7 @@
 
 This doc captures the **wheel-disc** widget that replaced the original
 `SidebarWheelChrome` as the live shell's left-side navigation. The
-concept's 96 px permanent sidebar (`nirios-concept/src/components/DesktopView.tsx:219-248`
+earlier concept's 96 px permanent sidebar
 — `absolute left-0 top-0 bottom-0 w-24 z-40`) is superseded by an
 in-plane circular disc. This is a **deliberate deviation** from the
 concept, mandated by the user's 2026-04-21 spec.
