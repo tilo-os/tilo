@@ -281,7 +281,7 @@ fn generic_ad_cosmetic_script() -> &'static str {
 }
 
 pub(crate) fn cache_dir() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join("qos-browser").join("filters"))
+    crate::storage::cache_dir().map(|d| d.join("filters"))
 }
 
 pub(crate) fn read_cached_list(path: &std::path::Path) -> Option<String> {

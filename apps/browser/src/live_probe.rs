@@ -61,6 +61,7 @@ impl WebViewEngine for LiveProbe {
                 }
                 WebViewEvent::TitleChanged(title) => state.title.clone_from(title),
                 WebViewEvent::LoadFinished => state.loaded = true,
+                WebViewEvent::LoadFinishedAt { uri } if uri == &state.uri => state.loaded = true,
                 WebViewEvent::LoadFailed { error, .. } => {
                     state.error = Some(error.clone());
                     state.loaded = false;
