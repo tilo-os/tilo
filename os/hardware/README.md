@@ -59,6 +59,15 @@ they do not prove compatibility or establish a publisher's signature.
 Select the profile when building on native aarch64 Linux, after configuring
 the normal pinned build inputs, registry access, generation and owner key:
 
+Set `QOS_TARGET_IMGREF` explicitly to the reviewed update tag or SHA-256 digest
+in the signature-required `code.podesta.ai/qos/qos` repository. It must identify
+a published channel or artifact that retains this board's firmware and device
+tree; this guide does not designate a release that has not been published.
+Non-generic builds reject a missing reference before building and bind it into
+the immutable hardware metadata. The installer uses that reference, permits an
+identical override, and rejects a conflicting override before any disk work.
+Generic images retain the official `latest` default and trusted overrides.
+
 ```sh
 QOS_HARDWARE_PROFILE=lenovo-83ed ./os/build.sh
 ```
@@ -78,8 +87,9 @@ and incomplete manifests. It writes root-owned files with mode `0644`:
 - `/etc/dracut.conf.d/41-qos-hardware.conf` includes those exact firmware paths
   in the initramfs, where display and input can need them during disk unlock.
 - `/usr/lib/qos/hardware-profile.json` binds the model, aarch64 architecture,
-  kernel-specific DTB path, and that DTB's SHA-256. The UKI builder validates
-  this immutable image input before embedding the device tree and signing.
+  kernel-specific DTB path, that DTB's SHA-256, and `target_update_ref`. The UKI
+  builder validates this immutable image input before embedding the device
+  tree and signing.
 - `/usr/lib/qos/hardware-profile-definition.json` holds the reviewed definition
   used to validate that generated profile.
 
@@ -88,3 +98,8 @@ These checks prepare build inputs; a signed image, VM installer checks, and a
 live boot on the laptop are still needed to establish bootability. Other
 firmware dependencies, including Wi-Fi and Bluetooth, must be checked against
 the chosen kernel and image packages.
+
+The update-reference binding covers image construction and initial installation.
+It does not prove that a later image published at that reference preserves the
+profile. A check of staged updates against the installed hardware profile and
+physical update/rollback acceptance remain separate work.

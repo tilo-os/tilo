@@ -24,6 +24,7 @@ NAMES = (
     "qcdxkmsuc8380.mbn", "qcvss8380.mbn", "qcadsp8380.mbn",
     "adsp_dtbs.elf", "qccdsp8380.mbn", "cdsp_dtbs.elf",
 )
+TARGET_REF = "code.podesta.ai/qos/qos:board-fixture"
 
 
 class HardwareProfileTest(unittest.TestCase):
@@ -74,7 +75,8 @@ class HardwareProfileTest(unittest.TestCase):
         }
 
     def run_preparer(self):
-        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware)
+        prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                target_update_ref=TARGET_REF)
 
     def rejected_without_writes(self, error):
         before = self.snapshot()
@@ -92,6 +94,7 @@ class HardwareProfileTest(unittest.TestCase):
             "architecture": "aarch64",
             "devicetree": f"/usr/lib/modules/{self.kver}/dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb",
             "devicetree_sha256": hashlib.sha256(self.dtb.read_bytes()).hexdigest(),
+            "target_update_ref": TARGET_REF,
         })
         installed = self.root / "usr/lib/firmware/qcom/x1e80100/LENOVO/83ED"
         self.assertEqual({path.name for path in installed.iterdir()}, set(NAMES))
@@ -123,6 +126,17 @@ class HardwareProfileTest(unittest.TestCase):
             prepare.prepare_profile("unknown", self.root, self.kver, self.firmware)
         self.assertEqual(before, self.snapshot())
 
+    def test_missing_or_untrusted_update_reference_fails_before_writes(self):
+        for value in (None, "", "registry.invalid/qos:fixture", "code.podesta.ai/qos/qos:",
+                      "code.podesta.ai/qos/qos@sha256:bad", TARGET_REF + "\n"):
+            with self.subTest(value=value):
+                before = self.snapshot()
+                with self.assertRaisesRegex(ValueError, "QOS_TARGET_IMGREF"):
+                    prepare.prepare_profile("lenovo-83ed", self.root, self.kver, self.firmware,
+                                            target_update_ref=value)
+                self.assertEqual(before, self.snapshot())
+        self.ownership.assert_not_called()
+
     def test_wrong_native_architecture(self):
         self.native.return_value = "x86_64"
         self.rejected_without_writes("native aarch64")
@@ -146,7 +160,8 @@ class HardwareProfileTest(unittest.TestCase):
         self.manifest = {"schema_version": 1, "profile": "other-board",
                          "files": {"radio.bin": hashlib.sha256(payload).hexdigest()}}
         self.write_manifest()
-        prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions)
+        prepare.prepare_profile("other-board", self.root, self.kver, self.firmware, definitions,
+                                target_update_ref=TARGET_REF)
         self.assertEqual((self.root / "usr/lib/firmware/vendor/radio/calibration.bin").read_bytes(), payload)
         emitted = json.loads((self.root / "usr/lib/qos/hardware-profile.json").read_text())
         self.assertEqual(emitted["devicetree"], "/" + tree.relative_to(self.root).as_posix())
@@ -158,7 +173,8 @@ class HardwareProfileTest(unittest.TestCase):
                 definitions, _ = self.definition(architecture=architecture)
                 self.native.return_value = architecture
                 (self.kernel / "config").write_text(config + "\n")
-                prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions)
+                prepare.prepare_profile("other-board", self.root, self.kver, self.work / "absent", definitions,
+                                        target_update_ref=TARGET_REF)
                 emitted = json.loads((self.root / "usr/lib/qos/hardware-profile.json").read_text())
                 self.assertEqual(emitted["architecture"], architecture)
                 self.assertIsNone(emitted["devicetree"])
