@@ -10925,4 +10925,64 @@ mod tests {
         assert!(CalDoc::remote_binding(&doc, id).is_none());
         assert_eq!(CalDoc::sync_tokens(&doc)[0].1, "token-3");
     }
+
+    #[test]
+    fn caldav_reconciliation_keeps_a_vtodo_at_its_stable_resource_across_pulls() {
+        let uid = Uuid::new_v4();
+        let remote_task = |done| Task {
+            id: uid,
+            title: "Server task".into(),
+            done,
+            due: NaiveDate::from_ymd_opt(2026, 8, 3),
+            priority: Priority::High,
+            project: None,
+            parent: None,
+        };
+        // Send the record through the real VTODO parser before reconciliation:
+        // a second pull must update the href-bound task, never append one.
+        let parsed_task = |done| {
+            let (_, tasks) = ics::parse(&ics::export(&Model {
+                events: Vec::new(),
+                tasks: vec![remote_task(done)],
+                projects: Vec::new(),
+            }));
+            tasks.into_iter().next().expect("one VTODO parses")
+        };
+        let mut app = CalendarApp::new_empty_for_shots();
+        let mut doc = AutoCommit::new();
+        let apply = |app: &mut CalendarApp, doc: &mut AutoCommit, task: Task, etag: &str| {
+            app.apply_sync_result(
+                caldav::SyncResult {
+                    resources: vec![caldav::RemoteResource {
+                        calendar_id: "work/default".into(),
+                        href: "/dav/work/tasks.ics".into(),
+                        etag: Some(etag.into()),
+                        events: Vec::new(),
+                        tasks: vec![task],
+                    }],
+                    ..caldav::SyncResult::default()
+                },
+                SyncOutcome::Synced {
+                    calendars: 1,
+                    events: 0,
+                },
+                doc,
+            );
+        };
+
+        apply(&mut app, &mut doc, parsed_task(false), "\"one\"");
+        let id = CalDoc::remote_id_for_href(&doc, "work/default", "/dav/work/tasks.ics#qos-task-0")
+            .expect("the VTODO has a href binding");
+        apply(&mut app, &mut doc, parsed_task(true), "\"two\"");
+
+        assert_eq!(
+            app.model.tasks.iter().filter(|task| task.id == id).count(),
+            1
+        );
+        assert!(app.model.task(id).is_some_and(|task| task.done));
+        assert_eq!(
+            CalDoc::remote_binding(&doc, id).unwrap().2.as_deref(),
+            Some("\"two\"")
+        );
+    }
 }
