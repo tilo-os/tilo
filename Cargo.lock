@@ -6761,6 +6761,7 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "os-actions",
+ "qos-power-mgmt",
  "serde",
  "serde_json",
  "taffy",

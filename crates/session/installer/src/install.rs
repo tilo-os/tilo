@@ -377,11 +377,6 @@ pub fn run_alongside_preflight<F: FnMut(String)>(
 /// Separated from [`run_install`] so tests can drive it with a stub
 /// command (e.g. `sh -c`) without the real backend present.
 ///
-/// NOTE: stderr is drained only after stdout reaches EOF. A backend that
-/// emits more than a pipe buffer (~64 KiB) of stderr *before* finishing
-/// stdout could deadlock; the real `qos-install` writes progress to
-/// stdout and only short errors to stderr, so this is safe in practice.
-///
 /// # Errors
 ///
 /// Returns `Err` if `cmd` fails to spawn, if writing `password` /
@@ -422,6 +417,22 @@ pub fn stream_command<F: FnMut(String)>(
         }
     }
 
+    // Drain stderr concurrently with stdout. Helpers such as bootc, podman,
+    // mkfs and cryptsetup do not share one output convention; a failure can
+    // legitimately fill stderr before closing stdout. Reading the pipes in
+    // sequence would then deadlock the installer and hide the actionable
+    // error from the UI. Preserve the existing contract by relaying captured
+    // stderr only when the command ultimately fails.
+    let stderr_reader = child.stderr.take().map(|stderr| {
+        std::thread::spawn(move || {
+            BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+                .filter(|line| !line.trim().is_empty())
+                .collect::<Vec<_>>()
+        })
+    });
+
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
@@ -430,15 +441,18 @@ pub fn stream_command<F: FnMut(String)>(
     }
 
     let status = child.wait()?;
+    let stderr_lines = stderr_reader
+        .map(|reader| {
+            reader
+                .join()
+                .map_err(|_| std::io::Error::other("stderr reader thread panicked"))
+        })
+        .transpose()?
+        .unwrap_or_default();
 
-    if !status.success()
-        && let Some(stderr) = child.stderr.take()
-    {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            if !line.trim().is_empty() {
-                on_line(format!("error: {line}"));
-            }
+    if !status.success() {
+        for line in stderr_lines {
+            on_line(format!("error: {line}"));
         }
     }
 
@@ -1025,6 +1039,26 @@ mod tests {
         assert!(
             lines.iter().any(|l| l.contains("boom")),
             "stderr relayed on failure"
+        );
+    }
+
+    #[test]
+    fn stream_command_drains_large_stderr_without_deadlocking() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(
+            "i=0; while [ \"$i\" -lt 4096 ]; do \
+             echo \"installer diagnostic $i fills the error pipe\" >&2; \
+             i=$((i + 1)); done; echo reached-stdout; exit 9",
+        );
+        let mut lines = Vec::new();
+        let ok = stream_command(cmd, "x", &[], |line| lines.push(line)).unwrap();
+        assert!(!ok);
+        assert!(lines.iter().any(|line| line == "reached-stdout"));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "error: installer diagnostic 4095 fills the error pipe"),
+            "the tail of stderr was drained and relayed"
         );
     }
 }
