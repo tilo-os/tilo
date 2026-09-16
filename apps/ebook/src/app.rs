@@ -7398,6 +7398,11 @@ struct NoteCardView<'a> {
     composing: bool,
 }
 
+struct SettingsTabsView {
+    viewport: Rect,
+    y: f64,
+}
+
 impl BooksApp {
     fn draw_reader(&mut self, ctx: &mut EbookPaintCtx<'_>) {
         let lib = std::mem::take(&mut self.library);
@@ -9644,16 +9649,22 @@ impl BooksApp {
 
 impl BooksApp {
     fn draw_settings(&mut self, ctx: &mut EbookPaintCtx<'_>) {
+        let r = self.rect;
+        self.draw_settings_topbar(ctx, r);
+        let tabs_y = r.y0 + TOP_BAR + 10.0;
+        let tab_h = self.draw_settings_tabs(
+            ctx,
+            &SettingsTabsView {
+                viewport: r,
+                y: tabs_y,
+            },
+        );
+
         let scene = &mut *ctx.scene;
         let t = ctx.transform;
         let tr = &mut *ctx.text;
         let theme = ctx.theme;
         let c = theme.tokens.colors.clone();
-        let r = self.rect;
-
-        self.draw_settings_topbar(scene, t, tr, theme, &c, r);
-        let tabs_y = r.y0 + TOP_BAR + 10.0;
-        let tab_h = self.draw_settings_tabs(scene, t, tr, theme, &c, r, tabs_y);
 
         // Scrollable body.
         let content_top = tabs_y + tab_h + 18.0;
@@ -9696,20 +9707,13 @@ impl BooksApp {
         }
     }
 
-    fn draw_settings_topbar(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        r: Rect,
-    ) {
+    fn draw_settings_topbar(&mut self, ctx: &mut EbookPaintCtx<'_>, r: Rect) {
+        let c = &ctx.theme.tokens.colors;
         let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOP_BAR);
-        paint::fill_rect(scene, t, bar, c.surfaces.raised);
+        paint::fill_rect(ctx.scene, ctx.transform, bar, c.surfaces.raised);
         paint::line(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(r.x0, r.y0 + TOP_BAR),
             Point::new(r.x1, r.y0 + TOP_BAR),
             c.border_standard,
@@ -9718,12 +9722,7 @@ impl BooksApp {
         let s = 34.0;
         let cy = r.y0 + (TOP_BAR - s) / 2.0;
         self.icon_button(
-            &mut EbookPaintCtx {
-                scene: &mut *scene,
-                transform: t,
-                text: &mut *tr,
-                theme,
-            },
+            ctx,
             IconButtonView {
                 rect: Rect::new(r.x0 + 14.0, cy, r.x0 + 14.0 + s, cy + s),
                 icon: Ico::Back,
@@ -9731,12 +9730,12 @@ impl BooksApp {
                 action: Action::CloseSettings,
             },
         );
-        tr.draw_text_weighted(
-            scene,
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "Settings",
             21.0,
             c.text_primary,
-            t * Affine::translate((r.x0 + 60.0, r.y0 + 15.0)),
+            ctx.transform * Affine::translate((r.x0 + 60.0, r.y0 + 15.0)),
             None,
             TextWeight::Bold,
         );
@@ -9745,17 +9744,10 @@ impl BooksApp {
     /// The underline-indicator tab bar. Wide layouts stay on one line; narrow
     /// or large-text layouts use a bounded two-by-two grid so every tab remains
     /// fully visible and touchable instead of clipping at the viewport edge.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_settings_tabs(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        r: Rect,
-        tabs_y: f64,
-    ) -> f64 {
+    fn draw_settings_tabs(&mut self, ctx: &mut EbookPaintCtx<'_>, view: &SettingsTabsView) -> f64 {
+        let c = &ctx.theme.tokens.colors;
+        let r = view.viewport;
+        let tabs_y = view.y;
         let tabs = [
             (SettingsTab::Library, "Library"),
             (SettingsTab::Fonts, "Fonts"),
@@ -9764,7 +9756,9 @@ impl BooksApp {
         ];
         let row_h = if self.text_scale >= 1.5 { 48.0 } else { 38.0 };
         let required_w = tabs.iter().fold(0.0, |width, (_, label)| {
-            let (label_w, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
+            let (label_w, _) = ctx
+                .text
+                .measure_weighted(label, 14.0, None, TextWeight::Semibold);
             width + f64::from(label_w) + 30.0
         });
         let stacked = required_w > r.width() - 24.0;
@@ -9773,7 +9767,9 @@ impl BooksApp {
         let mut tx = r.x0 + 12.0;
         for (index, (tab, label)) in tabs.into_iter().enumerate() {
             let active = self.settings_tab == tab;
-            let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
+            let (lw, _) = ctx
+                .text
+                .measure_weighted(label, 14.0, None, TextWeight::Semibold);
             let (tab_x, row_y, tab_w) = if stacked {
                 (
                     r.x0 + 12.0 + (index % 2) as f64 * grid_w,
@@ -9790,12 +9786,12 @@ impl BooksApp {
             } else {
                 c.text_dim
             };
-            tr.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 label,
                 14.0,
                 col,
-                t * Affine::translate((tab_x + 12.0, row_y + 11.0)),
+                ctx.transform * Affine::translate((tab_x + 12.0, row_y + 11.0)),
                 Some((tab_w - 24.0).max(1.0) as f32),
                 if active {
                     TextWeight::Semibold
@@ -9810,7 +9806,7 @@ impl BooksApp {
                     (tab_x + f64::from(lw) + 16.0).min(tab_rect.x1 - 8.0),
                     row_y + row_h,
                 );
-                paint::fill_round(scene, t, ind, 1.5, theme.accent_primary);
+                paint::fill_round(ctx.scene, ctx.transform, ind, 1.5, ctx.theme.accent_primary);
             }
             // Keep the selected radio tab in the semantic/hit tree too:
             // screen-reader and keyboard users must be able to revisit and
@@ -9822,8 +9818,8 @@ impl BooksApp {
         }
         // Divider under the whole tab bar.
         paint::line(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(r.x0, tabs_y + tab_h),
             Point::new(r.x1, tabs_y + tab_h),
             c.border_standard,
