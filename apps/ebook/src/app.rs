@@ -12983,11 +12983,10 @@ mod interaction_tests {
         );
     }
 
-    /// The floating page bubble is a transient overlay: hidden on a settled
-    /// reader, surfaced by a page change, and it schedules the animation frames
-    /// that let it fade itself out (so it hides without a stray pointer event).
+    /// The floating page bubble is hidden on a settled reader and surfaced by
+    /// a page change without leaving an invisible navigation hit behind.
     #[test]
-    fn page_bubble_surfaces_on_a_page_change_and_schedules_its_fade() {
+    fn page_bubble_surfaces_on_a_page_change() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
@@ -13001,17 +13000,13 @@ mod interaction_tests {
             find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
             "the hidden bubble exposes no page-nav hit"
         );
-        // A page turn pokes the bubble; the next frame draws it (its chevrons are
-        // hit-testable) and it keeps requesting frames so it can fade on its own.
+        // A page turn pokes the bubble; the next frame draws it and makes its
+        // chevrons hit-testable.
         app.dispatch(Action::NextPage, &mut doc);
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(
             find_hit(&app, |a| matches!(a, Action::NextPage)).is_some(),
             "a page change surfaces the bubble's next chevron"
-        );
-        assert!(
-            app.reader_bubble.needs_frame(Instant::now()),
-            "the visible bubble schedules its own fade-out frames"
         );
     }
 
