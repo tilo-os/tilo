@@ -6560,6 +6560,9 @@ name = "imager"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "cap-fs-ext",
+ "cap-primitives",
+ "cap-std",
  "libc",
  "qos-actions",
  "qos-app",
