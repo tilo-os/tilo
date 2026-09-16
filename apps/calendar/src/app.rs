@@ -58,7 +58,9 @@ use crate::event_popovers::{
 };
 use crate::ics;
 use crate::mini_month::{MiniMonth, Outcome as MiniMonthOutcome};
-use crate::model::{Event, Id, ListSel, Model, Palette, Priority, Recurrence, View, seed_demo};
+use crate::model::{
+    Event, Id, ListSel, Model, Palette, Priority, Recurrence, Task, View, seed_demo,
+};
 use crate::sidebar::{Action as SidebarAction, Mode as SidebarMode, Sidebar};
 use crate::timeline_interaction::{
     TIMELINE_SNAP_MIN, TimelineEffect, TimelineEventCtx, TimelineInteraction, TimelineRenderEvent,
