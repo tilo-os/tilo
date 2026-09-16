@@ -8388,6 +8388,60 @@ impl VideoEditorApp {
 // ==========================================================================
 // Widget impl
 // ==========================================================================
+impl VideoEditorApp {
+    fn draw_inspector_editors(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        regions: &Regions,
+    ) {
+        if !self.inspector_is_visible(regions) {
+            return;
+        }
+        let layout = self.inspector_layout(regions);
+        // Enumerating installed families needs the renderer, and this is the
+        // only draw path that has one — so the cache is filled here and the
+        // picker is built from it on press.
+        if layout.title_font.is_some() && self.system_fonts.is_empty() {
+            self.system_fonts = tr.system_families();
+        }
+        if let (Some((_, dropdown, _)), Some(rect)) = (self.font_picker.as_mut(), layout.title_font)
+        {
+            dropdown.apply_layout_external(rect);
+            dropdown.draw(scene, transform, tr, theme, presence);
+        }
+        if let (Some((media_id, field)), Some(rect)) = (self.title_edit.as_mut(), layout.title_text)
+        {
+            let media_id = *media_id;
+            field.apply_layout_external(rect.inset(-4.0));
+            field.draw(scene, transform, tr, theme, presence);
+            crate::presence::draw_peer_field_carets(
+                &mut crate::presence::PeerPaintCtx::new(scene, transform, tr, theme, presence),
+                crate::presence::FIELD_TITLE_WORDS,
+                media_id,
+                |byte| field.caret_rect(theme, byte),
+            );
+        }
+        let marker_row = self
+            .marker_rename
+            .as_ref()
+            .and_then(|(marker, _)| {
+                layout
+                    .marker_rows
+                    .iter()
+                    .find(|(row, _)| row.id == marker.id)
+            })
+            .map(|(_, row)| self.marker_edit_rect(*row));
+        if let (Some((_, label)), Some(rect)) = (self.marker_rename.as_mut(), marker_row) {
+            label.apply_layout_external(rect);
+            label.draw(scene, transform, tr, theme, presence);
+        }
+    }
+}
+
 impl Widget for VideoEditorApp {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::VIDEO_EDITOR_OPERATION_TYPE]
@@ -8712,47 +8766,9 @@ impl Widget for VideoEditorApp {
         self.draw_bin_drag(scene, transform, tr, theme, &r);
         // Inline rename field, drawn over the bin item's name band.
         self.draw_bin_rename(scene, transform, tr, theme, presence, &r);
-        // Inline editors inside the inspector: the title's words and a
-        // marker's name. Drawn after the panel so the caret is on top of it.
-        if self.inspector_is_visible(&r) {
-            let l = self.inspector_layout(&r);
-            // Enumerating installed families needs the renderer, and this is
-            // the only draw path that has one — so the cache is filled here
-            // and the picker is built from it on press.
-            if l.title_font.is_some() && self.system_fonts.is_empty() {
-                self.system_fonts = tr.system_families();
-            }
-            // The open family list floats over the panel, so it is drawn
-            // with the inline editors rather than inside the panel body.
-            if let (Some((_, dd, _)), Some(rect)) = (self.font_picker.as_mut(), l.title_font) {
-                dd.apply_layout_external(rect);
-                dd.draw(scene, transform, tr, theme, presence);
-            }
-            if let (Some((mid, field)), Some(rect)) = (self.title_edit.as_mut(), l.title_text) {
-                let mid = *mid;
-                field.apply_layout_external(rect.inset(-4.0));
-                field.draw(scene, transform, tr, theme, presence);
-                // Anyone else with a caret in these same words. Placed from
-                // the field's own byte-to-rectangle mapping, which the draw
-                // just above populated, so a peer's caret is this field's
-                // caret in another colour rather than a second guess at it.
-                crate::presence::draw_peer_field_carets(
-                    &mut crate::presence::PeerPaintCtx::new(scene, transform, tr, theme, presence),
-                    crate::presence::FIELD_TITLE_WORDS,
-                    mid,
-                    |byte| field.caret_rect(theme, byte),
-                );
-            }
-            let row = self
-                .marker_rename
-                .as_ref()
-                .and_then(|(m, _)| l.marker_rows.iter().find(|(r, _)| r.id == m.id))
-                .map(|(_, row)| self.marker_edit_rect(*row));
-            if let (Some((_, label)), Some(rect)) = (self.marker_rename.as_mut(), row) {
-                label.apply_layout_external(rect);
-                label.draw(scene, transform, tr, theme, presence);
-            }
-        }
+        // Inline inspector editors paint after the panel so carets and open
+        // pickers float over its body.
+        self.draw_inspector_editors(scene, transform, tr, theme, presence, &r);
         if self.presentation.export_open {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
