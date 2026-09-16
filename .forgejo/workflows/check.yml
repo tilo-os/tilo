@@ -112,6 +112,7 @@ jobs:
           python3 os/tests/native_index_promotion.py
           python3 os/tests/test_rpm_snapshot_architecture.py
           python3 os/tests/test_fex_payload.py
+          python3 os/tests/test_fex_patches.py
           python3 os/tests/test_windows_guest_contract.py
           python3 os/tests/test_windows_guest_payload.py
           python3 os/tests/test_windows_guest_dxvk.py
