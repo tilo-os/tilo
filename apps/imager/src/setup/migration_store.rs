@@ -2,11 +2,14 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
-use cap_fs_ext::OpenOptionsFollowExt;
+use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, Metadata, OpenOptions};
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +22,20 @@ use super::nofollow::{metadata_nofollow, same_directory_identity};
 const STORE_FILE: &str = "operations.json";
 const MAX_STORE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OPERATIONS: usize = 256;
+const ISSUE_PREVIEW: usize = 8;
+const MAX_ISSUE_BYTES: u64 = 128 * 1024;
+static NEXT_REPORT: AtomicU64 = AtomicU64::new(0);
+
+// Display snapshots have their own identity. Equal counts/previews must never
+// let an acknowledgement attach a previous attempt's full issue details.
+fn report_identity() -> String {
+    format!(
+        "{}-{:?}-{}",
+        std::process::id(),
+        std::time::SystemTime::now(),
+        NEXT_REPORT.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "platform", content = "units", deny_unknown_fields)]
@@ -96,8 +113,17 @@ struct StoredIssue {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredReport {
+    #[serde(default)]
+    identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     verified_files: Vec<NativePath>,
+    #[serde(default)]
+    verified_count: usize,
     verified_bytes: u64,
+    #[serde(default)]
+    issue_count: usize,
+    #[serde(default)]
+    details: Option<String>,
     skipped: Vec<StoredIssue>,
     failed: Vec<StoredIssue>,
     cancelled: bool,
@@ -108,12 +134,12 @@ struct StoredReport {
 impl StoredReport {
     fn from_report(report: CopyReport) -> Self {
         Self {
-            verified_files: report
-                .verified_files
-                .iter()
-                .map(|path| NativePath::encode(path))
-                .collect(),
+            identity: Some(report_identity()),
+            verified_count: report.verified_files.len(),
+            verified_files: Vec::new(),
             verified_bytes: report.verified_bytes,
+            issue_count: report.skipped.len() + report.failed.len(),
+            details: None,
             skipped: report
                 .skipped
                 .into_iter()
@@ -170,6 +196,46 @@ impl OperationRecord {
         }
     }
 
+    pub(super) fn issue_count(&self) -> usize {
+        self.report
+            .as_ref()
+            .map_or(0, |r| r.issue_count.max(r.skipped.len() + r.failed.len()))
+    }
+
+    pub(super) fn retain_detail_reference(&mut self, saved: &Self) {
+        if self.id == saved.id
+            && self.state == saved.state
+            && let (Some(current), Some(saved)) = (&mut self.report, &saved.report)
+            && current.details.is_none()
+            && current.identity.is_some()
+            && current.identity == saved.identity
+            && current.issue_count == saved.issue_count
+        {
+            current.details.clone_from(&saved.details);
+        }
+    }
+
+    pub(super) fn compact(&mut self) {
+        if let Some(report) = &mut self.report {
+            report.verified_count = report.verified_count.max(report.verified_files.len());
+            report.verified_files.clear();
+            report.issue_count = report
+                .issue_count
+                .max(report.skipped.len() + report.failed.len());
+            report.skipped.truncate(ISSUE_PREVIEW);
+            report
+                .failed
+                .truncate(ISSUE_PREVIEW.saturating_sub(report.skipped.len()));
+        }
+    }
+
+    pub(super) fn persistence_failed(&mut self, error: &str) {
+        self.state = OperationState::Incomplete;
+        self.failure = Some(format!(
+            "The result could not be saved locally: {error}. Reopen and revalidate before continuing."
+        ));
+    }
+
     pub(super) fn source(&self) -> Result<PathBuf, String> {
         self.source.decode()
     }
@@ -203,7 +269,7 @@ impl OperationRecord {
                     .as_ref()
                     .map_or(0, |p| p.verified_files as usize)
             },
-            |r| r.verified_files.len(),
+            |r| r.verified_count.max(r.verified_files.len()),
         )
     }
 
@@ -342,6 +408,9 @@ struct StoreDocument {
 pub(super) struct MigrationStore {
     root_path: PathBuf,
     root: Arc<PinnedDirectory>,
+    // The descriptor lock survives while any live worker owns this store.
+    ownership: fs::File,
+    ownership_identity: Metadata,
 }
 
 impl MigrationStore {
@@ -360,7 +429,51 @@ impl MigrationStore {
                 path.display()
             )
         })?;
+        let name = Path::new("ownership.lock");
+        // Never remove the lock pathname: unlinking a held lock allows a second
+        // inode/owner. A dead process releases its OS lock automatically.
+        if matches!(metadata_nofollow(&root.file, name), Err(e) if e.kind() == io::ErrorKind::NotFound)
+        {
+            let temporary = OwnedTemporary::create(&root, OsStr::new("ownership.lock"))
+                .map_err(|e| e.to_string())?;
+            match cap_primitives::fs::hard_link(
+                &root.file,
+                Path::new(&temporary.name),
+                &root.file,
+                name,
+            ) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        let expected = metadata_nofollow(&root.file, name).map_err(|e| e.to_string())?;
+        if !expected.is_file() || expected.is_symlink() {
+            return Err("migration ownership lock is not a regular private file".into());
+        }
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .follow(FollowSymlinks::No)
+            .nonblock(true);
+        let ownership =
+            cap_primitives::fs::open(&root.file, name, &options).map_err(|e| e.to_string())?;
+        destination_security::check_private_file(&ownership).map_err(|e| e.to_string())?;
+        let ownership_identity = Metadata::from_file(&ownership).map_err(|e| e.to_string())?;
+        if !same_directory_identity(&expected, &ownership_identity) {
+            return Err("migration ownership lock was replaced".into());
+        }
+        ownership
+            .try_lock()
+            .map_err(|e| format!("folder imports are busy in another window or process: {e}"))?;
+        let current = metadata_nofollow(&root.file, name).map_err(|e| e.to_string())?;
+        if !same_directory_identity(&current, &ownership_identity) {
+            return Err("migration ownership lock was replaced".into());
+        }
         Ok(Self {
+            ownership,
+            ownership_identity,
             root_path: path.to_path_buf(),
             root,
         })
@@ -371,7 +484,21 @@ impl MigrationStore {
         &self.root_path
     }
 
+    fn validate_ownership(&self) -> Result<(), String> {
+        destination_security::check_private_file(&self.ownership).map_err(|e| e.to_string())?;
+        let current = metadata_nofollow(&self.root.file, Path::new("ownership.lock"))
+            .map_err(|e| e.to_string())?;
+        if !current.is_file()
+            || current.is_symlink()
+            || !same_directory_identity(&current, &self.ownership_identity)
+        {
+            return Err("migration ownership lock changed; stop and reopen folder imports".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn load(&self) -> Result<Vec<OperationRecord>, String> {
+        self.validate_ownership()?;
         self.root
             .validate_destination()
             .map_err(|e| e.to_string())?;
@@ -407,9 +534,19 @@ impl MigrationStore {
             return Err("unsupported migration state schema or operation count".into());
         }
         for operation in &mut document.operations {
+            if let Some(report) = &mut operation.report
+                && report.identity.is_none()
+            {
+                report.identity = Some(report_identity());
+            }
             operation.source()?;
             operation.destination()?;
-            operation.journal()?;
+            MigrationJob::fresh(
+                operation.id.clone(),
+                operation.source()?,
+                operation.destination()?,
+                operation.journal()?,
+            )?;
             if operation.state == OperationState::Running {
                 operation.state = OperationState::Interrupted;
             }
@@ -417,7 +554,131 @@ impl MigrationStore {
         Ok(document.operations)
     }
 
+    fn save_issues(&self, operation: &OperationRecord) -> Result<String, String> {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let name = format!("{}.{stamp}.issues", operation.id);
+        let mut temporary =
+            OwnedTemporary::create(&self.root, OsStr::new(&name)).map_err(|e| e.to_string())?;
+        if let Some(report) = &operation.report {
+            for issue in report.skipped.iter().chain(&report.failed) {
+                let bytes = serde_json::to_vec(issue).map_err(|e| e.to_string())?;
+                if bytes.len() as u64 > MAX_ISSUE_BYTES {
+                    return Err("copy issue exceeds bounded record size".into());
+                }
+                temporary
+                    .file
+                    .write_all(&bytes)
+                    .and_then(|()| temporary.file.write_all(b"\n"))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        migration_durability::sync_file(&temporary.file).map_err(|e| e.to_string())?;
+        temporary.validate().map_err(|e| e.to_string())?;
+        self.validate_ownership()?;
+        cap_primitives::fs::hard_link(
+            &self.root.file,
+            Path::new(&temporary.name),
+            &self.root.file,
+            Path::new(&name),
+        )
+        .map_err(|e| e.to_string())?;
+        migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())?;
+        Ok(name)
+    }
+
+    pub(super) fn issue_page(
+        &self,
+        operation: &OperationRecord,
+        offset: u64,
+    ) -> Result<IssuePage, String> {
+        self.validate_ownership()?;
+        self.root
+            .validate_destination()
+            .map_err(|e| e.to_string())?;
+        MigrationJob::fresh(
+            operation.id.clone(),
+            operation.source()?,
+            operation.destination()?,
+            operation.journal()?,
+        )?;
+        let name = operation
+            .report
+            .as_ref()
+            .and_then(|r| r.details.as_deref())
+            .ok_or_else(|| {
+                "Full issue details were not saved; recheck the journal before continuing."
+                    .to_string()
+            })?;
+        if !name.starts_with(&format!("{}.", operation.id))
+            || !name.ends_with(".issues")
+            || name.len() > 255
+            || !matches!(
+                Path::new(name).components().next(),
+                Some(Component::Normal(_))
+            )
+            || Path::new(name).components().count() != 1
+        {
+            return Err("copy issue reference is invalid".into());
+        }
+        let expected =
+            metadata_nofollow(&self.root.file, Path::new(&name)).map_err(|e| e.to_string())?;
+        if !expected.is_file() || expected.is_symlink() {
+            return Err("copy issue details are not a regular file".into());
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No).nonblock(true);
+        let mut file = cap_primitives::fs::open(&self.root.file, Path::new(&name), &options)
+            .map_err(|e| e.to_string())?;
+        destination_security::check_private_file(&file).map_err(|e| e.to_string())?;
+        if !same_directory_identity(
+            &expected,
+            &Metadata::from_file(&file).map_err(|e| e.to_string())?,
+        ) {
+            return Err("copy details changed while opening".into());
+        }
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|e| e.to_string())?;
+        let mut reader = io::BufReader::new(file);
+        let mut issues = Vec::new();
+        let mut next = offset;
+        for _ in 0..32 {
+            let mut bytes = Vec::new();
+            reader
+                .by_ref()
+                .take(MAX_ISSUE_BYTES + 2)
+                .read_until(b'\n', &mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.is_empty() {
+                break;
+            }
+            if bytes.len() as u64 > MAX_ISSUE_BYTES + 1 || bytes.last() != Some(&b'\n') {
+                return Err("invalid bounded copy issue record".into());
+            }
+            next += bytes.len() as u64;
+            let issue: StoredIssue = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            issues.push((issue.path.decode()?, issue.message));
+        }
+        Ok(IssuePage {
+            issues,
+            next: (next < expected.len()).then_some(next),
+        })
+    }
+
+    #[cfg(test)]
     pub(super) fn save(&self, operations: &[OperationRecord]) -> Result<(), String> {
+        self.save_snapshot(operations).map(drop)
+    }
+
+    fn save_snapshot(
+        &self,
+        operations: &[OperationRecord],
+    ) -> Result<Vec<OperationRecord>, String> {
+        #[cfg(test)]
+        test_support::before_save(&self.root_path);
+        self.validate_ownership()?;
         if operations.len() > MAX_OPERATIONS {
             return Err("too many migration operations to persist".into());
         }
@@ -425,9 +686,28 @@ impl MigrationStore {
             .validate_destination()
             .map_err(|e| e.to_string())?;
         destination_security::check_private_file(&self.root.file).map_err(|e| e.to_string())?;
+        let mut compact = operations.to_vec();
+        for operation in &mut compact {
+            MigrationJob::fresh(
+                operation.id.clone(),
+                operation.source()?,
+                operation.destination()?,
+                operation.journal()?,
+            )?;
+            if let Some(report) = &operation.report {
+                let count = report.skipped.len() + report.failed.len();
+                if count > ISSUE_PREVIEW && count >= report.issue_count {
+                    let name = self.save_issues(operation)?;
+                    if let Some(report) = &mut operation.report {
+                        report.details = Some(name);
+                    }
+                }
+            }
+            operation.compact();
+        }
         let document = StoreDocument {
             version: 1,
-            operations: operations.to_vec(),
+            operations: compact,
         };
         let bytes = serde_json::to_vec(&document).map_err(|e| e.to_string())?;
         if bytes.len() as u64 > MAX_STORE_BYTES {
@@ -448,7 +728,77 @@ impl MigrationStore {
             Path::new(STORE_FILE),
         )
         .map_err(|e| e.to_string())?;
-        migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())
+        migration_durability::sync_directory(&self.root.file).map_err(|e| e.to_string())?;
+        Ok(document.operations)
+    }
+}
+
+pub(super) struct IssuePage {
+    pub(super) issues: Vec<(PathBuf, String)>,
+    pub(super) next: Option<u64>,
+}
+
+type SaveRequest = (
+    Vec<OperationRecord>,
+    std::sync::mpsc::Sender<Result<Vec<OperationRecord>, String>>,
+);
+
+/// All index writes are serialized off the event thread. The writer owns the
+/// store lock until every client (including a detached copy worker) exits and
+/// every queued checkpoint has completed.
+#[derive(Clone)]
+pub(super) struct StoreWriter {
+    sender: std::sync::mpsc::Sender<SaveRequest>,
+}
+impl StoreWriter {
+    pub(super) fn new(store: Arc<MigrationStore>) -> Result<Self, String> {
+        let (sender, receiver) = std::sync::mpsc::channel::<SaveRequest>();
+        std::thread::Builder::new()
+            .name("imager-copy-state".into())
+            .spawn(move || {
+                let mut failure: Option<String> = None;
+                let mut previous = Vec::new();
+                while let Ok((mut operations, reply)) = receiver.recv() {
+                    // A queued snapshot may predate the preceding save's ACK.
+                    // Preserve immutable detail references created by that save;
+                    // never carry forward operation state or copy authority.
+                    for (operation, saved) in operations.iter_mut().zip(&previous) {
+                        operation.retain_detail_reference(saved);
+                    }
+                    let result = if let Some(error) = &failure {
+                        Err(error.clone())
+                    } else {
+                        store.save_snapshot(&operations)
+                    };
+                    match &result {
+                        Ok(saved) => previous.clone_from(saved),
+                        Err(error) => failure = Some(error.clone()),
+                    }
+                    let _ = reply.send(result);
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Self { sender })
+    }
+
+    pub(super) fn save(
+        &self,
+        operations: Vec<OperationRecord>,
+    ) -> Result<std::sync::mpsc::Receiver<Result<Vec<OperationRecord>, String>>, String> {
+        let (reply, receiver) = std::sync::mpsc::channel();
+        self.sender
+            .send((operations, reply))
+            .map_err(|_| "local copy state writer stopped".to_string())?;
+        Ok(receiver)
+    }
+
+    pub(super) fn checkpoint(
+        &self,
+        operations: Vec<OperationRecord>,
+    ) -> Result<Vec<OperationRecord>, String> {
+        self.save(operations)?
+            .recv()
+            .map_err(|_| "local copy state writer lost its checkpoint response".to_string())?
     }
 }
 
@@ -495,6 +845,43 @@ fn ensure_private_root(path: &Path) -> io::Result<Arc<PinnedDirectory>> {
 }
 
 #[cfg(test)]
+pub(super) mod test_support {
+    use std::{
+        collections::HashMap,
+        path::{Path, PathBuf},
+        sync::{Mutex, OnceLock, mpsc},
+        time::Duration,
+    };
+    type Hook = (usize, mpsc::Sender<()>, mpsc::Receiver<()>);
+    static HOOKS: OnceLock<Mutex<HashMap<PathBuf, Hook>>> = OnceLock::new();
+    pub(crate) fn hold_save(path: &Path, nth: usize) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        HOOKS
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), (nth, entered_tx, release_rx));
+        (entered_rx, release_tx)
+    }
+    pub(super) fn before_save(path: &Path) {
+        let hook = {
+            let mut hooks = HOOKS.get_or_init(Mutex::default).lock().unwrap();
+            if let Some((nth, _, _)) = hooks.get_mut(path) {
+                *nth -= 1;
+                if *nth == 0 { hooks.remove(path) } else { None }
+            } else {
+                None
+            }
+        };
+        if let Some((_, entered, release)) = hook {
+            let _ = entered.send(());
+            release.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::fs;
 
@@ -518,6 +905,211 @@ mod tests {
         )
         .unwrap();
         (temp, store, job)
+    }
+
+    #[test]
+    fn later_attempt_with_same_counts_cannot_inherit_earlier_details() {
+        let (_temp, store, job) = fixture();
+        let mut earlier = OperationRecord::new(&job);
+        earlier.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+            failed: (0..40)
+                .map(|n| (PathBuf::from(format!("file-{n}")), "old reason".into()))
+                .collect(),
+            ..CopyReport::default()
+        }));
+        store.save(&[earlier]).unwrap();
+        let saved = store.load().unwrap().remove(0);
+        let mut later = OperationRecord::new(&job);
+        later.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+            failed: (0..40)
+                .map(|n| {
+                    (
+                        PathBuf::from(format!("file-{n}")),
+                        if n < 8 { "old reason" } else { "new reason" }.into(),
+                    )
+                })
+                .collect(),
+            ..CopyReport::default()
+        }));
+        later.compact();
+        later.retain_detail_reference(&saved);
+        assert!(
+            store.issue_page(&later, 0).is_err(),
+            "a different attempt inherited an earlier issue page"
+        );
+    }
+
+    #[test]
+    fn queued_legacy_compaction_cannot_lose_the_new_detail_reference() {
+        let (_temp, store, job) = fixture();
+        let store = Arc::new(store);
+        let writer = StoreWriter::new(Arc::clone(&store)).unwrap();
+        let mut legacy = OperationRecord::new(&job);
+        legacy.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+            failed: (0..40)
+                .map(|n| (PathBuf::from(format!("legacy-{n}")), "reason".into()))
+                .collect(),
+            ..CopyReport::default()
+        }));
+        let first = writer.save(vec![legacy.clone()]).unwrap();
+        legacy.compact();
+        let second = writer.save(vec![legacy]).unwrap();
+        first.recv().unwrap().unwrap();
+        second.recv().unwrap().unwrap();
+        let saved = store.load().unwrap().remove(0);
+        assert_eq!(store.issue_page(&saved, 0).unwrap().issues.len(), 32);
+    }
+
+    #[test]
+    fn saved_issue_pages_are_immutable_across_later_attempts() {
+        let (_temp, store, job) = fixture();
+        let mut operation = OperationRecord::new(&job);
+        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+            failed: (0..40)
+                .map(|n| (PathBuf::from(format!("old-{n}")), "old reason".into()))
+                .collect(),
+            ..CopyReport::default()
+        }));
+        store.save(&[operation.clone()]).unwrap();
+        let previous = store.load().unwrap().remove(0);
+        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+            failed: (0..40)
+                .map(|n| (PathBuf::from(format!("new-{n}")), "new reason".into()))
+                .collect(),
+            ..CopyReport::default()
+        }));
+        store.save(&[operation]).unwrap();
+        assert_eq!(
+            store.issue_page(&previous, 0).unwrap().issues[0].0,
+            PathBuf::from("old-0")
+        );
+    }
+
+    #[test]
+    fn every_issue_remains_available_in_bounded_pages_after_restart() {
+        let (_temp, store, job) = fixture();
+        let mut operation = OperationRecord::new(&job);
+        operation.apply_outcome(WorkerOutcome::Incomplete(CopyReport {
+            failed: (0..1000)
+                .map(|n| (PathBuf::from(format!("file-{n}")), format!("reason-{n}")))
+                .collect(),
+            scan_completed: true,
+            ..CopyReport::default()
+        }));
+        store.save(&[operation]).unwrap();
+        let reopened = store.load().unwrap().remove(0);
+        assert_eq!(reopened.issue_count(), 1000);
+        assert!(reopened.issues().unwrap().len() <= 8);
+        assert!(fs::metadata(store.root().join(STORE_FILE)).unwrap().len() < 65536);
+        let mut offset = 0;
+        let mut count = 0;
+        loop {
+            let page = store.issue_page(&reopened, offset).unwrap();
+            assert!(page.issues.len() <= 32);
+            for (path, reason) in page.issues {
+                assert_eq!(path, PathBuf::from(format!("file-{count}")));
+                assert_eq!(reason, format!("reason-{count}"));
+                count += 1;
+            }
+            if let Some(next) = page.next {
+                offset = next;
+            } else {
+                break;
+            }
+        }
+        assert_eq!(count, 1000);
+    }
+
+    #[test]
+    fn store_lock_process_helper() {
+        let Some(root) = std::env::var_os("QOS_COPY_STORE_LOCK_TEST") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let _store = MigrationStore::open_at(&root).unwrap();
+        fs::write(root.join("owner-ready"), b"ready").unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[test]
+    fn ownership_releases_after_process_death_without_removing_lock_file() {
+        let (temp, store, _job) = fixture();
+        let root = store.root().to_owned();
+        drop(store);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!(
+                    "{}::store_lock_process_helper",
+                    module_path!().split_once("::").unwrap().1
+                ),
+            ])
+            .env("QOS_COPY_STORE_LOCK_TEST", &root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !root.join("owner-ready").exists() {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "child did not acquire store lock in {}",
+                    temp.path().display()
+                );
+            }
+            std::thread::yield_now();
+        }
+        assert!(MigrationStore::open_at(&root).is_err());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(root.join("ownership.lock").is_file());
+        assert!(MigrationStore::open_at(&root).is_ok());
+    }
+
+    #[test]
+    fn second_owner_cannot_load_or_normalize_live_operation() {
+        let (_temp, store, job) = fixture();
+        let mut operation = OperationRecord::new(&job);
+        operation.approve();
+        operation.mark_running().unwrap();
+        store.save(&[operation]).unwrap();
+        let before = fs::read(store.root().join(STORE_FILE)).unwrap();
+        assert!(
+            MigrationStore::open_at(store.root()).is_err(),
+            "second owner acquired live store"
+        );
+        assert_eq!(fs::read(store.root().join(STORE_FILE)).unwrap(), before);
+        let root = store.root().to_owned();
+        drop(store);
+        let reopened = MigrationStore::open_at(&root).unwrap();
+        assert_eq!(
+            reopened.load().unwrap()[0].state(),
+            OperationState::Interrupted
+        );
+    }
+
+    #[test]
+    fn index_does_not_duplicate_unbounded_verified_paths() {
+        let (_temp, store, job) = fixture();
+        let mut operation = OperationRecord::new(&job);
+        let report = CopyReport {
+            verified_files: (0..10000)
+                .map(|n| PathBuf::from(format!("{n:08}-{}", "x".repeat(200))))
+                .collect(),
+            scan_completed: true,
+            ..CopyReport::default()
+        };
+        operation.apply_outcome(WorkerOutcome::Complete(report));
+        store.save(&[operation]).unwrap();
+        assert!(
+            fs::metadata(store.root().join(STORE_FILE)).unwrap().len() < 65536,
+            "full paths duplicated in index"
+        );
+        assert_eq!(store.load().unwrap()[0].verified_file_count(), 10000);
     }
 
     // Catches treating an operation index's stale Running marker as evidence
