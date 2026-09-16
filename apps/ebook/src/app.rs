@@ -9700,9 +9700,19 @@ impl BooksApp {
             SettingsTab::Colours => {
                 self.draw_schemes_manager(scene, t, tr, theme, &c, col_x, col_w, start_y)
             }
-            SettingsTab::Shortcuts => {
-                self.draw_shortcuts_settings(scene, t, tr, theme, &c, col_x, col_w, start_y)
-            }
+            SettingsTab::Shortcuts => self.draw_shortcuts_settings(
+                &mut EbookPaintCtx {
+                    scene: &mut *scene,
+                    transform: t,
+                    text: &mut *tr,
+                    theme,
+                },
+                SettingsColumnView {
+                    x: col_x,
+                    width: col_w,
+                    y: start_y,
+                },
+            ),
         };
         scene.pop_layer();
         let content_h = end_y - start_y;
@@ -9849,28 +9859,23 @@ impl BooksApp {
     /// key directly; bindings are deliberately not part of the Automerge
     /// document because another reader's keyboard layout is not shared book
     /// state. Arrow/Page navigation remains available as a reliable fallback.
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::too_many_lines,
         reason = "the compact shortcut settings row keeps its visual, hit-target, and accessible capture state together"
     )]
     fn draw_shortcuts_settings(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        x: f64,
-        w: f64,
-        mut y: f64,
+        ctx: &mut EbookPaintCtx<'_>,
+        view: SettingsColumnView,
     ) -> f64 {
-        tr.draw_text_weighted(
-            scene,
+        let c = &ctx.theme.tokens.colors;
+        let mut y = view.y;
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             "KEYBOARD SHORTCUTS",
             11.0,
             c.text_dim,
-            t * Affine::translate((x, y)),
+            ctx.transform * Affine::translate((view.x, y)),
             None,
             TextWeight::Semibold,
         );
@@ -9881,55 +9886,61 @@ impl BooksApp {
         } else {
             "Choose a row, then press one printable key. These bindings stay on this device; Arrow and Page keys always navigate."
         };
-        tr.draw_text(
-            scene,
+        ctx.text.draw_text(
+            ctx.scene,
             guidance,
             12.5,
             c.text_dim,
-            t * Affine::translate((x, y)),
-            Some(w as f32),
+            ctx.transform * Affine::translate((view.x, y)),
+            Some(view.width as f32),
         );
         y += if large_text { 132.0 } else { 54.0 };
 
         if let Some(error) = &self.shortcut_capture_error {
-            tr.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 error,
                 12.0,
                 c.semantic.danger,
-                t * Affine::translate((x, y - 24.0)),
-                Some(w as f32),
+                ctx.transform * Affine::translate((view.x, y - 24.0)),
+                Some(view.width as f32),
                 TextWeight::Medium,
             );
         }
 
         for shortcut in ReaderShortcut::ALL {
             let row_h = if large_text { 68.0 } else { 58.0 };
-            let row = Rect::new(x, y, x + w, y + row_h);
+            let row = Rect::new(view.x, y, view.x + view.width, y + row_h);
             let capturing = self.shortcut_capture == Some(shortcut);
             let hovered = self.is_hover(row);
             let background = if capturing {
-                theme.accent_primary.with_alpha_factor(0.16)
+                ctx.theme.accent_primary.with_alpha_factor(0.16)
             } else if hovered {
-                theme.bg_hover
+                ctx.theme.bg_hover
             } else {
                 c.surfaces.raised
             };
-            paint::fill_round(scene, t, row, f64::from(theme.tokens.radii.md), background);
-            paint::stroke_round(
-                scene,
-                t,
+            paint::fill_round(
+                ctx.scene,
+                ctx.transform,
                 row,
-                f64::from(theme.tokens.radii.md),
+                f64::from(ctx.theme.tokens.radii.md),
+                background,
+            );
+            paint::stroke_round(
+                ctx.scene,
+                ctx.transform,
+                row,
+                f64::from(ctx.theme.tokens.radii.md),
                 if capturing {
-                    theme.accent_primary
+                    ctx.theme.accent_primary
                 } else {
                     c.border_standard
                 },
                 if capturing { 2.0 } else { 1.0 },
             );
-            tr.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 if large_text {
                     match shortcut {
                         ReaderShortcut::PreviousPage => "Previous",
@@ -9943,7 +9954,7 @@ impl BooksApp {
                 },
                 14.0,
                 c.text_primary,
-                t * Affine::translate((x + 16.0, y + 14.0)),
+                ctx.transform * Affine::translate((view.x + 16.0, y + 14.0)),
                 None,
                 TextWeight::Semibold,
             );
@@ -9961,22 +9972,29 @@ impl BooksApp {
                     _ => raw,
                 }
             };
-            let (binding_w, _) = tr.measure_weighted(&binding, 13.0, None, TextWeight::Semibold);
+            let (binding_w, _) =
+                ctx.text
+                    .measure_weighted(&binding, 13.0, None, TextWeight::Semibold);
             let pill_w = (f64::from(binding_w) + 24.0).max(42.0);
-            let pill = Rect::new(x + w - pill_w - 14.0, y + 13.0, x + w - 14.0, y + 45.0);
+            let pill = Rect::new(
+                view.x + view.width - pill_w - 14.0,
+                y + 13.0,
+                view.x + view.width - 14.0,
+                y + 45.0,
+            );
             paint::fill_round(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 pill,
                 7.0,
                 if capturing {
-                    theme.accent_primary
+                    ctx.theme.accent_primary
                 } else {
                     c.surfaces.overlay
                 },
             );
-            tr.draw_text_weighted(
-                scene,
+            ctx.text.draw_text_weighted(
+                ctx.scene,
                 &binding,
                 13.0,
                 if capturing {
@@ -9984,10 +10002,11 @@ impl BooksApp {
                 } else {
                     c.text_primary
                 },
-                t * Affine::translate((
-                    pill.x0 + (pill.width() - f64::from(binding_w)) / 2.0,
-                    y + 22.0,
-                )),
+                ctx.transform
+                    * Affine::translate((
+                        pill.x0 + (pill.width() - f64::from(binding_w)) / 2.0,
+                        y + 22.0,
+                    )),
                 None,
                 TextWeight::Semibold,
             );
