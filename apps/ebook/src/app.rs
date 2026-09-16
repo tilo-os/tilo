@@ -9098,8 +9098,6 @@ impl BooksApp {
 
     /// `panel_x0` is the rail's left edge — `r.x0` when docked, or a slid
     /// position when it floats as an overlay flap.
-    // Immediate-mode draw helper: scene/transform/theme + geometry is the natural parameter set.
-    #[allow(clippy::too_many_arguments)]
     #[allow(
         clippy::too_many_lines,
         reason = "contents combines its fixed header, clipped virtual rows, and position indicator so their hit ordering stays explicit"
