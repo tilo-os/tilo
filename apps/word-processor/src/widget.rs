@@ -10581,6 +10581,8 @@ impl WordProcessorWidget {
                 |(_, rect)| Point::new(rect.x0, rect.y1),
             );
         let mut menu = ContextMenu::new();
+        menu.set_text_scale(crate::num::f32_of_f64(self.text_scale));
+        menu.set_viewport(Some(self.rect));
         let mut actions = Vec::new();
         let minimal = self.rect.width() / self.text_scale < 260.0;
         let mut overflow = Vec::new();
@@ -11253,6 +11255,8 @@ impl WordProcessorWidget {
             .collect();
 
         let mut menu = ContextMenu::new();
+        menu.set_text_scale(crate::num::f32_of_f64(self.text_scale));
+        menu.set_viewport(Some(self.rect));
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
 
         self.push_review_rows(&mut menu, &mut actions, &block, wstart, wend, raw_click_off);
@@ -11523,6 +11527,9 @@ impl WordProcessorWidget {
             .first()
             .map_or(self.rect.x0 + 8.0, |(_, r)| r.x0);
         let anchor_y = self.rect.y0 + self.toolbar_height(self.rect.width());
+        self.template_picker
+            .set_text_scale(crate::num::f32_of_f64(self.text_scale));
+        self.template_picker.set_viewport(self.rect);
         self.template_picker.open_at(Point::new(anchor_x, anchor_y));
         self.dirty = true;
     }
