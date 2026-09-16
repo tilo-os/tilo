@@ -505,12 +505,18 @@ fn folded_line(out: &mut String, line: &str) {
         }
         // `budget` is much wider than every UTF-8 scalar, so a non-empty
         // input always yields a character-boundary chunk.
+        let Some(chunk) = rest.get(..end) else {
+            break;
+        };
+        let Some(tail) = rest.get(end..) else {
+            break;
+        };
         if !first {
             out.push(' ');
         }
-        out.push_str(&rest[..end]);
+        out.push_str(chunk);
         out.push_str("\r\n");
-        rest = &rest[end..];
+        rest = tail;
         first = false;
     }
 }
