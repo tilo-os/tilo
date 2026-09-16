@@ -8370,9 +8370,12 @@ name = "media"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",
+ "hex",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -8597,6 +8600,7 @@ dependencies = [
  "base64 0.22.1",
  "gstreamer",
  "image",
+ "media",
  "qos-actions",
  "qos-app",
  "reqwest 0.12.28",
@@ -13558,6 +13562,7 @@ dependencies = [
  "windows-vm",
  "winit",
  "word-processor",
+ "x25519-dalek 2.0.1",
  "xattr",
  "zbus 4.4.0",
  "zeroize",

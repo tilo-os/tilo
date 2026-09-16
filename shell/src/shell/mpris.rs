@@ -26,6 +26,7 @@ const PLAYER_IFACE: &str = "org.mpris.MediaPlayer2.Player";
 /// A transport command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
+    Pause,
     PlayPause,
     Next,
     Previous,
@@ -34,6 +35,7 @@ pub enum Command {
 impl Command {
     fn method(self) -> &'static str {
         match self {
+            Command::Pause => "Pause",
             Command::PlayPause => "PlayPause",
             Command::Next => "Next",
             Command::Previous => "Previous",
@@ -73,6 +75,41 @@ pub fn send(cmd: Command) -> Option<Outcome> {
     }
 }
 
+/// Pause one exact player after its cross-device successor has reported a
+/// successfully opened source. Unlike media-key dispatch, this never falls
+/// back to whichever unrelated player happens to be active.
+pub fn pause_named(bus_name: &str) -> bool {
+    if !bus_name.starts_with(MPRIS_PREFIX) || bus_name.len() > 256 {
+        return false;
+    }
+    let owned = bus_name.to_string();
+    let (tx, rx) = mpsc::channel();
+    if std::thread::Builder::new()
+        .name("qos-mpris-handoff".to_string())
+        .spawn(move || {
+            let result = zbus::blocking::Connection::session()
+                .ok()
+                .and_then(|connection| {
+                    let proxy = zbus::blocking::Proxy::new(
+                        &connection,
+                        owned.as_str(),
+                        MPRIS_PATH,
+                        PLAYER_IFACE,
+                    )
+                    .ok()?;
+                    proxy.call_method("Pause", &()).ok()?;
+                    Some(true)
+                })
+                .unwrap_or(false);
+            let _ = tx.send(result);
+        })
+        .is_err()
+    {
+        return false;
+    }
+    rx.recv_timeout(DEADLINE).unwrap_or(false)
+}
+
 fn run(cmd: Command) -> Option<Outcome> {
     let conn = zbus::blocking::Connection::session()
         .map_err(|e| {
@@ -95,6 +132,7 @@ fn run(cmd: Command) -> Option<Outcome> {
         .ok()?;
 
     Some(match cmd {
+        Command::Pause => Outcome::NowPaused,
         Command::PlayPause => {
             if was_playing {
                 Outcome::NowPaused
@@ -144,6 +182,7 @@ mod tests {
     fn commands_map_to_the_spec_method_names() {
         // Wire names in the MPRIS spec, not ours to rename.
         assert_eq!(Command::PlayPause.method(), "PlayPause");
+        assert_eq!(Command::Pause.method(), "Pause");
         assert_eq!(Command::Next.method(), "Next");
         assert_eq!(Command::Previous.method(), "Previous");
     }

@@ -84,3 +84,37 @@ boundary without pretending the relay daemon already executes arbitrary jobs.
 No new wire message was added to `qos-relay/1`: adding an enum variant to the
 postcard protocol would make old peers reject the stream. Service discovery and
 job execution need a versioned, negotiated protocol extension before rollout.
+
+## Personal device fabric
+
+`shell::device_fabric` is the common, transport-neutral policy model for the
+person's interactive devices. It builds on qOS's certified same-identity lane;
+proximity, Bluetooth pairing, or sharing a Wi-Fi network are never treated as
+authorization.
+
+- **Play here** transfers a logical media identity, playhead, and playback
+  state rather than a local path or PipeWire node. The destination must be
+  online and advertise the required audio/video capabilities, and the old
+  output is paused before the new one resumes.
+- **Universal clipboard** is a content-addressed, de-duplicated 50-item
+  history. Entries are explicitly classified as shareable and capped at
+  256 KiB. Primary selection, secret fields, and qOS's secret MIME type never
+  enter the shared history.
+- **Roaming settings** converge per key. Hardware identity, display
+  calibration, interfaces, mounts, and local credentials are rejected by
+  namespace. Wi-Fi secrets use a separate type whose payload must already be
+  sealed to the person's root-derived secret-sync key; plaintext passwords
+  cannot be represented in fabric state.
+- **Use as a screen** stores the person's spatial arrangement and maps an edge
+  crossing through physical layout coordinates. Input still requires a
+  short-lived, target-issued lease; adjacency grants no input authority.
+- **App continuation** remains in `personal_continuity`. The fabric advertises
+  capability but does not duplicate launch intents, CRDT records, topology, or
+  focus state.
+
+This separation is an intentional qOS advantage over product-specific
+continuity silos: collaborative documents remain multi-person CRDT state,
+personal interaction state remains private to certified devices, and physical
+machine state remains local. The fabric model is bounded and convergent before
+transport wiring. It can be carried by a future negotiated relay protocol
+without breaking older Postcard enum decoders.

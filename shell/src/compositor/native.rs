@@ -66,7 +66,7 @@ use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
 use vello::kurbo::Rect;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::accessibility::{NativeAccessibility, Request as AccessibilityRequest};
@@ -2730,6 +2730,330 @@ fn keycode_for_eis(key: PhysicalKey) -> Option<u32> {
     })
 }
 
+#[derive(Clone, Debug)]
+struct SpatialControlSession {
+    target: crate::shell::personal_continuity::DeviceId,
+    return_edge: crate::shell::device_fabric::DisplayEdge,
+    x: f64,
+    y: f64,
+    pressed_keys: std::collections::BTreeSet<u32>,
+    pressed_buttons: std::collections::BTreeSet<u32>,
+}
+
+fn end_spatial_control(
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) {
+    let Some(session) = active.take() else {
+        return;
+    };
+    for keycode in session.pressed_keys {
+        let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+            network,
+            &session.target,
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode,
+                pressed: false,
+                modifiers: 0,
+            },
+        );
+    }
+    for button in session.pressed_buttons {
+        let _ = crate::shell::device_fabric_runtime::send_spatial_input(
+            network,
+            &session.target,
+            crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                button,
+                pressed: false,
+            },
+        );
+    }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "coordinates are clamped to the fabric wire bounds before narrowing"
+)]
+fn spatial_coord(value: f64) -> i32 {
+    value.clamp(-1_000_000.0, 1_000_000.0).round() as i32
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "wheel deltas are clamped to the bounded fabric wire representation"
+)]
+fn spatial_scroll(value: f64) -> i16 {
+    value
+        .clamp(f64::from(i16::MIN), f64::from(i16::MAX))
+        .round() as i16
+}
+
+fn move_spatial_pointer(
+    state: &State,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+    dx: f64,
+    dy: f64,
+) -> bool {
+    if let Some(session) = active.as_mut() {
+        session.x += dx;
+        session.y += dy;
+        let fabric = network.device_fabric();
+        let Some(rect) = fabric
+            .snapshots()
+            .get(&session.target)
+            .and_then(|snapshot| snapshot.display.as_ref())
+            .map(|display| display.rect)
+        else {
+            end_spatial_control(network, active);
+            return true;
+        };
+        let max_x = f64::from(rect.width.saturating_sub(1));
+        let max_y = f64::from(rect.height.saturating_sub(1));
+        let crossed_back = match session.return_edge {
+            crate::shell::device_fabric::DisplayEdge::Left => session.x < 0.0,
+            crate::shell::device_fabric::DisplayEdge::Right => session.x > max_x,
+            crate::shell::device_fabric::DisplayEdge::Top => session.y < 0.0,
+            crate::shell::device_fabric::DisplayEdge::Bottom => session.y > max_y,
+        };
+        if crossed_back {
+            end_spatial_control(network, active);
+            return true;
+        }
+        session.x = session.x.clamp(0.0, max_x);
+        session.y = session.y.clamp(0.0, max_y);
+        if crate::shell::device_fabric_runtime::send_spatial_input(
+            network,
+            &session.target,
+            crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+                x: spatial_coord(session.x),
+                y: spatial_coord(session.y),
+            },
+        )
+        .is_err()
+        {
+            end_spatial_control(network, active);
+        }
+        return true;
+    }
+    let Some((cursor_x, cursor_y)) = state.client_input.pointer_position() else {
+        return false;
+    };
+    let Some((local, _)) = network.local_device_fabric_identity() else {
+        return false;
+    };
+    let fabric = network.device_fabric();
+    let Some(local_rect) = fabric
+        .snapshots()
+        .get(&local)
+        .and_then(|snapshot| snapshot.display.as_ref())
+        .map(|display| display.rect)
+    else {
+        return false;
+    };
+    let Some(edge) = spatial_departure_edge(
+        cursor_x,
+        cursor_y,
+        local_rect.width,
+        local_rect.height,
+        dx,
+        dy,
+    ) else {
+        return false;
+    };
+    let local_x = spatial_coord(cursor_x);
+    let local_y = spatial_coord(cursor_y);
+    let Some(transition) = fabric.cross_edge(&local, edge, local_x, local_y) else {
+        return false;
+    };
+    let session = SpatialControlSession {
+        target: transition.to,
+        return_edge: edge.opposite(),
+        x: f64::from(transition.target_x) + dx,
+        y: f64::from(transition.target_y) + dy,
+        pressed_keys: std::collections::BTreeSet::new(),
+        pressed_buttons: std::collections::BTreeSet::new(),
+    };
+    if crate::shell::device_fabric_runtime::send_spatial_input(
+        network,
+        &session.target,
+        crate::shell::device_fabric::FabricInputEvent::PointerMotion {
+            x: spatial_coord(session.x),
+            y: spatial_coord(session.y),
+        },
+    )
+    .is_err()
+    {
+        return false;
+    }
+    *active = Some(session);
+    true
+}
+
+fn spatial_departure_edge(
+    cursor_x: f64,
+    cursor_y: f64,
+    width: u32,
+    height: u32,
+    dx: f64,
+    dy: f64,
+) -> Option<crate::shell::device_fabric::DisplayEdge> {
+    use crate::shell::device_fabric::DisplayEdge;
+    let max_x = f64::from(width.saturating_sub(1));
+    let max_y = f64::from(height.saturating_sub(1));
+    let horizontal = if cursor_x <= 0.0 && dx < 0.0 {
+        Some(DisplayEdge::Left)
+    } else if cursor_x >= max_x && dx > 0.0 {
+        Some(DisplayEdge::Right)
+    } else {
+        None
+    };
+    let vertical = if cursor_y <= 0.0 && dy < 0.0 {
+        Some(DisplayEdge::Top)
+    } else if cursor_y >= max_y && dy > 0.0 {
+        Some(DisplayEdge::Bottom)
+    } else {
+        None
+    };
+    match (horizontal, vertical) {
+        (Some(edge), Some(_)) if dx.abs() >= dy.abs() => Some(edge),
+        (Some(_) | None, Some(edge)) | (Some(edge), None) => Some(edge),
+        (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod spatial_edge_tests {
+    use super::spatial_departure_edge;
+    use crate::shell::device_fabric::DisplayEdge;
+
+    #[test]
+    fn pointer_can_depart_through_all_four_edges() {
+        assert_eq!(
+            spatial_departure_edge(0.0, 400.0, 1_000, 800, -2.0, 0.0),
+            Some(DisplayEdge::Left)
+        );
+        assert_eq!(
+            spatial_departure_edge(999.0, 400.0, 1_000, 800, 2.0, 0.0),
+            Some(DisplayEdge::Right)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 0.0, 1_000, 800, 0.0, -2.0),
+            Some(DisplayEdge::Top)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 799.0, 1_000, 800, 0.0, 2.0),
+            Some(DisplayEdge::Bottom)
+        );
+    }
+
+    #[test]
+    fn corner_departure_follows_the_dominant_motion_axis() {
+        assert_eq!(
+            spatial_departure_edge(999.0, 799.0, 1_000, 800, 8.0, 3.0),
+            Some(DisplayEdge::Right)
+        );
+        assert_eq!(
+            spatial_departure_edge(999.0, 799.0, 1_000, 800, 3.0, 8.0),
+            Some(DisplayEdge::Bottom)
+        );
+        assert_eq!(
+            spatial_departure_edge(500.0, 400.0, 1_000, 800, 8.0, 8.0),
+            None
+        );
+    }
+}
+
+fn forward_spatial_window_event(
+    event: &WindowEvent,
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<SpatialControlSession>,
+) -> bool {
+    let Some(session) = active.as_ref() else {
+        return false;
+    };
+    if let WindowEvent::KeyboardInput { event, .. } = event
+        && event.state == ElementState::Pressed
+        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+    {
+        end_spatial_control(network, active);
+        return true;
+    }
+    let target = session.target.clone();
+    let fabric_event = match event {
+        WindowEvent::CursorMoved { .. } => return true,
+        WindowEvent::MouseInput { state, button, .. } => {
+            let button = match button {
+                MouseButton::Left => 0x110,
+                MouseButton::Right => 0x111,
+                MouseButton::Middle => 0x112,
+                MouseButton::Back => 0x116,
+                MouseButton::Forward => 0x115,
+                MouseButton::Other(button) => u32::from(*button),
+            };
+            crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                button,
+                pressed: *state == ElementState::Pressed,
+            }
+        }
+        WindowEvent::MouseWheel { delta, .. } => {
+            let (horizontal, vertical) = match delta {
+                MouseScrollDelta::LineDelta(x, y) => {
+                    (spatial_scroll(f64::from(*x)), spatial_scroll(f64::from(*y)))
+                }
+                MouseScrollDelta::PixelDelta(position) => {
+                    (spatial_scroll(position.x), spatial_scroll(position.y))
+                }
+            };
+            if horizontal == 0 && vertical == 0 {
+                return true;
+            }
+            crate::shell::device_fabric::FabricInputEvent::Scroll {
+                horizontal,
+                vertical,
+            }
+        }
+        WindowEvent::KeyboardInput { event, .. } => {
+            let Some(keycode) = keycode_for_eis(event.physical_key) else {
+                return true;
+            };
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode,
+                pressed: event.state == ElementState::Pressed,
+                modifiers: 0,
+            }
+        }
+        _ => return false,
+    };
+    if crate::shell::device_fabric_runtime::send_spatial_input(network, &target, fabric_event)
+        .is_err()
+    {
+        *active = None;
+    } else if let Some(session) = active.as_mut() {
+        match fabric_event {
+            crate::shell::device_fabric::FabricInputEvent::PointerButton { button, pressed } => {
+                if pressed {
+                    session.pressed_buttons.insert(button);
+                } else {
+                    session.pressed_buttons.remove(&button);
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode, pressed, ..
+            } => {
+                if pressed {
+                    session.pressed_keys.insert(keycode);
+                } else {
+                    session.pressed_keys.remove(&keycode);
+                }
+            }
+            crate::shell::device_fabric::FabricInputEvent::PointerMotion { .. }
+            | crate::shell::device_fabric::FabricInputEvent::Scroll { .. } => {}
+        }
+    }
+    true
+}
+
 fn is_power_key(event: &WindowEvent) -> bool {
     if let WindowEvent::KeyboardInput { event, .. } = event
         && event.state == ElementState::Pressed
@@ -3131,6 +3455,70 @@ fn spawn_session_collab_broker(
     }
 }
 
+fn install_device_fabric_bridge(
+    host: &mut crate::shell::overlay_host::ShellOverlayHost,
+    fabric_net: Arc<crate::shell::network::ShellNetwork>,
+) {
+    let fabric_cache = std::rc::Rc::new(std::cell::RefCell::new(
+        None::<(Instant, crate::shell::overlay_host::DeviceFabricView)>,
+    ));
+    host.set_device_fabric_bridge({
+        let fabric_cache = std::rc::Rc::clone(&fabric_cache);
+        std::rc::Rc::new(move |action| {
+            use crate::shell::overlay_host::DeviceFabricUiAction;
+            if matches!(action, DeviceFabricUiAction::Snapshot)
+                && let Some((updated, view)) = fabric_cache.borrow().as_ref()
+                && updated.elapsed() < Duration::from_millis(750)
+            {
+                return Ok(view.clone());
+            }
+            match action {
+                DeviceFabricUiAction::Snapshot => {}
+                DeviceFabricUiAction::HandoffMedia { session_id, target } => {
+                    let _ = crate::shell::device_fabric_runtime::request_media_handoff(
+                        &fabric_net,
+                        &session_id,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::RouteLocalAudio { node_id } => {
+                    crate::shell::device_fabric_runtime::route_local_audio(node_id)?;
+                }
+                DeviceFabricUiAction::HandoffBluetooth {
+                    address,
+                    name,
+                    target,
+                } => {
+                    let _ = crate::shell::device_fabric_runtime::request_bluetooth_handoff(
+                        &fabric_net,
+                        &address,
+                        &name,
+                        &target,
+                    )?;
+                }
+                DeviceFabricUiAction::Place { device, edge } => {
+                    crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
+                }
+                DeviceFabricUiAction::GrantControl { controller } => {
+                    let _ = crate::shell::device_fabric_runtime::grant_input_control(
+                        &fabric_net,
+                        &controller,
+                    )?;
+                }
+                DeviceFabricUiAction::RevokeControl { controller } => {
+                    crate::shell::device_fabric_runtime::revoke_input_control(
+                        &fabric_net,
+                        &controller,
+                    )?;
+                }
+            }
+            let view = crate::shell::device_fabric_runtime::device_fabric_view(&fabric_net);
+            *fabric_cache.borrow_mut() = Some((Instant::now(), view.clone()));
+            Ok(view)
+        })
+    });
+}
+
 /// Start the authenticated peer transport and install the chrome commands
 /// that use it. Kept as one operation so first-login can call the exact same
 /// path after the identity ceremony releases the desktop.
@@ -3147,6 +3535,20 @@ fn spawn_session_peer_sync(
             let _ = handle.join_default_workspace();
             tracing::info!("peer-sync: actor spawned, default workspace joined");
             let net = Arc::new(handle);
+            let wifi_net = Arc::clone(&net);
+            frame_builder
+                .host_mut()
+                .set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
+                    crate::shell::overlay_host::WifiSecretAction::Lookup { ssid } => {
+                        Ok(wifi_net.shared_wifi_password(&ssid))
+                    }
+                    crate::shell::overlay_host::WifiSecretAction::Share { ssid, password } => {
+                        wifi_net
+                            .share_wifi_credential(&ssid, "wpa2", &password)
+                            .map(|()| None)
+                    }
+                }));
+            install_device_fabric_bridge(frame_builder.host_mut(), Arc::clone(&net));
             let stream_net = Arc::clone(&net);
             state.set_legacy_stream_publisher(Arc::new(move |message| {
                 stream_net.publish_legacy_active(message)
@@ -4039,6 +4441,33 @@ pub fn run() -> ! {
         initial_size,
         crate::shell::session_record_store(),
     );
+    let clipboard_store = state.selection_store();
+    frame_builder
+        .host_mut()
+        .set_clipboard_manager_bridge(std::rc::Rc::new(move |action| {
+            use crate::shell::overlay_host::ClipboardManagerAction;
+            match action {
+                ClipboardManagerAction::Snapshot => {}
+                ClipboardManagerAction::Activate(id) => {
+                    let _ =
+                        crate::compositor::selection::activate_history_item(&clipboard_store, id);
+                }
+                ClipboardManagerAction::SetPinned { id, pinned } => {
+                    let _ = crate::compositor::selection::pin_history_item(
+                        &clipboard_store,
+                        id,
+                        pinned,
+                    );
+                }
+                ClipboardManagerAction::Remove(id) => {
+                    let _ = crate::compositor::selection::remove_history_item(&clipboard_store, id);
+                }
+                ClipboardManagerAction::ClearUnpinned => {
+                    crate::compositor::selection::clear_clipboard_history(&clipboard_store);
+                }
+            }
+            crate::compositor::selection::clipboard_history(&clipboard_store)
+        }));
     // A fresh machine has no display server before `shell`, so first-login
     // cannot be a standalone winit app or a pre-graphical user unit. Host the
     // ceremony in trusted compositor chrome and withhold every desktop
@@ -4104,6 +4533,10 @@ pub fn run() -> ! {
     let mut peer_sync = enable_peer_sync
         .then(|| spawn_session_peer_sync(&mut frame_builder, &mut state, tree_handle.clone()))
         .flatten();
+    let mut device_fabric_runtime = peer_sync
+        .as_ref()
+        .map(|network| crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(network));
+    let mut spatial_control: Option<SpatialControlSession> = None;
     // The session's CRDT fan-out broker, bound before the wayland socket is
     // published (before any app launches) — an app resolves its collab
     // descriptor once at spawn, so a broker arriving later is one it never gets.
@@ -4699,6 +5132,11 @@ pub fn run() -> ! {
                     state.remote_input_firewall.note_local_input(Instant::now());
 
                     if session.is_locked() {
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
                         if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
@@ -4744,6 +5182,11 @@ pub fn run() -> ! {
                         // Super+Esc: every peer's input stops and stays stopped. Ahead of the
                         // client router and shell's Escape handling — a panic key a client can swallow isn't one.
                         client_input::stop_remote_input(&mut state, &mut frame_builder);
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
                         session_changed = true;
                     } else if is_lock_chord(wev, test_control_ctx.modifiers) {
                         // Super+L locks immediately.
@@ -4761,6 +5204,13 @@ pub fn run() -> ! {
                             frame_builder.with_chrome(|st| st.show_osd(osd));
                             session_changed = true;
                         }
+                    } else if peer_sync.as_ref().is_some_and(|network| {
+                        forward_spatial_window_event(wev, network, &mut spatial_control)
+                    }) {
+                        // The physical keyboard/pointer is logically on the
+                        // adjacent certified device until it crosses back or
+                        // Escape is pressed. Reserved shell chords above stay
+                        // local and remain an unconditional escape path.
                     } else {
                         // InputCapture deliberately sits after the compositor's
                         // power/VT/lock/panic controls but before client/chrome
@@ -4808,6 +5258,17 @@ pub fn run() -> ! {
                         }
                     }
                 }
+                BackendEvent::RelativePointerMotion { dx, dy } => {
+                    if session.is_locked() {
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
+                    } else if let Some(network) = peer_sync.as_ref() {
+                        let _ = move_spatial_pointer(&state, network, &mut spatial_control, dx, dy);
+                    }
+                }
                 BackendEvent::ModifiersChanged(modifiers) => {
                     // Carry the modifier mask forward so the next event dispatched (or the
                     // lock-chord check above) sees the right Ctrl/Shift/Alt/Super state.
@@ -4819,6 +5280,11 @@ pub fn run() -> ! {
                     // chrome's modifier snapshot, before accepting another
                     // physical event.
                     state.reset_client_keyboard_state();
+                    if let Some(network) = peer_sync.as_ref() {
+                        end_spatial_control(network, &mut spatial_control);
+                    } else {
+                        spatial_control = None;
+                    }
                     test_control_ctx.modifiers = Modifiers::default();
                 }
                 BackendEvent::OutputsChanged => {
@@ -4878,8 +5344,17 @@ pub fn run() -> ! {
                         state.forward_client_touch(touch, target);
                     }
                 }
-                BackendEvent::Redraw | BackendEvent::Focus(_) => {
-                    // Redraw is implicit (we re-paint every tick); focus changes don't gate input dispatch here.
+                BackendEvent::Focus(focused) => {
+                    if !focused {
+                        if let Some(network) = peer_sync.as_ref() {
+                            end_spatial_control(network, &mut spatial_control);
+                        } else {
+                            spatial_control = None;
+                        }
+                    }
+                }
+                BackendEvent::Redraw => {
+                    // Redraw is implicit: the native loop paints every tick.
                 }
             }
         }
@@ -5217,6 +5692,14 @@ pub fn run() -> ! {
         }
         if session.is_locked() != prev_locked {
             crate::portal::inhibit::publish_screensaver_state(session.is_locked());
+            if session.is_locked() {
+                let _ = state.release_all_personal_fabric_input();
+                if let Some(network) = peer_sync.as_ref() {
+                    end_spatial_control(network, &mut spatial_control);
+                } else {
+                    spatial_control = None;
+                }
+            }
         }
         prev_locked = session.is_locked();
 
@@ -5368,6 +5851,33 @@ pub fn run() -> ! {
         // network actor into the replica: peer changes fold in before this frame's pump reads them, bumping the revision to repaint.
         if let Some(net) = peer_sync.as_ref() {
             net.tick();
+            let runtime = device_fabric_runtime.get_or_insert_with(|| {
+                crate::shell::device_fabric_runtime::DeviceFabricRuntime::new(net)
+            });
+            let (width, height) = combined_geometry(backend.outputs());
+            let display =
+                (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                });
+            runtime.pump(
+                net,
+                &state.selection_store(),
+                crate::shell::device_fabric_runtime::LocalFabricCapabilities {
+                    display,
+                    pointer: true,
+                    keyboard: true,
+                    audio_output: system_audio,
+                },
+            );
+            for (controller, event) in crate::shell::device_fabric_runtime::take_spatial_input() {
+                let _ = state.apply_personal_fabric_input(&controller, event);
+            }
+            for controller in crate::shell::device_fabric_runtime::take_spatial_input_releases() {
+                let _ = state.release_personal_fabric_input(&controller);
+            }
             let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();

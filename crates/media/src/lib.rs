@@ -69,6 +69,7 @@ pub mod encode;
 pub mod engine;
 pub mod event;
 pub mod frame;
+pub mod handoff;
 pub mod hw;
 pub mod notification_sound;
 pub mod ring;

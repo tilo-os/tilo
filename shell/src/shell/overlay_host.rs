@@ -58,7 +58,7 @@ pub use crate::shell::peer_sync_overlay::{
 use crate::shell::portal_dialog::PortalDialogController;
 use crate::shell::power_menu::{PowerMenu, PowerMenuClick};
 use crate::shell::projection_overlay::ProjectionOverlay;
-use crate::shell::quick_settings_bluetooth::QuickSettingsBluetoothPane;
+use crate::shell::quick_settings_bluetooth::{BluetoothOutcome, QuickSettingsBluetoothPane};
 use crate::shell::quick_settings_drill_in::{DrillInList, DrillInOutcome};
 use crate::shell::quick_settings_root::{QuickSettingsRoot, RootAction, SliderCommit};
 use crate::shell::quick_settings_vpn::QuickSettingsVpnPane;
@@ -76,6 +76,270 @@ enum HistoryTargetAddress {
     File(PathBuf),
     Uri(String),
     App,
+}
+
+#[cfg(test)]
+mod clipboard_manager_tests {
+    use super::*;
+    use crate::compositor::selection::{
+        SelectionStore, SharedSelection, Target, activate_history_item, clear_clipboard_history,
+        clipboard_history, pin_history_item, remove_history_item, set_mirror_text,
+    };
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::WorkspaceTree;
+    use std::sync::{Arc, Mutex};
+    use ui::widget::Container;
+
+    fn bridge(store: SharedSelection) -> ClipboardManagerBridge {
+        std::rc::Rc::new(move |action| {
+            match action {
+                ClipboardManagerAction::Snapshot => {}
+                ClipboardManagerAction::Activate(id) => {
+                    let _ = activate_history_item(&store, id);
+                }
+                ClipboardManagerAction::SetPinned { id, pinned } => {
+                    let _ = pin_history_item(&store, id, pinned);
+                }
+                ClipboardManagerAction::Remove(id) => {
+                    let _ = remove_history_item(&store, id);
+                }
+                ClipboardManagerAction::ClearUnpinned => clear_clipboard_history(&store),
+            }
+            clipboard_history(&store)
+        })
+    }
+
+    #[test]
+    fn quick_settings_clipboard_bridge_uses_the_compositor_history() {
+        let store = Arc::new(Mutex::new(SelectionStore::default()));
+        assert!(set_mirror_text(&store, Target::Clipboard, "keep"));
+        assert!(set_mirror_text(&store, Target::Clipboard, "discard"));
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.set_clipboard_manager_bridge(bridge(store.clone()));
+
+        host.apply_quick_settings_root_action(RootAction::OpenClipboard, &chrome);
+        assert_eq!(
+            chrome.borrow().quick_settings.current_level(),
+            &crate::shell::quick_settings::QsLevel::Clipboard
+        );
+        let history = host.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        assert_eq!(history.len(), 2);
+        let keep = history[1].id;
+        let discard = history[0].id;
+        let _ = host.clipboard_manager_call(ClipboardManagerAction::SetPinned {
+            id: keep,
+            pinned: true,
+        });
+        let remaining = host.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, keep);
+        assert!(remaining[0].pinned);
+        assert!(!remaining.iter().any(|item| item.id == discard));
+
+        let _ = host.clipboard_manager_call(ClipboardManagerAction::Activate(keep));
+        assert_eq!(
+            crate::compositor::selection::mirror_text(&store, Target::Clipboard).as_deref(),
+            Some("keep")
+        );
+        assert!(
+            host.clipboard_manager_call(ClipboardManagerAction::Remove(keep))
+                .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
+mod device_fabric_ui_tests {
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::device_fabric::DeviceKind;
+    use crate::shell::personal_continuity::DeviceId;
+    use crate::shell::state::WorkspaceTree;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use ui::widget::Container;
+
+    fn fixture() -> (DeviceFabricView, DeviceId) {
+        let remote = DeviceId::new("certified-laptop").unwrap();
+        (
+            DeviceFabricView {
+                devices: vec![FabricDeviceView {
+                    id: remote.clone(),
+                    label: "Travel laptop".into(),
+                    kind: DeviceKind::Laptop,
+                    is_local: false,
+                    online: true,
+                    audio_output: true,
+                    video_output: true,
+                    display: true,
+                    controls_local: false,
+                    local_can_control: false,
+                }],
+                local_media: vec![FabricMediaView {
+                    session_id: "dev.qos.video:7".into(),
+                    title: "Shared film".into(),
+                    playing: true,
+                    has_video: true,
+                    targets: vec![remote.clone()],
+                }],
+                local_outputs: vec![LocalMediaOutputView {
+                    node_id: 41,
+                    label: "Bluetooth headphones".into(),
+                    is_default: false,
+                    bluetooth_codec: Some("AAC".into()),
+                }],
+                transfers: Vec::new(),
+            },
+            remote,
+        )
+    }
+
+    #[test]
+    fn device_pane_routes_local_audio_and_exact_remote_media() {
+        let (view, remote) = fixture();
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let bridge_view = view;
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(bridge_view.clone())
+        }));
+        host.apply_quick_settings_root_action(RootAction::OpenDevices, &chrome);
+        assert_eq!(
+            chrome.borrow().quick_settings.current_level(),
+            &crate::shell::quick_settings::QsLevel::Devices
+        );
+
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
+        let device_row = host.qs_device_row_rect(2);
+        host.handle_qs_device_fabric_click(Point::new(device_row.x0 + 44.0, device_row.center().y));
+        let (placements, control) =
+            ShellOverlayHost::qs_device_row_actions(host.qs_device_row_rect(2));
+        host.handle_qs_device_fabric_click(placements[1].center());
+        host.handle_qs_device_fabric_click(control.center());
+        let actions = actions.borrow();
+        assert!(actions.contains(&DeviceFabricUiAction::RouteLocalAudio { node_id: 41 }));
+        assert!(actions.contains(&DeviceFabricUiAction::HandoffMedia {
+            session_id: "dev.qos.video:7".into(),
+            target: remote,
+        }));
+        assert!(actions.contains(&DeviceFabricUiAction::Place {
+            device: DeviceId::new("certified-laptop").unwrap(),
+            edge: crate::shell::device_fabric::DisplayEdge::Right,
+        }));
+        assert!(actions.contains(&DeviceFabricUiAction::GrantControl {
+            controller: DeviceId::new("certified-laptop").unwrap(),
+        }));
+    }
+
+    #[test]
+    fn incompatible_device_row_does_not_emit_a_handoff() {
+        let (mut view, _) = fixture();
+        view.local_media[0].targets.clear();
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let host_view = view.clone();
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(host_view.clone())
+        }));
+        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
+        assert!(
+            !actions
+                .borrow()
+                .iter()
+                .any(|action| matches!(action, DeviceFabricUiAction::HandoffMedia { .. }))
+        );
+    }
+
+    #[test]
+    fn bluetooth_details_routes_exact_accessory_to_exact_certified_device() {
+        let (view, remote) = fixture();
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        {
+            let mut state = chrome.borrow_mut();
+            state.quick_settings.bt_devices = vec![crate::shell::quick_settings::BtDevice {
+                name: "Headphones".into(),
+                address: "AA:BB:CC:DD:EE:FF".into(),
+                battery: 80,
+                connected: true,
+            }];
+            state.quick_settings.push_level(
+                crate::shell::quick_settings::QsLevel::BluetoothDetails("AA:BB:CC:DD:EE:FF".into()),
+            );
+        }
+        let mut host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome);
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        host.handle_qs_bluetooth_details_click(
+            host.qs_device_row_rect(1).center(),
+            "AA:BB:CC:DD:EE:FF",
+        );
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::HandoffBluetooth {
+                    address: "AA:BB:CC:DD:EE:FF".into(),
+                    name: "Headphones".into(),
+                    target: remote,
+                })
+        );
+    }
+
+    #[test]
+    fn every_enrolled_device_remains_reachable_beyond_the_compact_first_page() {
+        let (mut view, _) = fixture();
+        view.devices = (0..12)
+            .map(|index| FabricDeviceView {
+                id: DeviceId::new(format!("device-{index}")).unwrap(),
+                label: format!("Device {index}"),
+                kind: DeviceKind::Laptop,
+                is_local: false,
+                online: true,
+                audio_output: true,
+                video_output: true,
+                display: true,
+                controls_local: false,
+                local_can_control: false,
+            })
+            .collect();
+        assert_eq!(
+            device_fabric_pane_rows(&view).len(),
+            view.local_media.len() + view.local_outputs.len() + view.devices.len(),
+            "the pane model must not truncate media, outputs, or devices"
+        );
+        let tree = WorkspaceTree::bootstrap_demo();
+        let chrome = ChromeState::new(tree);
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |_| Ok(view.clone())));
+        host.apply_quick_settings_root_action(RootAction::OpenDevices, &chrome);
+        assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::End)));
+        assert!(
+            host.qs_device_fabric_start > 0,
+            "End must reveal destinations below the first page"
+        );
+        assert!(host.handle_qs_device_fabric_keyboard(&Key::Named(NamedKey::Home)));
+        assert_eq!(host.qs_device_fabric_start, 0);
+    }
 }
 
 fn notification_history_relative_time(notification: &Notification, now: Instant) -> String {
@@ -207,6 +471,149 @@ type FollowBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<Strin
 /// relationship. Kept separate from [`FollowBridge`]: the latter is private
 /// local app control, while this one only paints a room-scoped cue remotely.
 type FollowPresenceBridge = std::rc::Rc<dyn Fn(crate::shell::state::RoomId, Option<String>)>;
+
+/// Privileged clipboard-manager operation. Payload bytes never cross this UI
+/// bridge; only the compositor can activate a retained item as the live
+/// selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardManagerAction {
+    Snapshot,
+    Activate([u8; 32]),
+    SetPinned { id: [u8; 32], pinned: bool },
+    Remove([u8; 32]),
+    ClearUnpinned,
+}
+
+pub type ClipboardManagerBridge = std::rc::Rc<
+    dyn Fn(ClipboardManagerAction) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot>,
+>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "presence and independently negotiated output/display capabilities are orthogonal facts"
+)]
+pub struct FabricDeviceView {
+    pub id: crate::shell::personal_continuity::DeviceId,
+    pub label: String,
+    pub kind: crate::shell::device_fabric::DeviceKind,
+    pub is_local: bool,
+    pub online: bool,
+    pub audio_output: bool,
+    pub video_output: bool,
+    pub display: bool,
+    /// This remote device currently holds a lease issued by the local one.
+    pub controls_local: bool,
+    /// The local device currently holds a lease issued by this remote one.
+    pub local_can_control: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FabricMediaView {
+    pub session_id: String,
+    pub title: String,
+    pub playing: bool,
+    pub has_video: bool,
+    pub targets: Vec<crate::shell::personal_continuity::DeviceId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalMediaOutputView {
+    pub node_id: u32,
+    pub label: String,
+    pub is_default: bool,
+    pub bluetooth_codec: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FabricTransferStatus {
+    Sending,
+    Sent,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FabricTransferView {
+    pub target: crate::shell::personal_continuity::DeviceId,
+    pub sent_bytes: u64,
+    pub total_bytes: u64,
+    pub status: FabricTransferStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceFabricView {
+    pub devices: Vec<FabricDeviceView>,
+    pub local_media: Vec<FabricMediaView>,
+    pub local_outputs: Vec<LocalMediaOutputView>,
+    pub transfers: Vec<FabricTransferView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceFabricUiAction {
+    Snapshot,
+    HandoffMedia {
+        session_id: String,
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    RouteLocalAudio {
+        node_id: u32,
+    },
+    HandoffBluetooth {
+        address: String,
+        name: String,
+        target: crate::shell::personal_continuity::DeviceId,
+    },
+    Place {
+        device: crate::shell::personal_continuity::DeviceId,
+        edge: crate::shell::device_fabric::DisplayEdge,
+    },
+    GrantControl {
+        controller: crate::shell::personal_continuity::DeviceId,
+    },
+    RevokeControl {
+        controller: crate::shell::personal_continuity::DeviceId,
+    },
+}
+
+pub type DeviceFabricBridge =
+    std::rc::Rc<dyn Fn(DeviceFabricUiAction) -> Result<DeviceFabricView, String>>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DeviceFabricPaneRow {
+    Media(FabricMediaView),
+    LocalOutput(LocalMediaOutputView),
+    Device(FabricDeviceView),
+}
+
+fn device_fabric_pane_rows(view: &DeviceFabricView) -> Vec<DeviceFabricPaneRow> {
+    view.local_media
+        .iter()
+        .cloned()
+        .map(DeviceFabricPaneRow::Media)
+        .chain(
+            view.local_outputs
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::LocalOutput),
+        )
+        .chain(
+            view.devices
+                .iter()
+                .cloned()
+                .map(DeviceFabricPaneRow::Device),
+        )
+        .collect()
+}
+
+/// Secret operations stay behind a narrow bridge to the certified personal
+/// fabric. This enum intentionally has no `Debug` implementation so a future
+/// diagnostic cannot accidentally format a passphrase.
+pub enum WifiSecretAction {
+    Lookup { ssid: String },
+    Share { ssid: String, password: String },
+}
+
+pub type WifiSecretBridge = std::rc::Rc<dyn Fn(WifiSecretAction) -> Result<Option<String>, String>>;
 
 pub(crate) struct CaptureMirrorHandoffLayer {
     pub rgba: std::sync::Arc<[u8]>,
@@ -772,6 +1179,18 @@ pub struct ShellOverlayHost {
     qs_notification_wheel_remainder: f64,
     /// Synthetic accessibility focus: false is Clear all, true is Undo.
     qs_notification_action_focus: Option<bool>,
+    /// Offset into the separate clipboard history. Clipboard and notification
+    /// panes retain independent positions when the person switches between
+    /// them.
+    qs_clipboard_history_start: usize,
+    qs_clipboard_wheel_remainder: f64,
+    /// Offset into the complete media/output/device list. Unlike the initial
+    /// compact implementation, no enrolled device disappears after row seven.
+    qs_device_fabric_start: usize,
+    qs_device_fabric_wheel_remainder: f64,
+    /// The local session selected as the source for a certified-device route.
+    /// This is private view state, never convergent fabric state.
+    qs_selected_media: Option<String>,
     /// Session action modal, including destructive-action arming and its
     /// own open/close transition.
     power_menu: PowerMenu,
@@ -854,6 +1273,13 @@ pub struct ShellOverlayHost {
     /// `None` in tests and in sessions booted without peer-sync, where
     /// `/invite` and `/connect` report that rather than doing nothing.
     peer_sync_bridge: Option<PeerSyncBridge>,
+    /// Privileged in-process access to the compositor's bounded clipboard
+    /// history. Absent in screenshots and embedders.
+    clipboard_manager_bridge: Option<ClipboardManagerBridge>,
+    /// Certified peer and media-output actions. Remote actions stay on the
+    /// exact-target personal lane; local sinks stay inside `PipeWire`.
+    device_fabric_bridge: Option<DeviceFabricBridge>,
+    wifi_secret_bridge: Option<WifiSecretBridge>,
     /// Session-local control path into the typed app broker. Follow never
     /// enters the replicated workspace document or crosses the network.
     follow_bridge: Option<FollowBridge>,
@@ -1650,6 +2076,8 @@ impl ShellOverlayHost {
                     chrome.borrow().quick_settings.current_level(),
                     crate::shell::quick_settings::QsLevel::Root
                         | crate::shell::quick_settings::QsLevel::Notifications
+                        | crate::shell::quick_settings::QsLevel::Clipboard
+                        | crate::shell::quick_settings::QsLevel::Devices
                 )
             })
         {
@@ -1776,6 +2204,11 @@ impl ShellOverlayHost {
             qs_notification_history_start: 0,
             qs_notification_wheel_remainder: 0.0,
             qs_notification_action_focus: None,
+            qs_clipboard_history_start: 0,
+            qs_clipboard_wheel_remainder: 0.0,
+            qs_device_fabric_start: 0,
+            qs_device_fabric_wheel_remainder: 0.0,
+            qs_selected_media: None,
             power_menu: PowerMenu::default(),
             session_inhibitors: qos_power_mgmt::InhibitRegistry::new(),
             strip_ribbon_hover: None,
@@ -1798,6 +2231,9 @@ impl ShellOverlayHost {
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
+            clipboard_manager_bridge: None,
+            device_fabric_bridge: None,
+            wifi_secret_bridge: None,
             follow_bridge: None,
             follow_presence_bridge: None,
             peer_sync_overlay: PeerSyncOverlay::default(),
@@ -2679,6 +3115,39 @@ impl ShellOverlayHost {
     /// `FrameBuilder` before it has a network handle to bridge to.
     pub fn set_peer_sync_bridge(&mut self, bridge: PeerSyncBridge) {
         self.peer_sync_bridge = Some(bridge);
+    }
+
+    /// Attach the compositor-owned clipboard history to trusted shell chrome.
+    pub fn set_clipboard_manager_bridge(&mut self, bridge: ClipboardManagerBridge) {
+        self.clipboard_manager_bridge = Some(bridge);
+    }
+
+    /// Attach the authenticated personal-device and local-output control
+    /// surface. An absent bridge renders an honest unprovisioned state.
+    pub fn set_device_fabric_bridge(&mut self, bridge: DeviceFabricBridge) {
+        self.device_fabric_bridge = Some(bridge);
+    }
+
+    fn device_fabric_call(&self, action: DeviceFabricUiAction) -> Result<DeviceFabricView, String> {
+        self.device_fabric_bridge.as_ref().map_or_else(
+            || Err("Personal device fabric is not available in this session".into()),
+            |bridge| bridge(action),
+        )
+    }
+
+    /// Attach the encrypted same-person credential store. Sessions without a
+    /// provisioned identity simply keep the existing password prompt.
+    pub fn set_wifi_secret_bridge(&mut self, bridge: WifiSecretBridge) {
+        self.wifi_secret_bridge = Some(bridge);
+    }
+
+    fn clipboard_manager_call(
+        &self,
+        action: ClipboardManagerAction,
+    ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
+        self.clipboard_manager_bridge
+            .as_ref()
+            .map_or_else(Vec::new, |bridge| bridge(action))
     }
 
     /// Supply identities the host has already verified (for example, through
@@ -6314,6 +6783,7 @@ impl ShellOverlayHost {
                 .into_iter()
                 .map(|d| BtDevice {
                     name: d.name,
+                    address: d.mac,
                     battery: d.battery,
                     connected: d.connected,
                 })
@@ -6462,11 +6932,18 @@ impl ShellOverlayHost {
                         .clamp(192.0, 552.0)
                 }
             }
-            QsLevel::Bluetooth | QsLevel::BluetoothDetails(_) => {
+            QsLevel::Bluetooth => {
                 let rows = state.quick_settings.bt_devices.len();
                 (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
                     .clamp(160.0, 552.0)
             }
+            QsLevel::BluetoothDetails(_) => self
+                .device_fabric_call(DeviceFabricUiAction::Snapshot)
+                .map_or(216.0, |view| {
+                    let rows = view.devices.len().saturating_add(1);
+                    (78.0 + 58.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                        .clamp(216.0, 552.0)
+                }),
             QsLevel::Vpn => {
                 let rows = state.quick_settings.vpns.len();
                 (68.0 + 56.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -6477,6 +6954,21 @@ impl ShellOverlayHost {
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
                     .clamp(160.0, 552.0)
             }
+            QsLevel::Clipboard => {
+                let rows = self
+                    .clipboard_manager_call(ClipboardManagerAction::Snapshot)
+                    .len()
+                    .min(7);
+                (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                    .clamp(160.0, 552.0)
+            }
+            QsLevel::Devices => self
+                .device_fabric_call(DeviceFabricUiAction::Snapshot)
+                .map_or(190.0, |view| {
+                    let rows = device_fabric_pane_rows(&view).len();
+                    (82.0 + 58.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
+                        .clamp(190.0, 552.0)
+                }),
         }
     }
 
@@ -6638,6 +7130,222 @@ impl ShellOverlayHost {
         // Consume at either edge too: arrows should not start moving a hidden
         // workspace after the visible history has reached its beginning/end.
         let _ = self.clamp_qs_notification_history_start(history_len);
+        true
+    }
+
+    fn qs_clipboard_visible_rows(&self) -> usize {
+        self.qs_notification_visible_rows()
+    }
+
+    fn clamp_qs_clipboard_history_start(&mut self, history_len: usize) -> bool {
+        let max_start = history_len.saturating_sub(self.qs_clipboard_visible_rows());
+        let next = self.qs_clipboard_history_start.min(max_start);
+        let changed = next != self.qs_clipboard_history_start;
+        self.qs_clipboard_history_start = next;
+        changed
+    }
+
+    fn scroll_qs_clipboard_history(&mut self, movement: isize) -> bool {
+        let history_len = self
+            .clipboard_manager_call(ClipboardManagerAction::Snapshot)
+            .len();
+        let max_start = history_len.saturating_sub(self.qs_clipboard_visible_rows());
+        let current = self.qs_clipboard_history_start.min(max_start);
+        let next = if movement.is_negative() {
+            current.saturating_sub(movement.unsigned_abs())
+        } else {
+            current.saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
+        }
+        .min(max_start);
+        if next == self.qs_clipboard_history_start {
+            return false;
+        }
+        self.qs_clipboard_history_start = next;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        true
+    }
+
+    fn handle_qs_clipboard_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64) -> bool {
+        let clipboard_open = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Clipboard
+                )
+        });
+        if !clipboard_open
+            || !self
+                .last_cursor
+                .is_some_and(|point| self.quick_settings_rect().contains(point))
+        {
+            return false;
+        }
+        let rows = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
+            MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
+        };
+        if rows.abs() <= f64::EPSILON {
+            return true;
+        }
+        self.qs_clipboard_wheel_remainder += rows;
+        let whole = self.qs_clipboard_wheel_remainder.trunc();
+        if whole.abs() >= 1.0 {
+            self.qs_clipboard_wheel_remainder -= whole;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a wheel delta is bounded by input hardware; this only converts complete row movement"
+            )]
+            let movement = whole as isize;
+            let _ = self.scroll_qs_clipboard_history(movement);
+        }
+        true
+    }
+
+    fn handle_qs_clipboard_keyboard(&mut self, logical_key: &Key) -> bool {
+        let history_len = self
+            .clipboard_manager_call(ClipboardManagerAction::Snapshot)
+            .len();
+        let page = isize::try_from(self.qs_clipboard_visible_rows()).unwrap_or(isize::MAX);
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let _ = self.scroll_qs_clipboard_history(1);
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let _ = self.scroll_qs_clipboard_history(-1);
+            }
+            Key::Named(NamedKey::PageDown) => {
+                let _ = self.scroll_qs_clipboard_history(page);
+            }
+            Key::Named(NamedKey::PageUp) => {
+                let _ = self.scroll_qs_clipboard_history(page.saturating_neg());
+            }
+            Key::Named(NamedKey::Home) => {
+                let _ = self.scroll_qs_clipboard_history(-isize::MAX);
+            }
+            Key::Named(NamedKey::End) => {
+                let _ = self.scroll_qs_clipboard_history(isize::MAX);
+            }
+            _ => return false,
+        }
+        let _ = self.clamp_qs_clipboard_history_start(history_len);
+        true
+    }
+
+    fn qs_device_fabric_visible_rows(&self) -> usize {
+        f64_floor_to_usize_saturating((self.quick_settings_rect().height() - 78.0) / 58.0)
+            .clamp(1, 7)
+    }
+
+    fn clamp_qs_device_fabric_start(&mut self, row_count: usize) -> bool {
+        let max_start = row_count.saturating_sub(self.qs_device_fabric_visible_rows());
+        let next = self.qs_device_fabric_start.min(max_start);
+        let changed = next != self.qs_device_fabric_start;
+        self.qs_device_fabric_start = next;
+        changed
+    }
+
+    fn scroll_qs_device_fabric(&mut self, movement: isize) -> bool {
+        let row_count = self
+            .device_fabric_call(DeviceFabricUiAction::Snapshot)
+            .map_or(0, |view| {
+                let bluetooth_details = self.chrome.as_ref().is_some_and(|chrome| {
+                    matches!(
+                        chrome.borrow().quick_settings.current_level(),
+                        crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
+                    )
+                });
+                if bluetooth_details {
+                    view.devices.len().saturating_add(1)
+                } else {
+                    device_fabric_pane_rows(&view).len()
+                }
+            });
+        let max_start = row_count.saturating_sub(self.qs_device_fabric_visible_rows());
+        let current = self.qs_device_fabric_start.min(max_start);
+        let next = if movement.is_negative() {
+            current.saturating_sub(movement.unsigned_abs())
+        } else {
+            current.saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
+        }
+        .min(max_start);
+        if next == self.qs_device_fabric_start {
+            return false;
+        }
+        self.qs_device_fabric_start = next;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        true
+    }
+
+    fn handle_qs_device_fabric_wheel(
+        &mut self,
+        delta: MouseScrollDelta,
+        scale_factor: f64,
+    ) -> bool {
+        let devices_open = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                && matches!(
+                    state.quick_settings.current_level(),
+                    crate::shell::quick_settings::QsLevel::Devices
+                        | crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
+                )
+        });
+        if !devices_open
+            || !self
+                .last_cursor
+                .is_some_and(|point| self.quick_settings_rect().contains(point))
+        {
+            return false;
+        }
+        let rows = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y),
+            MouseScrollDelta::PixelDelta(position) => -position.y / (48.0 * scale_factor.max(0.1)),
+        };
+        if rows.abs() <= f64::EPSILON {
+            return true;
+        }
+        self.qs_device_fabric_wheel_remainder += rows;
+        let whole = self.qs_device_fabric_wheel_remainder.trunc();
+        if whole.abs() >= 1.0 {
+            self.qs_device_fabric_wheel_remainder -= whole;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a wheel delta is bounded by input hardware; this only converts complete row movement"
+            )]
+            let movement = whole as isize;
+            let _ = self.scroll_qs_device_fabric(movement);
+        }
+        true
+    }
+
+    fn handle_qs_device_fabric_keyboard(&mut self, logical_key: &Key) -> bool {
+        let page = isize::try_from(self.qs_device_fabric_visible_rows()).unwrap_or(isize::MAX);
+        match logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let _ = self.scroll_qs_device_fabric(1);
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let _ = self.scroll_qs_device_fabric(-1);
+            }
+            Key::Named(NamedKey::PageDown) => {
+                let _ = self.scroll_qs_device_fabric(page);
+            }
+            Key::Named(NamedKey::PageUp) => {
+                let _ = self.scroll_qs_device_fabric(page.saturating_neg());
+            }
+            Key::Named(NamedKey::Home) => {
+                let _ = self.scroll_qs_device_fabric(-isize::MAX);
+            }
+            Key::Named(NamedKey::End) => {
+                let _ = self.scroll_qs_device_fabric(isize::MAX);
+            }
+            _ => return false,
+        }
         true
     }
 
@@ -9456,6 +10164,10 @@ impl ShellOverlayHost {
     /// row. Split out of `handle_shell_quick_settings_click`, which
     /// always treats the click as absorbed regardless of what this
     /// does.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the drill-in router keeps each mutually exclusive page next to the shared back/password precedence; splitting it would duplicate modal ordering"
+    )]
     fn handle_shell_quick_settings_drill_in_click(
         &mut self,
         p: Point,
@@ -9482,7 +10194,14 @@ impl ShellOverlayHost {
         match current_level {
             crate::shell::quick_settings::QsLevel::Wifi => self.handle_qs_wifi_click(p),
             crate::shell::quick_settings::QsLevel::Bluetooth => self.handle_qs_bluetooth_click(p),
+            crate::shell::quick_settings::QsLevel::BluetoothDetails(address) => {
+                self.handle_qs_bluetooth_details_click(p, address);
+            }
             crate::shell::quick_settings::QsLevel::Vpn => self.handle_qs_vpn_click(p),
+            crate::shell::quick_settings::QsLevel::Clipboard => self.handle_qs_clipboard_click(p),
+            crate::shell::quick_settings::QsLevel::Devices => {
+                self.handle_qs_device_fabric_click(p);
+            }
             crate::shell::quick_settings::QsLevel::Notifications => {
                 self.handle_qs_notifications_click(p, back);
             }
@@ -9523,18 +10242,34 @@ impl ShellOverlayHost {
             self.qs_actions.as_ref(),
         );
         Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+        let _ = self.try_connect_with_shared_wifi_password();
     }
 
     fn handle_qs_bluetooth_click(&mut self, p: Point) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let panel = self.quick_settings_rect();
+        let mut state = chrome.borrow_mut();
         let outcome = self.qs_bluetooth_pane.handle_click(
             p,
-            self.quick_settings_rect(),
-            &chrome.borrow().quick_settings.bt_devices,
+            panel,
+            &mut state.quick_settings.bt_devices,
+            self.qs_actions.as_ref(),
         );
-        Self::finish_quick_settings_drill_in_click(&chrome, outcome);
+        match outcome {
+            BluetoothOutcome::Back => state.quick_settings.pop_level(),
+            BluetoothOutcome::Changed => {}
+            BluetoothOutcome::OpenDetails { address } => {
+                state.quick_settings.push_level(
+                    crate::shell::quick_settings::QsLevel::BluetoothDetails(address),
+                );
+                self.qs_device_fabric_start = 0;
+                self.qs_device_fabric_wheel_remainder = 0.0;
+            }
+            BluetoothOutcome::None => return,
+        }
+        state.bump();
     }
 
     fn handle_qs_vpn_click(&mut self, p: Point) {
@@ -9574,6 +10309,260 @@ impl ShellOverlayHost {
             state.bump();
         }
     }
+
+    fn handle_qs_device_fabric_click(&mut self, point: Point) {
+        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+            return;
+        };
+        self.normalise_qs_selected_media(&view);
+        let rows = device_fabric_pane_rows(&view);
+        let _ = self.clamp_qs_device_fabric_start(rows.len());
+        let Some((row_index, item)) = rows
+            .iter()
+            .skip(self.qs_device_fabric_start)
+            .take(self.qs_device_fabric_visible_rows())
+            .enumerate()
+            .find(|(index, _)| self.qs_device_row_rect(*index).contains(point))
+            .map(|(index, item)| (index, item.clone()))
+        else {
+            return;
+        };
+        let secondary = self.qs_device_secondary_action(point, row_index, &item);
+        if let Some((action, success)) = secondary {
+            self.finish_qs_device_action(action, success);
+            return;
+        }
+        let action = match item {
+            DeviceFabricPaneRow::Media(media) => {
+                self.qs_selected_media = Some(media.session_id);
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                return;
+            }
+            DeviceFabricPaneRow::LocalOutput(output) if !output.is_default => Some((
+                DeviceFabricUiAction::RouteLocalAudio {
+                    node_id: output.node_id,
+                },
+                format!("Audio is now routed to {}", output.label),
+            )),
+            DeviceFabricPaneRow::Device(device)
+                if !device.is_local && device.online && self.qs_selected_media.is_some() =>
+            {
+                let session_id = self.qs_selected_media.clone().unwrap_or_default();
+                let compatible = view.local_media.iter().any(|media| {
+                    media.session_id == session_id && media.targets.contains(&device.id)
+                });
+                compatible.then(|| {
+                    (
+                        DeviceFabricUiAction::HandoffMedia {
+                            session_id,
+                            target: device.id,
+                        },
+                        format!(
+                            "Preparing media for {}; this device stays active until it opens",
+                            device.label
+                        ),
+                    )
+                })
+            }
+            _ => None,
+        };
+        let Some((action, success)) = action else {
+            return;
+        };
+        self.finish_qs_device_action(action, success);
+    }
+
+    fn handle_qs_bluetooth_details_click(&mut self, point: Point, address: &str) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let accessory = chrome
+            .borrow()
+            .quick_settings
+            .bt_devices
+            .iter()
+            .find(|device| device.address.eq_ignore_ascii_case(address))
+            .cloned();
+        let Some(accessory) = accessory else {
+            return;
+        };
+        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+            return;
+        };
+        let rows = std::iter::once(None)
+            .chain(view.devices.into_iter().map(Some))
+            .collect::<Vec<_>>();
+        let _ = self.clamp_qs_device_fabric_start(rows.len());
+        let selected = rows
+            .into_iter()
+            .skip(self.qs_device_fabric_start)
+            .take(self.qs_device_fabric_visible_rows())
+            .enumerate()
+            .find(|(index, _)| self.qs_device_row_rect(*index).contains(point))
+            .map(|(_, row)| row);
+        match selected {
+            Some(None) => {
+                let result = self.qs_actions.disconnect_bluetooth(&accessory.address);
+                if result.is_ok() {
+                    let mut state = chrome.borrow_mut();
+                    if let Some(device) = state
+                        .quick_settings
+                        .bt_devices
+                        .iter_mut()
+                        .find(|device| device.address.eq_ignore_ascii_case(&accessory.address))
+                    {
+                        device.connected = false;
+                    }
+                    state.quick_settings.pop_level();
+                    state.push_notification(
+                        "Bluetooth",
+                        format!("Disconnected {} from this device", accessory.name),
+                    );
+                    state.bump();
+                }
+                crate::shell::qs_actions::log_qs_result("disconnect_bluetooth", result);
+            }
+            Some(Some(device)) if !device.is_local && device.online => {
+                self.finish_qs_device_action(
+                    DeviceFabricUiAction::HandoffBluetooth {
+                        address: accessory.address,
+                        name: accessory.name.clone(),
+                        target: device.id,
+                    },
+                    format!(
+                        "Moving {} to {}; it stays here until that device confirms its pairing",
+                        accessory.name, device.label
+                    ),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn qs_device_secondary_action(
+        &self,
+        point: Point,
+        row_index: usize,
+        item: &DeviceFabricPaneRow,
+    ) -> Option<(DeviceFabricUiAction, String)> {
+        let DeviceFabricPaneRow::Device(device) = item else {
+            return None;
+        };
+        let (placements, control) = Self::qs_device_row_actions(self.qs_device_row_rect(row_index));
+        let edge = placements
+            .iter()
+            .position(|rect| rect.contains(point))
+            .and_then(|index| {
+                [
+                    crate::shell::device_fabric::DisplayEdge::Left,
+                    crate::shell::device_fabric::DisplayEdge::Right,
+                    crate::shell::device_fabric::DisplayEdge::Top,
+                    crate::shell::device_fabric::DisplayEdge::Bottom,
+                ]
+                .get(index)
+                .copied()
+            });
+        if let Some(edge) = edge
+            && !device.is_local
+            && device.online
+            && device.display
+        {
+            return Some((
+                DeviceFabricUiAction::Place {
+                    device: device.id.clone(),
+                    edge,
+                },
+                format!(
+                    "{} will sit {} this display after it confirms",
+                    device.label,
+                    match edge {
+                        crate::shell::device_fabric::DisplayEdge::Left => "left of",
+                        crate::shell::device_fabric::DisplayEdge::Right => "right of",
+                        crate::shell::device_fabric::DisplayEdge::Top => "above",
+                        crate::shell::device_fabric::DisplayEdge::Bottom => "below",
+                    }
+                ),
+            ));
+        }
+        if !control.contains(point) || device.is_local || !device.online {
+            return None;
+        }
+        if device.controls_local {
+            Some((
+                DeviceFabricUiAction::RevokeControl {
+                    controller: device.id.clone(),
+                },
+                format!("{} can no longer control this device", device.label),
+            ))
+        } else {
+            Some((
+                DeviceFabricUiAction::GrantControl {
+                    controller: device.id.clone(),
+                },
+                format!("{} may control this device for 15 minutes", device.label),
+            ))
+        }
+    }
+
+    fn finish_qs_device_action(&self, action: DeviceFabricUiAction, success: String) {
+        let result = self.device_fabric_call(action);
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            match result {
+                Ok(_) => state.push_notification("Devices & media", success),
+                Err(error) => state.push_notification("Could not complete device action", error),
+            };
+            state.bump();
+        }
+    }
+
+    fn handle_qs_clipboard_click(&mut self, point: Point) {
+        if self.qs_clipboard_clear_rect().contains(point) {
+            let history = self.clipboard_manager_call(ClipboardManagerAction::ClearUnpinned);
+            let _ = self.clamp_qs_clipboard_history_start(history.len());
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            return;
+        }
+        let history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        let visible_rows = self.qs_clipboard_visible_rows();
+        let start = self.qs_clipboard_history_start;
+        for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
+            let row = self.qs_clipboard_row_rect(visible_index);
+            if !row.contains(point) {
+                continue;
+            }
+            let (pin, remove) = Self::qs_clipboard_row_actions(row);
+            if pin.contains(point) {
+                let _ = self.clipboard_manager_call(ClipboardManagerAction::SetPinned {
+                    id: item.id,
+                    pinned: !item.pinned,
+                });
+            } else if remove.contains(point) {
+                let remaining =
+                    self.clipboard_manager_call(ClipboardManagerAction::Remove(item.id));
+                let _ = self.clamp_qs_clipboard_history_start(remaining.len());
+            } else {
+                let _ = self.clipboard_manager_call(ClipboardManagerAction::Activate(item.id));
+                if let Some(chrome) = self.chrome.as_ref() {
+                    let mut state = chrome.borrow_mut();
+                    state.overlays.quick_settings = false;
+                    state.quick_settings.nav_stack =
+                        vec![crate::shell::quick_settings::QsLevel::Root];
+                    state.bump();
+                }
+                return;
+            }
+            if let Some(chrome) = self.chrome.as_ref() {
+                chrome.borrow_mut().bump();
+            }
+            return;
+        }
+    }
+
     /// Routes a click through the root-page component, then applies the
     /// resulting shell-wide navigation or side effect after hit-testing.
     fn handle_shell_quick_settings_root_click(&mut self, p: Point) {
@@ -9605,16 +10594,37 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let notifications_open = {
+        let history_level = {
             let state = chrome.borrow();
-            state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    crate::shell::quick_settings::QsLevel::Notifications
-                )
+            state
+                .overlays
+                .quick_settings
+                .then(|| state.quick_settings.current_level().clone())
         };
-        if notifications_open {
+        if matches!(
+            history_level,
+            Some(crate::shell::quick_settings::QsLevel::Notifications)
+        ) {
             let consumed = self.handle_qs_notification_keyboard(logical_key);
+            *handled = consumed;
+            return consumed;
+        }
+        if matches!(
+            history_level,
+            Some(crate::shell::quick_settings::QsLevel::Clipboard)
+        ) {
+            let consumed = self.handle_qs_clipboard_keyboard(logical_key);
+            *handled = consumed;
+            return consumed;
+        }
+        if matches!(
+            history_level,
+            Some(
+                crate::shell::quick_settings::QsLevel::Devices
+                    | crate::shell::quick_settings::QsLevel::BluetoothDetails(_)
+            )
+        ) {
+            let consumed = self.handle_qs_device_fabric_keyboard(logical_key);
             *handled = consumed;
             return consumed;
         }
@@ -9743,6 +10753,25 @@ impl ShellOverlayHost {
                 drop(st);
                 self.qs_notification_history_start = 0;
                 self.qs_notification_wheel_remainder = 0.0;
+            }
+            RootAction::OpenClipboard => {
+                let mut st = chrome.borrow_mut();
+                st.quick_settings
+                    .push_level(crate::shell::quick_settings::QsLevel::Clipboard);
+                st.bump();
+                drop(st);
+                self.qs_clipboard_history_start = 0;
+                self.qs_clipboard_wheel_remainder = 0.0;
+            }
+            RootAction::OpenDevices => {
+                let mut st = chrome.borrow_mut();
+                st.quick_settings
+                    .push_level(crate::shell::quick_settings::QsLevel::Devices);
+                st.bump();
+                drop(st);
+                self.qs_selected_media = None;
+                self.qs_device_fabric_start = 0;
+                self.qs_device_fabric_wheel_remainder = 0.0;
             }
             RootAction::Changed(pending) => {
                 chrome.borrow_mut().bump();
@@ -11511,7 +12540,9 @@ impl Widget for ShellOverlayHost {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
-            && self.handle_qs_notification_wheel(*delta, scale_factor)
+            && (self.handle_qs_notification_wheel(*delta, scale_factor)
+                || self.handle_qs_clipboard_wheel(*delta, scale_factor)
+                || self.handle_qs_device_fabric_wheel(*delta, scale_factor))
         {
             *handled = true;
             return;
@@ -11740,6 +12771,217 @@ impl Widget for ShellOverlayHost {
                                     .with_description(description)
                                     .with_state(AccessState::new().modal(true))
                                     .with_children(children),
+                            );
+                        } else if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Clipboard
+                        ) {
+                            let history = self
+                                .clipboard_manager_call(ClipboardManagerAction::Snapshot);
+                            let visible = self.qs_clipboard_visible_rows();
+                            let start = self
+                                .qs_clipboard_history_start
+                                .min(history.len().saturating_sub(visible));
+                            let shown = visible.min(history.len().saturating_sub(start));
+                            let items = history
+                                .iter()
+                                .skip(start)
+                                .take(shown)
+                                .enumerate()
+                                .map(|(index, item)| {
+                                    let name = item.text_preview.as_deref().map_or_else(
+                                        || "Clipboard data".to_string(),
+                                        |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
+                                    );
+                                    AccessNode::new(Role::ListItem)
+                                        .with_name(name)
+                                        .with_description(format!(
+                                            "{} bytes; {}",
+                                            item.byte_len,
+                                            if item.pinned { "pinned" } else { "not pinned" }
+                                        ))
+                                        .with_position(index.saturating_add(1), shown)
+                                        .with_children(vec![
+                                            AccessNode::new(Role::Button).with_name("Use item"),
+                                            AccessNode::new(Role::Button).with_name(if item.pinned {
+                                                "Unpin item"
+                                            } else {
+                                                "Pin item"
+                                            }),
+                                            AccessNode::new(Role::Button).with_name("Remove item"),
+                                        ])
+                                })
+                                .collect();
+                            root.children.push(
+                                AccessNode::new(Role::Dialog)
+                                    .with_name("Clipboard")
+                                    .with_description(
+                                        "Private clipboard history shared only with your authenticated devices. Use Up and Down, Page Up and Page Down, Home, or End to move through retained items.",
+                                    )
+                                    .with_state(AccessState::new().modal(true))
+                                    .with_children(vec![
+                                        AccessNode::new(Role::List)
+                                            .with_name("Retained clipboard items")
+                                            .with_children(items),
+                                    ]),
+                            );
+                        } else if let crate::shell::quick_settings::QsLevel::BluetoothDetails(
+                            address,
+                        ) = state.quick_settings.current_level()
+                        {
+                            let accessory = state
+                                .quick_settings
+                                .bt_devices
+                                .iter()
+                                .find(|device| device.address.eq_ignore_ascii_case(address));
+                            let accessory_name = accessory
+                                .map_or("Bluetooth accessory", |device| device.name.as_str());
+                            let view = self
+                                .device_fabric_call(DeviceFabricUiAction::Snapshot)
+                                .unwrap_or_default();
+                            let rows = std::iter::once(None)
+                                .chain(view.devices.into_iter().map(Some))
+                                .collect::<Vec<_>>();
+                            let visible = self.qs_device_fabric_visible_rows();
+                            let start = self
+                                .qs_device_fabric_start
+                                .min(rows.len().saturating_sub(visible));
+                            let shown = visible.min(rows.len().saturating_sub(start));
+                            let items = rows
+                                .into_iter()
+                                .skip(start)
+                                .take(shown)
+                                .enumerate()
+                                .map(|(index, device)| match device {
+                                    None => AccessNode::new(Role::Button)
+                                        .with_name(format!(
+                                            "Disconnect {accessory_name} from this device"
+                                        ))
+                                        .with_position(index.saturating_add(1), shown),
+                                    Some(device) => AccessNode::new(Role::Button)
+                                        .with_name(format!("Move to {}", device.label))
+                                        .with_description(if device.is_local {
+                                            "This is the current certified device"
+                                        } else if device.online {
+                                            "The destination confirms its own local pairing before this device disconnects"
+                                        } else {
+                                            "Offline certified device"
+                                        })
+                                        .with_state(AccessState::new().disabled(
+                                            device.is_local || !device.online,
+                                        ))
+                                        .with_position(index.saturating_add(1), shown),
+                                })
+                                .collect();
+                            root.children.push(
+                                AccessNode::new(Role::Dialog)
+                                    .with_name(format!("Move {accessory_name}"))
+                                    .with_description(
+                                        "Choose a certified destination already paired with this accessory. Bond keys never leave either device. Use Up and Down, Page Up and Page Down, Home, or End to reach every destination.",
+                                    )
+                                    .with_state(AccessState::new().modal(true))
+                                    .with_children(vec![
+                                        AccessNode::new(Role::List)
+                                            .with_name("Bluetooth destinations")
+                                            .with_children(items),
+                                    ]),
+                            );
+                        } else if matches!(
+                            state.quick_settings.current_level(),
+                            crate::shell::quick_settings::QsLevel::Devices
+                        ) {
+                            let view = self
+                                .device_fabric_call(DeviceFabricUiAction::Snapshot)
+                                .unwrap_or_default();
+                            let selected_id = self.qs_selected_media.as_ref().or_else(|| {
+                                view.local_media
+                                    .iter()
+                                    .find(|media| media.playing)
+                                    .or_else(|| view.local_media.first())
+                                    .map(|media| &media.session_id)
+                            });
+                            let selected = selected_id.and_then(|id| {
+                                view.local_media.iter().find(|media| &media.session_id == id)
+                            });
+                            let rows = device_fabric_pane_rows(&view);
+                            let total = rows.len();
+                            let items = rows
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, item)| {
+                                    let (name, description, children) = match item {
+                                        DeviceFabricPaneRow::Media(media) => (
+                                            media.title,
+                                            if media.playing {
+                                                "Playing now; choose this media for routing"
+                                            } else {
+                                                "Paused; choose this media for routing"
+                                            }
+                                            .to_string(),
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::LocalOutput(output) => (
+                                            output.label,
+                                            if output.is_default {
+                                                "Current local audio output".into()
+                                            } else {
+                                                "Route current and future local audio here".into()
+                                            },
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::Device(device) => (
+                                            device.label.clone(),
+                                            Self::fabric_device_detail(
+                                                &device,
+                                                selected,
+                                                view.transfers
+                                                    .iter()
+                                                    .rev()
+                                                    .find(|transfer| transfer.target == device.id),
+                                            ),
+                                            if device.is_local {
+                                                Vec::new()
+                                            } else {
+                                                vec![
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Place display to the left"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Place display to the right"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Place display above"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Place display below"),
+                                                    AccessNode::new(Role::Button).with_name(
+                                                        if device.controls_local {
+                                                            "Revoke control of this device"
+                                                        } else {
+                                                            "Allow this device to control this device for 15 minutes"
+                                                        },
+                                                    ),
+                                                ]
+                                            },
+                                        ),
+                                    };
+                                    AccessNode::new(Role::Button)
+                                        .with_name(name)
+                                        .with_description(description)
+                                        .with_position(index.saturating_add(1), total)
+                                        .with_state(AccessState::new().focusable(true))
+                                        .with_children(children)
+                                })
+                                .collect();
+                            root.children.push(
+                                AccessNode::new(Role::Dialog)
+                                    .with_name("Devices and media")
+                                    .with_description(
+                                        "Local audio outputs and identity-certified qOS devices. Remote handoffs are direct and encrypted when reachable. Use Up and Down, Page Up and Page Down, Home, or End to move through every destination.",
+                                    )
+                                    .with_state(AccessState::new().modal(true))
+                                    .with_children(vec![
+                                        AccessNode::new(Role::List)
+                                            .with_name("Media destinations")
+                                            .with_children(items),
+                                    ]),
                             );
                         } else {
                             root.children.push(
@@ -15528,8 +16770,7 @@ impl ShellOverlayHost {
                 }
                 true
             }
-            crate::shell::quick_settings::QsLevel::Bluetooth
-            | crate::shell::quick_settings::QsLevel::BluetoothDetails(_) => {
+            crate::shell::quick_settings::QsLevel::Bluetooth => {
                 let panel = self.quick_settings_rect();
                 let cursor = self.last_cursor;
                 self.qs_bluetooth_pane.draw(
@@ -15541,6 +16782,10 @@ impl ShellOverlayHost {
                     cursor,
                     &qs.bt_devices,
                 );
+                true
+            }
+            crate::shell::quick_settings::QsLevel::BluetoothDetails(address) => {
+                self.draw_qs_bluetooth_details(scene, transform, text_renderer, theme, qs, address);
                 true
             }
             crate::shell::quick_settings::QsLevel::Vpn => {
@@ -15559,6 +16804,14 @@ impl ShellOverlayHost {
             }
             crate::shell::quick_settings::QsLevel::Notifications => {
                 self.draw_qs_notification_history(scene, transform, text_renderer, theme);
+                true
+            }
+            crate::shell::quick_settings::QsLevel::Clipboard => {
+                self.draw_qs_clipboard_history(scene, transform, text_renderer, theme);
+                true
+            }
+            crate::shell::quick_settings::QsLevel::Devices => {
+                self.draw_qs_device_fabric(scene, transform, text_renderer, theme);
                 true
             }
             crate::shell::quick_settings::QsLevel::Root => false,
@@ -15968,6 +17221,619 @@ impl ShellOverlayHost {
         }
     }
 
+    fn qs_clipboard_clear_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        Rect::new(r.x1 - 88.0, r.y0 + 8.0, r.x1 - 12.0, r.y0 + 40.0)
+    }
+
+    fn qs_device_row_rect(&self, index: usize) -> Rect {
+        let panel = self.quick_settings_rect();
+        let y0 = panel.y0 + 78.0 + usize_to_f64_lossy(index) * 58.0;
+        Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + 52.0)
+    }
+
+    fn qs_device_row_actions(row: Rect) -> ([Rect; 4], Rect) {
+        (
+            [
+                Rect::new(row.x1 - 78.0, row.y0 + 5.0, row.x1 - 54.0, row.y0 + 24.0),
+                Rect::new(row.x1 - 52.0, row.y0 + 5.0, row.x1 - 28.0, row.y0 + 24.0),
+                Rect::new(row.x1 - 78.0, row.y1 - 24.0, row.x1 - 54.0, row.y1 - 5.0),
+                Rect::new(row.x1 - 52.0, row.y1 - 24.0, row.x1 - 28.0, row.y1 - 5.0),
+            ],
+            Rect::new(row.x1 - 26.0, row.y0 + 10.0, row.x1 - 2.0, row.y1 - 10.0),
+        )
+    }
+
+    fn normalise_qs_selected_media(&mut self, view: &DeviceFabricView) {
+        if self.qs_selected_media.as_ref().is_some_and(|selected| {
+            view.local_media
+                .iter()
+                .any(|media| &media.session_id == selected)
+        }) {
+            return;
+        }
+        self.qs_selected_media = view
+            .local_media
+            .iter()
+            .find(|media| media.playing)
+            .or_else(|| view.local_media.first())
+            .map(|media| media.session_id.clone());
+    }
+
+    fn fabric_device_detail(
+        device: &FabricDeviceView,
+        selected: Option<&FabricMediaView>,
+        transfer: Option<&FabricTransferView>,
+    ) -> String {
+        if device.is_local {
+            return "This device · identity-certified".into();
+        }
+        if !device.online {
+            return "Offline · identity-certified".into();
+        }
+        if let Some(transfer) = transfer {
+            return match transfer.status {
+                FabricTransferStatus::Sending => {
+                    let percent = transfer
+                        .sent_bytes
+                        .saturating_mul(100)
+                        .checked_div(transfer.total_bytes)
+                        .unwrap_or(0);
+                    format!("Sending media · {percent}% · source stays active")
+                }
+                FabricTransferStatus::Sent => {
+                    "Media sent · waiting for destination app · source stays active".into()
+                }
+                FabricTransferStatus::Failed => {
+                    "Media transfer failed · source kept playing".into()
+                }
+            };
+        }
+        if device.controls_local && device.local_can_control {
+            return "Mutual control active · local input always wins".into();
+        }
+        if device.controls_local {
+            return "May control this device · local input always wins".into();
+        }
+        if device.local_can_control {
+            return "Control granted · place beside this display to cross".into();
+        }
+        match selected {
+            Some(media) if media.targets.contains(&device.id) => {
+                format!("Play {} here · direct encrypted handoff", media.title)
+            }
+            Some(media) if media.has_video && !device.video_output => {
+                "Online · audio only for this video".into()
+            }
+            Some(_) if !device.audio_output => "Online · no media output".into(),
+            Some(_) => "Online · unavailable for this media".into(),
+            None => "Online · identity-certified".into(),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded device rows share paint geometry with their capability and transport status"
+    )]
+    fn draw_qs_bluetooth_details(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        qs: &crate::shell::chrome_state::QuickSettingsState,
+        address: &str,
+    ) {
+        let accessory = qs
+            .bt_devices
+            .iter()
+            .find(|device| device.address.eq_ignore_ascii_case(address));
+        let name = accessory.map_or("Bluetooth accessory", |device| device.name.as_str());
+        self.draw_qs_drill_in_header(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &format!("Move {name}"),
+        );
+        let panel = self.quick_settings_rect();
+        text_renderer.draw_text(
+            scene,
+            "The destination must already have its own pairing · bond keys never leave a device",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 24.0)),
+        );
+        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Personal device fabric is unavailable",
+            );
+            return;
+        };
+        let rows = std::iter::once(None)
+            .chain(view.devices.into_iter().map(Some))
+            .collect::<Vec<_>>();
+        let _ = self.clamp_qs_device_fabric_start(rows.len());
+        let visible_rows = self.qs_device_fabric_visible_rows();
+        for (index, item) in rows
+            .iter()
+            .skip(self.qs_device_fabric_start)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let row = self.qs_device_row_rect(index);
+            let (title, detail, icon, enabled) = match item {
+                None => (
+                    "This device".to_string(),
+                    format!("Disconnect {name} without forgetting it"),
+                    ui::icons::Icon::Bluetooth,
+                    accessory.is_some_and(|device| device.connected),
+                ),
+                Some(device) => (
+                    device.label.clone(),
+                    if device.is_local {
+                        "This certified device".into()
+                    } else if device.online {
+                        "Move here after its local pairing is confirmed".into()
+                    } else {
+                        "Offline · identity-certified".into()
+                    },
+                    ui::icons::Icon::Monitor,
+                    !device.is_local && device.online,
+                ),
+            };
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(row, "")
+                    .hovered(enabled && self.last_cursor.is_some_and(|point| row.contains(point)))
+                    .disabled(!enabled)
+                    .accessible_name(&format!("{title}. {detail}")),
+            );
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
+                icon,
+                theme.tokens.colors.text_primary,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &title,
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
+                Some(f64_to_f32_lossy(row.width() - 54.0)),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
+                Some(f64_to_f32_lossy(row.width() - 54.0)),
+            );
+        }
+        if rows.len() > visible_rows {
+            let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
+            text_renderer.draw_text(
+                scene,
+                &format!(
+                    "Showing {}–{} of {} · scroll for more",
+                    self.qs_device_fabric_start.saturating_add(1),
+                    self.qs_device_fabric_start.saturating_add(shown),
+                    rows.len()
+                ),
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((panel.x0 + 12.0, panel.y1 - 14.0).into()),
+                Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            );
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the bounded device rows share paint geometry with their capability and transport status"
+    )]
+    fn draw_qs_device_fabric(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Devices & media");
+        let panel = self.quick_settings_rect();
+        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Set up your personal identity to connect devices",
+            );
+            return;
+        };
+        self.normalise_qs_selected_media(&view);
+        let selected = self.qs_selected_media.as_ref().and_then(|id| {
+            view.local_media
+                .iter()
+                .find(|media| &media.session_id == id)
+        });
+        text_renderer.draw_text(
+            scene,
+            "Direct when reachable · no vendor cloud · certified devices only",
+            theme.tokens.typography.scale.xs,
+            theme.tokens.colors.text_dim,
+            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 24.0)),
+        );
+        let rows = device_fabric_pane_rows(&view);
+        if rows.is_empty() {
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Connected outputs and enrolled devices appear here",
+            );
+            return;
+        }
+        let _ = self.clamp_qs_device_fabric_start(rows.len());
+        let visible_rows = self.qs_device_fabric_visible_rows();
+        for (index, item) in rows
+            .iter()
+            .skip(self.qs_device_fabric_start)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let row = self.qs_device_row_rect(index);
+            let (title, detail, icon, selected_row, enabled) = match item {
+                DeviceFabricPaneRow::Media(media) => (
+                    media.title.clone(),
+                    if media.playing {
+                        "Playing now · select a destination below".to_string()
+                    } else {
+                        "Paused · select a destination below".to_string()
+                    },
+                    if media.has_video {
+                        ui::icons::Icon::Film
+                    } else {
+                        ui::icons::Icon::Music
+                    },
+                    self.qs_selected_media.as_ref() == Some(&media.session_id),
+                    true,
+                ),
+                DeviceFabricPaneRow::LocalOutput(output) => (
+                    output.label.clone(),
+                    output.bluetooth_codec.as_ref().map_or_else(
+                        || {
+                            if output.is_default {
+                                "Local output · current default".into()
+                            } else {
+                                "Local output · route current audio here".into()
+                            }
+                        },
+                        |codec| format!("Bluetooth {codec} · route current audio here"),
+                    ),
+                    ui::icons::Icon::Volume2,
+                    output.is_default,
+                    !output.is_default,
+                ),
+                DeviceFabricPaneRow::Device(device) => {
+                    let enabled = !device.is_local
+                        && device.online
+                        && selected.is_some_and(|media| media.targets.contains(&device.id));
+                    (
+                        device.label.clone(),
+                        Self::fabric_device_detail(
+                            device,
+                            selected,
+                            view.transfers
+                                .iter()
+                                .rev()
+                                .find(|transfer| transfer.target == device.id),
+                        ),
+                        ui::icons::Icon::Monitor,
+                        false,
+                        enabled,
+                    )
+                }
+            };
+            let accessible = format!("{title}. {detail}");
+            let mut face = ButtonFace::new(row, "")
+                .hovered(enabled && self.last_cursor.is_some_and(|point| row.contains(point)))
+                .disabled(!enabled)
+                .accessible_name(&accessible);
+            if selected_row {
+                face = face.primary();
+            }
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            let trailing = if matches!(item, DeviceFabricPaneRow::Device(_)) {
+                86.0
+            } else {
+                0.0
+            };
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
+                icon,
+                if selected_row {
+                    theme.tokens.colors.on_accent(4.5)
+                } else {
+                    theme.tokens.colors.text_primary
+                },
+                1.5,
+            );
+            let text_color = if selected_row {
+                theme.tokens.colors.on_accent(4.5)
+            } else {
+                theme.tokens.colors.text_primary
+            };
+            text_renderer.draw_text_weighted(
+                scene,
+                &title,
+                theme.tokens.typography.scale.sm,
+                text_color,
+                transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
+                Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
+                TextWeight::Medium,
+            );
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                theme.tokens.typography.scale.xs,
+                if selected_row {
+                    theme.tokens.colors.on_accent(4.5)
+                } else {
+                    theme.tokens.colors.text_dim
+                },
+                transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
+                Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
+            );
+            if let DeviceFabricPaneRow::Device(device) = item {
+                let (placements, control) = Self::qs_device_row_actions(row);
+                for (rect, icon, name) in [
+                    (
+                        placements[0],
+                        ui::icons::Icon::ArrowLeft,
+                        "Place this display to the left",
+                    ),
+                    (
+                        placements[1],
+                        ui::icons::Icon::ArrowRight,
+                        "Place this display to the right",
+                    ),
+                    (
+                        placements[2],
+                        ui::icons::Icon::ArrowUp,
+                        "Place this display above",
+                    ),
+                    (
+                        placements[3],
+                        ui::icons::Icon::ArrowDown,
+                        "Place this display below",
+                    ),
+                ] {
+                    Button::paint(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        &ButtonFace::new(rect, "")
+                            .ghost()
+                            .icon(icon)
+                            .hovered(
+                                device.online
+                                    && device.display
+                                    && self.last_cursor.is_some_and(|point| rect.contains(point)),
+                            )
+                            .disabled(device.is_local || !device.online || !device.display)
+                            .accessible_name(name),
+                    );
+                }
+                let mut control_face = ButtonFace::new(control, "")
+                    .ghost()
+                    .icon(ui::icons::Icon::Mouse)
+                    .hovered(
+                        device.online
+                            && self
+                                .last_cursor
+                                .is_some_and(|point| control.contains(point)),
+                    )
+                    .disabled(device.is_local || !device.online)
+                    .accessible_name(if device.controls_local {
+                        "Revoke control of this device"
+                    } else {
+                        "Allow this device to control this device for 15 minutes"
+                    });
+                if device.controls_local {
+                    control_face = control_face.primary();
+                }
+                Button::paint(scene, transform, text_renderer, theme, &control_face);
+            }
+        }
+        if rows.len() > visible_rows {
+            let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
+            let position = format!(
+                "Showing {}–{} of {} · scroll for more",
+                self.qs_device_fabric_start.saturating_add(1),
+                self.qs_device_fabric_start.saturating_add(shown),
+                rows.len()
+            );
+            text_renderer.draw_text(
+                scene,
+                &position,
+                theme.tokens.typography.scale.xs,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((panel.x0 + 12.0, panel.y1 - 22.0).into()),
+                Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            );
+        }
+    }
+
+    fn qs_clipboard_row_rect(&self, visible_index: usize) -> Rect {
+        const ROW_HEIGHT: f64 = 70.0;
+        let panel = self.quick_settings_rect();
+        let y0 = panel.y0 + 76.0 + usize_to_f64_lossy(visible_index) * ROW_HEIGHT;
+        Rect::new(panel.x0 + 12.0, y0, panel.x1 - 12.0, y0 + ROW_HEIGHT - 6.0)
+    }
+
+    fn qs_clipboard_row_actions(row: Rect) -> (Rect, Rect) {
+        (
+            Rect::new(row.x1 - 70.0, row.y0 + 14.0, row.x1 - 38.0, row.y1 - 14.0),
+            Rect::new(row.x1 - 34.0, row.y0 + 14.0, row.x1 - 2.0, row.y1 - 14.0),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "clipboard rows intentionally share one geometry calculation for paint, privacy metadata, and their pin/remove controls"
+    )]
+    fn draw_qs_clipboard_history(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Clipboard");
+        let panel = self.quick_settings_rect();
+        let colors = &theme.tokens.colors;
+        let history = self.clipboard_manager_call(ClipboardManagerAction::Snapshot);
+        if history.is_empty() {
+            self.qs_clipboard_history_start = 0;
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Copied items appear here",
+            );
+            return;
+        }
+        let visible_rows = self.qs_clipboard_visible_rows();
+        let _ = self.clamp_qs_clipboard_history_start(history.len());
+        let start = self.qs_clipboard_history_start;
+        let shown = visible_rows.min(history.len().saturating_sub(start));
+
+        let clear = self.qs_clipboard_clear_rect();
+        Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(clear, "Clear")
+                .hovered(self.last_cursor.is_some_and(|point| clear.contains(point)))
+                .accessible_name("Clear unpinned clipboard history")
+                .text_size(theme.tokens.typography.scale.xs),
+        );
+        let position = if history.len() > visible_rows {
+            format!(
+                "Newest {}–{} of {} · private to your devices",
+                start.saturating_add(1),
+                start.saturating_add(shown),
+                history.len()
+            )
+        } else {
+            format!(
+                "{} item{} · private to your devices",
+                history.len(),
+                if history.len() == 1 { "" } else { "s" }
+            )
+        };
+        text_renderer.draw_text(
+            scene,
+            &position,
+            theme.tokens.typography.scale.xs,
+            colors.text_dim,
+            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 52.0).into()),
+            Some(f64_to_f32_lossy(panel.width() - 24.0)),
+        );
+
+        for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
+            let row = self.qs_clipboard_row_rect(visible_index);
+            let (pin, remove) = Self::qs_clipboard_row_actions(row);
+            let body = Rect::new(row.x0, row.y0, pin.x0 - 4.0, row.y1);
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(body, "")
+                    .hovered(self.last_cursor.is_some_and(|point| body.contains(point)))
+                    .accessible_name("Use clipboard item"),
+            );
+            let preview = item.text_preview.as_deref().map_or_else(
+                || {
+                    item.mime_types.first().map_or_else(
+                        || "Clipboard data".to_string(),
+                        |mime| format!("{mime} · {} bytes", item.byte_len),
+                    )
+                },
+                |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &preview,
+                theme.tokens.typography.scale.sm,
+                colors.text_primary,
+                transform.pre_translate((body.x0 + 12.0, body.y0 + 14.0).into()),
+                Some(f64_to_f32_lossy(body.width() - 24.0)),
+                TextWeight::Medium,
+            );
+            let detail = format!(
+                "{} · {} byte{}",
+                item.mime_types.first().map_or("data", String::as_str),
+                item.byte_len,
+                if item.byte_len == 1 { "" } else { "s" }
+            );
+            text_renderer.draw_text(
+                scene,
+                &detail,
+                theme.tokens.typography.scale.xs,
+                colors.text_dim,
+                transform.pre_translate((body.x0 + 12.0, body.y0 + 40.0).into()),
+                Some(f64_to_f32_lossy(body.width() - 24.0)),
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(pin, "")
+                    .hovered(self.last_cursor.is_some_and(|point| pin.contains(point)))
+                    .accessible_name(if item.pinned {
+                        "Unpin item"
+                    } else {
+                        "Pin item"
+                    })
+                    .icon(ui::icons::Icon::Star),
+            );
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(remove, "")
+                    .hovered(self.last_cursor.is_some_and(|point| remove.contains(point)))
+                    .accessible_name("Remove clipboard item")
+                    .icon(ui::icons::Icon::X),
+            );
+        }
+    }
+
     /// Hit rect for the back-chevron in the drill-in header. Click here
     /// pops `nav_stack`. Sized 32×32 with a small expansion for forgiving
     /// touch targets — the painted glyph is 24×24 inside.
@@ -16026,6 +17892,16 @@ impl ShellOverlayHost {
             st.bump();
         }
         let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
+        let share_result = if result.is_ok() {
+            self.wifi_secret_bridge.as_ref().map(|bridge| {
+                bridge(WifiSecretAction::Share {
+                    ssid: ssid.clone(),
+                    password: password.clone(),
+                })
+            })
+        } else {
+            None
+        };
         let mut st = chrome.borrow_mut();
         match result {
             Ok(()) => {
@@ -16038,7 +17914,13 @@ impl ShellOverlayHost {
                 st.quick_settings.wifi = true;
                 st.push_notification(
                     format!("Connected to {ssid}"),
-                    "This network is saved; the machine will rejoin it automatically.",
+                    if share_result.as_ref().is_some_and(Result::is_err) {
+                        "Saved on this device, but encrypted sharing is temporarily unavailable."
+                    } else if share_result.is_some() {
+                        "Saved and encrypted separately for each of your certified devices."
+                    } else {
+                        "This network is saved; the machine will rejoin it automatically."
+                    },
                 );
             }
             Err(e) => {
@@ -16054,6 +17936,58 @@ impl ShellOverlayHost {
             }
         }
         st.bump();
+    }
+
+    /// Use a credential from another certified device without ever putting it
+    /// into the visible password editor. A rejected saved secret leaves the
+    /// ordinary prompt in place so the person can correct it.
+    fn try_connect_with_shared_wifi_password(&self) -> bool {
+        let (Some(chrome), Some(bridge)) = (self.chrome.clone(), self.wifi_secret_bridge.as_ref())
+        else {
+            return false;
+        };
+        let Some(ssid) = chrome
+            .borrow()
+            .quick_settings
+            .wifi_password
+            .as_ref()
+            .map(|prompt| prompt.ssid.clone())
+        else {
+            return false;
+        };
+        let Ok(Some(password)) = bridge(WifiSecretAction::Lookup { ssid: ssid.clone() }) else {
+            return false;
+        };
+        if let Some(prompt) = chrome.borrow_mut().quick_settings.wifi_password.as_mut() {
+            prompt.connecting = true;
+            prompt.error = None;
+        }
+        let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
+        let mut state = chrome.borrow_mut();
+        match result {
+            Ok(()) => {
+                state.quick_settings.wifi_password = None;
+                for network in &mut state.quick_settings.wifi_networks {
+                    network.connected = network.ssid == ssid;
+                }
+                state.quick_settings.wifi = true;
+                state.push_notification(
+                    format!("Connected to {ssid}"),
+                    "Used the encrypted credential from one of your certified devices.",
+                );
+            }
+            Err(error) => {
+                tracing::warn!(target: "qos::os_actions", op = "connect_wifi", error = %error, "shared wifi credential was rejected");
+                if let Some(prompt) = state.quick_settings.wifi_password.as_mut() {
+                    prompt.connecting = false;
+                    prompt.error = Some(
+                        "The saved password no longer works. Enter the current password.".into(),
+                    );
+                }
+            }
+        }
+        state.bump();
+        true
     }
 
     /// Routes a key press into the passphrase field, if one is up.
@@ -17116,6 +19050,50 @@ mod wifi_password_tests {
                 .any(|n| n.ssid == "Cafe WiFi" && n.connected),
             "the list the user lands back on shows the network they just joined"
         );
+    }
+
+    #[test]
+    fn successful_join_shares_the_password_through_the_secret_bridge() {
+        let (mut host, _chrome, _) = host_on_wifi_pane(false);
+        let shared = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let observed = shared.clone();
+        host.set_wifi_secret_bridge(std::rc::Rc::new(move |action| match action {
+            WifiSecretAction::Share { ssid, password } => {
+                observed.borrow_mut().push((ssid, password));
+                Ok(None)
+            }
+            WifiSecretAction::Lookup { .. } => Ok(None),
+        }));
+        host.begin_wifi_password("Cafe WiFi");
+        for character in ["p", "w", "1"] {
+            press(&mut host, &ch(character));
+        }
+        press(&mut host, &Key::Named(NamedKey::Enter));
+        assert_eq!(
+            shared.borrow().as_slice(),
+            [("Cafe WiFi".to_string(), "pw1".to_string())]
+        );
+    }
+
+    #[test]
+    fn shared_password_connects_without_entering_the_visible_editor() {
+        let (mut host, chrome, recorder) = host_on_wifi_pane(false);
+        host.set_wifi_secret_bridge(std::rc::Rc::new(|action| match action {
+            WifiSecretAction::Lookup { ssid } if ssid == "Cafe WiFi" => {
+                Ok(Some("from-another-device".into()))
+            }
+            WifiSecretAction::Lookup { .. } | WifiSecretAction::Share { .. } => Ok(None),
+        }));
+        host.begin_wifi_password("Cafe WiFi");
+        assert!(host.try_connect_with_shared_wifi_password());
+        assert_eq!(
+            recorder.attempts.borrow().as_slice(),
+            [(
+                "Cafe WiFi".to_string(),
+                Some("from-another-device".to_string())
+            )]
+        );
+        assert!(chrome.borrow().quick_settings.wifi_password.is_none());
     }
 
     #[test]
