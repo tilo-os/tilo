@@ -1937,25 +1937,35 @@ fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
 
 /// One pill in the search card's filter band, shared by the kind chips
 /// and the "All" reset chip.
-#[allow(clippy::too_many_arguments)]
+#[derive(Clone, Copy)]
+struct FilterChipStyle {
+    text_size: f32,
+    fill: vello::peniko::Color,
+    text: vello::peniko::Color,
+}
+
 fn draw_filter_chip(
     scene: &mut Scene,
     transform: Affine,
     text_renderer: &mut TextRenderer,
     rect: Rect,
     label: &str,
-    text_size: f32,
-    fill: vello::peniko::Color,
-    text_color: vello::peniko::Color,
+    style: FilterChipStyle,
 ) {
     let shape = RoundedRect::from_rect(rect, rect.height() / 2.0);
-    scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-    let (lw, lh) = text_renderer.measure(label, text_size, None);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        style.fill,
+        None,
+        &shape,
+    );
+    let (lw, lh) = text_renderer.measure(label, style.text_size, None);
     text_renderer.draw_text(
         scene,
         label,
-        text_size,
-        text_color,
+        style.text_size,
+        style.text,
         transform.pre_translate(
             (
                 rect.x0 + (rect.width() - f64::from(lw)) / 2.0,
@@ -16039,13 +16049,15 @@ impl ShellOverlayHost {
                 text_renderer,
                 *rect,
                 choice,
-                14.0,
-                if selected {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
+                FilterChipStyle {
+                    text_size: 14.0,
+                    fill: if selected {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    text: theme.tokens.colors.text_primary,
                 },
-                theme.tokens.colors.text_primary,
             );
         }
         // USB is intentionally a real multi-select sheet, rather than a
@@ -16077,13 +16089,15 @@ impl ShellOverlayHost {
                 text_renderer,
                 *rect,
                 &label,
-                14.0,
-                if focused {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
+                FilterChipStyle {
+                    text_size: 14.0,
+                    fill: if focused {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    text: theme.tokens.colors.text_primary,
                 },
-                theme.tokens.colors.text_primary,
             );
         }
         if let Some(editor) = view.launcher_editor() {
@@ -16095,13 +16109,15 @@ impl ShellOverlayHost {
                     text_renderer,
                     name_rect,
                     self.portal_dialogs.launcher_name().unwrap_or(editor.name),
-                    14.0,
-                    if focused {
-                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                    } else {
-                        theme.tokens.colors.surfaces.base
+                    FilterChipStyle {
+                        text_size: 14.0,
+                        fill: if focused {
+                            theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                        } else {
+                            theme.tokens.colors.surfaces.base
+                        },
+                        text: theme.tokens.colors.text_primary,
                     },
-                    theme.tokens.colors.text_primary,
                 );
             }
             for (index, (label, rect)) in editor
@@ -16117,13 +16133,15 @@ impl ShellOverlayHost {
                     text_renderer,
                     *rect,
                     label,
-                    14.0,
-                    if selected {
-                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                    } else {
-                        theme.tokens.colors.surfaces.base
+                    FilterChipStyle {
+                        text_size: 14.0,
+                        fill: if selected {
+                            theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                        } else {
+                            theme.tokens.colors.surfaces.base
+                        },
+                        text: theme.tokens.colors.text_primary,
                     },
-                    theme.tokens.colors.text_primary,
                 );
             }
         }
@@ -16144,13 +16162,15 @@ impl ShellOverlayHost {
                 text_renderer,
                 *rect,
                 &label,
-                14.0,
-                if selected {
-                    theme.tokens.colors.accent[5].with_alpha_factor(0.26)
-                } else {
-                    theme.tokens.colors.surfaces.base
+                FilterChipStyle {
+                    text_size: 14.0,
+                    fill: if selected {
+                        theme.tokens.colors.accent[5].with_alpha_factor(0.26)
+                    } else {
+                        theme.tokens.colors.surfaces.base
+                    },
+                    text: theme.tokens.colors.text_primary,
                 },
-                theme.tokens.colors.text_primary,
             );
             if let Some(status) = &row.status {
                 text_renderer.draw_text(
@@ -16169,9 +16189,11 @@ impl ShellOverlayHost {
             text_renderer,
             layout.cancel,
             "Cancel",
-            14.0,
-            theme.tokens.colors.surfaces.base,
-            theme.tokens.colors.text_primary,
+            FilterChipStyle {
+                text_size: 14.0,
+                fill: theme.tokens.colors.surfaces.base,
+                text: theme.tokens.colors.text_primary,
+            },
         );
         draw_filter_chip(
             scene,
@@ -16179,9 +16201,11 @@ impl ShellOverlayHost {
             text_renderer,
             layout.confirm,
             view.confirm_label(),
-            14.0,
-            theme.tokens.colors.accent[5],
-            theme.tokens.colors.text_primary,
+            FilterChipStyle {
+                text_size: 14.0,
+                fill: theme.tokens.colors.accent[5],
+                text: theme.tokens.colors.text_primary,
+            },
         );
     }
 
@@ -17549,9 +17573,11 @@ impl ShellOverlayHost {
                 text_renderer,
                 rect,
                 &label,
-                chip_text_size,
-                if is_active { active_fill } else { idle_fill },
-                if is_active { active_text } else { idle_text },
+                FilterChipStyle {
+                    text_size: chip_text_size,
+                    fill: if is_active { active_fill } else { idle_fill },
+                    text: if is_active { active_text } else { idle_text },
+                },
             );
             match i {
                 0 => self.search_all_chip_rect = rect,
