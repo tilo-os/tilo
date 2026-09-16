@@ -2396,14 +2396,12 @@ impl TopBarChrome {
             return;
         }
         if self.tray_pill_rect.contains(p) {
-            state.overlays.quick_settings = !state.overlays.quick_settings;
-            state.bump();
+            state.toggle_quick_settings();
             *handled = true;
             return;
         }
         if self.media_indicator_rect.contains(p) {
-            state.overlays.quick_settings = true;
-            state.bump();
+            state.open_quick_settings();
             *handled = true;
             return;
         }
@@ -2763,7 +2761,8 @@ impl TopBarChrome {
                     }
                     Self::CONTROL_WORKSPACE_SETTINGS => state.toggle_workspace_settings(),
                     Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => {
-                        state.overlays.quick_settings = !state.overlays.quick_settings;
+                        state.toggle_quick_settings();
+                        return true;
                     }
                     Self::CONTROL_COLLABORATORS => {
                         state.overlays.collaborators = !state.overlays.collaborators;
