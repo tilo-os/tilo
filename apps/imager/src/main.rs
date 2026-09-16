@@ -96,10 +96,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let text_scale = parse_value_arg(&args, "--text-scale")
             .as_deref()
             .and_then(parse_text_scale);
+        let theme = standalone_shot_theme(text_scale);
         std::fs::create_dir_all(&dir).ok();
         for (i, scenario) in imager::SHOT_SCENARIOS.iter().enumerate() {
             let out = dir.join(format!("{:02}-{}.png", i + 1, scenario));
-            render_scenario(scenario, viewport, text_scale, &out)?;
+            render_scenario(scenario, viewport, &theme, &out)?;
         }
         return Ok(());
     }
@@ -146,7 +147,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_scenario(
         args.scenario.as_deref().unwrap_or("source"),
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        args.text_scale,
+        &ui::launch::shot_theme(args),
         out,
     )
     .map_err(|error| LaunchError::Operation(error.to_string()))
@@ -177,23 +178,14 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 fn render_scenario(
     scenario: &str,
     viewport: (u32, u32),
-    text_scale: Option<f32>,
+    theme: &Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
-    // so the same frame can be graded in both light and dark (default dark).
-    let mut theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    if let Some(scale) = text_scale {
-        theme = theme.with_text_scale(scale);
-    }
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
@@ -214,22 +206,20 @@ fn render_scenario(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -251,6 +241,26 @@ fn render_scenario(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("imager: wrote {} shot to {}", scenario, out.display());
     Ok(())
+}
+
+fn standalone_shot_theme(text_scale: Option<f32>) -> Theme {
+    let theme = std::env::var("QOS_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark)
+        .with_text_scale(text_scale.unwrap_or(1.0));
+    let reduced = [
+        "QOS_SHOTS_REDUCE_MOTION",
+        "QOS_A11Y_REDUCE_MOTION",
+        "QOS_REDUCE_MOTION",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var(key).ok())
+    .any(|value| {
+        let value = value.trim();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    });
+    theme.with_reduce_motion(reduced)
 }
 
 fn parse_text_scale(value: &str) -> Option<f32> {
