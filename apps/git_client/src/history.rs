@@ -42,6 +42,19 @@ struct CommitRowLayout {
     text_x: f64,
 }
 
+/// Resources and measured bounds shared by the commit-detail paint pass.
+struct HistoryDetailPaintCtx<'a> {
+    scene: &'a mut Scene,
+    text: &'a mut TextRenderer,
+    transform: Affine,
+    theme: &'a Theme,
+    area: Rect,
+    commit: &'a Commit,
+    x: f64,
+    width: f32,
+    pad: f64,
+}
+
 pub struct HistoryView;
 
 impl HistoryView {
@@ -342,40 +355,53 @@ impl HistoryView {
         let x = area.x0 + pad;
         let w = (area.width() - pad * 2.0) as f32;
 
-        y = Self::draw_detail_summary(scene, tr, t, theme, commit, x, y, w);
-        y = Self::draw_detail_author(scene, tr, t, theme, commit, x, y);
-        y = Self::draw_detail_meta_grid(scene, tr, t, theme, commit, x, y, w);
+        let mut ctx = HistoryDetailPaintCtx {
+            scene,
+            text: tr,
+            transform: t,
+            theme,
+            area,
+            commit,
+            x,
+            width: w,
+            pad,
+        };
+
+        y = Self::draw_detail_summary(&mut ctx, y);
+        y = Self::draw_detail_author(&mut ctx, y);
+        y = Self::draw_detail_meta_grid(&mut ctx, y);
 
         y += 8.0;
-        draw::hline(scene, t, y, x, area.x1 - pad, c.border_standard);
+        draw::hline(
+            ctx.scene,
+            ctx.transform,
+            y,
+            ctx.x,
+            ctx.area.x1 - ctx.pad,
+            c.border_standard,
+        );
         y += 14.0;
 
-        y = Self::draw_detail_body(scene, tr, t, theme, commit, x, y, w);
-        Self::draw_detail_files(scene, tr, t, theme, area, commit, x, y, w, pad);
+        y = Self::draw_detail_body(&mut ctx, y);
+        Self::draw_detail_files(&mut ctx, y);
 
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
     /// The commit summary line (part of [`Self::draw_detail`]). Returns the
     /// `y` for the next section.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
     )]
-    fn draw_detail_summary(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
+    fn draw_detail_summary(ctx: &mut HistoryDetailPaintCtx<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let commit = ctx.commit;
+        let x = ctx.x;
+        let w = ctx.width;
         let c = &theme.tokens.colors;
         draw::text_weighted(
             scene,
@@ -398,15 +424,13 @@ impl HistoryView {
 
     /// The author block with avatar (part of [`Self::draw_detail`]).
     /// Returns the `y` for the next section.
-    fn draw_detail_author(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-    ) -> f64 {
+    fn draw_detail_author(ctx: &mut HistoryDetailPaintCtx<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let commit = ctx.commit;
+        let x = ctx.x;
         let c = &theme.tokens.colors;
         let acolor = draw::author_color(theme, &commit.author_email);
         draw::avatar(scene, tr, t, theme, x, y, 32.0, &commit.author_name, acolor);
@@ -438,56 +462,22 @@ impl HistoryView {
 
     /// The commit / date / parents / refs metadata grid (part of
     /// [`Self::draw_detail`]). Returns the `y` for the next section.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    fn draw_detail_meta_grid(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
+    fn draw_detail_meta_grid(ctx: &mut HistoryDetailPaintCtx<'_>, y: f64) -> f64 {
+        let commit = ctx.commit;
         let short: String = commit.id.chars().take(12).collect();
-        let mut y = meta_row(scene, tr, t, theme, x, y, w, "commit", &short, true);
-        y = meta_row(scene, tr, t, theme, x, y, w, "date", &commit.when, false);
+        let mut y = meta_row(ctx, y, "commit", &short, true);
+        y = meta_row(ctx, y, "date", &commit.when, false);
         if !commit.parents.is_empty() {
             let parents: Vec<String> = commit
                 .parents
                 .iter()
                 .map(|p| p.chars().take(7).collect())
                 .collect();
-            y = meta_row(
-                scene,
-                tr,
-                t,
-                theme,
-                x,
-                y,
-                w,
-                "parents",
-                &parents.join(", "),
-                true,
-            );
+            y = meta_row(ctx, y, "parents", &parents.join(", "), true);
         }
         if !commit.refs.is_empty() {
             let refs: Vec<String> = commit.refs.iter().map(|r| r.name.clone()).collect();
-            y = meta_row(
-                scene,
-                tr,
-                t,
-                theme,
-                x,
-                y,
-                w,
-                "refs",
-                &refs.join(", "),
-                false,
-            );
+            y = meta_row(ctx, y, "refs", &refs.join(", "), false);
         }
         y
     }
@@ -496,23 +486,17 @@ impl HistoryView {
     /// Returns the `y` for the next section (unchanged when there is no
     /// body).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
     )]
-    fn draw_detail_body(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        commit: &Commit,
-        x: f64,
-        y: f64,
-        w: f32,
-    ) -> f64 {
+    fn draw_detail_body(ctx: &mut HistoryDetailPaintCtx<'_>, y: f64) -> f64 {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let commit = ctx.commit;
+        let x = ctx.x;
+        let w = ctx.width;
         let c = &theme.tokens.colors;
         if commit.body.is_empty() {
             return y;
@@ -534,25 +518,19 @@ impl HistoryView {
 
     /// The changed-files list, if any (part of [`Self::draw_detail`]).
     #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
-    #[allow(
         clippy::many_single_char_names,
         reason = "t/x/y/w/c are the standard graphics convention: transform, position, measured width, colour tokens"
     )]
-    fn draw_detail_files(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        area: Rect,
-        commit: &Commit,
-        x: f64,
-        mut y: f64,
-        w: f32,
-        pad: f64,
-    ) {
+    fn draw_detail_files(ctx: &mut HistoryDetailPaintCtx<'_>, mut y: f64) {
+        let scene = &mut *ctx.scene;
+        let tr = &mut *ctx.text;
+        let t = ctx.transform;
+        let theme = ctx.theme;
+        let area = ctx.area;
+        let commit = ctx.commit;
+        let x = ctx.x;
+        let w = ctx.width;
+        let pad = ctx.pad;
         let c = &theme.tokens.colors;
         if commit.files.is_empty() {
             return;
@@ -610,22 +588,18 @@ impl HistoryView {
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "internal draw-step split of an over-length function"
-)]
 fn meta_row(
-    scene: &mut Scene,
-    tr: &mut TextRenderer,
-    t: Affine,
-    theme: &Theme,
-    x: f64,
+    ctx: &mut HistoryDetailPaintCtx<'_>,
     y: f64,
-    _w: f32,
     label: &str,
     value: &str,
     mono: bool,
 ) -> f64 {
+    let scene = &mut *ctx.scene;
+    let tr = &mut *ctx.text;
+    let t = ctx.transform;
+    let theme = ctx.theme;
+    let x = ctx.x;
     let c = &theme.tokens.colors;
     draw::text(scene, tr, t, label, 12.0, c.text_dim, x, y, None);
     if mono {
