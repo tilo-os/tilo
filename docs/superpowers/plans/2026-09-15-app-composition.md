@@ -92,40 +92,9 @@ Execute the SearchField prerequisite and each app as separate reviewed tasks. So
 
 **Acceptance:** Blank trailing 56px disappears at 480; header, notice and first row do not overlap with import progress or errors. Pointer/keyboard Retry/Dismiss and import remain reachable. Capture empty, detail and import/error at 480/800.
 
-### Task 4: Disclose management controls
+### Task 4: Disclose management controls (umbrella; execute Tasks19,20)
 
-#### Firewall
-
-**Files:** `apps/firewall/src/app.rs`; existing app tests.
-
-**Current:** `layout_center` (~545) fixes narrow summary at 188px and bottom form at `FORM_H_NARROW` (226px), `draw_filter` repeats Rules beside Rules tab. `Layout`, `relayout`, `draw_form`, `handle_key`, `accessibility`, `perform_semantic_action` and existing form action dispatch are relevant.
-
-- [ ] Compact summary to measured title/chips/status groups; keep zone active-state action. Remove redundant Rules label when the tab already identifies the section.
-- [ ] Add `rule_form_open` view state and a clearly named Add rule Button. When closed, table fills the released space; when open use existing form in a bounded panel/modal with Save/Add and Cancel. Retain partially entered draft on temporary close if existing behavior retained it; Escape never applies a rule.
-- [ ] One form geometry drives paint and hit targets. Hide closed form controls from traversal and accessibility; focus first field on open and trigger on close. Route submit to existing rule action and retain Apply/backend confirmation behavior.
-
-**Acceptance:** More than baseline four narrow rules visible; all remaining rows scroll. Add rule by click and keyboard, cancel without mutation, submit through canonical action, Rules/Services switching and active zone setting. Capture closed/open form and backend unavailable state at 480 and 800×480.
-
-#### Windows
-
-**Files:** `apps/windows/src/app.rs`, `strings.rs`/localization resources for visible labels; no provider behavior changes.
-
-- [ ] In `WindowsApp::draw` (~1485), place application catalogue and Add app before secondary appliance details. Keep a compact meaningful appliance status plus Manage Windows disclosure; setup/error states offer their corrective action without dumping all maintenance copy before apps.
-- [ ] Add local `appliance_details_open` and `application_details_open` state. Move runner/capsule/access/management metadata to explicit details section; primary selected-app Open remains prominent. Reuse all existing Button instances and signals, `apply_control_signals`, `queue_live_control`, `invoke_appliance_operation` and application operation paths.
-- [ ] Update `sidebar_content_bottom`, `clamp_sidebar_scroll`, `deactivate_selection_controls`, `children`/`children_mut`, `test_rects`, `handle_event`, `accessibility`, `perform_semantic_action` together. Closed branches clear old button rectangles and aren't focusable. Preserve `compact_detail`, selection and pending confirmation/error recovery.
-- [ ] Enumerate existing maintenance commands in the test (Choose ISO, recovery desktop, start/restart/suspend/resume/shutdown/connect/update/revoke, capsule/VM confirmation, retry/escalation/uninstall/delete) and verify each is still reachable in its applicable state. Disclosure must not bypass destructive confirmation or execute VM operations on opening.
-
-**Acceptance:** First catalogue entry moves above baseline y347; choose/Open are primary. Open disclosure by pointer/keyboard, traverse all applicable commands, close/Escape and recover focus. Test offline/provider recording fixture; capture normal, vm-detail and error-compact. Controller owns Linux VM run and restoration to initial suspended state.
-
-
-#### Confirmed scale findings in the same app pass
-
-After shared measured components land, close these existing findings alongside the normal-size work. Additional app-local source files named here are in scope. Preserve the base-versus-resolved font contract and use one geometry model for paint and interaction.
-
-| App | Additional work | Verification |
-|---|---|---|
-| 4 Firewall | `app.rs:478/545/704` scaled summary/chips/filter tabs/form labels. Add measured automatic row/group height to planned disclosure geometry. | Open form and every field at2×; Rules/Services/zone and canonical submit. |
-| 4 Windows | No new corrected review finding supplied; verify its scaled management disclosure after planned normal repair. | Record actual Linux evidence; do not invent additional defects. |
+Firewall and Windows are separate app-owned implementation/review passes. Both must pass before Task4 closes. Read-only preflight: `.superpowers/app-ui-2026-09-15/management-disclosure-preflight.md`.
 
 ### Task 5: Group related text
 
@@ -436,6 +405,54 @@ Retain the existing shared active draft. Copying saved content into its URL/Body
 - [ ] Preserve typed filter mode/clear affordance, launcher palette dispatch, keyboard behavior, accessibility and caller-authored outer widths. This is an internal launcher slot measurement correction, not a global token/padding change or app-specific placeholder shortening. Keep full text available semantically.
 - [ ] Automatic minimum height must contain the actual label/chip at supported scales; bounded explicitly small widths may elide the input label, with no chip/input collision or negative rectangle. Do not shrink fonts or change all inputs.
 - [ ] Meaningful RED/GREEN geometry tests at1×/2× and platform shortcut labels, narrow/wide/resize, empty/typed filter clear and launcher activation. Verify actual painted/child rectangles and action callback, not only a replicated formula. Run affected SearchField tests; capture representative launcher at first frame normal/2×. Independent shared prerequisite review before Containers uses it.
+
+### Task 19: Firewall rule-form disclosure and reachable rules
+
+#### Firewall
+
+**Files:** `apps/firewall/src/app.rs`; existing app tests.
+
+**Current:** `layout_center` (~545) fixes narrow summary at 188px and bottom form at `FORM_H_NARROW` (226px), `draw_filter` repeats Rules beside Rules tab. `Layout`, `relayout`, `draw_form`, `handle_key`, `accessibility`, `perform_semantic_action` and existing form action dispatch are relevant.
+
+- [ ] Compact summary to measured title/chips/status groups; keep zone active-state action. Remove redundant Rules label when the tab already identifies the section.
+- [ ] Add `rule_form_open` view state and a clearly named Add rule Button. When closed, table fills the released space; when open use existing form in a bounded panel/modal with Save/Add and Cancel. Retain partially entered draft on temporary close if existing behavior retained it; Escape never applies a rule.
+- [ ] One form geometry drives paint and hit targets. Hide closed form controls from traversal and accessibility; focus first field on open and trigger on close. Route submit to existing rule action and retain Apply/backend confirmation behavior.
+
+**Acceptance:** More than baseline four narrow rules visible; all remaining rows scroll. Add rule by click and keyboard, cancel without mutation, submit through canonical action, Rules/Services switching and active zone setting. Capture closed/open form and backend unavailable state at 480 and 800×480.
+
+
+#### Controller source rulings
+
+- Current rule rows stop at `take(max_rows)` and there is no wheel path. The original requirement that all remaining rules scroll therefore needs real local rule scroll state, stable rule IDs, clipped visible rows, keyboard ensure-visible and matching pointer/semantic actions. Do not make model/backend/action ownership changes.
+- The complete local form draft survives Cancel/Escape. Closed form has zero input/segment/action geometry, no exposed children/semantics and no forwarded events; closed Enter cannot submit. Opening focuses the relevant first editable field and closing returns focus to Add rule.
+- Status currently painted inside the permanent form must move to the persistent measured status/summary group so closing the form cannot hide validation, deletion confirmation or backend results. Preserve existing confirmation and retry logic.
+- Add-rule/open/close/submit and existing visible form/row actions need real keyboard/semantic parity; current root only handles retry semantically. Submit stays `add_rule_from_form -> perform_action` through canonical add_rule_action. Invalid input stays open without document mutation; no direct config/backend bypass.
+- Include measured summary/chips/tabs/form label/group/row heights for true2×. Preserve user fonts; bounded form scroll must keep every field/action reachable at short height. Production scope app.rs and inline tests; fixtures must not apply host firewall changes.
+- Cover default closed/open480×900 and800×480, >viewport filtered rules through last stableID, draft/head preservation oncancel, valid/invalid canonical submit, closedEnterinert, zone/Rules/Services/backendunavailable, and true2× group/target bounds. Read preflight for current seams and test inventory.
+
+### Task 20: Windows catalogue-first management disclosures
+
+#### Windows
+
+**Files:** `apps/windows/src/app.rs`, `strings.rs`/localization resources for visible labels; no provider behavior changes.
+
+- [ ] In `WindowsApp::draw` (~1485), place application catalogue and Add app before secondary appliance details. Keep a compact meaningful appliance status plus Manage Windows disclosure; setup/error states offer their corrective action without dumping all maintenance copy before apps.
+- [ ] Add local `appliance_details_open` and `application_details_open` state. Move runner/capsule/access/management metadata to explicit details section; primary selected-app Open remains prominent. Reuse all existing Button instances and signals, `apply_control_signals`, `queue_live_control`, `invoke_appliance_operation` and application operation paths.
+- [ ] Update `sidebar_content_bottom`, `clamp_sidebar_scroll`, `deactivate_selection_controls`, `children`/`children_mut`, `test_rects`, `handle_event`, `accessibility`, `perform_semantic_action` together. Closed branches clear old button rectangles and aren't focusable. Preserve `compact_detail`, selection and pending confirmation/error recovery.
+- [ ] Enumerate existing maintenance commands in the test (Choose ISO, recovery desktop, start/restart/suspend/resume/shutdown/connect/update/revoke, capsule/VM confirmation, retry/escalation/uninstall/delete) and verify each is still reachable in its applicable state. Disclosure must not bypass destructive confirmation or execute VM operations on opening.
+
+**Acceptance:** First catalogue entry moves above baseline y347; choose/Open are primary. Open disclosure by pointer/keyboard, traverse all applicable commands, close/Escape and recover focus. Test offline/provider recording fixture; capture normal, vm-detail and error-compact. Controller owns the Linux VM run: check its fresh state first and restore only a power transition this task itself made; do not suspend a VM started by concurrent work.
+
+
+
+#### Controller source rulings
+
+- Current app-detail surface has no scroll state; only sidebar_scroll handles wheel. Add a separate local bounded detail scroll path so disclosed application commands are reachable at narrow/short heights. All paint/button/hit/semantic geometry uses that same offset/viewport; preserve local selected app/route/pending confirmations.
+- Catalogue/Add app/pending destination choice precede compact appliance summary; setup/error correction remains visible. Primary selected-app Open/Open file/Open in VM and route/recommendation controls stay available; secondary metadata/maintenance moves into explicit disclosures.
+- Reuse all current retained controls and stable IDs. Clear conditional rectangles before placement; children/event routing/semantics include only current visible/applicable branches, including hidden sidebar in compact detail. Keep per-command state in retained objects instead of recreating them during events.
+- Opening disclosure is pure local state: no command signals, provider calls or confirmation resets. Delete modal retains first priority; Escape closes innermost disclosure beforecompactBack and restores triggerfocus.
+- Preserve all27 existing command IDs/routes and their resource confirmation policies, local escalation/uninstall safeguards and phrase-confirmed delete. Scope app.rs/visiblelabelstrings/localization only; no provider/actions/appliance behavior changes. Recording/offline fixtures only; Linux/controller validation checks fresh VM state and restores only its own power transitions.
+- Test applicability/visibility for every retained command, actual keyboard/semantic disclosure and focus return, no hiddencontrolactivation, detail scroll to last action480×900/800×480, provider refresh/selection/resize, and current confirmation contracts. Capture normal/vm-detail/errorcompact and true2×; no Linux behavior claim from macOS compile alone. Read preflight command inventory and source seams.
 
 ## Controller validation contract for every task
 
