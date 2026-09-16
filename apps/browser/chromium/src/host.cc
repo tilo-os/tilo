@@ -321,8 +321,14 @@ int RunHost(int argc,char** argv) {
   CefString(&settings.root_cache_path)=profile;CefString(&settings.cache_path)=profile+"/default";
   CefString(&settings.log_file)=profile+"/cef.log";
 #if defined(OS_MAC)
-  auto executable=std::filesystem::canonical(argv[0]);
-  CefString(&settings.browser_subprocess_path)=(executable.parent_path().parent_path()/"Frameworks/Browser Engine Helper.app/Contents/MacOS/Browser Engine Helper").string();
+  const auto executable=std::filesystem::canonical(argv[0]);
+  const auto contents=executable.parent_path().parent_path();
+  // CEF defaults to the outermost app. Our runtime can be nested inside the
+  // Rust Browser.app, whose Frameworks directory does not contain CEF directly.
+  // Resolve from this executable so standalone and packaged layouts agree.
+  CefString(&settings.main_bundle_path)=contents.parent_path().string();
+  CefString(&settings.framework_dir_path)=(contents/"Frameworks/Chromium Embedded Framework.framework").string();
+  CefString(&settings.browser_subprocess_path)=(contents/"Frameworks/Browser Engine Helper.app/Contents/MacOS/Browser Engine Helper").string();
 #endif
   if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
   std::atomic<bool> stop{false};std::thread reader([&]{ReadCommands(stop);});
