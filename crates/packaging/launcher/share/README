@@ -8,5 +8,3 @@ linking seccompiler), generate it on the target host with:
 
     cargo run -p qos-launcher --bin qos-launcher --features dump-seccomp -- \
         --dump-seccomp > qos-launcher/share/qos-default.bpf
-
-(The dump-seccomp helper is a TODO follow-up.)

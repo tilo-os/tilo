@@ -343,8 +343,7 @@ pub fn op_class_is_revertible(op: OpClass) -> bool {
     }
 }
 
-/// Legible in environments without an emoji font — CLAUDE.md mandates
-/// ASCII/Unicode-symbol fallbacks over pictographic emoji.
+/// Text symbols remain legible in environments without an emoji font.
 pub fn op_class_glyph(op: OpClass) -> &'static str {
     match op {
         OpClass::Splice => "\u{00b1}",   // ±
@@ -355,7 +354,7 @@ pub fn op_class_glyph(op: OpClass) -> &'static str {
         OpClass::Restore => "\u{21b6}",    // ↶
         OpClass::Govern => "\u{2605}",     // ★
         OpClass::Compaction => "\u{2702}", // ✂ — host-driven horizon
-        // Ring reads as a compliance seal, not a lock (banned emoji).
+        // The ring reads as a compliance seal rather than a lock.
         OpClass::Redact => "\u{229A}", // ⊚ — redaction seal
     }
 }

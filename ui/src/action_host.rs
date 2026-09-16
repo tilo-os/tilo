@@ -1,9 +1,7 @@
 //! Framework-owned action dispatch every app gets by default.
 //!
-//! Adopting the qOS [action model](qos_actions) used to mean each app
-//! copy-pasting the same undo-bracket, encode-and-dispatch,
-//! last-dispatched, and no-op-transport plumbing. Hoisted here so an app
-//! declares only its own domain and embeds one [`ActionHost`] field.
+//! [`ActionHost`] centralizes dispatch, undo-boundary, and test-observation
+//! bookkeeping so an app declares only its own action domain.
 //!
 //! ```ignore
 //! struct MyApp { actions: ui::ActionHost, /* … */ }
@@ -23,9 +21,7 @@ use qos_actions::{
     Action, ActionContext, ActionEnvelope, EncodedAction, OptimisticError, OptimisticQueue,
 };
 
-/// Framework-owned action dispatch an app embeds as a single field, in
-/// place of hand-rolled `perform_action`/`DiscardTransport`/
-/// `last_dispatched` boilerplate.
+/// Framework-owned action dispatch an app embeds as a single field.
 ///
 /// The undo boundary this brackets carries no author: what crosses this
 /// seam is heads, not identity. It's still reachable by interactive Ctrl+Z

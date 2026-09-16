@@ -1,9 +1,7 @@
 //! `NumberInput` — a compact, click-to-type numeric field with steppers.
 //!
-//! A number you can nudge with `−`/`+` buttons or click and type
-//! directly; always parsed, validated and clamped to a range. Before this
-//! widget every inspector (font size, line spacing, opacity, margins, …)
-//! hand-rolled it.
+//! A number you can nudge with `−`/`+` buttons or click and type directly;
+//! values are parsed, validated, and clamped to a range.
 //!
 //! Two stepper buttons flank an embedded local-mode [`TextInput`].
 //! Clicking the field focuses and pre-selects it; **Enter**, a stepper

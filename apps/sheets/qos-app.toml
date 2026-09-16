@@ -7,14 +7,7 @@
 # read+write on the directories the user opens documents from. It does
 # NOT get the account vault — only Mail and Settings do.
 #
-# Pack and install:
-#
-#     cargo build -p sheets -p pkg-cli -p install
-#     mkdir -p target/qpkg/sheets/bin
-#     cp target/debug/sheets target/qpkg/sheets/bin/sheets
-#     target/debug/qos-pkg pack --manifest apps/sheets/qos-app.toml \
-#         --payload target/qpkg/sheets --output target/sheets.qpkg
-#     target/debug/qos-install install target/sheets.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.sheets"
@@ -24,8 +17,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

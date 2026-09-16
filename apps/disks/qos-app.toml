@@ -7,14 +7,7 @@
 # read+exec on the host bin dirs (lsblk/smartctl/udisksctl/mount/mkfs)
 # and the block device nodes it benchmarks.
 #
-# Pack and install:
-#
-#     cargo build -p disks -p pkg-cli -p install
-#     mkdir -p target/qpkg/disks/bin
-#     cp target/debug/disks target/qpkg/disks/bin/disks
-#     target/debug/qos-pkg pack --manifest apps/disks/qos-app.toml \
-#         --payload target/qpkg/disks --output target/disks.qpkg
-#     target/debug/qos-install install target/disks.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.disks"
@@ -24,8 +17,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

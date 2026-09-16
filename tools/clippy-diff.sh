@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # Reject Clippy diagnostics introduced since an exact comparison commit.
 #
-# A changed package can carry historical lint debt, and a dependency change can
-# select otherwise untouched reverse dependencies. Raw `deny` therefore makes
-# an unrelated edit responsible for every old diagnostic in those crates. This
-# script lints the same package set at the base and at HEAD, then compares stable
-# diagnostic fingerprints. Compiler failures are always fatal; Clippy sites may
-# disappear, but new sites may not appear.
+# Compare stable Clippy diagnostic fingerprints for the same package set at the
+# base and HEAD. Compiler failures are fatal; existing sites may disappear, but
+# new sites may not appear.
 
 set -uo pipefail
 

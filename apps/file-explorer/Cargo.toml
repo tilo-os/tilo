@@ -40,10 +40,8 @@ runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 uuid.workspace = true
 sha2.workspace = true
-# The one shared thumbnail generator + cache. `pdf` on (real first-page PDF
-# previews; pure-Rust to build — pdfium loads dynamically at runtime, falling
-# back to a badge when absent). Video stays a badge here so the hermetic build
-# and `--shots` need no gstreamer stack.
+# Shared thumbnail generator and cache. PDF previews use dynamically loaded
+# pdfium and fall back to a badge; video remains a badge in this crate.
 thumbnail = { path = "../../crates/thumbnail", features = ["pdf"] }
 trash = "5.2.6"
 open.workspace = true
@@ -59,9 +57,7 @@ icu_locale = "2.3.0"
 # manager can show each workspace file's sync/hydration state.
 xattr = "1.6.1"
 libc.workspace = true
-# Only used by the `--shots` demo seeds to synthesise real sample files
-# (gradient images, an EPUB with a cover) so a headless thumbnail frame renders
-# genuine previews rather than mocks.
+# Used by `--shots` demo seeds to create sample images and an EPUB cover.
 image = { workspace = true, features = ["png", "jpeg"] }
 zip.workspace = true
 tar.workspace = true

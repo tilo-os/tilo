@@ -143,7 +143,7 @@ acceptance record.
 
 ## Source documents
 
-- Product direction: `~/Development/quickdesktop-planning/`.
+- Product direction: [`docs/product.md`](product.md).
 - Interaction and component rules: [`ui/HIG.md`](../ui/HIG.md).
 - Shell keyboard/containment map:
   [`docs/shell-navigation-keyboard-map.md`](shell-navigation-keyboard-map.md).

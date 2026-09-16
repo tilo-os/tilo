@@ -6,10 +6,8 @@
 //! app, over its own `wl_data_device`/`zwp_primary_selection_device_v1`
 //! connection), or an in-process fallback when neither exists.
 //!
-//! The fallback is the bug this module exists to fix — it round-trips inside
-//! one process, so a test passes while cross-process copy is silently dead —
-//! so it now announces itself: the first fallback copy or paste logs a
-//! warning naming it.
+//! The in-process fallback cannot copy across processes, so its first copy or
+//! paste logs a warning.
 //!
 //! `arboard`'s Wayland path needs `zwlr_data_control_manager_v1`, a
 //! clipboard-*manager* protocol qOS deliberately withholds from sandboxed

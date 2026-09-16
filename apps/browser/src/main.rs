@@ -171,7 +171,7 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
 
 #[allow(
     clippy::too_many_lines,
-    reason = "The explicit visual-audit command routing keeps each deterministic state discoverable."
+    reason = "the deterministic screenshot command routing is kept together"
 )]
 fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
     if let Some(out) = args.value("--shots-live") {

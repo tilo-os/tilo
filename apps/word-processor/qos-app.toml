@@ -6,14 +6,7 @@
 # Beyond the system read profile it needs, as a consented capability:
 # read+write on the directories the user opens documents from.
 #
-# Pack and install:
-#
-#     cargo build -p word-processor -p pkg-cli -p install
-#     mkdir -p target/qpkg/word-processor/bin
-#     cp target/debug/word-processor target/qpkg/word-processor/bin/word-processor
-#     target/debug/qos-pkg pack --manifest apps/word-processor/qos-app.toml \
-#         --payload target/qpkg/word-processor --output target/word-processor.qpkg
-#     target/debug/qos-install install target/word-processor.qpkg --allow-self-signed
+
 
 [package]
 id       = "dev.qos.word-processor"
@@ -23,8 +16,6 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "qos-runtime/2026.07"
 
-# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
-# so the shipped binaries genuinely require AVX2/BMI2/FMA.
 [package.isa]
 x86_64 = "v3"
 

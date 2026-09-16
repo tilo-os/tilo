@@ -454,6 +454,19 @@ proof that an external device, network service, or codec works.
 
 ## CI integration
 
-The `shots --mode offscreen` flow runs cleanly in CI (no display, no GPU forwarding) as long as the runner has a recent Mesa + a software wgpu fallback. The compositor's `--backend headless` does the same thing for live-binary tests.
+The `shots --mode offscreen` flow runs cleanly in CI (no display, no GPU
+forwarding) as long as the runner has a recent Mesa plus a software wgpu
+fallback. The compositor's `--backend headless` does the same thing for
+live-binary tests.
 
-In distrobox locally: `distrobox enter my-distrobox -- bash -c 'cd /home/quinten/Development/quickdesktop && cargo test -p shell --test control_socket_test -- --ignored --test-threads 1'` — runs the full integration suite under `--ignored` (those tests spawn the binary themselves; opt-in via `--ignored` because they currently require a Wayland session for the legacy winit backend, but will work fully headless once the `--backend headless` worker lands).
+The control-socket integration test is ignored by default because its native
+compositor opens a winit window. Run it from the repository checkout inside a
+desktop session (or enter the development container first):
+
+```bash
+cargo build -p shell
+cargo test -p shell --test control_socket_test -- --ignored --test-threads 1
+```
+
+The test spawns the binary itself. It is intentionally separate from the
+offscreen lanes until the native compositor can run without a host display.

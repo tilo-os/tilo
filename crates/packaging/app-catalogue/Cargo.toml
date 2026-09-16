@@ -37,8 +37,7 @@ reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 rustls.workspace = true
 
 [dev-dependencies]
-# The end-to-end test packs and publishes a real .qpkg, then installs it
-# with the real installer — no part of the path is stubbed.
+# The end-to-end test packs, publishes, and installs a .qpkg.
 pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }

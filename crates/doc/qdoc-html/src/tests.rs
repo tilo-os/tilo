@@ -55,8 +55,6 @@ fn count(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()
 }
 
-// ---- required tests ---------------------------------------------------------
-
 #[test]
 fn heading_paragraph_bold_run_emits_h1_strong_and_escaped_text() {
     // A heading, then a paragraph whose first word is bold and which contains a
@@ -202,8 +200,6 @@ fn script_in_text_is_escaped_no_injection() {
         "escaped closing tag:\n{html}"
     );
 }
-
-// ---- additional coverage ----------------------------------------------------
 
 #[test]
 fn heading_levels_map_to_h1_through_h6() {

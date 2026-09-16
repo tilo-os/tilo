@@ -1,11 +1,9 @@
-//! Offscreen shots for the two `TextInput` capabilities added for the
-//! hand-rolled-UI migration: the **multiline** mode (soft-wrapped rows +
-//! cross-line selection + caret) and the **secret** mode (masked bullets, with
+//! Offscreen shots for `TextInput`'s **multiline** mode (soft-wrapped rows,
+//! cross-line selection, and caret) and **secret** mode (masked bullets, with
 //! a revealed variant for contrast).
 //!
-//! Every widget renders through its real five-pass pipeline; the selection and
-//! caret come from the production `draw` path, not private pokes (only
-//! `set_selection`, a public API, arms the highlight for the still frame).
+//! The shots use the normal five-pass pipeline. `set_selection` only prepares
+//! the public selection state for the still frame.
 //!
 //! Run:  `cargo run -p ui --example ui-shots -- textinput_ext_shots`
 //! Out:  `$TEXTINPUT_EXT_SHOTS_OUT` (default `target/textinput_ext_shots`)
@@ -37,9 +35,7 @@ fn label(scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, s: &str, x: f6
 
 #[allow(
     clippy::too_many_lines,
-    reason = "a shots scene is a straight-line recipe — build the widgets, lay them \
-              out, paint, save. Splitting it hides the order the frames are produced \
-              in, which is the one thing this file exists to show"
+    reason = "the scene setup follows its frame-construction order"
 )]
 pub fn run(_args: &[String]) {
     let dir = std::env::var("TEXTINPUT_EXT_SHOTS_OUT")

@@ -37,11 +37,8 @@
 //! End-to-end acceptance test for the export: what lands in the file has
 //! to be the user's footage.
 //!
-//! The bug this exists to catch produced a perfectly valid MP4 whose every
-//! frame was a synthesized two-band gradient built from a palette table —
-//! so a container check (`ftyp` magic, non-zero length) passed on it. This
-//! test decodes the exported file back and compares *pixels* with the
-//! source, which is the only check that can tell the two apart.
+//! The test decodes the exported file and compares pixels with the source;
+//! container checks alone cannot verify footage fidelity.
 //!
 //! It lives in `tests/` rather than beside the export so it exercises the
 //! crate exactly as a caller would, through the public API.
