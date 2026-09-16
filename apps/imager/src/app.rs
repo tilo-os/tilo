@@ -4060,10 +4060,13 @@ impl ImagerApp {
     }
 
     fn same_rescanned_target(expected: &TargetDrive, actual: &TargetDrive) -> bool {
+        // Slot names, model strings and capacities are not physical identity.
+        // Two identical sticks can reuse `sdb`, `disk4`, or `PhysicalDrive2`;
+        // without a stable ID, require a fresh choice and destructive
+        // confirmation after every rescan.
         let stable_identity_matches = match (&expected.stable_id, &actual.stable_id) {
             (Some(expected), Some(actual)) => expected == actual,
-            (Some(_), None) | (None, Some(_)) => false,
-            (None, None) => true,
+            _ => false,
         };
         stable_identity_matches
             && expected.name == actual.name
@@ -5924,6 +5927,18 @@ mod tests {
             app.confirm_input.value().is_empty(),
             "consent never carries to replacement hardware"
         );
+
+        let mut unidentified_before = crate::model::sample_targets()[0].clone();
+        unidentified_before.stable_id = None;
+        app.targets = vec![unidentified_before.clone()];
+        app.selected = Some(0);
+        app.confirm_input.set_text(&unidentified_before.name);
+        app.apply_drive_inventory(vec![unidentified_before]);
+        assert_eq!(
+            app.selected, None,
+            "a drive without stable identity must be chosen again after rescan"
+        );
+        assert!(app.confirm_input.value().is_empty());
     }
 
     #[test]
