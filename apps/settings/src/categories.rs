@@ -322,6 +322,10 @@ const ABOUT_KEYWORDS: &[&str] = &[
     "system",
     "version",
     "fingerprint",
+    "backup",
+    "portable backup",
+    "encrypted backup",
+    "recovery",
 ];
 
 impl Category {

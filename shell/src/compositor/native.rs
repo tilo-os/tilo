@@ -4967,7 +4967,11 @@ pub fn run() -> ! {
         // service, then land here because ChromeState intentionally remains
         // compositor-thread owned.
         if let Some(service) = tool_service.as_ref() {
-            service.pump_workspace_settings(&frame_builder.chrome_handle());
+            let chrome = frame_builder.chrome_handle();
+            service.pump_workspace_settings(&chrome);
+            service.pump_identity_backup(&chrome, || {
+                frame_builder.host_mut().open_portable_identity_backup()
+            });
         }
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
