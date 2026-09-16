@@ -32,6 +32,9 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # toggles and fields dispatch.
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
+cap-fs-ext = "3.4.6"
+cap-primitives = "3.4.6"
+cap-std = "3.4.6"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

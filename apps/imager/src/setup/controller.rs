@@ -26,13 +26,12 @@ pub struct FolderChoice {
 
 /// Owns the in-process choices shown by the setup screens.
 ///
-/// `page` and `default_mode` are public so the retained view can render them
-/// directly. Folder choices are changed through methods so returning to Review
-/// always requires an explicit navigation step after an edit.
+/// Navigation and folder choices are changed through methods so returning to
+/// Review always requires an explicit navigation step after an edit.
 #[derive(Clone, Debug)]
 pub struct SetupController {
-    pub page: SetupPage,
-    pub default_mode: FolderMode,
+    page: SetupPage,
+    default_mode: FolderMode,
     capabilities: Capabilities,
     chosen_experience: Option<Experience>,
     remembered_folders: Vec<FolderChoice>,
@@ -72,6 +71,16 @@ impl SetupController {
             self.page = SetupPage::Experience;
         }
         true
+    }
+
+    #[must_use]
+    pub fn page(&self) -> SetupPage {
+        self.page
+    }
+
+    #[must_use]
+    pub fn default_mode(&self) -> FolderMode {
+        self.default_mode
     }
 
     /// Set the common folder policy. Per-folder overrides remain intact.
@@ -265,7 +274,7 @@ mod tests {
         let mut linux = SetupController::new(linux_desktop());
         assert!(linux.choose_experience(Experience::Desktop));
         assert_eq!(linux.next(), Ok(()));
-        assert_eq!(linux.page, SetupPage::Folders);
+        assert_eq!(linux.page(), SetupPage::Folders);
 
         let mut windows = SetupController::new(Capabilities {
             host: HostOs::Windows,
@@ -274,7 +283,7 @@ mod tests {
         });
         assert!(!windows.choose_experience(Experience::Desktop));
         assert!(windows.next().is_err());
-        assert_eq!(windows.page, SetupPage::Experience);
+        assert_eq!(windows.page(), SetupPage::Experience);
     }
 
     #[test]
@@ -288,7 +297,7 @@ mod tests {
         setup.next().unwrap();
 
         setup.back();
-        assert_eq!(setup.page, SetupPage::Folders);
+        assert_eq!(setup.page(), SetupPage::Folders);
         assert_eq!(setup.plan().folders.len(), 1);
         assert_eq!(setup.plan().folders[0].bytes, 12);
     }
@@ -296,7 +305,7 @@ mod tests {
     #[test]
     fn copy_is_default_and_common_mode_preserves_overrides() {
         let mut setup = SetupController::new(linux_desktop());
-        assert_eq!(setup.default_mode, FolderMode::Copy);
+        assert_eq!(setup.default_mode(), FolderMode::Copy);
         assert!(setup.choose_experience(Experience::Desktop));
         setup.next().unwrap();
         setup
@@ -344,12 +353,12 @@ mod tests {
             .add_folder(scan("source/Documents", 12), test_path("qos/Documents"))
             .unwrap();
         setup.next().unwrap();
-        assert_eq!(setup.page, SetupPage::Review);
+        assert_eq!(setup.page(), SetupPage::Review);
         assert!(!setup.plan().folders[0].safe_sync);
 
         setup.set_mode(FolderMode::Connected);
 
-        assert_eq!(setup.page, SetupPage::Folders);
+        assert_eq!(setup.page(), SetupPage::Folders);
         assert!(!setup.plan().folders[0].safe_sync);
     }
 
