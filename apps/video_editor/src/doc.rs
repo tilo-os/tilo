@@ -1448,34 +1448,38 @@ pub fn sample_project() -> Project {
     let (v1id, v2id, a1id, a2id) = (v1.id, v2.id, a1.id, a2.id);
     p.tracks = vec![v1, v2, a1, a2];
 
-    // Helper to push a placed, pre-trimmed clip with grade + fades.
-    #[allow(clippy::too_many_arguments)]
-    let mut place = |track: Uuid,
-                     media: Uuid,
-                     start: f64,
-                     in_p: f64,
-                     out_p: f64,
-                     pal: u8,
-                     opacity: f64,
-                     volume: f64,
-                     transition: Transition,
-                     filters: Filters,
-                     fade_in: f64,
-                     fade_out: f64| {
+    // A demo placement is intentionally named: source and timeline times sit
+    // beside several normalized values, and the former positional helper let
+    // any of them be transposed without a type error.
+    struct DemoPlacement {
+        track: Uuid,
+        media: Uuid,
+        start: f64,
+        source: std::ops::Range<f64>,
+        palette: u8,
+        opacity: f64,
+        volume: f64,
+        transition: Transition,
+        filters: Filters,
+        fade_in: f64,
+        fade_out: f64,
+    }
+
+    let mut place = |placement: DemoPlacement| {
         p.clips.push(Clip {
             id: Uuid::new_v4(),
-            track,
-            media,
-            start,
-            in_point: in_p,
-            out_point: out_p,
-            opacity,
-            volume,
-            transition,
-            palette: pal,
-            filters,
-            fade_in,
-            fade_out,
+            track: placement.track,
+            media: placement.media,
+            start: placement.start,
+            in_point: placement.source.start,
+            out_point: placement.source.end,
+            opacity: placement.opacity,
+            volume: placement.volume,
+            transition: placement.transition,
+            palette: placement.palette,
+            filters: placement.filters,
+            fade_in: placement.fade_in,
+            fade_out: placement.fade_out,
             transition_duration: 0.0,
             effects: Vec::new(),
             ..Default::default()
@@ -1491,107 +1495,100 @@ pub fn sample_project() -> Project {
     };
 
     // V1 — the spine: drone open (graded + fade-in), interview body, market cutaway.
-    place(
-        v1id,
-        drone_id,
-        0.0,
-        2.0,
-        10.0,
-        0,
-        1.0,
-        1.0,
-        Transition::FadeIn,
-        graded,
-        1.5,
-        0.0,
-    );
-    place(
-        v1id,
-        interview_id,
-        8.0,
-        5.0,
-        17.0,
-        1,
-        1.0,
-        1.0,
-        Transition::CrossDissolve,
-        neutral,
-        0.0,
-        0.0,
-    );
-    place(
-        v1id,
-        market_id,
-        20.0,
-        0.0,
-        6.0,
-        2,
-        1.0,
-        1.0,
-        Transition::None,
-        neutral,
-        0.0,
-        1.0,
-    );
+    place(DemoPlacement {
+        track: v1id,
+        media: drone_id,
+        start: 0.0,
+        source: 2.0..10.0,
+        palette: 0,
+        opacity: 1.0,
+        volume: 1.0,
+        transition: Transition::FadeIn,
+        filters: graded,
+        fade_in: 1.5,
+        fade_out: 0.0,
+    });
+    place(DemoPlacement {
+        track: v1id,
+        media: interview_id,
+        start: 8.0,
+        source: 5.0..17.0,
+        palette: 1,
+        opacity: 1.0,
+        volume: 1.0,
+        transition: Transition::CrossDissolve,
+        filters: neutral,
+        fade_in: 0.0,
+        fade_out: 0.0,
+    });
+    place(DemoPlacement {
+        track: v1id,
+        media: market_id,
+        start: 20.0,
+        source: 0.0..6.0,
+        palette: 2,
+        opacity: 1.0,
+        volume: 1.0,
+        transition: Transition::None,
+        filters: neutral,
+        fade_in: 0.0,
+        fade_out: 1.0,
+    });
     // V2 — overlays: logo bug, then a sunset insert that dissolves in.
-    place(
-        v2id,
-        logo_id,
-        1.0,
-        0.0,
-        4.0,
-        4,
-        0.9,
-        1.0,
-        Transition::FadeIn,
-        neutral,
-        0.0,
-        0.0,
-    );
-    place(
-        v2id,
-        sunset_id,
-        21.0,
-        0.0,
-        6.0,
-        3,
-        0.85,
-        1.0,
-        Transition::CrossDissolve,
-        neutral,
-        0.0,
-        1.2,
-    );
+    place(DemoPlacement {
+        track: v2id,
+        media: logo_id,
+        start: 1.0,
+        source: 0.0..4.0,
+        palette: 4,
+        opacity: 0.9,
+        volume: 1.0,
+        transition: Transition::FadeIn,
+        filters: neutral,
+        fade_in: 0.0,
+        fade_out: 0.0,
+    });
+    place(DemoPlacement {
+        track: v2id,
+        media: sunset_id,
+        start: 21.0,
+        source: 0.0..6.0,
+        palette: 3,
+        opacity: 0.85,
+        volume: 1.0,
+        transition: Transition::CrossDissolve,
+        filters: neutral,
+        fade_in: 0.0,
+        fade_out: 1.2,
+    });
     // A1 — narration aligned under the interview.
-    place(
-        a1id,
-        vo_id,
-        8.0,
-        1.5,
-        13.5,
-        5,
-        1.0,
-        1.0,
-        Transition::None,
-        neutral,
-        0.3,
-        0.5,
-    );
+    place(DemoPlacement {
+        track: a1id,
+        media: vo_id,
+        start: 8.0,
+        source: 1.5..13.5,
+        palette: 5,
+        opacity: 1.0,
+        volume: 1.0,
+        transition: Transition::None,
+        filters: neutral,
+        fade_in: 0.3,
+        fade_out: 0.5,
+    });
     // A2 — ambient bed under the whole piece, ducked low, gentle fades.
-    place(
-        a2id,
-        pad_id,
-        0.0,
-        0.0,
-        28.0,
-        6,
-        1.0,
-        0.4,
-        Transition::FadeIn,
-        neutral,
-        2.0,
-        3.0,
-    );
+    place(DemoPlacement {
+        track: a2id,
+        media: pad_id,
+        start: 0.0,
+        source: 0.0..28.0,
+        palette: 6,
+        opacity: 1.0,
+        volume: 0.4,
+        transition: Transition::FadeIn,
+        filters: neutral,
+        fade_in: 2.0,
+        fade_out: 3.0,
+    });
 
     // A couple of stacked effects on the drone open so the demo shows the
     // effects stack (warm grade, then a gentle vignette).
