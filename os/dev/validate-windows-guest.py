@@ -33,8 +33,8 @@ ELF_FILES = {
 }
 DXVK_INTERFACES = ("d3d8", "d3d9", "d3d10core", "d3d11", "dxgi")
 PE_FILES = {
-    f"usr/{lib}/wine-wow64/wine/{arch}-windows/dxvk-{interface}.dll": bits
-    for lib, arch, bits in (("lib", "i386", 32), ("lib64", "x86_64", 64))
+    f"usr/share/qos/dxvk/{arch}/{interface}.dll": bits
+    for arch, bits in (("x32", 32), ("x64", 64))
     for interface in DXVK_INTERFACES
 }
 LOCALE_FILES = (
