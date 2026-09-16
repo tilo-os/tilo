@@ -6,6 +6,7 @@
 //!   * `--demo` — run live but seed sample content (drives, a qOS image,
 //!     recent history) for a walkthrough / review.
 //!   * `--setup` — run the capability-gated guided setup screens.
+//!   * `--import-folders` — run the durable later-folder import surface.
 //!   * `--shots PATH` — render one offscreen frame to a PNG and exit.
 //!     `--scenario NAME` picks which wizard station (defaults to `source`);
 //!     `--viewport WxH` sizes it.
@@ -110,7 +111,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::launch::run(
         &LaunchSpec::new_with_args("dev.qos.imager", live_root)
             .shot_handler(render_shot)
-            .allowed_live_flags(&["--demo", "--setup"])
+            .allowed_live_flags(&["--demo", "--setup", "--import-folders"])
             .scenarios(imager::SHOT_SCENARIOS)
             .open_state_with_args(open_state)
             .configure_app(|app| imager::actions::register(app.action_registry_mut())),
@@ -123,6 +124,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     reason = "signature is fixed by LaunchSpec::new_with_args"
 )]
 fn live_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
+    if args.has("--import-folders") {
+        return Ok(imager::setup::import_view::app_root());
+    }
     if args.has("--setup") {
         return Ok(imager::setup::app_root());
     }

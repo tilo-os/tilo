@@ -90,6 +90,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// Build the same widget as [`app_root`], with only peer-local shot state
 /// staged outside the collaborative document.
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
+    if scenario.starts_with("import-") {
+        return Box::new(setup::import_view::ImportApp::for_shot(scenario));
+    }
     if scenario.starts_with("setup-") {
         return Box::new(setup::view::SetupApp::for_shot(scenario));
     }
@@ -125,6 +128,10 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "setup-folders-connected",
     "setup-folders-later",
     "setup-review",
+    "import-progress",
+    "import-partial",
+    "import-conflict",
+    "import-complete",
 ];
 
 /// Pose the document for one named `--shots` scenario. Sample content is seeded

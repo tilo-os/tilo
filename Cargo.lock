@@ -6563,6 +6563,7 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
+ "dirs 6.0.0",
  "libc",
  "qos-actions",
  "qos-app",
