@@ -96,6 +96,18 @@ authorization.
   state rather than a local path or PipeWire node. The destination must be
   online and advertise the required audio/video capabilities, and the old
   output is paused before the new one resumes.
+- **Live audio route** covers streams that have no portable media identity:
+  all system playback or the currently focused application's playback can be
+  sent to a certified device advertising an audio output. Source choices are
+  fresh compositor-minted tokens; applications and peers never receive a
+  PipeWire node id. The target compositor prompts locally, starts its local
+  sink, and returns a random capability bound to the exact peer and session.
+  Version 1 is negotiated as bounded 20 ms, 48 kHz stereo S16LE frames with
+  bounded capture and playback queues. Replay, reordering, oversized frames,
+  stale consent, and a different peer are rejected. Policy disable, peer loss,
+  session expiry, send failure, or focus loss for an application route tears
+  down the workers and revokes the route; the Devices surface always exposes
+  pending/streaming status and a stop action.
 - **Universal clipboard** is a content-addressed, de-duplicated 50-item
   history. Entries are explicitly classified as shareable and capped at
   256 KiB. Primary selection, secret fields, and Tilo's secret MIME type never
