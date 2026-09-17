@@ -165,7 +165,7 @@ def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int)
     return min(max(1, maximum), len(names), cost_limited)
 
 
-def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int) -> dict:
+def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int, *, force_full: bool = False) -> dict:
     packages, by_dir = package_maps(metadata, root)
     global_change = any(path in GLOBAL_FILES or path.startswith(GLOBAL_PREFIXES) for path in changes)
     unmapped_workspace_change = any(
@@ -173,9 +173,10 @@ def make_plan(metadata: dict, root: Path, changes: list[str], shard_count: int) 
         and owner_for(path, by_dir) is None
         for path in changes
     )
-    if global_change or unmapped_workspace_change:
+    if force_full or global_change or unmapped_workspace_change:
         selected = set(packages)
-        reason = "repository-wide build input changed" if global_change else "workspace path has no package owner"
+        reason = ("full workspace explicitly requested" if force_full else
+                  "repository-wide build input changed" if global_change else "workspace path has no package owner")
         full = True
     else:
         seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
@@ -218,6 +219,7 @@ def main() -> int:
     parser.add_argument("--base", help="base commit/ref (defaults to HEAD^)")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--shards", type=int, default=2)
+    parser.add_argument("--full", action="store_true", help="check the complete workspace on each native architecture")
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--metadata", type=Path, help="read metadata JSON instead of invoking Cargo")
     parser.add_argument("--changes", type=Path, help="read changed paths instead of invoking git")
@@ -226,7 +228,7 @@ def main() -> int:
     root = Path(run("git", "rev-parse", "--show-toplevel", cwd=Path.cwd()))
     metadata = json.loads(args.metadata.read_text()) if args.metadata else cargo_metadata(root)
     changes = args.changes.read_text().splitlines() if args.changes else changed_files(root, args.base, args.head)
-    plan = make_plan(metadata, root, changes, args.shards)
+    plan = make_plan(metadata, root, changes, args.shards, force_full=args.full)
     print(json.dumps(plan, indent=2))
     if args.github_output:
         emit_github(plan, args.github_output)

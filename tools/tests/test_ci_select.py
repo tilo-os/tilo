@@ -57,6 +57,17 @@ class SelectorTests(unittest.TestCase):
         self.assertTrue(plan["full"])
         self.assertEqual(plan["selected_count"], plan["workspace_count"])
 
+    def test_explicit_full_selects_every_package_even_without_changes(self) -> None:
+        for changes in ([], ["docs/development-signing.md"]):
+            with self.subTest(changes=changes):
+                plan = ci_select.make_plan(self.metadata, self.root, changes, 2, force_full=True)
+                self.assertTrue(plan["full"])
+                self.assertEqual(plan["selected_count"], plan["workspace_count"])
+                for arch in ci_select.NATIVE_RUNNERS:
+                    rows = [row for row in plan["matrix"]["include"] if row["arch"] == arch]
+                    selected = " ".join(row["packages"] for row in rows).split()[1::2]
+                    self.assertEqual(sorted(selected), plan["selected"])
+
     def test_ci_scripts_do_not_force_unrelated_rust_rebuilds(self) -> None:
         plan = ci_select.make_plan(
             self.metadata,
