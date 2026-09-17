@@ -20,6 +20,15 @@ pub type El = Box<dyn Widget>;
 /// not have to carry every level of hierarchy.
 pub const CARD_GAP: f32 = 20.0;
 
+/// Base size for setting labels and read-only values. Settings pages are
+/// information-dense, but their primary content must not collapse to caption
+/// typography.
+pub const LABEL_TEXT_SIZE: f32 = 14.0;
+
+/// Supporting-copy size. Kept one step below labels while remaining readable
+/// in high-contrast and narrow layouts.
+pub const CAPTION_TEXT_SIZE: f32 = 13.0;
+
 /// A fixed-height empty box used for one-off vertical spacing.
 ///
 /// The toolkit's `Column` applies a *uniform* 12 px gap between children
@@ -62,13 +71,17 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(
-                Text::new("SETTINGS").with_scaled_size(12.0).dimmed(),
+                Text::new("Settings")
+                    .with_scaled_size(CAPTION_TEXT_SIZE)
+                    .dimmed(),
             ))
             .push(vgap(5.0))
-            .push(Box::new(Text::new(title).with_scaled_size(24.0)))
+            .push(Box::new(Text::new(title).with_scaled_size(26.0)))
             .push(vgap(5.0))
             .push(Box::new(
-                Text::new(subtitle).with_scaled_size(13.0).dimmed(),
+                Text::new(subtitle)
+                    .with_scaled_size(LABEL_TEXT_SIZE)
+                    .dimmed(),
             )),
     )
 }
@@ -94,7 +107,7 @@ pub fn card_with_action(title: &str, action: El, body: El) -> El {
 pub fn setting_row(label: &str, control: El) -> El {
     Box::new(
         Row::new()
-            .push(Box::new(Text::new(label).with_scaled_size(13.0)))
+            .push(Box::new(Text::new(label).with_scaled_size(LABEL_TEXT_SIZE)))
             .push(Box::new(Spacer::new()))
             .push(control),
     )
@@ -102,7 +115,10 @@ pub fn setting_row(label: &str, control: El) -> El {
 
 /// A label/value row where the value is plain read-only text.
 pub fn value_row(label: &str, value: &str) -> El {
-    setting_row(label, Box::new(Text::new(value).with_size(13.0)))
+    setting_row(
+        label,
+        Box::new(Text::new(value).with_scaled_size(LABEL_TEXT_SIZE)),
+    )
 }
 
 /// A label with a short helper line beneath it, paired with a trailing
@@ -114,7 +130,7 @@ pub fn value_row(label: &str, value: &str) -> El {
 /// the row and wrap the control below it, dropping it out of alignment.
 pub fn setting_row_described(label: &str, description: &str, control: El) -> El {
     let top = Row::new()
-        .push(Box::new(Text::new(label).with_scaled_size(13.0)))
+        .push(Box::new(Text::new(label).with_scaled_size(LABEL_TEXT_SIZE)))
         .push(Box::new(Spacer::new()))
         .push(control);
     Box::new(
@@ -123,14 +139,16 @@ pub fn setting_row_described(label: &str, description: &str, control: El) -> El 
             .with_intrinsic_height()
             .push(Box::new(top))
             .push(Box::new(
-                Text::new(description).with_scaled_size(12.0).dimmed(),
+                Text::new(description)
+                    .with_scaled_size(CAPTION_TEXT_SIZE)
+                    .dimmed(),
             )),
     )
 }
 
 /// A dim helper-text line, for captions and "best-effort" notes.
 pub fn caption(text: &str) -> El {
-    Box::new(Text::new(text).with_scaled_size(12.0).dimmed())
+    Box::new(Text::new(text).with_scaled_size(CAPTION_TEXT_SIZE).dimmed())
 }
 
 /// Default width (logical px) a compact right-aligned control (dropdown,

@@ -2180,7 +2180,10 @@ impl ContactsApp {
     /// from one flat function.
     fn layout_form(&mut self) {
         let scale = self.layout_scale();
-        let large_text = self.text_scale >= 1.75;
+        // A phone pane needs the same single-column field flow as large text:
+        // squeezing Org/Title, city/region, postal/country, or birthday/site
+        // into half of a 320px viewport truncates both values and placeholders.
+        let stack_fields = self.narrow || self.text_scale >= 1.75;
         let area = self.detail_rect;
         let off = self.detail_top_offset();
         let x0 = area.x0 + PAD;
@@ -2210,7 +2213,12 @@ impl ContactsApp {
             self.hit.save.x0 - 8.0,
             by + button_h,
         );
-        self.hit.fav_toggle = Rect::new(x0, by, x0 + 120.0, by + button_h);
+        // At the 320px minimum acceptance width the full Favorite label and
+        // Cancel/Save pair cannot share one row. Collapse only the favorite
+        // control to its universally recognisable star; its accessibility
+        // name and tooltip retain the full wording.
+        let favorite_w = if area.width() < 360.0 { 40.0 } else { 120.0 };
+        self.hit.fav_toggle = Rect::new(x0, by, x0 + favorite_w, by + button_h);
 
         let label_h = 18.0 * scale;
         let gap = 12.0 * scale;
@@ -2232,10 +2240,10 @@ impl ContactsApp {
         y += label_h;
         plan.push((
             Slot::First,
-            Rect::new(x0, y, if large_text { x1 } else { x0 + half }, y + nh),
+            Rect::new(x0, y, if stack_fields { x1 } else { x0 + half }, y + nh),
         ));
         y += nh + gap;
-        if large_text {
+        if stack_fields {
             plan.push((Slot::Last, Rect::new(x0, y, x1, y + nh)));
             y += nh + gap;
         } else {
@@ -2249,10 +2257,10 @@ impl ContactsApp {
         y += label_h;
         plan.push((
             Slot::Org,
-            Rect::new(x0, y, if large_text { x1 } else { x0 + half }, y + nh),
+            Rect::new(x0, y, if stack_fields { x1 } else { x0 + half }, y + nh),
         ));
         y += nh + gap;
-        if large_text {
+        if stack_fields {
             plan.push((Slot::Title, Rect::new(x0, y, x1, y + nh)));
             y += nh + gap;
         } else {
@@ -2268,12 +2276,12 @@ impl ContactsApp {
 
         // Birthday (input + calendar button) | Website
         y += label_h;
-        let birthday_span = if large_text { w } else { half };
+        let birthday_span = if stack_fields { w } else { half };
         let bday_w = birthday_span - 40.0;
         plan.push((Slot::Birthday, Rect::new(x0, y, x0 + bday_w, y + nh)));
         self.hit.cal_btn = Rect::new(x0 + bday_w + 6.0, y, x0 + birthday_span, y + nh);
         y += nh + gap;
-        if large_text {
+        if stack_fields {
             y += label_h;
             plan.push((Slot::Website, Rect::new(x0, y, x1, y + nh)));
             y += nh + gap;
@@ -2325,7 +2333,7 @@ impl ContactsApp {
         for i in 0..n {
             let chip_w = if self.text_scale >= 1.75 { 116.0 } else { 78.0 };
             let chip = Rect::new(x0, *y, x0 + chip_w, *y + nh);
-            let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
+            let rm = Rect::new(x1 - 34.0, *y, x1, *y + nh);
             plan.push((
                 Slot::Phone(i),
                 Rect::new(chip.x1 + 8.0, *y, rm.x0 - 8.0, *y + nh),
@@ -2334,7 +2342,7 @@ impl ContactsApp {
             self.hit.remove_btns.push((TypeTarget::Phone(i), rm));
             *y += nh + 8.0;
         }
-        let add_h = 28.0 * scale;
+        let add_h = 34.0 * scale;
         self.hit.add_phone = Rect::new(x0, *y, x0 + 130.0, *y + add_h);
         *y += add_h + gap;
     }
@@ -2357,7 +2365,7 @@ impl ContactsApp {
         for i in 0..n {
             let chip_w = if self.text_scale >= 1.75 { 116.0 } else { 78.0 };
             let chip = Rect::new(x0, *y, x0 + chip_w, *y + nh);
-            let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
+            let rm = Rect::new(x1 - 34.0, *y, x1, *y + nh);
             plan.push((
                 Slot::Email(i),
                 Rect::new(chip.x1 + 8.0, *y, rm.x0 - 8.0, *y + nh),
@@ -2366,7 +2374,7 @@ impl ContactsApp {
             self.hit.remove_btns.push((TypeTarget::Email(i), rm));
             *y += nh + 8.0;
         }
-        let add_h = 28.0 * scale;
+        let add_h = 34.0 * scale;
         self.hit.add_email = Rect::new(x0, *y, x0 + 130.0, *y + add_h);
         *y += add_h + gap;
     }
@@ -2387,12 +2395,12 @@ impl ContactsApp {
         let label_h = 18.0 * scale;
         let gap = 12.0 * scale;
         let nh = self.field_h();
-        let large_text = self.text_scale >= 1.75;
+        let stack_fields = self.narrow || self.text_scale >= 1.75;
         *y += label_h;
         for i in 0..n {
-            let chip_w = if large_text { 116.0 } else { 78.0 };
+            let chip_w = if stack_fields { 116.0 } else { 78.0 };
             let chip = Rect::new(x0, *y, x0 + chip_w, *y + nh);
-            let rm = Rect::new(x1 - 30.0, *y, x1, *y + nh);
+            let rm = Rect::new(x1 - 34.0, *y, x1, *y + nh);
             plan.push((
                 Slot::AddrStreet(i),
                 Rect::new(chip.x1 + 8.0, *y, rm.x0 - 8.0, *y + nh),
@@ -2402,10 +2410,10 @@ impl ContactsApp {
             *y += nh + 8.0;
             plan.push((
                 Slot::AddrCity(i),
-                Rect::new(x0, *y, if large_text { x1 } else { x0 + half }, *y + nh),
+                Rect::new(x0, *y, if stack_fields { x1 } else { x0 + half }, *y + nh),
             ));
             *y += nh + 8.0;
-            if large_text {
+            if stack_fields {
                 plan.push((Slot::AddrRegion(i), Rect::new(x0, *y, x1, *y + nh)));
                 *y += nh + 8.0;
             } else {
@@ -2416,10 +2424,10 @@ impl ContactsApp {
             }
             plan.push((
                 Slot::AddrPostal(i),
-                Rect::new(x0, *y, if large_text { x1 } else { x0 + half }, *y + nh),
+                Rect::new(x0, *y, if stack_fields { x1 } else { x0 + half }, *y + nh),
             ));
             *y += nh + 12.0;
-            if large_text {
+            if stack_fields {
                 plan.push((Slot::AddrCountry(i), Rect::new(x0, *y, x1, *y + nh)));
                 *y += nh + 12.0;
             } else {
@@ -2429,7 +2437,7 @@ impl ContactsApp {
                 ));
             }
         }
-        let add_h = 28.0 * scale;
+        let add_h = 34.0 * scale;
         self.hit.add_address = Rect::new(x0, *y, x0 + 150.0, *y + add_h);
         *y += add_h + gap;
     }
@@ -3553,41 +3561,27 @@ impl ContactsApp {
             TextWeight::Bold,
         );
         let fav = self.form.as_ref().is_some_and(|f| f.draft.favorite);
-        // Favorite toggle pill.
-        {
-            let r = self.hit.fav_toggle;
-            let hovered = r.contains(self.last_mouse);
-            let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
-            let bg = if fav {
-                theme.accent_primary.with_alpha_factor(0.18)
-            } else if hovered {
-                theme.bg_hover
+        let favorite_label = if self.hit.fav_toggle.width() <= 40.0 {
+            ""
+        } else if fav {
+            "Favorited"
+        } else {
+            "Favorite"
+        };
+        let favorite_face = ButtonFace::new(self.hit.fav_toggle, favorite_label)
+            .icon(Icon::Star)
+            .style(if fav {
+                ButtonStyle::Primary
             } else {
-                c.surfaces.raised
-            };
-            scene.fill(Fill::NonZero, t, bg, None, &shape);
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-            draw_star(
-                scene,
-                t,
-                Point::new(r.x0 + 16.0, r.center().y),
-                7.0,
-                theme.accent_primary,
-                fav,
-            );
-            tr.draw_text(
-                scene,
-                if fav { "Favorited" } else { "Favorite" },
-                12.0,
-                if fav {
-                    theme.accent_primary
-                } else {
-                    c.text_dim
-                },
-                t * Affine::translate((r.x0 + 30.0, r.center().y - 7.0 * scale)),
-                None,
-            );
-        }
+                ButtonStyle::Neutral
+            })
+            .accessible_name(if fav {
+                "Remove from favorites"
+            } else {
+                "Add to favorites"
+            })
+            .hovered(self.hit.fav_toggle.contains(self.last_mouse));
+        Button::paint(scene, t, tr, theme, &favorite_face);
         toolbar_button(
             scene,
             t,
@@ -3737,33 +3731,62 @@ impl ContactsApp {
         theme: &Theme,
         draft: &Contact,
     ) {
-        let c = &theme.tokens.colors;
         for (target, rect) in &self.hit.type_chips {
             let lbl = type_label(draft, *target);
             chip(scene, t, tr, theme, *rect, lbl, false);
         }
         for (_target, rect) in &self.hit.remove_btns {
-            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.md));
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-            // minus glyph
-            let cy = rect.center().y;
-            scene.stroke(
-                &Stroke::new(1.6),
+            Button::paint(
+                scene,
                 t,
-                c.semantic.danger,
-                None,
-                &Line::new((rect.center().x - 5.0, cy), (rect.center().x + 5.0, cy)),
+                tr,
+                theme,
+                &ButtonFace::new(*rect, "")
+                    .icon(Icon::X)
+                    .ghost()
+                    .accessible_name("Remove field")
+                    .hovered(rect.contains(self.last_mouse)),
             );
         }
-        add_button(scene, t, tr, theme, self.hit.add_phone, "+ Add phone");
-        add_button(scene, t, tr, theme, self.hit.add_email, "+ Add email");
-        add_button(scene, t, tr, theme, self.hit.add_address, "+ Add address");
+        add_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.add_phone,
+            "Add phone",
+            self.last_mouse,
+        );
+        add_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.add_email,
+            "Add email",
+            self.last_mouse,
+        );
+        add_button(
+            scene,
+            t,
+            tr,
+            theme,
+            self.hit.add_address,
+            "Add address",
+            self.last_mouse,
+        );
         {
             let r = self.hit.cal_btn;
-            let shape = RoundedRect::from_rect(r, f64::from(theme.tokens.radii.md));
-            scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-            scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-            draw_calendar_glyph(scene, t, r, theme);
+            Button::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                &ButtonFace::new(r, "")
+                    .icon(Icon::Calendar)
+                    .accessible_name("Choose birthday")
+                    .hovered(r.contains(self.last_mouse)),
+            );
         }
     }
 
@@ -4374,26 +4397,17 @@ fn add_button(
     theme: &Theme,
     rect: Rect,
     label: &str,
+    pointer: Point,
 ) {
-    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
-    scene.stroke(
-        &Stroke::new(1.0),
-        t,
-        theme.accent_primary.with_alpha_factor(0.6),
-        None,
-        &shape,
-    );
-    tr.draw_text_weighted(
+    Button::paint(
         scene,
-        label,
-        12.0,
-        theme.accent_primary,
-        t * Affine::translate((
-            rect.x0 + 10.0,
-            rect.center().y - 7.0 * f64::from(theme.text_scale),
-        )),
-        None,
-        TextWeight::Medium,
+        t,
+        tr,
+        theme,
+        &ButtonFace::new(rect, label)
+            .icon(Icon::Plus)
+            .ghost()
+            .hovered(rect.contains(pointer)),
     );
 }
 
@@ -4550,11 +4564,6 @@ fn draw_star(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, 
     } else {
         Icon::Star.draw(scene, t, rect, color);
     }
-}
-
-fn draw_calendar_glyph(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
-    let g = Rect::from_center_size(rect.center(), (18.0, 18.0));
-    Icon::Calendar.draw(scene, t, g, theme.tokens.colors.text_dim);
 }
 
 fn draw_chevron(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, left: bool) {
@@ -6181,6 +6190,23 @@ impl Widget for ContactsApp {
             Some("Edit contact")
         } else if self.hit.delete.contains(point) {
             Some("Delete contact")
+        } else if self.hit.fav_toggle.contains(point) {
+            Some("Toggle favorite")
+        } else if self.hit.add_phone.contains(point) {
+            Some("Add phone")
+        } else if self.hit.add_email.contains(point) {
+            Some("Add email")
+        } else if self.hit.add_address.contains(point) {
+            Some("Add address")
+        } else if self
+            .hit
+            .remove_btns
+            .iter()
+            .any(|(_, rect)| rect.contains(point))
+        {
+            Some("Remove field")
+        } else if self.hit.cal_btn.contains(point) {
+            Some("Choose birthday")
         } else {
             None
         }
@@ -9994,6 +10020,10 @@ mod tests {
             h.app.hit.add_phone.width() > 0.0,
             "the add-phone button is laid out"
         );
+        assert!(
+            h.app.hit.add_phone.height() >= 34.0,
+            "shared add controls keep a comfortable pointer target"
+        );
         h.press_left(h.app.hit.add_phone.center());
         assert_eq!(
             h.app.form.as_ref().unwrap().draft.phones.len(),
@@ -10010,6 +10040,10 @@ mod tests {
             .find(|(t, _)| matches!(t, TypeTarget::Phone(i) if *i == base))
             .map(|(_, r)| *r)
             .expect("the new phone row has a remove button");
+        assert!(
+            rm.width() >= 34.0 && rm.height() >= 34.0,
+            "shared remove controls keep a comfortable pointer target"
+        );
         h.press_left(rm.center());
         assert_eq!(
             h.app.form.as_ref().unwrap().draft.phones.len(),
@@ -10344,6 +10378,40 @@ mod tests {
         assert_eq!(Widget::tooltip(&h.app), Some("Import contacts"));
         h.app.last_mouse = h.app.hit.new.center();
         assert_eq!(Widget::tooltip(&h.app), Some("Create contact"));
+    }
+
+    #[test]
+    fn phone_edit_header_actions_do_not_overlap() {
+        let mut h = Harness::new(320, 640);
+        let id = h.app.selected.expect("sample contact selected");
+        let contact = h.app.store.get(id).cloned().expect("stored contact");
+        h.app.begin_edit(contact, false);
+        h.relayout();
+
+        assert_eq!(h.app.hit.fav_toggle.width(), 40.0);
+        assert!(h.app.hit.fav_toggle.x1 < h.app.hit.cancel.x0);
+        assert!(h.app.hit.cancel.x1 < h.app.hit.save.x0);
+        for rect in [h.app.hit.fav_toggle, h.app.hit.cancel, h.app.hit.save] {
+            assert!(rect.width() >= 40.0 && rect.height() >= 32.0);
+        }
+
+        let field_rect = |slot| {
+            h.app
+                .form
+                .as_ref()
+                .and_then(|form| form.inputs.iter().find(|field| field.slot == slot))
+                .map(|field| field.ti_rect())
+                .expect("edit field is laid out")
+        };
+        for (upper, lower) in [(Slot::First, Slot::Last), (Slot::Org, Slot::Title)] {
+            let upper = field_rect(upper);
+            let lower = field_rect(lower);
+            assert!(
+                lower.y0 >= upper.y1,
+                "phone form field pairs stack instead of truncating in columns"
+            );
+            assert_eq!(upper.width(), lower.width());
+        }
     }
 
     #[test]

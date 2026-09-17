@@ -6,8 +6,9 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use taffy::{NodeId, TaffyTree};
-use tilo_actions::{ActionContract, ActionSpec, OperationKind, Resource};
+use tilo_actions::{ActionAddress, ActionContract, ActionSpec, OperationKind, Resource};
 use ui::icons::Icon;
+use ui::search::{SearchProvider, SearchResult, fuzzy_score};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Banner, BarGauge, Button, Card, CardGrid, Column, Container, CropSelection, Divider, Dropdown,
@@ -224,6 +225,123 @@ struct OperationNotice {
     success: bool,
     title: String,
     message: String,
+}
+
+const DASHBOARD_RESOURCE_ID: &str = "print-centre.dashboard";
+
+fn dashboard_resource() -> Resource {
+    let operations = [
+        (
+            "refresh",
+            "Refresh printers and documents",
+            OperationKind::Effect,
+            "print-centre.refresh",
+        ),
+        (
+            "queue",
+            "Open print queue",
+            OperationKind::View,
+            "print-centre.open-queue",
+        ),
+        (
+            "history",
+            "Open print history",
+            OperationKind::View,
+            "print-centre.open-history",
+        ),
+        (
+            "diagnostics",
+            "Open printer diagnostics",
+            OperationKind::View,
+            "print-centre.open-diagnostics",
+        ),
+        (
+            "add-printer",
+            "Find and add a printer",
+            OperationKind::View,
+            "print-centre.open-discovery",
+        ),
+        (
+            "print-document",
+            "Print a document",
+            OperationKind::Effect,
+            "print-centre.choose-document",
+        ),
+        (
+            "scan",
+            "Scan a document",
+            OperationKind::View,
+            "print-centre.open-scanner",
+        ),
+    ];
+    operations.into_iter().fold(
+        Resource::new("print-centre", DASHBOARD_RESOURCE_ID, "Print Centre"),
+        |resource, (id, label, kind, operation)| {
+            ActionSpec::operation(id, label, kind, operation, &())
+                .map(|action| {
+                    resource
+                        .clone()
+                        .with_action(action.with_contract(ActionContract::default()))
+                })
+                .unwrap_or(resource)
+        },
+    )
+}
+
+#[derive(Clone)]
+struct PrintCentreSearchProvider {
+    resource: Resource,
+}
+
+impl PrintCentreSearchProvider {
+    fn new() -> Self {
+        Self {
+            resource: dashboard_resource(),
+        }
+    }
+}
+
+impl SearchProvider for PrintCentreSearchProvider {
+    fn name(&self) -> &str {
+        "Print Centre"
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        let query = query.trim();
+        self.resource
+            .actions
+            .iter()
+            .filter_map(|action| {
+                let score = fuzzy_score(query, &action.label)?;
+                Some(
+                    SearchResult::for_action(
+                        "Print Centre",
+                        &action.label,
+                        ActionAddress::new(&self.resource.id.0, &action.id),
+                    )
+                    .with_icon(match action.id.as_str() {
+                        "refresh" => Icon::Refresh,
+                        "history" => Icon::History,
+                        "add-printer" => Icon::Plus,
+                        "print-document" => Icon::FileText,
+                        "scan" => Icon::Camera,
+                        _ => Icon::Printer,
+                    })
+                    .with_score(score),
+                )
+            })
+            .collect()
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        (address.resource == self.resource.id.0
+            && self
+                .resource
+                .actions
+                .iter()
+                .any(|action| action.id == address.action))
+        .then(|| self.resource.clone())
+    }
 }
 
 fn title(s: &str, size: f32) -> El {
@@ -3078,6 +3196,13 @@ impl Widget for PrintCentre {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.bg_app,
+            None,
+            &self.inner.get_rect(),
+        );
         self.inner.draw(scene, transform, text, theme, presence);
     }
     fn handle_event(
@@ -3115,20 +3240,7 @@ impl Widget for PrintCentre {
         self.refresh.is_some() || self.picker.is_some() || self.scan_save_picker.is_some()
     }
     fn resources(&self, _: &AutoCommit) -> Vec<Resource> {
-        let Ok(refresh) = ActionSpec::operation(
-            "refresh",
-            "Refresh printers and documents",
-            OperationKind::Effect,
-            "print-centre.refresh",
-            &(),
-        ) else {
-            return Vec::new();
-        };
-        let refresh = refresh.with_contract(ActionContract::default());
-        vec![
-            Resource::new("print-centre", "print-centre.dashboard", "Print Centre")
-                .with_action(refresh),
-        ]
+        vec![dashboard_resource()]
     }
     fn invoke_resource_operation(
         &mut self,
@@ -3138,14 +3250,35 @@ impl Widget for PrintCentre {
         _: &AutoCommit,
         _: &ObjId,
     ) -> Result<bool, String> {
-        if k == OperationKind::Effect && id == "print-centre.refresh" {
-            *self = Self::new();
-            return Ok(true);
-        }
-        Ok(false)
+        let command = match (k, id) {
+            (OperationKind::Effect, "print-centre.refresh") => {
+                *self = Self::new();
+                return Ok(true);
+            }
+            (OperationKind::View, "print-centre.open-queue") => UiCommand::Queue,
+            (OperationKind::View, "print-centre.open-history") => UiCommand::History,
+            (OperationKind::View, "print-centre.open-diagnostics") => UiCommand::Diagnostics,
+            (OperationKind::View, "print-centre.open-discovery") => UiCommand::Discover,
+            (OperationKind::View, "print-centre.open-scanner") => UiCommand::ScanSetup,
+            (OperationKind::Effect, "print-centre.choose-document") => UiCommand::ChooseDocument,
+            _ => return Ok(false),
+        };
+        self.handle_command(command);
+        Ok(true)
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &["print-centre.refresh"]
+        &[
+            "print-centre.refresh",
+            "print-centre.open-queue",
+            "print-centre.open-history",
+            "print-centre.open-diagnostics",
+            "print-centre.open-discovery",
+            "print-centre.open-scanner",
+            "print-centre.choose-document",
+        ]
+    }
+    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        vec![Box::new(PrintCentreSearchProvider::new())]
     }
 }
 
@@ -3182,6 +3315,73 @@ mod tests {
             DemoScenario::ServiceError,
         ] {
             assert_eq!(PrintCentre::demo(s).name(), "PrintCentre");
+        }
+    }
+
+    #[test]
+    fn dashboard_exports_every_primary_navigation_route() {
+        let resource = dashboard_resource();
+        let action_ids = resource
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            action_ids,
+            [
+                "refresh",
+                "queue",
+                "history",
+                "diagnostics",
+                "add-printer",
+                "print-document",
+                "scan",
+            ]
+        );
+        assert!(
+            resource
+                .actions
+                .iter()
+                .all(|action| !action.label.is_empty())
+        );
+    }
+
+    #[test]
+    fn system_search_results_resolve_to_canonical_actions() {
+        let provider = PrintCentreSearchProvider::new();
+        for query in ["queue", "history", "diagnostics", "printer", "scan"] {
+            let results = provider.search(query);
+            assert!(!results.is_empty(), "missing result for {query}");
+            for result in results {
+                let address = result.action_address().expect("canonical action address");
+                assert!(provider.resolve_action_resource(&address).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_navigation_uses_the_same_production_views_as_clicks() {
+        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
+        centre.snapshot = Some(demo_snapshot());
+        let doc = AutoCommit::new();
+        for operation in [
+            "print-centre.open-queue",
+            "print-centre.open-history",
+            "print-centre.open-diagnostics",
+            "print-centre.open-scanner",
+        ] {
+            assert!(
+                centre
+                    .invoke_resource_operation(
+                        OperationKind::View,
+                        operation,
+                        &[],
+                        &doc,
+                        &automerge::ROOT,
+                    )
+                    .unwrap(),
+                "operation was not handled: {operation}"
+            );
         }
     }
 

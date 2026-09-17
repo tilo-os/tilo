@@ -60,7 +60,7 @@ pub const SIDEBAR_WIDTH: f64 = 264.0;
 
 /// Height (logical px) of a single category row. Generous enough to read as a
 /// touch target and to seat the icon + label comfortably.
-const ROW_HEIGHT: f32 = 40.0;
+const ROW_HEIGHT: f32 = 44.0;
 
 /// Inset (logical px) of the selection/hover pill from the row's left/right
 /// edges, so the highlight reads as a chip with margin to the panel border.
@@ -82,7 +82,7 @@ const ROW_ICON_COL: f64 = 20.0;
 const ROW_ICON_LABEL_GAP: f64 = 12.0;
 
 /// Font size (logical px) of a category label.
-const ROW_TEXT_SIZE: f32 = 14.0;
+const ROW_TEXT_SIZE: f32 = 15.0;
 
 /// Line-height ratio `TextRenderer` shapes with (`size * 1.25`); used to
 /// centre a single text line's box within the row.
@@ -529,14 +529,11 @@ pub fn build(
     )
 }
 
-/// An uppercase, dimmed section header line. Kept at 12 px so the category
-/// groups remain comfortably readable instead of becoming low-contrast chrome.
+/// A dimmed section header line. It uses the shared semantic dim style so its
+/// contrast follows the active OS theme instead of capturing a dark-theme
+/// colour while the widget tree is built.
 fn section_header(label: &str) -> Box<dyn Widget> {
-    Box::new(
-        Text::new(&label.to_uppercase())
-            .with_size(12.0)
-            .with_color(Theme::dark().text_dim),
-    )
+    Box::new(Text::new(label).with_scaled_size(13.0).dimmed())
 }
 
 #[cfg(test)]
@@ -637,6 +634,14 @@ mod tests {
         assert!(
             (top_slack - bottom_slack).abs() < 0.001,
             "text line box must be vertically centred (top={top_slack}, bottom={bottom_slack})"
+        );
+    }
+
+    #[test]
+    fn category_rows_meet_the_minimum_pointer_target() {
+        assert!(
+            ROW_HEIGHT >= 44.0,
+            "settings destinations must remain comfortable pointer and touch targets"
         );
     }
 

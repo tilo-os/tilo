@@ -281,7 +281,7 @@ impl SettingsApp {
                 .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("settings.search")
                 .with_placeholder("Search settings")
-                .with_font_size(13.0),
+                .with_font_size(14.0),
         )
     }
 
