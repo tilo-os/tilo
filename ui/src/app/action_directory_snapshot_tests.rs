@@ -607,3 +607,106 @@ fn directory_snapshot_old_descriptor_never_bypasses_changed_confirmation_contrac
         .unwrap_err();
     assert_eq!(error, qos_actions::DoorError::ConfirmationRequired);
 }
+
+fn connected_declared_directory() -> (App, std::rc::Rc<Cell<usize>>) {
+    let (mut app, calls) = declared_directory(1);
+    app.collab_manager = CollaborationManager::connected_for_lifecycle_test();
+    assert!(app.collab_manager.is_connected());
+    app.init_layout();
+    // Join delivers an initial catalogue event. Drain it before measuring an
+    // otherwise idle pump, so startup traffic cannot mask missing refresh.
+    app.pump_collab_presence();
+    app.publish_action_surface();
+    assert!(
+        !app.pump_collab_presence(),
+        "fixture must be idle after the join baseline"
+    );
+    assert!(app.last_published_actions.is_some());
+    assert_eq!(
+        app.action_directory_page(directory_query("", "", 8, 8192, 8))
+            .rows
+            .len(),
+        1
+    );
+    (app, calls)
+}
+
+#[test]
+fn directory_lifecycle_idle_refreshes_after_normal_sync_without_remote_query() {
+    let (mut app, calls) = connected_declared_directory();
+    let revision = app.action_directory_revision();
+    app.state_mut_for_test()
+        .doc
+        .put(ROOT, "changed-contract", true)
+        .unwrap();
+    // This production entrypoint has the same sync -> invalidate ordering as
+    // RedrawRequested, without requiring a live winit Window.
+    app.refresh_focus_order();
+    assert!(app.action_directory_snapshot.is_none());
+    let pending = app.state.doc.pending_ops();
+    assert!(pending > 0);
+    assert!(
+        !app.pump_collab_presence(),
+        "no inbound event may trigger publication for this regression"
+    );
+    assert!(
+        app.action_directory_snapshot.is_some(),
+        "idle must repair the snapshot evicted by sync"
+    );
+    let rows = app.action_directory_page(directory_query("", "declared:0", 8, 8192, 8));
+    assert_eq!(rows.rows.len(), 1);
+    assert_ne!(rows.revision, revision);
+    let contract: qos_actions::ActionContract =
+        serde_json::from_str(&rows.rows[0].visibility_contract_json).unwrap();
+    assert_eq!(
+        contract.confirmation,
+        qos_actions::ConfirmationPolicy::Confirm
+    );
+    assert_eq!(
+        app.state.doc.pending_ops(),
+        pending,
+        "refresh must not commit pending undo work"
+    );
+    let materializations = calls.get();
+    let revision = app.action_directory_revision();
+    for _ in 0..3 {
+        app.pump_collab_presence();
+    }
+    assert_eq!(
+        calls.get(),
+        materializations,
+        "stable idle must not rematerialize declarations"
+    );
+    assert_eq!(app.action_directory_revision(), revision);
+}
+
+#[test]
+fn directory_lifecycle_presence_eviction_recovers_on_normal_idle_without_input() {
+    let (mut app, calls) = connected_declared_directory();
+    app.apply_collab_event_for_test(CollabEvent::RemoteCursorMoved {
+        user_id: "peer".into(),
+        x: 1.0,
+        y: 2.0,
+    });
+    assert!(
+        app.action_directory_snapshot.is_none(),
+        "presence retains canonical cache invalidation"
+    );
+    assert!(
+        !app.pump_collab_presence(),
+        "presence was already applied; this is an empty idle pump"
+    );
+    assert!(
+        app.action_directory_snapshot.is_some(),
+        "presence-only invalidation must not permanently remove discovery"
+    );
+    let root = app.action_directory_page(directory_query("", "", 8, 8192, 8));
+    assert_eq!(root.rows.len(), 1);
+    assert!(matches!(
+        app.resolve_action_directory(&root.revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found(_)
+    ));
+    let materializations = calls.get();
+    app.pump_collab_presence();
+    assert_eq!(calls.get(), materializations);
+}
