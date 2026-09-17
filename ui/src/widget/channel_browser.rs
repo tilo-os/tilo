@@ -525,6 +525,9 @@ impl ChannelBrowser {
         let text_size = theme.tokens.typography.scale.sm;
         let cy = f64::midpoint(row.y0, row.y1);
         let mut x_cursor = band.x1 + 8.0;
+        // One measured line box for everything on the row's centre line:
+        // the pin, the name and (below) the time share it.
+        let line_top = text_top(text_renderer, text_size, cy);
 
         if entry.is_pinned {
             let (gw, _) = text_renderer.measure(PIN_GLYPH, text_size, None);
@@ -533,7 +536,7 @@ impl ChannelBrowser {
                 PIN_GLYPH,
                 text_size,
                 theme.tokens.colors.accent[5],
-                translated(transform, x_cursor, cy - f64::from(text_size) / 2.0),
+                translated(transform, x_cursor, line_top),
                 None,
             );
             x_cursor += f64::from(gw) + 4.0;
@@ -544,7 +547,7 @@ impl ChannelBrowser {
             entry.name.as_str(),
             text_size,
             theme.tokens.colors.text_primary,
-            translated(transform, x_cursor, cy - f64::from(text_size) / 2.0),
+            translated(transform, x_cursor, line_top),
             None,
         );
         let (nw, _) = text_renderer.measure(entry.name.as_str(), text_size, None);
@@ -627,14 +630,14 @@ impl ChannelBrowser {
 
         // Right-aligned before the unread badge slot.
         let rel = crate::widget::history::format_relative_time(entry.last_activity, now);
-        let (tw, _) = text_renderer.measure(&rel, text_size, None);
+        let (tw, th) = text_renderer.measure(&rel, text_size, None);
         let time_x = row.x1 - UNREAD_SLOT_W - 4.0 - f64::from(tw);
         text_renderer.draw_text(
             scene,
             &rel,
             text_size,
             theme.tokens.colors.text_dim,
-            translated(transform, time_x, cy - f64::from(text_size) / 2.0),
+            translated(transform, time_x, cy - f64::from(th) / 2.0),
             None,
         );
 
@@ -708,12 +711,13 @@ impl ChannelBrowser {
         );
         let text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
         let cy = f64::midpoint(header_rect.y0, header_rect.y1);
+        let header_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
             scene,
             space_name,
             text_size,
             theme.tokens.colors.text_dim,
-            translated(transform, band.x1 + 6.0, cy - f64::from(text_size) / 2.0),
+            translated(transform, band.x1 + 6.0, header_top),
             None,
         );
     }
@@ -726,7 +730,9 @@ impl ChannelBrowser {
         theme: &Theme,
     ) {
         let footer = self.footer_rect();
-        let band_body = Color::from_rgba8(0, 0, 0, 51);
+        // The quietest theme veneer rather than a fixed 20 % black: its
+        // polarity follows the theme, so the band recedes on light too.
+        let band_body = theme.tokens.colors.overlay_subtle;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1013,6 +1019,13 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     clippy::arithmetic_side_effects,
     reason = "Affine composition is float matrix math and cannot panic"
 )]
+/// Top edge that centres one line of `size`-px text on `center_y`, using the
+/// line box the renderer will actually paint (1.25 × size by default, and
+/// carrying the accessibility text scale) rather than the bare font size.
+fn text_top(tr: &mut TextRenderer, size: f32, center_y: f64) -> f64 {
+    center_y - f64::from(tr.measure("Ag", size, None).1) / 2.0
+}
+
 fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
