@@ -53,6 +53,11 @@ pub struct Button {
     /// Size the width from the visible label rather than using the 120px default.
     fit_content: bool,
     measured_fit_width: Option<f32>,
+    /// The settled footprint of a default-sized button — [`DEFAULT_SIZE`]
+    /// grown to hold the measured label. Seeds the next `build_layout` so a
+    /// stable label costs no extra layout pass; cleared whenever the label
+    /// can have changed shape (theme type step, locale).
+    default_footprint: Option<(f32, f32)>,
     content_sized: bool,
     content_padding: f32,
     /// The theme's resolved label size (its base type step, text scale
@@ -114,6 +119,7 @@ impl Button {
             click_value: None,
             fit_content: false,
             measured_fit_width: None,
+            default_footprint: None,
             content_sized: false,
             content_padding: 16.0,
             label_size: TypeScale::default().base,
@@ -256,6 +262,9 @@ impl Button {
             self.i18n_revision = revision;
             self.dirty = true;
             self.layout_dirty |= self.fit_content || self.content_sized;
+            // A new locale re-shapes the label; the default footprint it
+            // settled to may no longer hold it.
+            self.default_footprint = None;
         }
     }
 
@@ -362,6 +371,13 @@ impl Button {
         self
     }
 
+    /// Outlined destructive action; see [`ButtonStyle::DangerOutline`].
+    #[must_use]
+    pub fn danger_outline(mut self) -> Self {
+        self.style = ButtonStyle::DangerOutline;
+        self
+    }
+
     pub fn set_style(&mut self, style: ButtonStyle) {
         if self.style != style {
             self.style = style;
@@ -389,6 +405,13 @@ impl Button {
 /// `bg_active` only on interaction with a dim label/icon — the look a
 /// close-`X`, toolbar icon, or overlay affordance wants, replacing the
 /// per-app "draw a bare icon and hit-test the rect" pattern.
+///
+/// `DangerOutline` is the quiet destructive action: transparent at rest
+/// like `Ghost`, but outlined and lettered in the danger ink, so a
+/// secondary "Delete" beside a primary "Save" reads as destructive without
+/// the weight of a filled `Danger` face. Hover and press tint the fill the
+/// same way `Ghost` does; the ink is resolved once so it clears the
+/// readability floor on every one of those grounds.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ButtonStyle {
     #[default]
@@ -396,6 +419,7 @@ pub enum ButtonStyle {
     Primary,
     Danger,
     Ghost,
+    DangerOutline,
 }
 
 /// The retained [`Button`] tracks these itself; an immediate-mode caller
@@ -549,6 +573,32 @@ pub fn face_colors(
             );
             (bg, None, fg)
         }
+        ButtonStyle::DangerOutline => {
+            // Same grounds as `Ghost` — transparent at rest, the theme's
+            // opaque hover/active fills under the pointer — so the danger
+            // ink can be measured against every fill it will sit on. A
+            // translucent danger tint (what apps hand-painted here) has no
+            // measurable ground; the shared face uses the opaque tiers.
+            let bg = if interact.pressed {
+                theme.bg_active
+            } else if interact.hovered {
+                theme.bg_hover
+            } else {
+                Color::TRANSPARENT
+            };
+            let ink = theme.tokens.colors.ink_on_any(
+                &[
+                    theme.tokens.colors.surfaces.base,
+                    theme.bg_hover,
+                    theme.bg_active,
+                ],
+                theme.tokens.colors.semantic.danger,
+                ON_FILL_MIN_CONTRAST,
+            );
+            // One colour for outline and label: the border is what says
+            // "button" at rest, so it must be as readable as the word.
+            (bg, Some(ink), ink)
+        }
     }
 }
 
@@ -617,6 +667,12 @@ impl<'a> ButtonFace<'a> {
     #[must_use]
     pub fn ghost(mut self) -> Self {
         self.style = ButtonStyle::Ghost;
+        self
+    }
+    /// Outlined destructive action; see [`ButtonStyle::DangerOutline`].
+    #[must_use]
+    pub fn danger_outline(mut self) -> Self {
+        self.style = ButtonStyle::DangerOutline;
         self
     }
     #[must_use]
@@ -752,6 +808,19 @@ fn renderer_label_size(theme_size: f32, renderer: &TextRenderer) -> f32 {
     renderer.renderer_input_style(&TextStyle::new(theme_size)).size
 }
 
+/// Resolve a label key for painting, measuring or speaking. An empty key is
+/// an icon-only face and stays empty: routed through `i18n!` it would come
+/// back as the pseudo-locale's `⟦⟧` markers — a visible bracket pair beside
+/// the glyph, and a non-empty spoken name that hides the `accessible_name` /
+/// tooltip fallback.
+fn localized_label(key: &str) -> String {
+    if key.is_empty() {
+        String::new()
+    } else {
+        i18n!(key)
+    }
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     reason = "logical layout width narrows to renderer precision"
@@ -871,7 +940,7 @@ impl Button {
             );
         }
 
-        let label = i18n!(face.label);
+        let label = localized_label(face.label);
         paint_icon_and_label(
             scene,
             transform,
@@ -893,6 +962,42 @@ impl Button {
     fn append_cached(&self, out_scene: &mut Scene, inner: Affine) {
         out_scene.append(&self.cached, Some(inner));
     }
+
+    /// No explicit size, no fit/fill height, not content-sized: the button
+    /// stands at [`DEFAULT_SIZE`], grown only when the label needs more.
+    fn uses_default_footprint(&self) -> bool {
+        self.size.is_none() && !self.content_sized
+    }
+
+    /// [`DEFAULT_SIZE`] floored at the measured label: the height grows from
+    /// the label's measured line plus the content padding (the same rule the
+    /// `content_sized` face uses, so the two auto-height modes agree at
+    /// every scale), the width from label + icon + the fit-content side
+    /// allowance. At 1× a base-size line is 17.5 px and a label under 90 px
+    /// wide, so the result is exactly 120×40; at 2× text the 35 px line
+    /// lifts the face to 47 px and a wide label pushes it past 120 instead
+    /// of painting outside it.
+    fn measured_default_footprint(&self, text: &mut TextRenderer) -> (f32, f32) {
+        let label = localized_label(&self.label);
+        let (label_width, line_height) =
+            text.measure(&label, renderer_label_size(self.label_size, text), None);
+        let minimum_target = self.interaction.minimum_target();
+        let height = DEFAULT_SIZE
+            .1
+            .max((line_height + self.content_padding).ceil())
+            .max(minimum_target);
+        let icon_width = if self.icon.is_some() {
+            let gap = if label.is_empty() { 0.0 } else { ICON_LABEL_GAP };
+            px_f32(icon_edge(f64::from(height)) + gap)
+        } else {
+            0.0
+        };
+        let width = DEFAULT_SIZE
+            .0
+            .max((label_width + icon_width + FIT_SIDE_PADDING * 2.0).ceil())
+            .max(minimum_target);
+        (width, height)
+    }
 }
 
 impl Widget for Button {
@@ -905,6 +1010,8 @@ impl Widget for Button {
             self.is_hovered &= environment.supports_hover();
             self.layout_dirty = true;
             self.dirty = true;
+            // The footprint is floored at the environment's minimum target.
+            self.default_footprint = None;
         }
     }
 
@@ -929,10 +1036,17 @@ impl Widget for Button {
             // rebuilds widgets on a theme change; a relayout-only host such
             // as `FrameHarness::set_theme` relies on this.)
             self.dirty = true;
+            self.default_footprint = None;
         }
         self.label_size = label_size;
         self.content_padding = theme.padding_standard;
-        let (mut w, mut h) = self.size.unwrap_or(DEFAULT_SIZE);
+        // A default-sized button starts from its last settled footprint so
+        // the solver's first pass already agrees with the measurement
+        // `adjust_layout_with_measure` will make; `DEFAULT_SIZE` until then.
+        let (mut w, mut h) = self
+            .size
+            .or_else(|| self.default_footprint.filter(|_| self.uses_default_footprint()))
+            .unwrap_or(DEFAULT_SIZE);
         let minimum_target = self.interaction.minimum_target();
         w = w.max(minimum_target);
         h = h.max(minimum_target);
@@ -976,7 +1090,7 @@ impl Widget for Button {
         available: Size<taffy::AvailableSpace>,
         text: &mut TextRenderer,
     ) -> Size<f32> {
-        let label = i18n!(&self.label);
+        let label = localized_label(&self.label);
         let fixed_height = self
             .size
             .map_or(DEFAULT_SIZE.1, |(_, h)| h)
@@ -1051,6 +1165,44 @@ impl Widget for Button {
         }
         let mut style = style.clone();
         style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    /// A default-sized button pins both dimensions as `length`, so taffy
+    /// never consults `measure` for it (both axes are known before the leaf
+    /// is reached). The label is measured here instead, after each pass,
+    /// and the node grown to [`Self::measured_default_footprint`] when it
+    /// does not hold the label — at 1× that is `DEFAULT_SIZE` for every
+    /// label narrower than the face, so nothing shipped moves.
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        if !self.uses_default_footprint() {
+            return self.adjust_layout_style(taffy, node);
+        }
+        let (width, height) = match self.default_footprint {
+            Some(footprint) => footprint,
+            None => {
+                let footprint = self.measured_default_footprint(text);
+                self.default_footprint = Some(footprint);
+                footprint
+            }
+        };
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        let size = Size {
+            width: Dimension::length(width),
+            height: Dimension::length(height),
+        };
+        if current.size == size {
+            return false;
+        }
+        let mut style = current.clone();
+        style.size = size;
         taffy.set_style(node, style).is_ok()
     }
 
@@ -1151,7 +1303,7 @@ impl Widget for Button {
         // every taffy-driven path. Spelled out here since this goes through
         // the `_weighted` entry points shared with `ButtonFace`'s
         // (independently weighted/sized) immediate-mode path.
-        let label = i18n!(&self.label);
+        let label = localized_label(&self.label);
         paint_icon_and_label(
             scene,
             transform,
@@ -1395,7 +1547,7 @@ impl Widget for Button {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let label = i18n!(&self.label);
+        let label = localized_label(&self.label);
         let name = if label.is_empty() {
             // Icon-only: prefer the explicit accessible name, else fall
             // back to the tooltip text so the glyph is never silent when
@@ -2411,6 +2563,225 @@ mod tests {
             fills > 1,
             "body fill + label glyphs ⇒ several COLOR tags, got {fills}"
         );
+    }
+
+    /// Glyph-run origins painted into `scene`, in paint order.
+    fn glyph_origins(scene: &Scene) -> Vec<[f32; 2]> {
+        scene
+            .encoding()
+            .resources
+            .glyph_runs
+            .iter()
+            .map(|run| run.transform.translation)
+            .collect()
+    }
+
+    /// The shipped default footprint is untouched at 1×: a base-size label
+    /// shapes a 17.5 px line and "Save" is far narrower than the face, so the
+    /// measured floor resolves to exactly `DEFAULT_SIZE`.
+    #[test]
+    fn default_footprint_is_exactly_the_shipped_120_by_40_at_one_x() {
+        let rect = measured_button_rect(Button::new("save", "Save", None), 1.0);
+        assert_eq!(
+            (rect.width(), rect.height()),
+            (120.0, 40.0),
+            "default button at 1×: {rect:?}"
+        );
+    }
+
+    /// At 2× text the label line is 35 px; a 40 px face would leave it 2.5 px
+    /// of slack. The default footprint grows from the measured line plus the
+    /// content padding — the `content_sized` rule — so both auto-height
+    /// modes agree, and the width holds at 120 for a label that fits.
+    #[test]
+    fn default_footprint_grows_from_the_measured_line_at_two_x() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        let mut text = TextRenderer::new();
+        text.set_text_scale(2.0);
+        let (label_w, line_h) = text.measure(
+            "Save",
+            renderer_label_size(theme.tokens.typography.scale.base, &text),
+            None,
+        );
+        assert!((line_h - 35.0).abs() < 1e-3, "2× base line: {line_h}");
+        let expected_height = (line_h + theme.padding_standard).ceil();
+        assert!(expected_height > 40.0);
+        assert!(label_w + FIT_SIDE_PADDING * 2.0 < 120.0, "fixture label must fit 120");
+
+        let rect = measured_button_rect(Button::new("save", "Save", None), 2.0);
+        assert!(
+            (rect.height() - f64::from(expected_height)).abs() < 1e-6,
+            "2× default height {} should be the 35 px line + padding = {expected_height}",
+            rect.height()
+        );
+        assert!(
+            (rect.width() - 120.0).abs() < 1e-6,
+            "a label that fits keeps the 120 px default, got {}",
+            rect.width()
+        );
+    }
+
+    /// A label wider than the face used to paint outside it; the default
+    /// footprint now widens to hold it (label + the fit-content side
+    /// allowance) — the only case in which a default button leaves 120 at 1×.
+    #[test]
+    fn a_wide_label_widens_the_default_button_instead_of_overflowing_it() {
+        let label = "Remove every remote connection";
+        let mut text = TextRenderer::new();
+        let (label_w, _) = text.measure(
+            label,
+            renderer_label_size(Theme::dark().tokens.typography.scale.base, &text),
+            None,
+        );
+        let expected = (label_w + FIT_SIDE_PADDING * 2.0).ceil();
+        assert!(expected > 120.0, "fixture label must exceed the default face");
+
+        let rect = measured_button_rect(Button::new("remove", label, None), 1.0);
+        assert!(
+            (rect.width() - f64::from(expected)).abs() < 1e-6,
+            "width {} should be the measured label + 2×{FIT_SIDE_PADDING} = {expected}",
+            rect.width()
+        );
+        assert_eq!(rect.height(), 40.0, "the height stays at the shipped 40");
+    }
+
+    /// Explicit sizes are the caller's decision: neither a scaled theme nor a
+    /// wide label grows a `with_size` button.
+    #[test]
+    fn an_explicit_size_is_never_grown_by_the_measured_footprint() {
+        let rect = measured_button_rect(
+            Button::new("remove", "Remove every remote connection", None).with_size(120.0, 40.0),
+            2.0,
+        );
+        assert_eq!((rect.width(), rect.height()), (120.0, 40.0), "{rect:?}");
+    }
+
+    /// An icon-only face has an empty label key. Under the expanded
+    /// pseudo-locale `i18n!("")` came back as `⟦⟧`, painting a bracket pair
+    /// beside the glyph; the resolved label must stay empty.
+    #[test]
+    fn icon_only_face_paints_no_label_under_the_pseudo_locale() {
+        use crate::i18n::{I18nManager, PseudoLocale};
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rect = Rect::new(0.0, 0.0, 40.0, 40.0);
+
+        let mut icon_only = Scene::new();
+        Button::paint(
+            &mut icon_only,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &ButtonFace::new(rect, "").icon(crate::icons::Icon::X),
+        );
+        let icon_only_runs = glyph_origins(&icon_only).len();
+
+        let mut labelled = Scene::new();
+        Button::paint(
+            &mut labelled,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &ButtonFace::new(rect, "Go").icon(crate::icons::Icon::X),
+        );
+        let labelled_runs = glyph_origins(&labelled).len();
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+
+        assert_eq!(icon_only_runs, 0, "an icon-only face paints no glyph run");
+        assert!(labelled_runs > 0, "the labelled control still paints its text");
+    }
+
+    /// The same defect in the accessibility tree: `⟦⟧` is not empty, so the
+    /// icon-only button lost its tooltip fallback and was spoken as brackets.
+    #[test]
+    fn icon_only_button_speaks_its_tooltip_under_the_pseudo_locale() {
+        use crate::i18n::{I18nManager, PseudoLocale};
+        I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
+        let button = Button::new("close", "", None)
+            .with_icon(crate::icons::Icon::X)
+            .tooltip("Close");
+        let name = Widget::accessibility(&button).and_then(|node| node.name);
+        I18nManager::set_pseudo_locale(PseudoLocale::Off);
+        let name = name.expect("icon-only button with a tooltip has a spoken name");
+        assert_ne!(name, "⟦⟧", "the spoken name must not be the empty pseudo-locale markers");
+        assert!(
+            name.contains('C') && name.contains('s'),
+            "the tooltip is what gets spoken, got {name:?}"
+        );
+    }
+
+    /// Transparent at rest with the danger ink as both outline and label;
+    /// under the pointer the theme's opaque hover/active fills, so the ink
+    /// can be measured against every ground it sits on.
+    #[test]
+    fn face_colors_danger_outline_is_transparent_at_rest_and_outlined_in_its_ink() {
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let rest = face_colors(&theme, ButtonStyle::DangerOutline, ButtonInteract::default());
+            assert!(rest.0.components[3] <= 0.0, "{}: rest fill is transparent", theme.name);
+            assert_eq!(rest.1, Some(rest.2), "{}: outline is the label ink", theme.name);
+            let ratio = crate::a11y::contrast_ratio(rest.2, theme.tokens.colors.surfaces.base);
+            assert!(
+                ratio >= ON_FILL_MIN_CONTRAST,
+                "{}: danger ink {ratio:.2}:1 on the base surface",
+                theme.name
+            );
+            let hovered = face_colors(
+                &theme,
+                ButtonStyle::DangerOutline,
+                ButtonInteract {
+                    hovered: true,
+                    ..ButtonInteract::default()
+                },
+            );
+            assert_eq!(hovered.0, theme.bg_hover, "{}: hover tints the fill", theme.name);
+            assert_eq!(hovered.2, rest.2, "{}: the ink does not change under the pointer", theme.name);
+        }
+    }
+
+    /// Hover, press, focus and disabled recolour the face; none of them may
+    /// move it. The focus ring is stroked on the outline, not inset, so the
+    /// label origin is identical in every state.
+    #[test]
+    fn interaction_states_do_not_move_the_face_or_its_label() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
+        let states = [
+            ("rest", ButtonInteract::default()),
+            ("hovered", ButtonInteract { hovered: true, ..ButtonInteract::default() }),
+            ("pressed", ButtonInteract { pressed: true, ..ButtonInteract::default() }),
+            ("focused", ButtonInteract { focused: true, ..ButtonInteract::default() }),
+            ("disabled", ButtonInteract { disabled: true, ..ButtonInteract::default() }),
+        ];
+        for style in [
+            ButtonStyle::Neutral,
+            ButtonStyle::Primary,
+            ButtonStyle::Danger,
+            ButtonStyle::Ghost,
+            ButtonStyle::DangerOutline,
+        ] {
+            let mut reference: Option<[f32; 2]> = None;
+            for (name, interact) in states {
+                let mut scene = Scene::new();
+                let face = ButtonFace::new(rect, "Delete")
+                    .style(style)
+                    .hovered(interact.hovered)
+                    .pressed(interact.pressed)
+                    .focused(interact.focused)
+                    .disabled(interact.disabled);
+                Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
+                let origins = glyph_origins(&scene);
+                let origin = *origins.first().expect("label painted");
+                match reference {
+                    None => reference = Some(origin),
+                    Some(expected) => assert_eq!(
+                        origin, expected,
+                        "{style:?}/{name}: the label moved"
+                    ),
+                }
+            }
+        }
     }
 
     #[test]

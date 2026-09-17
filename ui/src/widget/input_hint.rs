@@ -695,6 +695,8 @@ impl Widget for InputHint {
                     f64::from(theme.tokens.spacing.s6).max(HEIGHT),
                 )),
             },
+            // Fixed target: never the item that gives in an overflowing row.
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
