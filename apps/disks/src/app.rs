@@ -1093,7 +1093,15 @@ impl DisksApp {
             usage_color(theme, used_frac),
         );
 
-        // Health dot + short label at a glance.
+        Self::draw_drive_health(paint, r, drive);
+    }
+
+    /// Health dot + short label at a glance (part of [`Self::draw_drive_row`]).
+    fn draw_drive_health(paint: &mut PaintContext<'_>, r: Rect, drive: &Drive) {
+        let scene = &mut *paint.scene;
+        let tr = &mut *paint.text;
+        let theme = paint.theme;
+        let t = paint.transform;
         let status = drive.smart_status();
         let dot_c = status_color(theme, status);
         let dot = Rect::new(r.x1 - 26.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 28.0);
@@ -3126,6 +3134,94 @@ impl DisksApp {
         }))
     }
 
+    /// Refresh scroll extents and derive the frame's shared geometry before
+    /// any paint pass consumes it.
+    fn prepare_draw_layout(&mut self) -> Layout {
+        let drive_count = self.topo.drives.len();
+        let (content_height, list_height) = match self.drive() {
+            Some(drive) => (
+                self.content_height(drive),
+                drive_count as f64 * CARD_H + drive_count.saturating_sub(1) as f64 * CARD_GAP,
+            ),
+            None => (0.0, 0.0),
+        };
+        self.content_h = content_height;
+        self.list_h = list_height;
+
+        let list_body_height = (self.rect.y1 - PAD) - (TOPBAR_H + PAD + LIST_HEADER_H);
+        let content_top = TOPBAR_H + PAD + HEADER_H + 12.0 + ACTIONBAR_H + 12.0 + TAB_H + PAD;
+        let content_height_available = (self.rect.y1 - PAD) - content_top;
+        self.content_scroll = self
+            .content_scroll
+            .clamp(0.0, (content_height - content_height_available).max(0.0));
+        self.list_scroll = self
+            .list_scroll
+            .clamp(0.0, (list_height - list_body_height).max(0.0));
+        self.compute_layout()
+    }
+
+    /// Paint the selected drive's header, action band, tabs, and clipped tab
+    /// content. The empty state follows the same detail-pane boundary.
+    fn draw_detail_pane(&self, paint: &mut PaintContext<'_>, layout: &Layout) {
+        let Some(drive) = self.drive() else {
+            self.draw_empty_state(
+                paint.scene,
+                paint.text,
+                paint.theme,
+                paint.transform,
+                layout,
+            );
+            return;
+        };
+
+        Self::draw_header(paint, layout, drive);
+        self.draw_action_bar(
+            paint.scene,
+            paint.text,
+            paint.theme,
+            paint.transform,
+            layout,
+            drive,
+        );
+        self.draw_tabs(
+            paint.scene,
+            paint.text,
+            paint.theme,
+            paint.transform,
+            layout,
+        );
+
+        let content_transform = paint.transform * Affine::translate((0.0, -self.content_scroll));
+        let natural_bottom = (layout.content.y0 + self.content_h).max(layout.content.y1);
+        let extended = Rect::new(
+            layout.content.x0,
+            layout.content.y0,
+            layout.content.x1,
+            natural_bottom,
+        );
+        paint.scene.push_layer(
+            Fill::NonZero,
+            ui::vello::peniko::BlendMode::default(),
+            1.0,
+            paint.transform,
+            &layout.content,
+        );
+        let mut content_paint = PaintContext {
+            scene: &mut *paint.scene,
+            text: &mut *paint.text,
+            theme: paint.theme,
+            transform: content_transform,
+        };
+        match self.tab {
+            Tab::Overview => self.draw_overview(&mut content_paint, layout, drive),
+            Tab::Smart => Self::draw_smart_tab(&mut content_paint, extended, drive),
+            Tab::Partitions => {
+                self.draw_partitions_tab(&mut content_paint, extended, drive);
+            }
+        }
+        paint.scene.pop_layer();
+    }
+
     /// Resolve an operation payload against the latest locally-probed
     /// topology. Resource invocations may arrive after a collaborator's
     /// document snapshot or a search result has gone stale, so a leaf name in
@@ -3621,105 +3717,22 @@ impl Widget for DisksApp {
         // App background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
 
-        // Measure content extents + clamp scroll before laying out (the list
-        // rows are positioned from `list_scroll`).
-        let n = self.topo.drives.len();
-        let (ch, lh) = match self.drive() {
-            Some(d) => (
-                self.content_height(d),
-                n as f64 * CARD_H + n.saturating_sub(1) as f64 * CARD_GAP,
-            ),
-            None => (0.0, 0.0),
+        let lay = self.prepare_draw_layout();
+        let mut paint = PaintContext {
+            scene,
+            text: text_renderer,
+            theme,
+            transform,
         };
-        self.content_h = ch;
-        self.list_h = lh;
-        let v = self.rect;
-        let list_body_h = (v.y1 - PAD) - (TOPBAR_H + PAD + LIST_HEADER_H);
-        let content_top = TOPBAR_H + PAD + HEADER_H + 12.0 + ACTIONBAR_H + 12.0 + TAB_H + PAD;
-        let content_avail = (v.y1 - PAD) - content_top;
-        self.content_scroll = self
-            .content_scroll
-            .clamp(0.0, (ch - content_avail).max(0.0));
-        self.list_scroll = self.list_scroll.clamp(0.0, (lh - list_body_h).max(0.0));
 
-        let lay = self.compute_layout();
-        let tr = text_renderer;
-
-        // Detail pane (drawn first; in overlay mode the flap sits on top).
-        if let Some(drive) = self.drive() {
-            Self::draw_header(
-                &mut PaintContext {
-                    scene,
-                    text: tr,
-                    theme,
-                    transform,
-                },
-                &lay,
-                drive,
-            );
-            self.draw_action_bar(scene, tr, theme, transform, &lay, drive);
-            self.draw_tabs(scene, tr, theme, transform, &lay);
-            // Content scrolls within its own clip so it stays usable when the
-            // window is short/narrow. `ct` shifts the content up by the scroll;
-            // interactive rects live in unscrolled coords (see handle_event).
-            let ct = transform * Affine::translate((0.0, -self.content_scroll));
-            let natural_bottom = (lay.content.y0 + self.content_h).max(lay.content.y1);
-            let ext = Rect::new(
-                lay.content.x0,
-                lay.content.y0,
-                lay.content.x1,
-                natural_bottom,
-            );
-            scene.push_layer(
-                Fill::NonZero,
-                ui::vello::peniko::BlendMode::default(),
-                1.0,
-                transform,
-                &lay.content,
-            );
-            match self.tab {
-                Tab::Overview => self.draw_overview(
-                    &mut PaintContext {
-                        scene,
-                        text: tr,
-                        theme,
-                        transform: ct,
-                    },
-                    &lay,
-                    drive,
-                ),
-                Tab::Smart => Self::draw_smart_tab(
-                    &mut PaintContext {
-                        scene,
-                        text: tr,
-                        theme,
-                        transform: ct,
-                    },
-                    ext,
-                    drive,
-                ),
-                Tab::Partitions => self.draw_partitions_tab(
-                    &mut PaintContext {
-                        scene,
-                        text: tr,
-                        theme,
-                        transform: ct,
-                    },
-                    ext,
-                    drive,
-                ),
-            }
-            scene.pop_layer();
-        } else {
-            self.draw_empty_state(scene, tr, theme, transform, &lay);
-        }
-
-        self.draw_statusline(scene, tr, theme, transform);
+        // Detail pane is drawn first; in overlay mode the flap sits on top.
+        self.draw_detail_pane(&mut paint, &lay);
+        self.draw_statusline(paint.scene, paint.text, theme, transform);
 
         // Dimming scrim behind the open overlay flap (eased with the reveal).
         if lay.scrim.width() > 0.0 {
             let alpha = (self.flap.reveal() * 0.5 * 255.0) as u8;
-            scene.fill(
+            paint.scene.fill(
                 Fill::NonZero,
                 transform,
                 with_alpha(Color::BLACK, alpha),
@@ -3734,8 +3747,10 @@ impl Widget for DisksApp {
         if self.flap.reveal() > 0.001 {
             if lay.split == SplitLayout::Overlay {
                 let panel = lay.sidebar.intersect(self.rect);
-                scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &panel);
-                scene.stroke(
+                paint
+                    .scene
+                    .fill(Fill::NonZero, transform, c.surfaces.base, None, &panel);
+                paint.scene.stroke(
                     &Stroke::new(1.0),
                     transform,
                     c.border_standard,
@@ -3746,39 +3761,14 @@ impl Widget for DisksApp {
                     ),
                 );
             }
-            self.draw_drive_list(
-                &mut PaintContext {
-                    scene,
-                    text: tr,
-                    theme,
-                    transform,
-                },
-                &lay,
-            );
+            self.draw_drive_list(&mut paint, &lay);
         }
 
         // Top bar last so the hamburger + title stay above the flap panel.
-        self.draw_topbar(
-            &mut PaintContext {
-                scene,
-                text: tr,
-                theme,
-                transform,
-            },
-            &lay,
-        );
+        self.draw_topbar(&mut paint, &lay);
 
         if let (Some(ml), Some(p)) = (lay.modal, self.pending) {
-            self.draw_modal(
-                &mut PaintContext {
-                    scene,
-                    text: tr,
-                    theme,
-                    transform,
-                },
-                &ml,
-                p,
-            );
+            self.draw_modal(&mut paint, &ml, p);
         }
     }
 
