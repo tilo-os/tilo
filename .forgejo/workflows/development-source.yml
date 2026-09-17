@@ -1,0 +1,55 @@
+name: Development / signed native source verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - os/dev/verify-development-source.py
+      - os/dev/development-trust.py
+      - os/dev/install-public-trust.py
+      - os/dev/hardware_profile.py
+      - os/tests/development_source_registry.py
+      - os/tests/Containerfile.development-source
+      - .forgejo/workflows/development-source.yml
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: runner
+          - arch: aarch64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Require native execution and install pinned Cosign
+        run: |
+          bash os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+          bash os/dev/install-cached-cosign.sh
+      - name: Verify with a disposable local registry and private fixture keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          context=$(mktemp -d)
+          image="tilo-development-source-fixture:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.arch }}"
+          cleanup() {
+            docker image rm "$image" >/dev/null 2>&1 || true
+            rm -rf -- "$context"
+          }
+          trap cleanup EXIT
+          mkdir "$context/dev"
+          cp os/dev/{verify-development-source.py,development-trust.py,install-public-trust.py,hardware_profile.py} "$context/dev/"
+          cp os/tests/development_source_registry.py "$context/"
+          cp "$(command -v cosign)" "$context/cosign"
+          cp os/tests/Containerfile.development-source "$context/Containerfile"
+          docker build --tag "$image" "$context"
+          # Nested Podman mounts only inside this disposable CI container.
+          # No host directories or credentials are mounted.
+          docker run --rm --privileged --tmpfs /tmp --tmpfs /run "$image"
