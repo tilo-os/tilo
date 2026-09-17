@@ -30,7 +30,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use photos::actions::{PhotosResources, register};
 use photos::doc::PhotosDoc;
-use photos::model::{Edits, Rect01};
+use photos::model::{Album, Edits, Rect01};
 use photos::pixels::{self, Rgba};
 use photos::{PhotosApp, shots_pattern};
 use tilo_actions::ResourceProvider;
@@ -944,6 +944,47 @@ fn library_card_controls_stay_inside_their_cards_at_wide_and_narrow_sizes() {
             }
         }
     }
+}
+
+#[test]
+fn desktop_library_uses_two_complete_rows_before_leaving_canvas_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, _) = staged(dir.path(), 1200, 800);
+    let mut hz = Harness::new(1440.0, 900.0);
+    hz.app.open_path(&mut hz.state.doc, &path);
+    let mut library = PhotosDoc::library(&hz.state.doc);
+    let seed = library.photos[0].clone();
+    for suffix in ["dusk", "trail", "museum", "market"] {
+        let mut extra = seed.clone();
+        extra.id = format!("{}:{suffix}", seed.id);
+        extra.image.name = format!("{suffix}.png");
+        library.add_photo(extra);
+    }
+    library.albums.push(Album {
+        id: "photos.album:layout".into(),
+        name: "Layout coverage".into(),
+        photo_ids: library
+            .photos
+            .iter()
+            .map(|photo| photo.id.clone())
+            .collect(),
+    });
+    PhotosDoc::set_library(&mut hz.state.doc, &library);
+    hz.app.show_library();
+    hz.frame();
+    hz.frame();
+
+    let cards = hz.app.library_card_action_rects();
+    assert_eq!(
+        cards.len(),
+        5,
+        "a five-photo desktop library should use the second row, not a large blank canvas"
+    );
+    assert!(cards.iter().all(|(card, ..)| card.width() >= 420.0));
+    assert!(
+        cards.iter().all(|(card, ..)| card.y1 <= 900.0),
+        "every rendered desktop card must remain fully pointer and AT reachable: {cards:?}"
+    );
 }
 
 /// 200% text has a deliberately compact overflow toolbar and a two-row
