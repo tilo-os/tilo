@@ -356,6 +356,8 @@ def build_environment(wpe, generation, revision, manifest, signer, cache):
                TILO_GENERATION=generation, TILO_SEAL_GENERATION='1',
                TILO_WITH_BROWSER='1', TILO_WPE_BOOTSTRAP='0',
                TILO_WPE_BUILD_JOBS='2', WPE_BUILDROOT_REF=wpe,
+               TILO_WPE_BUILD_CACHE_REF='code.sandbox.example/qos/tilo-development-wpe-cache-x86_64',
+               TILO_WPE_SOURCE_DATE_EPOCH='0',
                TILO_SKIP_BUILD='0', TILO_HARDWARE_PROFILE='generic',
                TILO_BUILD_ARGS='--build-arg TILO_PREBUILT_APPS=0 --build-arg TILO_PREBUILT_DESKTOP=0 --build-arg TILO_CARGO_BUILD_JOBS=2 --build-arg TILO_REQUIRE_COMPILER_CACHE=1')
     for name, value in cache.items():
