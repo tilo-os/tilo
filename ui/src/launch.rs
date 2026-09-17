@@ -819,7 +819,10 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     Ok(())
 }
 
-fn shot_theme(args: &LaunchArgs) -> Theme {
+/// Resolve the shared screenshot theme, text scale and motion preference.
+/// Custom shot handlers should use this when constructing their own harness.
+#[must_use]
+pub fn shot_theme(args: &LaunchArgs) -> Theme {
     let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
