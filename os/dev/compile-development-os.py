@@ -16,6 +16,8 @@ import re
 import signal
 import shutil
 import subprocess
+import stat
+import tempfile
 import time
 
 REPO = Path(__file__).resolve().parents[2]
@@ -27,6 +29,9 @@ PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'RPMS_REF': 'rpms-snapshot.env',
 GIB = 1024**3
 INITIAL_FREE = 80 * GIB
 ABORT_FREE = 8 * GIB
+CACHE_SECRETS = Path('/run/tilo-cache-secrets')
+CACHE_CREDENTIALS = {'AWS_ACCESS_KEY_ID': 'aws_access_key_id',
+                     'AWS_SECRET_ACCESS_KEY': 'aws_secret_access_key'}
 
 
 def validate_inputs(wpe, generation, revision, branch):
@@ -40,15 +45,136 @@ def validate_inputs(wpe, generation, revision, branch):
         raise ValueError('provisional full compilation is restricted to codex branches')
 
 
-def run(*command, env=None, capture=True):
+def run(*command, env=None, capture=True, timeout=None):
     result = subprocess.run(command, cwd=REPO, env=env, check=True,
                             stdout=subprocess.PIPE if capture else None,
-                            stderr=subprocess.PIPE if capture else None)
+                            stderr=subprocess.PIPE if capture else None, timeout=timeout)
     return result.stdout.decode().strip() if capture else ''
 
 
 def write_receipt(name, value):
     (EVIDENCE / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+
+
+def cache_configuration(environment):
+    # These are the deployed broker's public S3 identities on both runner
+    # placements. Do not send existing credentials to a redirected endpoint.
+    expected = {
+        'SCCACHE_ENDPOINT': 'https://s3.eu-central-1.amazonaws.com',
+        'SCCACHE_BUCKET': 'podesta-agent-sccache-125650147312-eu-central-1',
+        'SCCACHE_REGION': 'eu-central-1', 'SCCACHE_S3_USE_SSL': 'true',
+    }
+    if any(environment.get(name) != value for name, value in expected.items()):
+        raise ValueError('remote compiler cache configuration differs from the reviewed runner S3 identity')
+    prefix = environment.get('SCCACHE_S3_KEY_PREFIX', '')
+    if not re.fullmatch(r'[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*', prefix) or len(prefix) > 128:
+        raise ValueError('remote compiler cache requires a canonical runner key prefix')
+    return {**expected, 'SCCACHE_S3_KEY_PREFIX': prefix + '/tilo-development/image/x86_64/v1'}
+
+
+def stage_cache_credentials(directory):
+    """Write only existing cache credentials outside the Docker build context."""
+    cache_configuration(os.environ)
+    if os.environ.get('AWS_SESSION_TOKEN'):
+        raise ValueError('temporary AWS session credentials are not supported by this compile lane')
+    directory = Path(directory)
+    directory.chmod(0o700)
+    for variable, filename in CACHE_CREDENTIALS.items():
+        value = os.environ.get(variable, '')
+        if not value or len(value) > 1024 or any(char.isspace() for char in value):
+            raise ValueError('existing runner cache credentials are missing or malformed')
+        descriptor = os.open(directory / filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write(value)
+
+
+def cache_credentials():
+    values = {}
+    for variable, filename in CACHE_CREDENTIALS.items():
+        descriptor = os.open(CACHE_SECRETS / filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor) as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077 or not 0 < info.st_size <= 1024:
+                raise ValueError('cache credential must be a private root-owned bounded regular file')
+            value = stream.read(1025)
+        if len(value) > 1024 or not value or any(char.isspace() for char in value):
+            raise ValueError('cache credential is malformed')
+        values[variable] = value
+    return values
+
+
+def cache_counters(raw, prefix):
+    payload = json.loads(raw)
+    location = payload.get('cache_location', '')
+    if not isinstance(location, str) or 's3' not in location.lower() or f'/{prefix}/' not in location:
+        raise ValueError('compiler probe did not use the requested remote S3 cache')
+    counters = payload.get('stats', {})
+    def count(name):
+        value = counters.get(name, 0)
+        if isinstance(value, dict):
+            value = sum(value.get('counts', {}).values())
+        if type(value) is not int or value < 0:
+            raise ValueError('invalid compiler cache counter')
+        return value
+    result = {name: count(name) for name in
+              ('cache_hits', 'cache_misses', 'cache_writes', 'cache_errors', 'cache_read_errors', 'cache_write_errors')}
+    if any(result[name] for name in ('cache_errors', 'cache_read_errors', 'cache_write_errors')):
+        raise ValueError('remote compiler cache reported authentication or I/O errors')
+    return result
+
+
+def verify_remote_cache(configuration):
+    """Exercise real S3 writes/reads through the pinned sccache, not just DNS."""
+    receipt = {'configuration': configuration, 'status': 'probing', 'credentials_retained': False}
+    write_receipt('cache-configuration.json', receipt)
+    started = time.monotonic()
+    environment = {name: os.environ[name] for name in ('PATH', 'HOME', 'RUSTUP_HOME', 'CARGO_HOME') if name in os.environ}
+    environment.update(configuration)
+    environment.update(SCCACHE_IGNORE_SERVER_IO_ERROR='0', SCCACHE_SERVER_PORT='4236',
+                       AWS_EC2_METADATA_DISABLED='true')
+    try:
+        environment.update(cache_credentials())
+        with tempfile.TemporaryDirectory(prefix='cache-probe-', dir=PRIVATE) as temporary:
+            source, output = Path(temporary) / 'probe.rs', Path(temporary) / 'libprobe.rlib'
+            source.write_text('pub fn tilo_cache_probe() -> &\'static str { env!("SOURCE_DATE_EPOCH") }\n')
+            first_hash = None
+            for attempt in ('first', 'warm', 'changed_epoch'):
+                # New empty local cache plus a stopped server between attempts:
+                # a warm hit must come from the configured remote S3 backend.
+                cache_dir = Path(temporary) / attempt
+                cache_dir.mkdir()
+                environment['SCCACHE_DIR'] = str(cache_dir)
+                environment['SOURCE_DATE_EPOCH'] = '2' if attempt == 'changed_epoch' else '1'
+                run('sccache', '--zero-stats', env=environment, timeout=45)
+                run('sccache', 'rustc', '--crate-name', 'tilo_cache_probe', '--crate-type', 'rlib',
+                    str(source), '-o', str(output), env=environment, timeout=45)
+                counters = cache_counters(run('sccache', '--show-stats', '--stats-format=json',
+                                              env=environment, timeout=15), configuration['SCCACHE_S3_KEY_PREFIX'])
+                receipt[attempt] = counters
+                if not counters['cache_hits'] and not counters['cache_writes']:
+                    raise ValueError('remote compiler probe neither hit nor populated the cache')
+                if attempt == 'warm' and not counters['cache_hits']:
+                    raise ValueError('remote compiler probe had no warm cache hit')
+                output_hash = hashlib.sha256(output.read_bytes()).hexdigest()
+                if first_hash is None:
+                    first_hash = output_hash
+                elif (output_hash == first_hash) != (attempt == 'warm'):
+                    raise ValueError('compiler cache changed warm output or reused stale epoch-sensitive output')
+                run('sccache', '--stop-server', env=environment, timeout=15)
+                output.unlink()
+        receipt['remote_hit_proof'] = 'S3 backend, restarted server, distinct empty local cache per attempt'
+        receipt['epoch_sensitive_output_changed'] = True
+        receipt['status'] = 'verified-remote-compile-and-hit'
+    except (OSError, ValueError, subprocess.SubprocessError):
+        receipt['status'] = 'failed-before-full-compilation'
+        raise ValueError('remote compiler cache probe failed; inspect public cache configuration and runner connectivity') from None
+    finally:
+        receipt['elapsed_seconds'] = time.monotonic() - started
+        write_receipt('cache-configuration.json', receipt)
+        try:
+            run('sccache', '--stop-server', env=environment, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 def capacity_decision(free, *, starting):
@@ -58,9 +184,14 @@ def capacity_decision(free, *, starting):
 
 def memory_budget():
     result = {'scope': 'container-visible cgroup and guest meminfo'}
-    for name in ('memory.max', 'memory.peak', 'memory.events', 'cpu.max', 'cpuset.cpus.effective'):
+    for name in ('memory.max', 'memory.peak', 'memory.events', 'cpu.max', 'cpuset.cpus.effective',
+                 'cpu.stat', 'cpu.pressure', 'memory.pressure', 'io.pressure'):
         path = Path('/sys/fs/cgroup') / name
-        result[name] = path.read_text()[:1024].strip() if path.is_file() else 'unavailable'
+        if path.is_file():
+            with path.open() as stream:
+                result[name] = stream.read(1024).strip()
+        else:
+            result[name] = 'unavailable'
     path = Path('/proc/meminfo')
     result['guest_memory'] = [line for line in path.read_text().splitlines()
                               if line.startswith(('MemTotal:', 'MemAvailable:', 'SwapTotal:'))]
@@ -188,7 +319,7 @@ def installation_tooling(image):
                                  for flag in flags}}
 
 
-def build_environment(wpe, generation, revision, manifest, signer):
+def build_environment(wpe, generation, revision, manifest, signer, cache):
     # No inherited TILO_BUILD_ARGS, prebuilt payload, skip-build or remote engine
     # settings can change this from a complete, local, source build.
     allowed = ('PATH', 'HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'REGISTRY_AUTH_FILE')
@@ -207,6 +338,10 @@ def build_environment(wpe, generation, revision, manifest, signer):
                TILO_WPE_BUILD_JOBS='2', WPE_BUILDROOT_REF=wpe,
                TILO_SKIP_BUILD='0', TILO_HARDWARE_PROFILE='generic',
                TILO_BUILD_ARGS='--build-arg TILO_PREBUILT_APPS=0 --build-arg TILO_PREBUILT_DESKTOP=0 --build-arg TILO_CARGO_BUILD_JOBS=2')
+    for name, value in cache.items():
+        env['TILO_BUILD_ARGS'] += f' --build-arg {name}={value}'
+    for filename in CACHE_CREDENTIALS.values():
+        env['TILO_BUILD_ARGS'] += f' --secret id={filename},src={(CACHE_SECRETS / filename).as_posix()}'
     return env
 
 
@@ -224,6 +359,8 @@ def main():
     PRIVATE.mkdir(mode=0o700)
     EVIDENCE.mkdir(mode=0o755)
     Path('/work/tmp').mkdir()
+    cache = cache_configuration(os.environ)
+    verify_remote_cache(cache)
     pins = pinned_inputs()
     write_receipt('inputs.json', {'purpose': 'provisional-full-source-compilation',
         'installable': False, 'revision': args.revision, 'architecture': 'x86_64',
@@ -268,7 +405,7 @@ def main():
         '--efi-certificate', signer['efi_certificate'], '--registry-owner', str(PRIVATE / 'owner.pub'),
         '--output', str(PRIVATE / 'public')))
     shutil.copytree(PRIVATE / 'public', EVIDENCE / 'public-trust')
-    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'])
+    env = build_environment(args.wpe, args.generation, args.revision, trust['manifest_sha256'], signer['signer'], cache)
     compile_with_capacity_watchdog(env)
     inspection = inspect_compilation(env['TILO_IMAGE'], args.revision, args.generation,
         env['TILO_TARGET_IMGREF'], trust['manifest_sha256'], trust['identities']['efi-signing.crt'])
