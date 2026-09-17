@@ -14,6 +14,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -369,10 +370,10 @@ fn host_pointer_speed(speed: f64) -> f64 {
 }
 
 fn gsettings_get(schema: &str, key: &str) -> Option<String> {
-    let output = Command::new("gsettings")
-        .args(["get", schema, key])
-        .output()
-        .ok()?;
+    let mut command = Command::new("gsettings");
+    command.args(["get", schema, key]);
+    let output =
+        bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(5)).ok()?;
     output
         .status
         .success()
