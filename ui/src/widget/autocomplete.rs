@@ -673,20 +673,21 @@ impl Widget for Autocomplete {
         let tokens = &theme.tokens;
         let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
         let shape = RoundedRect::from_rect(panel, f64::from(tokens.radii.md));
-        // Raised panel + hairline border, matching the toolkit's other popovers.
+        // The suggestion list is a Panel (HIG §9.1 / §9.5): panel ground and
+        // panel edge, like the toolkit's other popovers.
         scene.fill(
             Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(panel, f64::from(tokens.radii.md)),
         );
 
         let text_size = renderer_type_size(text_renderer, tokens.typography.scale.base);
