@@ -50,6 +50,89 @@ pub(crate) enum CaptureSurfaceKind {
     },
 }
 
+pub(super) struct PreparedCaptureSurface<'a> {
+    pub(super) id: &'a str,
+    pub(super) title: &'a str,
+    pub(super) image: Image,
+    pub(super) pixel_aspect: f64,
+    pub(super) preferred_size: Option<vello::kurbo::Size>,
+    pub(super) spawn_from: Option<Rect>,
+    pub(super) handoff_layers: Vec<CaptureMirrorHandoffLayer>,
+    pub(super) crossfade_preview: Option<Image>,
+    pub(super) document_aspect: Option<f64>,
+}
+
+impl<'a> CaptureSurfaceRequest<'a> {
+    pub(super) fn prepare(self) -> PreparedCaptureSurface<'a> {
+        let Self {
+            id,
+            title,
+            rgba,
+            width,
+            height,
+            spawn_from,
+            kind,
+        } = self;
+        let pixel_aspect = f64::from(width) / f64::from(height.max(1));
+        let (image, preferred_size, handoff_layers, crossfade_preview, document_aspect) = match kind
+        {
+            CaptureSurfaceKind::Live {
+                preferred_size,
+                handoff_layers,
+            } => (
+                Image::from_rgba(rgba, width, height)
+                    .with_fit(ImageFit::Contain)
+                    .with_alt(format!("Live capture: {title}")),
+                preferred_size,
+                handoff_layers,
+                None,
+                None,
+            ),
+            CaptureSurfaceKind::Pinned { preview } => {
+                let document_aspect = (pixel_aspect < 0.58).then_some(pixel_aspect);
+                let fit = if document_aspect.is_some() {
+                    ImageFit::Fill
+                } else {
+                    ImageFit::Contain
+                };
+                let image = Image::from_rgba(rgba, width, height)
+                    .with_fit(fit)
+                    .with_alt(format!("Pinned screenshot: {title}"));
+                let preview_rgba: Vec<u8> = preview
+                    .pixels
+                    .into_iter()
+                    .flat_map(std::iter::IntoIterator::into_iter)
+                    .collect();
+                let preview_image = Image::from_rgba(
+                    Arc::from(preview_rgba),
+                    u32::from(preview.columns.max(1)),
+                    u32::from(preview.rows.max(1)),
+                )
+                .with_fit(ImageFit::Fill)
+                .with_alt(format!("Pinned screenshot preview: {title}"));
+                (
+                    image,
+                    document_aspect.map(|_| vello::kurbo::Size::new(340.0, 420.0)),
+                    Vec::new(),
+                    Some(preview_image),
+                    document_aspect,
+                )
+            }
+        };
+        PreparedCaptureSurface {
+            id,
+            title,
+            image,
+            pixel_aspect,
+            preferred_size,
+            spawn_from,
+            handoff_layers,
+            crossfade_preview,
+            document_aspect,
+        }
+    }
+}
+
 struct CaptureMirrorLayer {
     image: Image,
     source: Rect,
@@ -450,6 +533,64 @@ mod tests {
 
     fn pixel(alpha: u8) -> Arc<[u8]> {
         Arc::from(vec![20_u8, 30, 40, alpha])
+    }
+
+    #[test]
+    fn request_materialization_keeps_live_and_pinned_policies_distinct() {
+        let spawn = Rect::new(40.0, 50.0, 140.0, 100.0);
+        let live = CaptureSurfaceRequest {
+            id: "live",
+            title: "Live region",
+            rgba: Arc::from(vec![0_u8; 8]),
+            width: 2,
+            height: 1,
+            spawn_from: Some(spawn),
+            kind: CaptureSurfaceKind::Live {
+                preferred_size: Some(vello::kurbo::Size::new(480.0, 270.0)),
+                handoff_layers: vec![CaptureMirrorHandoffLayer {
+                    rgba: pixel(255),
+                    width: 1,
+                    height: 1,
+                    source: Rect::new(0.0, 0.0, 1.0, 1.0),
+                    target: Rect::new(0.0, 0.0, 1.0, 1.0),
+                }],
+            },
+        }
+        .prepare();
+        assert_eq!(live.pixel_aspect, 2.0);
+        assert_eq!(live.spawn_from, Some(spawn));
+        assert_eq!(
+            live.preferred_size,
+            Some(vello::kurbo::Size::new(480.0, 270.0))
+        );
+        assert_eq!(live.handoff_layers.len(), 1);
+        assert!(live.crossfade_preview.is_none());
+        assert!(live.document_aspect.is_none());
+
+        let pinned = CaptureSurfaceRequest {
+            id: "pinned",
+            title: "Tall screenshot",
+            rgba: Arc::from(vec![0_u8; 16]),
+            width: 1,
+            height: 4,
+            spawn_from: None,
+            kind: CaptureSurfaceKind::Pinned {
+                preview: ui::widget::CapturePreview {
+                    columns: 1,
+                    rows: 1,
+                    pixels: vec![[0, 0, 0, 255]],
+                },
+            },
+        }
+        .prepare();
+        assert_eq!(pinned.pixel_aspect, 0.25);
+        assert_eq!(pinned.document_aspect, Some(0.25));
+        assert_eq!(
+            pinned.preferred_size,
+            Some(vello::kurbo::Size::new(340.0, 420.0))
+        );
+        assert!(pinned.handoff_layers.is_empty());
+        assert!(pinned.crossfade_preview.is_some());
     }
 
     #[test]
