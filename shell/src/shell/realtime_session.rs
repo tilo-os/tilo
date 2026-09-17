@@ -256,7 +256,20 @@ pub struct RealtimeFabricOffer {
     pub room_id: String,
     pub semantic_position: Option<String>,
     pub media_bits: u8,
+    #[serde(default)]
+    pub controls: RealtimeControlState,
     pub expires_unix_ms: u64,
+}
+
+/// Bounded semantic control state that is safe to resume on another device.
+/// It contains no transport, capture, or hardware identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RealtimeControlState {
+    pub microphone_muted: bool,
+    pub camera_muted: bool,
+    pub screen_share_paused: bool,
+    pub share_audio_muted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -764,6 +777,7 @@ impl RealtimeFabricOffer {
             room: SemanticRoomLocator::new(self.provider.clone(), self.room_id.clone())?,
             semantic_position: self.semantic_position.clone(),
             media: RealtimeMediaSet::from_fabric_bits(self.media_bits)?,
+            controls: self.controls,
         };
         intent.validate()?;
         Ok(intent)
@@ -777,6 +791,7 @@ pub struct RealtimeResumeIntent {
     /// contain a URL, access token, or process-local media identifier.
     pub semantic_position: Option<String>,
     pub media: RealtimeMediaSet,
+    pub controls: RealtimeControlState,
 }
 
 impl RealtimeResumeIntent {
@@ -1249,6 +1264,7 @@ impl RealtimeSessionBroker {
             room_id: entry.intent.room.room_id.clone(),
             semantic_position: entry.intent.semantic_position.clone(),
             media_bits: entry.intent.media.fabric_bits(),
+            controls: entry.intent.controls,
             expires_unix_ms,
         })
     }
@@ -1773,6 +1789,7 @@ mod tests {
                 room: SemanticRoomLocator::new("meet", "room-42").unwrap(),
                 semantic_position: Some("main-stage".into()),
                 media,
+                controls: RealtimeControlState::default(),
             }
         }
 
@@ -2179,6 +2196,7 @@ mod tests {
             room: SemanticRoomLocator::new("meet", "safe-room").unwrap(),
             semantic_position: Some("https://unsafe.invalid/resume".into()),
             media: FakeCallingApp::audio(),
+            controls: RealtimeControlState::default(),
         };
         assert_eq!(
             intent.validate(),
@@ -2326,15 +2344,17 @@ mod tests {
             BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&source_broker), |_| true);
         let target_adapter =
             BrokerRealtimeFabricAdapter::with_app_verifier(Arc::clone(&target_broker), |_| true);
+        let mut intent = FakeCallingApp::intent(FakeCallingApp::audio());
+        intent.controls = RealtimeControlState {
+            microphone_muted: true,
+            camera_muted: false,
+            screen_share_paused: true,
+            share_audio_muted: true,
+        };
         let id = source_broker
             .lock()
             .unwrap()
-            .register(
-                &app.registration,
-                source.clone(),
-                FakeCallingApp::intent(FakeCallingApp::audio()),
-                now,
-            )
+            .register(&app.registration, source.clone(), intent, now)
             .unwrap();
         source_broker
             .lock()
@@ -2346,6 +2366,19 @@ mod tests {
         let RealtimeFabricSignal::Offer(projection) = offer.signal else {
             panic!("expected offer");
         };
+        assert_eq!(
+            projection.controls,
+            RealtimeControlState {
+                microphone_muted: true,
+                camera_muted: false,
+                screen_share_paused: true,
+                share_audio_muted: true,
+            }
+        );
+        let wire = serde_json::to_string(&projection).unwrap();
+        for forbidden in ["pipewire", "device_id", "capture", "credential", "/dev/"] {
+            assert!(!wire.to_ascii_lowercase().contains(forbidden));
+        }
         let fabric_id = projection.session_id;
         assert!(target_adapter.receive_authenticated(
             &source,
