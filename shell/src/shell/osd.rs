@@ -197,10 +197,20 @@ impl Osd {
             );
         }
 
+        let caption = self.caption();
+        let (_, caption_h) = text_renderer.measure_weighted(
+            &caption,
+            theme.tokens.typography.scale.sm,
+            None,
+            TextWeight::Medium,
+        );
+        let stack = OsdStack::layout(rect, self.has_level(), f64::from(caption_h), theme);
         draw_card(scene, transform, rect, theme);
-        draw_glyph(scene, transform, rect, theme, self.kind);
-        draw_level_bar(scene, transform, rect, theme, self);
-        draw_caption(scene, transform, rect, theme, text_renderer, self);
+        draw_glyph(scene, transform, stack.glyph, theme, self.kind);
+        if let Some(bar) = stack.bar {
+            draw_level_bar(scene, transform, bar, theme, self);
+        }
+        draw_caption(scene, transform, stack.caption, theme, text_renderer, &caption);
 
         if faded {
             scene.pop_layer();
@@ -208,12 +218,52 @@ impl Osd {
     }
 }
 
+/// The slab's vertical rhythm: glyph, optional level bar and caption as
+/// one stack centred in the card with `spacing.s3` between rows. Keeping
+/// layout separate from paint makes the rhythm testable and means a
+/// slab without a level bar (mic, transport) is centred rather than
+/// top-heavy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct OsdStack {
+    pub glyph: Rect,
+    pub bar: Option<Rect>,
+    pub caption: Rect,
+}
+
+impl OsdStack {
+    pub(crate) const GLYPH_PX: f64 = 28.0;
+    const BAR_H: f64 = 6.0;
+
+    pub(crate) fn layout(rect: Rect, has_level: bool, caption_h: f64, theme: &Theme) -> Self {
+        let gap = f64::from(theme.tokens.spacing.s3);
+        let inset = f64::from(theme.tokens.spacing.s6);
+        let bar_block = if has_level { Self::BAR_H + gap } else { 0.0 };
+        let stack_h = Self::GLYPH_PX + gap + bar_block + caption_h;
+        let top = rect.y0 + ((rect.height() - stack_h) / 2.0).max(0.0);
+        let cx = rect.center().x;
+        let glyph = Rect::new(
+            cx - Self::GLYPH_PX / 2.0,
+            top,
+            cx + Self::GLYPH_PX / 2.0,
+            top + Self::GLYPH_PX,
+        );
+        let mut y = glyph.y1 + gap;
+        let bar = has_level.then(|| {
+            let bar = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + Self::BAR_H);
+            y = bar.y1 + gap;
+            bar
+        });
+        let caption = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + caption_h);
+        Self { glyph, bar, caption }
+    }
+}
+
 fn draw_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     let colors = &theme.tokens.colors;
-    let radius = 18.0_f64;
-    // The slab floats over arbitrary app content, so it needs elevation to
-    // remain distinct on both quiet and visually busy tiles.
-    ui::surface::soft_shadow(scene, transform, rect, colors.neutral[0], 36.0, 14.0, 0.5);
+    // Panel role (HIG §9.1): radius and elevation come from the tokens the
+    // other floating chrome uses, so the slab is the same material.
+    let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
+    ui::chrome::shell::panel_shadow(scene, transform, rect, radius, theme, 1.0);
     let body = RoundedRect::from_rect(rect, radius);
     scene.fill(
         Fill::NonZero,
@@ -231,17 +281,14 @@ fn draw_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     );
 }
 
-fn draw_glyph(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme, kind: OsdKind) {
+fn draw_glyph(
+    scene: &mut Scene,
+    transform: Affine,
+    glyph_rect: Rect,
+    theme: &Theme,
+    kind: OsdKind,
+) {
     let colors = &theme.tokens.colors;
-    let glyph_px = 28.0_f64;
-    let gx = rect.center().x;
-    let gy = rect.y0 + 26.0;
-    let glyph_rect = Rect::new(
-        gx - glyph_px / 2.0,
-        gy - glyph_px / 2.0,
-        gx + glyph_px / 2.0,
-        gy + glyph_px / 2.0,
-    );
     let (icon, tint) = match kind {
         OsdKind::Volume { muted: true } => (ui::icons::Icon::VolumeX, colors.text_primary),
         OsdKind::Volume { muted: false } => (ui::icons::Icon::Volume2, colors.text_primary),
@@ -274,19 +321,9 @@ fn draw_glyph(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme, k
     );
 }
 
-fn draw_level_bar(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme, osd: Osd) {
-    if !osd.has_level() {
-        return;
-    }
+fn draw_level_bar(scene: &mut Scene, transform: Affine, bar: Rect, theme: &Theme, osd: Osd) {
     let colors = &theme.tokens.colors;
-    let bar_h = 6.0_f64;
-    let inset = 24.0_f64;
-    let bar = Rect::new(
-        rect.x0 + inset,
-        rect.y0 + 50.0,
-        rect.x1 - inset,
-        rect.y0 + 50.0 + bar_h,
-    );
+    let bar_h = bar.height();
     scene.fill(
         Fill::NonZero,
         transform,
@@ -317,24 +354,23 @@ fn draw_level_bar(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Them
 fn draw_caption(
     scene: &mut Scene,
     transform: Affine,
-    rect: Rect,
+    caption_rect: Rect,
     theme: &Theme,
     text_renderer: &mut TextRenderer,
-    osd: Osd,
+    caption: &str,
 ) {
     let colors = &theme.tokens.colors;
     let size = theme.tokens.typography.scale.sm;
-    let caption = osd.caption();
-    let (cw, ch) = text_renderer.measure_weighted(&caption, size, None, TextWeight::Medium);
+    let (cw, _) = text_renderer.measure_weighted(caption, size, None, TextWeight::Medium);
     text_renderer.draw_text_weighted(
         scene,
-        &caption,
+        caption,
         size,
         colors.text_dim,
         transform.pre_translate(
             (
-                rect.center().x - f64::from(cw) / 2.0,
-                rect.y1 - 12.0 - f64::from(ch),
+                caption_rect.center().x - f64::from(cw) / 2.0,
+                caption_rect.y0,
             )
                 .into(),
         ),
@@ -460,6 +496,34 @@ mod tests {
             !expire(&mut cur, t0 + OSD_HOLD),
             "expiring nothing must not claim a repaint"
         );
+    }
+
+    #[test]
+    fn slab_stack_is_centred_with_token_gaps_with_and_without_a_level_bar() {
+        let theme = Theme::dark();
+        let rect = Osd::rect_in(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        let gap = f64::from(theme.tokens.spacing.s3);
+        let caption_h = 15.0;
+
+        let with = OsdStack::layout(rect, true, caption_h, &theme);
+        let bar = with.bar.expect("a level slab has a bar");
+        assert_eq!(bar.y0 - with.glyph.y1, gap);
+        assert_eq!(with.caption.y0 - bar.y1, gap);
+        assert_eq!(with.glyph.center().x, rect.center().x);
+        assert!(
+            ((with.glyph.y0 - rect.y0) - (rect.y1 - with.caption.y1)).abs() < 1e-9,
+            "the stack is vertically centred in the slab"
+        );
+        assert!(with.glyph.y0 >= rect.y0 && with.caption.y1 <= rect.y1);
+
+        let without = OsdStack::layout(rect, false, caption_h, &theme);
+        assert!(without.bar.is_none());
+        assert_eq!(without.caption.y0 - without.glyph.y1, gap);
+        assert!(
+            ((without.glyph.y0 - rect.y0) - (rect.y1 - without.caption.y1)).abs() < 1e-9,
+            "a slab without a bar is centred too, not top-heavy"
+        );
+        assert!(without.glyph.y0 > with.glyph.y0);
     }
 
     #[test]
