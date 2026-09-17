@@ -11,6 +11,18 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
+/// The ordinary host-app request queued after trusted onboarding completes.
+/// The desktop id must use the registry identity produced by the XDG scan,
+/// while the installed file itself retains its `.desktop` suffix.
+pub(crate) fn launch_request() -> crate::shell::host_apps::QueuedLaunch {
+    crate::shell::host_apps::QueuedLaunch {
+        desktop_id: "qos-import-folders".into(),
+        display_name: "Add folders to qOS".into(),
+        placement: crate::shell::tab_binding::Placement::NewGroup,
+        portal_workspace_id: None,
+    }
+}
+
 #[derive(Default)]
 struct LaunchLatch {
     queued: bool,
@@ -170,6 +182,41 @@ pub(crate) fn pending_review(path: &Path, uid: u32) -> bool {
 mod tests {
     use super::*;
     use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn continuation_request_resolves_the_installed_desktop_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("qos-import-folders");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(
+            temp.path().join("qos-import-folders.desktop"),
+            format!(
+                "[Desktop Entry]\nType=Application\nName=Add folders to qOS\n\
+                 Exec={} --import-folders\nTryExec={}\n",
+                executable.display(),
+                executable.display(),
+            ),
+        )
+        .unwrap();
+
+        let scan = desktop_entry::scan_dirs(
+            &[temp.path().to_path_buf()],
+            &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
+        );
+        let request = launch_request();
+
+        assert_eq!(scan.stats.files_seen, 1);
+        assert!(
+            scan.find(&request.desktop_id).is_some(),
+            "continuation launch id {:?} must resolve against registry ids {:?}",
+            request.desktop_id,
+            scan.entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
 
     #[test]
     fn trusted_completion_launches_once_and_never_acks_durable_state() {
