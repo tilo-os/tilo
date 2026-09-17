@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::{FromRawFd as _, OwnedFd};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -34,9 +35,12 @@ pub(crate) enum RemoteCaptureEndpoint {
 }
 
 /// Injection seam implemented by the target's PipeWire/V4L2 backend.
-pub(crate) trait RemoteCaptureAdapter {
+pub(crate) trait RemoteCaptureAdapter: Send {
+    fn availability(&self) -> RemoteCaptureAvailability;
+
     fn provision(
         &mut self,
+        session_id: [u8; 16],
         profile: &RemoteCaptureProfile,
     ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError>;
 
@@ -62,6 +66,8 @@ struct ScannerSpool {
     bytes: u64,
     max_bytes: u64,
     last_page: Option<u32>,
+    complete: bool,
+    delivered: bool,
 }
 
 enum PreparedEndpoint {
@@ -122,7 +128,38 @@ impl RemoteCaptureTargetBridge {
             return Err(RemoteCaptureAdapterError::BindingMismatch);
         }
 
-        let endpoint = adapter.provision(&request.profile)?;
+        let endpoint = adapter.provision(session_id, &request.profile)?;
+        self.prepare_endpoint(
+            app, request, source, target, session_id, grant, endpoint, adapter,
+        )
+    }
+
+    /// Install an endpoint produced by the bounded provisioning worker. This
+    /// half is deliberately non-blocking and safe to call from a compositor
+    /// tick; discovery and subprocess startup happen before it.
+    pub(crate) fn prepare_endpoint(
+        &mut self,
+        app: &VerifiedAppRegistration,
+        request: &RemoteCaptureRequest,
+        source: DeviceId,
+        target: DeviceId,
+        session_id: [u8; 16],
+        grant: RemoteCaptureGrant,
+        endpoint: RemoteCaptureEndpoint,
+        adapter: &mut dyn RemoteCaptureAdapter,
+    ) -> Result<(), RemoteCaptureAdapterError> {
+        if !request.valid()
+            || request.app_id != app.app_id()
+            || request.workspace_id != app.workspace_id()
+            || session_id == [0; 16]
+            || !grant.valid()
+            || source == target
+            || self.sessions.contains_key(&session_id)
+            || self.sessions.len() >= MAX_REMOTE_CAPTURE_SESSIONS
+        {
+            adapter.revoke(session_id);
+            return Err(RemoteCaptureAdapterError::BindingMismatch);
+        }
         if !endpoint_matches(&endpoint, request.profile.kind()) {
             adapter.revoke(session_id);
             return Err(RemoteCaptureAdapterError::WrongEndpoint);
@@ -156,6 +193,8 @@ impl RemoteCaptureTargetBridge {
                         bytes: 0,
                         max_bytes: max_document_bytes,
                         last_page: None,
+                        complete: false,
+                        delivered: false,
                     }),
                 )
             }
@@ -307,6 +346,7 @@ impl RemoteCaptureTargetBridge {
             || chunk.offset != spool.bytes
             || chunk.total_bytes > spool.max_bytes
             || chunk.page_index < spool.last_page
+            || (chunk.end_of_unit && chunk.offset + chunk.payload.len() as u64 != chunk.total_bytes)
         {
             return Err(RemoteCaptureAdapterError::InvalidChunk);
         }
@@ -320,7 +360,38 @@ impl RemoteCaptureTargetBridge {
             .checked_add(chunk.payload.len() as u64)
             .ok_or(RemoteCaptureAdapterError::InvalidChunk)?;
         spool.last_page = chunk.page_index;
+        if chunk.end_of_unit {
+            spool.complete = true;
+        }
         Ok(())
+    }
+
+    /// Return a single target-local descriptor for a completed scan. The
+    /// unnamed file never acquires a path and exact app/session binding is
+    /// rechecked at delivery time.
+    pub(crate) fn take_completed_scanner(
+        &mut self,
+        app: &VerifiedAppRegistration,
+        source: &DeviceId,
+        target: &DeviceId,
+        session_id: [u8; 16],
+        grant: RemoteCaptureGrant,
+    ) -> Result<File, RemoteCaptureAdapterError> {
+        let session = self.exact_session_mut(app, source, target, session_id, grant)?;
+        let PreparedEndpoint::Scanner(spool) = &mut session.endpoint else {
+            return Err(RemoteCaptureAdapterError::WrongEndpoint);
+        };
+        if !session.active || !spool.complete || spool.delivered {
+            return Err(RemoteCaptureAdapterError::ApprovalRequired);
+        }
+        let mut file = spool
+            .file
+            .try_clone()
+            .map_err(RemoteCaptureAdapterError::Spool)?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(RemoteCaptureAdapterError::Spool)?;
+        spool.delivered = true;
+        Ok(file)
     }
 
     /// Atomically revoke broker authority and drop the unnamed scanner spool.
@@ -514,6 +585,313 @@ fn unnamed_scanner_spool() -> std::io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RemoteCaptureAvailability {
+    pub camera: bool,
+    pub microphone: bool,
+    pub scanner: bool,
+}
+
+enum ProductionEndpoint {
+    Camera(File),
+    Microphone {
+        loopback: Child,
+        writer: Child,
+        stdin: ChildStdin,
+    },
+}
+
+/// Production target-side injection. It provisions only kernel/PipeWire
+/// endpoints that actually exist and keeps every raw device/node identity
+/// inside the shell process.
+pub(crate) struct ProductionRemoteCaptureAdapter {
+    availability: RemoteCaptureAvailability,
+    sessions: BTreeMap<[u8; 16], ProductionEndpoint>,
+}
+
+impl ProductionRemoteCaptureAdapter {
+    pub(crate) fn detect() -> Self {
+        Self {
+            availability: RemoteCaptureAvailability {
+                camera: remote_camera_loopback().is_some() && trusted_command("v4l2-ctl").is_some(),
+                microphone: trusted_command("pw-loopback").is_some()
+                    && trusted_command("pw-cat").is_some()
+                    && trusted_command("pw-dump").is_some(),
+                // Reception needs only the compositor-private anonymous spool.
+                // `scanimage` is a source-side capability.
+                scanner: true,
+            },
+            sessions: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn availability(&self) -> RemoteCaptureAvailability {
+        self.availability
+    }
+
+    fn provision_camera(
+        &mut self,
+        session_id: [u8; 16],
+        profile: &RemoteCaptureProfile,
+    ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
+        use crate::shell::remote_capture_device::RemoteVideoFormat;
+        let RemoteCaptureProfile::Camera {
+            format,
+            width,
+            height,
+            ..
+        } = profile
+        else {
+            return Err(RemoteCaptureAdapterError::WrongEndpoint);
+        };
+        if *format != RemoteVideoFormat::Nv12 || !self.availability.camera {
+            return Err(RemoteCaptureAdapterError::BackendUnavailable(
+                "a Tilo v4l2loopback camera accepting NV12 is unavailable".into(),
+            ));
+        }
+        let path = remote_camera_loopback().ok_or_else(|| {
+            RemoteCaptureAdapterError::BackendUnavailable(
+                "the remote-camera loopback disappeared".into(),
+            )
+        })?;
+        let status = Command::new(trusted_command("v4l2-ctl").ok_or_else(|| {
+            RemoteCaptureAdapterError::BackendUnavailable("v4l2-ctl is unavailable".into())
+        })?)
+        .args([
+            "--device",
+            path.to_str().ok_or_else(|| {
+                RemoteCaptureAdapterError::BackendUnavailable(
+                    "remote-camera device path is invalid".into(),
+                )
+            })?,
+            "--set-fmt-video",
+            &format!("width={width},height={height},pixelformat=NV12"),
+        ])
+        .status()
+        .map_err(RemoteCaptureAdapterError::Io)?;
+        if !status.success() {
+            return Err(RemoteCaptureAdapterError::BackendUnavailable(
+                "the remote-camera loopback rejected the negotiated profile".into(),
+            ));
+        }
+        let writer = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .map_err(RemoteCaptureAdapterError::Io)?;
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .open(path)
+            .map_err(RemoteCaptureAdapterError::Io)?;
+        self.sessions
+            .insert(session_id, ProductionEndpoint::Camera(writer));
+        Ok(RemoteCaptureEndpoint::V4l2Device(OwnedFd::from(reader)))
+    }
+
+    fn provision_microphone(
+        &mut self,
+        session_id: [u8; 16],
+        profile: &RemoteCaptureProfile,
+    ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
+        use crate::shell::remote_capture_device::RemoteAudioFormat;
+        let RemoteCaptureProfile::Microphone {
+            format,
+            sample_rate,
+            channels,
+            ..
+        } = profile
+        else {
+            return Err(RemoteCaptureAdapterError::WrongEndpoint);
+        };
+        if *format != RemoteAudioFormat::PcmS16Le || !self.availability.microphone {
+            return Err(RemoteCaptureAdapterError::BackendUnavailable(
+                "PipeWire remote microphone injection is unavailable".into(),
+            ));
+        }
+        let suffix = hex::encode(session_id);
+        let sink_name = format!("tilo.remote-mic-sink.{suffix}");
+        let source_name = format!("tilo.remote-mic-source.{suffix}");
+        let mut loopback = Command::new(trusted_command("pw-loopback").ok_or_else(|| {
+            RemoteCaptureAdapterError::BackendUnavailable("pw-loopback is unavailable".into())
+        })?)
+            .arg(format!(
+                "--capture-props={{ node.name=\"{sink_name}\" media.class=\"Audio/Sink\" }}"
+            ))
+            .arg(format!(
+                "--playback-props={{ node.name=\"{source_name}\" node.description=\"Tilo remote microphone\" media.class=\"Audio/Source\" }}"
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(RemoteCaptureAdapterError::Io)?;
+        let node_id = wait_for_pipewire_node(&source_name).map_err(|error| {
+            let _ = loopback.kill();
+            error
+        })?;
+        let mut writer = Command::new(trusted_command("pw-cat").ok_or_else(|| {
+            RemoteCaptureAdapterError::BackendUnavailable("pw-cat is unavailable".into())
+        })?)
+        .arg("--playback")
+        .arg("--target")
+        .arg(&sink_name)
+        .arg("--format")
+        .arg("s16")
+        .arg("--rate")
+        .arg(sample_rate.to_string())
+        .arg("--channels")
+        .arg(channels.to_string())
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| {
+            let _ = loopback.kill();
+            RemoteCaptureAdapterError::Io(error)
+        })?;
+        let stdin = writer.stdin.take().ok_or_else(|| {
+            let _ = writer.kill();
+            let _ = loopback.kill();
+            RemoteCaptureAdapterError::BackendUnavailable(
+                "pw-cat did not expose its bounded audio input".into(),
+            )
+        })?;
+        self.sessions.insert(
+            session_id,
+            ProductionEndpoint::Microphone {
+                loopback,
+                writer,
+                stdin,
+            },
+        );
+        Ok(RemoteCaptureEndpoint::PipeWireNode(node_id))
+    }
+}
+
+impl RemoteCaptureAdapter for ProductionRemoteCaptureAdapter {
+    fn availability(&self) -> RemoteCaptureAvailability {
+        self.availability
+    }
+
+    fn provision(
+        &mut self,
+        session_id: [u8; 16],
+        profile: &RemoteCaptureProfile,
+    ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
+        if session_id == [0; 16] || self.sessions.contains_key(&session_id) {
+            return Err(RemoteCaptureAdapterError::BindingMismatch);
+        }
+        match profile.kind() {
+            RemoteCaptureKind::Camera => self.provision_camera(session_id, profile),
+            RemoteCaptureKind::Microphone => self.provision_microphone(session_id, profile),
+            RemoteCaptureKind::DocumentScanner => Ok(RemoteCaptureEndpoint::DocumentScanner),
+        }
+    }
+
+    fn ingest(
+        &mut self,
+        session_id: [u8; 16],
+        profile: &RemoteCaptureProfile,
+        chunk: &RemoteCaptureChunk,
+    ) -> Result<(), RemoteCaptureAdapterError> {
+        if !chunk.valid_for(profile.kind()) {
+            return Err(RemoteCaptureAdapterError::InvalidChunk);
+        }
+        match self.sessions.get_mut(&session_id) {
+            Some(ProductionEndpoint::Camera(writer))
+                if profile.kind() == RemoteCaptureKind::Camera =>
+            {
+                writer
+                    .write_all(&chunk.payload)
+                    .map_err(RemoteCaptureAdapterError::Io)
+            }
+            Some(ProductionEndpoint::Microphone { stdin, .. })
+                if profile.kind() == RemoteCaptureKind::Microphone =>
+            {
+                stdin
+                    .write_all(&chunk.payload)
+                    .map_err(RemoteCaptureAdapterError::Io)
+            }
+            _ => Err(RemoteCaptureAdapterError::WrongEndpoint),
+        }
+    }
+
+    fn revoke(&mut self, session_id: [u8; 16]) {
+        if let Some(ProductionEndpoint::Microphone {
+            mut loopback,
+            mut writer,
+            ..
+        }) = self.sessions.remove(&session_id)
+        {
+            let _ = writer.kill();
+            let _ = loopback.kill();
+        }
+    }
+}
+
+impl Drop for ProductionRemoteCaptureAdapter {
+    fn drop(&mut self) {
+        let sessions = self.sessions.keys().copied().collect::<Vec<_>>();
+        for session in sessions {
+            self.revoke(session);
+        }
+    }
+}
+
+fn trusted_command(name: &str) -> Option<std::path::PathBuf> {
+    ["/usr/bin", "/usr/libexec/tilo"]
+        .into_iter()
+        .map(std::path::Path::new)
+        .map(|directory| directory.join(name))
+        .find(|path| path.is_file())
+}
+
+fn remote_camera_loopback() -> Option<std::path::PathBuf> {
+    std::fs::read_dir("/sys/class/video4linux")
+        .ok()?
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let label = std::fs::read_to_string(entry.path().join("name")).ok()?;
+            label
+                .trim()
+                .starts_with("Tilo Remote Camera")
+                .then(|| std::path::Path::new("/dev").join(entry.file_name()))
+        })
+}
+
+fn wait_for_pipewire_node(name: &str) -> Result<u32, RemoteCaptureAdapterError> {
+    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let output = Command::new(trusted_command("pw-dump").ok_or_else(|| {
+            RemoteCaptureAdapterError::BackendUnavailable("pw-dump is unavailable".into())
+        })?)
+        .output()
+        .map_err(RemoteCaptureAdapterError::Io)?;
+        if output.status.success()
+            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            && let Some(node) = value.as_array().and_then(|items| {
+                items.iter().find_map(|item| {
+                    (item
+                        .pointer("/info/props/node.name")
+                        .and_then(|v| v.as_str())
+                        == Some(name))
+                    .then(|| item.get("id").and_then(serde_json::Value::as_u64))
+                    .flatten()
+                    .and_then(|id| u32::try_from(id).ok())
+                })
+            })
+        {
+            return Ok(node);
+        }
+        if Instant::now() >= deadline {
+            return Err(RemoteCaptureAdapterError::BackendUnavailable(
+                "PipeWire did not publish the remote microphone node".into(),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 #[derive(Debug, Error)]
 pub(crate) enum RemoteCaptureAdapterError {
     #[error("remote capture identity does not match the approved session")]
@@ -532,6 +910,10 @@ pub(crate) enum RemoteCaptureAdapterError {
     InvalidChunk,
     #[error("private scanner spool failed: {0}")]
     Spool(std::io::Error),
+    #[error("remote capture backend is unavailable: {0}")]
+    BackendUnavailable(String),
+    #[error("remote capture backend I/O failed: {0}")]
+    Io(std::io::Error),
 }
 
 #[cfg(test)]
@@ -548,8 +930,17 @@ mod tests {
     }
 
     impl RemoteCaptureAdapter for FakeAdapter {
+        fn availability(&self) -> RemoteCaptureAvailability {
+            RemoteCaptureAvailability {
+                camera: true,
+                microphone: true,
+                scanner: true,
+            }
+        }
+
         fn provision(
             &mut self,
+            _session_id: [u8; 16],
             _profile: &RemoteCaptureProfile,
         ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
             Ok(if self.scanner {
@@ -649,6 +1040,19 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
+            bridge.activate(
+                &owner,
+                &source,
+                &target,
+                session,
+                grant,
+                approval,
+                Instant::now(),
+            ),
+            Err(RemoteCaptureAdapterError::ApprovalRequired)
+                | Err(RemoteCaptureAdapterError::AlreadyActive)
+        ));
+        assert!(matches!(
             bridge.revoke(
                 &app("dev.tilo.Other", "workspace-a"),
                 &source,
@@ -734,6 +1138,27 @@ mod tests {
         assert!(matches!(
             bridge.append_scanner_chunk(&owner, &source, &target, &sparse),
             Err(RemoteCaptureAdapterError::InvalidChunk)
+        ));
+        let second = RemoteCaptureChunk {
+            sequence: 2,
+            offset: 4,
+            end_of_unit: true,
+            payload: vec![5, 6, 7, 8],
+            ..first
+        };
+        bridge
+            .append_scanner_chunk(&owner, &source, &target, &second)
+            .unwrap();
+        let mut completed = bridge
+            .take_completed_scanner(&owner, &source, &target, session, grant)
+            .unwrap();
+        assert_eq!(completed.metadata().unwrap().len(), 8);
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut completed, &mut contents).unwrap();
+        assert_eq!(contents, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert!(matches!(
+            bridge.take_completed_scanner(&owner, &source, &target, session, grant),
+            Err(RemoteCaptureAdapterError::ApprovalRequired)
         ));
         assert_eq!(bridge.revoke_peer(&source, &mut adapter), 1);
         assert_eq!(adapter.revoked, vec![session]);

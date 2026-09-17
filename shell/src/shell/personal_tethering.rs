@@ -73,6 +73,15 @@ pub enum TetheringSignal {
         provider: DeviceId,
         grant_nonce: TetheringNonce,
     },
+    /// Requester-authored cancellation for a pending or active grant. A
+    /// granted request must echo the exact provider nonce.
+    Cancel {
+        protocol_version: u16,
+        request_id: TetheringId,
+        requester: DeviceId,
+        provider: DeviceId,
+        grant_nonce: Option<TetheringNonce>,
+    },
 }
 
 impl std::fmt::Debug for TetheringSignal {
@@ -121,6 +130,17 @@ impl std::fmt::Debug for TetheringSignal {
                 ..
             } => formatter
                 .debug_struct("Stop")
+                .field("request_id", request_id)
+                .field("requester", requester)
+                .field("provider", provider)
+                .finish_non_exhaustive(),
+            Self::Cancel {
+                request_id,
+                requester,
+                provider,
+                ..
+            } => formatter
+                .debug_struct("Cancel")
                 .field("request_id", request_id)
                 .field("requester", requester)
                 .field("provider", provider)
@@ -219,6 +239,23 @@ impl TetheringSignal {
                     || requester == provider
                     || !valid_id(*request_id)
                     || !valid_id(*grant_nonce)
+                {
+                    return Err(TetheringError::InvalidDecision);
+                }
+            }
+            Self::Cancel {
+                protocol_version,
+                request_id,
+                requester,
+                provider,
+                grant_nonce,
+            } => {
+                if *protocol_version != TETHERING_PROTOCOL_VERSION
+                    || requester != authenticated_source
+                    || provider != local_target
+                    || requester == provider
+                    || !valid_id(*request_id)
+                    || grant_nonce.is_some_and(|nonce| !valid_id(nonce))
                 {
                     return Err(TetheringError::InvalidDecision);
                 }
@@ -575,6 +612,93 @@ impl PersonalTethering {
         })
     }
 
+    /// Cancel a requester-owned pending or active request and return the exact
+    /// authenticated cancellation message for its provider.
+    pub fn cancel_request(
+        &mut self,
+        local_device: &DeviceId,
+        request_id: TetheringId,
+    ) -> Result<TetheringSignal, TetheringError> {
+        let outbound = self
+            .outbound
+            .remove(&request_id)
+            .ok_or(TetheringError::UnknownRequest)?;
+        Ok(TetheringSignal::Cancel {
+            protocol_version: TETHERING_PROTOCOL_VERSION,
+            request_id,
+            requester: local_device.clone(),
+            provider: outbound.provider,
+            grant_nonce: outbound.grant_nonce,
+        })
+    }
+
+    /// Consume a requester-authored cancellation only for the exact pending
+    /// consent or provider lease and nonce it names.
+    pub fn receive_cancel(
+        &mut self,
+        authenticated_source: &DeviceId,
+        local_device: &DeviceId,
+        signal: &TetheringSignal,
+    ) -> Result<TetheringEvent, TetheringError> {
+        let TetheringSignal::Cancel {
+            protocol_version,
+            request_id,
+            requester,
+            provider,
+            grant_nonce,
+        } = signal
+        else {
+            return Err(TetheringError::UnexpectedSignal);
+        };
+        if *protocol_version != TETHERING_PROTOCOL_VERSION
+            || requester != authenticated_source
+            || provider != local_device
+        {
+            return Err(TetheringError::InvalidDecision);
+        }
+        let removed = if let Some(pending) = self.inbound.get(request_id) {
+            if pending.requester != *requester || grant_nonce.is_some() {
+                return Err(TetheringError::InvalidDecision);
+            }
+            self.inbound.remove(request_id);
+            true
+        } else if let Some(lease) = self.leases.get(request_id) {
+            if lease.requester != *requester || *grant_nonce != Some(lease.grant_nonce) {
+                return Err(TetheringError::InvalidDecision);
+            }
+            self.leases.remove(request_id);
+            true
+        } else {
+            false
+        };
+        if !removed {
+            return Err(TetheringError::UnknownRequest);
+        }
+        Ok(TetheringEvent::Ended {
+            request_id: *request_id,
+            peer: requester.clone(),
+        })
+    }
+
+    /// End a provider-owned active lease and produce its exact stop message.
+    pub fn stop_provider_lease(
+        &mut self,
+        local_device: &DeviceId,
+        request_id: TetheringId,
+    ) -> Result<TetheringSignal, TetheringError> {
+        let lease = self
+            .leases
+            .remove(&request_id)
+            .ok_or(TetheringError::UnknownRequest)?;
+        Ok(TetheringSignal::Stop {
+            protocol_version: TETHERING_PROTOCOL_VERSION,
+            request_id,
+            requester: lease.requester,
+            provider: local_device.clone(),
+            grant_nonce: lease.grant_nonce,
+        })
+    }
+
     /// Tear down every request and lease involving `peer`. Provider leases
     /// produce an exact stop message; pending consents and requester state are
     /// simply forgotten. Revocation and disconnect call this same path.
@@ -899,6 +1023,63 @@ mod tests {
         assert_eq!(
             provider_state.expire(&provider, 6_002 + GRANT_TTL_MS).len(),
             1
+        );
+    }
+
+    #[test]
+    fn requester_cancel_requires_the_exact_grant_nonce() {
+        let (_, requester, _, provider) = devices();
+        let mut provider_state = PersonalTethering::default();
+        let mut requester_state = PersonalTethering::default();
+        let request_id = [21; 16];
+        let request = requester_state
+            .request(
+                TetheringRoute::CertifiedPhone(provider.clone()),
+                &requester,
+                "Laptop",
+                request_id,
+                1_000,
+            )
+            .unwrap();
+        provider_state
+            .receive_request(&requester, &provider, &request, 1_000)
+            .unwrap();
+        let signals = provider_state
+            .decide(
+                &provider,
+                request_id,
+                true,
+                Some([22; 16]),
+                Some(sealed(&requester, &provider, "secret-passphrase", 1)),
+                1_001,
+            )
+            .unwrap();
+        requester_state
+            .receive_decision(&provider, &requester, &signals[0], 1_001)
+            .unwrap();
+        requester_state
+            .receive_credential(&provider, &requester, &signals[1], 1_001)
+            .unwrap();
+
+        let cancel = requester_state
+            .cancel_request(&requester, request_id)
+            .unwrap();
+        let mut spoof = cancel.clone();
+        if let TetheringSignal::Cancel { grant_nonce, .. } = &mut spoof {
+            *grant_nonce = Some([23; 16]);
+        }
+        assert_eq!(
+            provider_state.receive_cancel(&requester, &provider, &spoof),
+            Err(TetheringError::InvalidDecision)
+        );
+        assert!(
+            provider_state
+                .receive_cancel(&requester, &provider, &cancel)
+                .is_ok()
+        );
+        assert_eq!(
+            provider_state.stop_provider_lease(&provider, request_id),
+            Err(TetheringError::UnknownRequest)
         );
     }
 }

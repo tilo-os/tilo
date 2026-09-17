@@ -290,7 +290,8 @@ pub struct ServerAdvertisement {
 
 /// Hardware class a compute worker can expose through the normal package
 /// sandbox. Advertising hardware grants no additional identity authority.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ComputeAccelerator {
     /// A sandbox-approved render/compute node selected by the launcher.
     Gpu,
@@ -298,7 +299,8 @@ pub enum ComputeAccelerator {
 
 /// Coarse power information used to keep continuity from unexpectedly draining
 /// a portable device. Exact battery telemetry remains local to the observer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PowerAvailability {
     /// No reliable power observation is available.
     #[default]

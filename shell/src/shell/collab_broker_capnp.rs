@@ -1702,6 +1702,15 @@ impl RealtimeFabricAppBridge {
         })
     }
 
+    /// Shared target-local capture authority for compositor-owned continuity
+    /// runtimes. The broker remains shell-private; applications receive only
+    /// the semantic consent/session projection.
+    pub(crate) fn realtime_capture_broker(
+        &self,
+    ) -> Option<Arc<Mutex<crate::portal::CaptureBroker>>> {
+        self.state.realtime_capture_broker()
+    }
+
     /// Project newly authenticated fabric edges into exact certified local
     /// application subscriptions. Called from the compositor pump after the
     /// device-fabric runtime has drained inbound transport actions.

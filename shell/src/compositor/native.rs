@@ -3446,6 +3446,62 @@ fn install_device_fabric_bridge(
                         session_id,
                     )?;
                 }
+                DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
+                    let binding = active_physical_gamepad_binding(&tree_handle.read())
+                        .ok_or_else(|| "focus an app before using a remote input".to_string())?;
+                    let app =
+                        crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+                            binding.app_id,
+                            binding.workspace_id,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    crate::shell::remote_capture_runtime::request_remote_capture(
+                        &fabric_net,
+                        app,
+                        peer,
+                        kind,
+                    )?;
+                }
+                DeviceFabricUiAction::AuthorizeRemoteCapture {
+                    request_id,
+                    approved,
+                } => {
+                    crate::shell::remote_capture_runtime::decide_remote_capture(
+                        &fabric_net,
+                        request_id,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::ApproveRemoteCaptureTarget { session_id } => {
+                    crate::shell::remote_capture_runtime::approve_remote_capture_target(
+                        session_id,
+                    )?;
+                }
+                DeviceFabricUiAction::StopRemoteCapture { session_id } => {
+                    crate::shell::remote_capture_runtime::stop_remote_capture(
+                        &fabric_net,
+                        session_id,
+                    )?;
+                }
+                DeviceFabricUiAction::RequestPhoneTethering { phone } => {
+                    let _ = crate::shell::personal_tethering_runtime::request_phone_tethering(
+                        &fabric_net,
+                        &phone,
+                    )?;
+                }
+                DeviceFabricUiAction::AuthorizePhoneTethering {
+                    request_id,
+                    approved,
+                } => {
+                    crate::shell::personal_tethering_runtime::authorize_phone_tethering(
+                        request_id, approved,
+                    )?;
+                }
+                DeviceFabricUiAction::DisconnectPhoneTethering { request_id } => {
+                    crate::shell::personal_tethering_runtime::disconnect_phone_tethering(
+                        request_id,
+                    )?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
@@ -4594,6 +4650,24 @@ pub fn run() {
     ) && let Some(adapter) = bridge.adapter()
     {
         runtime.set_realtime_adapter(adapter);
+    }
+    let mut remote_capture_runtime = realtime_fabric_bridge
+        .as_ref()
+        .and_then(
+            crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker,
+        )
+        .map(|capture| {
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime::production(
+                    capture,
+                ),
+            ))
+        });
+    if let Some(remote_capture) = remote_capture_runtime.as_ref() {
+        crate::shell::remote_capture_runtime::install_active_runtime(remote_capture);
+        if let Some(runtime) = device_fabric_runtime.as_mut() {
+            runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
+        }
     }
     let identity_broker = spawn_session_identity_broker(&frame_builder.chrome_handle());
     // Settings can request a small, typed set of contextual tools through a
@@ -5921,6 +5995,9 @@ pub fn run() {
             {
                 runtime.set_realtime_adapter(adapter);
             }
+            if let Some(remote_capture) = remote_capture_runtime.as_ref() {
+                runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
+            }
             let (width, height) = combined_geometry(backend.outputs());
             let display =
                 (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
@@ -6240,6 +6317,22 @@ pub fn run() {
                 ) && let Some(adapter) = bridge.adapter()
                 {
                     runtime.set_realtime_adapter(adapter);
+                }
+                remote_capture_runtime = realtime_fabric_bridge
+                    .as_ref()
+                    .and_then(crate::shell::collab_broker_capnp::RealtimeFabricAppBridge::realtime_capture_broker)
+                    .map(|capture| {
+                        std::sync::Arc::new(std::sync::Mutex::new(
+                            crate::shell::remote_capture_runtime::RemoteCaptureFabricRuntime::production(
+                                capture,
+                            ),
+                        ))
+                    });
+                if let Some(remote_capture) = remote_capture_runtime.as_ref() {
+                    crate::shell::remote_capture_runtime::install_active_runtime(remote_capture);
+                    if let Some(runtime) = device_fabric_runtime.as_mut() {
+                        runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
+                    }
                 }
                 if let Some(net) = peer_sync.as_ref() {
                     attach_peer_presence(&mut frame_builder, broker, net);
