@@ -241,6 +241,7 @@ mod device_fabric_ui_tests {
         (
             DeviceFabricView {
                 bluetooth_authorizations: Vec::new(),
+                gamepad_authorizations: Vec::new(),
                 devices: vec![FabricDeviceView {
                     id: remote.clone(),
                     label: "Travel laptop".into(),
@@ -340,6 +341,37 @@ mod device_fabric_ui_tests {
                 .contains(&DeviceFabricUiAction::AuthorizeBluetoothHandoff {
                     request_id: [9; 16],
                     approved: true,
+                })
+        );
+    }
+
+    #[test]
+    fn device_pane_requires_an_explicit_gamepad_consent_choice() {
+        let (mut view, _) = fixture();
+        view.gamepad_authorizations = vec![GamepadAuthorizationView {
+            forwarding_id: [7; 16],
+            controller_label: "Arcade controller".into(),
+            source_label: "Travel laptop".into(),
+            app_id: "dev.tilo.game".into(),
+        }];
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&actions);
+        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        host.set_device_fabric_bridge(Rc::new(move |action| {
+            recorded.borrow_mut().push(action);
+            Ok(view.clone())
+        }));
+
+        let (_, decline) =
+            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
+        host.handle_qs_device_fabric_click(decline.center());
+        assert!(
+            actions
+                .borrow()
+                .contains(&DeviceFabricUiAction::AuthorizeGamepadForwarding {
+                    forwarding_id: [7; 16],
+                    approved: false,
                 })
         );
     }
