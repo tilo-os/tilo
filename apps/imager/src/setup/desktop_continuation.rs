@@ -34,6 +34,8 @@ enum DestinationIntent {
 struct ResolvedDestination {
     path: NativePath,
     parent_identity: Identity,
+    #[serde(default)]
+    source_revision: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,6 +96,22 @@ fn path_identity(path: &Path) -> Result<Identity, String> {
     let readable =
         migration_durability::readable_directory(&pin.file).map_err(|e| e.to_string())?;
     migration_durability::identity(&readable).map_err(|e| e.to_string())
+}
+
+fn absent(path: &Path) -> Result<bool, String> {
+    let parent = PinnedDirectory::open_absolute(path.parent().ok_or("copy path has no parent")?)
+        .map_err(|e| e.to_string())?;
+    parent.validate_destination().map_err(|e| e.to_string())?;
+    let result = super::nofollow::metadata_nofollow(
+        &parent.file,
+        Path::new(path.file_name().ok_or("copy path has no name")?),
+    );
+    parent.validate_destination().map_err(|e| e.to_string())?;
+    match result {
+        Ok(_) => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 impl Continuation {
@@ -229,6 +247,13 @@ impl Continuation {
         f.resolved = Some(ResolvedDestination {
             path: NativePath::encode(&destination),
             parent_identity: path_identity(parent)?,
+            source_revision: Some(
+                super::migration_review::SourceInventory::capture(
+                    &PinnedDirectory::open_absolute(&source).map_err(|e| e.to_string())?,
+                )
+                .and_then(|inventory| inventory.revision())
+                .map_err(|e| e.to_string())?,
+            ),
         });
         Ok(())
     }
@@ -259,22 +284,6 @@ impl Continuation {
         record: &OperationRecord,
     ) -> Result<Option<MigrationJob>, String> {
         use super::migration_store::OperationState;
-        fn absent(path: &Path) -> Result<bool, String> {
-            let parent =
-                PinnedDirectory::open_absolute(path.parent().ok_or("copy path has no parent")?)
-                    .map_err(|e| e.to_string())?;
-            parent.validate_destination().map_err(|e| e.to_string())?;
-            let result = super::nofollow::metadata_nofollow(
-                &parent.file,
-                Path::new(path.file_name().ok_or("copy path has no name")?),
-            );
-            parent.validate_destination().map_err(|e| e.to_string())?;
-            match result {
-                Ok(_) => Ok(false),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-                Err(e) => Err(e.to_string()),
-            }
-        }
         if !matches!(
             record.state(),
             OperationState::Interrupted | OperationState::Failed | OperationState::Cancelled
@@ -287,6 +296,41 @@ impl Continuation {
         let mut fresh = record.clone();
         fresh.approve();
         self.constrain_job(index, fresh.start_job()?).map(Some)
+    }
+
+    pub(super) fn can_replace_unpublished(record: &OperationRecord) -> Result<(), String> {
+        use super::migration_store::OperationState;
+        if !matches!(
+            record.state(),
+            OperationState::AwaitingReview
+                | OperationState::Failed
+                | OperationState::Interrupted
+                | OperationState::Cancelled
+        ) {
+            return Err("This copy has published or active work; preserve its outcome and use its existing retry action.".into());
+        }
+        if !absent(&record.journal()?)? {
+            return Err("This copy has a durable journal; its reviewed destination and source revision must be retained.".into());
+        }
+        if record.state() != OperationState::AwaitingReview && !absent(&record.destination()?)? {
+            return Err(
+                "Interrupted output requires review; its existing outcome was retained.".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_fresh_destination(&self, index: usize) -> Result<(), String> {
+        let destination = self
+            .folders
+            .get(index)
+            .ok_or("folder choice is no longer available")?
+            .destination()?
+            .ok_or("Review the destination first")?;
+        if !absent(&destination)? {
+            return Err("Destination collision: choose and review another destination; existing data was preserved.".into());
+        }
+        Ok(())
     }
 
     pub(super) fn constrain_job(
@@ -302,7 +346,12 @@ impl Continuation {
         if job.source() != f.source()? || job.destination() != r.path.decode()? {
             return Err("copy job does not match the reviewed endpoints".into());
         }
-        Ok(job.with_reviewed_identities(f.source_identity.clone(), r.parent_identity.clone()))
+        Ok(job.with_reviewed_identities(
+            f.source_identity.clone(),
+            r.parent_identity.clone(),
+            r.source_revision
+                .ok_or("Source review is outdated; review the folder again.")?,
+        ))
     }
 
     pub(super) fn validate_endpoints(
@@ -352,10 +401,18 @@ impl Continuation {
         let source = f.source()?;
         let destination = f.destination()?.ok_or("destination is unresolved")?;
         if let Some(op) = operations.iter().find(|op| op.id() == id) {
-            if op.source()? != source || op.destination()? != destination {
-                return Err("durable operation does not match reviewed endpoints".into());
+            if op.source()? == source
+                && op.destination()? == destination
+                && !matches!(
+                    op.state(),
+                    super::migration_store::OperationState::Failed
+                        | super::migration_store::OperationState::Interrupted
+                        | super::migration_store::OperationState::Cancelled
+                )
+            {
+                return Ok(None);
             }
-            return Ok(None);
+            Self::can_replace_unpublished(op)?;
         }
         if std::fs::symlink_metadata(&destination).is_ok() {
             return Err("Destination collision: existing data was preserved.".into());
@@ -662,6 +719,116 @@ mod tests {
             );
         }
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn edits_after_inventory_validation_cannot_become_the_copy_baseline() {
+        for edit_already_copied in [false, true] {
+            let (_temp, store, choices) = fixture();
+            let source = &choices[0].scan.source;
+            fs::write(source.join("aaa"), b"before").unwrap();
+            fs::write(source.join("zzz"), b"before").unwrap();
+            let mut c = Continuation::capture(&choices).unwrap();
+            let parent = store.root().parent().unwrap().join("target");
+            fs::create_dir(&parent).unwrap();
+            c.resolve(0, &parent, true).unwrap();
+            let folder = &c.folders[0];
+            let r = folder.resolved.as_ref().unwrap();
+            let reviewed = (
+                folder.source_identity.clone(),
+                r.parent_identity.clone(),
+                r.source_revision.unwrap(),
+            );
+            let destination = parent.join("Documents");
+            let journal = store.root().join("late-edit.journal");
+            let mut edited = false;
+            let report = super::super::migration_journal::copy_reviewed(
+                source,
+                &destination,
+                &journal,
+                &reviewed,
+                false,
+                &std::sync::atomic::AtomicBool::new(false),
+                |progress| {
+                    if progress.current_relative_path == Path::new("zzz") && !edited {
+                        edited = true;
+                        fs::write(
+                            source.join(if edit_already_copied { "aaa" } else { "zzz" }),
+                            b"edited",
+                        )
+                        .unwrap();
+                    }
+                },
+            )
+            .unwrap();
+            assert!(!report.complete(), "{report:?}");
+            assert_eq!(fs::read(destination.join("aaa")).unwrap(), b"before");
+            if !edit_already_copied {
+                assert!(!destination.join("zzz").exists());
+            }
+            // Even the ordinary resume route must retain the reviewed journal baseline.
+            assert!(
+                super::super::migration_journal::resume_folder(
+                    &journal,
+                    &std::sync::atomic::AtomicBool::new(false),
+                    |_| {}
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn existing_file_edited_after_final_review_is_refused_before_publication() {
+        use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+        let (_temp, store, choices) = fixture();
+        let file = choices[0].scan.source.join("existing.txt");
+        fs::write(&file, b"before").unwrap();
+        let mut c = Continuation::capture(&choices).unwrap();
+        let parent = store.root().parent().unwrap().join("target");
+        fs::create_dir(&parent).unwrap();
+        c.resolve(0, &parent, true).unwrap();
+        let mut op = c.prepare(0, &store, &[], true).unwrap().unwrap();
+        op.approve();
+        let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        fs::write(&file, b"edited").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        let mut worker = MigrationWorker::start(job).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let outcome = loop {
+            if let Some(WorkerEvent::Finished(outcome)) = worker.try_next() {
+                break outcome;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        };
+        assert!(matches!(outcome, WorkerOutcome::Failed(_)), "{outcome:?}");
+        assert!(!op.journal().unwrap().exists());
+        assert!(!parent.join("Documents").exists());
+        assert_eq!(fs::read(&file).unwrap(), b"edited");
+        drop(worker);
+        c.resolve(0, &parent, true).unwrap();
+        let job = c.constrain_job(0, op.start_job().unwrap()).unwrap();
+        let mut worker = MigrationWorker::start(job).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(WorkerEvent::Finished(outcome)) = worker.try_next() {
+                assert!(matches!(outcome, WorkerOutcome::Complete(_)), "{outcome:?}");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            fs::read(parent.join("Documents/existing.txt")).unwrap(),
+            b"edited"
+        );
     }
 
     #[test]
