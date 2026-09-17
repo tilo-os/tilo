@@ -75,7 +75,7 @@ def prepare(args):
     with tempfile.TemporaryDirectory(prefix='tilo-wpe-stage-') as temporary:
         iidfile = Path(temporary) / 'image.id'
         subprocess.run(build_command(args, iidfile), env=environment, check=True,
-                       stdout=sys.stderr)
+                       stdout=sys.stderr, stderr=subprocess.PIPE)
         identity = iidfile.read_text().strip()
         raw = subprocess.check_output(['podman', '--remote=false', 'image', 'inspect', identity],
                                       env=environment, stderr=subprocess.PIPE)
