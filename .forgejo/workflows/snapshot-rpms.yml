@@ -34,6 +34,7 @@ jobs:
   snapshot:
     if: github.ref == 'refs/heads/main'
     runs-on: runner
+    timeout-minutes: 600
     enable-openid-connect: true
     steps:
       - name: Checkout
