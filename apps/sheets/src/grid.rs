@@ -18,7 +18,7 @@ use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 
 use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value};
@@ -194,6 +194,97 @@ struct CellTextStyle {
     color: Color,
 }
 
+/// Text and band metrics for the grid, resolved from the renderer that paints
+/// it.
+///
+/// Theme typography tokens already carry the accessibility text scale and the
+/// renderer multiplies its input by that scale once more, so the app converts
+/// each token through [`TextRenderer::renderer_input_style`] exactly once and
+/// hands the grid the result. The column-header height, the row-header width
+/// and the *default* row height then derive from the measured line box of
+/// those styles, so layout, paint and hit-testing share one metric. Manual row
+/// heights and column widths are never touched. At 1× the floors reproduce the
+/// classic 26 px row / 28 px header / 56 px row-header density exactly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GridMetrics {
+    /// Renderer-input size for cell text (theme `base` ÷ renderer scale).
+    pub cell_size: f32,
+    /// Renderer-input size for header labels (theme `sm` ÷ renderer scale).
+    pub header_size: f32,
+    /// Measured line box of `cell_size` text, in final pixels.
+    pub cell_line_h: f64,
+    /// Measured line box of `header_size` text, in final pixels.
+    pub header_line_h: f64,
+    /// Measured width of a four-digit row label at `header_size`.
+    pub row_label_w: f64,
+    /// Theme spacing tokens the bands pad with (`s2`, `s3`).
+    pub pad: f64,
+    pub header_pad: f64,
+}
+
+impl GridMetrics {
+    /// Resolve the grid metrics for `theme` against `tr`, the renderer that
+    /// will paint the grid.
+    pub fn resolve(tr: &mut TextRenderer, theme: &Theme) -> Self {
+        let scale = &theme.tokens.typography.scale;
+        let cell = tr.renderer_input_style(&TextStyle::new(scale.base));
+        let header = tr.renderer_input_style(&TextStyle::new(scale.sm));
+        let (_, cell_line_h) = tr.measure_style("Ag", None, &cell);
+        let (row_label_w, header_line_h) = tr.measure_style("9999", None, &header);
+        Self {
+            cell_size: cell.size,
+            header_size: header.size,
+            cell_line_h: f64::from(cell_line_h),
+            header_line_h: f64::from(header_line_h),
+            row_label_w: f64::from(row_label_w),
+            pad: f64::from(theme.tokens.spacing.s2),
+            header_pad: f64::from(theme.tokens.spacing.s3),
+        }
+    }
+
+    /// The 1× metrics used before the first draw has a renderer; every band
+    /// lands on its classic floor.
+    #[must_use]
+    pub fn fallback() -> Self {
+        Self {
+            cell_size: 14.0,
+            header_size: 12.0,
+            cell_line_h: 17.5,
+            header_line_h: 15.0,
+            row_label_w: 28.0,
+            pad: 8.0,
+            header_pad: 12.0,
+        }
+    }
+
+    /// Height of an automatically sized row: the cell line box plus `s2`,
+    /// never below the classic 26 px.
+    #[must_use]
+    pub fn default_row_h(&self) -> f64 {
+        (self.cell_line_h + self.pad).max(DEFAULT_ROW_H)
+    }
+
+    /// Height of the column-header strip: the header line box plus `s3`,
+    /// never below the classic 28 px.
+    #[must_use]
+    pub fn col_header_h(&self) -> f64 {
+        (self.header_line_h + self.header_pad).max(COL_HEADER_H)
+    }
+
+    /// Width of the row-header strip: a four-digit label plus `s2` each side,
+    /// never below the classic 56 px.
+    #[must_use]
+    pub fn row_header_w(&self) -> f64 {
+        (self.row_label_w + 2.0 * self.pad).max(ROW_HEADER_W)
+    }
+}
+
+impl Default for GridMetrics {
+    fn default() -> Self {
+        Self::fallback()
+    }
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "selecting/point_selecting/show_formulas/needs_autofit/dirty are independent \
@@ -259,6 +350,9 @@ pub struct Grid {
     /// widths (needs a `TextRenderer`, only available at draw time).
     needs_autofit: bool,
     dirty: bool,
+    /// Resolved text/band metrics (see [`GridMetrics`]). Set by the app once
+    /// per draw from the renderer; `fallback()` until then.
+    metrics: GridMetrics,
 }
 
 impl Default for Grid {
@@ -299,9 +393,39 @@ impl Grid {
             show_formulas: false,
             needs_autofit: true,
             dirty: true,
+            metrics: GridMetrics::fallback(),
         };
         g.rebuild_geom();
         g
+    }
+
+    /// Adopt freshly resolved metrics. A change re-derives the automatic row
+    /// geometry (manual sizes are untouched) and re-fits columns, since both
+    /// depend on the cell text size.
+    pub fn set_metrics(&mut self, metrics: GridMetrics) {
+        if self.metrics == metrics {
+            return;
+        }
+        self.metrics = metrics;
+        self.rebuild_geom();
+        // Shorter rows shrink the content extent; keep the scroll inside it so
+        // the body never paints empty past the last row.
+        self.clamp_scroll();
+        self.needs_autofit = true;
+        self.dirty = true;
+    }
+
+    /// The metrics currently driving the grid's automatic geometry.
+    #[must_use]
+    pub fn metrics(&self) -> GridMetrics {
+        self.metrics
+    }
+
+    /// Thickness of the always-visible scrollbar rails along the body's right
+    /// and bottom edges, so chrome floated over the grid can stay clear of them.
+    #[must_use]
+    pub fn scrollbar_thickness() -> f64 {
+        SCROLLBAR_THICKNESS
     }
 
     /// Recompute the column/row offset prefix sums. Cheap (a single pass over
@@ -705,7 +829,10 @@ impl Grid {
         self.auto_col_w.get(&c).copied().unwrap_or(DEFAULT_COL_W)
     }
     fn row_h(&self, r: u32) -> f64 {
-        self.row_heights.get(&r).copied().unwrap_or(DEFAULT_ROW_H)
+        self.row_heights
+            .get(&r)
+            .copied()
+            .unwrap_or_else(|| self.metrics.default_row_h())
     }
 
     /// Content-space x (before scroll) of column `c`'s left edge. O(1) via
@@ -723,14 +850,14 @@ impl Grid {
             y
         } else {
             let last = self.row_y.last().copied().unwrap_or(0.0);
-            last + f64::from(r.saturating_sub(self.n_rows)) * DEFAULT_ROW_H
+            last + f64::from(r.saturating_sub(self.n_rows)) * self.metrics.default_row_h()
         }
     }
 
     fn body_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x0 + ROW_HEADER_W,
-            self.rect.y0 + COL_HEADER_H,
+            self.grid_x0(),
+            self.grid_y0(),
             self.rect.x1 - SCROLLBAR_THICKNESS,
             self.rect.y1 - SCROLLBAR_THICKNESS,
         )
@@ -807,10 +934,10 @@ impl Grid {
     }
 
     fn grid_x0(&self) -> f64 {
-        self.rect.x0 + ROW_HEADER_W
+        self.rect.x0 + self.metrics.row_header_w()
     }
     fn grid_y0(&self) -> f64 {
-        self.rect.y0 + COL_HEADER_H
+        self.rect.y0 + self.metrics.col_header_h()
     }
 
     /// Screen rect for a cell, in absolute coords (may lie outside the body).
@@ -983,7 +1110,8 @@ impl Grid {
 
     /// True once the grid has a usable layout rect (post `apply_layout`).
     fn has_layout(&self) -> bool {
-        self.rect.width() > ROW_HEADER_W && self.rect.height() > COL_HEADER_H
+        self.rect.width() > self.metrics.row_header_w()
+            && self.rect.height() > self.metrics.col_header_h()
     }
 
     fn clamp_scroll(&mut self) {
@@ -1936,8 +2064,8 @@ impl Grid {
         // Refit columns to their content before laying anything out, so long
         // labels aren't truncated by an occupied neighbour.
         if self.needs_autofit {
-            let base = theme.tokens.typography.scale.base;
-            self.autofit_columns(tr, base);
+            let cell_size = self.metrics.cell_size;
+            self.autofit_columns(tr, cell_size);
             self.rebuild_geom();
             self.needs_autofit = false;
         }
@@ -2034,7 +2162,8 @@ impl Grid {
         rows: &[u32],
     ) {
         let colors = &theme.tokens.colors;
-        let text_size = theme.tokens.typography.scale.base;
+        let text_size = self.metrics.cell_size;
+        let line_h = self.metrics.cell_line_h;
         for &r in rows {
             for &c in cols {
                 let cell = self.cell_screen_rect(c, r);
@@ -2068,6 +2197,7 @@ impl Grid {
                         },
                         cell,
                         false,
+                        line_h,
                     );
                     continue;
                 }
@@ -2097,6 +2227,7 @@ impl Grid {
                         },
                         cell,
                         right_align,
+                        line_h,
                     );
                 }
             }
@@ -2261,13 +2392,16 @@ impl Grid {
         style: &CellTextStyle,
         cell: Rect,
         right_align: bool,
+        line_h: f64,
     ) {
         let inner = Rect::new(cell.x0 + 1.0, cell.y0, cell.x1 - 1.0, cell.y1);
         if inner.width() <= 2.0 {
             return;
         }
         let (tw, _) = tr.measure(text, style.size, None);
-        let ty = cell.y0 + (cell.height() - f64::from(style.size)) / 2.0;
+        // Centre the measured line box, not the nominal font size, so a cell
+        // and its row header share one baseline at every text scale.
+        let ty = cell.y0 + (cell.height() - line_h) / 2.0;
         let tx = if right_align {
             cell.x1 - CELL_PAD_X - f64::from(tw)
         } else {
@@ -2319,7 +2453,8 @@ impl Grid {
         cols: &[u32],
     ) {
         let colors = &theme.tokens.colors;
-        let size = theme.tokens.typography.scale.sm;
+        let size = self.metrics.header_size;
+        let line_h = self.metrics.header_line_h;
 
         let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.grid_y0());
         scene.fill(
@@ -2353,7 +2488,7 @@ impl Grid {
             let label = crate::model::col_to_letters(c);
             let (lw, _) = tr.measure(&label, size, None);
             let tx = hrect.center().x - f64::from(lw) / 2.0;
-            let ty = self.rect.y0 + (COL_HEADER_H - f64::from(size)) / 2.0;
+            let ty = hrect.y0 + (hrect.height() - line_h) / 2.0;
             let color = if selected {
                 colors.text_primary
             } else {
@@ -2392,7 +2527,8 @@ impl Grid {
         rows: &[u32],
     ) {
         let colors = &theme.tokens.colors;
-        let size = theme.tokens.typography.scale.sm;
+        let size = self.metrics.header_size;
+        let line_h = self.metrics.header_line_h;
 
         let row_strip = Rect::new(self.rect.x0, self.grid_y0(), self.grid_x0(), self.rect.y1);
         scene.fill(
@@ -2426,7 +2562,7 @@ impl Grid {
             let label = format!("{}", r + 1);
             let (lw, _) = tr.measure(&label, size, None);
             let tx = hrect.center().x - f64::from(lw) / 2.0;
-            let ty = hy + (self.row_h(r) - f64::from(size)) / 2.0;
+            let ty = hy + (self.row_h(r) - line_h) / 2.0;
             let color = if selected {
                 colors.text_primary
             } else {
@@ -2515,7 +2651,7 @@ impl Grid {
             return;
         }
 
-        let size = theme.tokens.typography.scale.base;
+        let size = self.metrics.cell_size;
         let text = e.text();
         let desired = self.editor_desired_width(&text, tr, size);
 
@@ -2547,7 +2683,7 @@ impl Grid {
 
         // Text + caret, clipped to the editor box. A formula draws each cell
         // reference in its own colour; anything else draws in the body colour.
-        let ty = edit_rect.y0 + (edit_rect.height() - f64::from(size)) / 2.0;
+        let ty = edit_rect.y0 + (edit_rect.height() - self.metrics.cell_line_h) / 2.0;
         let tx = edit_rect.x0 + CELL_PAD_X;
         scene.push_layer(
             Fill::NonZero,
@@ -2726,6 +2862,48 @@ fn bounded_window(active: u32, total: u32, limit: u32) -> Vec<u32> {
 mod tests {
     use super::*;
     use crate::model::CellValue;
+
+    /// Metrics resolved against a real renderer at 1× reproduce the classic
+    /// density; at 2× the automatic row, header height and row-header width
+    /// follow the measured text, the prefix sums are rebuilt from them, and a
+    /// user's manual row height survives untouched.
+    #[test]
+    fn measured_metrics_drive_automatic_geometry_but_never_manual_sizes() {
+        let mut tr = TextRenderer::new();
+        let one_x = GridMetrics::resolve(&mut tr, &Theme::dark());
+        assert!((one_x.default_row_h() - DEFAULT_ROW_H).abs() < 0.01, "1x row");
+        assert!((one_x.col_header_h() - COL_HEADER_H).abs() < 0.01, "1x header");
+        assert!((one_x.row_header_w() - ROW_HEADER_W).abs() < 0.01, "1x row header");
+        assert!((one_x.cell_size - 14.0).abs() < 0.01, "cell text is the base token");
+
+        let mut g = Grid::new();
+        g.row_heights.insert(3, 40.0);
+        g.rebuild_geom();
+        let one_x_top_of_row_2 = g.row_top(2);
+
+        let theme = Theme::dark().with_text_scale(2.0);
+        tr.set_text_scale(2.0);
+        let two_x = GridMetrics::resolve(&mut tr, &theme);
+        // The renderer scales its input once, so the input size is unchanged
+        // while the measured line box doubled.
+        assert!((two_x.cell_size - 14.0).abs() < 0.01);
+        assert!(two_x.cell_line_h > one_x.cell_line_h * 1.9);
+        assert!(two_x.default_row_h() >= two_x.cell_line_h + two_x.pad - 0.01);
+        assert!(two_x.col_header_h() >= two_x.header_line_h + two_x.header_pad - 0.01);
+        assert!(two_x.row_header_w() >= two_x.row_label_w + 2.0 * two_x.pad - 0.01);
+
+        g.set_metrics(two_x);
+        assert!((g.row_h(3) - 40.0).abs() < 0.01, "manual row height is byte-for-byte");
+        assert!((g.row_h(4) - two_x.default_row_h()).abs() < 0.01, "automatic row follows text");
+        assert!(g.row_top(2) > one_x_top_of_row_2, "prefix sums were rebuilt");
+        assert!((g.row_top(4) - (3.0 * two_x.default_row_h() + 40.0)).abs() < 0.01);
+        assert!((g.grid_y0() - g.rect.y0 - two_x.col_header_h()).abs() < 0.01);
+        assert!((g.grid_x0() - g.rect.x0 - two_x.row_header_w()).abs() < 0.01);
+        // Unchanged metrics are a no-op: no needless geometry rebuild flag.
+        g.needs_autofit = false;
+        g.set_metrics(two_x);
+        assert!(!g.needs_autofit);
+    }
 
     /// A grid with a known geometry: each column is the default width, the
     /// body starts at `ROW_HEADER_W` / `COL_HEADER_H` and is wide enough for

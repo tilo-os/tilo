@@ -11,8 +11,16 @@ use crate::app::{ButtonKind, Hit, UiButton};
 use crate::chrome;
 use crate::render;
 
+/// Gap between insert pills and the overflow menu's panel padding (the `s2`
+/// token; the toolbar is renderer-free here so the value is spelled out).
 const GAP: f64 = 8.0;
-const OVERFLOW_WIDTH: f64 = 40.0;
+/// The "⋯" overflow button is a square of the pill height, never narrower.
+const OVERFLOW_MIN_WIDTH: f64 = 40.0;
+/// Classic minimum width of the overflow menu panel.
+const MENU_MIN_WIDTH: f64 = 150.0;
+/// Deliberately off-scale: menu rows leave a 4 px seam so adjacent hover
+/// fills never merge into one block.
+const MENU_ROW_SEAM: f64 = 4.0;
 
 struct Tool {
     bar: &'static str,
@@ -55,9 +63,16 @@ impl ToolbarTools {
         self.open = false;
     }
 
+    /// Lay out the insert tools between `tools_x` and `tools_right`.
+    ///
+    /// `text_pill_w` / `icon_pill_w` size a pill for a label (without / with
+    /// its icon) from the app's measured chrome metrics, so the slot a tool
+    /// gets is exactly as wide as the text it paints; `menu_row_h` is the
+    /// measured control height the overflow menu's rows take.
     #[allow(
         clippy::too_many_arguments,
-        reason = "toolbar bounds and the one-dimensional insertion slot are independent geometry"
+        reason = "toolbar bounds, the one-dimensional insertion slot and the measured sizing \
+                  callbacks are independent inputs"
     )]
     pub(super) fn layout(
         &self,
@@ -67,15 +82,23 @@ impl ToolbarTools {
         by: f64,
         bh: f64,
         toolbar: Rect,
+        text_pill_w: &dyn Fn(&str) -> f64,
+        icon_pill_w: &dyn Fn(&str) -> f64,
+        menu_row_h: f64,
     ) -> ToolbarToolsLayout {
         let tools = tools();
-        let widths: Vec<f64> = tools.iter().map(tool_width).collect();
+        let widths: Vec<f64> = tools
+            .iter()
+            .map(|tool| tool_width(tool, text_pill_w, icon_pill_w))
+            .collect();
         let total = widths.iter().sum::<f64>() + GAP * (tools.len() as f64 - 1.0);
         let fits_all = tools_x + total <= tools_right + 0.5;
+        // The overflow button is a square of the pill height.
+        let overflow_w = bh.max(OVERFLOW_MIN_WIDTH);
         let limit = if fits_all {
             tools_right
         } else {
-            tools_right - OVERFLOW_WIDTH - GAP
+            tools_right - overflow_w - GAP
         };
 
         let mut bx = tools_x;
@@ -92,8 +115,8 @@ impl ToolbarTools {
             return ToolbarToolsLayout::default();
         }
 
-        let overflow_x = bx.min(tools_right - OVERFLOW_WIDTH);
-        let overflow = Rect::new(overflow_x, by, overflow_x + OVERFLOW_WIDTH, by + bh);
+        let overflow_x = bx.min(tools_right - overflow_w);
+        let overflow = Rect::new(overflow_x, by, overflow_x + overflow_w, by + bh);
         buttons.push(UiButton {
             rect: overflow,
             kind: ButtonKind::IconOnly {
@@ -106,7 +129,7 @@ impl ToolbarTools {
             return ToolbarToolsLayout::default();
         }
 
-        menu_layout(&tools, &hidden, overflow, toolbar)
+        menu_layout(&tools, &hidden, overflow, toolbar, text_pill_w, menu_row_h)
     }
 
     pub(super) fn on_press(
@@ -209,10 +232,25 @@ fn tools() -> [Tool; 6] {
     ]
 }
 
-fn tool_width(tool: &Tool) -> f64 {
+/// The labels the insert tools paint on the bar, so the app can pre-measure
+/// them with the style they are painted in.
+pub(super) fn bar_labels() -> [&'static str; 6] {
+    tools().map(|tool| tool.bar)
+}
+
+/// The labels the overflow menu paints, likewise pre-measured by the app.
+pub(super) fn menu_labels() -> [&'static str; 6] {
+    tools().map(|tool| tool.menu)
+}
+
+fn tool_width(
+    tool: &Tool,
+    text_pill_w: &dyn Fn(&str) -> f64,
+    icon_pill_w: &dyn Fn(&str) -> f64,
+) -> f64 {
     match tool.icon {
-        Some(_) => 18.0 + 6.0 + chrome::est_width(tool.bar, 13.0) + 22.0,
-        None => chrome::est_width(tool.bar, 13.0) + 26.0,
+        Some(_) => icon_pill_w(tool.bar),
+        None => text_pill_w(tool.bar),
     }
 }
 
@@ -241,20 +279,25 @@ fn menu_layout(
     hidden: &[usize],
     overflow: Rect,
     toolbar: Rect,
+    text_pill_w: &dyn Fn(&str) -> f64,
+    menu_row_h: f64,
 ) -> ToolbarToolsLayout {
-    let row_h = 34.0;
-    let pad = 6.0;
+    // Rows are measured controls with a `MENU_ROW_SEAM` between them; the
+    // panel is as wide as its widest row (plus the row inset and panel
+    // padding), never narrower than its classic width.
+    let row_h = menu_row_h + MENU_ROW_SEAM;
+    let pad = GAP;
     let menu_w = hidden
         .iter()
         .filter_map(|&index| tools.get(index))
-        .map(|tool| chrome::est_width(tool.menu, 13.0) + 52.0)
-        .fold(150.0_f64, f64::max)
-        .min(toolbar.width() - 16.0);
+        .map(|tool| text_pill_w(tool.menu) + 2.0 * pad)
+        .fold(MENU_MIN_WIDTH, f64::max)
+        .min(toolbar.width() - 2.0 * pad);
     let mx1 = overflow
         .x1
-        .clamp(toolbar.x0 + 8.0 + menu_w, toolbar.x1 - 8.0);
+        .clamp(toolbar.x0 + pad + menu_w, toolbar.x1 - pad);
     let mx0 = mx1 - menu_w;
-    let my0 = overflow.y1 + 6.0;
+    let my0 = overflow.y1 + GAP;
     let bg = Rect::new(mx0, my0, mx1, my0 + pad * 2.0 + row_h * hidden.len() as f64);
     let menu_buttons = hidden
         .iter()
@@ -263,7 +306,7 @@ fn menu_layout(
         .map(|(row, tool)| {
             let y = my0 + pad + row as f64 * row_h;
             UiButton {
-                rect: Rect::new(mx0 + pad, y, mx1 - pad, y + row_h - 4.0),
+                rect: Rect::new(mx0 + pad, y, mx1 - pad, y + menu_row_h),
                 kind: ButtonKind::Text {
                     label: tool.menu.into(),
                     active: false,
@@ -284,6 +327,17 @@ mod tests {
     use super::*;
     use crate::model::ElementKind;
 
+    /// The 1× estimate the app falls back to before its first draw has
+    /// measured the labels: a text pill is its label plus 12 px each side, an
+    /// icon pill adds the 18 px icon and an 8 px gap.
+    fn text_pill_w(label: &str) -> f64 {
+        chrome::est_width(label, 13.0) + 24.0
+    }
+
+    fn icon_pill_w(label: &str) -> f64 {
+        26.0 + text_pill_w(label)
+    }
+
     fn narrow_layout(component: &ToolbarTools) -> (Vec<UiButton>, ToolbarToolsLayout) {
         let mut buttons = Vec::new();
         let layout = component.layout(
@@ -293,6 +347,9 @@ mod tests {
             11.0,
             34.0,
             Rect::new(0.0, 0.0, 560.0, 56.0),
+            &text_pill_w,
+            &icon_pill_w,
+            30.0,
         );
         (buttons, layout)
     }
