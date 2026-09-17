@@ -21,6 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use collab_types::ChannelId;
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
@@ -408,7 +409,7 @@ impl ChannelBrowser {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let pill_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let pill_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
         let active_fill = theme.tokens.colors.accent[5];
         let idle_fill = theme.tokens.colors.surface_white_5;
         let active_text = theme.tokens.colors.text_primary;
@@ -522,7 +523,7 @@ impl ChannelBrowser {
             &band,
         );
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let cy = f64::midpoint(row.y0, row.y1);
         let mut x_cursor = band.x1 + 8.0;
         // One measured line box for everything on the row's centre line:
@@ -571,7 +572,7 @@ impl ChannelBrowser {
         role: &str,
         x_cursor: f64,
     ) {
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let cy = f64::midpoint(row.y0, row.y1);
         let chip_text_size = (text_size - 2.0).max(10.0);
         let (lw, _) = text_renderer.measure(role, chip_text_size, None);
@@ -625,7 +626,7 @@ impl ChannelBrowser {
         entry: &ChannelEntry,
         now: SystemTime,
     ) {
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let cy = f64::midpoint(row.y0, row.y1);
 
         // Right-aligned before the unread badge slot.
@@ -709,7 +710,7 @@ impl ChannelBrowser {
             None,
             &band,
         );
-        let text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
         let cy = f64::midpoint(header_rect.y0, header_rect.y1);
         let header_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
@@ -749,7 +750,7 @@ impl ChannelBrowser {
             &border,
         );
 
-        let chip_text_size = (theme.tokens.typography.scale.sm - 2.0).max(9.0);
+        let chip_text_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 2.0).max(9.0));
         let chip_body = theme.tokens.colors.surface_white_5;
         let chip_border = theme.tokens.colors.border_white_10;
         let dim = theme.tokens.colors.text_dim;
@@ -1122,7 +1123,7 @@ impl Widget for ChannelBrowser {
 
         if self.visible.is_empty() {
             let label = "No channels";
-            let size = theme.tokens.typography.scale.sm;
+            let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
             let (w, h) = text_renderer.measure(label, size, None);
             let top = self.list_top_y();
             let cx = f64::midpoint(self.rect.x0, self.rect.x1);

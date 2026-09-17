@@ -25,6 +25,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -236,7 +237,7 @@ impl Widget for TriStateControl {
         // token would report a contrast the screen never holds.
         let active_ground = over(theme.tokens.colors.surfaces.raised, fill, alpha);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         for (i, (label, seg_rect)) in self.labels.iter().zip(self.seg_rects.iter()).enumerate() {
             let on = i == self.selected;
             let col = if on && tone != SegmentTone::Neutral {

@@ -21,6 +21,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -619,7 +620,7 @@ pub fn paint_transient(
         return ToastCardHit::default();
     }
 
-    let title_size = theme.tokens.typography.scale.sm;
+    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     let title_width = f64::from(
         text_renderer
             .measure_weighted(card.title, title_size, None, TextWeight::Semibold)
@@ -713,9 +714,9 @@ fn paint_card_text(
 ) {
     let text_x = rect.x0 + CARD_PAD_X;
     let width_avail = to_f32((text_right - text_x).max(0.0));
-    let caption_size = theme.tokens.typography.scale.xs;
-    let title_size = theme.tokens.typography.scale.sm;
-    let body_size = theme.tokens.typography.scale.xs;
+    let caption_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let body_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
 
     // A desktop notification may carry arbitrary localized or application
     // text. Keep every field one-line before deriving heights and widths;
@@ -726,13 +727,27 @@ fn paint_card_text(
     let body_text = single_line_text(card.body);
     let has_caption = !caption_text.is_empty();
     let has_body = !body_text.is_empty();
+    // Stack and centre the block on the *measured* line boxes (the renderer
+    // paints `line_height × size`), never on the font sizes.
     let cap_h = if has_caption {
-        f64::from(caption_size) + 4.0
+        let (_, h) = text_renderer.measure_weighted(
+            &caption_text.to_uppercase(),
+            caption_size,
+            None,
+            TextWeight::Semibold,
+        );
+        f64::from(h) + 4.0
     } else {
         0.0
     };
-    let title_h = f64::from(title_size) + if has_body { 4.0 } else { 0.0 };
-    let body_h = if has_body { f64::from(body_size) } else { 0.0 };
+    let (_, title_line_h) =
+        text_renderer.measure_weighted(&title_text, title_size, None, TextWeight::Semibold);
+    let title_h = f64::from(title_line_h) + if has_body { 4.0 } else { 0.0 };
+    let body_h = if has_body {
+        f64::from(text_renderer.measure(&body_text, body_size, None).1)
+    } else {
+        0.0
+    };
     let block_h = cap_h + title_h + body_h;
     let text_height = (text_bottom - rect.y0).max(0.0);
     let mut ty = rect.y0 + ((text_height - block_h) / 2.0).max(CARD_PAD_Y);

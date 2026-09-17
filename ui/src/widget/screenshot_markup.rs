@@ -34,6 +34,7 @@ use winit::{
     keyboard::{Key, NamedKey},
 };
 
+use crate::text_metrics::renderer_type_size;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
@@ -697,8 +698,8 @@ impl Widget for ScreenshotMarkup {
         // centre line. The caption follows the measured title rather than a
         // fixed offset, so a larger type scale cannot run the two together.
         let title = "Markup";
-        let title_size = theme.tokens.typography.scale.base;
-        let caption_size = theme.tokens.typography.scale.xs;
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.base);
+        let caption_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
         let (title_w, title_h) = tr.measure_weighted(title, title_size, None, TextWeight::Semibold);
         let (_, caption_h) = tr.measure_weighted("Ag", caption_size, None, TextWeight::Regular);
         let header_cy = self.rect.y0 + HEADER_BAND_H / 2.0;
@@ -862,21 +863,21 @@ impl Widget for ScreenshotMarkup {
             );
             let (_, opaque_h) = tr.measure_weighted(
                 "Opaque",
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 None,
                 TextWeight::Medium,
             );
             // Elided to the badge, which may have shrunk to the room left.
             let opaque = tr.elide_to_width_weighted(
                 "Opaque",
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 (badge.width() - 29.0 - 8.0).max(0.0) as f32,
                 TextWeight::Medium,
             );
             tr.draw_text_weighted(
                 scene,
                 &opaque,
-                theme.tokens.typography.scale.xs,
+                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 c.text_dim,
                 transform.pre_translate(
                     (
@@ -997,14 +998,14 @@ impl Widget for ScreenshotMarkup {
             if id == "save" {
                 let (_, save_h) = tr.measure_weighted(
                     "Save",
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     None,
                     TextWeight::Semibold,
                 );
                 tr.draw_text_weighted(
                     scene,
                     "Save",
-                    theme.tokens.typography.scale.xs,
+                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     c.on_accent(4.5),
                     transform.pre_translate(
                         (r.x0 + 30.0, r.center().y - f64::from(save_h) / 2.0).into(),
@@ -1048,7 +1049,7 @@ impl Widget for ScreenshotMarkup {
         {
             // Measured, not estimated from a character count: the estimate
             // both clipped wide labels and over-padded narrow ones.
-            let tip_size = theme.tokens.typography.scale.xs;
+            let tip_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
             let (label_w, label_h) = tr.measure_weighted(label, tip_size, None, TextWeight::Medium);
             let width = (f64::from(label_w) + 18.0).max(48.0);
             let tooltip_y = if anchor.y0 < self.toolbar.y0 {

@@ -22,6 +22,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::text_metrics::renderer_type_size;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -773,7 +774,7 @@ impl HistoryScrubber {
         let track = self.track_rect();
         // `scale.xs` is the floor of the type scale; the band caption was
         // three points under `sm`, which landed below it.
-        let size = theme.tokens.typography.scale.xs;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
 
         // Segments abut at the tick each one ends on so every visible edge is
         // a real boundary; spanning only first-tick..last-tick would leave a
@@ -905,7 +906,7 @@ impl HistoryScrubber {
         };
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
         scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let shown = fit(text_renderer, label, size, rect.width() - 10.0);
         let (w, h) = text_renderer.measure(&shown, size, None);
         text_renderer.draw_text(
@@ -933,7 +934,7 @@ impl HistoryScrubber {
         theme: &Theme,
     ) {
         let label = "No history yet";
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let (w, h) = text_renderer.measure(label, size, None);
         text_renderer.draw_text(
             scene,
@@ -1067,9 +1068,9 @@ impl HistoryScrubber {
         });
         let budget = pop.width() - 12.0;
         if let Some(head) = group_line {
-            let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+            let head_size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
             // The floor of the type scale, not three points under `sm`.
-            let sub_size = theme.tokens.typography.scale.xs;
+            let sub_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
             let head = fit(text_renderer, &head, head_size, budget);
             let (hw, hh) = text_renderer.measure(&head, head_size, None);
             let detail = fit(text_renderer, &detail, sub_size, budget);
@@ -1104,7 +1105,7 @@ impl HistoryScrubber {
                 None,
             );
         } else {
-            let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+            let size = renderer_type_size(text_renderer, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
             let drawn = fit(text_renderer, &detail, size, budget);
             let (lw, lh) = text_renderer.measure(&drawn, size, None);
             text_renderer.draw_text(
@@ -1145,7 +1146,7 @@ impl HistoryScrubber {
             // finish. Enter and Escape are the only two things it does; say so
             // where the buttons were, when there is room left over.
             let hint = "Enter to save \u{00b7} Esc to cancel";
-            let hint_size = theme.tokens.typography.scale.xs;
+            let hint_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
             let (hw, hh) = text_renderer.measure(hint, hint_size, None);
             if box_rect.x1 + 10.0 + f64::from(hw) <= last {
                 text_renderer.draw_text(

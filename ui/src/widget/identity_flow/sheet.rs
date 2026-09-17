@@ -32,6 +32,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
+use crate::text_metrics::renderer_type_size;
 use crate::color_compat::ColorCompat;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -213,16 +214,17 @@ pub(super) enum Role {
 
 impl Role {
     /// Renderer-relative size. Theme type tokens already carry the text
-    /// scale the renderer applies again, so it is divided back out once —
-    /// exactly what [`ModalFrame`] does for its title and action labels.
-    pub(super) fn size(self, theme: &Theme) -> f32 {
+    /// scale the renderer applies again, so it is divided back out once by
+    /// the renderer's own scale — exactly what [`ModalFrame`] does for its
+    /// title and action labels.
+    pub(super) fn size(self, theme: &Theme, text_renderer: &TextRenderer) -> f32 {
         let scale = &theme.tokens.typography.scale;
         let token = match self {
             Role::Body | Role::Value => scale.base,
             Role::Label | Role::Caption | Role::Error => scale.sm,
             Role::Code => scale.x2l,
         };
-        token / theme.text_scale
+        renderer_type_size(text_renderer, token)
     }
 
     pub(super) fn weight(self) -> TextWeight {
@@ -423,7 +425,7 @@ impl Sheet {
 /// Height one line of `role` occupies, measured with the style it is drawn
 /// in — never a literal, so a text-scale theme grows the row with the text.
 pub(super) fn line_height(text_renderer: &mut TextRenderer, theme: &Theme, role: Role) -> f64 {
-    let (_, h) = text_renderer.measure_weighted("Ag", role.size(theme), None, role.weight());
+    let (_, h) = text_renderer.measure_weighted("Ag", role.size(theme, text_renderer), None, role.weight());
     f64::from(h)
 }
 
@@ -437,7 +439,7 @@ pub(super) fn measure(
 ) -> (f64, f64) {
     let (w, h) = text_renderer.measure_weighted(
         text,
-        role.size(theme),
+        role.size(theme, text_renderer),
         max_width.map(narrow),
         role.weight(),
     );
@@ -518,7 +520,7 @@ pub(super) fn paint_text_in(
     text_renderer.draw_text_weighted(
         scene,
         text,
-        role.size(theme),
+        role.size(theme, text_renderer),
         color,
         transform.pre_translate(Vec2::new(x, y)),
         max_width.map(narrow),
@@ -784,7 +786,7 @@ pub(super) fn paint_segments(
     let face = SegmentedFace::new(segments, labels, selected)
         .style(SegmentedStyle::Solid)
         .radius(f64::from(theme.tokens.radii.md))
-        .text_size(Role::Label.size(theme))
+        .text_size(Role::Label.size(theme, text_renderer))
         .weight(TextWeight::Medium)
         .hovered(hovered);
     ToggleGroup::paint(scene, transform, text_renderer, theme, &face);
@@ -1244,7 +1246,10 @@ mod tests {
     #[test]
     fn roles_divide_the_text_scale_back_out_for_the_renderer() {
         let base = Theme::dark();
+        let base_tr = TextRenderer::new();
         let scaled = Theme::dark().with_text_scale(2.0);
+        let mut scaled_tr = TextRenderer::new();
+        scaled_tr.set_text_scale(2.0);
         for role in [
             Role::Body,
             Role::Label,
@@ -1254,12 +1259,12 @@ mod tests {
             Role::Code,
         ] {
             assert!(
-                (role.size(&base) - role.size(&scaled)).abs() < 0.01,
+                (role.size(&base, &base_tr) - role.size(&scaled, &scaled_tr)).abs() < 0.01,
                 "{role:?}: the renderer applies the scale; the role must not apply it twice"
             );
         }
-        assert!(Role::Code.size(&base) > Role::Value.size(&base));
-        assert!(Role::Value.size(&base) > Role::Caption.size(&base));
+        assert!(Role::Code.size(&base, &base_tr) > Role::Value.size(&base, &base_tr));
+        assert!(Role::Value.size(&base, &base_tr) > Role::Caption.size(&base, &base_tr));
     }
 
     #[test]

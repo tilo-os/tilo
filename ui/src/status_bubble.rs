@@ -14,6 +14,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 
+use crate::text_metrics::centered_text_top;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 
@@ -115,6 +116,11 @@ impl StatusBubble {
 
 /// `control` is a leading+trailing glyph slot in px each (`0.0` for a
 /// plain label).
+///
+/// `text_size` is renderer-relative: the renderer applies the accessibility
+/// text scale, so pass a design size (`12.0`) or a theme token divided once
+/// through [`crate::text_metrics::renderer_type_size`] — never a raw
+/// `theme.tokens.typography.scale.*` value, which paints 4× at 200 %.
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
     let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
@@ -124,7 +130,8 @@ pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64
 }
 
 /// The caller sets opacity by wrapping this in a `scene.push_layer(...
-/// alpha ...)` using [`StatusBubble::alpha`].
+/// alpha ...)` using [`StatusBubble::alpha`]. `text_size` follows the
+/// [`pill_size`] contract: renderer-relative, scaled once by the renderer.
 pub fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -154,9 +161,10 @@ pub fn draw_pill(
         &shape,
     );
 
-    let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-    let ty = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+    // Centre the measured line box, not the font size.
+    let ty = centered_text_top(rect.y0, rect.height(), f64::from(th));
     tr.draw_text_weighted(
         scene,
         text,

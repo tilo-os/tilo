@@ -59,6 +59,8 @@ mod f4_menu_highlight_render;
 mod f5_immersive_geometry;
 #[path = "f6_identity_flow_layout.rs"]
 mod f6_identity_flow_layout;
+#[path = "x1_text_scale_once.rs"]
+mod x1_text_scale_once;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]
