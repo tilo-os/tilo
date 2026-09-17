@@ -57,6 +57,7 @@ impl Exceptions {
 use std::time::{Duration, Instant};
 use ui::{
     LocalState,
+    tokens::TextRole,
     webview::{SharedEngine, SiteStatus, WebViewCommand, WebViewEvent},
     widget::{Button, Column, Container, Row, ScrollAxis, Scrollable, Text, Widget},
 };
@@ -302,7 +303,14 @@ impl SiteControls {
             if information { "Site" } else { "" },
             Pending::Open(information),
         )
-        .with_icon(ui::icons::Icon::Shield)
+        // Two launchers side by side with one glyph read as one control
+        // drawn twice; information gets its own mark and the shield stays
+        // with protection.
+        .with_icon(if information {
+            ui::icons::Icon::Info
+        } else {
+            ui::icons::Icon::Shield
+        })
         .with_accessible_name(if information {
             "Site information"
         } else {
@@ -321,8 +329,34 @@ impl SiteControls {
         clippy::too_many_lines,
         reason = "the two bounded site-panel sections share their action context"
     )]
-    pub fn panel(&self, width: f32, height: f32) -> Box<dyn Widget> {
-        let line = |text: &str| Box::new(Text::new(text).with_size(13.0)) as Box<dyn Widget>;
+    /// `label_w` is the facts' label column — the certificate and permission
+    /// facts are label / value rows sharing one column edge, so the values
+    /// read down the panel as a column rather than as sentences that each
+    /// happen to start with a name.
+    pub fn panel(&self, width: f32, height: f32, label_w: f32) -> Box<dyn Widget> {
+        // Body copy at the theme's body step; the 13px here was off the type
+        // scale.
+        let line = |text: &str| Box::new(Text::new(text).with_role(TextRole::Body)) as Box<dyn Widget>;
+        let fact = |name: &str, value: &str| -> Box<dyn Widget> {
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_width(label_w)
+                            .with_child(Box::new(
+                                Text::new(name).with_role(TextRole::Label).dimmed(),
+                            )),
+                    ))
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_flex_grow()
+                            .with_child(Box::new(Text::new(value).with_role(TextRole::Body))),
+                    )),
+            )
+        };
         let title = if self.information {
             "Site information"
         } else {
@@ -334,7 +368,7 @@ impl SiteControls {
             .with_intrinsic_height()
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(Text::new(title).with_size(18.0)))
+                    .push(Box::new(Text::new(title).with_role(TextRole::Title)))
                     .push(Box::new(
                         self.button("browser.site.close", "Done", Pending::Close)
                             .with_size(64.0, 32.0),
@@ -374,20 +408,23 @@ impl SiteControls {
                 column = column.push(line(connection));
                 if !status.subject.is_empty() {
                     column = column
-                        .push(line(&format!("Certificate: {}", status.subject)))
-                        .push(line(&format!("Issuer: {}", status.issuer)))
-                        .push(line(&format!(
-                            "{} · certificate status {}",
-                            tls_version(status.tls_version),
-                            status.certificate_status
-                        )))
-                        .push(line(&format!(
-                            "Certificate expires: {}",
-                            certificate_date(status.expires)
-                        )));
+                        .push(fact("Certificate", &status.subject))
+                        .push(fact("Issuer", &status.issuer))
+                        .push(fact(
+                            "Connection",
+                            &format!(
+                                "{} · certificate status {}",
+                                tls_version(status.tls_version),
+                                status.certificate_status
+                            ),
+                        ))
+                        .push(fact(
+                            "Certificate expires",
+                            &certificate_date(status.expires),
+                        ));
                 }
                 for (name, value) in &status.permissions {
-                    column = column.push(line(&format!("{name}: {value}")));
+                    column = column.push(fact(name, value));
                 }
                 column=column.push(Box::new(self.button("browser.site.revoke","Block permissions",action("revoke")).with_enabled(self.action.is_none())))
                     .push(line("Blocks camera, microphone, location and notifications for this origin. Reload to end existing media sessions."))
@@ -552,10 +589,10 @@ mod tests {
         let mut controls = SiteControls::default();
         controls.open = true;
         controls.committed = Some("https://example.test".into());
-        let mut panel = controls.panel(480.0, 444.0);
+        let theme = ui::theme::Theme::dark();
+        let mut panel = controls.panel(480.0, 444.0, 2.0 * theme.tokens.spacing.s16);
         let mut tree = taffy::TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
-        let theme = ui::theme::Theme::dark();
         let mut text = ui::text_render::TextRenderer::new();
         let node = panel.build_layout(&mut tree, &theme, &mut nodes);
         tree.compute_layout_with_measure(

@@ -32,6 +32,7 @@ use ui::qos_actions::{
 };
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
     MediaElementInfo, NavigationDirection, SharedEngine, WebViewCommand, WebViewEvent,
@@ -92,6 +93,10 @@ const ROOMY_CHROME_MIN_WIDTH: f64 = 1000.0;
 /// field they sit beside, so the row has one top and one bottom edge. Also the
 /// find bar's controls, which sit beside a field of the same height.
 pub(crate) const TOOLBAR_CONTROL_HEIGHT: f32 = 40.0;
+
+/// At or above this width the developer commands — DevTools, Find and the
+/// zoom readout — join the toolbar row.
+const DEVELOPER_CHROME_MIN_WIDTH: f64 = 1100.0;
 
 /// The responsive tiers for a window `width`: `(compact, roomy)`. One rule for
 /// the retained layout pass and the one-frame capture seed.
@@ -465,6 +470,12 @@ pub struct BrowserWidget {
     /// Wide enough for the optional toolbar commands; see
     /// [`ROOMY_CHROME_MIN_WIDTH`].
     roomy_chrome: bool,
+    /// The theme's text scale at the last layout pass. A labelled toolbar
+    /// control keeps its explicit width at 1× and grows with the text, so a
+    /// 2× label is not painted past a 1× face; and the responsive tiers are
+    /// judged on the width the text leaves, so a 1200px window at 2× lays
+    /// out as the 600px window it is to the eye.
+    text_scale: f32,
     motion_reduced: bool,
     pending_controls: std::collections::VecDeque<ControlInvocation>,
 }
@@ -516,6 +527,20 @@ impl BrowserWidget {
     }
     pub(crate) fn persisted_url(&self) -> &str {
         &self.session_url
+    }
+
+    /// A labelled control's width: its explicit 1× width, grown with the
+    /// text scale so the label it carries fits its face. Icon-only controls
+    /// keep their width — a glyph does not grow with the text.
+    fn labelled_width(&self, base: f32) -> f32 {
+        base * self.text_scale.max(1.0)
+    }
+
+    /// The window width the responsive tiers are judged on: the real width
+    /// in 1× pixels, so a 1200px window at a 2× text scale lays out as the
+    /// 600px window it is to the eye rather than starving its address field.
+    fn chrome_width(&self) -> f64 {
+        self.rect.width() / f64::from(self.text_scale.max(1.0))
     }
 
     /// Handle to the engine this widget drives — the binary uses it to
@@ -803,6 +828,7 @@ impl BrowserWidget {
             cursor: Point::ZERO,
             compact_chrome: false,
             roomy_chrome: true,
+            text_scale: 1.0,
             motion_reduced: false,
             pending_controls: std::collections::VecDeque::new(),
         }
@@ -1643,7 +1669,11 @@ impl BrowserWidget {
         };
         let history_pause_btn = self.bind_button(
             Button::new("browser.history-pause", "", None)
-                .with_icon(Icon::Shield)
+                // Pause, not a fourth shield: the row carried the same glyph
+                // for site information, protection, history pause and
+                // Private, so three icon-only controls were told apart by
+                // position alone.
+                .with_icon(Icon::Pause)
                 .with_accessible_name(history_pause_label)
                 .tooltip(history_pause_label)
                 .with_size(nav_btn.0, nav_btn.1),
@@ -1672,7 +1702,14 @@ impl BrowserWidget {
             "New Private Window"
         })
         .tooltip("New Private Window (Cmd+Shift+N)")
-        .with_size(if self.compact_chrome { 33.0 } else { 92.0 }, 40.0)
+        .with_size(
+            if self.compact_chrome {
+                33.0
+            } else {
+                self.labelled_width(92.0)
+            },
+            TOOLBAR_CONTROL_HEIGHT,
+        )
         .on_effect(move || private_request.set(true));
         let private_window_btn = if self.browsing_mode.is_private() {
             private_window_btn.primary()
@@ -1693,7 +1730,11 @@ impl BrowserWidget {
         // Site information has no action route yet, so it stays on every
         // non-compact tier — see `ROOMY_CHROME_MIN_WIDTH`.
         if !self.compact_chrome {
-            toolbar = toolbar.push(Box::new(self.site.launcher(true)));
+            toolbar = toolbar.push(Box::new(
+                self.site
+                    .launcher(true)
+                    .with_size(self.labelled_width(56.0), TOOLBAR_CONTROL_HEIGHT),
+            ));
         }
         // Every control on this row is `TOOLBAR_CONTROL_HEIGHT` tall — the
         // address field's height — so the row has one top and one bottom
@@ -1737,16 +1778,30 @@ impl BrowserWidget {
             library_resource,
             library_action,
         );
+        let download_status_w: f32 = if self.compact_chrome { 72.0 } else { 152.0 };
         let download_status = self.capabilities.toolbar_status().map(|status| {
             self.bind_button(
                 Button::new("browser.download-status", &status, None)
                     .with_accessible_name(&format!("Downloads: {status}"))
                     .tooltip("Show downloads")
-                    .with_size(if self.compact_chrome { 72.0 } else { 152.0 }, 40.0),
+                    .with_size(
+                        self.labelled_width(download_status_w),
+                        TOOLBAR_CONTROL_HEIGHT,
+                    ),
                 "browser.downloads",
                 "show",
             )
         });
+        // A download in progress adds its labelled status to the row. The
+        // developer commands yield that width, so the address field keeps
+        // its room while a render reports: with every 1200px command kept,
+        // the status left the field some 140px.
+        let developer_width = self.chrome_width()
+            - if download_status.is_some() {
+                f64::from(download_status_w)
+            } else {
+                0.0
+            };
         // On a phone-width window the disabled bookmark affordance was
         // consuming the only useful address-bar width. Bookmarks remain in
         // the Library/resource surface; keep the toolbar focused on finding
@@ -1768,17 +1823,15 @@ impl BrowserWidget {
         if self.roomy_chrome {
             toolbar = toolbar.push(Box::new(pip_btn));
         }
-        if !self.compact_chrome && self.rect.width() >= 1100.0 {
+        if !self.compact_chrome && developer_width >= DEVELOPER_CHROME_MIN_WIDTH {
             let developer_engine = self.engine.clone();
             toolbar = toolbar.push(Box::new(
                 Button::new("browser.devtools", "DevTools", None)
-                    .with_size(82.0, nav_btn.1)
+                    .with_size(self.labelled_width(82.0), nav_btn.1)
                     .on_effect(move || developer_engine.send(WebViewCommand::ShowDeveloperTools)),
             ));
-        }
-        if !self.compact_chrome && self.rect.width() >= 1100.0 {
-            toolbar = toolbar.push(Box::new(self.daily.launcher()));
-            toolbar = toolbar.push(Box::new(self.daily.zoom_reset()));
+            toolbar = toolbar.push(Box::new(self.daily.launcher(self.text_scale)));
+            toolbar = toolbar.push(Box::new(self.daily.zoom_reset(self.text_scale)));
         }
         if !self.compact_chrome {
             toolbar = toolbar.push(Box::new(private_window_btn));
@@ -1799,7 +1852,7 @@ impl BrowserWidget {
                 Box::new(
                     Text::new("Private window — browsing data is removed when this window closes. Files you download remain.")
                         .with_id("browser.private-indicator")
-                        .with_size(13.0),
+                        .with_role(TextRole::Body),
                 ),
             )));
         }
@@ -1807,16 +1860,16 @@ impl BrowserWidget {
             column = column.push(Box::new(
                 Container::new()
                     .with_background()
-                    .with_child(Box::new(Text::new(message).with_size(13.0))),
+                    .with_child(Box::new(Text::new(message).with_role(TextRole::Body))),
             ));
         }
         if self.close_blocked {
             column = column.push(Box::new(Container::new().with_child(Box::new(
-                Text::new("This tab has an active download. Finish or cancel it in Library → Downloads, then close the tab.").with_size(13.0)
+                Text::new("This tab has an active download. Finish or cancel it in Library → Downloads, then close the tab.").with_role(TextRole::Body)
             ))));
         }
         if self.daily.open && !self.show_settings && !self.show_library {
-            column = column.push(self.daily.bar());
+            column = column.push(self.daily.bar(self.text_scale));
         }
         if let Some(prompt) = self.capabilities.prompt(&self.engine) {
             column = column.push(prompt);
@@ -1827,7 +1880,7 @@ impl BrowserWidget {
                     Text::new(
                         "History paused — pages in this window are not saved to browsing history.",
                     )
-                    .with_size(13.0),
+                    .with_role(TextRole::Body),
                 )),
             ));
         }
@@ -1914,14 +1967,15 @@ impl BrowserWidget {
                 self.bind_button(
                     Button::new("browser.library.history-pause", label, None)
                         .with_accessible_name(label)
-                        .with_size(116.0, 36.0),
+                        .with_size(self.labelled_width(116.0), 36.0),
                     "browser.session",
                     "toggle-history-pause",
                 ),
             ));
         }
         heading = heading.push(Box::new(self.bind_button(
-            Button::new("browser.library.close", "Done", None).with_size(96.0, 36.0),
+            Button::new("browser.library.close", "Done", None)
+                .with_size(self.labelled_width(96.0), 36.0),
             "browser",
             "show-page",
         )));
@@ -1956,7 +2010,7 @@ impl BrowserWidget {
             let button = self.bind_button(
                 Button::new(id, label, None)
                     .with_accessible_name(&format!("Show {label}"))
-                    .with_size(132.0, 40.0),
+                    .with_size(self.labelled_width(132.0), 40.0),
                 resource,
                 "show",
             );
@@ -3907,6 +3961,12 @@ impl Widget for BrowserWidget {
             .composed
             .as_ref()
             .and_then(|widget| address_state(widget.as_ref()));
+        // The tiers and the labelled widths follow the text scale, which is
+        // only known here; the one-frame capture seed set them at 1×.
+        self.text_scale = theme.text_scale;
+        if self.rect.width() > 0.0 {
+            (self.compact_chrome, self.roomy_chrome) = chrome_tiers(self.chrome_width());
+        }
         let mut composed = self.build_composition();
         let child_node = composed.build_layout(taffy, theme, node_map);
         if let Some((id, state)) = address_state {
@@ -3959,7 +4019,10 @@ impl Widget for BrowserWidget {
             let width = (self.rect.width() as f32 - 2.0 * gutter).clamp(240.0, 480.0);
             let height = (self.rect.height() as f32 - top - theme.tokens.spacing.s12)
                 .clamp(180.0, 510.0);
-            let mut panel = self.site.panel(width, height);
+            // The facts' label column: wide enough for the longest label
+            // ("Certificate expires") at the label step, in spacing steps.
+            let label_w = 2.0 * theme.tokens.spacing.s16;
+            let mut panel = self.site.panel(width, height, label_w);
             let panel_node = panel.build_layout(taffy, theme, node_map);
             #[allow(
                 clippy::unwrap_used,
@@ -3992,7 +4055,7 @@ impl Widget for BrowserWidget {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let (compact, roomy) = chrome_tiers(self.rect.width());
+        let (compact, roomy) = chrome_tiers(self.chrome_width());
         if (compact, roomy) != (self.compact_chrome, self.roomy_chrome) {
             self.compact_chrome = compact;
             self.roomy_chrome = roomy;
