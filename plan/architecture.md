@@ -167,7 +167,7 @@ tilo/                            # workspace root
 └── os/                                  # Containerfile + systemd units
 ```
 
-Everything lives in this one repository — see `CLAUDE.md` for the monorepo workflow.
+Everything lives in this one repository — see `AGENTS.md` for the monorepo workflow.
 
 ## Key spatial concepts
 

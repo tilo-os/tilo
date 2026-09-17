@@ -20,7 +20,7 @@ path = "src/bin/tilo-rollback.rs"
 #   * the OS image already needs `tpm2-tools` and `cryptsetup` present for
 #     recovery-mode work, so there is no new dependency to ship;
 #   * the build host is image-based and carries none of the native development
-#     headers (see CLAUDE.md), so linking libtss2/libcryptsetup would force a
+#     headers (see AGENTS.md), so linking libtss2/libcryptsetup would force a
 #     layered host or a build-container-only build for a component that has to
 #     be buildable everywhere.
 # Every external invocation goes through `exec::Runner`, so the decision logic

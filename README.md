@@ -99,7 +99,7 @@ The required application-facing resource/action contract is documented in
 - [`docs/architecture.md`](docs/architecture.md) — component overview
 - [`plan/`](plan/) — design intent for the compositor, collaboration, security, distribution
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) — build environment and running Tilo on your own machine
-- [`CLAUDE.md`](CLAUDE.md) — what agents working in this repository are told
+- [`AGENTS.md`](AGENTS.md) — what agents working in this repository are told
 
 ## Status
 

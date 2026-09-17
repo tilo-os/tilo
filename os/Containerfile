@@ -212,7 +212,7 @@ FROM wpe-builder-${TILO_WITH_BROWSER} AS wpe-builder
 FROM ${BASE_REF} AS builder
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
-# against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
+# against. Superset of the my-distrobox dev deps (repo AGENTS.md) plus the base
 # toolchain a minimal bootc image lacks: cmake/perl/clang/openssl etc. that
 # vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
 # jemalloc, sqlite) need to build. `sccache` honours the project's
