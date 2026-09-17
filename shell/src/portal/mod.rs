@@ -87,8 +87,9 @@ pub use auth::{AuthenticatedCall, PortalAuthenticator};
 pub use background::BackgroundBackend;
 pub use camera::AccessBackend;
 pub use capture_broker::{
-    CaptureAuthorizationId, CaptureBroker, CaptureKind, CaptureLeaseId, CapturePrivacyEvent,
-    CaptureRevocation, CaptureSessionBinding, CaptureSourceView, LocalCaptureHandle,
+    CaptureAuthorizationId, CaptureBroker, CaptureKind, CaptureLeaseGrant, CaptureLeaseId,
+    CapturePrivacyEvent, CaptureRevocation, CaptureSessionBinding, CaptureSourceView,
+    LocalCaptureHandle,
 };
 pub use clipboard::ClipboardBackend;
 pub use desktop_services::DesktopPortalServices;
