@@ -1549,7 +1549,7 @@ mod tests {
                 TileContent::Foreign {
                     surface_id: id,
                     ..
-                } if id == surface_id
+                } if *id == surface_id
             ));
             assert_eq!(
                 rendered_tree

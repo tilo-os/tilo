@@ -3274,10 +3274,12 @@ impl XdgActivationHandler for State {
         let target = surface_id(&surface);
         let actual_app_id = {
             let tree = self.workspace_tree.read();
-            tab_binding::app_id_for_surface(&tree, target)
+            tab_binding::app_id_for_surface(&tree, target).map(str::to_owned)
         };
         let app_id_matches_target = data.app_id.as_deref().is_none_or(|requested| {
-            actual_app_id.is_some_and(|actual| app_ids_match(requested, actual))
+            actual_app_id
+                .as_deref()
+                .is_some_and(|actual| app_ids_match(requested, actual))
         });
         if let Some(host_launch) = host_launch.as_ref() {
             crate::shell::launcher::clear_pending_placement(&host_launch.desktop_id);
