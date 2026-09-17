@@ -367,3 +367,28 @@ fn native_chunk_missing_postmetadata_cannot_publish_successful_bytes() {
     report.facts.remove(last);
     assert!(qos_ntfs_helper::limits::decode_chunk(&report, 23).is_err());
 }
+
+#[test]
+fn cancellation_fixture_has_no_entry_after_its_last_read() {
+    let m = manifest("large").unwrap();
+    let facts = m["facts"].as_array().unwrap();
+    let directory = facts
+        .iter()
+        .find(|f| f["kind"] == "entry" && f["name"] == "630061006e00630065006c00")
+        .expect("native cancellation subtree missing");
+    assert_eq!(directory["directory"], true);
+    let children: Vec<_> = facts
+        .iter()
+        .filter(|f| f["kind"] == "entry" && f["parent"] == directory["record"])
+        .collect();
+    assert_eq!(
+        children.len(),
+        1,
+        "last-chunk cancellation needs a final readable entry"
+    );
+    assert_eq!(children[0]["name"], "6c006100730074002e00620069006e00");
+    let mut req = request(&m, "last.bin").unwrap();
+    req["length"] = json!(11);
+    let r = operation("large", &["--read-chunk".into(), req.to_string()]).unwrap();
+    assert_eq!(bytes(&r).unwrap(), b"final chunk");
+}
